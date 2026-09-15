@@ -777,7 +777,16 @@ struct WorkSessionDestinationView: View {
   }
 
   /// Whether this view is a cross-project "quick look" (see `crossProjectContext`).
-  var isCrossProject: Bool { crossProjectContext != nil }
+  /// Becomes false once the background Hub activate commits, so Send/approve
+  /// and history paging switch to the active-project path without remounting.
+  var isCrossProject: Bool {
+    hubChatIsForeignProject(
+      context: crossProjectContext,
+      ownerIsActive: crossProjectContext.map {
+        syncService.isActiveProject(id: $0.projectId, rootPath: $0.projectRootPath)
+      } ?? false
+    )
+  }
   var isRemoteOnlyChat: Bool { isCrossProject || personalChat }
   /// Single gate for lane→PR work in this destination. See `WorkChatLanePrPolicy`.
   var resolvesLanePr: Bool {
@@ -825,6 +834,8 @@ struct WorkSessionDestinationView: View {
   /// rather than fire-and-forget: two quick sends must not interleave two
   /// transcript loads.
   @State var postSendRefreshTask: Task<Void, Never>?
+  @State private var hubActivationRebindTask: Task<Void, Never>?
+  @State private var chatDestinationVisible = false
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var subagentSnapshots: [WorkSubagentSnapshot] = []
   @State var subagentSnapshotsRenderSignature = 0
@@ -1453,6 +1464,7 @@ struct WorkSessionDestinationView: View {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
       .onAppear {
+        chatDestinationVisible = true
         // Install remote routing synchronously with presentation so the first
         // user interaction cannot race the async load task and accidentally
         // fall back to the active project.
@@ -1461,6 +1473,29 @@ struct WorkSessionDestinationView: View {
            let currentSession = session ?? initialSession,
            isChatSession(currentSession) {
           syncService.retainChatEventSubscription(sessionId: sessionId)
+        }
+      }
+      .onChange(of: isCrossProject) { wasForeign, isForeign in
+        switch hubChatActivationScopeTransition(wasForeign: wasForeign, isForeign: isForeign) {
+        case .rebindToActive:
+          hubActivationRebindTask?.cancel()
+          // Drop foreign routing on this turn so Send/approve cannot keep
+          // targeting a project that is now the active one.
+          syncService.clearCrossProjectChatScope(sessionId: sessionId)
+          hubActivationRebindTask = Task { await rebindChatAfterHubActivation() }
+        case .restoreForeign:
+          hubActivationRebindTask?.cancel()
+          if let announcedLaneId {
+            syncService.releaseLaneOpen(laneId: announcedLaneId)
+            self.announcedLaneId = nil
+          }
+          // Register before any await. A send can land in the same turn as the
+          // rollback; without this, chatCommandScopeBySession is empty and the
+          // message routes to the restored active project instead of the owner.
+          registerChatCommandScope()
+          hubActivationRebindTask = Task { await restoreForeignChatScopeAfterActivationRollback() }
+        case .none:
+          break
         }
       }
       .task {
@@ -1615,6 +1650,9 @@ struct WorkSessionDestinationView: View {
         Task { await refreshRemoteSubagentSnapshots() }
       }
       .onDisappear {
+        chatDestinationVisible = false
+        hubActivationRebindTask?.cancel()
+        hubActivationRebindTask = nil
         if let announcedLaneId {
           syncService.releaseLaneOpen(laneId: announcedLaneId)
           self.announcedLaneId = nil
@@ -1643,10 +1681,101 @@ struct WorkSessionDestinationView: View {
       }
   }
 
+  /// Foreign Hub open → owning project committed. The switch tears the socket
+  /// and clears chat subscriptions; clearing the scope map alone would leave
+  /// this session unsubscribed. Rebind onto the active-project stream.
+  @MainActor
+  func rebindChatAfterHubActivation() async {
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else { return }
+    syncService.clearCrossProjectChatScope(sessionId: sessionId)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else { return }
+    guard let currentSession = session ?? initialSession, isChatSession(currentSession) else {
+      return
+    }
+    syncService.retainChatEventSubscription(sessionId: sessionId)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
+    _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
+    await loadTranscript(forceRemote: true)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
+    await syncLanePresence()
+  }
+
+  /// Activation committed, then `switchToDesktopProject` restored the previous
+  /// project. Foreign scope was cleared on the way in; put it back so send and
+  /// transcript stay on the chat's owner.
+  @MainActor
+  func restoreForeignChatScopeAfterActivationRollback() async {
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else { return }
+    if let announcedLaneId {
+      syncService.releaseLaneOpen(laneId: announcedLaneId)
+      self.announcedLaneId = nil
+    }
+    registerChatCommandScope()
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else { return }
+    guard let currentSession = session ?? initialSession, isChatSession(currentSession) else {
+      return
+    }
+    syncService.retainChatEventSubscription(sessionId: sessionId)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
+    _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
+    await loadTranscript(forceRemote: true)
+    guard hubChatShouldContinueActivationRebind(
+      destinationVisible: chatDestinationVisible,
+      taskCancelled: Task.isCancelled
+    ) else {
+      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
+      return
+    }
+  }
+
   func registerChatCommandScope() {
     if personalChat {
       syncService.setPersonalChatScope(sessionId: sessionId)
-    } else if let crossProjectContext {
+    } else if isCrossProject, let crossProjectContext {
       syncService.setCrossProjectChatScope(
         sessionId: sessionId,
         projectId: crossProjectContext.projectId,
@@ -1673,10 +1802,7 @@ struct WorkSessionDestinationView: View {
         )
         .adeScreenBackground()
       } else {
-        ProgressView()
-          .controlSize(.large)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .adeScreenBackground()
+        WorkChatOpeningSessionPlaceholder()
           .accessibilityLabel("Opening session")
       }
     }

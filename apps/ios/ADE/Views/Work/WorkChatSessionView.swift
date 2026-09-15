@@ -184,6 +184,50 @@ func workChatTranscriptFailureMessage(_ message: String) -> String {
   return trimmed
 }
 
+/// Chat-shaped loading chrome. Replaces the old spinner inside a glass card,
+/// which read as a blank sheet with a throbber in the middle.
+struct WorkChatTranscriptSkeleton: View {
+  var accessibilityLabelText = "Loading transcript"
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      HStack {
+        ADESkeletonView(width: 168, height: 36, cornerRadius: 16)
+        Spacer(minLength: 48)
+      }
+      HStack {
+        Spacer(minLength: 64)
+        ADESkeletonView(width: 132, height: 28, cornerRadius: 14)
+      }
+      HStack {
+        ADESkeletonView(width: 210, height: 52, cornerRadius: 16)
+        Spacer(minLength: 36)
+      }
+      HStack {
+        Spacer(minLength: 80)
+        ADESkeletonView(width: 96, height: 24, cornerRadius: 12)
+      }
+    }
+    .padding(.top, 8)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(accessibilityLabelText)
+    .accessibilityAddTraits(.updatesFrequently)
+  }
+}
+
+struct WorkChatOpeningSessionPlaceholder: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      WorkChatTranscriptSkeleton()
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 16)
+    .padding(.top, 12)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .adeScreenBackground()
+  }
+}
+
 /// `distanceFromTop` is how far the reader has scrolled from the first row, so
 /// it grows downward — the inverse of the geometry-probe `topY` this used to
 /// take, which was published from a per-frame `GeometryReader` riding the
@@ -1569,21 +1613,9 @@ struct WorkChatSessionView: View {
   var transcriptEmptyStateSection: some View {
     switch transcriptLoadState {
     case .loading:
-      VStack(spacing: 14) {
-        ProgressView()
-          .controlSize(.large)
-          .tint(ADEColor.accent)
-        Text("Loading transcript…")
-          .font(.subheadline)
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.center)
-      }
-      .frame(maxWidth: .infinity)
-      .adeGlassCard(cornerRadius: 20, padding: 24)
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel("Loading transcript")
-      .accessibilityAddTraits(.updatesFrequently)
-      .adeInspectable("Work.Chat.Transcript.Loading")
+      WorkChatTranscriptSkeleton()
+        .frame(maxWidth: .infinity)
+        .adeInspectable("Work.Chat.Transcript.Loading")
     case .failed(let message):
       ADEEmptyStateView(
         symbol: "exclamationmark.triangle",

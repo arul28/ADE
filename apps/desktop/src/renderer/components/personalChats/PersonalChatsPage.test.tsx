@@ -13,6 +13,10 @@ import type {
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, openUrlInAdeBrowser } from "../../lib/openExternal";
+import {
+  rememberRuntimeCatalog,
+  resetModelPickerRuntimeCatalogForTests,
+} from "../shared/ModelPicker/runtimeCatalogCache";
 
 // Deliberately a LIGHT accent (Codex-style) so the contrast tests can tell the
 // colored path (dark glyph) apart from the neutral-tint path (white glyph).
@@ -27,17 +31,52 @@ const FAKE_MODEL = {
 
 // The catalog→descriptor transform is not the unit under test; a small stub lets
 // each case flip provider availability deterministically.
-vi.mock("../shared/ModelPicker/modelCatalog", () => ({
-  descriptorsFromAgentChatModelCatalog: (catalog: { available?: boolean } | null | undefined) => ({
-    models: [FAKE_MODEL],
-    availableModelIds: catalog?.available === false ? [] : ["fake-model"],
-  }),
+vi.mock("../shared/ModelPicker/modelCatalog", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared/ModelPicker/modelCatalog")>();
+  return {
+    ...actual,
+    descriptorsFromAgentChatModelCatalog: (catalog: { available?: boolean } | null | undefined) => ({
+      models: [FAKE_MODEL],
+      availableModelIds: catalog?.available === false ? [] : ["fake-model"],
+    }),
+  };
+});
+
+const webChatsState = vi.hoisted(() => ({
+  picker: null as null | {
+    machineId: string | null;
+    machineLabel: string | null;
+    options: Array<{ id: string; name: string }>;
+    select: ReturnType<typeof vi.fn>;
+  },
+}));
+
+vi.mock("../../webclient/workspace/useWebChatsMachines", () => ({
+  useWebChatsMachines: () => webChatsState.picker,
+}));
+
+const pickerHarness = vi.hoisted(() => ({
+  onRuntimeCatalogRefreshed: undefined as undefined | ((
+    provider: "opencode",
+    catalogScopeKey?: string,
+  ) => void),
+  catalogScopeKey: "",
 }));
 
 vi.mock("../shared/ModelPicker/ModelPicker", () => ({
-  ModelPicker: ({ disabled }: { disabled?: boolean }) => (
-    <div data-testid="model-picker" data-disabled={disabled ? "true" : "false"} />
-  ),
+  ModelPicker: ({
+    disabled,
+    catalogScopeKey,
+    onRuntimeCatalogRefreshed,
+  }: {
+    disabled?: boolean;
+    catalogScopeKey?: string;
+    onRuntimeCatalogRefreshed?: (provider: "opencode", catalogScopeKey?: string) => void;
+  }) => {
+    pickerHarness.catalogScopeKey = catalogScopeKey ?? "";
+    pickerHarness.onRuntimeCatalogRefreshed = onRuntimeCatalogRefreshed;
+    return <div data-testid="model-picker" data-disabled={disabled ? "true" : "false"} />;
+  },
 }));
 
 vi.mock("../shared/ModelPicker/ReasoningEffortPicker", () => ({
@@ -217,6 +256,10 @@ describe("PersonalChatsPage", () => {
     cleanup();
     vi.clearAllMocks();
     delete window.__adeWebClient;
+    webChatsState.picker = null;
+    pickerHarness.onRuntimeCatalogRefreshed = undefined;
+    pickerHarness.catalogScopeKey = "";
+    resetModelPickerRuntimeCatalogForTests();
     state.sessions = [];
     state.catalogAvailable = true;
     state.historyEvents = [];
@@ -241,6 +284,126 @@ describe("PersonalChatsPage", () => {
     // Composer lives in the hero canvas (variant "hero"), not in the docked footer.
     expect(textarea.closest("[data-composer-variant]")?.getAttribute("data-composer-variant")).toBe("hero");
     expect(screen.getByText("Think through a decision")).toBeTruthy();
+  });
+
+  it("keys catalog reload off the hosted web machine catalog id", async () => {
+    webChatsState.picker = {
+      machineId: "catalog-machine-a",
+      machineLabel: "Studio A",
+      options: [{ id: "catalog-machine-a", name: "Studio A" }],
+      select: vi.fn(async () => null),
+    };
+    await renderPage();
+    const page = await screen.findByTestId("personal-chats-page");
+    expect(page.getAttribute("data-target")).toBe("web:catalog-machine-a");
+  });
+
+  it("forces a personal catalog refresh when refresh-stale returns no available models", async () => {
+    const { call } = installBridge();
+    await renderPage();
+    await waitFor(() => {
+      const modes = call.mock.calls
+        .filter((entry) => entry[0]?.action === "modelCatalog")
+        .map((entry) => entry[0]?.args?.mode);
+      expect(modes).toContain("refresh-stale");
+      expect(modes).toContain("force");
+    });
+  });
+
+  it("keeps a picker catalog refresh when a slower page force request finishes later", async () => {
+    let releaseForce: (() => void) | undefined;
+    const forceGate = new Promise<void>((resolve) => {
+      releaseForce = resolve;
+    });
+    const { call } = installBridge();
+    call.mockImplementation(async ({ action, args }: CallArgs) => {
+      if (action === "list") return { result: state.sessions };
+      if (action === "modelCatalog") {
+        if (args?.mode === "force") {
+          await forceGate;
+          return { result: { groups: [], fetchedAt: "force", available: false } };
+        }
+        return { result: { groups: [], fetchedAt: "stale", available: false } };
+      }
+      if (action === "getEventHistory") {
+        return {
+          result: {
+            sessionId: String(args?.sessionId ?? ""),
+            events: [],
+            sessionFound: true,
+            hasOlderHistory: false,
+            tailStartOffset: 0,
+          },
+        };
+      }
+      return { result: undefined };
+    });
+
+    await renderPage();
+    await waitFor(() => {
+      const modes = call.mock.calls
+        .filter((entry) => entry[0]?.action === "modelCatalog")
+        .map((entry) => entry[0]?.args?.mode);
+      expect(modes).toContain("force");
+    });
+    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("true"));
+
+    const scopeKey = pickerHarness.catalogScopeKey;
+    expect(scopeKey).toMatch(/^personal-chat\|/);
+    rememberRuntimeCatalog({
+      fetchedAt: "picker",
+      groups: [],
+      available: true,
+    } as never, { mode: "force", scopeKey });
+
+    await act(async () => {
+      pickerHarness.onRuntimeCatalogRefreshed?.("opencode", scopeKey);
+    });
+    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("false"));
+
+    await act(async () => {
+      releaseForce?.();
+    });
+    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("false"));
+  });
+
+  it("lets a delayed page force finish when the picker refresh never succeeds", async () => {
+    let releaseForce: (() => void) | undefined;
+    const forceGate = new Promise<void>((resolve) => {
+      releaseForce = resolve;
+    });
+    const { call } = installBridge();
+    call.mockImplementation(async ({ action, args }: CallArgs) => {
+      if (action === "list") return { result: state.sessions };
+      if (action === "modelCatalog") {
+        if (args?.mode === "force") {
+          await forceGate;
+          return { result: { groups: [], fetchedAt: "force", available: true } };
+        }
+        return { result: { groups: [], fetchedAt: "stale", available: false } };
+      }
+      return { result: undefined };
+    });
+
+    await renderPage();
+    await waitFor(() => {
+      const modes = call.mock.calls
+        .filter((entry) => entry[0]?.action === "modelCatalog")
+        .map((entry) => entry[0]?.args?.mode);
+      expect(modes).toContain("force");
+    });
+    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("true"));
+
+    rememberRuntimeCatalog({
+      fetchedAt: "stale-cache",
+      groups: [],
+      available: false,
+    } as never, { mode: "cached", scopeKey: pickerHarness.catalogScopeKey });
+
+    await act(async () => {
+      releaseForce?.();
+    });
+    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("false"));
   });
 
   it("pre-fills the draft when a suggestion chip is clicked", async () => {

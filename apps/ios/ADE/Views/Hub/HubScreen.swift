@@ -8,11 +8,12 @@ func hubProjectIdsCollapsedByDefault(
 
 // The all-projects hub — the mobile app's main surface once a machine is
 // connected. Lists every project on the machine, each expandable to its chats
-// grouped by lane (sourced from the live roster feed). Tapping a project card
-// opens its detailed tabbed view; tapping a chat opens that chat directly
-// (presented over the hub, so Back returns here). The bottom "type to vibecode"
-// box is the inline new-chat composer — focusing it expands the full controls
-// above the keyboard (see HubInlineComposer).
+// grouped by lane (sourced from the live roster feed). Four compact status
+// cards filter that tree (All / Working / Needs you / Finished). Tapping a
+// project card opens its detailed tabbed view; tapping a chat opens that chat
+// immediately (presented over the hub, so Back returns here). The bottom
+// "type to vibecode" box is the inline new-chat composer — focusing it expands
+// the full controls above the keyboard (see HubInlineComposer).
 //
 // Replaces the connected-state layout of the old `project hub`; the
 // no-machine / connecting states are preserved here.
@@ -56,6 +57,7 @@ struct HubScreen: View {
   // link waits for its project/session to appear. Roster revisions still retry
   // local resolution without creating a request loop.
   @State private var requestedRosterLookupRequestId: String?
+  @State private var rosterFilter: HubRosterFilter = .all
 
   private var isNoMachineBlankState: Bool {
     syncService.connectionState == .disconnected || syncService.connectionState == .error
@@ -204,6 +206,11 @@ struct HubScreen: View {
         chatsAttentionCount: chatsAttentionCount,
         onOpenChats: { personalChatsPresented = true }
       )
+      if canShowProjects && !syncService.projects.isEmpty {
+        HubRosterFilterBar(counts: hubRosterFilterCounts, selection: $rosterFilter)
+          .padding(.horizontal, 16)
+          .padding(.bottom, 8)
+      }
       ScrollView {
         LazyVStack(spacing: 12) {
           // Keep the project catalog mounted while a switch is in flight: only
@@ -214,15 +221,22 @@ struct HubScreen: View {
             HubConnectingCard()
           } else if syncService.projects.isEmpty {
             HubEmptyProjectsCard()
+          } else if filteredHubProjectPresentations.isEmpty {
+            HubRosterFilterEmptyState(filter: rosterFilter)
           } else {
-            ForEach(hubProjectPresentations) { presentation in
+            ForEach(filteredHubProjectPresentations) { presentation in
               let project = presentation.project
+              let honoursCollapse = rosterFilter == .all
               HubProjectCard(
                 presentation: presentation,
-                isCollapsed: collapsedProjectIds.contains(project.id),
-                collapsedLaneKeysSnapshot: collapsedLaneKeys,
+                isCollapsed: honoursCollapse && collapsedProjectIds.contains(project.id),
+                collapsedLaneKeysSnapshot: honoursCollapse ? collapsedLaneKeys : [],
                 collapsedLaneKeys: $collapsedLaneKeys,
-                onToggleCollapse: { withAnimation(.easeOut(duration: 0.16)) { toggle(&collapsedProjectIds, project.id) } },
+                allowsCollapse: honoursCollapse,
+                onToggleCollapse: {
+                  guard honoursCollapse else { return }
+                  withAnimation(.easeOut(duration: 0.16)) { toggle(&collapsedProjectIds, project.id) }
+                },
                 onOpenProject: { syncService.selectProject(project) },
                 onOpenChat: { chat, lane in
                   openChatTarget = HubChatTarget(project: project, lane: lane, chat: chat)
@@ -373,6 +387,16 @@ struct HubScreen: View {
         return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
       }
     }
+  }
+
+  private var hubRosterFilterCounts: [HubRosterFilter: Int] {
+    Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map { filter in
+      (filter, hubRosterFilterCount(hubProjectPresentations, filter: filter))
+    })
+  }
+
+  private var filteredHubProjectPresentations: [HubProjectPresentation] {
+    hubProjectPresentations.compactMap { hubProjectPresentation($0, matching: rosterFilter) }
   }
 
   private var hubPresentationKey: String? {

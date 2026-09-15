@@ -595,6 +595,7 @@ struct HubProjectCard: View, Equatable {
   let isCollapsed: Bool
   let collapsedLaneKeysSnapshot: Set<String>
   @Binding var collapsedLaneKeys: Set<String>
+  var allowsCollapse: Bool = true
   let onToggleCollapse: () -> Void
   let onOpenProject: () -> Void
   let onOpenChat: (RemoteRosterChat, RemoteRosterLane?) -> Void
@@ -629,6 +630,7 @@ struct HubProjectCard: View, Equatable {
               project: project,
               presentation: lanePresentation,
               isCollapsed: collapsedLaneKeysSnapshot.contains(laneKey(lanePresentation.lane)),
+              allowsCollapse: allowsCollapse,
               onToggle: { toggleLane(lanePresentation.lane) },
               onOpenChat: { chat in onOpenChat(chat, lanePresentation.lane) },
               onViewInWork: { onViewLaneInWork(lanePresentation.lane) },
@@ -658,6 +660,8 @@ struct HubProjectCard: View, Equatable {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!allowsCollapse)
+        .accessibilityHidden(!allowsCollapse)
         .accessibilityLabel(isCollapsed ? "Expand project" : "Collapse project")
       } else {
         Color.clear
@@ -729,6 +733,7 @@ struct HubProjectCard: View, Equatable {
 
   private func laneKey(_ lane: RemoteRosterLane) -> String { "\(project.id)/\(lane.id)" }
   private func toggleLane(_ lane: RemoteRosterLane) {
+    guard allowsCollapse else { return }
     let key = laneKey(lane)
     withAnimation(.easeOut(duration: 0.16)) {
       if collapsedLaneKeys.contains(key) { collapsedLaneKeys.remove(key) } else { collapsedLaneKeys.insert(key) }
@@ -743,6 +748,7 @@ struct HubProjectCard: View, Equatable {
   static func == (lhs: HubProjectCard, rhs: HubProjectCard) -> Bool {
     lhs.presentation == rhs.presentation
       && lhs.isCollapsed == rhs.isCollapsed
+      && lhs.allowsCollapse == rhs.allowsCollapse
       && lhs.collapsedLaneSignature == rhs.collapsedLaneSignature
   }
 }
@@ -777,6 +783,7 @@ struct HubLaneSection: View, Equatable {
   let project: MobileProjectSummary
   let presentation: HubLanePresentation
   let isCollapsed: Bool
+  var allowsCollapse: Bool = true
   let onToggle: () -> Void
   let onOpenChat: (RemoteRosterChat) -> Void
   let onViewInWork: () -> Void
@@ -822,6 +829,7 @@ struct HubLaneSection: View, Equatable {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .disabled(!allowsCollapse)
       .contextMenu {
         Button { onViewInWork() } label: { Label("View in Work tab", systemImage: "terminal") }
         Button { onViewInLanes() } label: { Label("View in Lanes tab", systemImage: "square.stack.3d.up") }
@@ -851,6 +859,7 @@ struct HubLaneSection: View, Equatable {
     lhs.project.id == rhs.project.id
       && lhs.presentation == rhs.presentation
       && lhs.isCollapsed == rhs.isCollapsed
+      && lhs.allowsCollapse == rhs.allowsCollapse
   }
 }
 

@@ -4546,9 +4546,9 @@ final class SyncService: ObservableObject {
     return projects.first { isActiveProject($0) }
   }
 
-  func isActiveProject(_ project: MobileProjectSummary) -> Bool {
+  func isActiveProject(id: String, rootPath: String?) -> Bool {
     if let activeProjectId {
-      if project.id == activeProjectId {
+      if id == activeProjectId {
         return true
       }
       if projects.contains(where: { $0.id == activeProjectId }) {
@@ -4556,9 +4556,13 @@ final class SyncService: ObservableObject {
       }
     }
     guard let activeProjectRootPath,
-          let projectRoot = normalizedProjectRoot(project.rootPath)
+          let projectRoot = normalizedProjectRoot(rootPath)
     else { return false }
     return projectRoot == activeProjectRootPath
+  }
+
+  func isActiveProject(_ project: MobileProjectSummary) -> Bool {
+    isActiveProject(id: project.id, rootPath: project.rootPath)
   }
 
   var isProjectSwitching: Bool {
@@ -5036,6 +5040,17 @@ final class SyncService: ObservableObject {
     // follow-up project open, which no-ops because the project is already
     // active — sees a hydrated project instead of a momentarily empty one.
     await awaitFreshActiveProjectWorkHydration(selectionGeneration: selectionGeneration)
+  }
+
+  /// Cancel a Hub-chat project switch that has not committed `activeProjectId`
+  /// yet. A committed switch is left running so the next tap in that project
+  /// does not pay for another reconnect. Safe to call from cover dismiss.
+  func abandonInFlightHubProjectActivation(for project: MobileProjectSummary) {
+    guard hubChatShouldAbandonActivationOnDismiss(
+      isSwitchingTargetProject: isSwitchingProject(project),
+      targetAlreadyActive: isActiveProject(project)
+    ) else { return }
+    _ = beginProjectSelection()
   }
 
   /// Wait until the active project's work domain reports a *fresh* successful

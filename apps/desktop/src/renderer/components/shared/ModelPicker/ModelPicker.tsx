@@ -16,6 +16,7 @@ import {
   descriptorsFromAgentChatModelCatalog,
   filterAcpFallbackModelsToRuntimeCatalog,
   mergeSelectorModels,
+  requestModelCatalog,
   resolveModelDescriptorWithRuntimeCatalog,
 } from "./modelCatalog";
 import { useModelRecents } from "./useModelRecents";
@@ -34,6 +35,8 @@ import {
   refreshProviderForFamily,
   reserveRuntimeCatalogScope,
   DEFAULT_RUNTIME_CATALOG_SCOPE,
+  PERSONAL_CHAT_CATALOG_SCOPE,
+  isPersonalChatCatalogScopeKey,
 } from "./runtimeCatalogCache";
 
 export type ModelPickerProps = {
@@ -48,7 +51,10 @@ export type ModelPickerProps = {
   models?: readonly ModelDescriptor[];
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
-  onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
+  onRuntimeCatalogRefreshed?: (
+    provider: AgentChatModelCatalogRefreshProvider,
+    catalogScopeKey?: string,
+  ) => void;
   /**
    * The machine whose catalog this picker describes. A runtime catalog is a
    * machine fact (local ollama/LM Studio endpoints, installed cursor-agent,
@@ -58,6 +64,12 @@ export type ModelPickerProps = {
    * list. `null`/omitted is only for surfaces with no composer machine
    * (Settings), which still use the window's bound runtime.
    */
+  /**
+   * Optional override for the runtime catalog cache bucket. Personal Chats pass
+   * a machine-scoped key so switching remote targets does not reuse another
+   * machine's inventory.
+   */
+  catalogScopeKey?: string;
   runtimePin?: OpenProjectBinding | null;
   constrainToAvailableModelIds?: boolean;
   /**
@@ -121,14 +133,22 @@ export const ModelPicker = memo(function ModelPicker({
   triggerClassName,
   openRequestKey,
   onOpenRequestHandled,
+  catalogScopeKey: catalogScopeKeyOverride,
 }: ModelPickerProps) {
-  const catalogScopeKey = runtimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  const catalogScopeKey = catalogScopeKeyOverride
+    ?? runtimePin?.key
+    ?? (surfaceKey === PERSONAL_CHAT_CATALOG_SCOPE
+      ? PERSONAL_CHAT_CATALOG_SCOPE
+      : DEFAULT_RUNTIME_CATALOG_SCOPE);
   // The scope KEY is the reactive input; the binding object itself is only a
   // routing payload. Reading it through a ref keeps `loadRuntimeCatalog` stable
   // across renders even if a caller hands us a fresh object each time, so an
   // open picker cannot be pushed into repeated cached-catalog fetches.
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin ?? null);
   runtimePinRef.current = runtimePin ?? null;
+  const catalogScopeKeyRef = useRef(catalogScopeKey);
+  catalogScopeKeyRef.current = catalogScopeKey;
+  const providerRefreshTokenRef = useRef(0);
   const [open, setOpen] = useState(false);
   /**
    * The rendered catalog is tagged with the machine it came from, and a tag
@@ -191,12 +211,16 @@ export const ModelPicker = memo(function ModelPicker({
       }
     }
 
-    const bridge = window.ade?.agentChat?.modelCatalog;
-    if (typeof bridge !== "function") return null;
+    if (isPersonalChatCatalogScopeKey(catalogScopeKey)) {
+      if (typeof window.ade?.personalChats?.call !== "function") return null;
+    } else if (typeof window.ade?.agentChat?.modelCatalog !== "function") {
+      return null;
+    }
     const requestKey = `${catalogScopeKey}|${args.mode}:${args.refreshProvider ?? "all"}:${cursorFlavor ?? "all"}`;
     const existingRequest = getRuntimeCatalogRequest(requestKey);
     if (existingRequest) {
       const next = await existingRequest;
+      if (catalogScopeKeyRef.current !== catalogScopeKey) return next;
       if (next) setRuntimeCatalog(next);
       return next;
     }
@@ -210,23 +234,21 @@ export const ModelPicker = memo(function ModelPicker({
           ...args,
           ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
         };
-        // Only pinned surfaces pass a second argument, so the bound path keeps
-        // the exact call shape (and the preload's local IPC fallback) it had.
         const pin = runtimePinRef.current;
-        const next = pin
-          ? await bridge(fetchArgs, pin)
-          : await bridge(fetchArgs);
+        const next = await requestModelCatalog(fetchArgs, { catalogScopeKey, pin });
         const visible = rememberRuntimeCatalog(next, {
           ...args,
           ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
           scopeKey: catalogScopeKey,
           scopeSerial,
         });
+        if (catalogScopeKeyRef.current !== catalogScopeKey) return visible;
         setRuntimeCatalog(visible);
         if (args.refreshProvider) setRefreshErrorProvider((current) => current === args.refreshProvider ? null : current);
         return visible;
       } catch {
         // Keep the last catalog visible; renderer fallbacks cover older runtimes.
+        if (catalogScopeKeyRef.current !== catalogScopeKey) return null;
         if (args.refreshProvider) setRefreshErrorProvider(args.refreshProvider);
         return null;
       }
@@ -239,6 +261,11 @@ export const ModelPicker = memo(function ModelPicker({
   }, [catalogScopeKey, cursorSource, setRuntimeCatalog]);
 
   useEffect(() => {
+    providerRefreshTokenRef.current += 1;
+    setRefreshingProvider(null);
+  }, [catalogScopeKey]);
+
+  useEffect(() => {
     if (!open) return;
     void loadRuntimeCatalog({ mode: "cached" });
   }, [loadRuntimeCatalog, open]);
@@ -247,12 +274,17 @@ export const ModelPicker = memo(function ModelPicker({
     const refreshProvider = refreshProviderForFamily(family);
     if (refreshProvider) {
       void (async () => {
+        const scopeAtRefresh = catalogScopeKey;
+        const refreshToken = ++providerRefreshTokenRef.current;
         const cursorFlavor = refreshProvider === "cursor" ? cursorSource : undefined;
         const shared = getSharedRuntimeCatalog(catalogScopeKey);
         if (shared) {
           setRuntimeCatalog(shared);
           if (runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor, catalogScopeKey)) {
             setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
+            setRefreshingProvider((current) => (
+              providerRefreshTokenRef.current === refreshToken ? null : current
+            ));
             return;
           }
         }
@@ -260,12 +292,19 @@ export const ModelPicker = memo(function ModelPicker({
         setRefreshingProvider(refreshProvider);
         try {
           const immediate = await loadRuntimeCatalog({ mode: "refresh-stale", refreshProvider });
-          if (immediate?.stale === true) {
-            await loadRuntimeCatalog({ mode: "force", refreshProvider });
+          if (!immediate) return;
+          if (immediate.stale === true) {
+            const forced = await loadRuntimeCatalog({ mode: "force", refreshProvider });
+            if (!forced) return;
           }
+          if (providerRefreshTokenRef.current !== refreshToken) return;
+          if (catalogScopeKeyRef.current !== scopeAtRefresh) return;
+          onRuntimeCatalogRefreshed?.(refreshProvider, scopeAtRefresh);
         } finally {
-          setRefreshingProvider((current) => current === refreshProvider ? null : current);
-          onRuntimeCatalogRefreshed?.(refreshProvider);
+          setRefreshingProvider((current) => {
+            if (providerRefreshTokenRef.current !== refreshToken) return current;
+            return current === refreshProvider ? null : current;
+          });
         }
       })();
     }

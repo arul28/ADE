@@ -28849,6 +28849,116 @@ final class HubChatActivationOutcomeTests: XCTestCase {
     XCTAssertFalse(hubChatRequiresProjectActivation(isActiveProject: true))
   }
 
+  func testForeignChatDropsCrossProjectScopeOnceTheOwnerIsActive() {
+    let context = WorkChatCrossProjectContext(
+      projectId: "p-ade",
+      projectRootPath: "/tmp/ADE",
+      displayName: "ADE"
+    )
+    XCTAssertTrue(
+      hubChatIsForeignProject(
+        context: context,
+        ownerIsActive: false
+      )
+    )
+    XCTAssertFalse(
+      hubChatIsForeignProject(
+        context: context,
+        ownerIsActive: true
+      )
+    )
+    XCTAssertNil(
+      hubChatCrossProjectContext(
+        project: MobileProjectSummary(
+          id: "p-ade",
+          displayName: "ADE",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+        isActiveProject: true
+      )
+    )
+  }
+
+  func testForeignChatWaitsWhenHostCannotScopeSubscribe() {
+    XCTAssertTrue(
+      hubChatCanPaintFromRosterStub(
+        hasChatStub: true,
+        ownerIsActive: false,
+        supportsCrossProjectChat: true
+      )
+    )
+    XCTAssertTrue(
+      hubChatCanPaintFromRosterStub(
+        hasChatStub: true,
+        ownerIsActive: true,
+        supportsCrossProjectChat: false
+      )
+    )
+    XCTAssertFalse(
+      hubChatCanPaintFromRosterStub(
+        hasChatStub: true,
+        ownerIsActive: false,
+        supportsCrossProjectChat: false
+      )
+    )
+    XCTAssertFalse(
+      hubChatCanPaintFromRosterStub(
+        hasChatStub: false,
+        ownerIsActive: false,
+        supportsCrossProjectChat: true
+      )
+    )
+  }
+
+  func testActivationRebindStopsOnceTheDestinationIsGone() {
+    XCTAssertTrue(
+      hubChatShouldContinueActivationRebind(destinationVisible: true, taskCancelled: false)
+    )
+    XCTAssertFalse(
+      hubChatShouldContinueActivationRebind(destinationVisible: false, taskCancelled: false)
+    )
+    XCTAssertFalse(
+      hubChatShouldContinueActivationRebind(destinationVisible: true, taskCancelled: true)
+    )
+  }
+
+  func testActivationRollbackRestoresForeignScope() {
+    XCTAssertEqual(
+      hubChatActivationScopeTransition(wasForeign: true, isForeign: false),
+      .rebindToActive
+    )
+    XCTAssertEqual(
+      hubChatActivationScopeTransition(wasForeign: false, isForeign: true),
+      .restoreForeign
+    )
+    XCTAssertEqual(
+      hubChatActivationScopeTransition(wasForeign: true, isForeign: true),
+      .none
+    )
+  }
+
+  func testActiveCliRowLeavesDecidingWithoutWaiting() {
+    XCTAssertTrue(
+      hubChatLeavesDecidingWithoutActivationWait(
+        canPaintFromStub: false,
+        requiresActivation: false
+      )
+    )
+    XCTAssertFalse(
+      hubChatLeavesDecidingWithoutActivationWait(
+        canPaintFromStub: false,
+        requiresActivation: true
+      )
+    )
+  }
+
+  func testStaleActivationAttemptDoesNotApply() {
+    XCTAssertTrue(hubChatActivationAttemptIsCurrent(started: 2, current: 2))
+    XCTAssertFalse(hubChatActivationAttemptIsCurrent(started: 2, current: 3))
+  }
+
   func testFailedActivationSurfacesSyncLastError() {
     let outcome = hubChatActivationOutcome(
       projectName: "ADE",

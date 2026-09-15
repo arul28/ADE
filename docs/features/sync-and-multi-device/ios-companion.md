@@ -377,8 +377,9 @@ apps/ios/
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Hub/                     # HubScreen (all-projects roster home),
 │   │   │                            # HubActivityState (canonical six-group
-│   │   │                            #   glyphs/tallies for the project→lane→chat
-│   │   │                            #   tree; snoozed running chats file as idle),
+│   │   │                            #   glyphs/tallies plus Hub roster filter
+│   │   │                            #   All/Working/Needs you/Finished),
+│   │   │                            # HubRosterFilterBar (compact status cards),
 │   │   │                            # HubComponents (project/lane/chat cards,
 │   │   │                            #   HubNoMachineState), HubQuickConnect
 │   │   │                            #   (HubQuickConnectSection — one-tap connect
@@ -2219,19 +2220,36 @@ local PTY rows. The loaded local Work projection is tagged with its project and
 cleared before a project switch can merge it with the next roster.
 Pending offline chat rows are filtered by active project id/root, and Work keys
 its presentation rebuild on that project's roster revision so activity in a
-different project does not repaint the current list. Tapping a project card
-opens its detailed tabbed view; tapping a chat opens that chat directly over the Hub (the
-Hub stays mounted underneath so Back returns to it, and it keeps rebuilding
-roster cards while a chat is open). Opening a chat that belongs to a project
-other than the active one always activates that project first
-(`HubScreen+ChatNavigation`), with the switch/hydration progress visible in the
-cover. The requested chat opens when activation completes. A failed or
-unresponsive switch resolves to concrete error copy with Retry and Back to Hub;
-there is no silent tap or indefinite spinner. The roster still lets
-`makeRosterSessionStub` render a chat immediately while its richer CRR row
-arrives. CLI (terminal) rows take the same activation boundary and then use the
-terminal destination (a CLI session has no chat JSONL; routing it through the
-chat transcript surface would render permanently blank). The
+different project does not repaint the current list. Four compact status cards sit under the Hub top bar: **All** (default,
+highlighted), **Working** (includes planning), **Needs you**, and **Finished**
+(done + failed). They filter the live machine roster — every project on the
+connected machine — and do not read account Activity. Idle and ended chats stay
+in All. Selecting a filter expands matching projects so the chats are visible;
+projects with no matches hide. Icons and hues are the same Activity glyphs the
+rows already use (`circle.dotted`, `circle.fill`, `checkmark.circle.fill`).
+Tapping a project card
+opens its detailed tabbed view; tapping a chat opens that chat immediately over
+the Hub (the Hub stays mounted underneath so Back returns to it, parked as a
+blank presenter while the cover is up). A chat roster row renders from
+`makeRosterSessionStub` and streams in cross-project scope without waiting for
+a project switch when the host advertises `crossProjectChat`. Older hosts drop
+that scope and would bind the stream to the currently active project, so those
+chats wait on activation the same way CLI rows do. The owning project still
+activates in the background so Send and approve are ready. Backing out of the
+cover always asks `abandonInFlightHubProjectActivation`, which cancels only an
+uncommitted switch so the next tap can start a different one; a switch that
+already committed `activeProjectId` is left running. CLI (terminal) rows still
+wait on activation, then use the terminal destination (a CLI session has no
+chat JSONL; routing it through the chat transcript surface would render
+permanently blank). A failed or unresponsive wait (CLI, or a foreign chat on a
+host without cross-project scope) resolves to concrete error copy with Retry
+and Back to Hub. A chat that already painted must not be replaced by Retry if
+the background switch fails. If a bundled switch then rolls the previous
+project back, the open chat restores foreign scope so send and transcript stay
+on the owner. An already-active CLI row opens the destination immediately
+instead of waiting on a spinner. The
+empty transcript loading state is a chat-shaped skeleton
+(`WorkChatTranscriptSkeleton`), not a spinner inside a glass card. The
 hub row context menu also narrows for CLI rows: only "Open session" is
 offered, since `chat.archive` / `chat.delete` reject non-chat sessions on the
 host.

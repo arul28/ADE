@@ -149,3 +149,141 @@ func hubStateSummaryLabel(_ counts: [HubStateCount]) -> String {
     .map { "\($0.count) \($0.group.label.lowercased())" }
     .joined(separator: ", ")
 }
+
+// MARK: - Hub roster filter
+
+/// The four glance cards on Hub. `all` is the unfiltered tree; the other three
+/// are client-side filters over the live machine roster. Planning is not a
+/// card — Hub rows never carry `chatActivityMode`, and the shared table already
+/// files a missing mode as working.
+enum HubRosterFilter: String, CaseIterable, Identifiable, Hashable {
+  case all
+  case working
+  case needsYou
+  case finished
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .all: return "All"
+    case .working: return "Working"
+    case .needsYou: return "Needs you"
+    case .finished: return "Finished"
+    }
+  }
+
+  var accessibilityTitle: String {
+    switch self {
+    case .all: return "All agents"
+    case .working: return ActivityStateGroup.working.label
+    case .needsYou: return ActivityStateGroup.needsYou.label
+    case .finished: return "Finished"
+    }
+  }
+
+  /// Same SF Symbols the notch, Activity sheet, and Hub rows already use.
+  /// `all` is the one extra: a compact grid, not a fifth state glyph.
+  var systemImage: String {
+    switch self {
+    case .all: return "square.grid.2x2"
+    case .working: return ActivityStateGroup.working.glyph.systemImage
+    case .needsYou: return ActivityStateGroup.needsYou.glyph.systemImage
+    case .finished: return ActivityStateGroup.done.glyph.systemImage
+    }
+  }
+
+  var tone: ActivityTone? {
+    switch self {
+    case .all: return nil
+    case .working: return ActivityStateGroup.working.tone
+    case .needsYou: return ActivityStateGroup.needsYou.tone
+    case .finished: return ActivityStateGroup.done.tone
+    }
+  }
+
+  var emptyTitle: String {
+    switch self {
+    case .all: return "No chats yet"
+    case .working: return "Nothing working"
+    case .needsYou: return "Nothing needs you"
+    case .finished: return "Nothing finished"
+    }
+  }
+
+  var emptyMessage: String {
+    switch self {
+    case .all: return "Chats from every project on this machine show up here."
+    case .working: return "Live and planning chats from every project will land in this filter."
+    case .needsYou: return "When an agent is waiting on you, it shows up here."
+    case .finished: return "Done and failed chats from every project land here."
+    }
+  }
+}
+
+func hubRosterFilterContains(_ group: ActivityStateGroup, _ filter: HubRosterFilter) -> Bool {
+  switch filter {
+  case .all:
+    return true
+  case .working:
+    return group == .working || group == .planning
+  case .needsYou:
+    return group == .needsYou
+  case .finished:
+    return group == .done || group == .failed
+  }
+}
+
+func hubRosterFilterCount(
+  _ presentations: [HubProjectPresentation],
+  filter: HubRosterFilter
+) -> Int {
+  presentations.reduce(0) { partial, presentation in
+    partial + presentation.lanes.reduce(0) { lanePartial, lane in
+      lanePartial + lane.rows.reduce(0) { rowPartial, row in
+        rowPartial + (hubRosterFilterContains(row.stateGroup, filter) ? 1 : 0)
+      }
+    }
+  }
+}
+
+func hubProjectPresentation(
+  _ presentation: HubProjectPresentation,
+  matching filter: HubRosterFilter
+) -> HubProjectPresentation? {
+  if filter == .all { return presentation }
+  let lanes = presentation.lanes.compactMap { lane -> HubLanePresentation? in
+    let rows = lane.rows.compactMap { hubChatRow($0, matching: filter) }
+    guard !rows.isEmpty else { return nil }
+    return HubLanePresentation(lane: lane.lane, rows: rows, totalCount: rows.count)
+  }
+  guard !lanes.isEmpty else { return nil }
+  let chatCount = lanes.reduce(0) { $0 + $1.rows.count }
+  let attentionCount = lanes.reduce(0) { partial, lane in
+    partial + lane.rows.filter { hubRosterFilterContains($0.stateGroup, .needsYou) }.count
+  }
+  let runningCount = lanes.reduce(0) { partial, lane in
+    partial + lane.rows.filter { hubRosterFilterContains($0.stateGroup, .working) }.count
+  }
+  return HubProjectPresentation(
+    project: presentation.project,
+    isActive: presentation.isActive,
+    isSwitching: presentation.isSwitching,
+    isLoading: presentation.isLoading,
+    laneCount: lanes.count,
+    chatCount: chatCount,
+    lanes: lanes,
+    attentionCount: attentionCount,
+    runningCount: runningCount
+  )
+}
+
+func hubChatRow(
+  _ row: HubChatRowPresentation,
+  matching filter: HubRosterFilter
+) -> HubChatRowPresentation? {
+  // Children are tally-only on Hub — they are not drawn — so a nested CLI
+  // must not promote its parent into Working/Needs you/Finished.
+  guard hubRosterFilterContains(row.stateGroup, filter) else { return nil }
+  return HubChatRowPresentation.make(chat: row.chat, childRows: [])
+}
