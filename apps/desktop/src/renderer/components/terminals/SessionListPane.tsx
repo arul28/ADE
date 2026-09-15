@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
+import { selectPrsForChat } from "../../lib/prChatScope";
 import { LanePrBadge } from "./LanePrBadge";
 import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./SessionContextMenu";
 import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
@@ -2030,7 +2031,16 @@ export const SessionListPane = React.memo(function SessionListPane({
           ? lanePrsForMachine(prsByLaneId, foreignRow.machineId, session.laneId)
           : boundMachineLanePrs(prsByLaneId, session.laneId))
       : [];
-    const sessionPr = sessionLane ? selectPrimaryLanePr(sessionLane, sessionLanePrs) : null;
+    const chatPrs = sessionLane && isChatToolType(session.toolType)
+      ? selectPrsForChat(sessionLanePrs, session.id, { currentBranch: sessionLane.branchRef })
+      : sessionLanePrs;
+    const sessionPr = sessionLane ? selectPrimaryLanePr(sessionLane, chatPrs) : null;
+    const lanePrimary = sessionLane ? selectPrimaryLanePr(sessionLane, sessionLanePrs) : null;
+    const showChatPrChip = Boolean(
+      sessionPr
+      && !options?.showLaneIdentity
+      && (sessionPr.id !== lanePrimary?.id || chatPrs.length > 1),
+    );
     // A card on an unreachable machine is shown as last reported and every
     // action on it would fail, so it is inert and says which machine is gone.
     const disabledReason = foreignRow
@@ -2107,6 +2117,8 @@ export const SessionListPane = React.memo(function SessionListPane({
         suppressStatusLabel={options?.suppressStatusLabel}
         deltaEnabled={!foreignRow}
         githubStack={isChatToolType(session.toolType) ? sessionPr?.stack ?? null : null}
+        chatPr={showChatPrChip ? sessionPr : null}
+        chatPrExtraCount={showChatPrChip ? Math.max(0, chatPrs.length - 1) : 0}
         disabledReason={disabledReason}
         disabledBusy={!foreignRow}
       />

@@ -581,6 +581,31 @@ export function GitHubTab({
     await loadSnapshot({ silent: true });
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
+  const handleMergeStack = React.useCallback(async (mergeMethod: MergeMethod) => {
+    if (!selectedStack || !snapshot?.repo) return;
+    const result = await window.ade.prs.mergeGitHubStack({
+      repo: snapshot.repo,
+      stackNumber: selectedStack.number,
+      mergeMethod,
+    });
+    await loadSnapshot({ silent: true });
+    if (!result.ok) {
+      throw new Error(result.disabledReason || result.error || "GitHub could not merge this stack.");
+    }
+  }, [loadSnapshot, selectedStack, snapshot?.repo]);
+
+  const handleRebaseStack = React.useCallback(async () => {
+    if (!selectedStack || !snapshot?.repo) return;
+    const result = await window.ade.prs.rebaseGitHubStack({
+      repo: snapshot.repo,
+      stackNumber: selectedStack.number,
+    });
+    await loadSnapshot({ silent: true });
+    if (!result.ok) {
+      throw new Error(result.disabledReason || result.error || "GitHub could not rebase this stack.");
+    }
+  }, [loadSnapshot, selectedStack, snapshot?.repo]);
+
   const handleLoadOlderHistory = React.useCallback(async () => {
     if (loadingOlderHistory) return;
     const nextLimit = Math.min(
@@ -851,6 +876,8 @@ export function GitHubTab({
           onSync: () => { void handleSync(); },
           onAddStackPullRequests: handleAddStackPullRequests,
           onUnstack: handleUnstack,
+          onMergeStack: handleMergeStack,
+          onRebaseStack: handleRebaseStack,
           onFilterChange: handleFilterChange,
         }}
       />

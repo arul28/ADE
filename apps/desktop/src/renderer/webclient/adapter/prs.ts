@@ -291,6 +291,38 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       invalidatePrsReads();
       return result;
     },
+    mergeGitHubStack: async (args: unknown) => {
+      const result = await call("prs.mergeGithubStack", args, {
+        ok: false,
+        stack: null,
+        method: "unavailable",
+        disabledReason: "GitHub stack merge is not available on this host.",
+      }, false);
+      invalidatePrsReads();
+      return result;
+    },
+    rebaseGitHubStack: async (args: unknown) => {
+      const result = await call("prs.rebaseGithubStack", args, {
+        ok: false,
+        stack: null,
+        method: "unavailable",
+        disabledReason: "GitHub stack rebase is not available on this host.",
+      }, false);
+      invalidatePrsReads();
+      return result;
+    },
+    linkChatSession: async (args: unknown) => {
+      const result = await call("prs.linkChatSession", args, { ok: false }, false);
+      invalidatePrsReads();
+      return result;
+    },
+    unlinkChatSession: async (args: unknown) => {
+      const result = await call("prs.unlinkChatSession", args, { ok: false }, false);
+      invalidatePrsReads();
+      return result;
+    },
+    listChatSessionsForPr: (args: unknown) => read("prs.listChatSessionsForPr", args, []),
+    getStackLinkOffer: (args: unknown) => read("prs.getStackLinkOffer", args, null),
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.onEvent", pin, infra);

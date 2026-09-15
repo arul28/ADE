@@ -1043,6 +1043,7 @@ const TOOL_SPECS: ToolSpec[] = [
         body: { type: "string" },
         draft: { type: "boolean", default: false },
         closeLinearIssueOnMerge: { type: "boolean", default: true },
+        sessionId: { type: "string", minLength: 1 },
       }
     }
   },
@@ -5512,11 +5513,15 @@ async function runTool(args: {
     if (!title) title = await defaultPrTitleForLane(runtime, laneId, baseBranch);
     if (body == null) body = "";
     const draft = asBoolean(toolArgs.draft, false);
+    const sessionId = asOptionalTrimmedString(toolArgs.sessionId)
+      ?? asOptionalTrimmedString(session.identity.chatSessionId);
     const pr = await prSvc.createFromLane({
       laneId,
       title,
       body,
       draft,
+      source: "agent",
+      ...(sessionId ? { sessionId } : {}),
       ...(baseBranch ? { baseBranch } : {}),
       ...(closeLinearIssueOnMerge ? { closeLinearIssueOnMerge } : {}),
     });

@@ -6311,6 +6311,7 @@ final class SyncService: ObservableObject {
       "pr_groups",
       "pr_group_members",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "integration_proposals",
       "lanes",
       "lane_list_snapshots",
@@ -14795,7 +14796,8 @@ final class SyncService: ObservableObject {
     baseBranch: String? = nil,
     labels: [String] = [],
     reviewers: [String],
-    strategy: String? = nil
+    strategy: String? = nil,
+    sessionId: String? = nil
   ) async throws {
     var args: [String: Any] = [
       "laneId": laneId,
@@ -14815,7 +14817,28 @@ final class SyncService: ObservableObject {
     if let strategy, !strategy.isEmpty {
       args["strategy"] = strategy
     }
+    if let sessionId, !sessionId.isEmpty {
+      args["sessionId"] = sessionId
+    }
     _ = try await sendCommand(action: "prs.createFromLane", args: args)
+  }
+
+  func linkPullRequestChatSession(prId: String, sessionId: String, allowCrossLane: Bool = false) async throws {
+    var args: [String: Any] = [
+      "prId": prId,
+      "sessionId": sessionId,
+    ]
+    if allowCrossLane {
+      args["allowCrossLane"] = true
+    }
+    _ = try await sendCommand(action: "prs.linkChatSession", args: args)
+  }
+
+  func unlinkPullRequestChatSession(prId: String, sessionId: String) async throws {
+    _ = try await sendCommand(action: "prs.unlinkChatSession", args: [
+      "prId": prId,
+      "sessionId": sessionId,
+    ])
   }
 
   func mergePullRequest(

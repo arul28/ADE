@@ -42,6 +42,8 @@ export type AdeCardVariant =
   | "pr_merged"
   | "pr_merge_ready"
   | "pr_conflict"
+  | "pr_stack_offer"
+  | "pr_stack_land"
   | "claude_session_quota"
   | (string & {});
 
@@ -141,6 +143,8 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "pr_merged",
   "pr_merge_ready",
   "pr_conflict",
+  "pr_stack_offer",
+  "pr_stack_land",
   "claude_session_quota",
 ];
 

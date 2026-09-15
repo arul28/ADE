@@ -209,6 +209,7 @@
 		FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */; };
 		FB000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift */; };
 		FB000000000000000000C2D0 /* WorkCardExpansionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */; };
+		FB000000000000000000C2E1 /* WorkChatPrScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2E1 /* WorkChatPrScopeTests.swift */; };
 		FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
 		B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* LaneBatchManageSheet.swift */; };
@@ -672,6 +673,7 @@
 		FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkAssistantRenderingTests.swift; path = ADETests/WorkAssistantRenderingTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerDraftAttachmentTests.swift; path = ADETests/WorkComposerDraftAttachmentTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCardExpansionTests.swift; path = ADETests/WorkCardExpansionTests.swift; sourceTree = "<group>"; };
+		FA000000000000000000C2E1 /* WorkChatPrScopeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatPrScopeTests.swift; path = ADETests/WorkChatPrScopeTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -1247,6 +1249,7 @@
 				FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */,
 				FA000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift */,
 				FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */,
+				FA000000000000000000C2E1 /* WorkChatPrScopeTests.swift */,
 				FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */,
 				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
 				A11800000000000000000001 /* AppUpdateAdvisorTests.swift */,
@@ -1804,6 +1807,7 @@
 				FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */,
 				FB000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift in Sources */,
 				FB000000000000000000C2D0 /* WorkCardExpansionTests.swift in Sources */,
+				FB000000000000000000C2E1 /* WorkChatPrScopeTests.swift in Sources */,
 				FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */,
 				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,
 				A11800000000000000000002 /* AppUpdateAdvisorTests.swift in Sources */,

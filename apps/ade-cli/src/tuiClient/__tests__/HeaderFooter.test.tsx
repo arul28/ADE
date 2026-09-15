@@ -45,6 +45,16 @@ describe("Header", () => {
     expect(frame.match(/ADE/g)).toHaveLength(1);
   });
 
+  it("shows the compact linked PR chip next to the chat title", () => {
+    const result = render(
+      <Header projectName="Project" lane={lane()} chatTitle="Design pass" prLabel="#42 +1" />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("pr ");
+    expect(frame).toContain("#42 +1");
+  });
+
   it("shows concise lane and branch context without model details", () => {
     const result = render(<Header projectName="Project" lane={lane()} chatTitle="Design pass" />);
     const frame = stripAnsi(result.lastFrame() ?? "");
@@ -256,7 +266,7 @@ describe("FooterControls", () => {
       return stripAnsi(result.lastFrame() ?? "");
     };
     expect(frameAt(0)).toContain("○");
-    expect(frameAt(100)).toContain("●");
+    expect(frameAt(100)).toContain("◝");
   });
 
   it("renders the approval prompt hints when an approval is active", () => {

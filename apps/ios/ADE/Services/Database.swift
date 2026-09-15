@@ -2263,7 +2263,7 @@ final class DatabaseService {
        where pr.project_id = ?
        order by pr.updated_at desc
     """
-    return query(sql, bind: { [self] statement in
+    let rows = query(sql, bind: { [self] statement in
       try self.bindText(projectId, to: statement, index: 1)
     }) { statement in
       PrSummary(
@@ -2295,6 +2295,7 @@ final class DatabaseService {
         checksMissingRequired: decodeJson(stringValue(statement, index: 22), as: [String].self)
       )
     }
+    return attachChatSessionLinksLocked(to: rows)
   }
 
   func fetchPullRequestListItems() -> [PullRequestListItem] {
@@ -2415,7 +2416,7 @@ final class DatabaseService {
       }
     }
 
-    return query(filteredSQL, bind: bindFn) { statement in
+    let items = query(filteredSQL, bind: bindFn) { statement in
       let row = PullRequestListItemRow(
         id: stringValue(statement, index: 0) ?? "",
         laneId: stringValue(statement, index: 1) ?? "",
@@ -2490,6 +2491,69 @@ final class DatabaseService {
         checksReason: stringValue(statement, index: 20),
         checksMissingRequired: decodeJson(stringValue(statement, index: 21), as: [String].self)
       )
+    }
+    return attachChatSessionLinksLocked(to: items)
+  }
+
+  private func chatSessionIdsByPrIdLocked(projectId: String) -> (links: [String: [String]], dismissals: [String: [String]]) {
+    var links: [String: [String]] = [:]
+    var dismissals: [String: [String]] = [:]
+    if hasTable(named: "pull_request_chat_sessions") {
+      let rows: [(String, String)] = query(
+        "select pr_id, session_id from pull_request_chat_sessions where project_id = ? order by created_at asc",
+        bind: { [self] statement in
+          try self.bindText(projectId, to: statement, index: 1)
+        }
+      ) { statement in
+        (stringValue(statement, index: 0) ?? "", stringValue(statement, index: 1) ?? "")
+      }
+      for (prId, sessionId) in rows where !prId.isEmpty && !sessionId.isEmpty {
+        if !(links[prId] ?? []).contains(sessionId) {
+          links[prId, default: []].append(sessionId)
+        }
+      }
+    }
+    if hasTable(named: "pull_request_chat_session_dismissals") {
+      let rows: [(String, String)] = query(
+        "select pr_id, session_id from pull_request_chat_session_dismissals where project_id = ? order by created_at asc",
+        bind: { [self] statement in
+          try self.bindText(projectId, to: statement, index: 1)
+        }
+      ) { statement in
+        (stringValue(statement, index: 0) ?? "", stringValue(statement, index: 1) ?? "")
+      }
+      for (prId, sessionId) in rows where !prId.isEmpty && !sessionId.isEmpty {
+        if !(dismissals[prId] ?? []).contains(sessionId) {
+          dismissals[prId, default: []].append(sessionId)
+        }
+      }
+    }
+    return (links, dismissals)
+  }
+
+  private func attachChatSessionLinksLocked(to prs: [PrSummary]) -> [PrSummary] {
+    guard let projectId = currentProjectIdLocked(), !prs.isEmpty else { return prs }
+    let maps = chatSessionIdsByPrIdLocked(projectId: projectId)
+    return prs.map { pr in
+      var next = pr
+      let linked = maps.links[pr.id] ?? []
+      let dismissed = maps.dismissals[pr.id] ?? []
+      next.chatSessionIds = linked.isEmpty ? nil : linked
+      next.dismissedChatSessionIds = dismissed.isEmpty ? nil : dismissed
+      return next
+    }
+  }
+
+  private func attachChatSessionLinksLocked(to prs: [PullRequestListItem]) -> [PullRequestListItem] {
+    guard let projectId = currentProjectIdLocked(), !prs.isEmpty else { return prs }
+    let maps = chatSessionIdsByPrIdLocked(projectId: projectId)
+    return prs.map { pr in
+      var next = pr
+      let linked = maps.links[pr.id] ?? []
+      let dismissed = maps.dismissals[pr.id] ?? []
+      next.chatSessionIds = linked.isEmpty ? nil : linked
+      next.dismissedChatSessionIds = dismissed.isEmpty ? nil : dismissed
+      return next
     }
   }
 
@@ -2763,6 +2827,7 @@ final class DatabaseService {
       "pull_request_snapshots",
       "pull_request_ai_summaries",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "pr_group_members",
     ] where hasTable(named: tableName) && tableHasColumn(tableName: tableName, columnName: "pr_id") {
       try exec("""
@@ -3049,6 +3114,18 @@ final class DatabaseService {
     try exec("create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id)")
     try exec("create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id)")
     try exec("""
+      create table if not exists pull_request_chat_session_dismissals (
+        id text primary key,
+        project_id text not null,
+        pr_id text not null,
+        session_id text not null,
+        created_at text not null,
+        updated_at text not null
+      )
+    """)
+    try exec("create index if not exists idx_pull_request_chat_session_dismissals_pr on pull_request_chat_session_dismissals(project_id, pr_id)")
+    try exec("create index if not exists idx_pull_request_chat_session_dismissals_session on pull_request_chat_session_dismissals(project_id, session_id)")
+    try exec("""
       create table if not exists pull_request_snapshots (
         pr_id text primary key,
         detail_json text,
@@ -3162,6 +3239,7 @@ final class DatabaseService {
       "pull_request_stack_snapshots",
       "pull_request_ai_summaries",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "pr_group_members",
     ]
 
@@ -3350,6 +3428,9 @@ final class DatabaseService {
     }
     if hasTable(named: "pull_request_chat_sessions") {
       _ = try execute("delete from pull_request_chat_sessions where session_id in (\(placeholders))", bind: bindSessionIds)
+    }
+    if hasTable(named: "pull_request_chat_session_dismissals") {
+      _ = try execute("delete from pull_request_chat_session_dismissals where session_id in (\(placeholders))", bind: bindSessionIds)
     }
     _ = try execute("delete from terminal_sessions where id in (\(placeholders))", bind: bindSessionIds)
     return retiredSessionIds.count

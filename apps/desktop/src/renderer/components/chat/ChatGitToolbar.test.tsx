@@ -103,6 +103,7 @@ function renderToolbar(props: {
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
   runtimePin?: any;
+  sessionId?: string | null;
 } = {}) {
   return render(
     <MemoryRouter initialEntries={["/work"]}>
@@ -148,15 +149,45 @@ describe("ChatGitToolbar", () => {
     expect(selectPrsForChat([{ id: "legacy" }] as unknown as PrSummary[], "chat-c").map((pr) => pr.id)).toEqual(["legacy"]);
   });
 
-  it("keeps a legacy PR visible when another PR in the lane has an explicit chat link", () => {
+  it("does not mix a legacy unedged PR into a chat that already has explicit edges", () => {
     const mixed = [
       { id: "legacy" },
       { id: "pr-a", chatSessionIds: ["chat-a"] },
       { id: "pr-b", chatSessionIds: ["chat-b"] },
     ] as unknown as PrSummary[];
 
-    expect(selectPrsForChat(mixed, "chat-a").map((pr) => pr.id)).toEqual(["legacy", "pr-a"]);
+    expect(selectPrsForChat(mixed, "chat-a").map((pr) => pr.id)).toEqual(["pr-a"]);
     expect(selectPrsForChat(mixed, "chat-c").map((pr) => pr.id)).toEqual(["legacy"]);
+  });
+
+  it("scopes listAll results to the chat session instead of the lane fallback", async () => {
+    window.ade.prs.listAll = vi.fn().mockResolvedValue([
+      {
+        id: "pr-claimed",
+        laneId: "lane-1",
+        githubPrNumber: 11,
+        githubUrl: "https://github.com/acme/ade/pull/11",
+        title: "Other chat PR",
+        state: "open",
+        headBranch: "feat/a",
+        chatSessionIds: ["chat-other"],
+      },
+      {
+        id: "pr-mine",
+        laneId: "lane-2",
+        githubPrNumber: 22,
+        githubUrl: "https://github.com/acme/ade/pull/22",
+        title: "This chat PR",
+        state: "open",
+        headBranch: "feat/b",
+        chatSessionIds: ["chat-1"],
+      },
+    ]);
+
+    renderToolbar({ sessionId: "chat-1" });
+
+    expect(await screen.findByRole("button", { name: /#22/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /#11/ })).toBeNull();
   });
 
   it("opens the PR creation handoff when the current lane has no linked PR", async () => {

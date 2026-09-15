@@ -1116,6 +1116,8 @@ extension WorkSessionDestinationView {
       if laneOpenPr != nil { laneOpenPr = nil }
       if lanePrSummary != nil { lanePrSummary = nil }
       if lanePrTag != nil { lanePrTag = nil }
+      if !chatLinkedPrs.isEmpty { chatLinkedPrs = [] }
+      if !chatPrCatalog.isEmpty { chatPrCatalog = [] }
       return
     }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1130,39 +1132,45 @@ extension WorkSessionDestinationView {
       laneOpenPr = nil
       lanePrSummary = nil
       lanePrTag = nil
+      chatLinkedPrs = []
+      chatPrCatalog = []
       return
     }
 
-    let items = (try? await syncService.fetchPullRequestListItems(laneId: trimmed)) ?? []
-    let remoteSummary: PrSummary?
-    if hostReachable && syncService.supportsRemoteAction("prs.getForLane") {
-      remoteSummary = try? await syncService.fetchPullRequestForLane(laneId: trimmed)
-    } else {
-      remoteSummary = nil
-    }
-
+    let items = (try? await syncService.fetchPullRequestListItems()) ?? []
     if hostReachable {
       await syncService.refreshLaneGithubPrItems(force: forceGithubRefresh)
     }
 
-    let resolution = workChatResolveLanePr(
-      lane: lanes.first(where: { $0.id == trimmed }),
-      pullRequests: items,
-      remoteSummary: remoteSummary,
-      githubPrs: syncService.laneGithubPrItems
-    )
+    let currentBranch = lanes.first(where: { $0.id == trimmed })?.branchRef
+    let scoped = workChatSelectPrsForChat(items, sessionId: sessionId, currentBranch: currentBranch)
+    let selected = scoped.first(where: { $0.id == selectedChatPrId }) ?? scoped.first
+    let mappedTag = selected.map(workChatLanePrTag(from:))
+    let mappedSummary: PrSummary?
+    if hostReachable,
+       syncService.supportsRemoteAction("prs.getForLane"),
+       let selected,
+       selected.laneId == trimmed {
+      let remote = try? await syncService.fetchPullRequestForLane(laneId: trimmed)
+      mappedSummary = remote?.id == selected.id ? remote : nil
+    } else {
+      mappedSummary = nil
+    }
 
     let stillCurrent = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
     guard !Task.isCancelled, stillCurrent else { return }
     lastResolvedPrLaneId = trimmed
-    if lanePrSummary != resolution.summary { lanePrSummary = resolution.summary }
-    if lanePrTag != resolution.tag { lanePrTag = resolution.tag }
-    if laneOpenPr != resolution.mappedPr { laneOpenPr = resolution.mappedPr }
+    chatPrCatalog = items
+    chatLinkedPrs = scoped
+    selectedChatPrId = selected?.id
+    if lanePrSummary != mappedSummary { lanePrSummary = mappedSummary }
+    if lanePrTag != mappedTag { lanePrTag = mappedTag }
+    if laneOpenPr != selected { laneOpenPr = selected }
   }
 
   /// Navigate to the resolved lane PR. No-op (rather than crash) if the PR was
   /// cleared between menu render and tap.
-  func openLaneOpenPr() {
+  func openLaneOpenPr(detailTab: PrDetailTab? = nil) {
     guard let tag = lanePrTag else { return }
     prDetailsPresented = false
     if let prId = tag.prId ?? laneOpenPr?.id, !prId.isEmpty {
@@ -1170,10 +1178,14 @@ extension WorkSessionDestinationView {
       syncService.requestedPrNavigation = PrNavigationRequest(
         prId: prId,
         prNumber: tag.githubPrNumber,
-        laneId: laneId.isEmpty ? nil : laneId
+        laneId: laneId.isEmpty ? nil : laneId,
+        detailTab: detailTab
       )
     } else {
-      syncService.requestedPrNavigation = PrNavigationRequest(prNumber: tag.githubPrNumber)
+      syncService.requestedPrNavigation = PrNavigationRequest(
+        prNumber: tag.githubPrNumber,
+        detailTab: detailTab
+      )
     }
   }
 
@@ -1216,8 +1228,14 @@ extension WorkSessionDestinationView {
     if hostReachable {
       do {
         try await syncService.refreshPullRequestSnapshots(prId: prId)
-        let items = (try? await syncService.fetchPullRequestListItems(laneId: headerMenuLaneId)) ?? []
-        laneOpenPr = workChatMappedPullRequest(for: lanePrTag, in: items)
+        let items = (try? await syncService.fetchPullRequestListItems()) ?? []
+        chatPrCatalog = items
+        chatLinkedPrs = workChatSelectPrsForChat(
+          items,
+          sessionId: sessionId,
+          currentBranch: lanes.first(where: { $0.id == headerMenuLaneId })?.branchRef
+        )
+        laneOpenPr = workChatMappedPullRequest(for: lanePrTag, in: chatLinkedPrs)
       } catch {
         prDetailsError = SyncUserFacingError.message(for: error)
       }
@@ -1302,7 +1320,8 @@ extension WorkSessionDestinationView {
         baseBranch: baseBranch,
         labels: labels,
         reviewers: reviewers,
-        strategy: strategy
+        strategy: strategy,
+        sessionId: sessionId
       )
       createPrPresented = false
       try? await syncService.refreshPullRequestSnapshots()
@@ -1316,6 +1335,69 @@ extension WorkSessionDestinationView {
     } catch {
       errorMessage = error.localizedDescription
       return false
+    }
+  }
+
+  @MainActor
+  func selectChatLinkedPr(_ prId: String) {
+    guard let selected = chatLinkedPrs.first(where: { $0.id == prId }) else { return }
+    selectedChatPrId = selected.id
+    laneOpenPr = selected
+    lanePrTag = workChatLanePrTag(from: selected)
+    Task { await refreshChatPrDetails(force: true) }
+  }
+
+  @MainActor
+  func linkChatPr(prId: String, allowCrossLane: Bool) async {
+    guard !chatPrLinkBusy else { return }
+    chatPrLinkBusy = true
+    defer { chatPrLinkBusy = false }
+    do {
+      try await syncService.linkPullRequestChatSession(
+        prId: prId,
+        sessionId: sessionId,
+        allowCrossLane: allowCrossLane
+      )
+      await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: false, clearBeforeLoad: false)
+      await refreshChatPrDetails(force: false)
+    } catch {
+      prDetailsError = SyncUserFacingError.message(for: error)
+    }
+  }
+
+  @MainActor
+  func unlinkCurrentChatPr() async {
+    guard let prId = laneOpenPr?.id, !chatPrLinkBusy else { return }
+    chatPrLinkBusy = true
+    defer { chatPrLinkBusy = false }
+    do {
+      try await syncService.unlinkPullRequestChatSession(prId: prId, sessionId: sessionId)
+      selectedChatPrId = nil
+      await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: false, clearBeforeLoad: false)
+      await refreshChatPrDetails(force: false)
+    } catch {
+      prDetailsError = SyncUserFacingError.message(for: error)
+    }
+  }
+
+  @MainActor
+  func linkChatStackOffer() async {
+    guard let offer = visibleChatStackOffer, !chatPrLinkBusy else { return }
+    chatPrLinkBusy = true
+    defer { chatPrLinkBusy = false }
+    do {
+      for sibling in offer.siblings {
+        try await syncService.linkPullRequestChatSession(
+          prId: sibling.id,
+          sessionId: sessionId,
+          allowCrossLane: true
+        )
+      }
+      dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
+      await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: false, clearBeforeLoad: false)
+      await refreshChatPrDetails(force: false)
+    } catch {
+      prDetailsError = SyncUserFacingError.message(for: error)
     }
   }
 }

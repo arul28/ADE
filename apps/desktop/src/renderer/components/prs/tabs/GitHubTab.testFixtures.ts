@@ -199,6 +199,8 @@ export function installGitHubTabWindowMocks(): void {
         }),
         addGitHubStackPullRequests: vi.fn().mockResolvedValue(null),
         unstackGitHubStack: vi.fn().mockResolvedValue(null),
+        mergeGitHubStack: vi.fn().mockResolvedValue({ ok: true, stack: null, method: "stack_api" }),
+        rebaseGitHubStack: vi.fn().mockResolvedValue({ ok: true, stack: null, method: "stack_api" }),
         delete: vi.fn().mockResolvedValue(undefined),
       },
       github: {

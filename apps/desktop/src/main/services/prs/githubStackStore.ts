@@ -573,13 +573,218 @@ export function createGithubStackStore(args: {
     return row ? Number(row.github_stack_number) : null;
   };
 
+  const isUnavailableStackApi = (error: unknown): boolean => {
+    const status = (() => {
+      const message = getErrorMessage(error);
+      const http = message.match(/HTTP (\d{3})/i);
+      if (http) return Number(http[1]);
+      if (/^not found$/i.test(message.trim()) || /\bnot found\b/i.test(message)) return 404;
+      if (/\bmethod not allowed\b/i.test(message)) return 405;
+      if (/\bforbidden\b/i.test(message) || /resource not accessible/i.test(message)) return 403;
+      return null;
+    })();
+    return status === 404 || status === 405 || status === 403;
+  };
+
+  const pollMergedPull = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+  ): Promise<{ merged: boolean; sha: string | null }> => {
+    const started = Date.now();
+    while (Date.now() - started < 45_000) {
+      const { data } = await githubService.apiRequest<Record<string, unknown>>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,
+      });
+      const merged = Boolean(data.merged) || Boolean(asString(data.merged_at));
+      if (merged) {
+        const sha = asString(data.merge_commit_sha).trim() || null;
+        return { merged: true, sha };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    return { merged: false, sha: null };
+  };
+
+  const mergeViaPullRequests = async (
+    repo: GitHubRepoRef,
+    stackNumber: number,
+    mergeMethod: string,
+  ): Promise<GitHubPrStack> => {
+    const stack = list(repo).find((entry) => entry.number === stackNumber);
+    if (!stack) throw new Error(`GitHub stack #${stackNumber} is not cached locally. Sync stacks and retry.`);
+    const openEntries = stack.entries
+      .filter((entry) => !entry.mergedAt && entry.state !== "closed")
+      .sort((left, right) => left.position - right.position);
+    if (openEntries.length === 0) {
+      return await reconcile(repo, stackNumber);
+    }
+    for (const entry of openEntries) {
+      await githubService.apiRequest<unknown>({
+        method: "PUT",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${entry.githubPrNumber}/merge-async`,
+        body: {
+          merge_method: mergeMethod,
+          sha: entry.headSha || undefined,
+        },
+      });
+      const polled = await pollMergedPull(repo, entry.githubPrNumber);
+      if (!polled.merged) {
+        throw new Error(`GitHub did not finish merging #${entry.githubPrNumber} in stack #${stackNumber}.`);
+      }
+    }
+    return await reconcile(repo, stackNumber);
+  };
+
+  const merge = async (
+    repo: GitHubRepoRef,
+    stackNumber: number,
+    mergeMethod = "merge",
+  ): Promise<{
+    ok: boolean;
+    stack: GitHubPrStack | null;
+    method: "stack_api" | "merge_async" | "unavailable";
+    disabledReason?: string | null;
+    error?: string | null;
+  }> => {
+    if (!Number.isInteger(stackNumber) || stackNumber <= 0) {
+      throw new Error("A positive GitHub stack number is required.");
+    }
+    return await withRepoMutationLock(repo, async () => {
+      try {
+        const { data, response } = await githubService.apiRequest<unknown>({
+          method: "POST",
+          path: `/repos/${repo.owner}/${repo.name}/stacks/${stackNumber}/merge`,
+          body: { merge_method: mergeMethod },
+        });
+        if (response?.status === 202) {
+          const stack = list(repo).find((entry) => entry.number === stackNumber);
+          const bottom = stack?.entries
+            .filter((entry) => !entry.mergedAt)
+            .sort((left, right) => left.position - right.position)[0];
+          if (bottom) await pollMergedPull(repo, bottom.githubPrNumber);
+        }
+        return {
+          ok: true,
+          stack: data != null ? replace(repo, data) : await reconcile(repo, stackNumber),
+          method: "stack_api" as const,
+        };
+      } catch (error) {
+        if (!isUnavailableStackApi(error)) {
+          return {
+            ok: false,
+            stack: list(repo).find((entry) => entry.number === stackNumber) ?? null,
+            method: "stack_api" as const,
+            error: getErrorMessage(error),
+          };
+        }
+        try {
+          return {
+            ok: true,
+            stack: await mergeViaPullRequests(repo, stackNumber, mergeMethod),
+            method: "merge_async" as const,
+          };
+        } catch (fallbackError) {
+          const message = getErrorMessage(fallbackError);
+          return {
+            ok: false,
+            stack: list(repo).find((entry) => entry.number === stackNumber) ?? null,
+            method: "unavailable" as const,
+            disabledReason: isUnavailableStackApi(fallbackError)
+              ? "GitHub does not expose stack merge for this repository yet."
+              : message,
+            error: message,
+          };
+        }
+      }
+    });
+  };
+
+  const rebaseViaPullRequests = async (
+    repo: GitHubRepoRef,
+    stackNumber: number,
+  ): Promise<GitHubPrStack> => {
+    const stack = list(repo).find((entry) => entry.number === stackNumber);
+    if (!stack) throw new Error(`GitHub stack #${stackNumber} is not cached locally. Sync stacks and retry.`);
+    const openEntries = stack.entries
+      .filter((entry) => !entry.mergedAt && entry.state !== "closed")
+      .sort((left, right) => left.position - right.position);
+    for (const entry of openEntries) {
+      const body: Record<string, unknown> = {};
+      if (entry.headSha.trim()) body.expected_head_sha = entry.headSha.trim();
+      await githubService.apiRequest<unknown>({
+        method: "PUT",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${entry.githubPrNumber}/update-branch`,
+        body,
+      });
+    }
+    return await reconcile(repo, stackNumber);
+  };
+
+  const rebase = async (
+    repo: GitHubRepoRef,
+    stackNumber: number,
+  ): Promise<{
+    ok: boolean;
+    stack: GitHubPrStack | null;
+    method: "stack_api" | "update_branch" | "unavailable";
+    disabledReason?: string | null;
+    error?: string | null;
+  }> => {
+    if (!Number.isInteger(stackNumber) || stackNumber <= 0) {
+      throw new Error("A positive GitHub stack number is required.");
+    }
+    return await withRepoMutationLock(repo, async () => {
+      try {
+        const { data } = await githubService.apiRequest<unknown>({
+          method: "POST",
+          path: `/repos/${repo.owner}/${repo.name}/stacks/${stackNumber}/rebase`,
+        });
+        return {
+          ok: true,
+          stack: data != null ? replace(repo, data) : await reconcile(repo, stackNumber),
+          method: "stack_api" as const,
+        };
+      } catch (error) {
+        if (!isUnavailableStackApi(error)) {
+          return {
+            ok: false,
+            stack: list(repo).find((entry) => entry.number === stackNumber) ?? null,
+            method: "stack_api" as const,
+            error: getErrorMessage(error),
+          };
+        }
+        try {
+          return {
+            ok: true,
+            stack: await rebaseViaPullRequests(repo, stackNumber),
+            method: "update_branch" as const,
+          };
+        } catch (fallbackError) {
+          const message = getErrorMessage(fallbackError);
+          return {
+            ok: false,
+            stack: list(repo).find((entry) => entry.number === stackNumber) ?? null,
+            method: "unavailable" as const,
+            disabledReason: isUnavailableStackApi(fallbackError)
+              ? "GitHub does not expose stack rebase for this repository yet."
+              : message,
+            error: message,
+          };
+        }
+      }
+    });
+  };
+
   return {
     addPullRequests,
     create,
     knownStackNumberForPr,
     list,
+    merge,
     membershipsByPr,
     parseMembership,
+    rebase,
     reconcile,
     reconcileRepository,
     scheduleReconcile,

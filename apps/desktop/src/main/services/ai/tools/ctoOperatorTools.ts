@@ -1263,7 +1263,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     execute: async ({ laneId, title, body, draft }) => {
       if (!deps.prService) return { success: false, error: "PR service is not available." };
       try {
-        const pr = await deps.prService.createFromLane({ laneId, title, body: body ?? "", draft });
+        const pr = await deps.prService.createFromLane({
+          laneId,
+          title,
+          body: body ?? "",
+          draft,
+          sessionId: deps.currentSessionId,
+          source: "agent",
+        });
         return { success: true, pr, githubUrl: pr.githubUrl, adeUrl: buildAdePrUrl(pr) };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };

@@ -204,4 +204,26 @@ describe("AdeCard", () => {
     expect(markup).not.toMatch(/\b(?:text|bg|border)-(?:red|rose)-/);
     expect(markup).toMatch(/amber/);
   });
+
+  it("renders GitHub stack-land layers instead of collapsing to fallback text", () => {
+    render(
+      <AdeCard
+        card={card({
+          cardId: "pr-stack-land:ade:desktop:4",
+          variant: "pr_stack_land",
+          title: "GitHub Stack #4 landed",
+          subtitle: "2 pull requests merged",
+          rows: [
+            { icon: "pass", text: "#8 Top layer", detail: "merged", tone: "success" },
+            { icon: "pass", text: "#7 Make checks useful", detail: "merged", tone: "success" },
+          ],
+          fallbackText: "GitHub Stack #4 landed. #8, #7 merged.",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("GitHub Stack #4 landed")).toBeTruthy();
+    expect(screen.getByText("#8 Top layer")).toBeTruthy();
+    expect(screen.getByText("#7 Make checks useful")).toBeTruthy();
+  });
 });

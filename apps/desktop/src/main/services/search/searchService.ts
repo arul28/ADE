@@ -8,6 +8,7 @@ import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import type { LaneSummary } from "../../../shared/types/lanes";
 import type { GitBranchSummary, GitCommitSummary } from "../../../shared/types/git";
 import type { PrComment, PrDetail, PrSummary } from "../../../shared/types/prs";
+import { parsePrNumberQuery } from "../../../shared/prChatScope";
 import type { TerminalSessionSummary } from "../../../shared/types/sessions";
 import type {
   SearchDocKind,
@@ -803,7 +804,13 @@ export function createSearchService(deps: SearchServiceDeps) {
       .filter((line) => line.trim().length > 0)
       .join("\n");
     const body = sanitizeIndexedText(
-      [summary.title, detail?.body ?? "", commentText].filter(Boolean).join("\n")
+      [
+        summary.title,
+        detail?.body ?? "",
+        commentText,
+        (summary.chatSessionIds ?? []).map((id) => `chat:${id}`).join(" "),
+        `#${summary.githubPrNumber}`,
+      ].filter(Boolean).join("\n")
     );
     let deepLink: string;
     try {
@@ -1475,6 +1482,39 @@ export function createSearchService(deps: SearchServiceDeps) {
       }
       if (kinds.includes("linear") && !matchAll) {
         delegated.push(...(await delegatedLinearCandidates(parsed)));
+      }
+      const prNumber = parsePrNumberQuery(args.query ?? "")
+        ?? (parsed.terms.length === 1 ? parsePrNumberQuery(parsed.terms[0] ?? "") : null);
+      if (prNumber && deps.prs && (kinds.includes("chat") || kinds.length === 0 || kinds.includes("pr"))) {
+        const summaries = await deps.prs.listAll();
+        const matches = summaries.filter((pr) => pr.githubPrNumber === prNumber);
+        for (const summary of matches) {
+          for (const sessionId of summary.chatSessionIds ?? []) {
+            if (parsed.sessionId && parsed.sessionId !== sessionId) continue;
+            const session = await resolveSession(sessionId);
+            if (!session || !isChatSession(session)) continue;
+            const scopeAllowsSession = !scopeChatSessionId
+              || session.id === scopeChatSessionId
+              || session.chatSessionId === scopeChatSessionId;
+            if (!scopeAllowsSession) continue;
+            if (laneId && session.laneId !== laneId) continue;
+            if (excludeSessionContent) continue;
+            delegated.push({
+              docId: `chat:${session.id}:pr:${summary.id}`,
+              kind: "chat",
+              title: session.title || `PR #${prNumber}`,
+              rankTitle: `${session.title} #${prNumber} ${summary.title}`,
+              laneId: session.laneId || summary.laneId || null,
+              laneName: session.laneName || null,
+              sessionId: session.id,
+              deepLink: sessionDeepLink(session, await envelopeForLane(session.laneId)),
+              updatedAt: sessionUpdatedAt(session) || summary.updatedAt,
+              bm25: 0,
+              snippet: `Linked to PR #${prNumber} ${summary.title}`.slice(0, 240),
+              matchRanges: [],
+            });
+          }
+        }
       }
     }
 

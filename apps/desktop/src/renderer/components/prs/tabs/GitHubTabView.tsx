@@ -5,6 +5,7 @@ import { Group, Panel } from "react-resizable-panels";
 import type {
   GitHubPrListItem,
   GitHubPrStack,
+  MergeMethod,
   PrSummary,
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
@@ -128,6 +129,8 @@ type GitHubTabViewDetail = {
   onSync: () => void;
   onAddStackPullRequests: (pullRequests: number[]) => Promise<void>;
   onUnstack: () => Promise<void>;
+  onMergeStack: (mergeMethod: MergeMethod) => Promise<void>;
+  onRebaseStack: () => Promise<void>;
   onFilterChange: (filter: GitHubFilter) => void;
 };
 
@@ -384,6 +387,8 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
                     onSync={detail.onSync}
                     onAddPullRequests={detail.onAddStackPullRequests}
                     onUnstack={detail.onUnstack}
+                    onMerge={detail.onMergeStack}
+                    onRebase={detail.onRebaseStack}
                   />
                 ) : null}
                 <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>

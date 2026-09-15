@@ -208,7 +208,10 @@ therefore appears once even when the background ingestion debounce has not run.
 Only chat, terminal, PR, commit, and branch text is FTS-indexed. Lanes, files,
 artifacts, and Linear issues are **delegated at query time** to their owning
 service so results are always fresh and nothing duplicates an authoritative
-store. Exact session lookup is a narrow live-source exception for indexed chat
+store. A query that is only a PR number (`#42` or `42`) also joins
+`pull_requests.chatSessionIds` at query time and returns those Work chats as
+`kind: "chat"` hits, so the palette can jump to the chat that owns the PR
+without waiting for FTS. Exact session lookup is a narrow live-source exception for indexed chat
 and terminal ownership: it supplements the FTS cache, then replaces stale
 same-document metadata rather than appending a duplicate. FTS candidates and
 delegated candidates are ranked together through the one comparator, then

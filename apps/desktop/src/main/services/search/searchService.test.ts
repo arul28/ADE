@@ -1291,3 +1291,49 @@ describe("searchService since: filter on delegated files", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe("searchService PR-number chat hits", () => {
+  it("returns linked Work chats when the query is a PR number", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-pr-chat-"));
+    const session = makeSession({ id: "chat-pr-42", title: "Webhook relay" });
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => [session],
+        get: async (id) => id === session.id ? session : null,
+      },
+      prs: {
+        listAll: async () => [{
+          id: "pr-42",
+          laneId: "lane-1",
+          projectId: "proj",
+          repoOwner: "ade",
+          repoName: "desktop",
+          githubPrNumber: 42,
+          githubUrl: "https://github.com/ade/desktop/pull/42",
+          title: "Add webhook relay",
+          state: "open",
+          updatedAt: "2026-07-05T00:00:00.000Z",
+          chatSessionIds: ["chat-pr-42"],
+        } as never],
+        getDetail: async () => null,
+        getComments: async () => [],
+      },
+      now: () => NOW,
+    });
+
+    const hashed = await service.query({ query: "#42", kinds: ["chat"] });
+    const hashedHit = hashed.results.find((item) => item.kind === "chat" && item.sessionId === "chat-pr-42");
+    expect(hashedHit).toBeTruthy();
+    expect(hashedHit?.snippet).toContain("PR #42");
+    expect(hashedHit?.title).toBe("Webhook relay");
+
+    const bare = await service.query({ query: "42", kinds: ["chat"] });
+    expect(bare.results.some((item) => item.sessionId === "chat-pr-42")).toBe(true);
+
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
