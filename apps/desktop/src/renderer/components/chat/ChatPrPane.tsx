@@ -26,6 +26,7 @@ import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { selectPrsForChat } from "../../lib/prChatScope";
+import { selectLanePrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
@@ -328,6 +329,14 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const runtimePinKey = runtimePin?.key ?? null;
   const pinMachineName = useMachineEntryForBinding(runtimePin)?.machineName ?? null;
   const [pr, setPr] = useState<PrSummary | null>(null);
+  // Every PR linked to this chat. The pane used to keep only the primary, so a
+  // second PR had nowhere to appear even once the data layer allowed one.
+  const [linkedPrs, setLinkedPrs] = useState<PrSummary[]>([]);
+  // Set when the user picks a non-primary PR from the list. A ref, not state:
+  // `refresh` is a stable callback other effects depend on, so reading a state
+  // value inside it would capture the value from the render that created it.
+  const pinnedPrIdRef = useRef<string | null>(null);
+  const pinnedChatKeyRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const { copy, copied } = useCopyToClipboard();
   const [checks, setChecks] = useState<PrCheck[] | null>(null);
@@ -355,18 +364,25 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     const requestId = refreshRequestRef.current + 1;
     refreshRequestRef.current = requestId;
     const requestIsCurrent = () => laneIdRef.current === laneId && refreshRequestRef.current === requestId;
+    // A pin belongs to one chat's list; never let it select across a switch.
+    if (pinnedChatKeyRef.current !== `${laneId}:${sessionId ?? ""}`) {
+      pinnedChatKeyRef.current = `${laneId}:${sessionId ?? ""}`;
+      pinnedPrIdRef.current = null;
+    }
     let cached: PrSummary | null = null;
     try {
       if (typeof window.ade.prs.listAll === "function") {
         const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
         const ownedPrs = allPrs.filter((candidate) => candidate.laneId === laneId && !candidate.detached);
         const scopedPrs = selectPrsForChat(ownedPrs, sessionId);
-        cached = selectPrimaryLanePr(
-          laneForPr,
-          scopedPrs,
-        );
+        const visiblePrs = selectLanePrs(laneForPr, scopedPrs);
+        setLinkedPrs(visiblePrs);
+        const pinnedId = pinnedPrIdRef.current;
+        cached = (pinnedId ? visiblePrs.find((entry) => entry.id === pinnedId) : null)
+          ?? selectPrimaryLanePr(laneForPr, scopedPrs);
       } else {
         const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        setLinkedPrs(legacy ? [legacy] : []);
         cached = selectPrimaryLanePr(laneForPr, legacy ? [legacy] : []);
       }
       if (!requestIsCurrent()) return;
@@ -598,6 +614,40 @@ export const ChatPrPane = React.memo(function ChatPrPane({
         {loading ? (
           <p className="px-1 py-6 text-center text-[12px] text-fg/40">Loading…</p>
         ) : pr ? (
+          <>
+            {linkedPrs.length > 1 ? (
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                {linkedPrs.map((entry) => {
+                  const selected = entry.id === pr.id;
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      onClick={() => {
+                        pinnedPrIdRef.current = entry.id;
+                        setCurrentPr(entry);
+                      }}
+                      title={entry.title || `#${entry.githubPrNumber}`}
+                      className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] leading-4 transition-colors ${
+                        selected
+                          ? "border-fg/25 bg-fg/[0.10] text-fg/90"
+                          : "border-border/15 bg-transparent text-fg/55 hover:bg-fg/[0.06]"
+                      }`}
+                    >
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                        entry.state === "merged"
+                          ? "bg-violet-400"
+                          : entry.state === "closed"
+                            ? "bg-red-400"
+                            : "bg-emerald-400"
+                      }`} />
+                      <span className="shrink-0 font-medium">#{entry.githubPrNumber}</span>
+                      <span className="truncate opacity-70">{entry.title || ""}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           <PrDetails
             pr={pr}
             checks={checks}
@@ -609,6 +659,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
             onOpenGitHub={() => void openInGitHub()}
             onCopy={() => void copyLink()}
           />
+          </>
         ) : runtimePin ? (
           // Reading a foreign lane's PR is now routed to its machine; CREATING
           // one is not. The creator derives its branch, base and Linear link

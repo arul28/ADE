@@ -834,6 +834,42 @@ runtime-bound windows) and search indexing (`searchService.notifyPrChanged` on
 
 ## Multi-PR lane ownership and chat edges
 
+### A PR is identified by what it is, not by a branch
+
+A pull request row is resolved by `(repo_owner, repo_name, github_pr_number)`.
+It used to be resolved by `(lane_id, head_branch)` first, and that single
+choice is why "multiple PRs per thread" looked broken while the edge table was
+always many-to-many. Both PRs opened from one chat carry the lane's branch as
+their head, so the second PR matched the first one's row and `upsertRow`
+rewrote its number, url, and title. One row survived, so one chat edge
+survived. The lane-branch lookup now runs only for a summary with no usable
+repo and number yet.
+
+Two guards relaxed with it, because a link is a POINTER:
+
+- `linkToLane` no longer refuses a PR whose head branch differs from the lane's.
+  Requiring a match meant one lane could hold one PR, since a lane has one
+  branch. Reviewing a colleague's PR from your own lane is ordinary now.
+- `linkToLane` no longer refuses a PR that another lane already owns. The
+  original owning lane keeps ownership — rebase and settle logic keys on it —
+  and the link only adds a reference. Chat edges from other lanes are left
+  alone for the same reason.
+
+Two things are deliberately NOT done for a PR this lane does not own: ADE does
+not rewrite the PR description with ADE/Linear linkage, and it does not publish
+Linear PR cards. Referencing a colleague's PR must not edit their repository.
+
+`createLaneFromPrBranch` still refuses a PR that already has an owning lane. A
+plain link is a pointer and never refuses, but creating a whole new worktree to
+host a PR that already has one leaves a duplicate behind.
+
+Both renderer filters that hid the extra PRs are relaxed on the same rule: a PR
+with an explicit chat-session link survives `selectLanePrs` regardless of its
+head branch, and the chat toolbar keeps a PR that this chat linked even when
+another lane opened it. Historical rows with no link still fall back to the
+branch rule and stay hidden.
+
+
 `pull_requests.lane_id` is intentionally non-unique. A live lane may retain
 multiple PR rows as it moves from one branch to another: a row whose
 `head_branch` matches the lane's current branch is `active`; a row with a

@@ -2121,7 +2121,7 @@ describe("prompt editing helpers", () => {
     const prompt = `${githubUrl} ${linearUrl}`;
 
     expect(formatPromptSmartLinkStrip(findSmartLinks(prompt))).toBe(
-      "links [GH arul28/ADE#835] [L ADE-89]",
+      "links [# arul28/ADE#835] [N ADE-89]",
     );
     expect(prompt).toContain(githubUrl);
     expect(prompt).toContain(linearUrl);

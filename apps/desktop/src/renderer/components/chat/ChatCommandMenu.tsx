@@ -31,9 +31,19 @@ import { cn } from "../ui/cn";
 // ---------------------------------------------------------------------------
 
 export type ChatCommandMenuItem =
-  | { type: "file"; path: string }
+  | { type: "file"; path: string; isDirectory?: boolean }
   | { type: "command"; name: string }
-  | { type: "mention"; mention: ChatMentionSuggestion };
+  | { type: "mention"; mention: ChatMentionSuggestion }
+  | { type: "pr"; pr: ComposerPrSuggestion };
+
+/** One row in the `#` pull-request menu. */
+export type ComposerPrSuggestion = {
+  number: number;
+  title: string;
+  state: "open" | "merged" | "closed";
+  url: string;
+  repo?: string;
+};
 
 export type ChatCommandMenuHandle = {
   moveUp(): void;
@@ -48,12 +58,17 @@ type ChatCommandMenuProps = {
   /** Available slash commands. */
   slashCommands: Array<{ name: string; description: string; argumentHint?: string; source?: "sdk" | "local" }>;
   /** File search callback. When omitted, @ file suggestions are unavailable. */
-  onFileSearch?: (query: string) => Promise<Array<{ path: string }>>;
+  onFileSearch?: (query: string) => Promise<Array<{ path: string; isDirectory?: boolean }>>;
   /**
    * Entity mention search (chats / lanes / terminals in the active project).
    * When omitted the @ menu shows files only.
    */
   onMentionSearch?: (query: string) => Promise<ChatMentionSuggestion[]>;
+  /**
+   * Pull-request search for the `#` trigger. When omitted, `#` opens no menu
+   * and the character stays ordinary text.
+   */
+  onPrSearch?: (query: string) => Promise<ComposerPrSuggestion[]>;
   /** Anchor position in viewport coordinates. */
   anchor: { top: number; left: number; bottom?: number } | null;
   /** Called when user selects an item. */
@@ -69,7 +84,7 @@ type ChatCommandMenuProps = {
   onNoMatches?: (trigger: ComposerTrigger) => void;
 };
 
-type FileResult = { path: string };
+type FileResult = { path: string; isDirectory?: boolean };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -281,7 +296,7 @@ function getViewportMenuStyle(anchor: NonNullable<ChatCommandMenuProps["anchor"]
 
 export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenuProps>(
   function ChatCommandMenu(
-    { trigger, slashCommands, onFileSearch, onMentionSearch, anchor, onSelect, onClose, onNoMatches },
+    { trigger, slashCommands, onFileSearch, onMentionSearch, onPrSearch, anchor, onSelect, onClose, onNoMatches },
     ref,
   ) {
     const [selectedIndex, setSelectedIndex] = useState(0);
@@ -320,6 +335,17 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
         triggerType,
       );
 
+    // ---- `#` source: pull requests in this project ----
+    const hashActive = triggerType === "hash";
+    const hashQuery = hashActive ? triggerQuery.trim() : "";
+    const { results: prResults, loading: prLoading } = useDebouncedSuggestions<ComposerPrSuggestion>(
+      hashActive,
+      hashQuery,
+      onPrSearch,
+      MAX_FILE_RESULTS,
+      triggerType,
+    );
+
     // ---- Derive display sections (flat item list drives keyboard nav) ----
     // Flat keyboard indices are assigned here, once, rather than by a mutable
     // counter threaded through the render tree.
@@ -329,6 +355,16 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       const withIndices = (entries: ChatCommandMenuItem[]): MenuRowEntry[] =>
         entries.map((item) => ({ item, index: nextIndex++ }));
 
+      if (trigger.type === "hash") {
+        return prResults.length
+          ? [{
+            key: "prs",
+            label: "Pull requests",
+            Icon: MagnifyingGlass,
+            rows: withIndices(prResults.map((pr) => ({ type: "pr" as const, pr }))),
+          }]
+          : [];
+      }
       if (trigger.type !== "at") {
         return [
           {
@@ -352,7 +388,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
         });
       }
       return out;
-    }, [trigger, filteredCommands, fileResults, mentionResults, atQuery]);
+    }, [trigger, filteredCommands, fileResults, mentionResults, prResults, atQuery]);
 
     const items: ChatCommandMenuItem[] = useMemo(
       () => sections.flatMap((section) => section.rows.map((row) => row.item)),
@@ -423,7 +459,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const query = trigger?.query.trim() ?? "";
     const isAtTrigger = trigger?.type === "at";
     const canSearchAt = Boolean(onFileSearch) || Boolean(onMentionSearch);
-    const loading = fileLoading || mentionLoading;
+    const loading = fileLoading || mentionLoading || prLoading;
 
     // ---- Dead-query dismissal ----
     // An @ query that settles with zero rows is reported once so the owner can
@@ -535,6 +571,30 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                             {dir && <span className="text-fg/30">{dir}</span>}
                             <span className={labelClass}>{base}</span>
                           </span>
+                        </MenuRow>
+                      );
+                    }
+
+                    if (item.type === "pr") {
+                      const stateDot = item.pr.state === "merged"
+                        ? "bg-violet-400"
+                        : item.pr.state === "closed"
+                          ? "bg-red-400"
+                          : "bg-emerald-400";
+                      return (
+                        <MenuRow
+                          key={`pr:${item.pr.repo ?? ""}#${item.pr.number}`}
+                          index={index}
+                          selected={isSelected}
+                          onHover={setSelectedIndex}
+                          onSelect={handleSelect}
+                        >
+                          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", stateDot)} aria-hidden />
+                          <span className={cn("shrink-0 font-medium", labelClass)}>#{item.pr.number}</span>
+                          <span className="truncate text-fg/60">{item.pr.title}</span>
+                          {item.pr.repo ? (
+                            <span className="ml-auto max-w-[40%] shrink-0 truncate text-fg/34">{item.pr.repo}</span>
+                          ) : null}
                         </MenuRow>
                       );
                     }

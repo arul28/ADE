@@ -2430,13 +2430,14 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    // The question card replaces the textarea inside the same frame rather
-    // than sitting above a disabled one, and the model / permission / effort
-    // row is hidden until it resolves.
-    expect(document.querySelector("textarea")).toBeNull();
+    // The question card replaces the message textarea inside the same frame
+    // rather than sitting above a disabled one, and the model / permission /
+    // effort row is hidden until it resolves. The card's own free-text answer
+    // IS a textarea (answers are regularly multi-line), so this asserts the
+    // absence of the composer's field specifically, not of any textarea.
+    expect(screen.queryByPlaceholderText("Type to vibecode...")).toBeNull();
     expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
     expect(screen.queryByLabelText("Send steer message")).toBeNull();
-    expect(screen.queryByLabelText("Upload file from disk")).toBeNull();
     // The composer's own Send is gone with the footer; the only Send on screen
     // is the card's, and it is disabled until the question is answered.
     expect(screen.getByTestId("ask-question-send")).toHaveProperty("disabled", true);

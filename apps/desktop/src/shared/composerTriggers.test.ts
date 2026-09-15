@@ -307,3 +307,29 @@ describe("isComposerTriggerDismissed", () => {
     expect(isComposerTriggerDismissed({ type: "at", start: 4, query: "cursor" }, null)).toBe(false);
   });
 });
+
+describe("hash (pull request) trigger", () => {
+  it("opens on a bare # at a word boundary", () => {
+    expect(detectComposerTrigger("look at #", 9)).toEqual({ type: "hash", query: "", start: 8 });
+  });
+
+  it("carries a number query", () => {
+    expect(detectComposerTrigger("fix #1237", 9)).toEqual({ type: "hash", query: "1237", start: 4 });
+  });
+
+  it("carries a text query", () => {
+    expect(detectComposerTrigger("#composer", 9)).toEqual({ type: "hash", query: "composer", start: 0 });
+  });
+
+  it("does not trigger on a markdown heading", () => {
+    expect(detectComposerTrigger("# Heading", 9)).toBeNull();
+  });
+
+  it("does not trigger inside an existing chip token", () => {
+    expect(detectComposerTrigger("owner/repo#12", 13)).toBeNull();
+  });
+
+  it("yields to an @ typed closer to the cursor", () => {
+    expect(detectComposerTrigger("#12 @src", 8)?.type).toBe("at");
+  });
+});

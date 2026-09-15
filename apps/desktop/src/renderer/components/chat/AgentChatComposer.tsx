@@ -70,6 +70,12 @@ import {
 } from "../../../shared/chatMentions";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import {
+  buildComposerClipboardPayload,
+  COMPOSER_CLIPBOARD_MIME,
+  parseComposerClipboard,
+  serializeComposerClipboard,
+} from "../../../shared/composerClipboard";
+import {
   activeTurnDispatchModes,
   activeTurnInterruptContinues,
   defaultActiveTurnDispatchMode,
@@ -113,7 +119,7 @@ import { approvalDetailIsRedundant, approvalRequestDetail } from "./approvalRequ
 import { formatCursorModeLabel } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
-import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
+import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle, type ComposerPrSuggestion } from "./ChatCommandMenu";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -579,14 +585,9 @@ function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | 
 }
 
 function getAttachBlockedReason(args: {
-  composerInputLocked: boolean;
-  composerInputLockMessage: string | null;
   parallelChatMode: boolean;
   attachmentCount: number;
 }): string | null {
-  if (args.composerInputLocked) {
-    return args.composerInputLockMessage ?? "Resolve the pending request before adding attachments.";
-  }
   if (args.parallelChatMode && args.attachmentCount >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
     return `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`;
   }
@@ -1734,6 +1735,7 @@ export function AgentChatComposer({
   onRemoveContextAttachment,
   onSearchAttachments,
   onSearchMentions,
+  onSearchPullRequests,
   onInteractionModeChange,
   onClaudeModeChange,
   onClaudePermissionModeChange,
@@ -1928,6 +1930,7 @@ export function AgentChatComposer({
    * project). Omitted when the session has no bound runtime to ask.
    */
   onSearchMentions?: (query: string) => Promise<ChatMentionSuggestion[]>;
+  onSearchPullRequests?: (query: string) => Promise<ComposerPrSuggestion[]>;
   onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
   onInteractionModeChange?: (mode: AgentChatInteractionMode) => void;
   onClaudeModeChange?: (mode: AgentChatClaudePermissionMode) => void;
@@ -2369,12 +2372,16 @@ export function AgentChatComposer({
       ? `Steer active turn: ${composerInputContextLabel}`
       : composerInputContextLabel;
   const attachmentSlotsUsed = attachments.length + pendingImageAttachments.length;
+  // A pending question locks TEXT, not files.
+  //
+  // Attaching was disabled whenever a question was on screen, so the one moment
+  // you most want to hand the agent a screenshot — it just asked you which of
+  // two designs to use — was the one moment you could not. No provider adapter
+  // carries a file inside an answer, so the files stay staged and ride the next
+  // turn; that is a delivery detail, not a reason to refuse the drop.
   const canAttach = !attachmentPersistenceUnavailableReason
-    && !composerInputLocked
     && (!parallelChatMode || attachmentSlotsUsed < PARALLEL_CHAT_MAX_ATTACHMENTS);
   const attachBlockedReason = attachmentPersistenceUnavailableReason ?? getAttachBlockedReason({
-    composerInputLocked,
-    composerInputLockMessage,
     parallelChatMode,
     attachmentCount: attachmentSlotsUsed,
   });
@@ -2438,14 +2445,12 @@ export function AgentChatComposer({
       clipboardImagePasteFallbackTimerRef.current = null;
     }
     clipboardImagePasteFallbackAttachedRef.current = false;
-    for (const attachment of pendingImageAttachments) {
-      cancelledPendingImageAttachmentsRef.current.add(attachment.id);
-    }
-    setPendingImageAttachments((current) => {
-      if (!current.length) return current;
-      return [];
-    });
-  }, [closeCommandMenu, composerInputLocked, pendingImageAttachments]);
+    // Staged attachments are deliberately NOT discarded here. A pending
+    // question locks the composer, and throwing away an image the user already
+    // dropped means their work disappears because the agent happened to ask
+    // something. The files stay staged and ride the next turn, which is also
+    // how a file reaches an answer: no provider adapter accepts one inline.
+  }, [closeCommandMenu, composerInputLocked]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
@@ -4713,7 +4718,136 @@ export function AgentChatComposer({
     uploadInputRef.current?.click();
   };
 
+  // Serialize an arbitrary subtree (a cloned selection) with the same chip
+  // rules `serializeRichEditor` uses on the whole editor, and collect the label
+  // each chip was displaying. The labels are what let the pills rebuild in a
+  // different chat, where the local label registry knows none of these tokens.
+  const serializeNodeWithChips = useCallback((root: Node): { text: string; labels: Map<string, string> } => {
+    const parts: string[] = [];
+    const labels = new Map<string, string>();
+    const visit = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parts.push(node.textContent ?? "");
+        return;
+      }
+      if (!(node instanceof HTMLElement)) return;
+      const chipText = node.dataset.composerChipText;
+      if (chipText != null) {
+        parts.push(chipText);
+        const label = node.querySelector<HTMLElement>("[data-composer-chip-label]")?.textContent?.trim();
+        if (label && label !== chipText) labels.set(chipText, label);
+        return;
+      }
+      if (
+        node.dataset.iosContextId
+        || node.dataset.appControlContextId
+        || node.dataset.builtInBrowserContextId
+      ) {
+        parts.push(" ");
+        return;
+      }
+      if (node.tagName === "BR") {
+        parts.push("\n");
+        return;
+      }
+      node.childNodes.forEach(visit);
+      if (node.tagName === "DIV" || node.tagName === "P") parts.push("\n");
+    };
+    root.childNodes.forEach(visit);
+    const text = parts
+      .join("")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/[ \t]+\n/g, "\n");
+    return { text, labels };
+  }, []);
+
+  /**
+   * Write the selection as canonical tokens plus a chip payload. Without this a
+   * native copy takes the DOM text, which is the chip LABEL, so a PR chip
+   * becomes "owner/repo#123" with no URL and a mention becomes a bare title.
+   */
+  const writeComposerSelectionToClipboard = useCallback((
+    clipboard: DataTransfer | null,
+  ): boolean => {
+    const editor = richEditorRef.current;
+    const selection = window.getSelection();
+    if (!clipboard || !editor || !selection || selection.isCollapsed || !selection.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) return false;
+
+    const { text, labels } = serializeNodeWithChips(range.cloneContents());
+    if (!text) return false;
+
+    clipboard.setData("text/plain", text);
+    try {
+      clipboard.setData(
+        COMPOSER_CLIPBOARD_MIME,
+        serializeComposerClipboard(buildComposerClipboardPayload(text, labels)),
+      );
+    } catch {
+      // A platform that refuses the custom MIME type still gets canonical
+      // tokens on text/plain, which is the half that must never be lost.
+    }
+    return true;
+  }, [serializeNodeWithChips]);
+
+  const handleCopy = (event: React.ClipboardEvent<HTMLElement>) => {
+    if (!useRichComposer) return;
+    if (writeComposerSelectionToClipboard(event.clipboardData)) event.preventDefault();
+  };
+
+  const handleCut = (event: React.ClipboardEvent<HTMLElement>) => {
+    if (!useRichComposer) return;
+    if (composerInputLocked) return;
+    if (!writeComposerSelectionToClipboard(event.clipboardData)) return;
+    event.preventDefault();
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) {
+      selection.deleteFromDocument();
+      syncRichDraft();
+    }
+  };
+
+  /**
+   * Restore chips from an ADE clipboard payload. Registering the labels first
+   * is what makes a cross-chat paste work: the rebuild filter only promotes a
+   * mention token it has a label for, and a new chat's registry starts empty.
+   */
+  const pasteComposerChipPayload = (event: React.ClipboardEvent<HTMLElement>): boolean => {
+    const payload = parseComposerClipboard(event.clipboardData.getData(COMPOSER_CLIPBOARD_MIME));
+    if (!payload || !payload.text) return false;
+
+    for (const chip of payload.chips) {
+      mentionLabelsRef.current.set(chip.token, chip.label);
+      onMentionLabelChange?.(chip.token, chip.label);
+    }
+
+    event.preventDefault();
+    if (useRichComposer) {
+      insertTextIntoRichEditor(payload.text);
+      window.requestAnimationFrame(() => {
+        hydrateMentionChipsInEditor();
+        tokenizeSmartLinksInEditor();
+      });
+      return true;
+    }
+
+    const node = event.currentTarget instanceof HTMLTextAreaElement ? event.currentTarget : null;
+    if (!node) return true;
+    const start = node.selectionStart ?? draft.length;
+    const end = node.selectionEnd ?? start;
+    const next = `${draft.slice(0, start)}${payload.text}${draft.slice(end)}`;
+    onDraftChange(next);
+    restoreTextareaCaret(start + payload.text.length);
+    setSmartLinkEditorEnabled(true);
+    return true;
+  };
+
   const handlePaste = (event: React.ClipboardEvent<HTMLElement>) => {
+    // Runs before the attachment gate: pasting a chip is text, not an upload,
+    // so a composer that cannot accept files can still accept chips.
+    if (!composerInputLocked && pasteComposerChipPayload(event)) return;
     if (!canAttach) return;
     // If the keydown fallback already attached the clipboard image (timeout
     // fired before this paste event landed), bail out so we don't double-attach.
@@ -4802,7 +4936,10 @@ export function AgentChatComposer({
       return;
     }
     if (item.type === "file" && commandMenuTrigger) {
-      if (!canAttach) {
+      // A folder has no bytes to upload, so the attachment gate does not apply
+      // to it: it is inserted as a pointer chip and nothing is attached.
+      const isDirectory = item.isDirectory === true;
+      if (!isDirectory && !canAttach) {
         setAttachError(attachBlockedReason ?? "Attachments are unavailable right now.");
         closeCommandMenu();
         return;
@@ -4811,8 +4948,8 @@ export function AgentChatComposer({
       if (useRichComposer) {
         if (!replaceRichTriggerWith({
           chipKind: "file",
-          chipText: `@${item.path}`,
-          triggerLabel: item.path,
+          chipText: isDirectory ? `@${item.path}/` : `@${item.path}`,
+          triggerLabel: isDirectory ? `${item.path}/` : item.path,
         })) {
           insertTextIntoRichEditor(`@${item.path} `);
         }
@@ -4822,7 +4959,29 @@ export function AgentChatComposer({
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);
       }
-      onAddAttachment({ path: item.path, type: inferAttachmentType(item.path) });
+      if (!isDirectory) onAddAttachment({ path: item.path, type: inferAttachmentType(item.path) });
+    } else if (item.type === "pr" && commandMenuTrigger) {
+      // The chip's serialized form is the PR url, so it survives copy, paste,
+      // and a send into the transcript as the same typed pill everywhere.
+      const token = item.pr.url;
+      const label = item.pr.repo ? `${item.pr.repo}#${item.pr.number}` : `#${item.pr.number}`;
+      mentionLabelsRef.current.set(token, label);
+      onMentionLabelChange?.(token, label);
+      if (useRichComposer) {
+        if (!replaceRichTriggerWith({
+          chipKind: "mention",
+          chipText: token,
+          chipLabel: label,
+          triggerLabel: label,
+        })) {
+          insertTextIntoRichEditor(`${token} `);
+        }
+      } else {
+        const trigger = composerTriggerForSelection(commandMenuTrigger, label, "pr");
+        const next = replaceComposerTriggerSpan(draft, trigger, `${token} `);
+        onDraftChange(next.text);
+        restoreTextareaCaret(next.caret);
+      }
     } else if (item.type === "mention" && commandMenuTrigger) {
       // A mention is a pointer, not an attachment: nothing is resolved or read
       // now. The token is expanded into an <ade-mention> block at send time.
@@ -6380,6 +6539,7 @@ export function AgentChatComposer({
             }))}
             onFileSearch={onSearchAttachments}
             onMentionSearch={onSearchMentions}
+            onPrSearch={onSearchPullRequests}
             anchor={commandMenuAnchor}
             onSelect={handleCommandMenuSelect}
             onClose={closeCommandMenu}
@@ -6419,6 +6579,8 @@ export function AgentChatComposer({
                 }}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
+                onCopy={handleCopy}
+                onCut={handleCut}
                 onKeyUp={captureRichSelection}
                 onMouseUp={() => {
                   cancelPromptHistorySequence();
@@ -6564,6 +6726,8 @@ export function AgentChatComposer({
                 placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
+                onCopy={handleCopy}
+                onCut={handleCut}
                 onMouseUp={cancelPromptHistorySequence}
                 onBlur={cancelPromptHistorySequence}
               />

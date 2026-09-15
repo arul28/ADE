@@ -2889,11 +2889,23 @@ export function createPrService({
     // Identity first. The lane-branch lookup is deliberately live-only (it answers
     // "what is this lane working on"), so on its own it would miss a detached row and
     // send us down the insert path with a primary key that already exists.
+    //
+    // Identity is the pull request ITSELF — `(repo, number)` — not the lane's
+    // current branch. Resolving by `(lane_id, head_branch)` first is what made
+    // a second PR opened from the same chat impossible: both PRs carry the
+    // lane's branch as their head, so the second one matched the first one's
+    // row and the UPDATE below rewrote its number, url, and title. One row
+    // survived, so one chat edge survived, and "multiple PRs per thread" only
+    // ever looked broken. The edge table itself was always many-to-many.
+    const hasRepoPrIdentity = Boolean(summary.repoOwner && summary.repoName && summary.githubPrNumber);
     const existing = getRowById(summary.id)
-      ?? (options?.allowRepoPrAdoption
-        ? getRowForLaneBranch(summary.laneId, summary.headBranch)
-            ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
-        : getRowForLaneBranch(summary.laneId, summary.headBranch));
+      ?? (hasRepoPrIdentity
+        ? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
+        : null)
+      // The lane-branch lookup remains only for rows with no usable repo/number
+      // yet (a summary mid-creation). With a real PR number in hand it must NOT
+      // run: it would hand back a DIFFERENT pull request that shares the branch.
+      ?? (hasRepoPrIdentity ? null : getRowForLaneBranch(summary.laneId, summary.headBranch));
     if (existing) {
       // A detached row is only reclaimed by a lane that still exists AND still tracks
       // the PR's head branch.
@@ -4883,6 +4895,22 @@ export function createPrService({
             `Imported lane '${lane.name}' is at ${importedHeadSha || "an unknown commit"}, but PR #${preflight.githubPrNumber} is at ${preflight.headSha}. Fetch the PR branch and try again.`,
           );
         }
+      }
+      // A plain link is now a pointer and never refuses, but creating a whole
+      // new lane to host a PR that already has an owning lane is still wrong:
+      // it leaves a duplicate worktree behind. Check here, inside the try, so
+      // the imported lane is cleaned up by the catch below.
+      const ownedElsewhere = getLiveRowForRepoPr(
+        preflight.repoOwner,
+        preflight.repoName,
+        preflight.githubPrNumber,
+      );
+      if (ownedElsewhere && ownedElsewhere.lane_id !== lane.id) {
+        const ownerLane = (await laneService.list({ includeArchived: true, includeStatus: false }))
+          .find((entry) => entry.id === ownedElsewhere.lane_id);
+        throw new Error(
+          `PR #${preflight.githubPrNumber} is already mapped to lane "${ownerLane?.name ?? ownedElsewhere.lane_id}".`,
+        );
       }
       const pr = await linkToLane({
         laneId: lane.id,
@@ -7529,9 +7557,13 @@ export function createPrService({
     const headBranch = asString(pr?.head?.ref) || branchNameFromRef(lane.branchRef);
     const baseBranch = asString(pr?.base?.ref) || branchNameFromRef(lane.baseRef);
     const laneBranch = branchNameFromRef(lane.branchRef);
-    if (normalizeBranchName(laneBranch) !== normalizeBranchName(headBranch)) {
-      throw new Error(`Cannot link PR #${locator.number} to lane "${lane.name}" because the PR head branch is "${headBranch}" but the lane branch is "${laneBranch}".`);
-    }
+    // A link is a POINTER, not a claim that the lane is building this branch.
+    // Requiring head === lane branch made a chat unable to reference a second
+    // PR at all: one lane has one branch, so the first PR consumed the only
+    // link the rule allowed. Linking a PR whose head is elsewhere is now
+    // ordinary — reviewing a colleague's PR from your own lane, or tracking a
+    // follow-up PR cut from a different branch.
+    const headMatchesLane = normalizeBranchName(laneBranch) === normalizeBranchName(headBranch);
 
     // Backfill creation_strategy for imported PRs that don't have one stored yet.
     // The wizard defaults to "pr_target" when users create via the UI; mirror
@@ -7539,13 +7571,12 @@ export function createPrService({
     // behavior (follow-up 3) instead of being treated as "unset". The
     // upsertRow path uses COALESCE so we never clobber an existing value.
     const existingRow = getLiveRowForRepoPr(repo.owner, repo.name, locator.number);
-    if (existingRow && existingRow.lane_id !== lane.id) {
-      const existingLane = (await laneService.list({ includeArchived: true, includeStatus: false }))
-        .find((entry) => entry.id === existingRow.lane_id);
-      throw new Error(
-        `Cannot link PR #${locator.number} to lane "${lane.name}" because it is already mapped to lane "${existingLane?.name ?? existingRow.lane_id}".`
-      );
-    }
+    // One PR may be referenced from more than one lane. The row keeps its
+    // original owning lane (the lane that opened it, which is what rebase and
+    // settle logic key on); this link adds a reference, it does not steal the
+    // row. Refusing outright is what stopped a chat from tracking a PR that
+    // another lane had already touched.
+    const linksToAnotherLane = Boolean(existingRow && existingRow.lane_id !== lane.id);
     const creationStrategy: PrCreationStrategy =
       normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
@@ -7562,7 +7593,11 @@ export function createPrService({
       branch: headBranch,
       prNumber: locator.number,
     });
-    if (patchedBody !== currentBody) {
+    // Only stamp ADE/Linear linkage into a PR this lane actually produced.
+    // Linking a PR whose head lives on another branch is now allowed, and
+    // rewriting a colleague's description because you referenced it would be
+    // an unpleasant surprise on their repository.
+    if (headMatchesLane && patchedBody !== currentBody) {
       try {
         await githubService.apiRequest({
           method: "PATCH",
@@ -7580,8 +7615,10 @@ export function createPrService({
     }
 
     const summary: PrSummary = {
-      id: randomUUID(),
-      laneId: lane.id,
+      id: existingRow?.id ?? randomUUID(),
+      // The lane that opened the PR keeps ownership; rebase and settle logic
+      // keys on it. This call adds a reference from `lane`, nothing more.
+      laneId: linksToAnotherLane && existingRow ? existingRow.lane_id : lane.id,
       projectId,
       repoOwner: repo.owner,
       repoName: repo.name,
@@ -7613,17 +7650,22 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
-    removeChatSessionLinksFromOtherLanes(prId, lane.id);
+    // Edges from other lanes survive: one PR can legitimately be referenced by
+    // several chats. Pruning only makes sense when this lane owns the PR.
+    if (!linksToAnotherLane) removeChatSessionLinksFromOtherLanes(prId, lane.id);
     linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
 
-    await publishLinearPrCardsForLane({
-      lane,
-      repo,
-      prNumber: locator.number,
-      githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
-      closePrimaryOnMerge: false,
-      linkedAt,
-    }).catch((error) => {
+    await (headMatchesLane
+      ? publishLinearPrCardsForLane({
+        lane,
+        repo,
+        prNumber: locator.number,
+        githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
+        closePrimaryOnMerge: false,
+        linkedAt,
+      })
+      : Promise.resolve()
+    ).catch((error) => {
       logger.warn("prs.linear_pr_cards_publish_failed", {
         laneId: lane.id,
         prNumber: locator.number,

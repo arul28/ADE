@@ -1062,6 +1062,39 @@ allowing a cross-provider fork.
   attachment refs; provider-specific handling still happens inside
   `agentChatService.sendMessage`.
 
+## Chips
+
+Every special token ADE draws as a pill comes from one model in
+`apps/desktop/src/shared/chips.ts`. It exists because three unrelated grammars
+used to produce chips independently: `chatMentions.ts` owns `@chat:` / `@lane:` /
+`@term:`, `smartLinks.ts` owns URL-shaped links, and a file path was a chip only
+because its label happened to equal its token.
+
+A `Chip` always carries its canonical `token` next to its display `label`. That
+one property is what makes the rest work:
+
+- **Copy and cut** write the canonical tokens to `text/plain` and a label payload
+  to `text/x-ade-composer` (`shared/composerClipboard.ts`). A native copy reads
+  the DOM, which holds the label, so without this a PR chip degrades to
+  `owner/repo#123` and a mention to a bare title.
+- **Paste** reads the payload, registers each label through
+  `onMentionLabelChange`, and rebuilds the pills. Registering the labels first is
+  what makes a paste into a *different* chat work: the rebuild only promotes a
+  token it has a label for, and a new chat's registry starts empty.
+- **Sent messages** render through `splitTextIntoChipParts` in `ChipText.tsx`, so
+  the transcript shows the same pill the composer did.
+- **Typed ADE deeplinks.** `deeplinks.ts` parses `ade://` URLs into a precise
+  target, which `smartLinks.ts` discarded in favour of one generic
+  `ADE · <path>` kind. Chips route through the real parser, so `ade://pr/...`
+  produces the same PR pill a github.com URL produces.
+- **The TUI** uses `CHIP_GLYPH_ASCII`, because the desktop table is emoji and
+  emoji render at one or two cells depending on the terminal.
+
+Folders are chips too. The file index used to hold files only
+(`fileSearchIndexService.ts`), so `@src/main` could never be suggested. It now
+records directories in a separate map, and a folder inserts a pointer chip
+without becoming an attachment, because a folder has no bytes to upload.
+
 ## Message list
 
 `AgentChatMessageList` windows its rendering with a **custom

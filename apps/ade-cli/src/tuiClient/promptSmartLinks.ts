@@ -1,7 +1,10 @@
 import {
+  chipDisplayLabel,
+  chipFromSmartLink,
+  chipGlyphAscii,
+} from "../../../desktop/src/shared/chips";
+import {
   findSmartLinks,
-  smartLinkDisplayLabel,
-  smartLinkProviderGlyph,
   type SmartLinkMatch,
 } from "../../../desktop/src/shared/smartLinks";
 
@@ -21,8 +24,17 @@ export function deletePromptSmartLinkForward(value: string, cursor: number): Pro
     : null;
 }
 
+/**
+ * The chip strip under the TUI prompt. It reads from the shared chip model so
+ * the TUI names a link exactly as the desktop and iOS do: an `ade://pr/...`
+ * link shows as `#1237`, not as the generic `ADE · pr/owner/repo/1237` the
+ * provider glyph alone produced.
+ */
 export function formatPromptSmartLinkStrip(links: readonly SmartLinkMatch[]): string {
   return `links ${links
-    .map((link) => `[${smartLinkProviderGlyph(link.provider)} ${smartLinkDisplayLabel(link)}]`)
+    .map((link) => {
+      const chip = chipFromSmartLink(link);
+      return `[${chipGlyphAscii(chip.kind)} ${chipDisplayLabel(chip)}]`;
+    })
     .join(" ")}`;
 }

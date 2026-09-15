@@ -323,7 +323,11 @@ export function AskQuestionComposer({
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (responding) return;
     const target = event.target as HTMLElement | null;
-    const inField = target?.tagName?.toLowerCase() === "input" || target?.isContentEditable === true;
+    // `textarea` counts: the free-text answer is a textarea now, and without it
+    // the card would steal digits as option shortcuts and handle Enter a second
+    // time after the field already did.
+    const tagName = target?.tagName?.toLowerCase();
+    const inField = tagName === "input" || tagName === "textarea" || target?.isContentEditable === true;
     if (event.key === "Escape") {
       event.preventDefault();
       onDecline();
@@ -560,10 +564,11 @@ export function AskQuestionComposer({
         </div>
 
         {question.allowsFreeform !== false ? (
-          <div className={cn("grid grid-cols-[26px_minmax(0,1fr)] items-center gap-2.5 border-t px-3.5 py-1", HAIRLINE)}>
-            <PencilSimple size={12} weight="regular" className="justify-self-end text-fg/26" />
+          <div className={cn("grid grid-cols-[26px_minmax(0,1fr)] items-start gap-2.5 border-t px-3.5 py-1", HAIRLINE)}>
+            <PencilSimple size={12} weight="regular" className="mt-[11px] justify-self-end text-fg/26" />
+            {question.isSecret ? (
             <input
-              type={question.isSecret ? "password" : "text"}
+              type="password"
               value={note}
               disabled={responding}
               data-testid={`ask-question-note-${question.id}`}
@@ -583,6 +588,35 @@ export function AskQuestionComposer({
               }}
               className="w-full bg-transparent py-2.5 text-[length:calc(var(--chat-font-size)*12.5/14)] text-fg/85 outline-none placeholder:text-fg/26"
             />
+            ) : (
+            /* A textarea, not an input: an answer is regularly a paragraph, a
+               pasted stack trace, or a short list, and a single-line field
+               silently swallowed every newline. Enter still sends, so the
+               common one-line answer is unchanged; Shift+Enter adds a line. */
+            <textarea
+              rows={1}
+              value={note}
+              disabled={responding}
+              data-testid={`ask-question-note-${question.id}`}
+              placeholder={notePlaceholder({
+                hasOptions: options.length > 0,
+                picks,
+                multi: question.multiSelect === true,
+              })}
+              onChange={(event) => {
+                setNotes((prev) => ({ ...prev, [question.id]: event.target.value }));
+                const node = event.currentTarget;
+                node.style.height = "auto";
+                node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.shiftKey) return;
+                event.preventDefault();
+                if (isLast ? canSend : canProceed) advance();
+              }}
+              className="w-full resize-none bg-transparent py-2.5 text-[length:calc(var(--chat-font-size)*12.5/14)] leading-[1.5] text-fg/85 outline-none placeholder:text-fg/26"
+            />
+            )}
           </div>
         ) : null}
       </div>

@@ -255,6 +255,21 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     [family, onChange, rememberReasoning, useFamilyDefaults],
   );
 
+  /**
+   * Commit a remembered family effort that the control is already DISPLAYING.
+   *
+   * `displayedEffort` falls back to the effort last used for this family, but
+   * the send path reads `reasoningEffort`, which was still empty. The trigger
+   * therefore read "High" while the run went out on the model's own default —
+   * the control stated one thing and the request carried another. Writing the
+   * value the moment it is shown makes the two agree.
+   */
+  useEffect(() => {
+    if (reasoningEffort) return;
+    if (!displayedEffort) return;
+    onChange(displayedEffort);
+  }, [displayedEffort, onChange, reasoningEffort]);
+
   const handleSelect = useCallback(
     (tier: string) => {
       commitEffort(displayedEffort === tier ? null : tier);

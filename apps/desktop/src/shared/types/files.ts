@@ -253,6 +253,13 @@ export type FilesQuickOpenArgs = {
 export type FilesQuickOpenItem = {
   path: string;
   score: number;
+  /**
+   * True for a directory. The index used to hold files only, so a composer
+   * `@` menu could never offer a folder even though "work on @src/main" is a
+   * perfectly ordinary instruction. Optional so older payloads still parse as
+   * files.
+   */
+  isDirectory?: boolean;
 };
 
 export type FilesSearchTextArgs = {

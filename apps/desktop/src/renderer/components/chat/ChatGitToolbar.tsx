@@ -210,7 +210,15 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       let lanePrs: PrSummary[];
       if (typeof window.ade.prs.listAll === "function") {
         const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
-        const ownedPrs = allPrs.filter((pr) => pr.laneId === laneId && !pr.detached);
+        // Ownership OR an explicit link to this chat. Filtering on lane id
+        // alone dropped a PR that this chat deliberately linked but another
+        // lane opened, which is exactly the cross-lane reference the pointer
+        // model exists to allow.
+        const ownedPrs = allPrs.filter((pr) => {
+          if (pr.detached) return false;
+          if (pr.laneId === laneId) return true;
+          return Boolean(sessionId && pr.chatSessionIds?.includes(sessionId));
+        });
         lanePrs = selectPrsForChat(ownedPrs, sessionId);
       } else {
         // Older web-preview/test bridges only expose the original single-PR

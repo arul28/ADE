@@ -124,6 +124,15 @@ import {
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
+import type { ComposerPrSuggestion } from "./ChatCommandMenu";
+import {
+  permissionLevelForClaude,
+  permissionLevelForCodex,
+  permissionLevelForDroid,
+  permissionLevelForOpenCode,
+  resolvePermissionLevel,
+  type PermissionLadderFamily,
+} from "../../../shared/permissionLadder";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
@@ -1523,7 +1532,35 @@ function resolveWorkDraftStorageKind(workDraftKind: WorkDraftLaunchKind | WorkDr
   return workDraftKind === "work-start" ? "work-start" : normalizeWorkDraftStorageKind();
 }
 
+/**
+ * What you last launched with, remembered PER MACHINE.
+ *
+ * The key used to include the project root and the lane id, so every new lane
+ * started from a blank slate and the memory felt random: you would set a model
+ * and a permission level, open the next lane, and be back on the defaults. The
+ * user's intent is not "in this lane I prefer Opus" — it is "I prefer Opus".
+ *
+ * Kind still separates the memories, because a chat and a CLI session are
+ * genuinely different choices, and the surface profile stays because a CTO-style
+ * persistent identity deliberately launches with different autonomy.
+ */
 function launchConfigStorageKey(scope: {
+  surfaceProfile: ChatSurfaceProfile;
+  workDraftKind: WorkDraftStorageKind;
+}): string {
+  return [
+    LAST_LAUNCH_CONFIG_KEY_PREFIX,
+    scope.surfaceProfile,
+    scope.workDraftKind,
+  ].map(encodeURIComponent).join(":");
+}
+
+/**
+ * The pre-2026-09 per-project, per-lane key. Read, never written, so a user who
+ * already had a remembered launch config keeps it the first time they open a
+ * lane that had one.
+ */
+function legacyLaunchConfigStorageKey(scope: {
   projectRoot: string | null | undefined;
   laneId: string | null | undefined;
   surfaceProfile: ChatSurfaceProfile;
@@ -1552,6 +1589,15 @@ function launchConfigStorageKeys(scope: {
     keys.push(
       launchConfigStorageKey({ ...scope, workDraftKind: "chat" }),
       launchConfigStorageKey({ ...scope, workDraftKind: "cli" }),
+    );
+  }
+  // Legacy per-lane keys come last: a machine-wide value always wins, and the
+  // old value is only consulted when nothing machine-wide exists yet.
+  keys.push(legacyLaunchConfigStorageKey({ ...scope, workDraftKind: sharedKind }));
+  if (sharedKind === "work-start") {
+    keys.push(
+      legacyLaunchConfigStorageKey({ ...scope, workDraftKind: "chat" }),
+      legacyLaunchConfigStorageKey({ ...scope, workDraftKind: "cli" }),
     );
   }
   return [...new Set(keys)];
@@ -8079,9 +8125,41 @@ export function AgentChatPane({
     }, pin);
     return hits.map((hit) => ({
       path: hit.path,
-      type: inferAttachmentType(hit.path)
+      // A folder is a pointer, not an attachment: it has no bytes to upload.
+      // The flag rides along so the composer inserts a chip and skips attaching.
+      type: inferAttachmentType(hit.path),
+      ...(hit.isDirectory ? { isDirectory: true as const } : {}),
     }));
   }, [laneId, selectedSessionId, sessionProvider]);
+
+  // `#` pull-request suggestions for the composer. Browse with an empty query,
+  // filter by number when the query is digits, otherwise match the title.
+  const searchPullRequests = useCallback(async (query: string): Promise<ComposerPrSuggestion[]> => {
+    const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
+    if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) return [];
+    try {
+      const all = await window.ade.prs.listAll?.(pin);
+      if (!all?.length) return [];
+      const trimmed = query.trim().toLowerCase();
+      const digits = /^\d+$/.test(trimmed);
+      const matches = all.filter((pr) => {
+        if (pr.detached) return false;
+        if (!trimmed) return true;
+        if (digits) return String(pr.githubPrNumber).startsWith(trimmed);
+        return (pr.title ?? "").toLowerCase().includes(trimmed)
+          || String(pr.githubPrNumber).startsWith(trimmed);
+      });
+      return matches.slice(0, 20).map((pr) => ({
+        number: pr.githubPrNumber,
+        title: pr.title ?? "",
+        state: pr.state === "merged" || pr.state === "closed" ? pr.state : "open",
+        url: pr.githubUrl || `https://github.com/${pr.repoOwner}/${pr.repoName}/pull/${pr.githubPrNumber}`,
+        repo: pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : undefined,
+      }));
+    } catch {
+      return [];
+    }
+  }, [selectedSessionId]);
 
   // Entity @-mention suggestions (chats / lanes / terminals) for the active
   // project. Daemon-routed through the chat action domain; an unbound runtime
@@ -8574,6 +8652,107 @@ export function AgentChatPane({
     consumedInitialModelIdRef.current = nextModelId;
     setModelId(nextModelId);
   }, [initialModelId, preferencesReady]);
+
+  // Carry the user's autonomy level across a model-family switch.
+  //
+  // Each provider names its permission modes differently, so switching family
+  // used to drop you on that family's default: you could be on the most
+  // permissive Claude mode, pick a Droid model, and silently land on the most
+  // cautious one. The ladder maps the LEVEL, and a family that cannot express
+  // it gets the nearest lower rung — never a higher one.
+  //
+  // Only families the user has not visited in this composer are overwritten.
+  // An exact earlier choice (Droid's `agi`, say) is remembered and restored,
+  // which is why the visited set exists.
+  const activeLadderFamily = useMemo<PermissionLadderFamily | null>(() => {
+    const provider = resolveChatRuntimeProvider(selectedModelDesc);
+    switch (provider) {
+      case "claude": return "claude";
+      case "codex": return "codex";
+      case "opencode": return "opencode";
+      case "droid": return "droid";
+      case "cursor": return "cursor";
+      case "qwen":
+      case "kimi":
+      case "copilot": return "acp";
+      default: return null;
+    }
+  }, [selectedModelDesc]);
+  const previousLadderFamilyRef = useRef<PermissionLadderFamily | null>(null);
+  const visitedLadderFamiliesRef = useRef<Set<PermissionLadderFamily>>(new Set());
+  useEffect(() => {
+    const next = activeLadderFamily;
+    const previous = previousLadderFamilyRef.current;
+    previousLadderFamilyRef.current = next;
+    if (!next) return;
+    if (previous) visitedLadderFamiliesRef.current.add(previous);
+    if (!previous || previous === next) return;
+    if (visitedLadderFamiliesRef.current.has(next)) return;
+
+    // Never overwrite a family that already carries a deliberate choice. The
+    // target's controls differ from this surface's defaults when the user set
+    // them, or when they were restored from the remembered launch config —
+    // switching the model must not discard either. Only a family still sitting
+    // on its untouched default inherits the level.
+    const targetIsUntouched = (() => {
+      switch (next) {
+        case "claude": return claudePermissionMode === initialNativeControls.claudePermissionMode;
+        case "codex":
+          return codexApprovalPolicy === initialNativeControls.codexApprovalPolicy
+            && codexSandbox === initialNativeControls.codexSandbox;
+        case "opencode": return opencodePermissionMode === initialNativeControls.opencodePermissionMode;
+        case "droid": return droidPermissionMode === initialNativeControls.droidPermissionMode;
+        case "cursor": return cursorModeId === initialNativeControls.cursorModeId;
+        case "acp": return true;
+      }
+    })();
+    if (!targetIsUntouched) {
+      visitedLadderFamiliesRef.current.add(next);
+      return;
+    }
+
+    const level = (() => {
+      switch (previous) {
+        case "claude": return permissionLevelForClaude(claudePermissionMode);
+        case "codex": return permissionLevelForCodex(codexSandbox, codexApprovalPolicy);
+        case "opencode": return permissionLevelForOpenCode(opencodePermissionMode);
+        case "droid": return permissionLevelForDroid(droidPermissionMode);
+        default: return null;
+      }
+    })();
+    if (!level) return;
+
+    const resolved = resolvePermissionLevel(level, next);
+    switch (next) {
+      case "claude":
+        setClaudePermissionMode(resolved.claudePermissionMode);
+        break;
+      case "codex":
+        setCodexApprovalPolicy(resolved.codexApprovalPolicy);
+        setCodexSandbox(resolved.codexSandbox);
+        break;
+      case "opencode":
+        setOpenCodePermissionMode(resolved.opencodePermissionMode);
+        break;
+      case "droid":
+        setDroidPermissionMode(resolved.droidPermissionMode);
+        break;
+      case "cursor":
+        setCursorModeId(resolved.cursorModeId);
+        break;
+      case "acp":
+        break;
+    }
+  }, [
+    activeLadderFamily,
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    cursorModeId,
+    droidPermissionMode,
+    initialNativeControls,
+    opencodePermissionMode,
+  ]);
 
   const currentNativeControls = useMemo<NativeControlState>(() => ({
     interactionMode,
@@ -13522,6 +13701,7 @@ export function AgentChatPane({
             onRemoveContextAttachment={removeContextAttachment}
             onSearchAttachments={searchAttachments}
             onSearchMentions={searchMentions}
+            onSearchPullRequests={searchPullRequests}
             onClearEvents={() => {
               if (selectedSessionId) {
                 clearSessionView(selectedSessionId);

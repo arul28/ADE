@@ -287,7 +287,17 @@ export function selectLanePrs(
   // lists, Work cards, and chat badges. Historical rows remain in the source
   // list and PR workspace, but never leak into those visible lane surfaces.
   return prs
-    .filter((pr) => !pr.detached && lanePrMatchesCurrentBranch(lane, pr))
+    .filter((pr) => {
+      if (pr.detached) return false;
+      // A PR the user explicitly linked to a chat in this lane is visible even
+      // when its head branch is elsewhere. Branch matching alone is what kept a
+      // lane to one PR: every PR opened from the lane carries the lane branch,
+      // so a deliberately linked second PR was filtered out of every lane
+      // surface. Historical rows with no link still fall back to the branch
+      // rule and stay hidden.
+      if ((pr.chatSessionIds?.filter(Boolean).length ?? 0) > 0) return true;
+      return lanePrMatchesCurrentBranch(lane, pr);
+    })
     .sort(comparePrTags);
 }
 

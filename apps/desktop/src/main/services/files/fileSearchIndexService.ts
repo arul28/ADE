@@ -60,11 +60,22 @@ type IndexedFile = {
   mtimeMs: number;
 };
 
+type IndexedDirectory = {
+  path: string;
+  lowerPath: string;
+};
+
 type WorkspaceIndex = {
   workspaceId: string;
   rootPath: string;
   includeIgnored: boolean;
   files: Map<string, IndexedFile>;
+  /**
+   * Directories the walk visited. Kept apart from `files` so nothing that
+   * scans file contents (text search, size limits, mtime) can ever pick a
+   * directory up by accident; only name-matching reads this map.
+   */
+  directories: Map<string, IndexedDirectory>;
   quickOpenCache: Map<string, FilesQuickOpenItem[]>;
   buildingPromise: Promise<void> | null;
   builtAt: string | null;
@@ -441,6 +452,7 @@ export function createFileSearchIndexService() {
       rootPath,
       includeIgnored,
       files: new Map(),
+      directories: new Map(),
       quickOpenCache: new Map(),
       buildingPromise: null,
       builtAt: null
@@ -465,6 +477,13 @@ export function createFileSearchIndexService() {
         index.files.delete(key);
       }
     }
+    // Directories are removed on the same rule. Without this a deleted folder
+    // keeps appearing in the composer's `@` menu until the next full rebuild.
+    for (const key of index.directories.keys()) {
+      if (key === normalized || key.startsWith(descendantsPrefix)) {
+        index.directories.delete(key);
+      }
+    }
   };
 
   const upsertFile = (index: WorkspaceIndex, relPath: string): void => {
@@ -480,7 +499,12 @@ export function createFileSearchIndexService() {
       return;
     }
 
-    if (stat.isDirectory()) return;
+    if (stat.isDirectory()) {
+      // A folder created after the build lands here; record it so it is
+      // suggestable immediately rather than only after the next rebuild.
+      index.directories.set(normalized, { path: normalized, lowerPath: normalized.toLowerCase() });
+      return;
+    }
     if (!stat.isFile()) return;
 
     index.files.set(normalized, {
@@ -583,6 +607,7 @@ export function createFileSearchIndexService() {
         if (await opts.shouldIgnore(relPath, index.includeIgnored)) continue;
 
         if (entry.isDirectory()) {
+          index.directories.set(relPath, { path: relPath, lowerPath: relPath.toLowerCase() });
           stack.push(relPath);
           continue;
         }
@@ -667,6 +692,11 @@ export function createFileSearchIndexService() {
         const score = scorePath(entry.lowerPath, args.query, allowComposerPrefixFallback);
         if (score < 0) continue;
         scored.push({ path: entry.path, score });
+      }
+      for (const entry of index.directories.values()) {
+        const score = scorePath(entry.lowerPath, args.query, allowComposerPrefixFallback);
+        if (score < 0) continue;
+        scored.push({ path: entry.path, score, isDirectory: true });
       }
       scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
       const result = scored.slice(0, args.limit);

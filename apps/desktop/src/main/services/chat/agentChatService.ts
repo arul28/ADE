@@ -13992,6 +13992,9 @@ export function createAgentChatService(args: {
 
     const approvalPolicy = (() => {
       if (chat.defaultApprovalPolicy === "auto") return "never" as const;
+      const configuredCodex = permissions.providers?.codex;
+      if (configuredCodex === "plan") return "untrusted" as const;
+      if (configuredCodex === "full-auto") return "never" as const;
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
       // Codex chat defaults should match the documented "Default permissions"
@@ -14005,14 +14008,30 @@ export function createAgentChatService(args: {
 
     const sandboxMode = (() => {
       if (chat.codexSandbox) return chat.codexSandbox;
+      if (permissions.providers?.codexSandbox) return permissions.providers.codexSandbox;
+      const configuredCodex = permissions.providers?.codex;
+      if (configuredCodex === "plan") return "read-only" as const;
+      if (configuredCodex === "full-auto") return "danger-full-access" as const;
+      if (configuredCodex === "edit") return "workspace-write" as const;
       if (permissions.cli?.sandboxPermissions) return permissions.cli.sandboxPermissions;
       if (cliMode === "full-auto") return "danger-full-access" as const;
       if (cliMode === "read-only") return "read-only" as const;
       return "workspace-write" as const;
     })();
 
+    // `permissions.providers` is the documented per-provider setting, and it
+    // used to be read for Pi alone: every other provider silently ignored it
+    // and fell through to the legacy shared `cli`/`inProcess` knobs. A user who
+    // set a Claude or Codex default in config got no effect at all.
+    const providerPermissions = permissions.providers ?? {};
+
     const claudePermissionMode = (() => {
       if (chat.claudePermissionMode) return chat.claudePermissionMode;
+      const configured = providerPermissions.claude;
+      if (configured === "plan") return "plan" as const;
+      if (configured === "full-auto") return "bypassPermissions" as const;
+      if (configured === "edit") return "acceptEdits" as const;
+      if (configured === "default") return "default" as const;
       if (cliMode === "read-only") return "plan" as const;
       if (cliMode === "full-auto") return "bypassPermissions" as const;
       return "default" as const;
@@ -14021,6 +14040,10 @@ export function createAgentChatService(args: {
     const opencodePermissionMode = (() => {
       if (chat.opencodePermissionMode === "plan" || chat.opencodePermissionMode === "edit" || chat.opencodePermissionMode === "full-auto" || chat.opencodePermissionMode === "config-toml") {
         return chat.opencodePermissionMode;
+      }
+      const configured = permissions.providers?.opencode;
+      if (configured === "plan" || configured === "edit" || configured === "full-auto" || configured === "config-toml") {
+        return configured;
       }
       if (inProcessMode === "plan" || inProcessMode === "edit" || inProcessMode === "full-auto" || inProcessMode === "config-toml") {
         return inProcessMode;

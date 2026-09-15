@@ -526,9 +526,41 @@ export function createSearchService(deps: SearchServiceDeps) {
     }
   };
 
+  /**
+   * PR identifiers per chat session, refreshed whenever PRs are indexed. It
+   * lets "#1237" or a pasted PR url find the CHAT that is working on that PR,
+   * not only the PR document itself. Kept as a plain map because the metadata
+   * upsert is synchronous and must not grow an await.
+   */
+  const prTermsByChatSession = new Map<string, string[]>();
+
+  const rebuildPrTermsByChatSession = (summaries: readonly PrSummary[]): void => {
+    prTermsByChatSession.clear();
+    for (const pr of summaries) {
+      const repo = pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : "";
+      const terms = [
+        `#${pr.githubPrNumber}`,
+        repo ? `${repo}#${pr.githubPrNumber}` : "",
+        pr.githubUrl ?? "",
+        pr.title ?? "",
+      ].filter(Boolean);
+      for (const sessionId of pr.chatSessionIds ?? []) {
+        if (!sessionId) continue;
+        const existing = prTermsByChatSession.get(sessionId);
+        if (existing) existing.push(...terms);
+        else prTermsByChatSession.set(sessionId, [...terms]);
+      }
+    }
+  };
+
   const upsertSessionMetaDoc = (session: TerminalSessionSummary, kind: "chat" | "terminal", deepLink: string): void => {
     const prefix = kind === "chat" ? "chat" : "term";
-    const bodyParts = [session.title, session.goal ?? "", session.summary ?? ""].filter(Boolean);
+    const bodyParts = [
+      session.title,
+      session.goal ?? "",
+      session.summary ?? "",
+      ...(kind === "chat" ? prTermsByChatSession.get(session.id) ?? [] : []),
+    ].filter(Boolean);
     upsertDoc({
       docId: `${prefix}:${session.id}:meta`,
       kind,
@@ -781,6 +813,7 @@ export function createSearchService(deps: SearchServiceDeps) {
   const processPr = async (prId: string): Promise<void> => {
     if (!deps.prs) return;
     const summaries = await deps.prs.listAll();
+    rebuildPrTermsByChatSession(summaries);
     const summary = summaries.find((pr) => pr.id === prId);
     if (!summary) {
       withTransaction(() => deleteDocsWhere("doc_id = ?", [`pr:${prId}`]));
@@ -840,6 +873,7 @@ export function createSearchService(deps: SearchServiceDeps) {
   const processPrSweep = async (): Promise<void> => {
     if (!deps.prs) return;
     const summaries = await deps.prs.listAll();
+    rebuildPrTermsByChatSession(summaries);
     const liveIds = new Set(summaries.map((pr) => `pr:${pr.id}`));
     const indexed = all<{ doc_id: string }>("SELECT doc_id FROM docs WHERE kind = 'pr'");
     withTransaction(() => {
