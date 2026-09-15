@@ -146,6 +146,9 @@ export const ModelPicker = memo(function ModelPicker({
   // open picker cannot be pushed into repeated cached-catalog fetches.
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin ?? null);
   runtimePinRef.current = runtimePin ?? null;
+  const catalogScopeKeyRef = useRef(catalogScopeKey);
+  catalogScopeKeyRef.current = catalogScopeKey;
+  const providerRefreshTokenRef = useRef(0);
   const [open, setOpen] = useState(false);
   /**
    * The rendered catalog is tagged with the machine it came from, and a tag
@@ -217,6 +220,7 @@ export const ModelPicker = memo(function ModelPicker({
     const existingRequest = getRuntimeCatalogRequest(requestKey);
     if (existingRequest) {
       const next = await existingRequest;
+      if (catalogScopeKeyRef.current !== catalogScopeKey) return next;
       if (next) setRuntimeCatalog(next);
       return next;
     }
@@ -238,11 +242,13 @@ export const ModelPicker = memo(function ModelPicker({
           scopeKey: catalogScopeKey,
           scopeSerial,
         });
+        if (catalogScopeKeyRef.current !== catalogScopeKey) return visible;
         setRuntimeCatalog(visible);
         if (args.refreshProvider) setRefreshErrorProvider((current) => current === args.refreshProvider ? null : current);
         return visible;
       } catch {
         // Keep the last catalog visible; renderer fallbacks cover older runtimes.
+        if (catalogScopeKeyRef.current !== catalogScopeKey) return null;
         if (args.refreshProvider) setRefreshErrorProvider(args.refreshProvider);
         return null;
       }
@@ -255,6 +261,11 @@ export const ModelPicker = memo(function ModelPicker({
   }, [catalogScopeKey, cursorSource, setRuntimeCatalog]);
 
   useEffect(() => {
+    providerRefreshTokenRef.current += 1;
+    setRefreshingProvider(null);
+  }, [catalogScopeKey]);
+
+  useEffect(() => {
     if (!open) return;
     void loadRuntimeCatalog({ mode: "cached" });
   }, [loadRuntimeCatalog, open]);
@@ -264,6 +275,7 @@ export const ModelPicker = memo(function ModelPicker({
     if (refreshProvider) {
       void (async () => {
         const scopeAtRefresh = catalogScopeKey;
+        const refreshToken = ++providerRefreshTokenRef.current;
         const cursorFlavor = refreshProvider === "cursor" ? cursorSource : undefined;
         const shared = getSharedRuntimeCatalog(catalogScopeKey);
         if (shared) {
@@ -282,12 +294,14 @@ export const ModelPicker = memo(function ModelPicker({
             const forced = await loadRuntimeCatalog({ mode: "force", refreshProvider });
             if (!forced) return;
           }
-          // Only notify after a successful fetch. `finally` used to fire on
-          // failure too, which made Personal Chats bump its request seq and
-          // discard an in-flight page force while the cache was still stale.
+          if (providerRefreshTokenRef.current !== refreshToken) return;
+          if (catalogScopeKeyRef.current !== scopeAtRefresh) return;
           onRuntimeCatalogRefreshed?.(refreshProvider, scopeAtRefresh);
         } finally {
-          setRefreshingProvider((current) => current === refreshProvider ? null : current);
+          setRefreshingProvider((current) => {
+            if (providerRefreshTokenRef.current !== refreshToken) return current;
+            return current === refreshProvider ? null : current;
+          });
         }
       })();
     }

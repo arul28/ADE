@@ -1399,8 +1399,13 @@ describe("ModelPicker", () => {
   it("does not notify the parent when a provider rail refresh fails", async () => {
     const user = userEvent.setup();
     const onRuntimeCatalogRefreshed = vi.fn();
-    const modelCatalog = vi.fn(async () => {
-      throw new Error("catalog unavailable");
+    let rejectRefresh: ((error: Error) => void) | undefined;
+    const refreshFailure = new Promise<never>((_, reject) => {
+      rejectRefresh = reject;
+    });
+    const modelCatalog = vi.fn((args?: { mode?: string; refreshProvider?: string }) => {
+      if (args?.refreshProvider) return refreshFailure;
+      return Promise.resolve({ groups: [], fetchedAt: "2026-05-18T00:00:00.000Z", stale: false });
     });
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -1410,14 +1415,76 @@ describe("ModelPicker", () => {
 
     renderPicker({ onRuntimeCatalogRefreshed });
     await user.click(screen.getByRole("button", { name: /Select model/i }));
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "cached" });
+    });
     const opencodeRail = document.querySelector(
       '[data-rail-selection="provider:opencode"]',
     ) as HTMLButtonElement;
     await user.click(opencodeRail);
-
     await waitFor(() => {
-      expect(modelCatalog).toHaveBeenCalled();
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "opencode" });
     });
+    await act(async () => {
+      rejectRefresh?.(new Error("catalog unavailable"));
+    });
+    await expect(refreshFailure).rejects.toThrow("catalog unavailable");
+    expect(onRuntimeCatalogRefreshed).not.toHaveBeenCalled();
+  });
+
+  it("does not notify the parent for a provider refresh that finishes after the catalog scope changes", async () => {
+    const user = userEvent.setup();
+    const onRuntimeCatalogRefreshed = vi.fn();
+    let resolveRefresh: ((catalog: AgentChatModelCatalog) => void) | undefined;
+    const pendingRefresh = new Promise<AgentChatModelCatalog>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const modelCatalog = vi.fn((args?: { mode?: string; refreshProvider?: string }) => {
+      if (args?.refreshProvider) return pendingRefresh;
+      return Promise.resolve({ groups: [], fetchedAt: "2026-05-18T00:00:00.000Z", stale: false });
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    const view = render(
+      <ModelPicker
+        value={SONNET.id}
+        onChange={vi.fn()}
+        surfaceKey="test-surface"
+        models={MODELS}
+        catalogScopeKey="machine-a"
+        onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "cached" });
+    });
+    const opencodeRail = document.querySelector(
+      '[data-rail-selection="provider:opencode"]',
+    ) as HTMLButtonElement;
+    await user.click(opencodeRail);
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "opencode" });
+    });
+
+    view.rerender(
+      <ModelPicker
+        value={SONNET.id}
+        onChange={vi.fn()}
+        surfaceKey="test-surface"
+        models={MODELS}
+        catalogScopeKey="machine-b"
+        onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
+      />,
+    );
+    await act(async () => {
+      resolveRefresh?.({ groups: [], fetchedAt: "late", stale: false });
+    });
+    await pendingRefresh;
     expect(onRuntimeCatalogRefreshed).not.toHaveBeenCalled();
   });
 
