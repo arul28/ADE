@@ -990,7 +990,7 @@ export function ChatTurnWorkSummary({
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
-  /** Time/usage hairline rendered directly under the summary label. */
+  /** Time/usage hairline rendered last, under the summary and any expanded activity. */
   chrome?: React.ReactNode;
 }) {
   const workspacePaths = useChatWorkspacePaths();
@@ -1007,7 +1007,7 @@ export function ChatTurnWorkSummary({
   return (
     <div className="w-full min-w-0">
       {label ? (
-        <div className="mb-1 flex justify-center">
+        <div className="mb-1 flex justify-start">
           <button
             type="button"
             aria-expanded={open}
@@ -1016,16 +1016,15 @@ export function ChatTurnWorkSummary({
               if (!open) workspacePaths?.ensureWorkspacesLoaded?.();
               setOpen((value) => !value);
             }}
-            className="flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-center font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55 transition-colors hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
+            className="flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55 transition-colors hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
           >
-            <Caret size={10} weight="bold" className="shrink-0 text-fg/35" />
+            <Caret size={9} weight="bold" className="shrink-0 text-fg/35" />
             <span className="font-medium">{label}</span>
           </button>
         </div>
       ) : null}
-      {chrome}
       {label && open ? (
-        <div className="mt-2 min-w-0 overflow-hidden border-l border-white/[0.08] pl-4">
+        <div className="mb-2 min-w-0 overflow-hidden border-l border-white/[0.08] pl-4">
           {tools.length > 0 ? (
             <ChatToolActivityDetails
               entries={tools}
@@ -1044,6 +1043,7 @@ export function ChatTurnWorkSummary({
           ) : null}
         </div>
       ) : null}
+      {chrome}
     </div>
   );
 }

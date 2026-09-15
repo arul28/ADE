@@ -361,8 +361,9 @@ implements a two-layer transform:
    command, hook, and web-search groups no longer occupy permanent transcript
    rows. During a live turn they are available from the expandable working
    status; after `done` they collapse into one `N tools · M files` summary
-   stacked immediately above the turn's existing time/usage line. Expanding
-   lists the tools and files below that line. On desktop the `work_log_group` envelopes are filtered out of the
+   stacked immediately above the turn's existing time/usage line, left-aligned
+   with Thought. Expanding lists the tools and files between that summary and
+   the time/usage line, which stays last. On desktop the `work_log_group` envelopes are filtered out of the
    rendered timeline entirely rather than rendered empty, so they do not
    consume row gaps. File changes share that same combined summary (unless a
    checkpoint `turn_diff_summary` already covers the turn), instead of once per uninterrupted burst of tool

@@ -3838,6 +3838,47 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     expect(rendered.container.textContent).toContain("npm test");
+    const expanded = rendered.container.textContent ?? "";
+    expect(expanded.indexOf("npm test")).toBeLessThan(expanded.indexOf("ran 5.0s"));
+  });
+
+  it("left-aligns the turn work summary with Thought and keeps time/usage last when expanded", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "reasoning", text: "Checking the package name.", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "command",
+          command: "cat package.json",
+          cwd: "/repo",
+          output: "{}",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "completed",
+          exitCode: 0,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ]);
+
+    const summary = screen.getByRole("button", { name: /^Show .+ from this turn$/ });
+    expect(summary.className).toContain("text-left");
+    expect(summary.parentElement?.className).toContain("justify-start");
+    expect(summary.parentElement?.className).not.toContain("justify-center");
+
+    fireEvent.click(summary);
+    const text = rendered.container.textContent ?? "";
+    expect(text.indexOf("1 tool")).toBeLessThan(text.indexOf("cat package.json"));
+    expect(text.indexOf("cat package.json")).toBeLessThan(text.indexOf("ran 2.0s"));
   });
 
   // "Keep the last": the row you read is the most recent one; quiet successes
