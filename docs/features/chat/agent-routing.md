@@ -948,7 +948,10 @@ then remain on Copilot Auto. ACP metadata generation uses the provider's own
 one-shot CLI: Qwen uses safe mode and receives its prompt over stdin, Kimi uses
 its model alias plus plan mode, Grok uses its model plus plan mode, and Copilot
 receives the selected model with tools and MCP servers disabled and its prompt
-over stdin.
+over stdin. Qwen, Kimi, and Grok one-shot metadata routes are text-only; an
+image-backed metadata request is rejected explicitly so the naming fallback can
+try another provider instead of silently discarding the image. Copilot's
+one-shot route forwards supported image attachments.
 
 Both stages walk `buildSessionIntelligenceModelCandidates` in
 `sessionNaming.ts`. A provider-level failure condemns every remaining

@@ -380,6 +380,29 @@ describe("runProviderTask", () => {
     );
   });
 
+  it.each([
+    ["Qwen", "qwen", "qwen-acp", "qwen/qwen3-coder-plus"],
+    ["Kimi", "moonshot", "kimi-acp", "moonshot/kimi-for-coding"],
+    ["Grok", "xai", "grok-acp", "xai/grok-4.6"],
+  ] as const)("rejects image-backed metadata tasks when %s has no native image input", async (
+    providerLabel,
+    family,
+    providerRoute,
+    providerModelId,
+  ) => {
+    await expect(runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: { family, providerRoute, isCliWrapped: true, providerModelId } as any,
+      prompt: "Name this chat.",
+      feature: "session-metadata",
+      imagePaths: ["/tmp/settings.png"],
+      projectConfig: {} as any,
+  })).rejects.toThrow(
+    "Image input is not supported with " + providerLabel + " native metadata tasks",
+  );
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("routes every Cursor task through the SDK worker pool with no policy of its own", async () => {
     cursorLocalPromptMock.mockResolvedValue({ text: "ok", agentId: "agent-1" });
 

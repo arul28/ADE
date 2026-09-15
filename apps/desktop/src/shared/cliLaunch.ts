@@ -1942,8 +1942,8 @@ export function buildTrackedCliResumeLaunchCommand(
       ...grokReasoningEffortFlags(reasoningEffort),
       ...permissionModeToGrokFlags(permissionMode),
     ];
-    if (targetId) parts.push("--resume", targetId);
-    else parts.push("--continue");
+    if (targetId) parts.push("-r", targetId);
+    else parts.push("-c");
     const promptRidesInArgv = Boolean(prompt) && (options.platform ?? process.platform) !== "win32";
     if (prompt && promptRidesInArgv) parts.push(prompt);
     return {

@@ -1495,6 +1495,7 @@ function buildInitialResumeMetadata(args: {
 }): TerminalResumeMetadata | null {
   const parsedLaunch = parseTrackedCliLaunchConfig(args.startupCommand, args.toolType);
   const parsedResume = parseTrackedCliResumeCommand(args.startupCommand, args.toolType);
+  const trackedProvider = providerFromTool(args.toolType);
   const isClaude = isClaudeTrackedCliToolType(args.toolType);
   const isCodex = args.toolType === "codex" || args.toolType === "codex-orchestrated";
   const isCursor = args.toolType === "cursor-cli";
@@ -1509,12 +1510,8 @@ function buildInitialResumeMetadata(args: {
   const initialTargetId = preAssignedId ?? parsedTargetId;
 
   if (parsedLaunch) {
-    let provider: TerminalResumeMetadata["provider"] = "claude";
-    if (isCodex) provider = "codex";
-    else if (isCursor) provider = "cursor";
-    else if (isDroid) provider = "droid";
-    else if (isOpenCode) provider = "opencode";
-    else if (isPi) provider = "pi";
+    const provider = trackedProvider;
+    if (!provider) return null;
     return {
       provider,
       targetKind: isCodex ? "thread" : "session",
@@ -1540,6 +1537,9 @@ function buildInitialResumeMetadata(args: {
   }
   if (isPi) {
     return { provider: "pi", targetKind: "session", targetId: null, launch: {} };
+  }
+  if (trackedProvider) {
+    return { provider: trackedProvider, targetKind: trackedProvider === "codex" ? "thread" : "session", targetId: null, launch: {} };
   }
   return null;
 }

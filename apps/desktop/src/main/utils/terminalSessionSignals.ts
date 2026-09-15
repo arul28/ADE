@@ -20,11 +20,13 @@ import {
 import { parseCommandLine } from "../../shared/shell";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
-const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode|pi)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
+const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode|pi|qwen|kimi|grok|copilot)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
 const RESUME_HINT_PREFIX_REGEX = /\b(?:resume|continue)\s+with\s+(.+)$/i;
 const RESUME_COMMAND_LINE_REGEX = /^(?:.*?(?:[%$#❯›]\s+))?((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:claude|codex|cursor-agent|droid|opencode|pi)\s+.+)$/i;
 
 export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
+
+const RESUME_NATIVE_ACP_COMMAND_LINE_REGEX = /^((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:qwen|kimi|grok|copilot)\s.+)$/i;
 
 function normalizeCommand(raw: string): string {
   return raw
@@ -253,6 +255,40 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
     return "default";
   }
 
+  if (provider === "qwen") {
+    const approvalMode = extractCliFlagValue(normalized, "--approval-mode")?.toLowerCase();
+    if (approvalMode === "yolo" || normalized.includes("--yolo")) return "full-auto";
+    if (approvalMode === "auto") return "auto";
+    if (approvalMode === "auto-edit") return "edit";
+    if (approvalMode === "plan") return "plan";
+    if (approvalMode === "default") return "default";
+    return "default";
+  }
+
+  if (provider === "kimi") {
+    if (normalized.includes("--yolo")) return "full-auto";
+    if (normalized.includes("--auto")) return "edit";
+    if (normalized.includes("--plan")) return "plan";
+    return "default";
+  }
+
+  if (provider === "grok") {
+    const permission = extractCliFlagValue(normalized, "--permission-mode")?.toLowerCase();
+    if (permission === "bypasspermissions") return "full-auto";
+    if (permission === "auto") return "auto";
+    if (permission === "acceptedits") return "edit";
+    if (permission === "plan") return "plan";
+    if (permission === "default") return "default";
+    return "default";
+  }
+
+  if (provider === "copilot") {
+    if (normalized.includes("--allow-all-tools")) return "full-auto";
+    if (normalized.includes("--deny-tool=write") && normalized.includes("--deny-tool=shell")) return "plan";
+    if (normalized.includes("--allow-tool=write")) return "edit";
+    return "default";
+  }
+
   if (provider === "opencode") {
     if (
       normalized.includes("opencode_config_content=")
@@ -288,7 +324,10 @@ export function parseTrackedCliLaunchConfig(
     ?? extractTrackedCliPermissionMode(normalized, provider);
   const model = droidStringSetting(droidSettings, "model")
     ?? droidSpecStringSetting(droidSettings, "specModeModel")
-    ?? extractCliFlagValue(normalized, "--model");
+    ?? extractCliFlagValue(normalized, "--model")
+    ?? (provider === "qwen" || provider === "kimi" || provider === "grok"
+      ? extractCliFlagValue(normalized, "-m")
+      : null);
   const reasoningEffort = droidStringSetting(droidSettings, "reasoningEffort")
     ?? droidSpecStringSetting(droidSettings, "specModeReasoningEffort")
     ?? (provider === "codex"
@@ -404,8 +443,43 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
     return sanitizeResumeTargetId(raw) ?? undefined;
   }
 
-  if (provider === "qwen" || provider === "grok" || provider === "copilot") {
-    const binary = provider === "qwen" ? "qwen" : provider === "grok" ? "grok" : "copilot";
+  if (provider === "grok") {
+    let parts: string[];
+    try {
+      parts = parseCommandLine(command);
+    } catch {
+      return undefined;
+    }
+    if (parts[0]?.toLowerCase() !== "grok") return undefined;
+    const resumeIndex = parts.findIndex((part, index) =>
+      index > 0
+      && (
+        part === "-r"
+        || part === "-c"
+        || part.toLowerCase() === "--resume"
+        || part.toLowerCase() === "--continue"
+        || part.toLowerCase().startsWith("--resume=")
+      ),
+    );
+    if (resumeIndex < 0) return undefined;
+    const selector = parts[resumeIndex]!.toLowerCase();
+    const inlineTarget = selector.startsWith("--resume=")
+      ? parts[resumeIndex]!.slice("--resume=".length)
+      : selector.startsWith("-r=")
+        ? parts[resumeIndex]!.slice(3)
+        : null;
+    const next = parts[resumeIndex + 1];
+    const raw = inlineTarget ?? (
+      (selector === "-r" || selector === "--resume") && next && !next.startsWith("-")
+        ? next
+        : null
+    );
+    if (raw == null) return null;
+    return sanitizeResumeTargetId(raw) ?? undefined;
+  }
+
+  if (provider === "qwen" || provider === "copilot") {
+    const binary = provider === "qwen" ? "qwen" : "copilot";
     const escapedBinary = binary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const match = command.match(new RegExp(`^${escapedBinary}\\b.*?(?:--resume(?:=|\\s+)([^\\s]+)|--continue\\b)(?:\\s|$)`, "i"));
     if (!match) return undefined;
@@ -502,7 +576,7 @@ export function defaultResumeCommandForTool(toolType: TerminalToolType | null | 
   if (toolType === "opencode" || toolType === "opencode-orchestrated") return "opencode --continue";
   if (toolType === "qwen") return "qwen --continue";
   if (toolType === "kimi") return "kimi -c";
-  if (toolType === "grok") return "grok --continue";
+  if (toolType === "grok") return "grok -c";
   if (toolType === "copilot") return "copilot --continue";
   // Deliberately null for Pi. `pi --continue` means "the most recent session
   // for this directory", and since ADE chat and the tracked CLI share one
@@ -534,7 +608,10 @@ export function extractResumeCommandFromOutput(
         if (!trimmed) return [];
         const hinted = trimmed.match(RESUME_HINT_PREFIX_REGEX)?.[1]?.trim();
         if (hinted && toolFromCommand(hinted)) return [hinted];
-        const command = trimmed.match(RESUME_COMMAND_LINE_REGEX)?.[1]?.trim();
+        const command = (
+          trimmed.match(RESUME_COMMAND_LINE_REGEX)
+          ?? trimmed.match(RESUME_NATIVE_ACP_COMMAND_LINE_REGEX)
+        )?.[1]?.trim();
         return command ? [command] : [];
       }),
   ];

@@ -4233,6 +4233,38 @@ describe("ptyService", () => {
       );
     });
 
+    it.each([
+      ["qwen", "qwen -m qwen3-coder-plus --approval-mode auto-edit", "qwen", "qwen3-coder-plus", "edit"],
+      ["kimi", "kimi -m kimi-code/k3 --plan", "kimi", "kimi-code/k3", "plan"],
+      ["grok", "grok -m grok-4.6 --permission-mode bypassPermissions", "grok", "grok-4.6", "full-auto"],
+      ["copilot", "copilot --model gpt-5.4 --deny-tool=write --deny-tool=shell", "copilot", "gpt-5.4", "plan"],
+    ] as const)(
+      "stores provider-specific resume metadata for %s launches",
+      async (toolType, startupCommand, provider, model, permissionMode) => {
+        const { service, sessionService } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: provider + " CLI",
+          cols: 80,
+          rows: 24,
+          toolType,
+          startupCommand,
+        });
+
+        expect(sessionService.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            toolType,
+            resumeMetadata: expect.objectContaining({
+              provider,
+              targetKind: "session",
+              targetId: null,
+              launch: expect.objectContaining({ model, permissionMode }),
+            }),
+          }),
+        );
+      },
+    );
+
     it("reattaches a resumed tracked session instead of creating a duplicate terminal row", async () => {
       const { service, sessionService } = createHarness();
       sessionService.create({

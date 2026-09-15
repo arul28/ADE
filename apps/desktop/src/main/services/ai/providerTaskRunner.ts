@@ -438,6 +438,16 @@ async function runAcpOneShotTask(
   };
 }
 
+function rejectUnsupportedAcpTaskImages(args: ProviderTaskRunnerArgs, providerLabel: string): void {
+  if ((args.imagePaths?.length ?? 0) > 0) {
+    throw new Error(
+      "Image input is not supported with "
+        + providerLabel
+        + " native metadata tasks; retry with a provider that supports image input.",
+    );
+  }
+}
+
 async function runCopilotTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim()
@@ -469,6 +479,7 @@ async function runCopilotTask(args: ProviderTaskRunnerArgs): Promise<ProviderTas
 }
 
 async function runQwenTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Qwen");
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
@@ -491,6 +502,7 @@ async function runQwenTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
 }
 
 async function runKimiTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Kimi");
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
@@ -504,6 +516,7 @@ async function runKimiTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
 }
 
 async function runGrokTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Grok");
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`

@@ -15337,9 +15337,16 @@ export function createAgentChatService(args: {
 
   const parseResumeCommandPointer = (resumeCommand: string | null | undefined): Omit<ReconciledPointerCandidate, "source" | "at"> | null => {
     const command = resumeCommand?.trim() ?? "";
-    const chatMatch = command.match(/^chat:(codex|opencode|droid|cursor|qwen|kimi|grok|copilot):(.+)$/u);
-    if (chatMatch?.[1] && chatMatch[2]?.trim()) {
-      return { provider: chatMatch[1] as ReconciledPointerCandidate["provider"], pointer: chatMatch[2].trim() };
+    // ACP ids come from session/new and are persisted separately; treating
+    // their chat:<provider>:<ADE chat id> route marker as a native pointer
+    // makes recovery resume a session that never existed at the provider.
+    // Preserve the established pointer formats for the non-ACP providers.
+    const chatMatch = command.match(/^chat:(codex|opencode|droid|cursor):(.+)$/u);
+    if (chatMatch?.[1]?.trim()) {
+      return {
+        provider: chatMatch[1] as ReconciledPointerCandidate["provider"],
+        pointer: chatMatch[2]!.trim(),
+      };
     }
     const claudeMatch = command.match(/(?:^|\s)claude(?:\s+[^\s]+)*\s+--resume\s+([^\s]+)/u);
     return claudeMatch?.[1]

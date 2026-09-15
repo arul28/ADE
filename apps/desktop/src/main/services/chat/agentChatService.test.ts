@@ -50960,6 +50960,24 @@ describe("explicit provider-thread continuity recovery", () => {
     expect(readPersistedChatState(resume.id).threadId).toBe("thread-resume");
     expect(readPersistedChatState(transcript.id).threadId).toBe("thread-transcript");
     expect(readPersistedChatState(none.id).continuityRecovery).toMatchObject({ state: "required", reason: "unknown" });
+
+    const acp = await service.createSession({
+      laneId: "lane-1",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+      title: "Qwen chat",
+    });
+    fs.rmSync(metadataPath(acp.id), { force: true });
+    fs.rmSync(metadataPath(acp.id) + ".lkg", { force: true });
+    sessionService.setResumeCommand(acp.id, "chat:qwen:" + acp.id);
+    service.reconcileThreadPointerFromRedundantSources(acp.id);
+    expect(readPersistedChatState(acp.id).acpSessionId).toBeUndefined();
+    expect(readPersistedChatState(acp.id).continuityRecovery).toMatchObject({
+      state: "required",
+      reason: "unknown",
+      provider: "qwen",
+    });
   });
 });
 
