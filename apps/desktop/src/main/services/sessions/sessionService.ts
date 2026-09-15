@@ -168,7 +168,16 @@ const CLAUDE_SESSION_COLUMNS = `
 `;
 
 function isResumeProvider(value: unknown): value is TerminalResumeProvider {
-  return value === "claude" || value === "codex" || value === "cursor" || value === "droid" || value === "opencode" || value === "pi";
+  return value === "claude"
+    || value === "codex"
+    || value === "cursor"
+    || value === "droid"
+    || value === "opencode"
+    || value === "pi"
+    || value === "qwen"
+    || value === "kimi"
+    || value === "grok"
+    || value === "copilot";
 }
 
 function normalizeAttentionSource(value: unknown): SessionAttentionSource | null {
@@ -617,6 +626,14 @@ export function createSessionService({
       "pi-chat",
       "cursor",
       "droid-chat",
+      "qwen",
+      "kimi",
+      "grok",
+      "copilot",
+      "qwen-chat",
+      "kimi-chat",
+      "grok-chat",
+      "copilot-chat",
       "aider",
       "continue",
       "other"
@@ -635,6 +652,10 @@ export function createSessionService({
     if (normalized.startsWith("chat:cursor:")) return "cursor";
     if (normalized.startsWith("chat:unified:")) return "opencode-chat";
     if (normalized.startsWith("chat:claude:")) return "claude-chat";
+    if (normalized.startsWith("chat:qwen:")) return "qwen-chat";
+    if (normalized.startsWith("chat:kimi:")) return "kimi-chat";
+    if (normalized.startsWith("chat:grok:")) return "grok-chat";
+    if (normalized.startsWith("chat:copilot:")) return "copilot-chat";
     if (normalized === "chat:codex" || normalized.startsWith("chat:codex:")) return "codex-chat";
     return toolType;
   };
@@ -769,6 +790,18 @@ export function createSessionService({
         } else if (toolType === "droid-chat") {
           legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
           legacyChatParams.push("chat:droid:%");
+        } else if (toolType === "qwen-chat") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:qwen:%");
+        } else if (toolType === "kimi-chat") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:kimi:%");
+        } else if (toolType === "grok-chat") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:grok:%");
+        } else if (toolType === "copilot-chat") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:copilot:%");
         }
       }
 

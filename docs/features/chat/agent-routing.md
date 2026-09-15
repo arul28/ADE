@@ -941,6 +941,15 @@ about 8s for a native provider title, then ADE-name if the title is
 still the default. CLI sessions are always ADE-named. `ade chat
 generate-names` regenerates title, lane name, and status line.
 
+ACP model selection is provider-specific. Copilot receives the selected model
+through its native `session/set_model` request when the installed CLI supports
+it; its older ACP builds can accept the request without changing inference and
+then remain on Copilot Auto. ACP metadata generation uses the provider's own
+one-shot CLI: Qwen uses safe mode and receives its prompt over stdin, Kimi uses
+its model alias plus plan mode, Grok uses its model plus plan mode, and Copilot
+receives the selected model with tools and MCP servers disabled and its prompt
+over stdin.
+
 Both stages walk `buildSessionIntelligenceModelCandidates` in
 `sessionNaming.ts`. A provider-level failure condemns every remaining
 model behind that provider. An empty candidate list uses the

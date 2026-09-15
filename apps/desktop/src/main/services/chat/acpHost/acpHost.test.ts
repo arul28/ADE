@@ -159,6 +159,7 @@ describe("dialect capability declarations", () => {
       dialect.resumeSession,
       dialect.loadSession,
       dialect.sessionConfig,
+      dialect.modelSelection,
       dialect.mcpInjection,
       dialect.imagePrompts,
     ]) {
@@ -295,9 +296,11 @@ describe("spawn plans", () => {
       binaryPath: "/bin/kimi",
       cwd: "/lane",
       baseEnv: {},
+      modelId: "moonshot/kimi-for-coding",
+      permissionMode: "yolo",
       configHome: "/home/.kimi-code",
     });
-    expect(plan.args).toEqual(["acp"]);
+    expect(plan.args).toEqual(["--model", "kimi-code/kimi-for-coding", "--yolo", "acp"]);
     expect(plan.env.KIMI_CODE_HOME).toBe("/home/.kimi-code");
   });
 
@@ -313,6 +316,18 @@ describe("spawn plans", () => {
     expect(plan.args[plan.args.indexOf("--add-dir") + 1]).toBe("/lane/worktree");
     expect(plan.args).toContain("--config-dir");
     expect(plan.env.COPILOT_HOME).toBe("/home/.copilot");
+  });
+
+  it("passes the selected model to Copilot's ACP process", () => {
+    const plan = copilotDialect.buildSpawnPlan({
+      binaryPath: "/bin/copilot",
+      cwd: "/lane/worktree",
+      baseEnv: {},
+      modelId: "github-copilot/gpt-5.4",
+    });
+
+    expect(plan.args).toContain("--model");
+    expect(plan.args[plan.args.indexOf("--model") + 1]).toBe("gpt-5.4");
   });
 
   // ADE removed its Copilot trust pre-seed: a live three-arm experiment on
@@ -959,6 +974,15 @@ describe("session config", () => {
       expect(harness.agent.methodsReceived()).not.toContain(ACP_METHOD.sessionSetConfigOption);
     },
   );
+
+  it("routes Copilot model selection through session/set_model", () => {
+    expect(copilotDialect.modelSelection).toMatchObject({ declared: true });
+    const behavior = copilotDialect.modelSelection.declared ? copilotDialect.modelSelection.behavior : null;
+    expect(behavior?.({ sessionId: "session-1", modelId: "gpt-5.4" })).toEqual({
+      method: ACP_METHOD.sessionSetModel,
+      params: { sessionId: "session-1", modelId: "gpt-5.4" },
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import type {
   AcpMcpInjectionBehavior,
   AcpResumeBehavior,
   AcpCloseBehavior,
+  AcpModelSelectionBehavior,
   AcpSessionConfigBehavior,
 } from "../acpHostTypes";
 import { ACP_METHOD } from "../acpProtocolTypes";
@@ -47,6 +48,12 @@ export const standardSetConfigOption: AcpSessionConfigBehavior = ({ sessionId, c
     typeof value === "boolean"
       ? { sessionId, configId, type: "boolean", value }
       : { sessionId, configId, value },
+});
+
+/** Copilot's model setter is a provider-native ACP method, not a config option. */
+export const standardSetModel: AcpModelSelectionBehavior = ({ sessionId, modelId }) => ({
+  method: ACP_METHOD.sessionSetModel,
+  params: { sessionId, modelId },
 });
 
 /**

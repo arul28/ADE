@@ -5042,6 +5042,10 @@ const CHAT_SESSION_TOOL_TYPES = [
   "cursor",
   "droid-chat",
   "pi-chat",
+  "qwen-chat",
+  "kimi-chat",
+  "grok-chat",
+  "copilot-chat",
 ] satisfies TerminalToolType[];
 type ChatSessionToolType = (typeof CHAT_SESSION_TOOL_TYPES)[number];
 
@@ -5067,6 +5071,10 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
   if (toolType === "claude-chat") return "claude";
   if (toolType === "cursor") return "cursor";
   if (toolType === "droid-chat") return "droid";
+  if (toolType === "qwen" || toolType === "qwen-chat") return "qwen";
+  if (toolType === "kimi" || toolType === "kimi-chat") return "kimi";
+  if (toolType === "grok" || toolType === "grok-chat") return "grok";
+  if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
   return "codex";
 }
 
@@ -5076,6 +5084,10 @@ function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
   if (provider === "claude") return "claude-chat";
   if (provider === "cursor") return "cursor";
   if (provider === "droid") return "droid-chat";
+  if (provider === "qwen") return "qwen-chat";
+  if (provider === "kimi") return "kimi-chat";
+  if (provider === "grok") return "grok-chat";
+  if (provider === "copilot") return "copilot-chat";
   return "codex-chat";
 }
 
@@ -6209,6 +6221,10 @@ function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string
   if (provider === "opencode") return `chat:opencode:${sessionId}`;
   if (provider === "cursor") return `chat:cursor:${sessionId}`;
   if (provider === "droid") return `chat:droid:${sessionId}`;
+  if (provider === "qwen") return `chat:qwen:${sessionId}`;
+  if (provider === "kimi") return `chat:kimi:${sessionId}`;
+  if (provider === "grok") return `chat:grok:${sessionId}`;
+  if (provider === "copilot") return `chat:copilot:${sessionId}`;
   return `chat:claude:${sessionId}`;
 }
 
@@ -13316,7 +13332,8 @@ export function createAgentChatService(args: {
   };
 
   // OpenCode handles API-key and local-model chats.
-  // CLI-wrapped models fall through to the existing Claude/Codex runtimes.
+  // CLI-wrapped models fall through to their provider-specific runtimes
+  // (Claude, Codex, Droid, or one of the ACP dialects).
   // Local model discovery is consolidated through OpenCode's provider inventory.
 
   const getAvailableRegistryModels = async (
@@ -15320,7 +15337,7 @@ export function createAgentChatService(args: {
 
   const parseResumeCommandPointer = (resumeCommand: string | null | undefined): Omit<ReconciledPointerCandidate, "source" | "at"> | null => {
     const command = resumeCommand?.trim() ?? "";
-    const chatMatch = command.match(/^chat:(codex|opencode|droid|cursor):(.+)$/u);
+    const chatMatch = command.match(/^chat:(codex|opencode|droid|cursor|qwen|kimi|grok|copilot):(.+)$/u);
     if (chatMatch?.[1] && chatMatch[2]?.trim()) {
       return { provider: chatMatch[1] as ReconciledPointerCandidate["provider"], pointer: chatMatch[2].trim() };
     }
@@ -46953,7 +46970,18 @@ export function createAgentChatService(args: {
     }
     const liveManaged = managedSessions.get(row.id) ?? liveManagedInitial;
     const liveSession = liveManaged?.session ?? null;
-    const provider = liveSession?.provider ?? persisted?.provider ?? providerFromToolType(row.toolType);
+    const persistedProvider = liveSession?.provider ?? persisted?.provider ?? null;
+    const provider = persistedProvider ?? providerFromToolType(row.toolType);
+    if (persistedProvider && isChatToolType(row.toolType)) {
+      const canonicalToolType = toolTypeFromProvider(persistedProvider);
+      if (canonicalToolType !== row.toolType) {
+        row = sessionService.updateMeta({
+          sessionId: row.id,
+          toolType: canonicalToolType,
+          resumeCommand: resumeCommandForProvider(persistedProvider, row.id),
+        }) ?? row;
+      }
+    }
     const fallbackModel = liveSession?.model ?? persisted?.model ?? fallbackModelForProvider(provider);
     const hydratedModelId = liveSession?.modelId
       ?? persisted?.modelId

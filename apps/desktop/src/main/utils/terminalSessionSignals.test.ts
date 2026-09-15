@@ -83,6 +83,7 @@ describe("terminalSessionSignals", () => {
     expect(defaultResumeCommandForTool("droid")).toBe("droid --resume");
     expect(defaultResumeCommandForTool("opencode")).toBe("opencode --continue");
     expect(defaultResumeCommandForTool("opencode-orchestrated")).toBe("opencode --continue");
+    expect(defaultResumeCommandForTool("copilot")).toBe("copilot --continue");
     // Pi has no safe default. `pi --continue` means "the most recent session
     // for this directory", and chat and the tracked CLI share one native Pi
     // store — a brand new terminal reopened a four-day-old transcript, and the
@@ -93,6 +94,7 @@ describe("terminalSessionSignals", () => {
 
   it("treats orchestrated OpenCode terminals as OpenCode resume sessions", () => {
     expect(providerFromTool("opencode-orchestrated")).toBe("opencode");
+    expect(providerFromTool("copilot-chat")).toBe("copilot");
     expect(normalizeResumeCommand("opencode --session open-1", "opencode-orchestrated")).toBe("opencode --session open-1");
   });
 
@@ -376,6 +378,10 @@ describe("terminalSessionSignals", () => {
     expect(parseTrackedCliResumeCommand("droid --resume 29f8d3bf-6620-4c89-a72e-5327670acc69", "droid")).toEqual({
       provider: "droid",
       targetId: "29f8d3bf-6620-4c89-a72e-5327670acc69",
+    });
+    expect(parseTrackedCliResumeCommand("copilot --resume copilot-session-1", "copilot")).toEqual({
+      provider: "copilot",
+      targetId: "copilot-session-1",
     });
     expect(parseTrackedCliResumeCommand("OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_abc", "opencode")).toEqual({
       provider: "opencode",

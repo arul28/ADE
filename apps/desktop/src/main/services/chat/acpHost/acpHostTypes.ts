@@ -144,6 +144,12 @@ export type AcpSessionConfigBehavior = (args: {
   value: string | boolean;
 }) => { method: string; params: Record<string, unknown> };
 
+/** Provider-native model selection when it is not a config option. */
+export type AcpModelSelectionBehavior = (args: {
+  sessionId: AcpSessionId;
+  modelId: string;
+}) => { method: string; params: Record<string, unknown> };
+
 /**
  * Normalized usage sample. `null` means the payload carried nothing usable, and
  * the host emits no usage event for it.
@@ -343,6 +349,7 @@ export type AcpDialectBase = {
 
   /** Optional capabilities. Present ones carry their behavior. */
   readonly sessionConfig: AcpCapability<AcpSessionConfigBehavior>;
+  readonly modelSelection: AcpCapability<AcpModelSelectionBehavior>;
   readonly mcpInjection: AcpCapability<AcpMcpInjectionBehavior>;
   readonly imagePrompts: AcpCapability<AcpImagePromptBehavior>;
 

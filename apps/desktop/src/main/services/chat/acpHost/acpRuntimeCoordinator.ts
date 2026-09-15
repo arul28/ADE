@@ -25,7 +25,7 @@ import {
 } from "./acpSession";
 import type { AcpPendingPermission } from "./acpPermissionBridge";
 import type { AcpSessionConfigOption } from "./acpProtocolTypes";
-import type { AcpDialect, AcpSlashCommand, AcpSpawnPlan } from "./acpHostTypes";
+import { behaviorOf, type AcpDialect, type AcpSlashCommand, type AcpSpawnPlan } from "./acpHostTypes";
 
 export type AcpRuntimeState<TSteer = unknown> = {
   kind: "acp";
@@ -199,8 +199,19 @@ export async function createAcpRuntime<TSteer>(
         error: error instanceof Error ? error.message : String(error),
       });
     });
-    if (args.modelToken) {
-      await session.setConfigOption({ configId: "model", value: args.modelToken }).catch((error) => {
+  }
+  if (args.modelToken) {
+    const modelBehavior = behaviorOf(args.dialect.modelSelection);
+    const setModel = modelBehavior
+      ? async () => {
+        const call = modelBehavior({ sessionId: session.sessionId, modelId: args.modelToken! });
+        await session.connection.request(call.method, call.params);
+      }
+      : args.dialect.sessionConfig.declared
+        ? async () => session.setConfigOption({ configId: "model", value: args.modelToken! })
+        : null;
+    if (setModel) {
+      await setModel().catch((error) => {
         args.logger.warn("agent_chat.acp_set_model_failed", {
           sessionId: args.owner.session.id,
           provider: args.provider,

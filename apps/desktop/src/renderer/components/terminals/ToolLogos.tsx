@@ -1,5 +1,5 @@
 import React from "react";
-import { Claude, Codex, Cursor, OpenCode } from "@lobehub/icons";
+import { Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, OpenCode, Qwen } from "@lobehub/icons";
 import type { TerminalToolType } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { DroidLogo, PiLogo } from "../shared/ProviderLogos";
@@ -42,6 +42,22 @@ export const OpenCodeLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
   <OpenCode.Avatar size={size} className={lobeMarkClass(className)} />
 );
 
+export const CopilotLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
+  <GithubCopilot.Avatar size={size} className={lobeMarkClass(className)} />
+);
+
+export const QwenLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
+  <Qwen.Color size={size} className={lobeMarkClass(className)} />
+);
+
+export const KimiLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
+  <Kimi.Color size={size} className={lobeMarkClass(className)} />
+);
+
+export const GrokLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
+  <Grok.Avatar size={size} className={lobeMarkClass(className)} />
+);
+
 const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   claude: ClaudeLogo,
   "claude-chat": ClaudeLogo,
@@ -58,6 +74,14 @@ const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   "opencode-orchestrated": OpenCodeLogo,
   pi: PiLogo,
   "pi-chat": PiLogo,
+  qwen: QwenLogo,
+  "qwen-chat": QwenLogo,
+  kimi: KimiLogo,
+  "kimi-chat": KimiLogo,
+  grok: GrokLogo,
+  "grok-chat": GrokLogo,
+  copilot: CopilotLogo,
+  "copilot-chat": CopilotLogo,
   shell: ShellLogo,
 };
 

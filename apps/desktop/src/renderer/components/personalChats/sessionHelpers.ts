@@ -1,6 +1,7 @@
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import type { ToolLogo } from "../terminals/ToolLogos";
+import { chatToolTypeForProvider } from "../../lib/sessions";
 
 export function sessionTitle(session: AgentChatSessionSummary): string {
   const title = session.title?.trim() || session.goal?.trim() || session.summary?.trim();
@@ -26,9 +27,5 @@ export function relativeTime(value: string | null | undefined): string {
 }
 
 export function providerToolType(provider: string): Parameters<typeof ToolLogo>[0]["toolType"] {
-  if (provider === "claude") return "claude-chat";
-  if (provider === "codex") return "codex-chat";
-  if (provider === "cursor") return "cursor";
-  if (provider === "droid") return "droid-chat";
-  return "opencode-chat";
+  return chatToolTypeForProvider(provider);
 }

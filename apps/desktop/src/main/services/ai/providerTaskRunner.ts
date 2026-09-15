@@ -10,13 +10,27 @@ import type { AgentPermissionMode } from "./agentExecutor";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { resolveClaudeCliModel } from "./claudeModelUtils";
 import { resolveCodexExecutable } from "./codexExecutable";
+import {
+  resolveCopilotExecutable,
+  resolveGrokExecutable,
+  resolveKimiExecutable,
+  resolveQwenExecutable,
+} from "./acpExecutables";
 import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
-import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
+import {
+  codexReasoningEffortFlags,
+  resolveGrokCliModelForLaunch,
+  resolveKimiCliModelForLaunch,
+  resolveCodexCliModelForLaunch,
+  resolveCopilotCliModelForLaunch,
+  resolveQwenCliModelForLaunch,
+} from "../../../shared/cliLaunch";
+import { resolveCliProviderForModel } from "../../../shared/modelRegistry";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -401,6 +415,112 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   };
 }
 
+/** Run an ADE-owned metadata prompt through a provider's native CLI. */
+async function runAcpOneShotTask(
+  args: ProviderTaskRunnerArgs,
+  config: { command: string; argv: string[]; providerLabel: string; stdinText?: string },
+): Promise<ProviderTaskRunnerResult> {
+  const result = await runCommand({
+    command: config.command,
+    argv: config.argv,
+    cwd: args.cwd,
+    timeoutMs: args.timeoutMs,
+    stdinText: config.stdinText,
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`${config.providerLabel} exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+  }
+  const text = result.stdout.trim();
+  return {
+    text,
+    structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null,
+    sessionId: null,
+  };
+}
+
+async function runCopilotTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
+  const combinedPrompt = args.system?.trim()
+    ? `${args.system.trim()}\n\n${prompt}`
+    : prompt;
+  const cliArgs = [
+    "--no-auto-update",
+    "--no-color",
+    "--no-ask-user",
+    "--disable-builtin-mcps",
+    "--deny-tool=*",
+    "--deny-url=*",
+    "--output-format",
+    "text",
+  ];
+  const model = resolveCopilotCliModelForLaunch(args.descriptor.providerModelId);
+  if (model) cliArgs.push("--model", model);
+  for (const imagePath of args.imagePaths ?? []) {
+    cliArgs.push("--attachment", imagePath);
+  }
+
+  const resolved = resolveCopilotExecutable({ auth: args.auth });
+  return await runAcpOneShotTask(args, {
+    command: resolved.path,
+    argv: cliArgs,
+    providerLabel: "Copilot",
+    stdinText: combinedPrompt,
+  });
+}
+
+async function runQwenTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
+  const combinedPrompt = args.system?.trim()
+    ? `${args.system.trim()}\n\n${prompt}`
+    : prompt;
+  // Qwen's ACP session supports permission modes through
+  // `session/set_config_option`, but Qwen 0.22.x does not expose the older
+  // `--approval-mode` flag on its one-shot CLI. Safe mode keeps this metadata
+  // task away from project customizations and MCP while the prompt remains
+  // provider-native.
+  const cliArgs = ["--safe-mode", "--output-format", "text"];
+  const model = resolveQwenCliModelForLaunch(args.descriptor.providerModelId);
+  if (model) cliArgs.push("--model", model);
+  const resolved = resolveQwenExecutable({ auth: args.auth });
+  return await runAcpOneShotTask(args, {
+    command: resolved.path,
+    argv: cliArgs,
+    providerLabel: "Qwen",
+    stdinText: combinedPrompt,
+  });
+}
+
+async function runKimiTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
+  const combinedPrompt = args.system?.trim()
+    ? `${args.system.trim()}\n\n${prompt}`
+    : prompt;
+  const cliArgs = ["--plan"];
+  const model = resolveKimiCliModelForLaunch(args.descriptor.providerModelId);
+  if (model) cliArgs.unshift("--model", model);
+  cliArgs.push("--output-format", "text", "--prompt", combinedPrompt);
+  const resolved = resolveKimiExecutable({ auth: args.auth });
+  return await runAcpOneShotTask(args, { command: resolved.path, argv: cliArgs, providerLabel: "Kimi" });
+}
+
+async function runGrokTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
+  const combinedPrompt = args.system?.trim()
+    ? `${args.system.trim()}\n\n${prompt}`
+    : prompt;
+  const cliArgs = ["--permission-mode", "plan", "--no-subagents", "--disable-web-search"];
+  const model = resolveGrokCliModelForLaunch(args.descriptor.providerModelId);
+  if (model) cliArgs.push("--model", model);
+  if (args.jsonSchema) {
+    cliArgs.push("--json-schema", JSON.stringify(args.jsonSchema));
+  } else {
+    cliArgs.push("--output-format", "plain");
+  }
+  cliArgs.push("--single", combinedPrompt);
+  const resolved = resolveGrokExecutable({ auth: args.auth });
+  return await runAcpOneShotTask(args, { command: resolved.path, argv: cliArgs, providerLabel: "Grok" });
+}
+
 async function runOpenCodeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const timeoutMs = args.timeoutMs ?? 120_000;
   const controller = new AbortController();
@@ -436,6 +556,19 @@ export async function runProviderTask(args: ProviderTaskRunnerArgs): Promise<Pro
   }
   if (args.descriptor.family === "cursor") {
     return await runCursorTask(args);
+  }
+  const cliProvider = resolveCliProviderForModel(args.descriptor);
+  if (cliProvider === "qwen") {
+    return await runQwenTask(args);
+  }
+  if (cliProvider === "kimi") {
+    return await runKimiTask(args);
+  }
+  if (cliProvider === "grok") {
+    return await runGrokTask(args);
+  }
+  if (cliProvider === "copilot") {
+    return await runCopilotTask(args);
   }
   return await runOpenCodeTask(args);
 }

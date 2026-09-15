@@ -34,6 +34,7 @@ import {
   type AcpSpawnContext,
   type AcpSpawnPlan,
 } from "../acpHostTypes";
+import { resolveKimiCliModelForLaunch } from "../../../../../shared/cliLaunch";
 import {
   ADE_CLIENT_INFO,
   inlineImagePrompt,
@@ -51,9 +52,16 @@ export const KIMI_WINDOWS_DEGRADATION_NOTE =
   "Kimi needs Git for Windows on this machine, because Git Bash is its shell.";
 
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
+  const args: string[] = [];
+  const model = resolveKimiCliModelForLaunch(context.modelId);
+  if (model) args.push("--model", model);
+  if (context.permissionMode === "yolo") args.push("--yolo");
+  else if (context.permissionMode === "auto-edit") args.push("--auto");
+  else if (context.permissionMode === "plan") args.push("--plan");
+  args.push("acp");
   return {
     command: context.binaryPath,
-    args: ["acp"],
+    args,
     cwd: context.cwd,
     env: withOptionalEnv(context.baseEnv, { KIMI_CODE_HOME: context.configHome }),
   };
@@ -109,6 +117,7 @@ export const kimiDialect = defineAcpDialect({
   // `session/set_config_option` is not part of Kimi's surface. Permission mode
   // and model travel on the command line instead.
   sessionConfig: capabilityAbsent,
+  modelSelection: capabilityAbsent,
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),
   configOptionIds: [],

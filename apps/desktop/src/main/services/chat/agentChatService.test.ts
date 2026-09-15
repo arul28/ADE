@@ -2841,6 +2841,33 @@ describe("createAgentChatService", () => {
       expect(sessionService.create).toHaveBeenCalledTimes(1);
     });
 
+    it("persists Copilot chats with Copilot identity and repairs legacy Codex rows", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "copilot",
+        model: "gpt-5.4",
+        modelId: "github-copilot/gpt-5.4",
+      });
+
+      expect(sessionService.create).toHaveBeenCalledWith(expect.objectContaining({
+        toolType: "copilot-chat",
+        resumeCommand: `chat:copilot:${session.id}`,
+      }));
+
+      sessionService.updateMeta({
+        sessionId: session.id,
+        toolType: "codex-chat",
+        resumeCommand: "chat:codex",
+      });
+      await service.getSessionSummary(session.id);
+
+      expect(sessionService.get(session.id)).toEqual(expect.objectContaining({
+        toolType: "copilot-chat",
+        resumeCommand: `chat:copilot:${session.id}`,
+      }));
+    });
+
     it("persists create-time goals into the backing session row", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({

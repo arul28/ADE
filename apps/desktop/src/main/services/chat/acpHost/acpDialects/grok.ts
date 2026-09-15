@@ -295,6 +295,7 @@ export const grokDialect = defineAcpDialect({
 
   // Non-standard on this agent. Model and effort ride spawn flags instead.
   sessionConfig: capabilityAbsent,
+  modelSelection: capabilityAbsent,
   mcpInjection: capability(transportGatedMcpInjection),
   // No image or audio prompt support.
   imagePrompts: capabilityAbsent,

@@ -498,6 +498,35 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("preserves Copilot chat sessions and finds them through the chat filter", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-copilot",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Copilot chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: path.join(projectRoot, "session-copilot.chat.jsonl"),
+      toolType: "copilot-chat",
+      resumeCommand: "chat:copilot:session-copilot",
+    });
+
+    expect(service.get("session-copilot")).toEqual(expect.objectContaining({
+      toolType: "copilot-chat",
+      resumeCommand: "chat:copilot:session-copilot",
+    }));
+    expect(service.list({ laneId: "lane-1", toolTypes: ["copilot-chat"] }).map((row) => row.id))
+      .toEqual(["session-copilot"]);
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("allows internal callers to opt out of the default session list limit", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

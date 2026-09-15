@@ -152,11 +152,15 @@ function droidSpecStringSetting(settings: Record<string, unknown> | null, key: s
 
 function toolFromCommand(raw: string): TerminalToolType | null {
   const normalized = stripLeadingEnvAssignments(raw).trim().toLowerCase();
-  if (normalized.startsWith("claude ")) return "claude";
-  if (normalized.startsWith("codex ")) return "codex";
-  if (normalized.startsWith("cursor-agent ")) return "cursor-cli";
-  if (normalized.startsWith("droid ")) return "droid";
-  if (normalized.startsWith("opencode ")) return "opencode";
+  if (/^claude(?:\s|$)/.test(normalized)) return "claude";
+  if (/^codex(?:\s|$)/.test(normalized)) return "codex";
+  if (/^cursor-agent(?:\s|$)/.test(normalized)) return "cursor-cli";
+  if (/^droid(?:\s|$)/.test(normalized)) return "droid";
+  if (/^opencode(?:\s|$)/.test(normalized)) return "opencode";
+  if (/^qwen(?:\s|$)/.test(normalized)) return "qwen";
+  if (/^kimi(?:\s|$)/.test(normalized)) return "kimi";
+  if (/^grok(?:\s|$)/.test(normalized)) return "grok";
+  if (/^copilot(?:\s|$)/.test(normalized)) return "copilot";
   if (/^pi(?:\s|$)/.test(normalized)) return "pi";
   return null;
 }
@@ -168,6 +172,10 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
   if (toolType === "droid") return "droid";
   if (toolType === "opencode" || toolType === "opencode-orchestrated" || toolType === "opencode-chat") return "opencode";
   if (toolType === "pi" || toolType === "pi-chat") return "pi";
+  if (toolType === "qwen" || toolType === "qwen-chat") return "qwen";
+  if (toolType === "kimi" || toolType === "kimi-chat") return "kimi";
+  if (toolType === "grok" || toolType === "grok-chat") return "grok";
+  if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
   return null;
 }
 
@@ -396,6 +404,23 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
     return sanitizeResumeTargetId(raw) ?? undefined;
   }
 
+  if (provider === "qwen" || provider === "grok" || provider === "copilot") {
+    const binary = provider === "qwen" ? "qwen" : provider === "grok" ? "grok" : "copilot";
+    const escapedBinary = binary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = command.match(new RegExp(`^${escapedBinary}\\b.*?(?:--resume(?:=|\\s+)([^\\s]+)|--continue\\b)(?:\\s|$)`, "i"));
+    if (!match) return undefined;
+    if (match[1] == null) return null;
+    return sanitizeResumeTargetId(match[1]) ?? undefined;
+  }
+
+  if (provider === "kimi") {
+    const match = command.match(/^kimi\b.*?(?:-S(?:=|\s+)([^\s]+)|--resume(?:=|\s+)([^\s]+)|-c\b)(?:\s|$)/i);
+    if (!match) return undefined;
+    const raw = match[1] ?? match[2];
+    if (raw == null) return null;
+    return sanitizeResumeTargetId(raw) ?? undefined;
+  }
+
   const match = (provider === "pi"
     ? command.match(/^pi\b.*?(?:--session(?:=|\s+)([^\s]+)|--continue\b|-c\b|-r\b)(?:\s|$)/i)
     : command.match(/^opencode\b.*?(?:--session(?:=|\s+)([^\s]+)|-s\s+([^\s]+)|--continue\b|-c\b)(?:\s|$)/i));
@@ -475,6 +500,10 @@ export function defaultResumeCommandForTool(toolType: TerminalToolType | null | 
   if (toolType === "cursor-cli") return "cursor-agent --model auto --continue";
   if (toolType === "droid") return "droid --resume";
   if (toolType === "opencode" || toolType === "opencode-orchestrated") return "opencode --continue";
+  if (toolType === "qwen") return "qwen --continue";
+  if (toolType === "kimi") return "kimi -c";
+  if (toolType === "grok") return "grok --continue";
+  if (toolType === "copilot") return "copilot --continue";
   // Deliberately null for Pi. `pi --continue` means "the most recent session
   // for this directory", and since ADE chat and the tracked CLI share one
   // native Pi store that can be another terminal's session or a chat's — a
