@@ -282,6 +282,9 @@ export const ModelPicker = memo(function ModelPicker({
           setRuntimeCatalog(shared);
           if (runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor, catalogScopeKey)) {
             setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
+            setRefreshingProvider((current) => (
+              providerRefreshTokenRef.current === refreshToken ? null : current
+            ));
             return;
           }
         }

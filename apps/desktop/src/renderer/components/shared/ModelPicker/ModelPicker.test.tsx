@@ -1488,6 +1488,81 @@ describe("ModelPicker", () => {
     expect(onRuntimeCatalogRefreshed).not.toHaveBeenCalled();
   });
 
+  it("clears the OpenCode spinner when a later fresh provider rail is selected", async () => {
+    const user = userEvent.setup();
+    let resolveOpenCode: ((catalog: AgentChatModelCatalog) => void) | undefined;
+    const pendingOpenCode = new Promise<AgentChatModelCatalog>((resolve) => {
+      resolveOpenCode = resolve;
+    });
+    const modelCatalog = vi.fn((args?: { mode?: string; refreshProvider?: string }) => {
+      if (args?.refreshProvider === "opencode") return pendingOpenCode;
+      return Promise.resolve({ groups: [], fetchedAt: "2026-05-18T00:00:00.000Z", stale: false });
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+    rememberRuntimeCatalog(
+      {
+        fetchedAt: "2026-05-18T00:00:00.000Z",
+        stale: false,
+        groups: [{
+          key: "ollama",
+          displayName: "Ollama",
+          providers: [{
+            key: "ollama",
+            displayName: "Ollama",
+            badgeColor: "#64748B",
+            modelCount: 1,
+            subsections: [{
+              key: "ollama",
+              label: "Ollama",
+              models: [{
+                id: "ollama/llama",
+                runtimeModelId: "llama",
+                provider: "ollama",
+                providerKey: "ollama",
+                groupKey: "ollama",
+                displayName: "llama",
+                isDefault: false,
+                isAvailable: true,
+              }],
+            }],
+          }],
+        }],
+      } as never,
+      { mode: "force", refreshProvider: "ollama" },
+    );
+    expect(runtimeCatalogProviderIsFresh("ollama")).toBe(true);
+
+    renderPicker();
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    const opencodeRail = document.querySelector(
+      '[data-rail-selection="provider:opencode"]',
+    ) as HTMLButtonElement;
+    await user.click(opencodeRail);
+    await waitFor(() => {
+      expect(document.querySelector('[data-refresh-provider="opencode"]')).toBeTruthy();
+    });
+
+    const ollamaRail = document.querySelector(
+      '[data-rail-selection="provider:ollama"]',
+    ) as HTMLButtonElement;
+    await user.click(ollamaRail);
+    await waitFor(() => {
+      expect(document.querySelector('[data-refresh-provider="opencode"]')).toBeNull();
+    });
+
+    await act(async () => {
+      resolveOpenCode?.({ groups: [], fetchedAt: "late", stale: false });
+    });
+    await pendingOpenCode;
+
+    await user.click(opencodeRail);
+    expect(document.querySelector('[data-refresh-provider="opencode"]')).toBeNull();
+  });
+
   it("renders the Set up banner when the active rail is unauthed and onOpenSignIn is wired", async () => {
     const user = userEvent.setup();
     providerAuthStatusInternal = { anthropic: "unauthed", openai: "unauthed" };
