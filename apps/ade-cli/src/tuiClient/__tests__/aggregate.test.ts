@@ -34,6 +34,28 @@ describe("aggregateChatBlocks typed groups", () => {
     ])).toBe("Retrying Claude · attempt 2 of 10");
   });
 
+  it("does not carry an untagged retry across a completed prior turn", () => {
+    expect(deriveActiveProviderRetryActivityDetail([
+      env("2026-01-01T12:00:00.000Z", {
+        type: "api_retry",
+        attempt: 1,
+        maxRetries: 3,
+        retryDelayMs: 2_000,
+        errorStatus: null,
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:02.000Z", {
+        type: "status",
+        turnStatus: "started",
+        turnId: "turn-2",
+      }),
+    ])).toBeNull();
+  });
+
   it("groups tool_calls + commands together and keeps file_changes as a separate group", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "read", args: { path: "a.ts" }, itemId: "t1", turnId: "turn-1" }),

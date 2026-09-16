@@ -62,6 +62,30 @@ describe("provider retry presentation", () => {
     })).toBe(true);
   });
 
+  it("keeps legacy authentication failures visible instead of treating them as retries", () => {
+    const event = {
+      type: "system_notice" as const,
+      noticeKind: "warning" as const,
+      message: "Claude API retry 2/10: authentication failed",
+      detail: "HTTP 401",
+      status: "authentication_failed",
+    };
+    expect(isLegacyProviderRetryNotice(event)).toBe(false);
+    expect(isLegacyProviderRetryNotice({
+      ...event,
+      message: "Claude API retry 2/10: unknown",
+      status: undefined,
+      detail: "HTTP 401",
+    })).toBe(false);
+    expect(isLegacyProviderRetryNotice({
+      ...event,
+      noticeKind: "auth",
+      message: "Claude API retry 2/10: unknown",
+      status: undefined,
+      detail: undefined,
+    })).toBe(false);
+  });
+
   it("requires an explicit marker instead of guessing from free-form activity text", () => {
     expect(isProviderRetryActivityEvent({
       type: "activity",

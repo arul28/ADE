@@ -1701,6 +1701,35 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).not.toContain("Claude API retry");
   });
 
+  it("does not replay an untagged retry from a completed prior turn", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "api_retry",
+          attempt: 1,
+          maxRetries: 3,
+          retryDelayMs: 2_000,
+          errorStatus: null,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-2" },
+      },
+    ], { showStreamingIndicator: true });
+
+    expect(rendered.container.textContent).not.toContain("Retrying Claude");
+    expect(rendered.container.textContent).not.toContain("Reconnecting to Claude");
+  });
+
   it("renders unauthenticated agent CLI errors as a re-login card", () => {
     renderMessageList([
       {

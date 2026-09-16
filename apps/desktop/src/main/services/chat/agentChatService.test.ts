@@ -20956,7 +20956,7 @@ describe("createAgentChatService", () => {
             event: expect.objectContaining({
               type: "activity",
               activity: "working",
-              detail: "Reconnecting to Cursor",
+              providerRetry: true,
             }),
           }),
         ]),

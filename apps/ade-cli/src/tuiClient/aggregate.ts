@@ -14,6 +14,7 @@ import {
   formatProviderRetryActivityDetail,
   isLegacyProviderRetryNotice,
   isProviderRetryActivityEvent,
+  isProviderRetryTurnBoundary,
 } from "../../../desktop/src/shared/providerRetryPresentation";
 import { readRecord, summarizeInlineText } from "../../../desktop/src/renderer/components/chat/chatTranscriptRows";
 import { replaceInternalToolNames } from "../../../desktop/src/renderer/components/chat/toolPresentation";
@@ -133,6 +134,7 @@ export function deriveActiveProviderRetryActivityDetail(
 
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!.event;
+    if (isProviderRetryTurnBoundary(event)) return null;
     const eventTurnId = turnIdOf(event)?.trim() ?? "";
     if (eventTurnId && eventTurnId !== activeTurnId) continue;
     if (isProviderRetryActivityEvent(event)) {

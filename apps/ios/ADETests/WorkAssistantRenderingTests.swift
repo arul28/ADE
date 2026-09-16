@@ -576,4 +576,49 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
       return card.body?.contains("retry") == true || card.body?.contains("WebSockets") == true
     })
   }
+
+  func testLegacyClaudeAuthenticationFailureStaysVisibleOnMobileTimeline() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-16T00:00:01.000Z",
+        sequence: 1,
+        event: .systemNotice(
+          kind: "warning",
+          message: "Claude API retry 2/10: authentication failed",
+          detail: "HTTP 401",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertTrue(snapshot.eventCards.contains { card in
+      card.body == "Claude API retry 2/10: authentication failed"
+    })
+    XCTAssertTrue(snapshot.timeline.contains { entry in
+      guard case .eventCard(let card) = entry.payload else { return false }
+      return card.body == "Claude API retry 2/10: authentication failed"
+    })
+  }
+
+  func testAuthenticationFailureStatusPreservesAuthKindOnReplay() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:01.000Z","sequence":1,"event":{"type":"system_notice","noticeKind":"warning","status":"authentication_failed","message":"Claude API retry 2/10: unknown","detail":"provider rejected the credentials","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 1)
+    guard case .systemNotice(let kind, _, _, _, _) = transcript[0].event else {
+      return XCTFail("expected a system notice, got \(transcript[0].event)")
+    }
+    XCTAssertEqual(kind, "auth")
+  }
 }

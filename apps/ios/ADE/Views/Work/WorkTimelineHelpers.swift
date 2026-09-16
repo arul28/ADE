@@ -3695,9 +3695,24 @@ func isLowSignalWorkSystemNotice(kind: String, message: String, detail: String?)
 /// metadata is provider-shaped and belongs in the live working indicator; this
 /// deliberately recognizes only the legacy shapes ADE itself emitted, rather
 /// than hiding arbitrary provider warnings that happen to mention retries.
-func isLegacyProviderRetryNotice(kind: String, message: String, detail _: String?) -> Bool {
+func isLegacyProviderRetryNotice(kind: String, message: String, detail: String?) -> Bool {
   let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   let normalizedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  let authFailureSignals = [
+    "authentication",
+    "authenticate",
+    "invalid api key",
+    "invalid key",
+    "invalid credentials",
+    "unauthorized",
+    "http 401",
+    "401",
+  ]
+  let authFailureText = "\(normalizedMessage) \(normalizedDetail)"
+  if normalizedKind == "auth" || authFailureSignals.contains(where: { authFailureText.contains($0) }) {
+    return false
+  }
 
   if normalizedMessage.hasPrefix("claude api retry") {
     return true

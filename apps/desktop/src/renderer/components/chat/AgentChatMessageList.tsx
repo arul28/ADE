@@ -97,6 +97,7 @@ import {
   formatProviderRetryActivityDetail,
   isLegacyProviderRetryNotice,
   isProviderRetryActivityEvent,
+  isProviderRetryTurnBoundary,
 } from "../../../shared/providerRetryPresentation";
 import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import { isClaudeContextCategoryKind } from "../../../shared/claudeContextUsage";
@@ -4571,6 +4572,7 @@ function deriveActiveProviderRetryActivity(
   if (!activeTurnId) return null;
   for (let i = events.length - 1; i >= 0; i--) {
     const evt = events[i]!.event;
+    if (isProviderRetryTurnBoundary(evt)) return null;
     const eventTurnId = getEventTurnId(evt);
     if (eventTurnId && eventTurnId !== activeTurnId) continue;
     if (isProviderRetryActivityEvent(evt)) {

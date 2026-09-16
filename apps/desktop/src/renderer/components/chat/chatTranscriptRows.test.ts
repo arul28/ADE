@@ -1498,6 +1498,25 @@ describe("chatTranscriptRows edge cases", () => {
     });
   });
 
+  it("keeps a legacy Claude authentication failure visible during replay", () => {
+    const event = {
+      type: "system_notice" as const,
+      noticeKind: "warning" as const,
+      status: "authentication_failed",
+      message: "Claude API retry 2/10: authentication failed",
+      detail: "HTTP 401",
+      turnId: "turn-1",
+    };
+    const rows = collapseChatTranscriptEvents([{
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event,
+    }]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event).toMatchObject(event);
+  });
+
   it("keeps Codex goal lifecycle events visible", () => {
     const rows = collapseChatTranscriptEvents([
       {

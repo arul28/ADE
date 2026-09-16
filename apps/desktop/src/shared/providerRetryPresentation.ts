@@ -26,6 +26,7 @@ export type ProviderRetryActivityEvent = Extract<AgentChatEvent, { type: "activi
 
 const TRANSPORT_FALLBACK_PATTERN = /(?:fall(?:ing)?\s+back|fallback).*(?:web\s*socket|websocket).*(?:https?|transport)|(?:web\s*socket|websocket).*(?:https?|transport).*(?:fallback|tim(?:e|ed)\s*out|timeout)/i;
 const LEGACY_PROVIDER_HEALTH_RETRY_PATTERN = /^(?:codex|opencode)\s+hit a provider error and is retrying automatically\b/i;
+const LEGACY_AUTH_FAILURE_PATTERN = /authentication|authenticate|auth(?:[_\s-]+(?:failed|failure|error|required))|invalid\s+(?:api\s+)?key|invalid\s+credentials|unauthori[sz]ed|\b401\b/i;
 
 /**
  * Provider SDKs use different names for the same transient failure. Keep the
@@ -95,6 +96,17 @@ export function isProviderRetryActivityEvent(event: unknown): event is ProviderR
   return candidate.type === "activity" && candidate.providerRetry === true;
 }
 
+/**
+ * A terminal event or a real user message starts the next chronological turn
+ * segment. Retry replay may inspect untagged legacy events within the current
+ * segment, but must not carry one across that boundary from an older turn.
+ */
+export function isProviderRetryTurnBoundary(event: AgentChatEvent): boolean {
+  return event.type === "done"
+    || (event.type === "status" && event.turnStatus !== "started")
+    || (event.type === "user_message" && event.deliveryState !== "queued");
+}
+
 function providerFromRetryText(message: string): string {
   const lower = message.toLowerCase();
   for (const provider of ["claude", "codex", "opencode", "cursor", "droid", "pi", "qwen", "kimi", "grok", "copilot"]) {
@@ -127,6 +139,9 @@ export type LegacyProviderRetryNotice = Extract<AgentChatEvent, { type: "system_
  */
 export function isLegacyProviderRetryNotice(event: LegacyProviderRetryNotice): boolean {
   const message = event.message.trim();
+  const status = event.status?.trim() ?? "";
+  const detail = typeof event.detail === "string" ? event.detail : "";
+  if (event.noticeKind === "auth" || LEGACY_AUTH_FAILURE_PATTERN.test(`${status} ${message} ${detail}`)) return false;
   if (message.toLowerCase().startsWith("claude api retry")) return true;
   if (event.noticeKind === "provider_health" && LEGACY_PROVIDER_HEALTH_RETRY_PATTERN.test(message)) return true;
   return event.noticeKind === "warning" && TRANSPORT_FALLBACK_PATTERN.test(message);
