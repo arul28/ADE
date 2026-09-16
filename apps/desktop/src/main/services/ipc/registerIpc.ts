@@ -69,6 +69,7 @@ import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
+import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { getModelById } from "../../../shared/modelRegistry";
 import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
@@ -814,6 +815,11 @@ import {
   createBrainAccountActionCaller,
   createBrainRefreshBroker,
 } from "../account/accountBridge";
+import { createAccountVaultBridge } from "../account/accountVaultBridge";
+import {
+  runAccountMigration,
+  type AccountMigrationSourceResult,
+} from "../account/accountMigration";
 import {
   createAccountSettingsSyncService,
   type AccountSettingRow,
@@ -11060,9 +11066,186 @@ export function registerIpc({
     async (): Promise<AccountSettingsResult<null>> => await accountSettingsSyncService.sync(),
   );
 
+  const accountVaultBridge = createAccountVaultBridge({
+    getPool: () => localRuntimeConnectionPool,
+    getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null,
+    logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+  });
+
+  const openAccountContexts = (): AppContext[] => {
+    const contexts = getResourceUsageContexts?.() ?? [getCtx()];
+    const byRoot = new Map<string, AppContext>();
+    for (const context of contexts) {
+      const root = context.project?.rootPath;
+      if (root) byRoot.set(root, context);
+    }
+    return [...byRoot.values()];
+  };
+
+  const listVaultItems = async (scope: string) => {
+    const result = await accountVaultBridge.list(scope);
+    return result.ok ? result.value : null;
+  };
+
+  const migrateProviderApiKeys = async (): Promise<AccountMigrationSourceResult> => {
+    let keys: Record<string, string>;
+    try {
+      const { getAllApiKeys } = await import("../ai/apiKeyStore");
+      keys = getAllApiKeys();
+    } catch {
+      // API keys are initialized with the first project context. Defer this
+      // source when sign-in happens before any project has opened.
+      return { moved: 0, skipped: 0, complete: false };
+    }
+    const listed = await listVaultItems("all");
+    if (!listed) return { moved: 0, skipped: 0, complete: false };
+    const present = new Set(
+      listed
+        .filter((item) => item.scope === "all" && item.kind === "provider_api_key")
+        .map((item) => item.key),
+    );
+    let moved = 0;
+    let skipped = 0;
+    for (const [provider, value] of Object.entries(keys)) {
+      const existing = await accountVaultBridge.get("all", "provider_api_key", provider);
+      if (!existing.ok) return { moved, skipped, complete: false };
+      if (existing.value !== null || present.has(provider)) {
+        skipped += 1;
+        continue;
+      }
+      const saved = await accountVaultBridge.set("all", "provider_api_key", provider, value);
+      if (!saved.ok) return { moved, skipped, complete: false };
+      moved += 1;
+    }
+    return { moved, skipped };
+  };
+
+  const migrateLinearRefreshToken = async (): Promise<AccountMigrationSourceResult> => {
+    const services = openAccountContexts()
+      .map((context) => context.linearCredentialService)
+      .filter((service): service is NonNullable<AppContext["linearCredentialService"]> => Boolean(service));
+    if (services.length === 0) return { moved: 0, skipped: 0, complete: false };
+    const refreshToken = services
+      .map((service) => service.getRefreshToken())
+      .find((value): value is string => Boolean(value));
+    if (!refreshToken) return { moved: 0, skipped: 0 };
+
+    const listed = await listVaultItems("all");
+    if (!listed) return { moved: 0, skipped: 0, complete: false };
+    const present = listed.some(
+      (item) => item.scope === "all" && item.kind === "linear_refresh_token" && item.key === "default",
+    );
+    const existing = await accountVaultBridge.get("all", "linear_refresh_token", "default");
+    if (!existing.ok) return { moved: 0, skipped: 0, complete: false };
+    if (existing.value !== null || present) return { moved: 0, skipped: 1 };
+    const saved = await accountVaultBridge.set("all", "linear_refresh_token", "default", refreshToken);
+    return saved.ok
+      ? { moved: 1, skipped: 0 }
+      : { moved: 0, skipped: 0, complete: false };
+  };
+
+  const migrateProjectSecrets = async (): Promise<AccountMigrationSourceResult> => {
+    const contexts = openAccountContexts();
+    if (contexts.length === 0) return { moved: 0, skipped: 0, complete: false };
+    let sawProject = false;
+    let moved = 0;
+    let skipped = 0;
+    for (const context of contexts) {
+      const service = context.projectSecretService;
+      const root = context.project?.rootPath;
+      if (!service || !root) continue;
+      sawProject = true;
+      const scope = accountRepoScopeKey(readGitOriginUrl(root));
+      if (!scope) continue;
+      const listed = await listVaultItems(scope);
+      if (!listed) return { moved, skipped, complete: false };
+      const present = new Set(
+        listed
+          .filter((item) => item.scope === scope && item.kind === "project_secret")
+          .map((item) => item.key),
+      );
+      for (const secret of service.list().secrets) {
+        if (secret.storage !== "account") continue;
+        const local = service.get({ name: secret.name });
+        const existing = await accountVaultBridge.get(scope, "project_secret", secret.name);
+        if (!existing.ok) return { moved, skipped, complete: false };
+        if (existing.value !== null || present.has(secret.name)) {
+          skipped += 1;
+          continue;
+        }
+        const saved = await accountVaultBridge.set(scope, "project_secret", secret.name, local.value);
+        if (!saved.ok) return { moved, skipped, complete: false };
+        moved += 1;
+      }
+    }
+    return sawProject ? { moved, skipped } : { moved, skipped, complete: false };
+  };
+
+  let accountMigrationInFlight: Promise<void> | null = null;
+  const startAccountMigration = (): void => {
+    let status: AdeAccountStatus;
+    try {
+      status = accountBridge.status();
+    } catch {
+      return;
+    }
+    if (!status.signedIn || !status.userId || accountMigrationInFlight) return;
+    accountMigrationInFlight = (async () => {
+      try {
+        const { hydrateApiKeysFromVault } = await import("../ai/apiKeyStore");
+        await hydrateApiKeysFromVault();
+      } catch (error) {
+        getCtx().logger.warn("account.vault_hydrate_failed", {
+          source: "provider_api_keys",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      for (const context of openAccountContexts()) {
+        try {
+          await context.linearCredentialService?.hydrateFromVault();
+          await context.projectSecretService?.hydrateFromVault();
+        } catch (error) {
+          getCtx().logger.warn("account.vault_hydrate_failed", {
+            source: "project_context",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      await runAccountMigration({
+        receiptDir: resolveMachineAdeLayout().adeDir,
+        getAccountUserId: () => {
+          const current = accountBridge.status();
+          return current.signedIn ? current.userId : null;
+        },
+        logger: {
+          info: (message, meta) => getCtx().logger.info(message, meta),
+          warn: (message, meta) => getCtx().logger.warn(message, meta),
+        },
+        sources: {
+          project_secrets: migrateProjectSecrets,
+          provider_api_keys: migrateProviderApiKeys,
+          linear_credentials: migrateLinearRefreshToken,
+        },
+      });
+    })()
+      .catch((error) => {
+        getCtx().logger.warn("account.migration_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        accountMigrationInFlight = null;
+      });
+  };
+
+  // A signed-in launch has no sign-in transition to trigger the work, so seed
+  // the same best-effort path immediately after the account/settings services.
+  startAccountMigration();
+
   ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.status();
     if (status.signedIn) productAnalyticsService?.identifyAccount(status.userId);
+    if (status.signedIn) startAccountMigration();
     return status;
   });
 
@@ -11081,7 +11264,10 @@ export function registerIpc({
     IPC.accountPollLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountLoginPoll> => {
       const result = await accountBridge.pollLogin(arg?.sessionId ?? "");
-      if (result.authStatus.signedIn) productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      if (result.authStatus.signedIn) {
+        productAnalyticsService?.identifyAccount(result.authStatus.userId);
+        startAccountMigration();
+      }
       return result;
     },
   );
@@ -11109,7 +11295,10 @@ export function registerIpc({
     IPC.accountPollDeviceLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountDeviceLoginPoll> => {
       const result = await accountBridge.pollDeviceLogin(arg?.sessionId ?? "");
-      if (result.authStatus.signedIn) productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      if (result.authStatus.signedIn) {
+        productAnalyticsService?.identifyAccount(result.authStatus.userId);
+        startAccountMigration();
+      }
       return result;
     },
   );

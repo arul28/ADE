@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
   ProjectSecretDeleteArgs,
@@ -12,10 +13,13 @@ import type {
   ProjectSecretsImportPreview,
   ProjectSecretsImportResult,
   ProjectSecretsListResult,
+  ProjectSecretStorage,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
 } from "../../../shared/types/projectSecrets";
+import { readGitOriginUrl } from "../projects/recentProjectSummary";
+import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { nowIso } from "../shared/utils";
 import {
   formatProjectSecretEnv,
@@ -28,6 +32,7 @@ type ProjectSecretIndexEntry = {
   createdAt: string;
   updatedAt: string;
   valueLength: number;
+  storage: ProjectSecretStorage;
 };
 
 type ProjectSecretIndex = {
@@ -41,6 +46,14 @@ const INDEX_KEY = "__ade_project_secrets_index_v1";
 const VALUE_PREFIX = "secret:";
 const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
 
+export type ProjectSecretServiceOptions = {
+  downloadsDir?: string;
+  getAccountVault?: () => AccountVaultBridge | null | undefined;
+  logger?: {
+    warn?(message: string, meta?: Record<string, unknown>): void;
+  } | null;
+};
+
 function normalizeSecretName(name: string | undefined | null): string {
   const normalized = typeof name === "string" ? name.trim() : "";
   if (!normalized) throw new Error("Secret name is required.");
@@ -48,6 +61,10 @@ function normalizeSecretName(name: string | undefined | null): string {
     throw new Error("Secret names must start with a letter and contain only letters, numbers, '.', '_', or '-' (max 128 characters).");
   }
   return normalized;
+}
+
+function normalizeStorage(value: unknown): ProjectSecretStorage {
+  return value === "device" ? "device" : "account";
 }
 
 function parseIndex(raw: string | null): ProjectSecretIndex {
@@ -69,7 +86,12 @@ function parseIndex(raw: string | null): ProjectSecretIndex {
       const valueLength = Number.isSafeInteger(candidate.valueLength) && Number(candidate.valueLength) >= 0
         ? Number(candidate.valueLength)
         : 0;
-      normalizedEntries[name] = { createdAt, updatedAt, valueLength };
+      normalizedEntries[name] = {
+        createdAt,
+        updatedAt,
+        valueLength,
+        storage: normalizeStorage(candidate.storage),
+      };
     }
     return { version: 1, entries: normalizedEntries };
   } catch {
@@ -85,22 +107,30 @@ function valueKey(name: string): string {
   return `${VALUE_PREFIX}${name}`;
 }
 
-function toSummary(name: string, entry: ProjectSecretIndexEntry): ProjectSecretSummary {
+function toSummary(
+  name: string,
+  entry: ProjectSecretIndexEntry,
+  storage: ProjectSecretStorage = entry.storage,
+): ProjectSecretSummary {
   return {
     name,
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
     valueLength: entry.valueLength,
+    storage,
   };
 }
 
-function sortSummaries(entries: Record<string, ProjectSecretIndexEntry>): ProjectSecretSummary[] {
+function sortSummaries(
+  entries: Record<string, ProjectSecretIndexEntry>,
+  resolveStorage: (entry: ProjectSecretIndexEntry) => ProjectSecretStorage = (entry) => entry.storage,
+): ProjectSecretSummary[] {
   return Object.entries(entries)
-    .map(([name, entry]) => toSummary(name, entry))
+    .map(([name, entry]) => toSummary(name, entry, resolveStorage(entry)))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function createProjectSecretService(projectRoot: string, options: { downloadsDir?: string } = {}) {
+export function createProjectSecretService(projectRoot: string, options: ProjectSecretServiceOptions = {}) {
   const layout = resolveAdeLayout(projectRoot);
   const credentialsPath = path.join(layout.secretsDir, STORE_FILE);
   const store = new EncryptedFileCredentialStore({
@@ -108,6 +138,84 @@ export function createProjectSecretService(projectRoot: string, options: { downl
     machineKeyPath: path.join(layout.secretsDir, KEY_FILE),
     lockPath: `${credentialsPath}.lock`,
   });
+
+  const getAccountScope = (): string | null => accountRepoScopeKey(readGitOriginUrl(projectRoot));
+  const resolveStorage = (
+    entry: ProjectSecretIndexEntry,
+    accountScope = getAccountScope(),
+  ): ProjectSecretStorage => entry.storage === "account" && !accountScope ? "device" : entry.storage;
+
+  const describeVaultFailure = (detail: unknown): string => {
+    if (detail instanceof Error) return detail.message;
+    if (detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string") {
+      return detail.message;
+    }
+    return String(detail ?? "unknown error");
+  };
+
+  const logVaultFailure = (operation: string, name: string, detail: unknown): void => {
+    options.logger?.warn?.("project_secret.account_vault_sync_failed", {
+      operation,
+      name,
+      error: describeVaultFailure(detail),
+    });
+  };
+
+  const resolveAccountVault = (operation: string, name: string): AccountVaultBridge | null => {
+    try {
+      return options.getAccountVault?.() ?? null;
+    } catch (error) {
+      logVaultFailure(operation, name, error);
+      return null;
+    }
+  };
+
+  const fireAndForgetVaultCall = (
+    operation: "set" | "remove",
+    name: string,
+    call: (vault: AccountVaultBridge) => Promise<unknown>,
+  ): void => {
+    const vault = resolveAccountVault(operation, name);
+    if (!vault) return;
+
+    let pending: Promise<unknown>;
+    try {
+      pending = call(vault);
+    } catch (error) {
+      logVaultFailure(operation, name, error);
+      return;
+    }
+    void Promise.resolve(pending).then((result) => {
+      if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true) {
+        logVaultFailure(operation, name, result);
+      }
+    }).catch((error: unknown) => {
+      logVaultFailure(operation, name, error);
+    });
+  };
+
+  const syncSecretToVault = (
+    name: string,
+    value: string,
+    storage: ProjectSecretStorage,
+    accountScope = getAccountScope(),
+  ): void => {
+    if (storage !== "account" || !accountScope) return;
+    fireAndForgetVaultCall(
+      "set",
+      name,
+      (vault) => vault.set(accountScope, "project_secret", name, value),
+    );
+  };
+
+  const removeSecretFromVault = (name: string, storage: ProjectSecretStorage, accountScope = getAccountScope()): void => {
+    if (storage !== "account" || !accountScope) return;
+    fireAndForgetVaultCall(
+      "remove",
+      name,
+      (vault) => vault.remove(accountScope, "project_secret", name),
+    );
+  };
 
   const readIndex = (): ProjectSecretIndex => {
     if (!fs.existsSync(credentialsPath)) return { version: 1, entries: {} };
@@ -137,28 +245,38 @@ export function createProjectSecretService(projectRoot: string, options: { downl
     }
     const imported: string[] = [];
     const replaced: string[] = [];
+    const accountScope = getAccountScope();
+    const defaultStorage: ProjectSecretStorage = accountScope ? "account" : "device";
+    const saved: Array<{ name: string; value: string; storage: ProjectSecretStorage }> = [];
     const now = nowIso();
     store.updateSync((values) => {
       const index = parseIndex(values[INDEX_KEY] ?? null);
       for (const secret of normalized) {
         const previous = index.entries[secret.name];
         (previous ? replaced : imported).push(secret.name);
+        const storage = previous?.storage ?? defaultStorage;
         values[valueKey(secret.name)] = secret.value;
         index.entries[secret.name] = {
           createdAt: previous?.createdAt ?? now,
           updatedAt: now,
           valueLength: secret.value.length,
+          storage,
         };
+        saved.push({ ...secret, storage });
       }
       values[INDEX_KEY] = serializeIndex(index);
     });
+    for (const secret of saved) {
+      syncSecretToVault(secret.name, secret.value, secret.storage, accountScope);
+    }
     return { imported, replaced };
   };
 
   return {
     list(): ProjectSecretsListResult {
+      const accountScope = getAccountScope();
       return {
-        secrets: sortSummaries(readIndex().entries),
+        secrets: sortSummaries(readIndex().entries, (entry) => resolveStorage(entry, accountScope)),
         storage: {
           path: credentialsPath,
           encrypted: true,
@@ -179,7 +297,7 @@ export function createProjectSecretService(projectRoot: string, options: { downl
         throw new Error(`ADE secret '${name}' was not found.`);
       }
       return {
-        ...toSummary(name, entry),
+        ...toSummary(name, entry, resolveStorage(entry)),
         value,
       };
     },
@@ -188,22 +306,98 @@ export function createProjectSecretService(projectRoot: string, options: { downl
       const name = normalizeSecretName(args?.name);
       const nextValue = typeof args?.value === "string" ? args.value : "";
       if (!nextValue.length) throw new Error("Secret value is required.");
+      const requestedStorage = normalizeStorage(args?.storage);
+      const accountScope = getAccountScope();
+      const storage: ProjectSecretStorage = requestedStorage === "account" && accountScope
+        ? "account"
+        : "device";
       const now = nowIso();
       let entry: ProjectSecretIndexEntry | null = null;
+      let previousStorage: ProjectSecretStorage = "device";
       store.updateSync((values) => {
         const index = parseIndex(values[INDEX_KEY] ?? null);
         const previous = index.entries[name];
+        previousStorage = previous?.storage ?? "account";
         entry = {
           createdAt: previous?.createdAt ?? now,
           updatedAt: now,
           valueLength: nextValue.length,
+          storage,
         };
         values[valueKey(name)] = nextValue;
         index.entries[name] = entry;
         values[INDEX_KEY] = serializeIndex(index);
       });
       if (!entry) throw new Error("Failed to save ADE secret.");
-      return toSummary(name, entry);
+      syncSecretToVault(name, nextValue, storage, accountScope);
+      if (storage === "device") removeSecretFromVault(name, previousStorage, accountScope);
+      return toSummary(name, entry, storage);
+    },
+
+    async hydrateFromVault(): Promise<void> {
+      const accountScope = getAccountScope();
+      if (!accountScope) return;
+      const vault = resolveAccountVault("list", "*");
+      if (!vault) return;
+
+      let listed: Awaited<ReturnType<AccountVaultBridge["list"]>>;
+      try {
+        listed = await vault.list(accountScope);
+      } catch (error) {
+        logVaultFailure("list", "*", error);
+        return;
+      }
+      if (!listed.ok) {
+        logVaultFailure("list", "*", listed);
+        return;
+      }
+
+      for (const item of listed.value) {
+        if (item.scope !== accountScope || item.kind !== "project_secret") continue;
+        let name: string;
+        try {
+          name = normalizeSecretName(item.key);
+        } catch {
+          continue;
+        }
+        if (readIndex().entries[name]) continue;
+
+        let value = typeof item.value === "string" ? item.value : null;
+        if (value === null) {
+          let fetched: Awaited<ReturnType<AccountVaultBridge["get"]>>;
+          try {
+            fetched = await vault.get(accountScope, "project_secret", name);
+          } catch (error) {
+            logVaultFailure("get", name, error);
+            continue;
+          }
+          if (!fetched.ok) {
+            logVaultFailure("get", name, fetched);
+            continue;
+          }
+          value = fetched.value;
+        }
+        if (!value?.length || readIndex().entries[name]) continue;
+
+        try {
+          const now = nowIso();
+          store.updateSync((values) => {
+            const index = parseIndex(values[INDEX_KEY] ?? null);
+            if (index.entries[name]) return false;
+            values[valueKey(name)] = value!;
+            index.entries[name] = {
+              createdAt: now,
+              updatedAt: now,
+              valueLength: value!.length,
+              storage: "account",
+            };
+            values[INDEX_KEY] = serializeIndex(index);
+            return;
+          });
+        } catch (error) {
+          logVaultFailure("hydrate", name, error);
+        }
+      }
     },
 
     previewEnvImport(args: ProjectSecretEnvFile): ProjectSecretsImportPreview {
@@ -261,19 +455,23 @@ export function createProjectSecretService(projectRoot: string, options: { downl
         return { deleted: false, name };
       }
       let deleted = false;
+      let deletedStorage: ProjectSecretStorage = "device";
       store.updateSync((values) => {
         const nextIndex = parseIndex(values[INDEX_KEY] ?? null);
         const key = valueKey(name);
-        const hadEntry = Boolean(nextIndex.entries[name]);
+        const previous = nextIndex.entries[name];
+        const hadEntry = Boolean(previous);
         const hadValue = values[key] != null;
         deleted = hadEntry || hadValue;
         if (!deleted) return false;
+        deletedStorage = previous?.storage ?? "account";
         delete values[key];
         if (hadEntry) {
           delete nextIndex.entries[name];
           values[INDEX_KEY] = serializeIndex(nextIndex);
         }
       });
+      if (deleted) removeSecretFromVault(name, deletedStorage);
       return { deleted, name };
     },
   };

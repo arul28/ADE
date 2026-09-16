@@ -824,8 +824,12 @@ Renderer — settings:
   values in a select-all/individual-selection review modal, atomically import
   the selected rows, and export all secrets as a mode-`0600`
   `ade-secrets.env` file in Downloads. Values are backed by
-  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`. When the
-  active project is remote, only the Finder read happens on the controller Mac:
+  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`. New
+  secrets default to the account and can be saved to the current repository's
+  account scope or this device only; an account choice falls back to this
+  device when the repository has no Git remote. The list shows the effective
+  destination for every secret. When the active project is remote, only the
+  Finder read happens on the controller Mac:
   the bounded file content is parsed/imported by the active runtime and export
   writes to Downloads on the remote project host.
 - `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`

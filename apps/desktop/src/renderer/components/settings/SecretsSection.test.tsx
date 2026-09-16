@@ -8,10 +8,11 @@ const originalAde = (globalThis.window as any)?.ade;
 
 function installAdeMock() {
   const list = vi.fn(async () => ({
-    secrets: [{ name: "EXISTING", createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z", valueLength: 3 }],
+    secrets: [{ name: "EXISTING", createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z", valueLength: 3, storage: "account" as const }],
     storage: { path: "/remote/.ade/secrets/project-secrets.v1.enc", encrypted: true, scope: "project" as const },
   }));
-  const get = vi.fn(async () => ({ name: "EXISTING", value: "old", createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z", valueLength: 3 }));
+  const get = vi.fn(async () => ({ name: "EXISTING", value: "old", createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z", valueLength: 3, storage: "account" as const }));
+  const set = vi.fn(async () => ({ name: "NEW_SECRET", createdAt: "2026-07-16T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z", valueLength: 3, storage: "device" as const }));
   const importEnv = vi.fn<[], Promise<{ imported: string[]; replaced: string[] }>>(async () => ({
     imported: ["NEW_SECRET"],
     replaced: [],
@@ -23,7 +24,7 @@ function installAdeMock() {
     projectSecrets: {
       list,
       get,
-      set: vi.fn(),
+      set,
       delete: vi.fn(),
       chooseEnvFile: vi.fn(async () => ({
         fileName: ".env.local",
@@ -36,7 +37,7 @@ function installAdeMock() {
       exportEnv,
     },
   };
-  return { get, importEnv, exportEnv, writeClipboardText };
+  return { get, set, importEnv, exportEnv, writeClipboardText };
 }
 
 describe("SecretsSection env import and export", () => {
@@ -52,6 +53,7 @@ describe("SecretsSection env import and export", () => {
     render(<SecretsSection />);
 
     await screen.findByText("EXISTING");
+    expect(screen.getByText("Account")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Import .env" }));
 
     const dialog = await screen.findByRole("dialog", { name: /Import secrets from \.env\.local/ });
@@ -68,6 +70,23 @@ describe("SecretsSection env import and export", () => {
       secrets: [{ name: "NEW_SECRET", value: "visible value" }],
     }));
     expect(await screen.findByText("Imported 1 secret.")).toBeTruthy();
+  });
+
+  it("saves a new secret to the selected device-only destination", async () => {
+    const { set } = installAdeMock();
+    render(<SecretsSection />);
+
+    await screen.findByText("EXISTING");
+    fireEvent.change(screen.getByRole("textbox", { name: "Secret name" }), { target: { value: "NEW_SECRET" } });
+    fireEvent.change(screen.getByLabelText("Secret value"), { target: { value: "new" } });
+    fireEvent.click(screen.getByRole("radio", { name: "This device only" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
+
+    await waitFor(() => expect(set).toHaveBeenCalledWith({
+      name: "NEW_SECRET",
+      value: "new",
+      storage: "device",
+    }));
   });
 
   it("requires plaintext confirmation and reports the remote machine Downloads path after export", async () => {
@@ -87,8 +106,8 @@ describe("SecretsSection env import and export", () => {
   it("clears revealed and copied values when import replaces a secret", async () => {
     const { get, importEnv, writeClipboardText } = installAdeMock();
     get
-      .mockResolvedValueOnce({ name: "EXISTING", value: "old", createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z", valueLength: 3 })
-      .mockResolvedValueOnce({ name: "EXISTING", value: "replacement", createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z", valueLength: 11 });
+      .mockResolvedValueOnce({ name: "EXISTING", value: "old", createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z", valueLength: 3, storage: "account" as const })
+      .mockResolvedValueOnce({ name: "EXISTING", value: "replacement", createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z", valueLength: 11, storage: "account" as const });
     importEnv.mockResolvedValueOnce({ imported: [], replaced: ["EXISTING"] });
     render(<SecretsSection />);
 

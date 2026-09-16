@@ -1,6 +1,11 @@
 import React from "react";
 import { Check, Copy, DownloadSimple, Eye, EyeSlash, Plus, Trash, UploadSimple, X } from "@phosphor-icons/react";
-import type { ProjectSecretSummary, ProjectSecretsImportPreview, ProjectSecretsListResult } from "../../../shared/types";
+import type {
+  ProjectSecretStorage,
+  ProjectSecretSummary,
+  ProjectSecretsImportPreview,
+  ProjectSecretsListResult,
+} from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { SecretsImportEnvModal } from "./SecretsImportEnvModal";
 import {
@@ -9,15 +14,17 @@ import {
   SettingsManagerRow,
   SettingsManagerTable,
 } from "./primitives/SettingsManagerPage";
+import { SettingsSegmented } from "./primitives";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 
 /** The anchor `secrets.secrets` in `settingsManifest.ts` points at. */
 const ANCHOR = "secrets";
 
-/** Name, value, updated, actions — shared by the header and every row. */
+/** Name, value, storage, updated, actions — shared by the header and every row. */
 const SECRET_COLUMNS = [
   { label: "Name", width: "minmax(160px, 1fr)" },
   { label: "Value", width: "minmax(180px, 1.4fr)" },
+  { label: "Where", width: "110px" },
   { label: "Updated", width: "minmax(140px, 0.9fr)" },
   { label: "Actions", width: "132px", align: "right" as const },
 ];
@@ -90,6 +97,7 @@ export function SecretsSection() {
   const [snapshot, setSnapshot] = React.useState<ProjectSecretsListResult | null>(null);
   const [name, setName] = React.useState("");
   const [value, setValue] = React.useState("");
+  const [storage, setStorage] = React.useState<ProjectSecretStorage>("account");
   const [revealedValues, setRevealedValues] = React.useState<Record<string, string>>({});
   const [visibleNames, setVisibleNames] = React.useState<Record<string, boolean>>({});
   // Keyed so only the row that was copied shows its confirmation. The hook
@@ -153,7 +161,7 @@ export function SecretsSection() {
     setMessage(null);
     setError(null);
     try {
-      await window.ade.projectSecrets.set({ name: nextName, value });
+      await window.ade.projectSecrets.set({ name: nextName, value, storage });
       setValue("");
       setName("");
       setConfirmDeleteName(null);
@@ -383,6 +391,15 @@ export function SecretsSection() {
             spellCheck={false}
             style={inputStyle}
           />
+          <SettingsSegmented
+            ariaLabel="Secret storage"
+            value={storage}
+            onChange={setStorage}
+            options={[
+              { value: "account", label: "Save to account" },
+              { value: "device", label: "This device only" },
+            ]}
+          />
           <button
             type="submit"
             disabled={saving || !name.trim() || !value}
@@ -426,7 +443,7 @@ export function SecretsSection() {
           </div>
         )}
 
-        <SettingsManagerTable columns={SECRET_COLUMNS} minWidth={680}>
+        <SettingsManagerTable columns={SECRET_COLUMNS} minWidth={780}>
           {secrets.length === 0 ? (
             <SettingsManagerEmpty
               title="No secrets saved."
@@ -498,6 +515,9 @@ export function SecretsSection() {
                     </div>
                   </div>
                   <SecretValueCell secret={secret} value={revealedValues[secret.name] ?? null} visible={isVisible} />
+                  <div style={{ color: COLORS.textMuted, fontSize: 12, minWidth: 0 }}>
+                    {secret.storage === "account" ? "Account" : "This device"}
+                  </div>
                   <div style={{ color: COLORS.textMuted, fontSize: 12, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {formatUpdatedAt(secret.updatedAt)}
                   </div>

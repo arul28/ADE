@@ -2696,6 +2696,11 @@ function createHeadlessLinearCredentialService(args: {
       const { token } = readToken();
       return token.trim() || null;
     },
+    getRefreshToken() {
+      return readCredential(authModeKey) === "oauth"
+        ? readCredential(refreshTokenKey)
+        : null;
+    },
     getStatus() {
       const { token, source } = readToken();
       const authMode =

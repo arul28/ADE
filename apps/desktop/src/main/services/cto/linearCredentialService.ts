@@ -745,6 +745,12 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       return getStoredToken()?.token ?? null;
     },
 
+    /** The local OAuth refresh credential, for the silent account migration. */
+    getRefreshToken(): string | null {
+      const stored = getStoredToken();
+      return stored?.authMode === "oauth" ? stored.refreshToken ?? null : null;
+    },
+
     getTokenOrThrow(): string {
       const token = getStoredToken()?.token ?? null;
       if (!token) throw new Error("Linear token missing. Set it in Settings > Linear.");

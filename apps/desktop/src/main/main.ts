@@ -339,6 +339,7 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoVoiceRuntimeService } from "./services/cto/ctoVoiceRuntimeService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
+import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
 import {
   buildRendererCspPolicy,
   isRendererFrameNavigationAllowed,
@@ -1954,6 +1955,11 @@ app.whenReady().then(async () => {
       }
     },
   });
+  const accountVaultBridge = createAccountVaultBridge({
+    getPool: () => localRuntimePool,
+    getRootPath: () => bootedUsageScopeRoot([...projectContexts.values()]),
+    logger: localRuntimeLogger,
+  });
   // Carry this machine's OS-level suspend/resume into the brain, which has no
   // such hook of its own and owns the account-directory publisher. Registered
   // here rather than lazily so the beat is already wired the first time the lid
@@ -3016,6 +3022,7 @@ app.whenReady().then(async () => {
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot, {
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+      getAccountVault: () => accountVaultBridge,
     });
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     registerAccountConfigProjectRoot(projectRoot);
@@ -3371,7 +3378,10 @@ app.whenReady().then(async () => {
       db,
       logger,
     });
-    const projectSecretService = createProjectSecretService(projectRoot);
+    const projectSecretService = createProjectSecretService(projectRoot, {
+      getAccountVault: () => accountVaultBridge,
+      logger,
+    });
 
     const laneEnvironmentService = createLaneEnvironmentService({
       projectRoot,
@@ -3993,6 +4003,7 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir,
       logger,
       credentialStore: linearCredentialStore,
+      getAccountVault: () => accountVaultBridge,
     });
     const linearClient = createLinearClient({
       credentials: linearCredentialService,

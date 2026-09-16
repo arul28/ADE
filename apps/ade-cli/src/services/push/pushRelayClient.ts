@@ -899,7 +899,8 @@ export type AccountVaultItemKind =
   | "provider_key"
   | "integration"
   | "provider_api_key"
-  | "linear_refresh_token";
+  | "linear_refresh_token"
+  | "project_secret";
 
 export type AccountVaultItem = {
   scope: string;
