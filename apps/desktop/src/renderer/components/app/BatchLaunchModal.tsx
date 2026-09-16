@@ -415,7 +415,6 @@ export function BatchLaunchModal({
           <SessionLaunchModelControls
             config={defaultConfig}
             onChange={handleDefaultConfigChange}
-            surfaceKey="batch-launch-default"
           />
           {multiIssue ? (
             <button
@@ -489,7 +488,6 @@ export function BatchLaunchModal({
                   <SessionLaunchModelControls
                     config={toLaunchModelConfig(state)}
                     onChange={(patch) => patchIssue(issue.id, patchFromLaunchModelConfig(state, patch))}
-                    surfaceKey={`batch-launch-${issue.id}`}
                   />
                 ) : null}
                 {conflict ? (

@@ -235,7 +235,6 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
         <ModelPicker
           value={modelId}
           onChange={handleModelChange}
-          surfaceKey="orchestration-model-selection-pending"
           {...(availableModelIds ? { availableModelIds } : {})}
           {...(providerAuthStatus ? { providerAuthStatus } : {})}
           runtimePin={runtimePin}

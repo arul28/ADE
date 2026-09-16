@@ -100,7 +100,6 @@ describe("LinearQuickViewButton batch-launch UI", () => {
           nativeControls: defaultNativeControls(),
         }}
         onChange={onChange}
-        surfaceKey="linear-batch-test"
         showSessionType={false}
       />,
     );
@@ -123,7 +122,6 @@ describe("LinearQuickViewButton batch-launch UI", () => {
           nativeControls: defaultNativeControls(),
         }}
         onChange={onChange}
-        surfaceKey="linear-batch-atomic-test"
         showSessionType={false}
       />,
     );

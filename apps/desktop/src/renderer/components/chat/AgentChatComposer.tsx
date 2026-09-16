@@ -6103,7 +6103,6 @@ export function AgentChatComposer({
                   value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
                   onChange={(next, options) =>
                     onParallelSlotModelChange?.(parallelConfiguringIndex, next, options)}
-                  surfaceKey={`chat-composer-parallel-${parallelConfiguringIndex}`}
                   {...(availableModelIds ? { availableModelIds } : {})}
                   constrainToAvailableModelIds={constrainModelSelection}
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
@@ -6139,7 +6138,6 @@ export function AgentChatComposer({
                 <ModelPicker
                   value={modelId}
                   onChange={onModelChange}
-                  surfaceKey="chat-composer"
                   openRequestKey={modelPickerOpenRequestKey}
                   onOpenRequestHandled={onModelPickerOpenRequestHandled}
                   {...(availableModelIds ? { availableModelIds } : {})}

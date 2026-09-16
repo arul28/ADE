@@ -44,7 +44,6 @@ import {
 export type ModelPickerProps = {
   value: string;
   onChange: (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => void;
-  surfaceKey: string;
   compact?: boolean;
   disabled?: boolean;
   availableModelIds?: string[];
@@ -115,7 +114,6 @@ export type ModelPickerProps = {
 export const ModelPicker = memo(function ModelPicker({
   value,
   onChange,
-  surfaceKey,
   compact = false,
   disabled = false,
   availableModelIds,
@@ -469,7 +467,6 @@ export const ModelPicker = memo(function ModelPicker({
             {open ? (
               <ModelPickerContent
                 value={effectiveValue}
-                surfaceKey={surfaceKey}
                 models={modelList}
                 isAvailable={isAvailable}
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}

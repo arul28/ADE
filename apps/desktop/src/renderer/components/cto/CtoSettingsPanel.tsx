@@ -76,7 +76,6 @@ export function CtoSettingsPanel({
             value={currentModelId}
             availableModelIds={availableModelIds}
             filter={ctoModelSupportsLiveRedirect}
-            surfaceKey="cto-settings"
             disabled={switchingModel}
             fastModeActive={currentFastMode}
             onFastModeToggle={onFastModeChange}

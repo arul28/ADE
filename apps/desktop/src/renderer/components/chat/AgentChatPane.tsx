@@ -12757,7 +12757,6 @@ export function AgentChatPane({
               <ModelPicker
                 value={handoffModelId}
                 onChange={setHandoffModelId}
-                surfaceKey="chat-handoff"
                 availableModelIds={handoffAvailableModelIds}
                 filter={handoffForkModelFilter}
                 onOpenSignIn={openProviderSignIn}
@@ -12795,7 +12794,6 @@ export function AgentChatPane({
               <ModelPicker
                 value={handoffModelId}
                 onChange={setHandoffModelId}
-                surfaceKey="chat-handoff"
                 availableModelIds={handoffAvailableModelIds}
                 onOpenSignIn={openProviderSignIn}
                 runtimePin={activeComposerRuntimeBinding}

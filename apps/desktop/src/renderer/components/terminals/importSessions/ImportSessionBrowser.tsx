@@ -955,7 +955,6 @@ function ImportSessionDetail({
                       <ModelPicker
                         value={forkModel}
                         onChange={(modelId) => setForkModel(modelId)}
-                        surfaceKey="import-fork-as-chat"
                         compact
                       />
                       {crossFamily ? (

@@ -541,7 +541,6 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
                 <ModelPicker
                   value={form.targetModelId}
                   onChange={(modelId) => setForm((current) => ({ ...current, targetModelId: modelId }))}
-                  surfaceKey="work-auto-handoff"
                   availableModelIds={availableModelIds}
                   runtimePin={binding}
                   compact

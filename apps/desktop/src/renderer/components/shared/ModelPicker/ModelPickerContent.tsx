@@ -33,7 +33,6 @@ import { ModelPickerEmptyState, ProviderRefreshError } from "./ModelPickerEmptyS
 import { useModelFavorites } from "./useModelFavorites";
 import { useModelRecents } from "./useModelRecents";
 import { useAuthOnlyFilter } from "./useAuthOnlyFilter";
-import { usePerSurfaceModelDefaults } from "./usePerSurfaceModelDefaults";
 import { useProviderAuthStatus } from "./useProviderAuthStatus";
 import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
@@ -167,7 +166,6 @@ function modelRequiresConfiguration(model: ModelDescriptor): boolean {
 
 export type ModelPickerContentProps = {
   value: string;
-  surfaceKey: string;
   models: readonly ModelDescriptor[];
   isAvailable: (modelId: string) => boolean;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
@@ -211,7 +209,6 @@ export type ModelPickerContentProps = {
 
 export const ModelPickerContent = memo(function ModelPickerContent({
   value,
-  surfaceKey,
   models,
   isAvailable,
   providerAuthStatus,
@@ -244,7 +241,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const { favorites, isFavorite, toggleFavorite } = useModelFavorites();
   const { recents, recordUsage } = useModelRecents();
   const { authOnly, toggleAuthOnly } = useAuthOnlyFilter();
-  const { setDefault: setSurfaceDefault } = usePerSurfaceModelDefaults();
   const hasExternalAuthStatus = Boolean(providerAuthStatus && Object.keys(providerAuthStatus).length > 0);
   const internalAuth = useProviderAuthStatus({
     loadStatus: !hasExternalAuthStatus,
@@ -723,13 +719,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     [expandedModels, isAvailableForUse, onOpenSignIn, onSelect, onServiceTierChange, recordUsage, value],
   );
 
-  const handleSetSurfaceDefault = useCallback(
-    (modelId: string) => {
-      setSurfaceDefault(surfaceKey, modelId);
-    },
-    [setSurfaceDefault, surfaceKey],
-  );
-
   const handleCopyId = useCallback((modelId: string) => {
     try {
       void navigator.clipboard.writeText(modelId).catch(() => {
@@ -992,15 +981,13 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         onToggleFavorite={toggleFavorite}
                         onFocus={() => setFocusedIndex(virtualRow.index)}
                         onCopyId={handleCopyId}
-                        onSetSurfaceDefault={handleSetSurfaceDefault}
                         fastModeOn={!serviceTierMode && fastMode && isActive}
                         {...(!serviceTierMode && onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
                         {...(serviceTierMode ? {
                           serviceTierMode: true,
                           serviceTier: isActive ? serviceTier : null,
                           onServiceTierChange: handleServiceTierChange,
-                        } : {})}
-                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
+                        } : {})}                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
                       />
                     </div>
                   );
