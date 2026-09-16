@@ -165,6 +165,9 @@ describe("CaptureHelper", () => {
     const { helper, onShot } = createHelper({ selfPid: 999 });
     helper.updateSettings({ enabled: true });
     child.emit("spawn");
+    // The helper never emits `captured` unsolicited — it answers a request.
+    child.stdout.write('{"type":"chord"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
     child.stdout.write(JSON.stringify({
       type: "captured",
       path: "/tmp/ade-capture/capture-2.png",
@@ -180,12 +183,61 @@ describe("CaptureHelper", () => {
     const { helper, onShot, onFailure } = createHelper();
     helper.updateSettings({ enabled: true });
     child.emit("spawn");
+    // The helper never emits `captured` unsolicited — it answers a request.
+    child.stdout.write('{"type":"chord"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
     child.stdout.write('{"type":"captured","path":"/etc/passwd"}\n');
     await new Promise((resolve) => setImmediate(resolve));
     expect(onShot).not.toHaveBeenCalled();
     expect(readFileSyncMock).not.toHaveBeenCalled();
     expect(onFailure).toHaveBeenCalledTimes(1);
     expect(onFailure.mock.calls[0][0].reason).toBe("capture-failed");
+  });
+
+  /**
+   * Windows spells the same directory several ways — drive-letter case, `/`
+   * versus `\\` — so the jail check has to fold case. It only does so when it
+   * is told the platform: leaving `isPathInside` to default to
+   * `process.platform` meant this test exercised the HOST's rules, and a
+   * perfectly good Windows capture would have been rejected in production
+   * with nothing failing here.
+   */
+  it("accepts a win32 capture path that differs only by case and separator", async () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const onShot = vi.fn();
+    const onFailure = vi.fn();
+    const helper = new CaptureHelper({
+      executablePath: "C:\\ADE\\ade-capture-helper.exe",
+      outputDirectory: "C:\\Users\\Sam\\AppData\\Local\\Temp\\ade-capture-stable",
+      logger,
+      onShot,
+      onFailure,
+      platform: "win32",
+      chordCooldownMs: 0,
+    });
+    helper.updateSettings({ enabled: true });
+    child.emit("spawn");
+    child.stdout.write('{"type":"chord"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    child.stdout.write(JSON.stringify({
+      type: "captured",
+      path: "c:/users/sam/appdata/local/temp/ade-capture-stable/capture-1.png",
+    }) + "\n");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(onShot).toHaveBeenCalledTimes(1);
+
+    // ...and a sibling directory that merely shares a prefix is still refused.
+    child.stdout.write('{"type":"chord"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    child.stdout.write(JSON.stringify({
+      type: "captured",
+      path: "c:\\users\\sam\\appdata\\local\\temp\\ade-capture-stable-old\\x.png",
+    }) + "\n");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onShot).toHaveBeenCalledTimes(1);
+    expect(onFailure).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a permission refusal and keeps reporting it in health", async () => {
@@ -249,6 +301,64 @@ describe("CaptureHelper", () => {
     expect(helper.getHealth().state).toBe("disabled");
   });
 
+  /**
+   * `stopChild()` gives the old child a grace window before the forced kill,
+   * so a toggle off and straight back on has the NEW child spawned and healthy
+   * when the old one finally closes. An unguarded close handler then cleared
+   * the new child's readiness and scheduled a restart for a live process.
+   */
+  it("ignores a superseded child closing after a quick off/on toggle", async () => {
+    const first = fakeChild();
+    const second = fakeChild();
+    spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const { helper, onShot } = createHelper();
+    helper.updateSettings({ enabled: true });
+    first.emit("spawn");
+    helper.updateSettings({ enabled: false });
+    helper.updateSettings({ enabled: true });
+    second.emit("spawn");
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(helper.getHealth().state).toBe("running");
+
+    // The first child only now notices it was asked to quit.
+    first.emit("close", 0, null);
+    expect(helper.getHealth().state).toBe("running");
+
+    // ...and the live child still delivers.
+    second.stdout.write('{"type":"chord"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    second.stdout.write('{"type":"captured","path":"/tmp/ade-capture/ok.png"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onShot).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A `captured` line that arrives after the 8 s timeout already reported a
+   * failure must not also deliver a shot: the user has been told it did not
+   * happen, and the file is deleted rather than left for the dispose purge.
+   */
+  it("drops a capture answer that arrives after its own timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      spawnMock.mockReturnValue(child);
+      const { helper, onShot, onFailure } = createHelper();
+      helper.updateSettings({ enabled: true });
+      child.emit("spawn");
+      child.stdout.write('{"type":"chord"}\n');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(onFailure).toHaveBeenCalledTimes(1);
+
+      child.stdout.write('{"type":"captured","path":"/tmp/ade-capture/late.png"}\n');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onShot).not.toHaveBeenCalled();
+      expect(rmSyncMock).toHaveBeenCalledWith("/tmp/ade-capture/late.png", { force: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reports a missing binary rather than spawning it", () => {
     existsSyncMock.mockReturnValue(false);
     const { helper } = createHelper();
@@ -263,6 +373,9 @@ describe("CaptureHelper", () => {
     const { helper, onShot } = createHelper();
     helper.updateSettings({ enabled: true });
     child.emit("spawn");
+    // The helper never emits `captured` unsolicited — it answers a request.
+    child.stdout.write('{"type":"chord"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
     child.stdout.write('not json\n{"type":"captured","path":"/tmp/ade-capture/ok.png"}\n');
     await new Promise((resolve) => setImmediate(resolve));
     expect(logger.warn).toHaveBeenCalledWith("capture.helper_invalid_output");

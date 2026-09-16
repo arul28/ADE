@@ -80,6 +80,7 @@ import { detectInstallSource } from "./services/analytics/installSource";
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureChatHandoffReplayAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
@@ -180,6 +181,7 @@ import type {
   CaptureGestureHealth,
   CaptureGestureShot,
 } from "../shared/types/captureGesture";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 
 import {
   attentionNotchAppNavigation,
@@ -329,6 +331,7 @@ import {
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
+import { createCtoVoiceRuntimeService } from "./services/cto/ctoVoiceRuntimeService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
@@ -1539,6 +1542,22 @@ app.whenReady().then(async () => {
       .filter((entry) => !entry.remote);
 
   const machineAdeLayout = resolveMachineAdeLayout();
+  // Machine-scoped API keys (the CTO voice key) belong to this install, not to
+  // whichever project happens to be open — a window with no project bound, a
+  // remote-bound window and the in-process mode all reach the machine-key IPC.
+  // Registered here, at app start, so they never fall through to a project-less
+  // encrypted fallback; and registered with the SHARED file store rather than
+  // `createDesktopCredentialStore`'s safeStorage-primary routed store, because
+  // the headless runtime and the `ade` CLI that must read these keys cannot
+  // decrypt an Electron safeStorage file.
+  {
+    const { initMachineApiKeyStore } = await import("./services/ai/apiKeyStore");
+    initMachineApiKeyStore({
+      credentialStore: new EncryptedFileCredentialStore({
+        secretsDir: machineAdeLayout.secretsDir,
+      }),
+    });
+  }
   const startupState = normalizeStartupProjectState({
     saved,
     additionalRecentProjects: readMachineRegistryRecentProjects(
@@ -4013,6 +4032,11 @@ app.whenReady().then(async () => {
         projectId,
         sessionId: event.sessionId,
       }),
+      onChatHandoffReplay: (event) => captureChatHandoffReplayAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
+      }),
       onSessionMetadataRegenerated: (event) => captureSessionMetadataRegeneratedAnalytics({
         analytics: productAnalyticsService,
         projectId,
@@ -5022,6 +5046,34 @@ app.whenReady().then(async () => {
       mirrorDesktopRecentProjectToMachineCatalog(project.rootPath);
     }
 
+    /*
+     * The in-process twin of the runtime's own voice service — built ONLY when
+     * this desktop is itself the project runtime.
+     *
+     * This constructor is not the test path alone: `ensureProjectContextForMobileSync`
+     * reaches it in production, caches the context, and a later window open
+     * reuses it. Building a call brain there would put a second one in desktop
+     * main while the daemon owns the real one for the same project — two
+     * sockets, two confirm-first holds, two transcripts. A call is the one
+     * service in this context that must not exist twice, so it is gated on the
+     * mode rather than on the constructor being reached.
+     *
+     * Everything else here (`agentChatService` above all) genuinely IS needed by
+     * a mobile-sync context: the phone drives the CTO chat through it.
+     */
+    const ctoVoiceCallService = shouldUseInProcessProjectRuntime()
+      ? createCtoVoiceRuntimeService({
+        projectRoot,
+        logger,
+        laneService,
+        ctoStateService,
+        agentChatService,
+        ctoMemoryService,
+        productAnalyticsService,
+        eventBuffer: rpcEventBuffer,
+      })
+      : null;
+
     // ── ADE RPC Socket Server (embedded mode) ─────────────────────
     const rpcRuntime = {
       projectRoot,
@@ -5064,6 +5116,7 @@ app.whenReady().then(async () => {
       externalSessionsService,
       ctoStateService,
       ctoMemoryService,
+      ctoVoiceCallService,
       linearCredentialService,
       linearIssueTracker,
       githubService,
@@ -5351,6 +5404,7 @@ app.whenReady().then(async () => {
       testService,
       ctoStateService,
       ctoMemoryService,
+      ctoVoiceCallService,
       adeProjectService,
       linearCredentialService,
       linearIssueTracker,
@@ -5872,6 +5926,13 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.ptyService?.disposeAll();
+    } catch {
+      // ignore
+    }
+    // Before the chat service is gone is too late — a live call holds the CTO
+    // in confirm-first mode, and a project closed mid-call must give that back.
+    try {
+      ctx.ctoVoiceCallService?.dispose();
     } catch {
       // ignore
     }
@@ -6728,6 +6789,17 @@ app.whenReady().then(async () => {
   let shutdownForceTimer: NodeJS.Timeout | null = null;
   let attentionNotchHelper: AttentionNotchHelper | null = null;
   let captureHelper: CaptureHelper | null = null;
+  /**
+   * The ADE window the user was last in.
+   *
+   * Recorded here rather than derived on demand because the capture gesture
+   * fires while ADE is in the background — `BrowserWindow.getFocusedWindow()`
+   * is null at exactly the moment the answer is needed.
+   */
+  let lastFocusedAdeWindowId: number | null = BrowserWindow.getFocusedWindow()?.id ?? null;
+  app.on("browser-window-focus", (_event, window) => {
+    if (!window.isDestroyed()) lastFocusedAdeWindowId = window.id;
+  });
 
   const shutdownOpenCodeServersBestEffort = (): void => {
     try {
@@ -8245,14 +8317,78 @@ app.whenReady().then(async () => {
    * any live window — never a newly opened one, because the gesture must be
    * able to fire while ADE is in the background without conjuring a window the
    * user did not ask for.
+   *
+   * The middle step is the one that matters in practice: the gesture's whole
+   * point is firing over ANOTHER app's window, so `getFocusedWindow()` is null
+   * exactly when a capture happens, and `getAllWindows()[0]` is creation order
+   * — an arbitrary project, usually not the one the user was last in.
+   * `lastFocusedAdeWindowId` remembers which window that was.
    */
   const captureGestureWindow = (): BrowserWindow | null => {
-    const candidate =
-      BrowserWindow.getFocusedWindow()
-      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
-      ?? null;
+    const liveWindows = BrowserWindow.getAllWindows().filter(
+      (win) => !win.isDestroyed() && !win.webContents.isDestroyed(),
+    );
+    const lastFocused = lastFocusedAdeWindowId == null
+      ? null
+      : liveWindows.find((win) => win.id === lastFocusedAdeWindowId) ?? null;
+    const candidate = BrowserWindow.getFocusedWindow() ?? lastFocused ?? liveWindows[0] ?? null;
     if (!candidate || candidate.isDestroyed() || candidate.webContents.isDestroyed()) return null;
     return candidate;
+  };
+
+  /**
+   * Shrink a shot until it fits the base64 attachment ceiling.
+   *
+   * The helper's own cap is generous (a 6K display is ~10 MB of PNG and a
+   * multi-monitor grab can be far more), but `saveTempAttachment` moves the
+   * bytes as base64 inside a command payload and rejects anything over
+   * {@link LEGACY_MAX_CHAT_ATTACHMENT_BYTES}. Left alone, a big display's
+   * capture reached the composer and then failed to stage, so the gesture
+   * silently did nothing. Downscaling keeps the shot — a half-size screenshot
+   * is still a perfectly readable screenshot — and only a shot that will not
+   * fit after four halvings fails, with a message that says why.
+   */
+  const fitCaptureShotToAttachmentLimit = (shot: CaptureGestureShot): CaptureGestureShot | null => {
+    let bytes: Buffer = Buffer.from(shot.pngBase64, "base64");
+    if (bytes.byteLength <= LEGACY_MAX_CHAT_ATTACHMENT_BYTES) return shot;
+    let image = nativeImage.createFromBuffer(bytes);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const size = image.getSize();
+      if (size.width < 2 || size.height < 2) break;
+      // Width only: `resize` preserves the aspect ratio when just one
+      // dimension is given, so the shot never stretches.
+      image = image.resize({ width: Math.max(1, Math.floor(size.width / 2)), quality: "good" });
+      bytes = image.toPNG();
+      if (!bytes.byteLength) break;
+      if (bytes.byteLength <= LEGACY_MAX_CHAT_ATTACHMENT_BYTES) {
+        return { ...shot, pngBase64: bytes.toString("base64") };
+      }
+    }
+    return null;
+  };
+
+  /**
+   * One coarse fact per capture-gesture press.
+   *
+   * Emitted where the shot is delivered or refused, which is the only place
+   * that knows whether the gesture actually worked — the renderer sees the
+   * result, and the helper sees the press, but neither sees both. Never the
+   * window, its title, the app it belonged to, the temp path the PNG passed
+   * through, the image, or the helper's error text.
+   *
+   * Deduped by minute rather than per press: the product question is whether
+   * the gesture works for an installation, and a user who fires it four times
+   * in a row while something is broken is one fact, not four.
+   */
+  const CAPTURE_GESTURE_ANALYTICS_DEDUPE_MS = 60_000;
+  const reportCaptureGesture = (outcome: "delivered" | "failed" | "too_large"): void => {
+    productAnalyticsService?.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "cto", action: "capture_gesture", outcome },
+      dedupeKey: `capture_gesture:${outcome}`,
+      minimumIntervalMs: CAPTURE_GESTURE_ANALYTICS_DEDUPE_MS,
+    });
   };
 
   captureHelper = new CaptureHelper({
@@ -8279,12 +8415,23 @@ app.whenReady().then(async () => {
     onShot: (shot: CaptureGestureShot) => {
       const target = captureGestureWindow();
       if (!target) return;
+      const fitted = fitCaptureShotToAttachmentLimit(shot);
+      if (!fitted) {
+        reportCaptureGesture("too_large");
+        target.webContents.send(IPC.captureGestureFailed, {
+          reason: "capture-failed",
+          source: shot.source,
+          message: "That screen is too large to attach, even scaled down.",
+        } satisfies CaptureGestureFailure);
+        return;
+      }
       // Bring ADE forward BEFORE the event: the renderer's fly-in animation is
       // pointless behind another app's window, and the whole gesture means
       // "take me to the CTO with this".
       activateAppForAttentionNotch();
       foregroundAttentionWindow(target);
-      target.webContents.send(IPC.captureGestureShot, shot);
+      target.webContents.send(IPC.captureGestureShot, fitted);
+      reportCaptureGesture("delivered");
     },
     onFailure: (failure: CaptureGestureFailure) => {
       const target = captureGestureWindow();
@@ -8293,6 +8440,8 @@ app.whenReady().then(async () => {
       // else's window; yanking them into ADE to read "there was no window in
       // front" is worse than the failure.
       target.webContents.send(IPC.captureGestureFailed, failure);
+      // The coarse fact only; `failure.reason` and its message stay local.
+      reportCaptureGesture("failed");
     },
   });
   // Sleep does not always lock the machine, so resume must clear suspension

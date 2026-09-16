@@ -680,6 +680,35 @@ describe("buffered event decoding", () => {
     ).toBeNull();
     expect(isBufferedEvent({ id: "1", timestamp: "t", category: "runtime", payload: {} })).toBe(false);
   });
+
+  it("tolerates a category this SDK version has never heard of", () => {
+    // The runtime's category list grows without the SDK — `cto_voice` was added
+    // for live CTO calls, and it carries a call's running transcript. Two rules
+    // hold at once and are asserted together: an unknown category must not make
+    // the stream throw or stall (the drain path is uncategorised, so it sees
+    // every category the buffer holds), and it must never decode into a chat
+    // envelope a subscriber would be handed. Only `runtime` is the chat channel.
+    const unknown = {
+      id: 9,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      category: "cto_voice",
+      payload: {
+        sessionId: "s1",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        event: { type: "text", text: "spoken words the SDK must not surface" },
+      },
+    };
+    expect(isBufferedEvent(unknown)).toBe(true);
+    expect(chatEnvelopeFromBufferedEvent(unknown)).toBeNull();
+    expect(
+      chatEnvelopeFromBufferedEvent({
+        id: 10,
+        timestamp: "t",
+        category: "some_category_invented_next_year",
+        payload: { sessionId: "s", timestamp: "t", event: { type: "text" } },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("thread store", () => {

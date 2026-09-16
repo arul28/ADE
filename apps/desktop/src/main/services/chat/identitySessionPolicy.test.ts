@@ -99,3 +99,43 @@ describe("identitySessionPolicy", () => {
     expect(resolveIdentityExecutionLane("assistant" as never, "   ", "lane-primary")).toBe(null);
   });
 });
+
+describe("a confirm hold belongs to one session", () => {
+  it("leaves every other CTO session in full-auto", () => {
+    // One brain process hosts every open project's scopes and this module is a
+    // singleton across all of them, so an unkeyed hold put every project's CTO
+    // into confirm-first mode because one of them was on a call.
+    const release = beginIdentityConfirmHold("session-a");
+    try {
+      expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude", "session-a")).toBe("default");
+      expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude", "session-b")).toBe("full-auto");
+      expect(isIdentityConfirmHeld("session-a")).toBe(true);
+      expect(isIdentityConfirmHeld("session-b")).toBe(false);
+    } finally {
+      release();
+    }
+    expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude", "session-a")).toBe("full-auto");
+  });
+
+  it("counts per session, so overlapping calls cannot release each other early", () => {
+    const first = beginIdentityConfirmHold("session-a");
+    const second = beginIdentityConfirmHold("session-a");
+    first();
+    expect(isIdentityConfirmHeld("session-a")).toBe(true);
+    second();
+    expect(isIdentityConfirmHeld("session-a")).toBe(false);
+  });
+
+  it("still answers for everyone when the holder could not name its session", () => {
+    // The hold is taken before the lane resolves, so it starts unscoped for a
+    // few milliseconds. Losing the gate in that window would be worse than
+    // over-applying it.
+    const release = beginIdentityConfirmHold();
+    try {
+      expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude", "session-b")).toBe("default");
+    } finally {
+      release();
+    }
+    expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude", "session-b")).toBe("full-auto");
+  });
+});

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import {
   createComputerUseArtifactPath,
@@ -1184,7 +1185,7 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         cursor: { type: "number", minimum: 0 },
         limit: { type: "number", minimum: 1, maximum: 1000 },
-        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "pty"] }
+        category: { type: "string", enum: [...REMOTE_RUNTIME_EVENT_CATEGORIES] }
       }
     }
   },
@@ -5857,6 +5858,17 @@ async function runTool(args: {
     const cursor = asNumber(toolArgs.cursor, 0);
     const limit = asNumber(toolArgs.limit, 100);
     const category = asOptionalTrimmedString(toolArgs.category);
+    // A voice call's state carries its running transcript, so listening to one
+    // is the same disclosure as reading the CTO thread — and the `cto_voice`
+    // action domain is fail-closed to the cto role. Without this an agent that
+    // cannot start or drive a call could still drain one out of the buffer.
+    const ctoVoiceVisible = callerHasRoleAtLeast(callerCtx.role, "cto");
+    if (category === "cto_voice" && !ctoVoiceVisible) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        "stream_events category cto_voice requires the cto role."
+      );
+    }
     if (category) {
       // When filtering by category, drain a larger batch and filter client-side.
       // Use the last *drained* event's ID (not last *filtered*) as nextCursor
@@ -5874,7 +5886,14 @@ async function runTool(args: {
         oldestCursor: result.oldestCursor ?? null
       };
     }
-    return runtime.eventBuffer.drain(cursor, limit);
+    const drained = runtime.eventBuffer.drain(cursor, limit);
+    if (ctoVoiceVisible) return drained;
+    // Filtered, not refused: every other category is still readable, and the
+    // cursor still advances past what was withheld so polling cannot stall.
+    return {
+      ...drained,
+      events: drained.events.filter((e) => e.category !== "cto_voice")
+    };
   }
 
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown ADE action: ${name}`);

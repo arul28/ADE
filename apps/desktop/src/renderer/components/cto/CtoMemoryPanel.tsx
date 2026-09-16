@@ -101,7 +101,7 @@ export function CtoMemoryPanel() {
           spellCheck={false}
         />
         <div className="mt-1.5 text-[11px] leading-4 text-muted-fg/45">
-          Persists across model switches and compactions. The CTO reads this back every time.
+          The CTO reads these notes back on every turn, and they survive a model switch.
         </div>
       </div>
 
@@ -109,7 +109,7 @@ export function CtoMemoryPanel() {
         <div>
           <div className="text-[12.5px] font-medium text-fg/85">Current thread state</div>
           <div className="mt-1 text-[11px] leading-4 text-muted-fg/45">
-            A rolling summary the CTO rewrites as work moves. Read-only.
+            The CTO writes this summary of the work so far, and you cannot edit it.
           </div>
           <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/25 p-3 font-mono text-[11.5px] leading-5 text-fg/70">
             {snapshot.threadState.trim()}

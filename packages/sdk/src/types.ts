@@ -690,11 +690,38 @@ export type DoctorReport = {
   recentErrors: Array<{ at: string; scope: string; message: string }>;
 };
 
-/** BufferedEvent as produced by `apps/ade-cli/src/eventBuffer.ts`. */
+/**
+ * The categories `apps/ade-cli/src/eventBuffer.ts` carried when this SDK
+ * version was written. Listed for autocomplete, not for exhaustiveness.
+ *
+ * `runtime` is the only one the SDK decodes: it is the chat-envelope channel.
+ * `pty` is terminal bytes the SDK has no surface for, and `cto_voice` is live
+ * CTO call state — which carries a call's running transcript, is fail-closed to
+ * the `cto` role at the runtime, and never reaches an `agent`-role sidecar like
+ * this one. Neither is ever handed to a subscriber.
+ */
+export type KnownBufferedEventCategory =
+  | "orchestrator"
+  | "dag_mutation"
+  | "runtime"
+  | "pty"
+  | "cto_voice";
+
+/**
+ * BufferedEvent as produced by `apps/ade-cli/src/eventBuffer.ts`.
+ *
+ * `category` is deliberately OPEN. The runtime is downloaded and can be newer
+ * than the SDK that drives it, so a category this build has never heard of is
+ * an ordinary event, not a bug — and the drain fallback polls
+ * `personalChats.streamEvents` without a category filter, so it sees every one
+ * the buffer holds. `chatEnvelopeFromBufferedEvent` gates on `"runtime"`
+ * exactly, which is what keeps an unknown category from ever being mistaken for
+ * chat. A closed union here would have made that tolerance unstateable.
+ */
 export type BufferedEvent = {
   id: number;
   timestamp: string;
-  category: "orchestrator" | "dag_mutation" | "runtime" | "pty";
+  category: KnownBufferedEventCategory | (string & {});
   payload: Record<string, unknown>;
 };
 

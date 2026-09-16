@@ -13,6 +13,9 @@ where the machinery lives.
 | `apps/desktop/src/shared/chatModelSwitching.ts` | `canSwitchChatSessionModel` / `filterChatModelIdsForSession` -- rules for mid-session model changes. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | `handoffSession`, permission translation, per-provider adapter. |
 | `apps/desktop/src/shared/permissionLadder.ts` | The four ordered autonomy levels (`plan` → `ask` → `auto-edit` → `full-auto`) and their mapping onto every provider's own vocabulary, so switching model family keeps the level instead of landing on that family's default. Nearest-**lower** on a miss. Deliberately separate from the abstract `AgentChatPermissionMode` words below; see [The permission ladder](#the-permission-ladder). |
+| `apps/desktop/src/main/services/chat/identitySessionPolicy.ts` | The CTO permission pin. `normalizeIdentityPermissionMode` returns `full-auto` for the `cto` identity, or `default` while a voice call holds `beginIdentityConfirmHold(sessionId)`. The holds are a counter per session key, so overlapping calls cannot release each other early and a call on one project does not downgrade every other project's CTO — one brain process hosts every open project's scopes and this module is a singleton across all of them. A hold taken before its session id is known is filed unscoped and still answers for everyone, because a caller that could not name its session cannot be narrowed after the fact. Also owns `isPrimaryPinnedIdentity`, `isIdentityConfirmHeld`, and `resolveIdentityExecutionLane`. |
+| `apps/desktop/src/main/services/chat/crossProviderReplayFork.ts` | The transcript replay budget for a cross-provider handoff: `REPLAY_CHARS_PER_TOKEN` (3), `REPLAY_RESERVE_MIN_TOKENS` (32,000), `REPLAY_RESERVE_WINDOW_FRACTION` (0.15), and `REPLAY_MAX_WINDOW_FRACTION` (0.6), plus the `replayReserveTokens` / `replayBudgetTokens` / `replayBudgetChars` derivations, `CODEX_REPLAY_MAX_CHARS` and `CODEX_APP_SERVER_INPUT_MAX_CHARS`, and the fitters `fitTranscriptReplayToBudget` / `buildFittedTranscriptReplay` that return a `TranscriptReplayFit`. |
+| `apps/desktop/src/main/services/chat/claudeReplayOverflowRecovery.ts` | Claude-only repair for a handoff replay that does not fit, as one factory taking every dependency by injection (`createClaudeReplayOverflowRecovery`). Owns `TranscriptReplayOrigin` + `normalizeTranscriptReplayOrigin`, the `ReplayForkProvenance` shape, the `CLAUDE_REPLAY_OVERFLOW_MIN_BUDGET_CHARS` floor (2,000), and the four entry points the chat service calls: `noteConsumedReplay` / `forgetConsumedReplay`, `recoverFromOverflow`, `noteRetrySucceeded`, and `reportRetryFailed`. The consumed and staged records live in `WeakMap`s keyed by the runtime, so they die with it rather than being persisted or leaking across a rebind. |
 | `apps/desktop/src/shared/cursorModes.ts` | Canonical Cursor mode vocabulary and compatibility mapping from the legacy ADE permission field; permission-only full-auto/plan launches persist the native mode that the UI and later clients read. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | macOS-only signed Codex Computer Use MCP resolver. Requires explicit Codex config opt-in and verifies the standalone OpenAI client before it can be injected into a chat or CLI runtime. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. Reasoning/fast variants are per-provider: Claude/Codex/Droid/Pi keep their flags, but tracked OpenCode launches always run the root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — no `run --interactive` branch and no `--variant`, because the root command silently drops unknown args; variants remain a chat-runtime feature. |
@@ -1000,6 +1003,52 @@ on the Claude Agent SDK:
    taken. An empty candidate list still returns that brief — it does
    not throw or skip the handoff.
 
+### Replay budget and the handoff notice
+
+A transcript replay never fills the target model's context window. ADE
+budgets it at three characters per token, holds back the larger of 32,000
+tokens or 15% of the window for the system prompt, the tools and the first
+message, and caps the replay itself at 60% of the window
+(`crossProviderReplayFork.ts`). When that budget drops older turns, the new
+chat opens with a plain notice saying how many of the original turns it
+carried, roughly what share of the model's context they take, and that the
+rest is still in the source chat. A replay can still be rejected as too long, in two shapes: the turn that
+carried it is refused outright, or an earlier turn accepted it into the provider
+session and every later message overflows with nothing left in memory to shrink.
+`claudeReplayOverflowRecovery.ts` repairs both the same way, and ADE does not ask
+Claude to compact a conversation with only one exchange — the SDK answers that
+with "Not enough messages to compact".
+
+ADE records where each replay came from (`transcriptReplayOrigin`: source chat,
+budget chars, turn counts, context window), so a "prompt is too long" halves the
+last budget, re-fits the source chat's transcript to it, and re-sends the message
+once. Halving stops at 2,000 characters; below that a replay carries nothing
+worth sending. The retry always opens a **fresh** provider session rather than
+resuming the old one, which still holds the prompt that did not fit, and clears
+the continuity tail that reset stages — the replay already is the conversation,
+and a second thinner copy of the same turns is the duplication that overflowed
+the chat in the first place.
+
+One automatic retry per message. A second failure is reported rather than
+retried, and the staged replay is put back on the chat so the user's next message
+still carries the conversation: `noteRetrySucceeded` drops that staged copy once
+the retry lands (it is in the provider session now, and the string itself can be
+a megabyte of transcript held per runtime), while `reportRetryFailed` restores it
+and says so. `reportRetryFailed` is idempotent, because several terminal paths
+can notice the same failure. A turn the user **interrupted** is neither: pressing
+Stop is not a prompt that did not fit, the replay is already in the session, and
+blaming its length would be a lie about what just happened.
+
+Chats forked before that marker existed are recovered from the `handoff_fork`
+provenance on their imported envelopes, which carries the same source id — but
+only when `replayFork` says that fork was a replay fork, or, for forks that
+predate the flag, when the source chat's provider was not Claude. A native fork
+keeps its history on the provider, and re-seeding it from the source transcript
+would drop every turn taken since. Replay-overflow recovery is Claude-only:
+every other provider's replay is already capped by a wire limit it cannot
+exceed (`CODEX_REPLAY_MAX_CHARS` for Codex, the equivalent for the rest), so
+none of them can reach this state.
+
 ## Auto-title generation
 
 ADE names chats and auto-created lanes from the ADE provider that owns
@@ -1125,9 +1174,14 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
    MCP server (Claude), the `ade_cto` dynamic-tool namespace (Codex), or a
    dedicated HTTP MCP lease (Cursor / Droid / OpenCode). See
    [tool-system](tool-system.md#registration-on-a-live-session).
-5. Guarded permission defaults: Claude defaults to `"default"` (ask
-   before dangerous ops); OpenCode defaults to `"edit"`. `full-auto`
-   is only applied when explicitly requested.
+5. Pinned permission mode: `normalizeIdentityPermissionMode` in
+   `identitySessionPolicy.ts` pins the CTO to `full-auto` on every
+   provider. The mode is not a default a caller can override.
+   `ensureIdentitySession` re-normalizes the session before every turn,
+   so a mode written once is snapped back. A live voice call is the one
+   exception: `beginIdentityConfirmHold()` holds the CTO in `default`
+   for the life of the call, so reads run and writes raise an approval.
+   The hold is a counter, so overlapping calls cannot release it early.
 6. Work the CTO launches never lands on the primary lane.
    `resolveCtoExecutionLane` honors an explicit `laneId` and otherwise
    creates a dedicated lane; it has no fallback to the CTO session's

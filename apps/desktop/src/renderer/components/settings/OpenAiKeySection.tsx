@@ -14,7 +14,7 @@
  */
 import React, { useState } from "react";
 import { CheckCircle } from "@phosphor-icons/react";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { SettingsCard } from "./primitives";
 import { SourceBadge } from "./providers/providerUi";
 import {
@@ -22,8 +22,10 @@ import {
   OPENAI_VOICE_PROVIDER,
   OpenAiKeyCostLine,
   OpenAiKeyField,
+  openAiEnvHint,
   useMachineOpenAiKey,
-} from "./OpenAiKeySheet";
+  openAiEnvShadowNote,
+} from "./openAiKey";
 
 /** Must match the `agents.openai-key` entry's anchor in `settingsManifest.ts`. */
 export const OPENAI_KEY_ANCHOR = "openai-api-key";
@@ -60,7 +62,9 @@ export function OpenAiKeySection() {
       stacked
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
-        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{envVar}</div>
+        {/* A field label, not the raw variable name: "OPENAI_API_KEY" in
+            monospace read as a value the user was supposed to recognise. */}
+        <div style={{ fontSize: 11.5, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>Key</div>
         <div
           style={{
             display: "grid",
@@ -98,13 +102,13 @@ export function OpenAiKeySection() {
                   </span>
                 ) : (
                   <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                    Loaded from environment
+                    Read from this computer's environment
                   </span>
                 )}
               </div>
             ) : (
               <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
-                {loading ? "Checking…" : "No OpenAI API key configured"}
+                {loading ? "Checking…" : "No key saved yet."}
               </span>
             )}
           </div>
@@ -166,12 +170,19 @@ export function OpenAiKeySection() {
             )}
           </div>
         </div>
+        {/* The variable, said in a sentence. While editing, the field prints
+            its own hint, so this one stands down rather than say it twice. */}
+        {!editing && source !== "env" ? (
+          <div style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted }}>
+            {openAiEnvHint(envVar)}
+          </div>
+        ) : null}
         {/* An env-sourced key is real and ADE will use it; what it cannot do is
             edit it from here, so the card says where to go instead of offering
             a Delete that would do nothing. */}
         {source === "env" && !editing ? (
           <div style={{ fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.55, color: COLORS.textMuted }}>
-            {`${envVar} is set in this machine's environment. Add a key here to override it for ADE, or unset the variable to remove it.`}
+            {openAiEnvShadowNote(envVar)}
           </div>
         ) : null}
         {error ? (

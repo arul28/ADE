@@ -148,21 +148,31 @@ export class CaptureHelper {
         this.options.logger.warn("capture.helper_error", { error: error.message });
       });
       child.once("close", (code, signal) => {
+        // EVERY mutation below is guarded on this being the live child, not
+        // just `this.child = null`. `stopChild()` hands the old child a 500 ms
+        // grace window, so a toggle off/on inside that window has the new child
+        // already spawned and healthy when the old one finally closes — and an
+        // unguarded handler would then clear the NEW child's readiness, its
+        // stability timer and its in-flight latch, and schedule a restart for a
+        // process that never died.
+        const current = this.child === child;
+        this.options.logger.info("capture.helper_exited", {
+          code,
+          signal,
+          disposed: this.disposed,
+          superseded: !current,
+        });
+        if (!current) return;
         this.childReady = false;
         if (this.stableTimer) {
           clearTimeout(this.stableTimer);
           this.stableTimer = null;
         }
-        if (this.child === child) this.child = null;
+        this.child = null;
         this.clearCaptureTimer();
         // A child that died mid-capture never answers, so the in-flight latch
         // has to drop here or the next chord is refused forever.
         this.captureInFlight = false;
-        this.options.logger.info("capture.helper_exited", {
-          code,
-          signal,
-          disposed: this.disposed,
-        });
         if (!this.disposed && this.enabled) this.scheduleRestart();
       });
       return true;
@@ -388,10 +398,22 @@ export class CaptureHelper {
         this.requestCapture("chord");
         return;
       }
-      case "captured":
-        this.settleCapture();
+      case "captured": {
+        const settled = this.settleCapture();
+        if (!settled) {
+          // Late answer: the timeout already failed this capture. Delete the
+          // orphaned PNG rather than leave it for the dispose-time purge.
+          this.discardOrphanedCapture(output.path);
+          this.options.logger.debug("capture.late_answer_dropped", { type: output.type });
+          return;
+        }
         this.deliverShot(output);
         return;
+      }
+      // Failures are NOT gated on an in-flight request. The Windows helper
+      // emits `permission-denied` at startup when the keyboard hook is blocked
+      // by policy, before any capture has been asked for, and that is the one
+      // signal that tells the user why the gesture will never fire.
       case "permission-denied":
         this.permissionDenied = true;
         this.settleCapture();
@@ -413,6 +435,10 @@ export class CaptureHelper {
     this.clearCaptureTimer();
     this.captureTimer = setTimeout(() => {
       this.captureTimer = null;
+      // `captureInFlight` is the whole guard. A second request cannot start
+      // while one is in flight (both entry points refuse), and `requestCapture`
+      // clears this timer before arming the next one, so a fired timer always
+      // belongs to the capture that is still latched.
       if (!this.captureInFlight) return;
       this.captureInFlight = false;
       this.options.onFailure({
@@ -424,15 +450,55 @@ export class CaptureHelper {
     this.captureTimer.unref();
   }
 
-  private settleCapture(): void {
+  /**
+   * Close out the request the helper just answered.
+   *
+   * Returns false when there was nothing in flight — the answer arrived after
+   * its own timeout already reported a failure (or after the child that owned
+   * it died), so the caller must drop it rather than deliver a shot for a
+   * capture the user has already been told did not happen.
+   */
+  private settleCapture(): boolean {
+    const wasInFlight = this.captureInFlight;
     this.captureInFlight = false;
     this.lastCaptureAtMs = Date.now();
     this.clearCaptureTimer();
+    return wasInFlight;
   }
 
   private clearCaptureTimer(): void {
     if (this.captureTimer) clearTimeout(this.captureTimer);
     this.captureTimer = null;
+  }
+
+  /**
+   * Resolve a path the helper reported, or null when it is not ours to touch.
+   *
+   * `isPathInside`, not startsWith: Windows paths differ by case, separator and
+   * 8.3 form, and a hand-rolled compare rejects a perfectly good capture. It
+   * answers true for the directory itself, so no separate equality check.
+   *
+   * `this.platform` is passed rather than left to default to `process.platform`
+   * — the whole point of the injectable platform is that the win32 folding
+   * rules can be exercised from a macOS or Linux host, and a defaulted argument
+   * silently tests the host's rules instead.
+   */
+  private resolveInsideOutputDirectory(capturedPath: string): string | null {
+    const pathApi = this.platform === "win32" ? path.win32 : path.posix;
+    const root = pathApi.resolve(this.options.outputDirectory);
+    const resolved = pathApi.resolve(root, capturedPath);
+    return isPathInside(resolved, root, this.platform) ? resolved : null;
+  }
+
+  /** A capture that arrived too late still left a PNG behind. Remove it. */
+  private discardOrphanedCapture(capturedPath: string): void {
+    const resolved = this.resolveInsideOutputDirectory(capturedPath);
+    if (!resolved) return;
+    try {
+      fs.rmSync(resolved, { force: true });
+    } catch {
+      // Best effort: the dispose-time purge is the backstop.
+    }
   }
 
   /**
@@ -446,13 +512,12 @@ export class CaptureHelper {
     const capturedPath = output.path;
     // Anything outside the directory ADE told the helper to use is not ours to
     // read or delete, however the helper came to name it.
-    const resolved = path.resolve(capturedPath);
-    const root = path.resolve(this.options.outputDirectory);
-    // `isPathInside`, not startsWith: Windows paths differ by case, separator
-    // and 8.3 form, and a hand-rolled compare rejects a perfectly good capture.
-    // It answers true for the directory itself, so no separate equality check.
-    if (!isPathInside(resolved, root)) {
-      this.options.logger.warn("capture.helper_path_outside_output_dir", { path: resolved });
+    const resolved = this.resolveInsideOutputDirectory(capturedPath);
+    if (!resolved) {
+      // The path the HELPER named, not the resolved one: `resolved` is null by
+      // construction on this branch, and the name the helper chose is the only
+      // thing worth reading in the log.
+      this.options.logger.warn("capture.helper_path_outside_output_dir", { path: capturedPath });
       this.options.onFailure({
         reason: "capture-failed",
         source: this.pendingSource,

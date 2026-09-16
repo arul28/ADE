@@ -155,6 +155,13 @@ export type SceneCaptureRect = { x: number; y: number; width: number; height: nu
  * The renderer measures with `getBoundingClientRect()`, which can report a
  * scrolled-out or fractional rect; `capturePage` with a rect that leaves the
  * page resolves an empty image. Returns null when nothing capturable is left.
+ *
+ * INTERSECTION, not a shift. Clamping the origin on its own while keeping the
+ * size froze a scene that had scrolled above the viewport as a picture of
+ * whatever was at the top of the window: `{y: -300, height: 400}` became
+ * `{y: 0, height: 400}` — a rect the same size as the scene, in a place the
+ * scene was not. Intersecting keeps only the part that is genuinely on screen,
+ * and answers null when that is nothing.
  */
 export function clampSceneCaptureRect(
   rect: SceneCaptureRect | null | undefined,
@@ -173,12 +180,16 @@ export function clampSceneCaptureRect(
   const rawHeight = numeric(rect.height);
   if ([rawX, rawY, rawWidth, rawHeight].some((value) => Number.isNaN(value))) return null;
 
-  const x = Math.min(Math.max(Math.round(rawX), 0), maxWidth - 1);
-  const y = Math.min(Math.max(Math.round(rawY), 0), maxHeight - 1);
-  const width = Math.min(Math.round(rawWidth), maxWidth - x);
-  const height = Math.min(Math.round(rawHeight), maxHeight - y);
+  const left = Math.round(rawX);
+  const top = Math.round(rawY);
+  const x0 = Math.max(0, left);
+  const y0 = Math.max(0, top);
+  const x1 = Math.min(maxWidth, left + Math.round(rawWidth));
+  const y1 = Math.min(maxHeight, top + Math.round(rawHeight));
+  const width = x1 - x0;
+  const height = y1 - y0;
   if (width < 1 || height < 1) return null;
-  return { x, y, width, height };
+  return { x: x0, y: y0, width, height };
 }
 
 /** Largest PNG we will turn back into bytes for the proof drawer (~8 MB decoded). */

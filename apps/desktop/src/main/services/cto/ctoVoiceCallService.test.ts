@@ -1,25 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { createCtoVoiceCallService, type CtoVoiceSocket } from "./ctoVoiceCallService";
+import {
+  createCtoVoiceCallService,
+  describeCtoVoiceSocketFailure,
+  forwardUnexpectedResponse,
+  type CtoVoiceSocket,
+} from "./ctoVoiceCallService";
 import type { CtoVoiceState } from "../../../shared/types/ctoVoice";
-
-/** A socket the test drives: records what was sent, replays what the API would say. */
-function createFakeSocket() {
-  const sent: Array<Record<string, unknown>> = [];
-  const handlers: Record<string, Array<(payload?: unknown) => void>> = {};
-  const socket: CtoVoiceSocket = {
-    send: (data) => sent.push(JSON.parse(data) as Record<string, unknown>),
-    close: () => {},
-    on: (event, handler) => { (handlers[event] = handlers[event] ?? []).push(handler); },
-  };
-  return {
-    socket,
-    sent,
-    open: () => handlers.open?.forEach((h) => h()),
-    receive: (event: unknown) => handlers.message?.forEach((h) => h(JSON.stringify(event))),
-    typesSent: () => sent.map((m) => String(m.type)),
-    lastOfType: (type: string) => [...sent].reverse().find((m) => m.type === type),
-  };
-}
+import { createFakeSocket } from "./ctoVoiceTestDoubles";
 
 function createService(overrides: Partial<Parameters<typeof createCtoVoiceCallService>[0]> = {}) {
   const fake = createFakeSocket();
@@ -102,18 +89,14 @@ describe("createCtoVoiceCallService", () => {
   });
 
   it("holds a mutation behind a confirmation instead of running it", async () => {
-    const { service, fake, latest } = createService({
-      runBackendTurn: async () => ({
-        spoken: "I can open a pull request for that.",
-        confirmation: { toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" },
-      }),
-    });
+    // The confirmation comes from the CTO thread's own approval — the turn is
+    // parked inside `canUseTool` — not from a field on the turn's result.
+    const { service, fake, latest } = createService();
     await service.start();
     fake.open();
     fake.receive({ type: "session.started" });
     fake.receive({ type: "session.input_transcript.delta", delta: "open a pr for the sync lane" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
-    await new Promise((r) => setTimeout(r, 0));
+    service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
 
     expect(latest().phase).toBe("confirming");
     expect(latest().pendingConfirmation?.toolName).toBe("openPr");
@@ -233,12 +216,7 @@ describe("createCtoVoiceCallService", () => {
     // Closing the transcript first used to rotate the utterance id BEFORE the
     // confirmation captured it, binding the question to the id the reply would
     // carry — and the "same utterance" guard then rejected every spoken yes.
-    const { service, fake, latest } = createService({
-      runBackendTurn: async () => ({
-        spoken: "I can open a pull request for that.",
-        confirmation: { toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" },
-      }),
-    });
+    const { service, fake, latest } = createService();
     await service.start();
     fake.open();
     fake.receive({ type: "session.started" });
@@ -247,6 +225,7 @@ describe("createCtoVoiceCallService", () => {
     fake.receive({ type: "session.input_transcript.done", text: "open a pr for the sync lane" });
     fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
     await new Promise((r) => setTimeout(r, 0));
+    service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
     expect(latest().pendingConfirmation?.toolName).toBe("openPr");
 
     fake.receive({ type: "session.input_transcript.delta", delta: "yes" });
@@ -256,19 +235,14 @@ describe("createCtoVoiceCallService", () => {
   });
 
   it("never lets the utterance that raised a question also answer it", async () => {
-    const { service, fake, latest } = createService({
-      runBackendTurn: async () => ({
-        spoken: "I can open a pull request for that.",
-        confirmation: { toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" },
-      }),
-    });
+    const { service, fake, latest } = createService();
     await service.start();
     fake.open();
     fake.receive({ type: "session.started" });
 
     // One utterance that both asks and sounds like consent.
     fake.receive({ type: "session.input_transcript.delta", delta: "open a pr, yes do it" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
+    service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
     await new Promise((r) => setTimeout(r, 0));
     fake.receive({ type: "session.input_transcript.done", text: "open a pr, yes do it" });
     await new Promise((r) => setTimeout(r, 0));
@@ -381,18 +355,12 @@ describe("createCtoVoiceCallService", () => {
   });
 
   it("marks a history-rewriting tool destructive, so voice cannot approve it", async () => {
-    const { service, fake, latest } = createService({
-      runBackendTurn: async () => ({
-        spoken: "That would force-push.",
-        confirmation: { toolName: "gitForcePush", prompt: "Force-push ade/sync-fix?" },
-      }),
-    });
+    const { service, fake, latest } = createService();
     await service.start();
     fake.open();
     fake.receive({ type: "session.started" });
     fake.receive({ type: "session.input_transcript.delta", delta: "force-push the sync lane" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
-    await new Promise((r) => setTimeout(r, 0));
+    service.raiseApproval({ itemId: "item-1", toolName: "gitForcePush", prompt: "Force-push ade/sync-fix?" });
     expect(latest().pendingConfirmation?.destructive).toBe(true);
   });
 
@@ -533,5 +501,240 @@ describe("createCtoVoiceCallService", () => {
     service.setMuted(false);
     service.pushAudio("AAAA");
     expect(fake.typesSent()).toContain("session.input_audio.append");
+  });
+});
+
+describe("describeCtoVoiceSocketFailure", () => {
+  it("names a rejected key, because that is the one the user can fix", () => {
+    for (const status of [401, 403]) {
+      expect(describeCtoVoiceSocketFailure({ status })).toEqual({
+        message: "OpenAI rejected this key. Check it under CTO settings, Voice.",
+        status,
+        code: null,
+      });
+    }
+  });
+
+  it("recovers the status ws buries in its own message", () => {
+    // With no `unexpected-response` listener this is all that survives, and it
+    // is what a build that forgot one would have to work from.
+    expect(describeCtoVoiceSocketFailure({ message: "Unexpected server response: 401" }).message)
+      .toBe("OpenAI rejected this key. Check it under CTO settings, Voice.");
+    expect(describeCtoVoiceSocketFailure({ message: "Unexpected server response: 429" }).status)
+      .toBe(429);
+  });
+
+  it("separates throttling from rejection, because waiting fixes one and not the other", () => {
+    expect(describeCtoVoiceSocketFailure({ status: 429 }).message)
+      .toBe("OpenAI is rate limiting this key. Try again in a minute.");
+  });
+
+  it("blames the network only when there was no response at all", () => {
+    expect(describeCtoVoiceSocketFailure({ code: "ENOTFOUND" }).message)
+      .toBe("ADE could not reach OpenAI. Check your internet connection.");
+    expect(describeCtoVoiceSocketFailure({ code: "ECONNREFUSED" }).message)
+      .toBe("ADE could not reach OpenAI. Check your internet connection.");
+    // Read out of the text when the code rides there instead of on the error.
+    expect(describeCtoVoiceSocketFailure({ message: "getaddrinfo ENOTFOUND api.openai.com" }).message)
+      .toBe("ADE could not reach OpenAI. Check your internet connection.");
+    // A 500 is OpenAI answering. Telling the user to check their wifi would
+    // send them to fix something that is not broken.
+    expect(describeCtoVoiceSocketFailure({ status: 500, code: "ECONNRESET" }).message)
+      .toBe("The voice connection failed.");
+  });
+
+  it("keeps the old sentence for a failure it cannot explain", () => {
+    expect(describeCtoVoiceSocketFailure()).toEqual({
+      message: "The voice connection failed.",
+      status: null,
+      code: null,
+    });
+    expect(describeCtoVoiceSocketFailure({ message: "socket hang up" }).message)
+      .toBe("The voice connection failed.");
+    expect(describeCtoVoiceSocketFailure({ status: 503 }).message)
+      .toBe("The voice connection failed.");
+  });
+});
+
+describe("forwardUnexpectedResponse", () => {
+  it("reports the status before it releases the request", () => {
+    // Releasing first makes `ws` emit "closed before the connection was
+    // established" synchronously, and that error knows nothing about the 401
+    // that caused it — so it won the race and the user was told the generic
+    // sentence for a key OpenAI had plainly refused.
+    const order: string[] = [];
+    forwardUnexpectedResponse(
+      () => order.push("handler"),
+      { destroy: () => order.push("destroy") },
+      { statusCode: 401 },
+    );
+    expect(order).toEqual(["handler", "destroy"]);
+  });
+
+  it("still releases the request when the handler throws", () => {
+    const destroy = vi.fn();
+    expect(() => forwardUnexpectedResponse(
+      () => { throw new Error("boom"); },
+      { destroy },
+      { statusCode: 401 },
+    )).toThrow("boom");
+    expect(destroy).toHaveBeenCalled();
+  });
+
+  it("survives a response and a request that carry nothing", () => {
+    const handler = vi.fn();
+    forwardUnexpectedResponse(handler, null, null);
+    expect(handler).toHaveBeenCalledWith({ statusCode: null });
+  });
+});
+
+describe("a call that never connects", () => {
+  it("surfaces a rejected key in the state the HUD reads, and logs the status", async () => {
+    const warn = vi.fn();
+    const { service, fake, states } = createService({
+      logger: { info: () => {}, warn },
+    });
+    await service.start();
+
+    fake.rejectUpgrade(401);
+
+    const failed = states.find((state) => state.phase === "failed");
+    expect(failed?.error).toBe("OpenAI rejected this key. Check it under CTO settings, Voice.");
+    expect(warn).toHaveBeenCalledWith(
+      "cto_voice.socket_rejected",
+      expect.objectContaining({ status: 401 }),
+    );
+  });
+
+  it("keeps the rejected-key sentence when tearing the socket down emits its own error", async () => {
+    // The real shape of the regression: closing a CONNECTING socket makes `ws`
+    // emit "WebSocket was closed before the connection was established" inside
+    // the same tick, and that generic error must not win.
+    const warn = vi.fn();
+    const handlers: Record<string, Array<(payload?: unknown) => void>> = {};
+    const emitError = () => handlers.error?.forEach((h) => h(
+      new Error("WebSocket was closed before the connection was established"),
+    ));
+    const socket: CtoVoiceSocket = {
+      send: () => {},
+      // Both doors: an explicit close and a destroy behave the same way.
+      close: () => emitError(),
+      on: (event, handler) => { (handlers[event] = handlers[event] ?? []).push(handler); },
+    };
+    const states: CtoVoiceState[] = [];
+    const service = createCtoVoiceCallService({
+      getApiKey: async () => "sk-test",
+      ctoName: () => "CTO",
+      projectName: () => "ADE",
+      backchannelsEnabled: () => true,
+      runBackendTurn: async () => ({ spoken: "" }),
+      persistCall: async () => {},
+      onState: (state) => states.push(state),
+      logger: { info: () => {}, warn },
+      createWebSocket: () => socket,
+    });
+    await service.start();
+
+    handlers["unexpected-response"]?.forEach((h) => h({ statusCode: 401 }));
+    await Promise.resolve();
+
+    const failed = states.find((state) => state.phase === "failed");
+    expect(failed?.error).toBe("OpenAI rejected this key. Check it under CTO settings, Voice.");
+    expect(service.getState().error).toBe("OpenAI rejected this key. Check it under CTO settings, Voice.");
+    // The trace still names the status, which is what the log is for.
+    expect(warn).toHaveBeenCalledWith(
+      "cto_voice.socket_rejected",
+      expect.objectContaining({ status: 401 }),
+    );
+    // The teardown's own error is recorded, and marked as the follow-on it is.
+    expect(warn).toHaveBeenCalledWith(
+      "cto_voice.socket_error",
+      expect.objectContaining({ suppressed: true }),
+    );
+  });
+
+  it("does not let a late generic error overwrite the reason it already found", async () => {
+    // `ws` can follow a rejected upgrade with an error that knows nothing.
+    const { service, fake } = createService();
+    await service.start();
+
+    fake.rejectUpgrade(401);
+    fake.fail(new Error("socket hang up"));
+
+    expect(service.getState().error)
+      .toBe("OpenAI rejected this key. Check it under CTO settings, Voice.");
+  });
+
+  it("does not blame OpenAI for a hang-up ADE asked for", async () => {
+    // The production symptom: something ends the call ~150 ms in, while the
+    // socket is still CONNECTING. `ws` reports that close as "WebSocket was
+    // closed before the connection was established" — indistinguishable, from
+    // the error alone, from a connection that failed on its own. Describing it
+    // as one is how a call hung up by ADE came back as
+    // "The voice connection failed." and buried the real cause.
+    const warn = vi.fn();
+    const info = vi.fn();
+    const handlers: Record<string, Array<(payload?: unknown) => void>> = {};
+    const socket: CtoVoiceSocket = {
+      send: () => {},
+      close: () => handlers.error?.forEach((h) => h(
+        new Error("WebSocket was closed before the connection was established"),
+      )),
+      on: (event, handler) => { (handlers[event] = handlers[event] ?? []).push(handler); },
+    };
+    const states: CtoVoiceState[] = [];
+    const service = createCtoVoiceCallService({
+      getApiKey: async () => "sk-test",
+      ctoName: () => "CTO",
+      projectName: () => "ADE",
+      backchannelsEnabled: () => true,
+      runBackendTurn: async () => ({ spoken: "" }),
+      persistCall: async () => {},
+      onState: (state) => states.push(state),
+      logger: { info, warn },
+      createWebSocket: () => socket,
+    });
+    await service.start();
+    // Never opened: exactly the window the real hang-up lands in.
+    expect(states.at(-1)?.phase).toBe("connecting");
+
+    await service.end("owner_end");
+
+    expect(states.some((state) => state.phase === "failed")).toBe(false);
+    expect(states.at(-1)?.phase).toBe("ended");
+    expect(states.at(-1)?.error).toBeNull();
+    // And the trace says who ended it, which is the whole point.
+    expect(info).toHaveBeenCalledWith(
+      "cto_voice.call_end",
+      expect.objectContaining({ reason: "owner_end", socketOpen: false }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "cto_voice.socket_error",
+      expect.objectContaining({ deliberate: true }),
+    );
+  });
+
+  it("names the teardown path on every call end", async () => {
+    const info = vi.fn();
+    const { service, fake } = createService({ logger: { info, warn: () => {} } });
+    await service.start();
+
+    fake.rejectUpgrade(401);
+    await Promise.resolve();
+
+    expect(info).toHaveBeenCalledWith(
+      "cto_voice.call_end",
+      expect.objectContaining({ reason: "socket_rejected" }),
+    );
+  });
+
+  it("tells an offline machine it is offline", async () => {
+    const { service, fake, states } = createService();
+    await service.start();
+
+    fake.fail(Object.assign(new Error("getaddrinfo ENOTFOUND api.openai.com"), { code: "ENOTFOUND" }));
+
+    const failed = states.find((state) => state.phase === "failed");
+    expect(failed?.error).toBe("ADE could not reach OpenAI. Check your internet connection.");
   });
 });

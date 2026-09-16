@@ -35,6 +35,16 @@ export const SCENE_FENCE_LANGUAGE = "scene";
 export const SCENE_LIMITS = {
   /** Source bytes. Past this a scene is a document, not a view. */
   maxSourceBytes: 96_000,
+  /**
+   * Bytes of ASSEMBLED document the main process will hold for a frame.
+   *
+   * The renderer checks `maxSourceBytes` before it ever calls `scene.prepare`,
+   * but the document store is bounded by document COUNT, so a renderer that
+   * skipped that check could pin 64 unbounded strings in main. This is the
+   * server-side bound: the fence source plus the fixed template, with room for
+   * the template rather than a second magic number at the IPC edge.
+   */
+  maxDocumentBytes: 192_000,
   maxTitleLength: 120,
   /** A scene that never calls ade.ready() is frozen anyway after this. */
   readyTimeoutMs: 8_000,
@@ -78,24 +88,154 @@ function readMarkerAttributes(rest: string): Record<string, string> {
 }
 
 /**
+ * The document furniture a scene never gets to keep.
+ *
+ * `<head>`/`<body>` lose the tag but keep their contents (styles, fonts, the
+ * markup itself) so the fragment concatenates cleanly into the host template.
+ * Dropping `<base>` matters even though `default-src 'none'` already blocks
+ * every fetch: it keeps relative-URL behaviour predictable if the policy is
+ * ever loosened. And a scene cannot relax its own policy, so a CSP meta the
+ * model wrote goes too.
+ */
+const DOCUMENT_WRAPPER = new RegExp([
+  "<!doctype[^>]*>",
+  "</?(?:html|head|body)(?:\\s[^>]*)?>",
+  "<base(?:\\s[^>]*)?>",
+  "<meta[^>]+http-equiv\\s*=\\s*[\"']?content-security-policy[\"']?[^>]*>",
+].join("|"), "gi");
+
+/**
+ * Regions whose text is DATA, not markup, and must survive byte for byte.
+ *
+ * One alternation rather than three passes so the earliest opener wins: a
+ * `<script>` written inside a comment is part of the comment, and a `<!--`
+ * inside a script is part of the script.
+ */
+const VERBATIM_REGION = /<script\b[\s\S]*?<\/script\s*>|<style\b[\s\S]*?<\/style\s*>|<!--[\s\S]*?-->/gi;
+
+/**
  * Models emit anything from a bare `<div>` to a full document. Normalize both
  * to a fragment so the host template owns <head> and the policy that lives in
- * it. Dropping <base> matters even though `default-src 'none'` already blocks
- * every fetch: it keeps relative-URL behaviour predictable if the policy is
- * ever loosened.
+ * it.
+ *
+ * The strip runs only OUTSIDE script, style and comment bodies. A blanket
+ * `replace` over the whole source deleted the literal text `<body>` from inside
+ * a JS string — a scene that rendered a snippet of HTML as its own content came
+ * out silently corrupted, with no parse error to point at. Scanning for the
+ * verbatim regions first costs one extra pass and makes the strip mean what its
+ * name says: document furniture, not anything that happens to look like it.
  */
 function unwrapDocument(source: string): string {
-  let html = source;
-  html = html.replace(/<!doctype[^>]*>/gi, "");
-  html = html.replace(/<\/?html[^>]*>/gi, "");
-  html = html.replace(/<base[^>]*>/gi, "");
-  // Keep the contents of <head> (styles, fonts) but drop the tag itself so the
-  // fragment concatenates cleanly into the template body.
-  html = html.replace(/<\/?head[^>]*>/gi, "");
-  html = html.replace(/<\/?body[^>]*>/gi, "");
-  // A scene cannot relax its own policy: strip any CSP meta the model wrote.
-  html = html.replace(/<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi, "");
-  return html.trim();
+  let out = "";
+  let cursor = 0;
+  VERBATIM_REGION.lastIndex = 0;
+  let region: RegExpExecArray | null;
+  while ((region = VERBATIM_REGION.exec(source))) {
+    out += source.slice(cursor, region.index).replace(DOCUMENT_WRAPPER, "");
+    out += region[0];
+    cursor = region.index + region[0].length;
+  }
+  out += source.slice(cursor).replace(DOCUMENT_WRAPPER, "");
+  return out.trim();
+}
+
+/**
+ * True while the last ```scene fence in a markdown body is still open.
+ *
+ * The markdown parser renders an unterminated fence as a finished code block on
+ * every streamed tick, so without this the host prepares a new document and
+ * reloads the frame several times a second — each reload throwing away whatever
+ * the half-written scene had drawn. Fence state is tracked for every language,
+ * not just `scene`: a ``` inside an open ```ts block closes that block and does
+ * not open a scene.
+ */
+export function hasOpenSceneFence(markdown: string): boolean {
+  let openLanguage: string | null = null;
+  for (const line of String(markdown ?? "").split("\n")) {
+    const fence = /^\s{0,3}(?:```|~~~)\s*([^\s`~]*)/.exec(line);
+    if (!fence) continue;
+    if (openLanguage === null) openLanguage = (fence[1] ?? "").trim().toLowerCase();
+    else if (!(fence[1] ?? "").trim().length) openLanguage = null;
+  }
+  return openLanguage === SCENE_FENCE_LANGUAGE;
+}
+
+/** One fence, as the scanner below located it. */
+type FenceSpan = {
+  language: string;
+  /** Line indexes, half-open: the fence's own opening and closing lines included. */
+  startLine: number;
+  endLineExclusive: number;
+  body: string;
+};
+
+/**
+ * Every top-level fence in a markdown document, in order.
+ *
+ * The same line scanner `hasOpenSceneFence` uses, and deliberately so: the two
+ * have to agree on \`\`\` versus ~~~, on up to three spaces of indentation, and on
+ * the rule that a fence inside an open block closes that block rather than
+ * opening a nested one. A second, looser regex somewhere else is how "the
+ * streaming guard says a scene is open" and "the splitter found no scene" end
+ * up both being true.
+ */
+function readFenceSpans(markdown: string): FenceSpan[] {
+  const lines = String(markdown ?? "").split("\n");
+  const spans: FenceSpan[] = [];
+  let openLanguage: string | null = null;
+  let openAt = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const fence = /^\s{0,3}(?:```|~~~)\s*([^\s`~]*)/.exec(lines[i]!);
+    if (!fence) continue;
+    const language = (fence[1] ?? "").trim().toLowerCase();
+    if (openLanguage === null) {
+      openLanguage = language;
+      openAt = i;
+      continue;
+    }
+    if (language.length) continue;
+    spans.push({
+      language: openLanguage,
+      startLine: openAt,
+      endLineExclusive: i + 1,
+      body: lines.slice(openAt + 1, i).join("\n"),
+    });
+    openLanguage = null;
+  }
+  return spans;
+}
+
+/**
+ * Split a message into what should be read aloud and the one scene it drew.
+ *
+ * The fence has to come OUT of the prose or a voice model reads HTML aloud —
+ * and so does every OTHER scene fence, because the prompt allows exactly one
+ * and a second one left behind is read out in full. Only the first VALID fence
+ * becomes the scene; a malformed one is left in the prose rather than silently
+ * dropped, so the failure is audible instead of invisible.
+ */
+export function extractSceneFence(markdown: string): {
+  spoken: string;
+  sceneSource?: string;
+} {
+  const text = String(markdown ?? "");
+  const spans = readFenceSpans(text).filter((span) => span.language === SCENE_FENCE_LANGUAGE);
+  if (!spans.length) return { spoken: text.trim() };
+
+  const chosen = spans.find((span) => !isSceneParseFailure(parseSceneFence(span.body))) ?? null;
+  // Every scene fence leaves the prose, valid or not, EXCEPT a malformed one
+  // that is the only candidate — that one stays, so the user hears that
+  // something was meant to be here.
+  const removed = chosen ? spans : spans.slice(1);
+  if (!removed.length) return { spoken: text.trim() };
+
+  const lines = text.split("\n");
+  const dropped = new Set<number>();
+  for (const span of removed) {
+    for (let i = span.startLine; i < span.endLineExclusive; i += 1) dropped.add(i);
+  }
+  const spoken = lines.filter((_line, index) => !dropped.has(index)).join("\n").trim();
+  return chosen ? { spoken, sceneSource: chosen.body } : { spoken };
 }
 
 /** `Buffer` does not exist in the renderer; this file is shared by both sides. */
@@ -134,6 +274,20 @@ export function parseSceneFence(source: string): ParsedScene | SceneParseFailure
 
 export function isSceneParseFailure(value: ParsedScene | SceneParseFailure): value is SceneParseFailure {
   return "reason" in value;
+}
+
+/**
+ * One line standing in for a scene on a surface that cannot run one.
+ *
+ * The TUI is the caller that matters: a scene is up to 96 KB of HTML and CSS,
+ * and printing it into a terminal transcript buries the answer the user asked
+ * for under a wall of markup. The mosaic fence already collapses this way; this
+ * is the same contract for the other fence ADE renders natively.
+ */
+export function summarizeSceneFence(source: string): string {
+  const parsed = parseSceneFence(source);
+  const title = isSceneParseFailure(parsed) ? null : parsed.title;
+  return `[scene: ${title ?? "generated view"}]`;
 }
 
 /**

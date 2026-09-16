@@ -1,4 +1,4 @@
-import type { AgentChatTurnSettledEvent } from "../chat/agentChatService";
+import type { AgentChatTurnSettledEvent, ChatHandoffReplayOutcome } from "../chat/agentChatService";
 import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCoordinator";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 
@@ -46,6 +46,43 @@ export function captureChatMentionsExpandedAnalytics(args: {
       feature: "chat",
       action: "mention_expanded",
       outcome: "completed",
+      source: "runtime",
+    },
+  });
+}
+
+/**
+ * One coarse fact for what became of a handoff's transcript replay.
+ *
+ * The product question is whether a cross-provider handoff actually carries the
+ * conversation: whole (`fit`), in part (`truncated`), not at all (`refused`),
+ * or only after ADE re-sent it with less history (`retried` / `gave_up`).
+ * `provider` is the existing coarse target-provider key — never a model name,
+ * a turn count, a share, or any transcript. Deduped per chat and outcome with a
+ * one-hour minimum interval, so a chat that overflows repeatedly reports the
+ * shape of the failure once an hour rather than once a message.
+ */
+export function captureChatHandoffReplayAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: {
+    sessionId: string;
+    outcome: ChatHandoffReplayOutcome;
+    provider: string;
+  };
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    sessionId: args.event.sessionId,
+    dedupeKey: `chat_handoff_replay:${args.event.sessionId}:${args.event.outcome}`,
+    minimumIntervalMs: 60 * 60_000,
+    properties: {
+      feature: "chat",
+      action: "handoff_replay",
+      outcome: args.event.outcome,
+      provider: args.event.provider,
       source: "runtime",
     },
   });

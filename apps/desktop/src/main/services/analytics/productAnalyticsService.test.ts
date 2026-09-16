@@ -555,6 +555,74 @@ describe("productAnalyticsService", () => {
     expect(JSON.stringify(harness.messages)).not.toContain("private");
   });
 
+  it("accepts a CTO voice call outcome and drops everything about the call itself", () => {
+    const harness = makeHarness();
+
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "cto",
+        action: "voice_call",
+        outcome: "rejected_key",
+        duration_bucket: "under_1m",
+        transcript: "we should force push",
+        project_path: "/Users/someone/secret-repo",
+      },
+      dedupeKey: "cto_voice_call:call-1",
+    })).toEqual({ accepted: true, reason: "accepted" });
+
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "cto",
+      action: "voice_call",
+      outcome: "rejected_key",
+      duration_bucket: "under_1m",
+    });
+    const wire = JSON.stringify(harness.messages);
+    expect(wire).not.toContain("force push");
+    expect(wire).not.toContain("secret-repo");
+  });
+
+  it("refuses a voice outcome the allowlist does not name", () => {
+    const harness = makeHarness();
+
+    harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "cto",
+        action: "voice_call",
+        // The sentence the user read, which is exactly what must never travel.
+        outcome: "OpenAI rejected this key",
+      },
+    });
+
+    expect(harness.messages[0]?.properties).not.toHaveProperty("outcome");
+    expect(JSON.stringify(harness.messages)).not.toContain("OpenAI");
+  });
+
+  it("accepts the three capture-gesture outcomes and nothing about the window", () => {
+    const harness = makeHarness();
+
+    for (const outcome of ["delivered", "failed", "too_large"]) {
+      harness.service.captureInternal({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: {
+          feature: "cto",
+          action: "capture_gesture",
+          outcome,
+          window_title: "Bank of Somewhere — Statement",
+        },
+        dedupeKey: `capture_gesture:${outcome}`,
+      });
+    }
+
+    expect(harness.messages.map((message) => (message.properties as { outcome?: string } | undefined)?.outcome))
+      .toEqual(["delivered", "failed", "too_large"]);
+    expect(JSON.stringify(harness.messages)).not.toContain("Bank of Somewhere");
+  });
+
   it("accepts a failed update transaction as a coarse step name and dedupes it per hour", () => {
     const harness = makeHarness();
 
@@ -1637,6 +1705,56 @@ describe("product analytics producers", () => {
       action: "ios_live_view",
       outcome: "backend_host_encoded",
       source: "renderer_route",
+    });
+  });
+
+  it("keeps the five handoff-replay outcomes and nothing that names the chat", () => {
+    // The funnel only answers "does a handoff carry the conversation?" if all
+    // five ends survive the sanitizer under one filter.
+    for (const outcome of ["fit", "truncated", "refused", "retried", "gave_up"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "chat",
+        action: "handoff_replay",
+        outcome,
+        provider: "claude",
+        source: "runtime",
+      })).toEqual({
+        feature: "chat",
+        action: "handoff_replay",
+        outcome,
+        provider: "claude",
+        source: "runtime",
+      });
+    }
+
+    // A sixth spelling is dropped, not widened.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action: "handoff_replay",
+      outcome: "halved",
+    })).not.toHaveProperty("outcome");
+
+    // The transcript is the whole risk here: the model it went to, how many
+    // turns survived, how much of the window they took, and the text itself are
+    // all off the key list, so none of them can ride along.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action: "handoff_replay",
+      outcome: "truncated",
+      provider: "claude",
+      source: "runtime",
+      model: "claude-opus-5",
+      kept_turn_count: 41,
+      turn_count: 118,
+      share_bucket: "half",
+      replay_text: "[user]\nthe whole conversation",
+      target_session_id: "chat-9f2a",
+    })).toEqual({
+      feature: "chat",
+      action: "handoff_replay",
+      outcome: "truncated",
+      provider: "claude",
+      source: "runtime",
     });
   });
 

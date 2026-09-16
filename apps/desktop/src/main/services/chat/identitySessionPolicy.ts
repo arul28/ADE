@@ -33,29 +33,56 @@ export function isPrimaryPinnedIdentity(identityKey: AgentChatIdentityKey | unde
  * A counter, not a boolean, so overlapping holds cannot release each other
  * early. Each `begin` answers its own release, and a release is idempotent.
  */
-let identityConfirmHolds = 0;
+const identityConfirmHolds = new Map<string, number>();
 
-export function beginIdentityConfirmHold(): () => void {
-  identityConfirmHolds += 1;
+/**
+ * The key a hold with no session id is filed under.
+ *
+ * One brain process hosts every open project's scopes, and this module is a
+ * singleton across all of them — so an unkeyed hold downgrades the CTO in every
+ * project at once, not just the one on the call. Callers that can name their
+ * session should; this is the bucket for the ones that cannot yet.
+ */
+const UNSCOPED_HOLD_KEY = "__unscoped__";
+
+export function beginIdentityConfirmHold(sessionId?: string | null): () => void {
+  const key = typeof sessionId === "string" && sessionId.trim().length
+    ? sessionId.trim()
+    : UNSCOPED_HOLD_KEY;
+  identityConfirmHolds.set(key, (identityConfirmHolds.get(key) ?? 0) + 1);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    identityConfirmHolds = Math.max(0, identityConfirmHolds - 1);
+    const next = (identityConfirmHolds.get(key) ?? 0) - 1;
+    if (next > 0) identityConfirmHolds.set(key, next);
+    else identityConfirmHolds.delete(key);
   };
 }
 
-export function isIdentityConfirmHeld(): boolean {
-  return identityConfirmHolds > 0;
+/**
+ * Is a hold up for this session?
+ *
+ * An unscoped hold still answers for everyone, because a caller that could not
+ * name its session cannot be narrowed after the fact — and losing the gate
+ * would be worse than over-applying it. A hold that DID name a session answers
+ * only for that one.
+ */
+export function isIdentityConfirmHeld(sessionId?: string | null): boolean {
+  if ((identityConfirmHolds.get(UNSCOPED_HOLD_KEY) ?? 0) > 0) return true;
+  const key = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!key.length) return identityConfirmHolds.size > 0;
+  return (identityConfirmHolds.get(key) ?? 0) > 0;
 }
 
 export function normalizeIdentityPermissionMode(
   identityKey: AgentChatIdentityKey | undefined,
   mode: AgentChatSession["permissionMode"] | undefined,
   provider: AgentChatProvider,
+  sessionId?: string | null,
 ): AgentChatSession["permissionMode"] {
   if (isPrimaryPinnedIdentity(identityKey)) {
-    return isIdentityConfirmHeld() ? "default" : "full-auto";
+    return isIdentityConfirmHeld(sessionId) ? "default" : "full-auto";
   }
   return mode === "plan" ? "plan" : guardedIdentityPermissionModeForProvider(provider);
 }

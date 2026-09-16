@@ -162,9 +162,17 @@ import {
   buildTranscriptReplayDocument,
   CODEX_APP_SERVER_INPUT_MAX_CHARS,
   fitTranscriptReplayTextToBudget,
+  replayContextSharePercent,
   replayMaxCharsForProvider,
   toReplayForkDisclosure,
+  type TranscriptReplayFit,
 } from "./crossProviderReplayFork";
+import {
+  createClaudeReplayOverflowRecovery,
+  normalizeTranscriptReplayOrigin,
+  type ReplayForkProvenance,
+  type TranscriptReplayOrigin,
+} from "./claudeReplayOverflowRecovery";
 import {
   isPrimaryPinnedIdentity,
   normalizeIdentityPermissionMode,
@@ -1498,6 +1506,13 @@ type PersistedChatState = {
   spawnKind?: AgentChatSession["spawnKind"];
   subagentTakeoverPromptShownAt?: string | null;
   pendingTranscriptReplay?: string | null;
+  /**
+   * Durable record that this chat was born from a replay-fork handoff. It
+   * outlives the replay text itself, because the failure it repairs — the
+   * provider session is already too full — only shows up on a later turn, long
+   * after the in-memory record of the replay is gone.
+   */
+  transcriptReplayOrigin?: TranscriptReplayOrigin | null;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -1964,6 +1979,21 @@ type ClaudeContextGuardrailState = {
   fallbackIssuedThisEpisode: boolean;
   pendingInternalCompactionTrigger: "ade_fallback" | "recovery" | null;
   pendingInternalCompactionId: string | null;
+  /**
+   * The notice ADE will show *if* the SDK confirms the compaction it was asked
+   * for. Held until the compact_boundary lands, because claiming a compaction
+   * that never happened is how a chat ends up telling the user to re-send a
+   * message into the same overflow.
+   */
+  pendingInternalCompactionNotice: { message: string; turnId?: string } | null;
+  /**
+   * Set when the SDK answered a /compact with "Not enough messages to compact".
+   * It means "too few messages right now", not "never": the next turn that
+   * completes normally clears it so the boundary fallback works again.
+   */
+  compactionUnavailable: boolean;
+  /** The turn that carried the refusal, so clearing it cannot happen on that turn. */
+  compactionUnavailableTurnId: string | null;
   lastUsageEmitAt: number | null;
   lastUsageEmitPct: number | null;
   nextSampleId: number;
@@ -3642,6 +3672,8 @@ type ManagedChatSession = {
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
   pendingTranscriptReplay: string | null;
+  /** See PersistedChatState.transcriptReplayOrigin. */
+  transcriptReplayOrigin: TranscriptReplayOrigin | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -7522,16 +7554,15 @@ function syncLegacyPermissionMode(session: Pick<
  * approval, and the safety net that follows the SDK's own status report — and
  * every one of them must re-assert the identity policy afterwards. As three
  * separate `applyClaudePlanModeTransition` calls, the third was written without
- * the re-assert and silently handed a CTO held read-only for a voice call its
- * write access back.
+ * the re-assert and silently handed a held CTO its write access back.
+ *
+ * The exit itself always takes: a held CTO lands in confirm-first mode, where a
+ * mutation asks out loud, rather than in plan mode, which refused writes
+ * outright and left spoken confirmation unreachable.
  */
-function exitPlanModeForSession(session: AgentChatSession): boolean {
+function exitPlanModeForSession(session: AgentChatSession): void {
   applyClaudePlanModeTransition(session, "default");
   reassertIdentityPermissionMode(session);
-  // True when the policy refused the exit — a CTO held read-only for a voice
-  // call is put straight back into plan. Callers must not then announce an exit
-  // that did not happen, or tell the live query the session is out of plan.
-  return session.permissionMode === "plan";
 }
 
 /**
@@ -7552,6 +7583,9 @@ function reassertIdentityPermissionMode(session: AgentChatSession): void {
     session.identityKey,
     session.permissionMode,
     session.provider,
+    // Named, because a voice call on one project's CTO must not change the
+    // access mode of a CTO chat in another.
+    session.id,
   );
   if (next === session.permissionMode) return;
   applyLegacyPermissionModeToNativeControls(session, next);
@@ -8599,6 +8633,17 @@ function personalChatUserPromptFallback(
   }
 }
 
+/**
+ * What became of a handoff's transcript replay.
+ *
+ * `fit` and `truncated` are the pre-flight: the whole conversation reached the
+ * new model, or only its newest turns did. `refused` is a handoff that could
+ * not be made at all. `retried` and `gave_up` are the two ends of the
+ * overflow recovery — ADE re-sent the message with less history and the model
+ * took it, or it ran out of room and handed the turn back to the user.
+ */
+export type ChatHandoffReplayOutcome = "fit" | "truncated" | "refused" | "retried" | "gave_up";
+
 export type AgentChatTurnSettledEvent = Readonly<{
   sessionId: string;
   turnId: string;
@@ -8746,6 +8791,17 @@ export function createAgentChatService(args: {
   onClaudeHooksIgnored?: (event: { sessionId: string }) => void;
   /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
   onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
+  /**
+   * Content-free hook for the one product question a handoff replay raises: did
+   * the conversation reach the new model whole, in part, or not at all. Fired
+   * once when the handoff pre-flight resolves, and once per overflow-recovery
+   * terminal. Never a model name, a turn count, or any transcript.
+   */
+  onChatHandoffReplay?: (event: {
+    sessionId: string;
+    outcome: ChatHandoffReplayOutcome;
+    provider: AgentChatProvider;
+  }) => void;
   /** Content-free hook fired after an explicit session-metadata generation request. */
   onSessionMetadataRegenerated?: (event: {
     sessionId: string;
@@ -8832,6 +8888,7 @@ export function createAgentChatService(args: {
     onTurnSettled,
     onClaudeHooksIgnored,
     onChatMentionsExpanded,
+    onChatHandoffReplay,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onUsageLimitAutoResumed,
@@ -9879,22 +9936,18 @@ export function createAgentChatService(args: {
         // Transition out of plan mode so the UI reflects the change,
         // matching the state update performed after manual approval.
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
-          const refused = exitPlanModeForSession(managed.session);
+          exitPlanModeForSession(managed.session);
           persistChatState(managed);
           // Surface the transition so the composer's mode chip updates — parity
           // with the manual-approval branch below. Without this, full-auto plan
           // sessions exit plan mode on the backend but the UI stays on "plan".
-          // Skipped when the exit was refused: the chip would then show an
-          // access mode the session is not actually in.
-          if (!refused) {
-            emitChatEvent(managed, {
-              type: "system_notice",
-              noticeKind: "info",
-              message: "Session exited plan mode",
-              detail: buildClaudePlanModeNoticeDetail("exited_plan_mode", managed.session.claudePermissionMode),
-              turnId: runtime.activeTurnId ?? undefined,
-            });
-          }
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Session exited plan mode",
+            detail: buildClaudePlanModeNoticeDetail("exited_plan_mode", managed.session.claudePermissionMode),
+            turnId: runtime.activeTurnId ?? undefined,
+          });
         }
         return { behavior: "allow", updatedInput: input };
       }
@@ -9973,9 +10026,8 @@ export function createAgentChatService(args: {
           explicitApproval: true,
         });
         // Switch session out of plan mode so the UI reflects the transition.
-        let planExitRefused = false;
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
-          planExitRefused = exitPlanModeForSession(managed.session);
+          exitPlanModeForSession(managed.session);
           persistChatState(managed);
         }
 
@@ -9983,33 +10035,23 @@ export function createAgentChatService(args: {
         // native ExitPlanMode handler restores prePlanMode itself, but an
         // explicit setPermissionMode call ensures the SDK and ADE agree on
         // the target mode even if the SDK's restore path no-ops.
-        //
-        // When the exit was refused, the mode to agree on is `plan`: pushing
-        // the restored access mode would tell the running query the session is
-        // writable for the rest of this turn, which is exactly what the hold
-        // exists to prevent.
         try {
           const sessionControl = getClaudeQueryControl(runtime.query);
           if (typeof sessionControl.setPermissionMode === "function") {
             await sessionControl.setPermissionMode(
-              planExitRefused
-                ? "plan"
-                : resolveSessionClaudePermissionMode(managed.session, "default"),
+              resolveSessionClaudePermissionMode(managed.session, "default"),
             );
           }
         } catch { /* best-effort — the SDK's own restore path is the source of truth */ }
 
-        // Emit permission mode change notice for UI sync — unless the exit was
-        // refused, in which case there is no transition to announce.
-        if (!planExitRefused) {
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "info",
-            message: "Session exited plan mode",
-            detail: buildClaudePlanModeNoticeDetail("exited_plan_mode", managed.session.claudePermissionMode),
-            turnId: runtime.activeTurnId ?? undefined,
-          });
-        }
+        // Emit permission mode change notice for UI sync.
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Session exited plan mode",
+          detail: buildClaudePlanModeNoticeDetail("exited_plan_mode", managed.session.claudePermissionMode),
+          turnId: runtime.activeTurnId ?? undefined,
+        });
 
         // Allow the SDK's native ExitPlanMode handler to run. It restores the
         // pre-plan permission mode (toolPermissionContext.prePlanMode) — same
@@ -12632,6 +12674,28 @@ export function createAgentChatService(args: {
     return toReplayForkDisclosure(fit);
   };
 
+  /**
+   * Say, in plain words, how much of the old chat the new model actually got.
+   * The fit counts turns, so the share is converted with the same conservative
+   * characters-per-token estimate the budget uses.
+   */
+  const emitHandoffReplayNotice = (
+    target: ManagedChatSession,
+    fit: TranscriptReplayFit,
+    modelLabel: string,
+    contextWindowTokens: number | null | undefined,
+  ): void => {
+    if (!fit.truncated) return;
+    const share = replayContextSharePercent(fit.text, contextWindowTokens);
+    emitChatEvent(target, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: `Handoff carried the newest ${fit.keptTurnCount} of ${fit.turnCount} turns${
+        share != null ? `, about ${share}% of ${modelLabel}'s context` : ""
+      }. Older turns are in the original chat.`,
+    });
+  };
+
   type ConsumedTurnContextPrefix = {
     composed: string;
     replay: string;
@@ -15014,6 +15078,9 @@ export function createAgentChatService(args: {
       pendingTranscriptReplay: managed.pendingTranscriptReplay?.trim()
         ? managed.pendingTranscriptReplay
         : null,
+      ...(managed.transcriptReplayOrigin
+        ? { transcriptReplayOrigin: managed.transcriptReplayOrigin }
+        : {}),
       ...(eventSequenceHighWaterMark > 0 ? { eventSequence: eventSequenceHighWaterMark } : {}),
       updatedAt: nowIso()
     };
@@ -17155,8 +17222,105 @@ export function createAgentChatService(args: {
         occupancyPctAtTrigger,
       });
     }
+    // The compact_boundary is the SDK's confirmation that a compaction really
+    // happened. Only now may ADE say so.
+    const heldNotice = guardrail.pendingInternalCompactionNotice;
     guardrail.pendingInternalCompactionTrigger = null;
     guardrail.pendingInternalCompactionId = null;
+    guardrail.pendingInternalCompactionNotice = null;
+    guardrail.compactionUnavailable = false;
+    guardrail.compactionUnavailableTurnId = null;
+    if (heldNotice) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        severity: "info",
+        message: heldNotice.message,
+        ...(heldNotice.turnId ? { turnId: heldNotice.turnId } : {}),
+      });
+    }
+  };
+
+  /**
+   * The Claude SDK refuses to compact a conversation that has fewer than two
+   * message groups — a fresh handoff is exactly that. Retract the compaction
+   * ADE asked for, say what actually happened, and never ask again for this
+   * session until a real compaction lands.
+   */
+  const observeClaudeCompactionUnavailable = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    texts: readonly (string | null | undefined)[],
+    turnId?: string,
+  ): boolean => {
+    const guardrail = runtime.contextGuardrail;
+    if (!guardrail.pendingInternalCompactionTrigger) return false;
+    const matched = texts.some((text) => typeof text === "string"
+      && /not enough messages to compact/i.test(text));
+    if (!matched) return false;
+    const compactionId = guardrail.pendingInternalCompactionId;
+    guardrail.pendingInternalCompactionTrigger = null;
+    guardrail.pendingInternalCompactionId = null;
+    guardrail.pendingInternalCompactionNotice = null;
+    guardrail.compactionUnavailable = true;
+    guardrail.compactionUnavailableTurnId = turnId ?? null;
+    emitChatEvent(managed, {
+      type: "context_compact",
+      trigger: "ade_fallback",
+      state: "failed",
+      ...(compactionId ? { compactionId } : {}),
+      ...(turnId ? { turnId } : {}),
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: "Claude could not compact this conversation. Start a new chat or hand off with a shorter history.",
+      ...(turnId ? { turnId } : {}),
+    });
+    logger.info("agent_chat.claude_context_compaction_unavailable", {
+      sessionId: managed.session.id,
+      occupancyPctAtTrigger: guardrail.occupancyPct,
+    });
+    return true;
+  };
+
+  /**
+   * A `/compact` that can never be answered. The message sits in an input pump
+   * that is about to be closed, so the boundary it was waiting for will never
+   * arrive — and the pending trigger would otherwise make every later fallback
+   * a no-op for the life of this runtime.
+   */
+  const abandonPendingInternalCompaction = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    reason: string,
+  ): void => {
+    const guardrail = runtime.contextGuardrail;
+    if (!guardrail.pendingInternalCompactionTrigger) return;
+    const compactionId = guardrail.pendingInternalCompactionId;
+    guardrail.pendingInternalCompactionTrigger = null;
+    guardrail.pendingInternalCompactionId = null;
+    guardrail.pendingInternalCompactionNotice = null;
+    // The compaction never ran, so this episode has not used its one fallback.
+    guardrail.fallbackIssuedThisEpisode = false;
+    emitChatEvent(managed, {
+      type: "context_compact",
+      trigger: "ade_fallback",
+      state: "failed",
+      failReason: "teardown",
+      ...(compactionId ? { compactionId } : {}),
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: "Claude could not compact this conversation. Its session restarted before the compaction ran.",
+    });
+    logger.warn("agent_chat.claude_context_compaction_abandoned", {
+      sessionId: managed.session.id,
+      reason,
+    });
   };
 
   const issueClaudeInternalCompaction = async (
@@ -17167,6 +17331,9 @@ export function createAgentChatService(args: {
   ): Promise<boolean> => {
     const guardrail = runtime.contextGuardrail;
     if (guardrail.pendingInternalCompactionTrigger) return true;
+    // One refusal is the answer for the whole session: asking again would loop
+    // the same "Not enough messages to compact" forever.
+    if (guardrail.compactionUnavailable) return false;
     if (!runtime.inputPump) await ensureClaudeQuery(managed, runtime);
     if (!runtime.inputPump) return false;
     const message = await buildClaudeV2MessageAsync("/compact", [], {
@@ -17190,21 +17357,129 @@ export function createAgentChatService(args: {
       compactionId: guardrail.pendingInternalCompactionId,
       ...(turnId ? { turnId } : {}),
     });
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "info",
-      severity: "info",
+    guardrail.pendingInternalCompactionNotice = {
       message: trigger === "recovery"
         ? "context overflowed — compacted; please re-send your last message"
         : "ADE compacted the context because Claude's automatic compaction had not run.",
       ...(turnId ? { turnId } : {}),
-    });
+    };
     logger.info("agent_chat.claude_context_compaction_observed", {
       sessionId: managed.session.id,
       trigger,
       occupancyPctAtTrigger: guardrail.occupancyPct,
     });
     return true;
+  };
+
+  /**
+   * "Not enough messages to compact" describes the conversation at that moment,
+   * not forever. Once a later turn finishes normally the conversation has grown
+   * and the boundary fallback is valid again, so re-arm it. The refusal turn
+   * itself never clears the flag, which keeps the no-loop guarantee inside a
+   * single attempt.
+   */
+  const maybeClearClaudeCompactionUnavailable = (
+    runtime: ClaudeRuntime,
+    turnId: string,
+    status: string,
+  ): void => {
+    const guardrail = runtime.contextGuardrail;
+    if (!guardrail.compactionUnavailable) return;
+    if (status !== "completed") return;
+    // A /compact still in flight has not told us anything yet.
+    if (guardrail.pendingInternalCompactionTrigger) return;
+    if (guardrail.compactionUnavailableTurnId === turnId) return;
+    guardrail.compactionUnavailable = false;
+    guardrail.compactionUnavailableTurnId = null;
+  };
+
+  /**
+   * Claude-only replay-overflow repair. See claudeReplayOverflowRecovery.ts —
+   * every other provider caps its replay at a wire limit it cannot exceed.
+   */
+  const claudeReplayOverflow = createClaudeReplayOverflowRecovery<ManagedChatSession, ClaudeRuntime>({
+    logger,
+    emitNotice: (managed, notice) => {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: notice.kind,
+        severity: notice.kind,
+        message: notice.message,
+        turnId: notice.turnId,
+      });
+    },
+    persist: (managed) => persistChatState(managed),
+    describeSession: (managed) => {
+      const descriptor = resolveSessionModelDescriptor(managed.session);
+      return {
+        id: managed.session.id,
+        modelLabel: descriptor?.displayName ?? managed.session.model ?? "this model",
+        contextWindowTokens: descriptor?.contextWindow
+          ?? managed.transcriptReplayOrigin?.contextWindowTokens
+          ?? null,
+      };
+    },
+    readOrigin: (managed) => managed.transcriptReplayOrigin,
+    writeOrigin: (managed, origin) => { managed.transcriptReplayOrigin = origin; },
+    readForkProvenance: (managed) => readReplayForkProvenance(managed),
+    stageReplay: (managed, replay) => { managed.pendingTranscriptReplay = replay; },
+    buildSourceReplay: (sourceSessionId, contextWindowTokens, budgetChars) => {
+      let envelopes: AgentChatEventEnvelope[];
+      try {
+        envelopes = readTranscriptEnvelopes(
+          ensureManagedSession(sourceSessionId),
+          { includeBuffered: true },
+        );
+      } catch (error) {
+        logger.warn("agent_chat.claude_replay_source_unreadable", {
+          sourceSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+      return buildFittedTranscriptReplay(envelopes, contextWindowTokens, budgetChars);
+    },
+    resetProviderSession: async (managed, runtime) => {
+      await resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
+    },
+    onGaveUp: (managed) => {
+      onChatHandoffReplay?.({
+        sessionId: managed.session.id,
+        outcome: "gave_up",
+        provider: managed.session.provider,
+      });
+    },
+    clearContinuityContext: (managed) => {
+      // The reset stages a transcript tail for continuity. The replay carries
+      // the same conversation in full, so the tail is pure duplication here —
+      // and duplication is what overflowed this chat in the first place.
+      managed.pendingReconstructionContext = null;
+    },
+  });
+
+  /**
+   * The `handoff_fork` stamp the import writes onto every envelope it copies.
+   * `replayFork` tells a replay fork from a native one; forks that predate it
+   * are told apart by the source chat's provider instead.
+   */
+  const readReplayForkProvenance = (managed: ManagedChatSession): ReplayForkProvenance | null => {
+    for (const envelope of readTranscriptEnvelopes(managed)) {
+      if (envelope.provenance?.providerOrigin !== "handoff_fork") continue;
+      const sourceSessionId = envelope.provenance.sourceSessionId?.trim() ?? "";
+      if (!sourceSessionId || sourceSessionId === managed.session.id) continue;
+      let sourceProvider: string | null = null;
+      try {
+        sourceProvider = ensureManagedSession(sourceSessionId).session.provider ?? null;
+      } catch {
+        sourceProvider = null;
+      }
+      return {
+        sourceSessionId,
+        replayFork: envelope.provenance.replayFork === true,
+        sourceProvider,
+      };
+    }
+    return null;
   };
 
   const maybeIssueClaudeBoundaryCompaction = async (
@@ -20506,6 +20781,7 @@ export function createAgentChatService(args: {
       ctoSessionStartedAt: row.status === "running" ? row.startedAt : null,
       pendingReconstructionContext: null,
       pendingTranscriptReplay: null,
+      transcriptReplayOrigin: null,
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
@@ -20584,6 +20860,7 @@ export function createAgentChatService(args: {
     if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
       managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
     }
+    managed.transcriptReplayOrigin = normalizeTranscriptReplayOrigin(persisted?.transcriptReplayOrigin);
 
     managedSessions.set(sessionId, managed);
     // Deferred until the scheduler has read its durable rows back: before that,
@@ -21863,6 +22140,7 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
     }
     persistChatState(managed);
+    maybeClearClaudeCompactionUnavailable(runtime, turnId, status);
     const compactionIssued = await maybeIssueClaudeBoundaryCompaction(managed, runtime, {
       recoverFromOverflow,
       turnId,
@@ -22890,6 +23168,16 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, { type: "error", message: error, turnId });
         }
       }
+      observeClaudeCompactionUnavailable(
+        managed,
+        runtime,
+        [
+          ...resultErrors.all,
+          state.assistantText,
+          typeof resultMsg.result === "string" ? resultMsg.result : null,
+        ],
+        state.turnId ?? undefined,
+      );
       await finishClaudeIdleTurn(
         managed,
         runtime,
@@ -23135,6 +23423,10 @@ export function createAgentChatService(args: {
       messageUuid?: string;
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
+      /** This run is the single automatic retry after a too-long handoff replay. */
+      replayOverflowRetry?: boolean;
+      /** The user message is already in the transcript; do not echo it again. */
+      suppressUserEcho?: boolean;
     },
   ): Promise<void> => {
     const runtime = managed.runtime;
@@ -23187,18 +23479,22 @@ export function createAgentChatService(args: {
       preview: claudeQueuedMessagePreview(displayText),
       ...(args.steerId ? { steerId: args.steerId } : {}),
     });
-    emitPreparedUserMessage(managed, {
-      text: userText,
-      displayText,
-      attachments,
-      contextAttachments,
-      metadata: args.metadata,
-      turnId,
-      messageId: userMessageId,
-      steerId: args.steerId,
-      laneDirectiveKey: args.laneDirectiveKey,
-      onDispatched: args.onDispatched,
-    });
+    if (!args.suppressUserEcho) {
+      emitPreparedUserMessage(managed, {
+        text: userText,
+        displayText,
+        attachments,
+        contextAttachments,
+        metadata: args.metadata,
+        turnId,
+        messageId: userMessageId,
+        steerId: args.steerId,
+        laneDirectiveKey: args.laneDirectiveKey,
+        onDispatched: args.onDispatched,
+      });
+    } else {
+      args.onDispatched?.();
+    }
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
     captureTurnBeforeSha(managed);
     emitChatEvent(managed, {
@@ -23367,7 +23663,20 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed ?? "";
+      const consumedTurnContext = consumePendingTurnContextPrefix(managed, providerSlashCommand);
+      // Remember the handoff replay this turn carries: an overflow on a turn
+      // that carried one is fixed by shortening the replay, not by compacting.
+      if (consumedTurnContext?.replay) {
+        claudeReplayOverflow.noteConsumedReplay(
+          runtime,
+          turnId,
+          consumedTurnContext.replay,
+          args.replayOverflowRetry === true,
+        );
+      } else {
+        claudeReplayOverflow.forgetConsumedReplay(runtime);
+      }
+      const reconstructionContext = consumedTurnContext?.composed ?? "";
       const basePromptText = providerSlashCommand
         ? args.promptText
         : [
@@ -23702,28 +24011,19 @@ export function createAgentChatService(args: {
             const wasPlan = managed.session.permissionMode === "plan";
             const nowPlan = reportedMode === "plan";
             if (wasPlan !== nowPlan) {
-              let refused = false;
               if (nowPlan) applyClaudePlanModeTransition(managed.session, "plan");
-              else refused = exitPlanModeForSession(managed.session);
+              else exitPlanModeForSession(managed.session);
               persistChatState(managed);
-              // A held identity is put straight back into plan by the
-              // re-assert, so the SDK's report was refused, not applied.
-              // Announcing "exited plan mode" would be a lie, and since the
-              // mode is still "plan" the very next status message satisfies
-              // this branch again — one false notice per message for the rest
-              // of the call.
-              if (!refused) {
-                emitChatEvent(managed, {
-                  type: "system_notice",
-                  noticeKind: "info",
-                  message: nowPlan ? "Session entered plan mode" : "Session exited plan mode",
-                  detail: buildClaudePlanModeNoticeDetail(
-                    nowPlan ? "entered_plan_mode" : "exited_plan_mode",
-                    managed.session.claudePermissionMode,
-                  ),
-                  turnId,
-                });
-              }
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "info",
+                message: nowPlan ? "Session entered plan mode" : "Session exited plan mode",
+                detail: buildClaudePlanModeNoticeDetail(
+                  nowPlan ? "entered_plan_mode" : "exited_plan_mode",
+                  managed.session.claudePermissionMode,
+                ),
+                turnId,
+              });
             }
           }
           if (statusMsg.status === "compacting") {
@@ -25069,6 +25369,16 @@ export function createAgentChatService(args: {
           resultTerminalStatus = classifyClaudeResultStatus(resultMsg);
           resultTerminalReason = compactString(resultMsg.terminal_reason);
           recoverFromContextOverflow = isClaudeContextOverflowResult(resultMsg, resultErrors.all);
+          observeClaudeCompactionUnavailable(
+            managed,
+            runtime,
+            [
+              ...resultErrors.all,
+              assistantText,
+              typeof resultMsg.result === "string" ? resultMsg.result : null,
+            ],
+            turnId,
+          );
           if (resultErrors.internalDiagnostics.length > 0) {
             logger.debug("agent_chat.claude_internal_diagnostic", {
               ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
@@ -25333,7 +25643,32 @@ export function createAgentChatService(args: {
       }
 
       persistChatState(managed);
-      const compactionIssued = runtimeStillCurrent
+      if (runtimeStillCurrent) {
+        maybeClearClaudeCompactionUnavailable(runtime, turnId, finalStatus);
+      }
+      // A too-long handoff replay is repaired by re-fitting the replay, never
+      // by a compaction the SDK will refuse on a single-exchange conversation.
+      const replayRecovery = runtimeStillCurrent && recoverFromContextOverflow
+        ? await claudeReplayOverflow.recoverFromOverflow(managed, runtime, turnId, {
+          isRetryTurn: args.replayOverflowRetry === true,
+        })
+        : null;
+      if (args.replayOverflowRetry === true && !replayRecovery) {
+        // "interrupted" is a user pressing Stop, not a prompt that did not fit:
+        // the replay is already in the session, and blaming its length would be
+        // a lie about what just happened.
+        if (finalStatus === "failed") {
+          claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
+        } else if (finalStatus === "completed") {
+          claudeReplayOverflow.noteRetrySucceeded(runtime);
+          onChatHandoffReplay?.({
+            sessionId: managed.session.id,
+            outcome: "retried",
+            provider: managed.session.provider,
+          });
+        }
+      }
+      const compactionIssued = runtimeStillCurrent && !replayRecovery
         ? await maybeIssueClaudeBoundaryCompaction(managed, runtime, {
             recoverFromOverflow: recoverFromContextOverflow,
             turnId,
@@ -25342,7 +25677,22 @@ export function createAgentChatService(args: {
 
       // Process queued steers (skip if session was disposed during execution)
       if (managed.runtime === runtime) {
-        if (compactionIssued) {
+        if (replayRecovery === "retry") {
+          void runClaudeTurn(managed, {
+            ...args,
+            replayOverflowRetry: true,
+            suppressUserEcho: true,
+            onDispatched: undefined,
+            onBackendDispatched: undefined,
+          }).catch((retryError) => {
+            logger.warn("agent_chat.claude_replay_overflow_retry_failed", {
+              sessionId: managed.session.id,
+              turnId,
+              error: retryError instanceof Error ? retryError.message : String(retryError),
+            });
+            claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
+          });
+        } else if (compactionIssued) {
           startClaudeIdleReader(managed, runtime, "turn_completed");
         } else if (runtime.pendingSteers.length) {
           const delivered = await deliverNextQueuedSteer(managed, runtime);
@@ -25377,6 +25727,7 @@ export function createAgentChatService(args: {
       // success path starts the idle reader. Abort throws still land here —
       // do not close() or an idle-reader terminate would reap those jobs.
       if (!runtime.interrupted) {
+        abandonPendingInternalCompaction(managed, runtime, "turn_failed");
         try { runtime.query?.close(); } catch { /* ignore */ }
         runtime.inputPump?.close();
         runtime.queryGeneration += 1;
@@ -25531,6 +25882,9 @@ export function createAgentChatService(args: {
         }
       }
 
+      if (args.replayOverflowRetry === true && !runtime.interrupted) {
+        claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
+      }
       persistChatState(managed);
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
       if (failedBeforeBackendDispatch) throw effectiveError;
@@ -33852,6 +34206,7 @@ export function createAgentChatService(args: {
       ? runtime.sdkSessionId?.trim() || null
       : null;
     cancelClaudeWarmup(managed, runtime, reason);
+    abandonPendingInternalCompaction(managed, runtime, `query_reset:${reason}`);
     if (!options.preserveInitialInputDispatchGate) {
       settleClaudeInitialInputDispatch(runtime, new Error(`Claude query reset before turn input dispatch (${reason}).`));
     }
@@ -34950,6 +35305,9 @@ export function createAgentChatService(args: {
         fallbackIssuedThisEpisode: false,
         pendingInternalCompactionTrigger: null,
         pendingInternalCompactionId: null,
+        pendingInternalCompactionNotice: null,
+        compactionUnavailable: false,
+        compactionUnavailableTurnId: null,
         lastUsageEmitAt: null,
         lastUsageEmitPct: null,
         nextSampleId: 0,
@@ -35012,6 +35370,7 @@ export function createAgentChatService(args: {
       ctoSessionStartedAt: null,
       pendingReconstructionContext: null,
       pendingTranscriptReplay: null,
+      transcriptReplayOrigin: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -35983,7 +36342,7 @@ export function createAgentChatService(args: {
     const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
     const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
     let effectivePermissionMode = identityKey
-      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
+      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider, sessionId)
       : requestedPermMode;
     if (orchestrationLeadRequested) {
       effectivePermissionMode = "plan";
@@ -36192,6 +36551,7 @@ export function createAgentChatService(args: {
       ctoSessionStartedAt: identityKey === "cto" ? startedAt : null,
       pendingReconstructionContext: null,
       pendingTranscriptReplay: null,
+      transcriptReplayOrigin: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -36553,6 +36913,30 @@ export function createAgentChatService(args: {
       usedFallbackSummary = generatedBrief.usedFallbackSummary;
     }
 
+    // Pre-flight. Fit the replay before the new chat exists, so a transcript
+    // that cannot fit at all refuses the handoff instead of creating a chat
+    // whose very first message is guaranteed to be rejected.
+    const targetModelLabel = targetDescriptor.displayName?.trim() || targetDescriptor.id;
+    const replayFit = replayFork
+      ? buildFittedTranscriptReplay(
+        readTranscriptEnvelopes(managed, { includeBuffered: true }),
+        targetDescriptor.contextWindow,
+        replayMaxCharsForProvider(targetProvider),
+      )
+      : null;
+    // The header alone always fits, so an empty string is not the signal: a
+    // replay that kept none of the conversation is.
+    if (replayFit && replayFit.turnCount > 0 && replayFit.keptTurnCount === 0) {
+      // No target chat exists yet, so this one is filed under the chat the user
+      // was handing off.
+      onChatHandoffReplay?.({
+        sessionId: sourceId,
+        outcome: "refused",
+        provider: targetProvider,
+      });
+      throw new Error(`This chat is too long to hand off to ${targetModelLabel}. Start a new chat on ${targetModelLabel} instead.`);
+    }
+
     const created = await createSession({
       laneId: targetLaneId,
       provider: targetProvider,
@@ -36651,28 +37035,43 @@ export function createAgentChatService(args: {
           ...(envelope.provenance ?? {}),
           providerOrigin: "handoff_fork",
           sourceSessionId: sourceId,
+          // A native fork keeps its history on the provider; only a replay fork
+          // may ever be re-seeded from this source transcript.
+          ...(replayFit ? { replayFork: true } : {}),
         },
       }));
       if (sourceEnvelopes.length) await appendImportedChatEvents(createdManaged, sourceEnvelopes);
     }
 
     let replayForkDisclosure: AgentChatReplayForkDisclosure | undefined;
-    if (replayFork) {
-      const fit = buildFittedTranscriptReplay(
-        readTranscriptEnvelopes(managed, { includeBuffered: true }),
-        targetDescriptor.contextWindow,
-        replayMaxCharsForProvider(targetProvider),
-      );
-      createdManaged.pendingTranscriptReplay = fit.text;
+    if (replayFit) {
+      createdManaged.pendingTranscriptReplay = replayFit.text;
+      // Durable: the replay text is consumed by the first turn, but the fact
+      // that this chat was rebuilt from another one has to outlive it.
+      createdManaged.transcriptReplayOrigin = {
+        sourceSessionId: sourceId,
+        budgetChars: replayFit.text.length,
+        keptTurnCount: replayFit.keptTurnCount,
+        turnCount: replayFit.turnCount,
+        ...(targetDescriptor.contextWindow
+          ? { contextWindowTokens: targetDescriptor.contextWindow }
+          : {}),
+      };
       persistChatState(createdManaged);
-      replayForkDisclosure = toReplayForkDisclosure(fit);
-      if (fit.truncated) {
-        emitChatEvent(createdManaged, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: `Forked with a full transcript replay. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window or provider input limit.`,
-        });
-      }
+      replayForkDisclosure = toReplayForkDisclosure(replayFit);
+      emitHandoffReplayNotice(
+        createdManaged,
+        replayFit,
+        targetModelLabel,
+        targetDescriptor.contextWindow,
+      );
+      // The pre-flight has resolved: the conversation either reached the new
+      // model whole or only in part. One fact, once per handoff.
+      onChatHandoffReplay?.({
+        sessionId: createdManaged.session.id,
+        outcome: replayFit.truncated ? "truncated" : "fit",
+        provider: targetProvider,
+      });
     }
 
     if (handoffMode === "brief" || handoffNote) {
@@ -48641,6 +49040,7 @@ export function createAgentChatService(args: {
         args.identityKey,
         args.permissionMode ?? managed.session.permissionMode,
         managed.session.provider,
+        managed.session.id,
       );
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       enforceManagedLocalHarnessPermissionMode(managed);
@@ -50817,6 +51217,7 @@ export function createAgentChatService(args: {
           managed.session.identityKey,
           managed.session.permissionMode,
           nextProvider,
+          managed.session.id,
         );
         applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       }
@@ -50975,7 +51376,12 @@ export function createAgentChatService(args: {
     if (permissionMode !== undefined) {
       managed.session.permissionMode = orchestrationLockedMode
         ?? (isIdentitySession
-        ? normalizeIdentityPermissionMode(managed.session.identityKey, permissionMode, managed.session.provider)
+        ? normalizeIdentityPermissionMode(
+          managed.session.identityKey,
+          permissionMode,
+          managed.session.provider,
+          managed.session.id,
+        )
           : permissionMode);
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
     }

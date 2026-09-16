@@ -91,26 +91,27 @@ Main process:
 - `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
-- `apps/desktop/src/renderer/components/settings/OpenAiKeySheet.tsx` — the
-  machine-scoped OpenAI key, shared by the settings card and the modal the
-  CTO's **Talk** button opens: `useMachineOpenAiKey` (status in, secret only
-  out), `OpenAiKeyCostLine` (`OPENAI_VOICE_COST_LINE` + the
+- `apps/desktop/src/renderer/components/settings/openAiKey.tsx` — the
+  machine-scoped OpenAI key parts, shared by the settings card and the modal
+  the CTO's **Talk** button opens: `useMachineOpenAiKey` (status in, secret
+  only out), `OpenAiKeyCostLine` (`OPENAI_VOICE_COST_LINE` + the
   `platform.openai.com` link, opened through ADE's own opener so it honours
-  the "open links in" preference), `OpenAiKeyField`, and `OpenAiKeySheet`
-  itself. `OPENAI_VOICE_PROVIDER` is `"openai"` — the same secret as the
+  the "open links in" preference), and `OpenAiKeyField`.
+  `OPENAI_VOICE_PROVIDER` is `"openai"` — the same secret as the
   `OPENAI_API_KEY` provider key, not a second one.
+- `apps/desktop/src/renderer/components/settings/OpenAiKeySheet.tsx` — the
+  modal sheet, composed from those parts.
 - `apps/desktop/src/renderer/components/settings/OpenAiKeySection.tsx` — the
   card, with `OPENAI_KEY_ANCHOR` pinned to the `agents.openai-key` manifest
   entry. Add → store → **Connected** → Replace / Delete, and Replace/Delete
   offered only when `status.source === "store"`.
 - `apps/desktop/src/main/services/ai/apiKeyStore.ts` — the machine-scope half:
-  `withMachineScope`, `createMachineScopeState` (store path under
+  `initMachineApiKeyStore`, `createMachineScopeState` (store path under
   `resolveMachineAdeLayout().secretsDir`, `projectRootPath: null`),
   `storeMachineApiKey` / `deleteMachineApiKey` / `listMachineStoredProviders`,
   and `getMachineApiKeyStatus`, which reports `store` vs `env` without ever
-  handing the value back. The scope swap is safe because every operation the
-  store performs is synchronous, so it cannot interleave with a project-scoped
-  call on the same tick.
+  handing the value back. Every helper takes its `ApiKeyScopeState` as the
+  first argument, so each call names the store it reads.
 - `apps/desktop/src/renderer/components/settings/CaptureGestureSection.tsx` —
   the capture-gesture switch plus the native helper's health line and its
   retry. Reads `supportsCaptureGesturePlatform()` / `captureGestureBlocker()`
@@ -1606,14 +1607,20 @@ and [machine power and sleep in the account directory](../sync-and-multi-device/
 **Settings > Agents & Models > Connections > OpenAI API key** (anchor
 `openai-api-key`, `OpenAiKeySection.tsx`) is the only key on that page
 bound to the **machine** rather than the project. It resolves through the
-machine-scoped half of `apiKeyStore.ts`: `withMachineScope` swaps the
-module's store state for the duration of one synchronous call, pointing
-it at `resolveMachineAdeLayout().secretsDir` — `~/.ade/secrets`, or
-`$ADE_HOME` — instead of `<project>/.ade/secrets`, and deliberately sets
-`projectRootPath: null` so the per-project legacy migration, the one step
-that makes a key follow a project, never runs. The credential store
-itself is already machine-wide, so both scopes share it: one provider key
-is one secret, whichever door it came in by.
+machine-scoped half of `apiKeyStore.ts`. The machine-scoped exports pass an
+`ApiKeyScopeState` that points at `resolveMachineAdeLayout().secretsDir` —
+`~/.ade/secrets`, or `$ADE_HOME` — instead of `<project>/.ade/secrets`. It
+sets `projectRootPath: null`, so the per-project legacy migration, the one
+step that makes a key follow a project, never runs. `initMachineApiKeyStore`
+registers the credential store at app start, so a window with no project open
+still writes where the runtime and the `ade` CLI read, and it registers an
+`EncryptedFileCredentialStore` over `~/.ade/secrets` rather than
+`createDesktopCredentialStore`'s safeStorage-primary routed store — the headless
+runtime and the `ade` CLI cannot decrypt an Electron safeStorage file, which is
+how Settings once answered `configured: true` while Talk answered "no OpenAI key
+on this machine", both honestly, about two different stores. The
+credential store itself is already machine-wide, so both scopes share it: one
+provider key is one secret, whichever door it came in by.
 
 The scope is the point, not an implementation detail. This key pays for
 CTO voice calls *this machine* makes, and scoping it to a project would
@@ -1644,11 +1651,11 @@ Three rules govern the secret itself:
   delete nothing while leaving the user believing otherwise; the `env`
   case gets a line saying where to go instead.
 
-`OpenAiKeySheet.tsx` exports the same cost line, field, and save button as
-a block another surface can drop into a modal, which is what the CTO's
-**Talk** button mounts the first time someone starts a call with no key
-stored. One implementation of the ask, so the never-re-display rule has
-one enforcement point.
+`openAiKey.tsx` exports the cost line and the field, and `OpenAiKeySheet.tsx`
+composes them into the modal another surface can mount. The CTO's **Talk**
+button mounts it the first time someone starts a call with no key stored. One
+implementation of the ask, so the never-re-display rule has one enforcement
+point.
 
 The manifest entry is `web: "hidden"`, like every other machine-scoped
 setting on this page: a machine secret has no meaning in a browser tab,

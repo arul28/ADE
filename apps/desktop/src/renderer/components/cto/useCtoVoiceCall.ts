@@ -2,13 +2,16 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 
 import { bytesToBase64 } from "../../lib/base64";
 import {
+  CTO_VOICE_CAPTURE_DEFAULT_NOTE,
   CTO_VOICE_CAPTURE_EVENT,
   CTO_VOICE_INITIAL_STATE,
   CTO_VOICE_SAMPLE_RATE,
+  ctoVoiceMicrophoneUnavailableMessage,
   isVoiceCallLive,
   type CtoVoiceBridge,
   type CtoVoiceStatePayload,
 } from "../../../shared/types/ctoVoice";
+import { rendererRuntimeTarget } from "../../lib/platform";
 
 /**
  * Renderer half of a CTO voice call.
@@ -48,17 +51,28 @@ function setState(next: CtoVoiceStatePayload) {
  * on the CTO page — so a per-hook subscription registered the same IPC listener
  * twice and delivered every state push twice.
  */
-let bridgeSubscribed = false;
+let releaseBridge: (() => void) | null = null;
 
 function subscribe(listener: () => void) {
-  // Latched on SUCCESS, not on the attempt. Setting it first meant that a
-  // first subscriber mounting before the preload bridge existed turned the
-  // store off for the life of the process.
-  if (!bridgeSubscribed) {
-    bridgeSubscribed = Boolean(bridge()?.onState(setState));
+  // Attached on SUCCESS, not on the attempt. Latching a boolean before the
+  // call meant a first subscriber mounting ahead of the preload bridge turned
+  // the store off for the life of the process.
+  //
+  // The unsubscribe is kept rather than dropped: while any component is
+  // listening there is exactly one IPC listener, and when the last one goes
+  // the bridge listener goes with it. Dropping it leaked a listener per
+  // process and left tests no way back to a clean store.
+  if (!releaseBridge) {
+    releaseBridge = bridge()?.onState(setState) ?? null;
   }
   listeners.add(listener);
-  return () => { listeners.delete(listener); };
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      releaseBridge?.();
+      releaseBridge = null;
+    }
+  };
 }
 
 /**
@@ -95,11 +109,45 @@ function floatToPcm16(input: Float32Array): Uint8Array {
   return out;
 }
 
+/**
+ * Ask the OS for the microphone before asking Chromium for it.
+ *
+ * On macOS Electron hands back a live, unmuted, all-zero track instead of
+ * throwing when the OS has not granted access, so `getUserMedia` succeeding
+ * proves nothing. Dictation already learned this and owns the gate
+ * (`ade.transcription.requestMicAccess` → `askForMediaAccess`); this reuses it
+ * rather than growing a second one. Absent bridge — the browser preview — is
+ * not a denial, and falls through to `getUserMedia` as before.
+ */
+async function microphoneAccessDenied(): Promise<boolean> {
+  const ensureAccess = window.ade?.transcription?.requestMicAccess;
+  if (!ensureAccess) return false;
+  try {
+    const access = await ensureAccess();
+    return access.status !== "granted";
+  } catch {
+    // An unreachable gate is not a denial; let `getUserMedia` decide.
+    return false;
+  }
+}
+
 async function startCapture() {
   if (mediaStream) return;
+  if (await microphoneAccessDenied()) {
+    throw new Error("Microphone access was not granted.");
+  }
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
+  // A stream with no audio track, or one that is already over, is a failure
+  // that arrived as a success. `muted` is deliberately NOT checked: a track can
+  // legitimately start muted for a frame, and hanging up on that would refuse
+  // calls on working microphones.
+  const track = mediaStream.getAudioTracks()[0];
+  if (!track || track.readyState === "ended") {
+    stopCapture();
+    throw new Error("The microphone produced no audio track.");
+  }
   audioContext = new AudioContext({ sampleRate: CTO_VOICE_SAMPLE_RATE });
   const source = audioContext.createMediaStreamSource(mediaStream);
   // ScriptProcessor is deprecated but is the only node that works without
@@ -164,9 +212,11 @@ export function useCtoVoiceCall() {
   // Starting is a plain request; the microphone is started by the HUD host in
   // response to the phase change, so it has exactly one owner no matter which
   // surface pressed the button.
-  const start = useCallback(async () => {
+  // Typed as the bridge's own result, so the no-bridge arm cannot quietly
+  // return a narrower object and make callers cast to read `detail`.
+  const start = useCallback(async (): ReturnType<CtoVoiceBridge["start"]> => {
     const api = bridge();
-    if (!api) return { ok: false, error: "unavailable" as const };
+    if (!api) return { ok: false, error: "unavailable" };
     return api.start();
   }, []);
 
@@ -174,6 +224,13 @@ export function useCtoVoiceCall() {
     await bridge()?.end();
   }, []);
 
+  // The one place this store writes something the main process did not send.
+  //
+  // Mute is a physical expectation — the button must look pressed the instant
+  // it is pressed — so the flag is echoed locally rather than waited for. It is
+  // an echo, not a fact: the next pushed state replaces the whole object, so if
+  // the main process disagrees (a call that ended mid-press, a refused mute)
+  // its answer wins on the very next push. Nothing else here may do this.
   const toggleMute = useCallback(() => {
     const next = !state.muted;
     bridge()?.setMuted(next);
@@ -213,8 +270,11 @@ export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
       return;
     }
     let cancelled = false;
+    // The hang-up carries a reason because it comes from this side; see
+    // `CtoVoiceBridge.end` for why a silent one is not enough.
     void startCapture().catch(() => {
-      if (!cancelled) void bridge()?.end();
+      if (cancelled) return;
+      void bridge()?.end(ctoVoiceMicrophoneUnavailableMessage(rendererRuntimeTarget().platform));
     });
     return () => { cancelled = true; };
   }, [live]);
@@ -239,7 +299,7 @@ export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
       if (!pngBase64) return;
       void bridge()?.attachImage({
         pngBase64,
-        note: detail?.note ?? "The user shared what they are looking at.",
+        note: detail?.note ?? CTO_VOICE_CAPTURE_DEFAULT_NOTE,
       });
     };
     window.addEventListener(CTO_VOICE_CAPTURE_EVENT, onCapture);

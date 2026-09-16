@@ -93,12 +93,22 @@ export function buildConfirmation(args: {
   utteranceId: string | null;
   nowMs: number;
   approvalItemId?: string | null;
+  /**
+   * The verdict, when the caller could see more than the tool's name.
+   *
+   * A real approval rarely names an ADE operation: a bash approval arrives as
+   * "Run command: git push --force origin main", and the name alone
+   * (`Bash`, `command`) says nothing about blast radius. `describeVoiceApproval`
+   * reads the command text and decides; this is where that decision lands.
+   * Omitted, the name is all there is to go on.
+   */
+  destructive?: boolean;
 }): CtoVoiceConfirmation {
   return {
     id: args.id,
     prompt: args.prompt,
     toolName: args.toolName,
-    destructive: isDestructiveVoiceTool(args.toolName),
+    destructive: args.destructive ?? isDestructiveVoiceTool(args.toolName),
     utteranceId: args.utteranceId,
     expiresAtMs: args.nowMs + CTO_VOICE_SPOKEN_CONFIRM_WINDOW_MS,
     ...(args.approvalItemId ? { approvalItemId: args.approvalItemId } : {}),

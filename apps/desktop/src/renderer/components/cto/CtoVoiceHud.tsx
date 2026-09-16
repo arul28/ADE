@@ -5,10 +5,12 @@ import { Microphone, MicrophoneSlash, Phone, Warning } from "@phosphor-icons/rea
 import {
   formatVoiceCost,
   formatVoiceElapsed,
+  isVoiceCallLive,
   isVoiceCallVisible,
   type CtoVoiceConfirmation,
   type CtoVoicePhase,
   type CtoVoiceState,
+  type LiveVoicePhase,
 } from "../../../shared/types/ctoVoice";
 import { COLORS } from "../lanes/laneDesignTokens";
 
@@ -27,15 +29,36 @@ import { COLORS } from "../lanes/laneDesignTokens";
 const PILL_HEIGHT = 44;
 const CANVAS_WIDTH = 420;
 
-const PHASE_LABEL: Record<CtoVoicePhase, string> = {
-  idle: "Ready",
+/**
+ * What makes a pill look like a pill, in one place so the failed one cannot
+ * drift from the live one.
+ *
+ * Solid rather than blurred: a backdrop-filter here promotes the buttons to
+ * their own compositing layer, which software rasterisation then paints at the
+ * wrong origin — a ghost copy of the controls appeared in the opposite corner.
+ * Opacity alone reads the same over app chrome and cannot do that.
+ */
+function pillChrome(borderColor: string): React.CSSProperties {
+  return {
+    background: "rgba(16,14,22,0.96)",
+    border: `1px solid ${borderColor}`,
+    boxShadow: "0 12px 32px rgba(0,0,0,0.38)",
+  };
+}
+
+/**
+ * One label per phase a running call can be in.
+ *
+ * Keyed by the shared `LiveVoicePhase`, so a phase added to the call cannot be
+ * added without a word for it here. `failed` is not in this map: it is not a
+ * running call and it has its own pill.
+ */
+const PHASE_LABEL: Record<LiveVoicePhase, string> = {
   connecting: "Connecting",
   listening: "Listening",
   thinking: "Working",
   speaking: "Speaking",
   confirming: "Waiting on you",
-  ended: "Call ended",
-  failed: "Call failed",
 };
 
 /**
@@ -129,6 +152,51 @@ function ConfirmationStrip({
   );
 }
 
+/**
+ * The pill a call leaves behind when it never started.
+ *
+ * Its own component because it shares nothing with a running call but the
+ * shape: no meter, no timer, no mute, no captions, nothing to drag a canvas
+ * around. Gating one pill on `failed` in five places made the live path read
+ * as though every one of those things had a failed variant.
+ *
+ * It says only that the call failed. The reason is a sentence, and a sentence
+ * belongs on the CTO page under the header, where there is a line's width for
+ * it — not trailing off the bottom of a pill onto the composer.
+ */
+function FailedPill({ onDismiss }: { onDismiss: () => void }) {
+  const reduced = useReducedMotion();
+  return (
+    <div className="pointer-events-none fixed inset-0 z-[112]" data-testid="cto-voice-hud-layer">
+      <motion.div
+        initial={reduced ? false : { opacity: 0, y: 14, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 360, damping: 30 }}
+        className="pointer-events-auto absolute bottom-6 right-6 flex items-center gap-2.5 rounded-full py-1.5 pl-3 pr-1.5"
+        style={{ height: PILL_HEIGHT, ...pillChrome(COLORS.danger) }}
+        data-testid="cto-voice-hud"
+        data-phase="failed"
+      >
+        <Warning size={15} weight="fill" style={{ color: COLORS.danger }} />
+        <span className="text-[11px] font-medium" style={{ color: COLORS.danger }}>
+          Call failed
+        </span>
+        <button
+          type="button"
+          onClick={onDismiss}
+          title="Dismiss"
+          aria-label="Dismiss"
+          data-testid="cto-voice-end"
+          className="grid size-8 place-items-center rounded-full transition-transform hover:scale-105"
+          style={{ background: COLORS.danger, color: "#0b0910" }}
+        >
+          <Phone size={14} weight="fill" style={{ transform: "rotate(135deg)" }} />
+        </button>
+      </motion.div>
+    </div>
+  );
+}
+
 export type CtoVoiceHudProps = {
   state: CtoVoiceState;
   /** Rendered above the pill while the call has drawn something. */
@@ -162,8 +230,9 @@ export function CtoVoiceHud({
   }, [state.captions]);
 
   if (!isVoiceCallVisible(state.phase)) return null;
+  // Visible but not live can only be `failed`, and that is a different pill.
+  if (!isVoiceCallLive(state.phase)) return <FailedPill onDismiss={onEnd} />;
 
-  const failed = state.phase === "failed";
   const expanded = Boolean(canvas) || Boolean(state.pendingConfirmation);
   // Hoisted so the JSX below narrows without a non-null assertion.
   const pending = state.pendingConfirmation;
@@ -233,7 +302,7 @@ export function CtoVoiceHud({
 
         {/* Caption — one line, the most recent thing said. */}
         <AnimatePresence>
-          {showCaptions && latestCaption && !failed ? (
+          {showCaptions && latestCaption ? (
             <motion.div
               key={`${latestCaption.role}-${latestCaption.atMs}`}
               initial={reduced ? false : { opacity: 0, y: 4 }}
@@ -255,29 +324,30 @@ export function CtoVoiceHud({
           ) : null}
         </AnimatePresence>
 
-        {/* The pill. */}
+        {/* The pill. Nothing below it: the failure sentence used to hang off
+            the bottom of this stack, outside every border the HUD draws, and
+            landed on the composer's icon row. The reason for a failed call is
+            the page's to tell, under the CTO header, where there is a line's
+            worth of room for it. */}
         <div
           onPointerDown={(event) => dragControls.start(event)}
           className="flex items-center gap-2.5 rounded-full py-1.5 pl-3 pr-1.5"
           style={{
             height: PILL_HEIGHT,
-            // Solid rather than blurred: a backdrop-filter on this pill promotes
-            // its buttons to their own compositing layer, which software
-            // rasterisation then paints at the wrong origin — a ghost copy of the
-            // controls appeared in the opposite corner. Opacity alone reads the
-            // same over app chrome and cannot do that.
-            background: "rgba(16,14,22,0.96)",
-            border: `1px solid ${failed ? COLORS.danger : state.interrupted ? COLORS.accent : COLORS.border}`,
-            boxShadow: dragging ? "0 20px 48px rgba(0,0,0,0.5)" : "0 12px 32px rgba(0,0,0,0.38)",
+            ...pillChrome(state.interrupted ? COLORS.accent : COLORS.border),
+            ...(dragging ? { boxShadow: "0 20px 48px rgba(0,0,0,0.5)" } : null),
             cursor: dragging ? "grabbing" : "grab",
             transition: "border-color 140ms ease, box-shadow 140ms ease",
           }}
         >
           <LevelMeter level={state.inputLevel} phase={state.phase} interrupted={state.interrupted} />
 
-          <div className="flex min-w-0 flex-col leading-none">
-            <span className="text-[11px] font-medium" style={{ color: failed ? COLORS.danger : COLORS.textPrimary }}>
-              {failed ? "Call failed" : PHASE_LABEL[state.phase]}
+          <div className="flex min-w-0 max-w-[180px] flex-col leading-none">
+            <span
+              className="truncate text-[11px] font-medium"
+              style={{ color: COLORS.textPrimary }}
+            >
+              {PHASE_LABEL[state.phase]}
             </span>
             <span className="mt-0.5 text-[10px] tabular-nums" style={{ color: COLORS.textDim }}>
               {formatVoiceElapsed(state.elapsedMs)} · {formatVoiceCost(state.elapsedMs)}
@@ -286,17 +356,17 @@ export function CtoVoiceHud({
 
           <div className="ml-1 flex items-center gap-1">
             <button
-              type="button"
-              onClick={onToggleMute}
-              title={state.muted ? "Unmute" : "Mute"}
-              aria-label={state.muted ? "Unmute" : "Mute"}
-              data-testid="cto-voice-mute"
-              className="grid size-8 place-items-center rounded-full transition-colors"
-              style={{
-                background: state.muted ? COLORS.accentSubtle : "transparent",
-                color: state.muted ? COLORS.accent : COLORS.textSecondary,
-              }}
-            >
+                type="button"
+                onClick={onToggleMute}
+                title={state.muted ? "Unmute" : "Mute"}
+                aria-label={state.muted ? "Unmute" : "Mute"}
+                data-testid="cto-voice-mute"
+                className="grid size-8 place-items-center rounded-full transition-colors"
+                style={{
+                  background: state.muted ? COLORS.accentSubtle : "transparent",
+                  color: state.muted ? COLORS.accent : COLORS.textSecondary,
+                }}
+              >
               {state.muted ? <MicrophoneSlash size={14} weight="fill" /> : <Microphone size={14} />}
             </button>
             <button
@@ -312,12 +382,6 @@ export function CtoVoiceHud({
             </button>
           </div>
         </div>
-
-        {failed && state.error ? (
-          <span className="max-w-[360px] text-right text-[10px]" style={{ color: COLORS.textDim }}>
-            {state.error}
-          </span>
-        ) : null}
       </motion.div>
     </div>
   );

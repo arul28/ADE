@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import { FileCode } from "@phosphor-icons/react";
 
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
-import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
+import { hasOpenSceneFence, SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import { useChatChromeTint } from "./chatAppearance";
@@ -142,6 +142,15 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
    */
   sceneLive?: boolean;
 }) {
+  // This component knows both halves of "still arriving", so it answers the
+  // question once instead of handing the frame two flags to combine. Fence
+  // state is read over the WHOLE body — settled prose plus the growing tail —
+  // so a fence that opens in one and closes in the other is read as one fence.
+  // Every scene in the body is held while the last one is open; a message with
+  // two scenes mounts both a tick later rather than mounting one against a
+  // document that is still arriving.
+  const sceneStreaming = Boolean(sceneLive)
+    && hasOpenSceneFence(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown);
   const chromeTint = useChatChromeTint();
   const neu = chromeTint === "neutral";
   const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
@@ -213,7 +222,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       // Scenes are not gated on a render context: any agent may draw, and the
       // sandbox rather than the caller is what makes that safe.
       if (isBlock && language === SCENE_FENCE_LANGUAGE) {
-        return <SceneFrame source={text} scopeKey={mosaicScopeKey ?? undefined} live={sceneLive} />;
+        return <SceneFrame source={text} scopeKey={mosaicScopeKey ?? undefined} live={sceneLive} streaming={sceneStreaming} />;
       }
       return isBlock ? (
         <HighlightedCode code={text} language={language} />
@@ -261,7 +270,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, neu, openWorkspacePath, sceneLive]);
+  }), [mosaic, mosaicScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming]);
 
   return (
     <div

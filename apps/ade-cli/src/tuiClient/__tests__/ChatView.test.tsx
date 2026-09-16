@@ -1970,6 +1970,51 @@ describe("ChatView", () => {
     expect(frame).not.toMatch(/┌─\s*mosaic/);
   });
 
+  it("collapses a ```scene fence to one line (the frame is desktop-only)", () => {
+    const scene = [
+      '<!-- @scene title="Merged pull requests" -->',
+      '<div class="wrap"><span id="n">3</span></div>',
+      "<style>.wrap { color: red }</style>",
+      "<script>ade.countUp('#n', 3);</" + "script>",
+    ].join("\n");
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "Here it is:\n\n```scene\n" + scene + "\n```" },
+      },
+    ];
+    const frame = renderEvents(events, { width: 80 });
+    expect(frame).toContain("[scene: Merged pull requests]");
+    // None of the markup reaches the terminal.
+    expect(frame).not.toContain("countUp");
+    expect(frame).not.toContain("<div");
+    expect(frame).not.toMatch(/┌─\s*scene/);
+  });
+
+  it.each([
+    ["a ~~~ fence", "~~~scene\n", "\n~~~"],
+    ["a fence indented up to three spaces", "   ```scene\n", "\n   ```"],
+    ["an info string with a suffix", "```scene generated\n", "\n```"],
+  ])("collapses %s the same way the desktop renderer does", (_label, open, close) => {
+    const scene = [
+      '<!-- @scene title="Merged pull requests" -->',
+      '<div class="wrap"><span id="n">3</span></div>',
+    ].join("\n");
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "Here it is:\n\n" + open + scene + close },
+      },
+    ];
+    const frame = renderEvents(events, { width: 80 });
+    expect(frame).toContain("[scene: Merged pull requests]");
+    expect(frame).not.toContain("<div");
+  });
+
   it("renders a malformed ```mosaic fence as a normal code block, not a summary line", () => {
     const events: AgentChatEventEnvelope[] = [
       {

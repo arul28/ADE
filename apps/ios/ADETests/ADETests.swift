@@ -19348,7 +19348,11 @@ final class ADETests: XCTestCase {
     ) as? [String: Any]
     let state = encoded?["onboardingState"] as? [String: Any]
     XCTAssertEqual(state?["completedSteps"] as? [String], ["intro", "memory_gardener"])
-    XCTAssertEqual(state?["completedAt"] as? String, "2026-07-04T00:00:00Z")
+    // The retired wizard fields are NOT resurrected on the way back: the host's
+    // `normalizeOnboardingState` keeps `completedSteps` and nothing else, so a
+    // phone echoing `completedAt` would be writing a field with no reader.
+    XCTAssertNil(state?["completedAt"])
+    XCTAssertNil(state?["dismissedAt"])
     // Nothing on the phone injects a step of its own into the host's list.
     XCTAssertFalse((state?["completedSteps"] as? [String] ?? []).contains("identity"))
   }
@@ -21405,6 +21409,51 @@ final class ADETests: XCTestCase {
       ["Build", "", "ADE"],
       ["Ship", "done", ""],
     ])
+  }
+
+  /// A ```scene fence is agent-authored HTML for the desktop's sandboxed frame.
+  /// iOS has no frame to run it in, so the transcript must collapse it to a
+  /// placeholder — never render, and never dump, up to 96 KB of markup.
+  func testSceneFenceCollapsesToAPlaceholderInsteadOfMarkup() {
+    let markdown = """
+    Here is the shape of it.
+
+    ```scene
+    <!-- @scene title="Lane throughput" -->
+    <div style="color:red">burn chart</div>
+    ```
+    """
+    let blocks = parseMarkdownBlocks(markdown)
+    guard case .code(let language, let code) = blocks.last?.kind else {
+      return XCTFail("Expected the scene fence to parse as a fenced block.")
+    }
+    XCTAssertTrue(workIsSceneFenceLanguage(language))
+    // The source survives in the model (the view is what collapses it), so the
+    // title the placeholder shows has to come out of it.
+    XCTAssertEqual(workSceneFenceTitle(code), "Lane throughput")
+    XCTAssertEqual(workSummarizeSceneFence(code), "[scene: Lane throughput]")
+  }
+
+  /// Mirrors desktop `parseSceneFence`: only the first non-blank line may be
+  /// the marker, `@scene` is a whole word, and a scene with no marker falls
+  /// back to the generic label rather than borrowing text from its markup.
+  func testSceneFenceTitleParsingMirrorsDesktopMarkerRules() {
+    XCTAssertEqual(workSceneFenceTitle("\n\n<!--   @scene   title=\"Spaced\"  -->\n<p>x</p>"), "Spaced")
+    XCTAssertNil(workSceneFenceTitle("<div>no marker</div>"))
+    // A marker that is not the FIRST non-blank line is markup, not a title.
+    XCTAssertNil(workSceneFenceTitle("<div>x</div>\n<!-- @scene title=\"Late\" -->"))
+    // `@scene` must be a whole word.
+    XCTAssertNil(workSceneFenceTitle("<!-- @scenery title=\"Nope\" -->"))
+    // An empty title is no title.
+    XCTAssertNil(workSceneFenceTitle("<!-- @scene title=\"  \" -->"))
+    XCTAssertEqual(workSummarizeSceneFence("<div>x</div>"), "[scene: generated view]")
+    // Capped at the desktop's 120 characters.
+    let long = String(repeating: "a", count: 200)
+    XCTAssertEqual(workSceneFenceTitle("<!-- @scene title=\"\(long)\" -->")?.count, 120)
+    // Language matching is trimmed and case-insensitive; nothing else collapses.
+    XCTAssertTrue(workIsSceneFenceLanguage(" Scene "))
+    XCTAssertFalse(workIsSceneFenceLanguage("swift"))
+    XCTAssertFalse(workIsSceneFenceLanguage(nil))
   }
 
   func testParseWorkChatTranscriptUsesDeterministicFallbackItemIds() {

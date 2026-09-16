@@ -14,6 +14,7 @@ import {
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
+import { CTO_VOICE_ACTIONS } from "../../desktop/src/shared/types/ctoVoice";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -3786,6 +3787,99 @@ describe("adeRpcServer", () => {
     expect(stalePreferenceWrite.isError).toBe(true);
     expect(stalePreferenceWrite.error?.message).toContain("account changed");
     expect(putAttentionPreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the CTO voice call off every agent-role surface, with contracts for the operator", async () => {
+    const fixture = createRuntime();
+    const start = vi.fn(async () => ({ ok: true }));
+    const getState = vi.fn(() => ({ phase: "idle" }));
+    (fixture.runtime as any).ctoVoiceCallService = {
+      getState,
+      hasKey: vi.fn(() => ({ hasKey: false })),
+      start,
+      end: vi.fn(),
+      setMuted: vi.fn(),
+      pushAudio: vi.fn(),
+      pullAudio: vi.fn(),
+      resolveApproval: vi.fn(),
+      sendCapture: vi.fn(),
+      dispose: vi.fn(),
+    };
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
+    const hidden = await callTool(agentHandler, "list_ade_actions", { domain: "cto_voice" });
+    expect(hidden?.isError).toBeUndefined();
+    expect(hidden.structuredContent).toMatchObject({ count: 0, actions: [] });
+
+    const refused = await callTool(agentHandler, "run_ade_action", {
+      domain: "cto_voice",
+      action: "start",
+      args: { ownerToken: "token-1" },
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.error?.message).toContain("requires elevated role");
+    expect(start).not.toHaveBeenCalled();
+
+    const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
+    const inventory = await callTool(ctoHandler, "list_ade_actions", { domain: "cto_voice" });
+    expect(inventory?.isError).toBeUndefined();
+    expect(inventory.structuredContent.actions.map((entry: { name: string }) => entry.name)).toEqual(
+      expect.arrayContaining(CTO_VOICE_ACTIONS.map((action) => `cto_voice.${action}`)),
+    );
+    // A blank row here is an operator guessing at `ownerToken`, so every voice
+    // action must reach `ade actions list --text` with a usable contract.
+    for (const entry of inventory.structuredContent.actions as {
+      name: string;
+      description?: string;
+      input?: string;
+    }[]) {
+      expect(entry.description, entry.name).toBeTruthy();
+      expect(entry.input, entry.name).toBeTruthy();
+    }
+
+    const state = await callTool(ctoHandler, "run_ade_action", {
+      domain: "cto_voice",
+      action: "getState",
+      args: {},
+    });
+    expect(state?.isError).toBeUndefined();
+    expect(getState).toHaveBeenCalled();
+  });
+
+  it("withholds cto_voice events from a non-CTO stream_events caller without stalling its cursor", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+      events: [
+        { id: cursor + 1, timestamp: "t", category: "runtime", payload: {} },
+        { id: cursor + 2, timestamp: "t", category: "cto_voice", payload: { caption: "secret" } },
+      ],
+      nextCursor: cursor + 2,
+      hasMore: false,
+    }));
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
+
+    const byName = await callTool(agentHandler, "stream_events", { cursor: 0, category: "cto_voice" });
+    expect(byName.isError).toBe(true);
+    expect(byName.error?.message).toContain("requires the cto role");
+
+    const drained = await callTool(agentHandler, "stream_events", { cursor: 0 });
+    expect(drained?.isError).toBeUndefined();
+    expect(drained.structuredContent.events.map((event: { category: string }) => event.category)).toEqual([
+      "runtime",
+    ]);
+    // Filtered, not refused — and the cursor still advances past what was
+    // withheld, so polling cannot stall on an event the caller cannot see.
+    expect(drained.structuredContent.nextCursor).toBe(2);
+
+    const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
+    const full = await callTool(ctoHandler, "stream_events", { cursor: 0 });
+    expect(full?.isError).toBeUndefined();
+    expect(full.structuredContent.events).toHaveLength(2);
   });
 
   it("invokes ADE actions dynamically and returns status hints", async () => {

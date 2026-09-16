@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSceneDocument,
+  hasOpenSceneFence,
   isSceneParseFailure,
   parseSceneFence,
   parseSceneHostMessage,
   SCENE_CONTENT_SECURITY_POLICY,
   SCENE_LIMITS,
+  summarizeSceneFence,
 } from "./chatScene";
 
 describe("parseSceneFence", () => {
@@ -49,11 +51,44 @@ describe("parseSceneFence", () => {
     expect(parsed.html.toLowerCase()).not.toContain("content-security-policy");
   });
 
+  /**
+   * The strip is document furniture, not anything shaped like it. A scene that
+   * renders a snippet of HTML as its own content keeps every byte of it.
+   */
+  it("never strips wrapper tags out of script or style text", () => {
+    const parsed = parseSceneFence([
+      "<div id=\"out\"></div>",
+      "<script>",
+      "  var sample = \"<body> and </body> and <!doctype html>\";",
+      "  document.getElementById(\"out\").textContent = sample;",
+      "</" + "script>",
+      "<style>/* <body> inside a comment */ p { color: red }</style>",
+    ].join("\n"));
+    if (isSceneParseFailure(parsed)) throw new Error("expected a scene");
+    expect(parsed.html).toContain("<body> and </body> and <!doctype html>");
+    expect(parsed.html).toContain("/* <body> inside a comment */");
+    // ...and the real wrapper outside those regions still goes.
+    const wrapped = parseSceneFence("<body><script>var s = \"<body>\";</" + "script></body>");
+    if (isSceneParseFailure(wrapped)) throw new Error("expected a scene");
+    expect(wrapped.html.startsWith("<script")).toBe(true);
+    expect(wrapped.html).toContain("var s = \"<body>\";");
+  });
+
   it("refuses an empty scene and an oversized one", () => {
     const empty = parseSceneFence('<!-- @scene title="x" -->\n   ');
     expect(isSceneParseFailure(empty) && empty.reason).toBe("empty");
     const big = parseSceneFence("x".repeat(SCENE_LIMITS.maxSourceBytes + 1));
     expect(isSceneParseFailure(big) && big.reason).toBe("too-large");
+  });
+});
+
+describe("SCENE_LIMITS", () => {
+  /** The server-side bound has to leave room for the template it wraps. */
+  it("allows a full-size source plus the document template", () => {
+    expect(SCENE_LIMITS.maxDocumentBytes).toBeGreaterThan(SCENE_LIMITS.maxSourceBytes);
+    const document = buildSceneDocument({ html: "x".repeat(SCENE_LIMITS.maxSourceBytes) });
+    expect(new TextEncoder().encode(document).length)
+      .toBeLessThanOrEqual(SCENE_LIMITS.maxDocumentBytes);
   });
 });
 
@@ -113,5 +148,25 @@ describe("parseSceneHostMessage", () => {
     const err = parseSceneHostMessage({ __adeScene: 1, type: "error", payload: { message: "e".repeat(900) } });
     expect(err?.type).toBe("error");
     expect(err && "message" in err.payload ? err.payload.message.length : 0).toBe(500);
+  });
+});
+
+describe("hasOpenSceneFence", () => {
+  it("is true only while the last scene fence is still open", () => {
+    expect(hasOpenSceneFence("```scene\n<p>half")).toBe(true);
+    expect(hasOpenSceneFence("```scene\n<p>done</p>\n```")).toBe(false);
+    expect(hasOpenSceneFence("```ts\nconst a = 1;")).toBe(false);
+    // A ``` inside an open ts block closes that block; it does not open a scene.
+    expect(hasOpenSceneFence("```ts\nconst a = 1;\n```\n```scene\n<p>")).toBe(true);
+    expect(hasOpenSceneFence("no fences here")).toBe(false);
+  });
+});
+
+describe("summarizeSceneFence", () => {
+  it("collapses a scene to one line naming it", () => {
+    expect(summarizeSceneFence('<!-- @scene title="Merged PRs" -->\n<p>x</p>'))
+      .toBe("[scene: Merged PRs]");
+    expect(summarizeSceneFence("<p>x</p>")).toBe("[scene: generated view]");
+    expect(summarizeSceneFence("   ")).toBe("[scene: generated view]");
   });
 });

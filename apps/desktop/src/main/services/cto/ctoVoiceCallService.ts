@@ -7,6 +7,8 @@ import {
   CTO_VOICE_ENDPOINT,
   CTO_VOICE_MODEL,
   CTO_VOICE_INITIAL_STATE,
+  CTO_VOICE_CAPTURE_DEFAULT_NOTE,
+  CTO_VOICE_PREOPEN_AUDIO_LIMIT,
   CTO_VOICE_SAMPLE_RATE,
   voiceCostUsd,
   type CtoVoiceCaption,
@@ -39,16 +41,144 @@ import { buildConfirmation, resolveSpokenConfirmation } from "./ctoVoiceConfirma
 export type CtoVoiceSocket = {
   send: (data: string) => void;
   close: () => void;
-  on: (event: "open" | "message" | "close" | "error", handler: (payload?: unknown) => void) => void;
+  /**
+   * `unexpected-response` is the only place the HTTP status of a failed upgrade
+   * is visible. Without a listener `ws` throws the response away and reports
+   * `Error: Unexpected server response: 401`, so "your key was rejected" and
+   * "OpenAI is down" arrive as the same sentence.
+   */
+  on: (
+    event: "open" | "message" | "close" | "error" | "unexpected-response",
+    handler: (payload?: unknown) => void,
+  ) => void;
 };
+
+/**
+ * Why a call stopped. Every teardown names one, and the name is in the log.
+ *
+ * Kept as data rather than a free string so a new teardown path cannot be added
+ * without deciding what to call it — the diagnosis this exists for is "which of
+ * the nine paths ran", and an unlabelled tenth is the one that hides.
+ */
+export type CtoVoiceCallEndReason =
+  | "owner_end"
+  | "start_rejected"
+  | "watchdog"
+  | "socket_close"
+  | "socket_error"
+  | "socket_rejected"
+  | "confirm_mode_failed"
+  | "dispose"
+  | "replaced"
+  | "unknown";
+
+/** What a failed connection attempt told us, in the two forms it can arrive. */
+export type CtoVoiceSocketFailure = {
+  /** HTTP status of a rejected upgrade, when there was a response at all. */
+  status?: number | null;
+  /** Node's error code (`ENOTFOUND`, `ECONNREFUSED`, …), when there was one. */
+  code?: string | null;
+  /** The raw message, read only to recover a status or code nobody passed. */
+  message?: string | null;
+};
+
+export type CtoVoiceSocketFailureReason = {
+  /** One sentence for the HUD, naming the thing the user can act on. */
+  message: string;
+  status: number | null;
+  code: string | null;
+};
+
+/**
+ * Codes that mean "this machine could not reach OpenAI at all".
+ *
+ * A DNS failure, a refused connection and a dead route are one problem from the
+ * user's side — the network — and a different problem from a rejected key, so
+ * they must not share a sentence.
+ */
+const CTO_VOICE_OFFLINE_ERROR_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "ETIMEDOUT",
+  "EPIPE",
+  "ERR_SOCKET_CONNECTION_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/**
+ * Turn a failed connection into something worth reading.
+ *
+ * "The voice connection failed." is true of every case below and useful in none
+ * of them: the three that a user can actually do something about are a key
+ * OpenAI refused, a key it is throttling, and a machine that is offline. Pure,
+ * so the mapping is testable without a socket.
+ *
+ * The status is taken from the upgrade response when we have one and recovered
+ * from `ws`'s own message when we do not — `Unexpected server response: 401` is
+ * what arrives when nothing listened for the response itself.
+ */
+export function describeCtoVoiceSocketFailure(
+  failure: CtoVoiceSocketFailure = {},
+): CtoVoiceSocketFailureReason {
+  const text = typeof failure.message === "string" ? failure.message : "";
+  const parsedStatus = /unexpected server response:\s*(\d{3})/i.exec(text)?.[1];
+  const status = typeof failure.status === "number" && Number.isFinite(failure.status)
+    ? failure.status
+    : parsedStatus
+      ? Number(parsedStatus)
+      : null;
+  const explicitCode = typeof failure.code === "string" && failure.code.trim().length
+    ? failure.code.trim().toUpperCase()
+    : null;
+  // A fake socket in a test, and some wrapped errors, carry the code only in
+  // the text ("getaddrinfo ENOTFOUND api.openai.com").
+  const code = explicitCode
+    ?? [...CTO_VOICE_OFFLINE_ERROR_CODES].find((candidate) => text.toUpperCase().includes(candidate))
+    ?? null;
+
+  if (status === 401 || status === 403) {
+    return { message: "OpenAI rejected this key. Check it under CTO settings, Voice.", status, code };
+  }
+  if (status === 429) {
+    return { message: "OpenAI is rate limiting this key. Try again in a minute.", status, code };
+  }
+  // Only when the upgrade never got a response: a 500 is OpenAI answering, not
+  // a network that is down, and must not be blamed on the user's connection.
+  if (status === null && code !== null && CTO_VOICE_OFFLINE_ERROR_CODES.has(code)) {
+    return { message: "ADE could not reach OpenAI. Check your internet connection.", status, code };
+  }
+  return { message: "The voice connection failed.", status, code };
+}
 
 export type CtoVoiceBackendResult = {
   /** Spoken back to the user, paraphrased by the voice model. */
   spoken: string;
-  /** Optional scene the turn drew. */
+  /**
+   * A scene the turn drew, lifted out of the answer's one `scene` fence.
+   *
+   * The HUD renders it in the same sandbox the transcript uses, so a view drawn
+   * during a call and a view drawn in a chat turn are the same thing.
+   */
   sceneSource?: string | null;
-  /** Set when the backend wants to run something that changes state. */
-  confirmation?: { toolName: string; prompt: string } | null;
+};
+
+/**
+ * One approval on the CTO thread, as the call needs to hear about it.
+ *
+ * `destructive` is decided by whoever watched the event, because only they can
+ * see the command text — the tool name on its own cannot tell a force-push from
+ * a `git status`.
+ */
+export type CtoVoiceApprovalNotice = {
+  itemId: string;
+  toolName: string;
+  prompt: string;
+  destructive?: boolean;
 };
 
 export type CtoVoiceCallDeps = {
@@ -84,12 +214,12 @@ export type CtoVoiceCallDeps = {
     costUsd: number;
   }) => Promise<void>;
   /**
-   * Open and close the call's read-only window. A call shares the CTO's one
-   * session and there is no per-turn permission argument, so the guarantee that
-   * a spoken word cannot reach a writing tool has to be held open for the
-   * duration of the call and released on hang-up.
+   * Put the CTO in confirm-first mode for the life of the call.
+   *
+   * A call shares the CTO's one session and there is no per-turn permission
+   * argument, so the guarantee that a spoken word cannot reach a writing tool
+   * has to be held open for the whole call and released on hang-up.
    */
-  /** Put the CTO in confirm-first mode for the life of the call. */
   setCallConfirmMode?: (confirmFirst: boolean) => Promise<void>;
   /**
    * Answer an approval the CTO's turn is blocked on.
@@ -107,7 +237,7 @@ export type CtoVoiceCallDeps = {
    * that is no longer on screen.
    */
   watchApprovals?: (
-    onApproval: (args: { itemId: string; toolName: string; prompt: string }) => void,
+    onApproval: (args: CtoVoiceApprovalNotice) => void,
   ) => () => void;
   onState: (state: CtoVoiceState) => void;
   /** One chunk of output audio, base64 PCM16, for the renderer to play. */
@@ -117,17 +247,84 @@ export type CtoVoiceCallDeps = {
   createWebSocket?: (url: string, apiKey: string) => CtoVoiceSocket;
 };
 
+/**
+ * Hand the rejected upgrade's status up, and only THEN release the socket.
+ *
+ * The order is the whole function. Destroying the request makes `ws` emit
+ * `error` synchronously — "WebSocket was closed before the connection was
+ * established" — and that error knows nothing about the 401 it was caused by.
+ * Releasing first therefore let the generic sentence win the race against the
+ * one the user needs, which is how a rejected key came back as "The voice
+ * connection failed." The status is reported, described and latched before
+ * anything is torn down; the destroy afterwards only frees the socket `ws`
+ * hands to a listener and will not otherwise clean up.
+ */
+export function forwardUnexpectedResponse(
+  handler: (payload?: unknown) => void,
+  request: { destroy?: () => void } | null | undefined,
+  response: { statusCode?: number | null } | null | undefined,
+): void {
+  try {
+    handler({ statusCode: response?.statusCode ?? null });
+  } finally {
+    try {
+      request?.destroy?.();
+    } catch {
+      // The handshake is already over; this only releases the socket.
+    }
+  }
+}
+
 function defaultSocket(url: string, apiKey: string): CtoVoiceSocket {
   const socket = new WebSocket(url, { headers: { Authorization: `Bearer ${apiKey}` } });
   return {
     send: (data) => socket.send(data),
     close: () => socket.close(),
-    on: (event, handler) => socket.on(event, handler as (...args: unknown[]) => void),
+    on: (event, handler) => {
+      if (event === "unexpected-response") {
+        // `ws` hands the listener (request, response); only the status matters,
+        // and taking a listener here is also what stops it collapsing the
+        // response into a bare `Error: Unexpected server response: NNN`.
+        socket.on("unexpected-response", (request, response) => {
+          forwardUnexpectedResponse(handler, request, response);
+        });
+        return;
+      }
+      socket.on(event, handler as (...args: unknown[]) => void);
+    },
   };
 }
 
 export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   let socket: CtoVoiceSocket | null = null;
+  /**
+   * True only between `open` and the end of the socket's life.
+   *
+   * `ws` throws synchronously on `send` while the handshake is still in flight
+   * ("WebSocket is not open: readyState 0 (CONNECTING)"), and the microphone
+   * starts producing frames the moment the HUD mounts — which is the whole
+   * window between Talk being pressed and OpenAI answering. Every send below is
+   * gated on this rather than on `socket` being non-null, because a socket that
+   * exists is not a socket that will accept anything.
+   */
+  let socketOpen = false;
+  /**
+   * True while WE are closing the socket on purpose.
+   *
+   * `ws` reports a close of a still-CONNECTING socket as
+   * "WebSocket was closed before the connection was established" — an error
+   * that looks exactly like a connection that failed on its own. Describing it
+   * as one blamed OpenAI for a hang-up ADE asked for, which is how a call ended
+   * by the renderer 144 ms in came back as "The voice connection failed."
+   */
+  let deliberateClose = false;
+  /**
+   * Mic frames captured before the session existed.
+   *
+   * Dropped rather than replayed past this bound: the first second of speech is
+   * worth keeping, an unbounded queue against a socket that never opens is not.
+   */
+  let pendingInputAudio: string[] = [];
   /**
    * True from the moment `start` commits to a call until `endCall` tears it
    * down — NOT "is the socket open".
@@ -176,8 +373,49 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
   const setPhase = (phase: CtoVoicePhase) => emit({ phase });
 
+  /**
+   * The connection died. Say which way, once.
+   *
+   * A rejected upgrade can reach us twice — through `unexpected-response` and
+   * again through `error` — and the second arrival knows less than the first,
+   * so it must not overwrite "OpenAI rejected this key" with the generic line.
+   */
+  /**
+   * Why the connection died, in two words rather than a sentence.
+   *
+   * The sentence the user reads names a provider and a settings pane; the
+   * product question is only "was the key refused, or could we not reach
+   * OpenAI at all". Recorded here because this is the one place the HTTP status
+   * exists.
+   */
+  let connectionFailureKind: "rejected_key" | "connection_failed" | null = null;
+  let connectionFailed = false;
+  const failConnection = (failure: CtoVoiceSocketFailure, event: string): void => {
+    const reason = describeCtoVoiceSocketFailure(failure);
+    deps.logger?.warn(event, {
+      status: reason.status,
+      code: reason.code,
+      ...(connectionFailed ? { suppressed: true } : {}),
+      ...(deliberateClose ? { deliberate: true } : {}),
+      ...(failure.message ? { error: failure.message } : {}),
+    });
+    // Whatever explained the failure first knew the most. Tearing the socket
+    // down is itself reported as an error ("closed before the connection was
+    // established"), so the follow-on is logged for the trace and then does
+    // nothing at all — and a close WE asked for is never a failure to begin
+    // with, whether or not anything had failed before it.
+    if (deliberateClose || connectionFailed) return;
+    connectionFailed = true;
+    connectionFailureKind = reason.status === 401 || reason.status === 403
+      ? "rejected_key"
+      : "connection_failed";
+    emit({ phase: "failed", error: reason.message });
+  };
+
   const send = (payload: Record<string, unknown>) => {
-    if (!socket) return;
+    // Not "is there a socket" — "will it take this". A pre-open send throws,
+    // and it used to throw once per microphone frame.
+    if (!socket || !socketOpen) return;
     try {
       socket.send(JSON.stringify(payload));
     } catch (error) {
@@ -236,8 +474,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     const controller = new AbortController();
     abort?.abort();
     abort = controller;
-    const raisedBy = utterance.id;
-
     try {
       const image = pendingImage;
       pendingImage = null;
@@ -251,19 +487,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // Superseded while the backend was working: the answer is to a question
       // the user has already moved on from, so it is dropped, not spoken.
       if (controller.signal.aborted) return;
-
-      if (result.confirmation) {
-        const confirmation = buildConfirmation({
-          id: randomUUID(),
-          toolName: result.confirmation.toolName,
-          prompt: result.confirmation.prompt,
-          utteranceId: raisedBy,
-          nowMs: Date.now(),
-        });
-        emit({ pendingConfirmation: confirmation, phase: "confirming" });
-        speak(delegationId, result.spoken || confirmation.prompt);
-        return;
-      }
 
       if (result.sceneSource) emit({ sceneSource: result.sceneSource });
       speak(delegationId, result.spoken);
@@ -367,7 +590,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * `canUseTool`. Speaking the question here is what turns "the call went
    * quiet" into "the CTO asked you something".
    */
-  function raiseApproval(args: { itemId: string; toolName: string; prompt: string }) {
+  function raiseApproval(args: CtoVoiceApprovalNotice) {
     if (!started) return;
     const confirmation = buildConfirmation({
       id: randomUUID(),
@@ -376,6 +599,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       utteranceId: utterance.id,
       nowMs: Date.now(),
       approvalItemId: args.itemId,
+      ...(args.destructive === undefined ? {} : { destructive: args.destructive }),
     });
     emit({ pendingConfirmation: confirmation, phase: "confirming" });
     // Spoken with no delegation id: this is ADE asking, not an answer to a
@@ -412,16 +636,35 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     }
   }
 
-  async function endCall() {
+  /**
+   * Every way a call can stop, named.
+   *
+   * One line per teardown, logged BEFORE the `started` guard, because the most
+   * confusing case is the one where the answer is "something called end and it
+   * was already over". Without it, a call that died 144 ms in looked identical
+   * whether OpenAI refused it or ADE hung up on itself.
+   */
+  async function endCall(reason: CtoVoiceCallEndReason = "unknown") {
+    deps.logger?.info("cto_voice.call_end", {
+      reason,
+      callId: state.callId,
+      phase: state.phase,
+      started,
+      socketOpen,
+    });
     if (!started) return;
     started = false;
     const closing = socket;
     socket = null;
+    socketOpen = false;
+    pendingInputAudio = [];
     abort?.abort();
     abort = null;
     if (keepAlive) { clearInterval(keepAlive); keepAlive = null; }
     releaseApprovalWatch?.();
     releaseApprovalWatch = null;
+    // Set before the close, because `ws` reports it synchronously.
+    deliberateClose = true;
     try { closing?.close(); } catch { /* already gone */ }
 
     // Restore full-auto first: a call that ended must not leave the CTO asking
@@ -455,6 +698,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   return {
     getState: () => state,
 
+    /** The coarse reason the connection failed, if it did. Never a sentence. */
+    getConnectionFailureKind: () => connectionFailureKind,
+
     raiseApproval,
 
     async start(): Promise<{ ok: boolean; error?: string }> {
@@ -473,6 +719,12 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // half-open utterance or its unsent transcript.
       utterance = { id: randomUUID(), text: "", open: false, consumed: false };
       pendingImage = null;
+      // A second call on this service must be able to fail in its own words.
+      connectionFailed = false;
+      connectionFailureKind = null;
+      socketOpen = false;
+      deliberateClose = false;
+      pendingInputAudio = [];
 
       const callId = randomUUID();
       emit({
@@ -514,6 +766,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         // Without this the late handler arms a 10 Hz interval that nothing will
         // ever clear, once per abandoned call.
         if (!socket) return;
+        socketOpen = true;
         send({
           type: "session.start",
           event_id: randomUUID(),
@@ -534,27 +787,71 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
         // A real microphone never stops. Without a continuous stream the session
         // stalls mid-sentence, so silence goes out whenever the user is muted.
+        // Whatever the microphone produced while the handshake was in flight,
+        // in order and after the session config it belongs to.
+        const buffered = pendingInputAudio;
+        pendingInputAudio = [];
+        for (const chunk of buffered) {
+          send({ type: "session.input_audio.append", audio: chunk });
+        }
+
         keepAlive = setInterval(() => {
-          if (!socket || !state.muted) return;
+          if (!socket || !socketOpen || !state.muted) return;
           const silence = Buffer.alloc(Math.floor(CTO_VOICE_SAMPLE_RATE * 0.1) * 2);
           send({ type: "session.input_audio.append", audio: silence.toString("base64") });
         }, 100);
       });
       socket.on("message", (payload) => handleEvent(payload));
-      socket.on("error", (payload) => {
-        deps.logger?.warn("cto_voice.socket_error", { error: String(payload) });
-        emit({ phase: "failed", error: "The voice connection failed." });
+      socket.on("unexpected-response", (payload) => {
+        const response = (payload ?? {}) as { statusCode?: unknown };
+        const status = typeof response.statusCode === "number" ? response.statusCode : null;
+        failConnection({ status }, "cto_voice.socket_rejected");
+        // Nothing else will: taking the `unexpected-response` listener makes
+        // this handler responsible for ending the attempt.
+        void endCall("socket_rejected");
       });
-      socket.on("close", () => { void endCall(); });
+      socket.on("error", (payload) => {
+        const error = (payload ?? {}) as { code?: unknown; message?: unknown };
+        failConnection(
+          {
+            code: typeof error.code === "string" ? error.code : null,
+            message: typeof error.message === "string" ? error.message : String(payload),
+          },
+          "cto_voice.socket_error",
+        );
+      });
+      socket.on("close", () => { void endCall("socket_close"); });
 
       return { ok: true };
     },
 
     /** Mic frames from the renderer: base64 PCM16 at the session sample rate. */
     pushAudio(base64: string, level?: number) {
-      if (!socket || state.muted) return;
-      send({ type: "session.input_audio.append", audio: base64 });
-      if (typeof level === "number") emit({ inputLevel: Math.max(0, Math.min(1, level)) });
+      // Wrapped whole: this runs ~12 times a second off an action call, and a
+      // throw here does not stay here — it rejects the action, which the
+      // desktop pump reads as "the runtime is gone" and tears the call down,
+      // taking the state subscription with it before the runtime's own failure
+      // can be forwarded. That is how a rejected key left the HUD counting
+      // against a call that had already ended.
+      try {
+        if (!socket || state.muted) return;
+        if (!socketOpen) {
+          // The session does not exist yet. Hold the audio for the open
+          // handler to flush, bounded so a socket that never opens cannot grow
+          // the process.
+          pendingInputAudio.push(base64);
+          if (pendingInputAudio.length > CTO_VOICE_PREOPEN_AUDIO_LIMIT) {
+            pendingInputAudio.splice(0, pendingInputAudio.length - CTO_VOICE_PREOPEN_AUDIO_LIMIT);
+          }
+        } else {
+          send({ type: "session.input_audio.append", audio: base64 });
+        }
+        // The level meter is the one thing that is still true before the socket
+        // opens: the user IS talking, and the HUD should show it.
+        if (typeof level === "number") emit({ inputLevel: Math.max(0, Math.min(1, level)) });
+      } catch (error) {
+        deps.logger?.warn("cto_voice.push_audio_failed", { error: String(error) });
+      }
     },
 
     /**
@@ -563,9 +860,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
      * it cannot read one.
      */
     attachImage(args: { pngBase64: string; note: string }) {
+      // The capture can wait for the socket; `think` cannot be sent before it.
       if (!socket) return;
       pendingImage = args.pngBase64;
-      think(null, args.note || "The user shared the window they are looking at. It is attached to the next backend request.");
+      think(null, args.note || CTO_VOICE_CAPTURE_DEFAULT_NOTE);
     },
 
     setMuted(muted: boolean) {
@@ -582,7 +880,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       denyPending();
     },
 
-    end: endCall,
+    end: (reason?: CtoVoiceCallEndReason) => endCall(reason ?? "unknown"),
   };
 }
 

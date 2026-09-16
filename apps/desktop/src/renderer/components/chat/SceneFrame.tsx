@@ -62,6 +62,21 @@ export type SceneFrameProps = {
   /** True while the turn or call that produced this scene is still running. */
   live?: boolean;
   /**
+   * True while this scene's ```scene fence is still ARRIVING — live AND not
+   * yet closed. The markdown parser hands a half-written fence over as a
+   * finished code block on every reveal tick, so mounting on one would prepare
+   * a new document and reload the iframe several times a second, throwing away
+   * whatever the scene had already drawn.
+   *
+   * One prop rather than a `live` + `sealed` pair, because only the caller can
+   * answer it: fence state is a property of the markdown body, not of this
+   * component, and the two flags were never independently meaningful here —
+   * `sealed` mattered only while `live`. Defaults false: every caller that does
+   * not stream (the voice HUD, a settled transcript row) is complete by
+   * construction.
+   */
+  streaming?: boolean;
+  /**
    * Stable key for the transcript row. It feeds the document identity below so
    * two byte-identical scenes at different positions get their own frame rather
    * than sharing one.
@@ -72,7 +87,7 @@ export type SceneFrameProps = {
 
 type Status = "loading" | "running" | "frozen" | "failed";
 
-export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFrameProps) {
+export function SceneFrame({ source, live = false, streaming = false, scopeKey, onEmit }: SceneFrameProps) {
   // Proof in ADE is chat-scoped, so a snapshot filed with no owner is an
   // artifact nobody can trace back to a conversation. Read from the chat scope
   // rather than taken as a prop: the value is session-constant, and threading
@@ -91,10 +106,12 @@ export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFram
   const [proofState, setProofState] = useState<"idle" | "saving" | "saved">("idle");
 
   const theme = useMemo(readSceneTheme, []);
+  // A fence that is still arriving draws nothing: one placeholder now beats a
+  // frame that reloads on every tick.
   const doc = useMemo(() => {
-    if (failed) return null;
+    if (failed || streaming) return null;
     return buildSceneDocument({ html: parsed.html, title: parsed.title, theme, scopeKey });
-  }, [failed, parsed, theme, scopeKey]);
+  }, [failed, streaming, parsed, theme, scopeKey]);
 
   const [src, setSrc] = useState<string | null>(null);
 
@@ -104,20 +121,27 @@ export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFram
     if (!doc) return;
     let revoked: string | null = null;
     let cancelled = false;
-    const prepare = window.ade?.scene?.prepare;
-    if (typeof prepare === "function") {
-      void prepare(doc)
-        .then((url) => { if (!cancelled) setSrc(url); })
-        .catch(() => {
-          if (cancelled) return;
-          const blob = new Blob([doc], { type: "text/html" });
-          revoked = URL.createObjectURL(blob);
-          setSrc(revoked);
-        });
-    } else {
+    const fallBackToBlob = () => {
       const blob = new Blob([doc], { type: "text/html" });
       revoked = URL.createObjectURL(blob);
       setSrc(revoked);
+    };
+    const prepare = window.ade?.scene?.prepare;
+    if (typeof prepare === "function") {
+      // A non-string answer is a failure, not a URL. On the hosted web client
+      // the `scene.prepare` the adapter exposes is a generic fallback proxy: it
+      // is a function, it resolves, and it resolves `null` — so a bare
+      // `typeof === "function"` check passed, `src` became null, and the scene
+      // rendered as a blank gap with no error anywhere.
+      void prepare(doc)
+        .then((url) => {
+          if (cancelled) return;
+          if (typeof url === "string" && url.length > 0) setSrc(url);
+          else fallBackToBlob();
+        })
+        .catch(() => { if (!cancelled) fallBackToBlob(); });
+    } else {
+      fallBackToBlob();
     }
     return () => {
       cancelled = true;
@@ -152,10 +176,10 @@ export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFram
   // A scene that never reports ready is not necessarily broken — it may simply
   // not call ade.ready() — so this stops the spinner rather than the scene.
   useEffect(() => {
-    if (status !== "loading") return;
+    if (status !== "loading" || !src) return;
     const timer = window.setTimeout(() => setStatus("running"), SCENE_LIMITS.readyTimeoutMs);
     return () => window.clearTimeout(timer);
-  }, [status]);
+  }, [status, src]);
 
   // Freeze: capture the frame's rect, then swap the image in and drop the frame
   // so nothing keeps executing in scrollback.
@@ -194,6 +218,30 @@ export function SceneFrame({ source, live = false, scopeKey, onEmit }: SceneFram
       .then((ok) => setProofState(ok ? "saved" : "idle"))
       .catch(() => setProofState("idle"));
   }, [failed, parsed, snapshot, sessionId]);
+
+  if (streaming) {
+    // Deliberately not the parse-failure block: a fence that is two lines in is
+    // not a broken scene, and showing "could not be rendered" mid-stream would
+    // be a lie that corrects itself a second later.
+    return (
+      <div className="group/scene my-3" data-testid="chat-scene" data-scene-status="drawing">
+        <div className="flex">
+          <div
+            aria-hidden
+            className="w-px shrink-0 rounded-full"
+            style={{ background: `linear-gradient(to bottom, ${COLORS.accent}, transparent)` }}
+          />
+          <div className="min-w-0 flex-1 pl-3" style={{ height: MIN_HEIGHT }} />
+        </div>
+        <div className="mt-1 flex items-center gap-2 pl-3.5">
+          <span className="text-[10px] tracking-wide" style={{ color: COLORS.textMuted }}>
+            {(!failed && parsed.title) || "Generated view"}
+            <span style={{ color: COLORS.textDim }}> · drawing</span>
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   if (failed) {
     return (

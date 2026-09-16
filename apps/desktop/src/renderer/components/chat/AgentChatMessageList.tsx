@@ -2680,7 +2680,12 @@ function renderEvent(
             onOpenWorkspacePath={options?.onOpenWorkspacePath}
             mosaic={options?.mosaic}
             mosaicScopeKey={envelope.key}
-            sceneLive={Boolean(options?.sessionTurnActive)}
+            // This row's OWN turn, not the session's. `sessionTurnActive` is
+            // true for every row in the transcript while any turn runs, so a
+            // scene drawn three turns ago came back to life — and re-executed
+            // its script — the moment the user scrolled to it during a later
+            // turn. `turnActive` is already scoped to the row's turn id.
+            sceneLive={Boolean(options?.turnActive)}
           />
         </div>
       </motion.div>

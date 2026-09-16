@@ -294,6 +294,35 @@ operational lines (`agent_chat.auto_resume_scheduled`,
 which do carry session ids, schedule ids, and fire times, are not PostHog
 events.
 
+What becomes of a handoff's transcript replay records one coarse fact on the
+same `ade_feature_used` event with `feature: "chat"` and
+`action: "handoff_replay"`, at the durable owners: `handoffSession` once the
+pre-flight has resolved, and the Claude replay-overflow recovery once per
+terminal. `outcome` is a closed set of five values — `fit` (the whole
+conversation reached the new model), `truncated` (only its newest turns did),
+`refused` (the handoff could not be made at all), `retried` (ADE re-sent the
+message with less history and the model took it), and `gave_up` (it ran out of
+room and handed the turn back). `provider` rides along as the existing coarse
+target-provider slug. The product question is only whether a cross-provider
+handoff carries the conversation, so nothing finer crosses the boundary: no
+model name, no turn counts, no share of the context window, no notice copy, and
+no part of the transcript. A `share_bucket` property was considered and left
+out — no bucket key for a proportion exists, and the five outcomes already
+answer the question.
+
+Volume is bounded by a `chat_handoff_replay:<session>:<outcome>` deduplication
+key (the service salts and hashes it locally; it is never sent) with a one-hour
+minimum interval. A handoff is a deliberate user action that emits once, and the
+recovery emits at most one `retried` or `gave_up` per user message, so worst
+case is five accepted events per chat per hour and realistic volume is single
+digits per installation per day — inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling. No ceiling
+was raised, and no PostHog definition changed: the provisioning scripts
+enumerate event names, not `action` or `outcome` values. The recovery's local
+operational lines (`agent_chat.claude_replay_overflow_retry`,
+`agent_chat.claude_replay_overflow_gave_up`), which carry session and turn ids
+and turn counts, are not PostHog events.
+
 Which tool an installation opens in the Work tools pane records the existing
 `ade_feature_used` event at the pane's single writer (`useWorkSidebarTool`'s
 `setTool`, which every entry point funnels through — a picker card, the command
@@ -641,6 +670,44 @@ the existing `ade_feature_used` and shared daily ceilings. Hover, right-click,
 snapshot refresh, acknowledgements, delivery retries, APNs/ActivityKit frames,
 and native presentation changes remain untracked because they are either
 high-frequency mechanics or can expose work-specific interaction patterns.
+
+### CTO voice calls and the capture gesture
+
+A CTO voice call records one `ade_feature_used` event when it ENDS, emitted from
+the runtime-hosted call service — the durable owner of the call, and the only
+place that sees every way one can finish. It carries `feature: "cto"`,
+`action: "voice_call"`, one closed `outcome`, and the existing coarse
+`duration_bucket`. The five outcomes are the whole product question: `completed`,
+`rejected_key` (OpenAI refused the key), `connection_failed` (the socket never
+came up), `microphone_unavailable` (the OS would not open a microphone), and
+`ended_early` (the call ended before it got going). They are mapped from the
+teardown reason and the HTTP status, never from the sentence the user read —
+those name a provider and a settings pane. Nothing about the call itself
+crosses: not the transcript, the captions, the spoken words, the project, the
+lane, the CTO's name, the voice, the cost, or any part of a key. The bucket
+reuses the existing `duration_bucket` vocabulary (`under_1m` … `over_2h`)
+rather than a voice-specific spelling, so call length stays comparable with
+every other duration in the taxonomy.
+
+A deduplication key per call id makes the two terminal states one call publishes
+— `failed` then `ended` — a single accepted event. A call is a deliberate,
+attended act that bills by the minute, so the realistic worst case is a handful
+per installation per UTC day; the hard bound is the `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling, neither of
+which was raised.
+
+The capture gesture records the same event from the main-process handler that
+delivers or refuses the shot, with `feature: "cto"`,
+`action: "capture_gesture"`, and one of three coarse outcomes: `delivered`,
+`failed`, and `too_large` (a display ADE could not fit into an attachment even
+after four halvings — the one failure that is a product fact rather than an
+environment one). Never the window, its title, the app it belonged to, the temp
+path the PNG passed through, the image, or the helper's error text. A
+per-outcome one-minute deduplication key bounds a chord-mashing loop to at most
+1,440 accepted events per outcome in theory, and the `ade_feature_used`
+30-per-minute and 140-per-day limits bound it in practice; the realistic number
+is single digits. No ceiling was raised, and the dashboard spec is deliberately
+untouched — no card asks either question yet.
 
 ### Native iOS
 

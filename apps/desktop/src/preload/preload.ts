@@ -117,6 +117,8 @@ import type {
   ProjectSecretSummary,
   ProjectSecretValueResult,
 } from "../shared/types";
+import { isRemoteRuntimeEventCategory } from "../shared/types/remoteRuntime";
+import type { CtoVoiceActionResult } from "../shared/types/ctoVoice";
 import type {
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
@@ -2897,6 +2899,11 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     }
 
     for (const event of batch.events) {
+      // The polled path reaches the renderer without passing through
+      // `toRemoteRuntimeBufferedEvent`: the batch is cast, not normalized. The
+      // category guard therefore has to be applied here too, or the one door
+      // the pushed path closes is simply walked around by the poller.
+      if (!isRendererRuntimeEventCategory(event.category)) continue;
       // `remoteRuntimeEventStartedAtMs` is 0 for remote bindings, so the shared
       // helper's zero guard already restricts this to local ones.
       if (isPinnedRuntimeEventStale(remoteRuntimeEventStartedAtMs, event.timestamp)) {
@@ -3006,15 +3013,23 @@ function toRemoteRuntimeEventNotificationPayload(
   return { bindingKey, event, ...(eventEpoch ? { eventEpoch } : {}) };
 }
 
-function isRemoteRuntimeEventCategory(
+/**
+ * Categories a RENDERER-bound event stream may carry.
+ *
+ * Deliberately narrower than `REMOTE_RUNTIME_EVENT_CATEGORIES`: `cto_voice` is
+ * excluded here — on the pushed path AND on the polled batch — and at both of
+ * main's gates, the subscription guard and `shouldForwardRuntimeEvent`. Four
+ * doors for one rule, because refusing only the subscription name lets an
+ * uncategorised stream carry it anyway, and the poller casts its batch rather
+ * than normalizing it. Nothing consumes it on this side: the voice router
+ * subscribes in the main process and pushes `IPC.ctoVoiceState`. The doors are
+ * in series, so the strictest one decides — which is why each is written to
+ * stand alone rather than to trust the one before it.
+ */
+function isRendererRuntimeEventCategory(
   value: unknown,
 ): value is RemoteRuntimeEventCategory {
-  return (
-    value === "orchestrator" ||
-    value === "dag_mutation" ||
-    value === "runtime" ||
-    value === "pty"
-  );
+  return isRemoteRuntimeEventCategory(value) && value !== "cto_voice";
 }
 
 function toRemoteRuntimeBufferedEvent(
@@ -3024,7 +3039,7 @@ function toRemoteRuntimeBufferedEvent(
   if (typeof value.id !== "number" || !Number.isFinite(value.id)) return null;
   if (typeof value.timestamp !== "string") return null;
   const category = value.category;
-  if (!isRemoteRuntimeEventCategory(category)) {
+  if (!isRendererRuntimeEventCategory(category)) {
     return null;
   }
   const payload = isRecord(value.payload) ? value.payload : {};
@@ -4625,21 +4640,66 @@ const adeBridge = {
       callProjectRuntimeActionOr("ai", "listApiKeys", {}, () =>
         ipcRenderer.invoke(IPC.aiListApiKeys),
       ),
-    // Machine-scoped keys. Not routed through `callProjectRuntimeActionOr`: the
-    // key follows this machine's ADE home, so sending it to the bound project's
-    // runtime would be sending it to the wrong store. The key travels one way
-    // only — in, on `store` — and never comes back out of these calls.
-    getMachineApiKeyStatus: async (provider: string): Promise<MachineApiKeyStatus> =>
-      ipcRenderer.invoke(IPC.aiGetMachineApiKeyStatus, { provider }),
+    /*
+     * Machine-scoped keys go to the LOCAL runtime, and never to a remote one.
+     *
+     * Two rules, both load bearing. A remote brain is the wrong store outright:
+     * the key follows THIS machine's ADE home, so these use the local-only
+     * helper rather than `callProjectRuntimeActionOr`, whose first stop is the
+     * remote runtime when the window is remote-bound. And among the local
+     * options the runtime is the right one, because desktop main writes through
+     * `createDesktopCredentialStore` (Electron `safeStorage`) while the project
+     * runtime reads through `EncryptedFileCredentialStore` — a key written to
+     * the first is invisible to the second, which is how Settings could report
+     * `configured: true` while the runtime-hosted voice call answered "no
+     * OpenAI key on this machine".
+     *
+     * `callLocalProjectActionStrictIfBound` rather than the fresh-binding
+     * variant: a machine-scoped key is the same secret through any local
+     * binding, so refreshing the binding first would buy nothing and only add
+     * an await — and the strict helper is the one that does not wait on an
+     * in-flight remote project open, which a Settings write has no reason to
+     * block behind.
+     *
+     * The desktop IPC stays as the fallback, and is what answers when no
+     * project is bound, when the window is remote-bound, and in the in-process
+     * runtime mode where there is no daemon to call. The key still travels one
+     * way only — in, on `store` — and never comes back out of these calls.
+     */
+    getMachineApiKeyStatus: async (provider: string): Promise<MachineApiKeyStatus> => {
+      const runtime = await callLocalProjectActionStrictIfBound<MachineApiKeyStatus>(
+        "ai",
+        "getMachineApiKeyStatus",
+        { args: { provider } },
+      );
+      if (runtime.handled) return runtime.result;
+      return ipcRenderer.invoke(IPC.aiGetMachineApiKeyStatus, { provider });
+    },
     storeMachineApiKey: async (provider: string, key: string): Promise<MachineApiKeyStatus> =>
       clearAround(
         () => aiStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.aiStoreMachineApiKey, { provider, key }),
+        async () => {
+          const runtime = await callLocalProjectActionStrictIfBound<MachineApiKeyStatus>(
+            "ai",
+            "storeMachineApiKey",
+            { args: { provider, key } },
+          );
+          if (runtime.handled) return runtime.result;
+          return ipcRenderer.invoke(IPC.aiStoreMachineApiKey, { provider, key });
+        },
       ),
     deleteMachineApiKey: async (provider: string): Promise<MachineApiKeyStatus> =>
       clearAround(
         () => aiStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.aiDeleteMachineApiKey, { provider }),
+        async () => {
+          const runtime = await callLocalProjectActionStrictIfBound<MachineApiKeyStatus>(
+            "ai",
+            "deleteMachineApiKey",
+            { args: { provider } },
+          );
+          if (runtime.handled) return runtime.result;
+          return ipcRenderer.invoke(IPC.aiDeleteMachineApiKey, { provider });
+        },
       ),
     verifyApiKey: async (
       provider: string,
@@ -7607,8 +7667,10 @@ const adeBridge = {
    * CTO voice call. The renderer owns only the microphone and the speaker.
    */
   ctoVoice: {
-    start: () => ipcRenderer.invoke(IPC.ctoVoiceStart) as Promise<{ ok: boolean; error?: string }>,
-    end: () => ipcRenderer.invoke(IPC.ctoVoiceEnd) as Promise<void>,
+    start: () => ipcRenderer.invoke(IPC.ctoVoiceStart) as Promise<CtoVoiceActionResult>,
+    // The reason travels with the hang-up: a call ended because the microphone
+    // would not open has something to say, and the main process cannot know it.
+    end: (reason?: string) => ipcRenderer.invoke(IPC.ctoVoiceEnd, { reason }) as Promise<void>,
     // `send`, not `invoke`: audio frames arrive about ten times a second for the
     // life of a call, and a round trip per frame would be pure overhead.
     pushAudio: (audio: string, level: number) => ipcRenderer.send(IPC.ctoVoicePushAudio, { audio, level }),

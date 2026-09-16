@@ -121,4 +121,26 @@ describe("renderMarkdown", () => {
     expect(anchor.getAttribute("rel")).toContain("noopener");
     expect(anchor.getAttribute("target")).toBe("_blank");
   });
+
+  it("degrades a scene fence to a code block instead of running it", () => {
+    // ADE's own transcript renders a ```scene fence as generated UI, inside a
+    // sandboxed opaque-origin frame with its own CSP. chat-ui has no such frame
+    // and must never grow one by accident: a scene is agent-authored HTML/JS,
+    // so here it is text in a <pre>, exactly like any other unknown language.
+    const source = [
+      "```scene",
+      "<h1>Deploy</h1><script>window.__sceneRan = true;<\/script>",
+      "```",
+    ].join("\n");
+    const { container } = render(<div>{renderMarkdown(source)}</div>);
+
+    const block = container.querySelector("pre.adechat-code-block")!;
+    expect(block).not.toBeNull();
+    expect(block.getAttribute("data-language")).toBe("scene");
+    expect(block.textContent).toContain("<h1>Deploy</h1>");
+    // The markup is inert: no element was constructed from it, and nothing ran.
+    expect(container.querySelector("h1")).toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+    expect((window as unknown as { __sceneRan?: boolean }).__sceneRan).toBeUndefined();
+  });
 });

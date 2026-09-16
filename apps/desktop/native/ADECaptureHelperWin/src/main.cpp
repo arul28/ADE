@@ -17,11 +17,19 @@
 //    loop ALSO exits when stdin closes, so an orphaned helper cannot survive
 //    its parent.
 //
-// 2. THE HOOK MUST NOT BLOCK. `WH_KEYBOARD_LL` calls back on the thread that
-//    installed it, and Windows silently removes a hook whose thread stops
-//    pumping messages (LowLevelHooksTimeout, 300ms by default). So the hook
-//    callback does nothing but flip two booleans and PostMessage — no capture,
-//    no file I/O, no allocation.
+// 2. THE HOOK MUST NOT BLOCK — AND NEITHER MAY THE LOOP THAT SERVES IT.
+//    `WH_KEYBOARD_LL` calls back on the thread that installed it, and Windows
+//    silently removes a hook whose thread stops pumping messages
+//    (LowLevelHooksTimeout, 300ms by default). So the hook callback does
+//    nothing but flip two booleans and PostMessage — no capture, no file I/O,
+//    no allocation. That is only half the rule: the posted message is handled
+//    by the SAME thread, so running the capture there stalls the pump for as
+//    long as PrintWindow + a PNG encode take — routinely past 300ms on a large
+//    or unresponsive window — and the hook is removed with no error anywhere.
+//    The chord then simply stops working until the helper restarts. The
+//    capture therefore runs on a detached worker (mirroring the macOS helper's
+//    `DispatchQueue.global(qos: .userInitiated)`), one at a time, while this
+//    thread keeps pumping.
 //
 // 3. THE CHORD IS BOTH CTRL KEYS, read from the hook struct's `vkCode`, which
 //    reports VK_LCONTROL and VK_RCONTROL separately. GetAsyncKeyState cannot:
@@ -45,6 +53,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cwchar>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -75,6 +84,9 @@ std::atomic<bool> g_right_ctrl_down{false};
 // Latch, exactly as in the macOS ChordDetector: modifier keys are held, and key
 // repeat would otherwise fire the gesture dozens of times for one press.
 std::atomic<bool> g_chord_engaged{false};
+// One capture at a time, and never on the message-loop thread. See the
+// dispatch in main() for why.
+std::atomic<bool> g_capture_in_flight{false};
 DWORD g_main_thread_id = 0;
 HHOOK g_keyboard_hook = nullptr;
 std::wstring g_output_directory;
@@ -189,6 +201,34 @@ std::wstring NextCapturePath() {
   return path;
 }
 
+/**
+ * The executable base name of the process that owns a window, without ".exe".
+ *
+ * QueryFullProcessImageNameW rather than GetModuleFileNameEx: it needs only
+ * PROCESS_QUERY_LIMITED_INFORMATION, which a medium-integrity process is
+ * granted for most other processes, where the module APIs would fail. An empty
+ * string is an ordinary answer - an elevated or protected process refuses the
+ * handle, and the shot is still worth delivering without a name.
+ */
+std::wstring OwnerAppName(DWORD owner_pid) {
+  if (owner_pid == 0) return std::wstring();
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, owner_pid);
+  if (process == nullptr) return std::wstring();
+  wchar_t buffer[MAX_PATH * 2] = {0};
+  DWORD length = static_cast<DWORD>(std::size(buffer));
+  const BOOL ok = QueryFullProcessImageNameW(process, 0, buffer, &length);
+  CloseHandle(process);
+  if (!ok || length == 0) return std::wstring();
+  std::wstring full(buffer, length);
+  const size_t slash = full.find_last_of(L"\\/");
+  std::wstring name = slash == std::wstring::npos ? full : full.substr(slash + 1);
+  if (name.size() > 4) {
+    const std::wstring tail = name.substr(name.size() - 4);
+    if (_wcsicmp(tail.c_str(), L".exe") == 0) name.resize(name.size() - 4);
+  }
+  return name;
+}
+
 void PerformCapture() {
   HWND window = GetForegroundWindow();
   if (window == nullptr || !IsWindow(window) || IsIconic(window)) {
@@ -271,6 +311,14 @@ void PerformCapture() {
   std::string payload = "{\"type\":\"captured\",\"path\":\"";
   payload += JsonEscape(Utf8From(destination));
   payload += "\"";
+  // `describeShot` names the app before the window title, and the macOS helper
+  // supplies it from kCGWindowOwnerName. Windows has no equivalent, so the
+  // closest honest answer is the owning process's executable base name -
+  // "Chrome", "Xcode", "Slack" - which is what the user calls the app anyway.
+  const std::string app = JsonEscape(Utf8From(OwnerAppName(owner_pid)));
+  if (!app.empty()) {
+    payload += ",\"appName\":\"" + app + "\"";
+  }
   const std::string title = JsonEscape(Utf8From(title_buffer));
   if (!title.empty()) {
     payload += ",\"windowTitle\":\"" + title + "\"";
@@ -379,7 +427,15 @@ int main() {
     if (message.message == kMsgChord) {
       if (g_enabled.load()) EmitSimple("chord");
     } else if (message.message == kMsgCapture) {
-      PerformCapture();
+      // Detached rather than joined: joining here would be the very stall this
+      // exists to avoid. The latch keeps it to one at a time, and the shutdown
+      // path below waits for it to clear before GDI+ goes away.
+      if (!g_capture_in_flight.exchange(true)) {
+        std::thread([] {
+          PerformCapture();
+          g_capture_in_flight.store(false);
+        }).detach();
+      }
     } else {
       TranslateMessage(&message);
       DispatchMessageW(&message);
@@ -387,6 +443,16 @@ int main() {
   }
 
   if (g_keyboard_hook != nullptr) UnhookWindowsHookEx(g_keyboard_hook);
+  // A detached worker still holding GDI+ objects when GdiplusShutdown runs is a
+  // crash on the way out, which the supervisor would read as a helper that
+  // died. The bound is the supervisor's own grace window
+  // (GRACEFUL_SHUTDOWN_MS in captureHelper.ts): waiting longer than that buys
+  // nothing, because it kills us at that mark regardless, and waiting less
+  // would tear GDI+ down while the process is still alive and working.
+  constexpr int kShutdownDrainMs = 500;
+  for (int waited = 0; g_capture_in_flight.load() && waited < kShutdownDrainMs; waited += 25) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
   Gdiplus::GdiplusShutdown(gdiplus_token);
   return 0;
 }

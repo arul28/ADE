@@ -5,6 +5,7 @@ import {
   ADE_ACTION_CTO_ONLY,
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
+  callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
 } from "./actionPolicy";
@@ -13,11 +14,91 @@ import type { AdeActionDomain } from "./domains";
 /**
  * The gate, tested over the tables alone.
  *
- * Deliberately loads nothing but `actionPolicy` and its two pure siblings: a
- * question about who may call what is answered by two tables and four
- * predicates, and a test that has to stand up the registry's whole service
- * graph to ask it would be measuring the wiring instead of the policy.
+ * Deliberately loads nothing but `actionPolicy` and its pure siblings — the
+ * domain names, the input contracts and the voice action list, none of which
+ * import anything at all. A question about who may call what is answered by two
+ * tables and four predicates, and a test that has to stand up the registry's
+ * whole service graph to ask it would be measuring the wiring instead of the
+ * policy.
  */
+
+describe("machine-scoped API keys on the ai domain", () => {
+  it("is reachable on the bus, because the runtime owns the store the UI writes", () => {
+    expect(isAllowedAdeAction("ai", "getMachineApiKeyStatus")).toBe(true);
+    expect(isAllowedAdeAction("ai", "storeMachineApiKey")).toBe(true);
+    expect(isAllowedAdeAction("ai", "deleteMachineApiKey")).toBe(true);
+  });
+
+  it("gates the writes like the project-scoped pair, and leaves the status read open", () => {
+    // Writing or destroying a provider credential is operator work; asking
+    // whether one is configured is not, and never returns the key.
+    expect(isCtoOnlyAdeAction("ai", "storeMachineApiKey")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "deleteMachineApiKey")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "getMachineApiKeyStatus")).toBe(false);
+    // The project-scoped pair it mirrors.
+    expect(isCtoOnlyAdeAction("ai", "storeApiKey")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "deleteApiKey")).toBe(true);
+  });
+
+  it("documents the input shape of each", () => {
+    for (const action of ["getMachineApiKeyStatus", "storeMachineApiKey", "deleteMachineApiKey"]) {
+      const contract = getAdeActionInputContract("ai", action);
+      expect(contract, `ai.${action} needs an input contract`).toBeDefined();
+      expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("the cto_voice gate", () => {
+  const VOICE_ACTIONS = [
+    "getState",
+    "hasKey",
+    "start",
+    "end",
+    "setMuted",
+    "pushAudio",
+    "pullAudio",
+    "resolveApproval",
+    "sendCapture",
+  ] as const;
+
+  it("puts the whole call surface on the bus, so desktop main can route to it", () => {
+    for (const action of VOICE_ACTIONS) {
+      expect(isAllowedAdeAction("cto_voice", action), action).toBe(true);
+    }
+  });
+
+  it("is fail-closed: every voice action needs cto role, with no exceptions", () => {
+    for (const action of VOICE_ACTIONS) {
+      expect(isCtoOnlyAdeAction("cto_voice", action), action).toBe(true);
+    }
+    // The polarity matters more than the list: an action added later must be
+    // CTO-only by omission rather than by someone remembering this file.
+    expect(isCtoOnlyAdeAction("cto_voice", "somethingAddedLater")).toBe(true);
+    expect(ADE_ACTION_CTO_ONLY.cto_voice).toEqual({ allExcept: [] });
+  });
+
+  it("denies an agent-role caller every voice action", () => {
+    for (const action of VOICE_ACTIONS) {
+      const gated = isCtoOnlyAdeAction("cto_voice", action);
+      expect(gated && !callerHasRoleAtLeast("agent", "cto"), action).toBe(true);
+      expect(gated && !callerHasRoleAtLeast("orchestrator", "cto"), action).toBe(true);
+      expect(gated && !callerHasRoleAtLeast("external", "cto"), action).toBe(true);
+    }
+    // Desktop main launches the project runtime with ADE_DEFAULT_ROLE=cto and
+    // refuses to connect to one that answers with anything else.
+    expect(callerHasRoleAtLeast("cto", "cto")).toBe(true);
+  });
+
+  it("documents the input shape of every voice action", () => {
+    for (const action of VOICE_ACTIONS) {
+      const contract = getAdeActionInputContract("cto_voice", action);
+      expect(contract, `cto_voice.${action} needs an input contract`).toBeDefined();
+      expect(contract?.description?.length ?? 0).toBeGreaterThan(10);
+      expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
+    }
+  });
+});
 
 describe("isAllowedAdeAction", () => {
   it("accepts a canonical action from the allowlist", () => {

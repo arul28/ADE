@@ -1694,6 +1694,13 @@ export type AgentChatEventEnvelope = {
     role?: "user" | "orchestrator" | "worker" | "agent" | null;
     targetKind?: string | null;
     sourceSessionId?: string | null;
+    /**
+     * True when the fork that imported this envelope carried the conversation
+     * as a transcript replay rather than a provider-side fork. A native fork
+     * keeps its own history on the provider, so the source transcript is NOT a
+     * safe thing to re-seed it from.
+     */
+    replayFork?: boolean;
     attemptId?: string | null;
     stepKey?: string | null;
     laneId?: string | null;

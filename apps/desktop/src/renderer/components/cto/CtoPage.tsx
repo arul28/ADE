@@ -38,6 +38,8 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** Why the last call could not start. Its own line, so the header never moves. */
+  const [talkNotice, setTalkNotice] = useState<string | null>(null);
   const [switchingModel, setSwitchingModel] = useState(false);
 
   const historyLoadedRef = useRef(false);
@@ -283,30 +285,42 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   return (
     <div className={cn(shellBodyCls, "relative flex-col")}>
       {/* Header */}
-      <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-2.5">
-        <div className="flex min-w-0 items-center gap-2.5">
-          {/* The same glyph as the tab rail and as iOS, not the first character
-              of whatever the user renamed the CTO to. One mark, every surface. */}
-          <Robot size={22} weight="regular" className="shrink-0" style={{ color: CTO_ACCENT }} />
-          <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
-        </div>
+      <div className="flex flex-col border-b border-white/[0.06]">
+        <div className="flex items-center gap-3 px-4 py-2.5">
+          <div className="flex min-w-0 items-center gap-2.5">
+            {/* The same glyph as the tab rail and as iOS, not the first character
+                of whatever the user renamed the CTO to. One mark, every surface. */}
+            <Robot size={22} weight="regular" className="shrink-0" style={{ color: CTO_ACCENT }} />
+            <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
+          </div>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          <CtoTalkButton />
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(true)}
-            aria-label="CTO settings"
-            className={cn(
-              "flex h-7 w-7 items-center justify-center rounded-lg border transition-colors",
-              settingsOpen
-                ? "border-white/15 bg-white/[0.06] text-fg"
-                : "border-white/[0.07] text-muted-fg/55 hover:bg-white/[0.04] hover:text-fg",
-            )}
-          >
-            <Gear size={15} weight={settingsOpen ? "fill" : "regular"} />
-          </button>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <CtoTalkButton onNotice={setTalkNotice} />
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="CTO settings"
+              className={cn(
+                "flex h-7 w-7 items-center justify-center rounded-lg border transition-colors",
+                settingsOpen
+                  ? "border-white/15 bg-white/[0.06] text-fg"
+                  : "border-white/[0.07] text-muted-fg/55 hover:bg-white/[0.04] hover:text-fg",
+              )}
+            >
+              <Gear size={15} weight={settingsOpen ? "fill" : "regular"} />
+            </button>
+          </div>
         </div>
+        {talkNotice ? (
+          <p
+            data-testid="cto-talk-error"
+            role="status"
+            className="truncate border-t border-white/[0.05] px-4 py-1.5 text-[11px] leading-[1.5] text-amber-300/85"
+            title={talkNotice}
+          >
+            {talkNotice}
+          </p>
+        ) : null}
       </div>
 
       {settingsOpen ? (
@@ -323,7 +337,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           onFastModeChange={(enabled) => void handleFastModeChange(enabled)}
           onOpenProviderSettings={openProviderSettings}
           onIdentityChange={(patch) => void handleIdentityChange(patch)}
-          onVoiceChange={(patch) => void handleIdentityChange(patch)}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}

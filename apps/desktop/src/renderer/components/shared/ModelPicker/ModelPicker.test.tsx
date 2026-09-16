@@ -599,6 +599,49 @@ describe("ModelPicker", () => {
     expect(favoriteStore.has(OPUS.id)).toBe(true);
   });
 
+  it("gives every row one line of detail under the name", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelPicker value={SONNET.id} onChange={vi.fn()} surfaceKey="test" models={[SONNET, OPUS]} />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    // The complaint this answers: rows were a name and nothing else, so two
+    // models that differ only in what they can hold looked identical.
+    expect((await findModelRow(SONNET.id)).textContent).toContain("Anthropic · 200K context · reasoning");
+    expect((await findModelRow(OPUS.id)).textContent).toContain("Anthropic · 1M context · reasoning");
+  });
+
+  it("names the route a model actually takes on its detail line", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelPicker
+        value={OPENCODE_MODEL.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={[OPENCODE_MODEL]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect((await findModelRow(OPENCODE_MODEL.id)).textContent)
+      .toContain("OpenCode · Anthropic · 200K context · reasoning");
+  });
+
+  it("names the Pi provider on a pi/ row whose descriptor carries no pi-sdk route", async () => {
+    const user = userEvent.setup();
+    // The shape that regressed: the rail grouped this as Pi (it matches on the
+    // id) while the detail line matched on `providerRoute` alone and dropped
+    // the provider entirely.
+    const routeless: ModelDescriptor = { ...PI_MODEL, providerRoute: "openai-responses" };
+    render(
+      <ModelPicker value={routeless.id} onChange={vi.fn()} surfaceKey="test" models={[routeless]} />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect((await findModelRow(routeless.id)).textContent).toContain("OpenAI · OpenAI Codex · work");
+  });
+
   it("does not render popover content when closed", () => {
     renderPicker();
     expect(screen.queryByRole("listbox", { name: /models/i })).toBeNull();

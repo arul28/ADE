@@ -873,7 +873,8 @@ import type {
 } from "../../../shared/types/orchestration";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
-import { createCtoVoiceWiringDeps, registerCtoVoiceIpc } from "../cto/ctoVoiceWiring";
+import type { CtoVoiceRuntimeService } from "../cto/ctoVoiceRuntimeService";
+import { registerCtoVoiceIpc } from "../cto/ctoVoiceWiring";
 import { UNAVAILABLE_CAPTURE_GESTURE_HEALTH } from "../capture/captureGestureState";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
@@ -915,6 +916,7 @@ import {
   sceneDocumentStore,
   type SceneCaptureRect,
 } from "../scenes/sceneDocumentStore";
+import { SCENE_LIMITS } from "../../../shared/chatScene";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
@@ -1165,6 +1167,17 @@ export type AppContext = {
   sessionDeltaService?: SessionDeltaService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  /**
+   * The in-process CTO voice call.
+   *
+   * Built only under `shouldUseInProcessProjectRuntime()`, and deliberately not
+   * merely "wherever this constructor runs": `ensureProjectContextForMobileSync`
+   * reaches the same constructor in production, and a call brain built there
+   * would be a second one for a project whose daemon already owns the real
+   * one. Null in every real build; the router reaches the runtime's instance
+   * over the `cto_voice` action domain instead.
+   */
+  ctoVoiceCallService?: CtoVoiceRuntimeService | null;
   adeProjectService?: AdeProjectService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
@@ -8887,6 +8900,15 @@ export function registerIpc({
     }
   };
 
+  /** Same defensive shape, for a scene note that carries fields rather than an error. */
+  const logSceneNote = (event: string, fields: Record<string, unknown>): void => {
+    try {
+      getCtx().logger.warn(event, fields);
+    } catch {
+      // No context, no log.
+    }
+  };
+
   /**
    * Store a scene document and hand back the URL the frame loads it from.
    *
@@ -8896,6 +8918,12 @@ export function registerIpc({
   ipcMain.handle(IPC.scenePrepare, async (_event, arg: { html?: unknown } | string): Promise<string> => {
     const html = typeof arg === "string" ? arg : typeof arg?.html === "string" ? arg.html : "";
     if (!html.length) throw new Error("A scene document is required.");
+    // The renderer checks its own ceiling before it ever gets here; this is the
+    // server-side one, and it lives with the rest of the scene limits rather
+    // than as arithmetic at the IPC edge.
+    if (Buffer.byteLength(html, "utf8") > SCENE_LIMITS.maxDocumentBytes) {
+      throw new Error("This scene is too large to render.");
+    }
     return sceneDocumentStore.put(html).url;
   });
 
@@ -8969,34 +8997,106 @@ export function registerIpc({
         const ctx = getCtx();
         const broker = ctx.computerUseArtifactBrokerService;
         const projectRoot = ctx.project?.rootPath ?? null;
-        if (!broker || !projectRoot) return false;
+        if (!projectRoot) return false;
         const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
         if (!bytes) return false;
         const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
         const artifactPath = createComputerUseArtifactPath(projectRoot, title, "png");
         fs.writeFileSync(artifactPath, bytes);
-        // Proof in ADE is chat-scoped. A snapshot filed with no owner cannot be
-        // shown against the conversation that drew it, and lane-root resolution
-        // is skipped entirely.
+
+        // The bytes have to be on disk before either route can be taken: the
+        // in-process broker ingests a path, and the runtime action is handed a
+        // path and nothing else. Everything from here therefore runs under a
+        // `finally` — but the rule is NOT "delete unless filed". It is delete
+        // only when we KNOW the record was never created.
         //
-        // The id comes from the renderer, so it is checked against this
-        // project's own sessions rather than trusted: an id naming another
-        // project's chat would file the artifact into that chat's drawer. A
-        // miss drops the owner, never the artifact — an unattributed snapshot
-        // is a smaller loss than a misattributed one.
-        const sessionId = await resolveSceneProofOwner(ctx, arg?.sessionId);
-        broker.ingest({
-          backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
-          ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
-          inputs: [{
-            kind: "screenshot",
-            title: title.slice(0, 200),
-            path: artifactPath,
-            mimeType: "image/png",
-            description: "Snapshot of an agent-authored scene.",
-          }],
-        });
-        return true;
+        // The two failures are not symmetric. An unreferenced file is invisible
+        // and permanent (the store is pruned by drawer record, so nothing ever
+        // collects it) but it is inert. A drawer record pointing at a file that
+        // is gone is a BROKEN ARTIFACT the user sees and cannot open. So a lost
+        // or failed RPC — where `ingestSceneSnapshot` may well have committed
+        // the record before the answer went missing — keeps the file and logs
+        // it, and `listBrokenArtifacts` / `pruneBrokenArtifacts` reconcile the
+        // one case that is genuinely orphaned. Only an outcome we are certain
+        // of deletes.
+        let outcome: "filed" | "not-filed" | "unknown" = "not-filed";
+        try {
+          if (broker) {
+            // Proof in ADE is chat-scoped. A snapshot filed with no owner cannot
+            // be shown against the conversation that drew it, and lane-root
+            // resolution is skipped entirely.
+            //
+            // The id comes from the renderer, so it is checked against this
+            // project's own sessions rather than trusted: an id naming another
+            // project's chat would file the artifact into that chat's drawer. A
+            // miss drops the owner, never the artifact — an unattributed
+            // snapshot is a smaller loss than a misattributed one.
+            //
+            // A throw out of the lookup is still "not-filed": nothing has been
+            // ingested yet.
+            const sessionId = await resolveSceneProofOwner(ctx, arg?.sessionId);
+            // From this line on the record may exist, so a throw out of
+            // `ingest` is an unknown outcome rather than a failure.
+            outcome = "unknown";
+            broker.ingest({
+              backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
+              ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
+              inputs: [{
+                kind: "screenshot",
+                title: title.slice(0, 200),
+                path: artifactPath,
+                mimeType: "image/png",
+                description: "Snapshot of an agent-authored scene.",
+              }],
+            });
+            outcome = "filed";
+            return true;
+          }
+
+          // Runtime-backed build: `computerUseArtifactBrokerService` and
+          // `agentChatService` are BOTH null in this process, so the branch
+          // above could never run and the Proof button answered false every
+          // time — with its ownership check never reached. The bytes are
+          // already on disk in this project's artifact store (the runtime is
+          // the same machine), so the daemon is handed the path and performs
+          // the same ownership resolution against the chat service it owns.
+          //
+          // No pool: nobody was asked to file anything, so this outcome is certain.
+          if (!localRuntimeConnectionPool) return false;
+          let response;
+          try {
+            response = await localRuntimeConnectionPool.callActionForRoot(projectRoot, {
+              domain: "computer_use_artifacts",
+              action: "ingestSceneSnapshot",
+              args: {
+                path: artifactPath,
+                title,
+                sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : null,
+              },
+            });
+          } catch (error) {
+            // A dropped socket after the daemon committed looks exactly like a
+            // daemon that never ran the action. We cannot tell them apart from
+            // here, so we keep the bytes.
+            outcome = "unknown";
+            throw error;
+          }
+          const wasFiled = (response.result as { filed?: unknown } | null)?.filed === true;
+          // An explicit `filed: false` is an answer, not a silence.
+          outcome = wasFiled ? "filed" : "not-filed";
+          return wasFiled;
+        } finally {
+          if (outcome === "not-filed") {
+            try {
+              fs.rmSync(artifactPath, { force: true });
+            } catch {
+              // Best effort. A snapshot we could not file AND could not remove
+              // is not worth failing the button over.
+            }
+          } else if (outcome === "unknown") {
+            logSceneNote("scene.proof_outcome_unknown", { path: artifactPath });
+          }
+        }
       } catch (error) {
         logSceneFailure("scene.attach_proof_failed", error);
         return false;
@@ -11927,14 +12027,25 @@ export function registerIpc({
 
   // -- CTO voice call --
 
-  registerCtoVoiceIpc(
-    ipcMain,
-    createCtoVoiceWiringDeps({
-      getCtx,
-      resolvePrimaryLaneId: () => resolvePrimaryLaneIdOnly(getCtx()),
-      saveTempAttachment: saveAgentChatTempAttachmentBuffer,
-    }),
-  );
+  registerCtoVoiceIpc(ipcMain, {
+    getCtx,
+    // Null only when this desktop IS the project runtime. Whenever a pool
+    // exists the daemon owns this project's call, and the router routes there —
+    // `ctx.ctoVoiceCallService` is the fallback for the no-pool case, not a
+    // preference.
+    getLocalRuntimePool: () => localRuntimeConnectionPool ?? null,
+    // A remote-bound window is connected — just not to a runtime on this
+    // machine — so it gets its own sentence instead of the local pool's.
+    getBindingKind: (senderId) => {
+      const windowId = BrowserWindow.getAllWindows()
+        .find((win) => win.webContents.id === senderId)?.id ?? null;
+      return getWindowSession?.(windowId)?.binding?.kind ?? null;
+    },
+    logger: {
+      warn: (msg, meta) => getCtx().logger.warn(msg, meta),
+      info: (msg, meta) => getCtx().logger.info(msg, meta),
+    },
+  });
 
   // -- Smart memory --
 

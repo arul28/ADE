@@ -89,6 +89,23 @@ describe("clampSceneCaptureRect", () => {
       .toEqual({ x: 1100, y: 700, width: 100, height: 100 });
   });
 
+  /**
+   * The regression this exists for: shifting a negative origin while keeping
+   * the size captured a rect the same size as the scene, in a place the scene
+   * was not — a scrolled-off scene froze as a picture of the top of the window.
+   */
+  it("intersects a scrolled-off rect instead of sliding it into view", () => {
+    expect(clampSceneCaptureRect({ x: 0, y: -300, width: 400, height: 400 }, content))
+      .toEqual({ x: 0, y: 0, width: 400, height: 100 });
+    expect(clampSceneCaptureRect({ x: -50, y: 10, width: 200, height: 50 }, content))
+      .toEqual({ x: 0, y: 10, width: 150, height: 50 });
+  });
+
+  it("returns null for a rect entirely off the content box", () => {
+    expect(clampSceneCaptureRect({ x: 0, y: -300, width: 400, height: 200 }, content)).toBeNull();
+    expect(clampSceneCaptureRect({ x: 1300, y: 0, width: 400, height: 200 }, content)).toBeNull();
+  });
+
   it("returns null when nothing capturable is left", () => {
     expect(clampSceneCaptureRect({ x: 0, y: 0, width: 0, height: 10 }, content)).toBeNull();
     expect(clampSceneCaptureRect(null, content)).toBeNull();

@@ -1164,3 +1164,52 @@ func workPurgeMarkdownRenderCaches() {
   workStreamingMarkdownCache.removeAllObjects()
   workStreamingInlineMarkdownCache.removeAllObjects()
 }
+
+// MARK: - Scene fences
+
+/// The fence language desktop reserves for agent-authored generated UI.
+/// Mirrors `SCENE_FENCE_LANGUAGE` in `apps/desktop/src/shared/chatScene.ts`.
+let workSceneFenceLanguage = "scene"
+
+/// Longest title a scene marker may contribute. Mirrors desktop
+/// `SCENE_LIMITS.maxTitleLength`.
+private let workSceneTitleLimit = 120
+
+/// True when a code fence's language marks it as a scene.
+func workIsSceneFenceLanguage(_ language: String?) -> Bool {
+  guard let language else { return false }
+  return language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == workSceneFenceLanguage
+}
+
+/// The title a scene declares in its leading `<!-- @scene title="…" -->` marker.
+///
+/// Mirrors the marker half of desktop `parseSceneFence`: blank lines are
+/// skipped, only the FIRST non-blank line may be the marker, and the title is
+/// capped at `workSceneTitleLimit`. A scene without a marker has no title, and
+/// the placeholder falls back to the generic label.
+func workSceneFenceTitle(_ source: String) -> String? {
+  for rawLine in source.split(separator: "\n", omittingEmptySubsequences: false) {
+    let line = rawLine.trimmingCharacters(in: .whitespaces)
+    if line.isEmpty { continue }
+    guard line.lowercased().hasPrefix("<!--"), line.hasSuffix("-->") else { return nil }
+    let inner = String(line.dropFirst(4).dropLast(3)).trimmingCharacters(in: .whitespaces)
+    guard inner.lowercased().hasPrefix("@scene") else { return nil }
+    let rest = String(inner.dropFirst("@scene".count))
+    // `@scene` must be a whole word, matching the desktop marker's `\b`.
+    if let next = rest.first, next.isLetter || next.isNumber || next == "_" { return nil }
+    guard let range = rest.range(of: "title=\"", options: .caseInsensitive),
+          let close = rest[range.upperBound...].firstIndex(of: "\"")
+    else { return nil }
+    let title = rest[range.upperBound..<close].trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else { return nil }
+    return String(title.prefix(workSceneTitleLimit))
+  }
+  return nil
+}
+
+/// One line standing in for a scene on a surface that cannot run one. Mirrors
+/// desktop `summarizeSceneFence` so the TUI, the CLI and the phone all collapse
+/// a scene the same way.
+func workSummarizeSceneFence(_ source: String) -> String {
+  "[scene: \(workSceneFenceTitle(source) ?? "generated view")]"
+}

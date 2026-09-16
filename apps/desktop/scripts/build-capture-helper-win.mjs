@@ -44,12 +44,15 @@ if (!fs.existsSync(sourcePath)) {
 
 fs.mkdirSync(outputRoot, { recursive: true });
 
+// Every spawn below passes `windowsHide: true`, including the two bare probes.
+// Omitting it is the documented Windows failure in `WINDOWS_PORT.md`: a console
+// window flashes up for each probe and can outlive the run that opened it.
 function hasTool(command) {
-  const probe = spawnSync(command, ["--version"], { stdio: "ignore", shell: false });
+  const probe = spawnSync(command, ["--version"], { stdio: "ignore", shell: false, windowsHide: true });
   if (!probe.error) return true;
   // cl.exe has no --version and exits non-zero on a bare invocation, but it
   // still runs; `error` is only set when the executable could not be spawned.
-  const bare = spawnSync(command, [], { stdio: "ignore", shell: false });
+  const bare = spawnSync(command, [], { stdio: "ignore", shell: false, windowsHide: true });
   return !bare.error;
 }
 
@@ -75,7 +78,7 @@ try {
       `/Fo:${path.join(scratchDir, "main.obj")}`,
       "/link",
       "/SUBSYSTEM:CONSOLE",
-    ], { stdio: "inherit", cwd: scratchDir });
+    ], { stdio: "inherit", cwd: scratchDir, windowsHide: true });
   } else {
     const compiler = hasTool("clang++") ? "clang++" : hasTool("g++") ? "g++" : null;
     if (!compiler) {
@@ -98,7 +101,7 @@ try {
       // every import library itself.
       "-lgdiplus", "-lgdi32", "-luser32", "-ldwmapi", "-lole32",
       "-static",
-    ], { stdio: "inherit", cwd: scratchDir });
+    ], { stdio: "inherit", cwd: scratchDir, windowsHide: true });
   }
 
   if (!fs.existsSync(temporaryOutput)) {

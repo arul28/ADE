@@ -1,4 +1,5 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
+import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -853,12 +854,7 @@ function omitProjectId(
 }
 
 function readEventCategory(value: unknown): RuntimeEventCategory | null {
-  return value === "orchestrator" ||
-    value === "dag_mutation" ||
-    value === "runtime" ||
-    value === "pty"
-    ? value
-    : null;
+  return isRemoteRuntimeEventCategory(value) ? value : null;
 }
 
 function readCursor(value: unknown): number {
@@ -1155,6 +1151,33 @@ export function createMultiProjectRpcRequestHandler(
     };
   };
 
+  /**
+   * The `cto_voice` rule, in one place, for every scope that streams events.
+   *
+   * A call's state carries its running transcript, so listening to one is the
+   * same disclosure as reading the CTO thread — and the `cto_voice` action
+   * domain is fail-closed to the cto role. The project scope has always
+   * enforced this; the PERSONAL scope had no equivalent, and "nothing puts a
+   * voice event in that buffer today" is a property of the producers, not a
+   * guarantee of this boundary. A buffer is a buffer.
+   *
+   * Refused outright when asked for by name, filtered out of an uncategorised
+   * stream rather than failing it.
+   */
+  const assertVoiceCategoryAllowed = (
+    category: RuntimeEventCategory | null,
+    method: string,
+  ): boolean => {
+    const callerIsCto = callerHasRoleAtLeast(callerRole(), "cto");
+    if (category === "cto_voice" && !callerIsCto) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        `${method} category cto_voice requires the cto role.`,
+      );
+    }
+    return callerIsCto;
+  };
+
   const subscribeRuntimeEvents = async (params: Record<string, unknown>) => {
     const projectId = readProjectId(params);
     if (!projectId) {
@@ -1180,11 +1203,19 @@ export function createMultiProjectRpcRequestHandler(
     // past the required-send ceiling and the host closed the whole connection
     // (4001 "Required sync response backpressured"). See `runtimeEventVolume`.
     const includeHighVolumeEvents = params.includeHighVolumeEvents === true;
+    // A voice call's state carries its running transcript, so listening to it is
+    // the same disclosure as reading the CTO thread. The `cto_voice` ACTION
+    // domain is fail-closed to the cto role (see `ADE_ACTION_CTO_ONLY`); without
+    // the same gate here an agent that cannot start or drive a call could still
+    // sit and listen to one. Denied outright when asked for by name, and
+    // filtered out of an uncategorised subscription rather than failing it.
+    const callerIsCto = assertVoiceCategoryAllowed(category, "runtimeEvents.subscribe");
     const scope = await scopeRegistry.get(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
     const eventEpoch = scope.runtime.eventBuffer.epoch();
     const shouldForward = (event: BufferedEvent): boolean => {
       if (category && event.category !== category) return false;
+      if (!callerIsCto && event.category === "cto_voice") return false;
       // Skipped, never queued: the frame after this one is already a better
       // picture of the same screen, so a dropped frame costs nothing and a
       // buffered one costs the transport.
@@ -1255,6 +1286,7 @@ export function createMultiProjectRpcRequestHandler(
         "personalChats.subscribeEvents category is invalid.",
       );
     }
+    const callerIsCto = assertVoiceCategoryAllowed(category, "personalChats.subscribeEvents");
     // The wire params narrowed to the scope's actual contract, so an unknown
     // key on the request can never reach the subscription.
     const args: PersonalChatSubscribeEventsArgs = {
@@ -1274,7 +1306,10 @@ export function createMultiProjectRpcRequestHandler(
     // subscribeEvents is still awaiting, before the result is assigned here.
     const subscribed = await personalChatScope.subscribeEvents(
       args,
-      (event, eventEpoch) => emitRuntimeEvent(subscriptionId, null, event, eventEpoch),
+      (event, eventEpoch) => {
+        if (!callerIsCto && event.category === "cto_voice") return;
+        emitRuntimeEvent(subscriptionId, null, event, eventEpoch);
+      },
     );
     // The connection can close during that await. `handler.dispose` has then
     // already drained the subscription map, so registering now would leak a
@@ -1929,7 +1964,16 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "personalChats.streamEvents") {
-      return await personalChatScope.streamEvents(params);
+      const category = params.category == null ? null : readEventCategory(params.category);
+      const callerIsCto = assertVoiceCategoryAllowed(category, "personalChats.streamEvents");
+      const result = await personalChatScope.streamEvents(params);
+      if (callerIsCto) return result;
+      // Filtered, not refused: every other category is still readable, and the
+      // cursor still advances past what was withheld so polling cannot stall.
+      return {
+        ...result,
+        events: result.events.filter((event) => event.category !== "cto_voice"),
+      };
     }
 
     if (method === "personalChats.subscribeEvents") {
