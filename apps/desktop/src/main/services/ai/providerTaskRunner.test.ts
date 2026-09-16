@@ -119,6 +119,7 @@ function createMockProcess(args: {
   stderr?: string;
   exitCode?: number;
   onStart?: () => void;
+  deferClose?: boolean;
 } = {}): MockSpawnProcess {
   const stdout = new EventEmitter();
   const stderr = new EventEmitter();
@@ -139,7 +140,7 @@ function createMockProcess(args: {
     args.onStart?.();
     if (args.stdout) stdout.emit("data", Buffer.from(args.stdout, "utf8"));
     if (args.stderr) stderr.emit("data", Buffer.from(args.stderr, "utf8"));
-    child.emit("close", args.exitCode ?? 0);
+    if (!args.deferClose) child.emit("close", args.exitCode ?? 0);
   });
 
   return child;
@@ -229,6 +230,31 @@ describe("runProviderTask", () => {
       stdio: ["pipe", "pipe", "pipe"],
     });
     expect(child.stdin.end).toHaveBeenCalledWith("Summarize the worktree state.");
+  });
+
+  it("terminates a provider task when writing its prompt fails", async () => {
+    const child = createMockProcess({ deferClose: true });
+    spawnMock.mockReturnValueOnce(child);
+
+    const pending = runProviderTask({
+      cwd: process.cwd(),
+      descriptor: {
+        family: "anthropic",
+        isCliWrapped: true,
+        providerModelId: "claude-sonnet-5",
+      } as any,
+      prompt: "This prompt cannot be delivered.",
+      feature: "unit-test",
+      projectConfig: {} as any,
+    });
+
+    await vi.waitFor(() => {
+      expect(child.stdin.end).toHaveBeenCalled();
+    });
+    child.stdin.emit("error", Object.assign(new Error("EIO"), { code: "EIO" }));
+
+    await expect(pending).rejects.toThrow("EIO");
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
   it("pipes Codex prompts over stdin instead of argv", async () => {
@@ -334,35 +360,44 @@ describe("runProviderTask", () => {
       feature: "session-metadata",
       projectConfig: {} as any,
     };
-    const results = await Promise.all([
-      runProviderTask({
-        ...common,
-        descriptor: {
-          family: "qwen",
-          providerRoute: "qwen-acp",
-          isCliWrapped: true,
-          providerModelId: "qwen/qwen3-coder-plus",
-        } as any,
-      }),
-      runProviderTask({
-        ...common,
-        descriptor: {
-          family: "moonshot",
-          providerRoute: "kimi-acp",
-          isCliWrapped: true,
-          providerModelId: "moonshot/kimi-for-coding",
-        } as any,
-      }),
-      runProviderTask({
-        ...common,
-        descriptor: {
-          family: "xai",
-          providerRoute: "grok-acp",
-          isCliWrapped: true,
-          providerModelId: "xai/grok-4.6",
-        } as any,
-      }),
-    ]);
+    const writeFileSpy = vi.spyOn(fs, "writeFileSync");
+    let results: Awaited<ReturnType<typeof runProviderTask>>[];
+    let wroteNoToolsAgent = false;
+    try {
+      results = await Promise.all([
+        runProviderTask({
+          ...common,
+          descriptor: {
+            family: "qwen",
+            providerRoute: "qwen-acp",
+            isCliWrapped: true,
+            providerModelId: "qwen/qwen3-coder-plus",
+          } as any,
+        }),
+        runProviderTask({
+          ...common,
+          descriptor: {
+            family: "moonshot",
+            providerRoute: "kimi-acp",
+            isCliWrapped: true,
+            providerModelId: "moonshot/kimi-for-coding",
+          } as any,
+        }),
+        runProviderTask({
+          ...common,
+          descriptor: {
+            family: "xai",
+            providerRoute: "grok-acp",
+            isCliWrapped: true,
+            providerModelId: "xai/grok-4.6",
+          } as any,
+        }),
+      ]);
+    } finally {
+      wroteNoToolsAgent = writeFileSpy.mock.calls.some(([, contents]) => String(contents).includes("tools: []"));
+      writeFileSpy.mockRestore();
+    }
+    expect(wroteNoToolsAgent).toBe(true);
 
     expect(results.map((result) => result.structuredOutput)).toEqual([
       { chatTitle: "Qwen title" },
@@ -372,7 +407,8 @@ describe("runProviderTask", () => {
     expect(spawnMock).toHaveBeenCalledTimes(3);
     const launched = spawnMock.mock.calls.map((call) => call[1]);
     expect(launched[0]).toEqual(expect.arrayContaining(["--safe-mode", "--output-format", "text", "--model", "qwen3-coder-plus"]));
-    expect(launched[1]).toEqual(expect.arrayContaining(["--model", "kimi-code/kimi-for-coding", "--output-format", "text", "--prompt"]));
+    expect(launched[1]).toEqual(expect.arrayContaining(["--model", "kimi-code/kimi-for-coding", "--agent-file", "--output-format", "text", "--prompt"]));
+    expect(launchArgvValueAfter(launched[1], "--agent-file")).toMatch(/ade-kimi-task-/);
     expect(launched[1]).not.toContain("--plan");
     expect(launched[2]).toEqual(expect.arrayContaining(["--permission-mode", "plan", "--model", "grok-4.6", "--json-schema"]));
     expect(launched[0]).not.toContain("--prompt");

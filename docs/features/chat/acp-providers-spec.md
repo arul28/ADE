@@ -104,6 +104,11 @@ deprecated Python kimi-cli)
   `--auto` (parse error: "Cannot combine --yolo with --auto"); `--plan`. Vendor
   docs say permission flags ARE allowed on resume (Emdash's omit-on-resume is
   stale) — verify with one live probe after login.
+- Metadata/title tasks use Kimi's native `--prompt` route with a temporary
+  `--agent-file` whose `tools` list is empty; they never receive project tools.
+  Kimi has no accept-edits equivalent, so ADE's generic accept-edits selection
+  keeps Kimi at its normal approval posture. An explicit native `auto-edit`
+  request remains rejected rather than being silently broadened to `--auto`.
 - Session id: NOT assignable at launch. Capture via sessions-dir disk-adopt
   (pattern: `scheduleCodexSessionIdCaptureBestEffort` in `ptyService.ts`) or a
   `SessionStart` hook. IDs are ULID-shaped.

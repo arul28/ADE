@@ -215,6 +215,7 @@ async function runCommand(args: {
       if (settled || isBenignStdinCloseError(error)) return;
       settled = true;
       clearTimeout(timeoutHandle);
+      terminateProcessTree(child, "SIGTERM");
       reject(error);
     });
 
@@ -507,15 +508,31 @@ async function runKimiTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
-  // Kimi rejects --plan together with --prompt. Metadata generation is a
-  // non-interactive text task, so keep the supported prompt/output contract
-  // while keeping the task non-interactive.
-  const cliArgs: string[] = [];
-  const model = resolveKimiCliModelForLaunch(args.descriptor.providerModelId);
-  if (model) cliArgs.unshift("--model", model);
-  cliArgs.push("--output-format", "text", "--prompt", combinedPrompt);
-  const resolved = resolveKimiExecutable({ auth: args.auth });
-  return await runAcpOneShotTask(args, { command: resolved.path, argv: cliArgs, providerLabel: "Kimi" });
+  // Kimi rejects --plan/--auto/--yolo together with --prompt. Metadata
+  // generation is non-interactive, so use a temporary agent with no tools
+  // instead of relying on a permission flag that the CLI disallows here.
+  const taskDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kimi-task-"));
+  const agentPath = path.join(taskDir, "metadata.md");
+  fs.writeFileSync(agentPath, [
+    "---",
+    "name: ade-metadata",
+    "description: ADE metadata task with no tool access.",
+    "tools: []",
+    "---",
+    "Return only the requested metadata. Do not use tools.",
+    "",
+  ].join("\n"), "utf8");
+
+  try {
+    const cliArgs: string[] = [];
+    const model = resolveKimiCliModelForLaunch(args.descriptor.providerModelId);
+    if (model) cliArgs.push("--model", model);
+    cliArgs.push("--agent-file", agentPath, "--output-format", "text", "--prompt", combinedPrompt);
+    const resolved = resolveKimiExecutable({ auth: args.auth });
+    return await runAcpOneShotTask(args, { command: resolved.path, argv: cliArgs, providerLabel: "Kimi" });
+  } finally {
+    fs.rmSync(taskDir, { recursive: true, force: true });
+  }
 }
 
 async function runGrokTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {

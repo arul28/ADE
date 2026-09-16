@@ -25844,10 +25844,14 @@ export function createAgentChatService(args: {
   */
   const acpPermissionModeFromLegacyPermissionMode = (
     mode: AgentChatSession["permissionMode"] | undefined,
+    provider: AgentChatSession["provider"] | undefined,
   ): AgentChatAcpPermissionMode => {
     switch (mode) {
       case "plan": return "plan";
-      case "edit": return "auto-edit";
+      // Kimi has no accept-edits equivalent. Keep the generic composer
+      // selection fail-closed at Kimi's normal approval posture; an explicit
+      // native `auto-edit` request is still rejected by the Kimi dialect.
+      case "edit": return provider === "kimi" ? "default" : "auto-edit";
       case "auto": return "auto";
       case "full-auto": return "yolo";
       default: return "default";
@@ -25855,7 +25859,8 @@ export function createAgentChatService(args: {
   };
 
   const resolveAcpPermissionMode = (session: AgentChatSession): AgentChatAcpPermissionMode =>
-    session.acpPermissionMode ?? acpPermissionModeFromLegacyPermissionMode(session.permissionMode);
+    session.acpPermissionMode
+    ?? acpPermissionModeFromLegacyPermissionMode(session.permissionMode, session.provider);
 
   /**
    * True when ADE should answer a permission card itself rather than show it.
@@ -50810,6 +50815,7 @@ export function createAgentChatService(args: {
         // captured when the current ACP runtime was opened.
         managed.session.acpPermissionMode = acpPermissionModeFromLegacyPermissionMode(
           managed.session.permissionMode,
+          managed.session.provider,
         );
       }
     }
