@@ -248,7 +248,7 @@ type PrTagComparable = {
   githubPrNumber: number;
 };
 
-function comparePrTags(a: PrTagComparable, b: PrTagComparable): number {
+export function comparePrTags(a: PrTagComparable, b: PrTagComparable): number {
   const byState = prStateRank(a.state) - prStateRank(b.state);
   if (byState !== 0) return byState;
   const aUpdated = Date.parse(a.updatedAt);
@@ -303,6 +303,34 @@ export function selectLanePrs(
       return lanePrMatchesCurrentBranch(lane, pr);
     })
     .sort(comparePrTags);
+}
+
+/**
+ * What a CHAT should show: everything `selectLanePrs` gives the lane, plus any
+ * pull request this chat explicitly linked even though another lane owns it.
+ *
+ * The two rules have to live apart. Lane surfaces (tags, badges, Work cards)
+ * must stay strictly lane-owned — relaxing that put one lane's PR on every lane
+ * in the project. Chat surfaces must not, because `linkToLane` deliberately
+ * leaves `lane_id` on the ORIGINAL owning lane, so a cross-lane link would
+ * otherwise be written to the database and then filtered out of every view.
+ */
+export function selectChatPrs(
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  prs: PrSummary[],
+  sessionId?: string | null,
+): PrSummary[] {
+  const owned = selectLanePrs(lane, prs);
+  const seen = new Set(owned.map((pr) => pr.id));
+  const linkedElsewhere = sessionId
+    ? prs.filter((pr) => (
+      !pr.detached
+      && pr.laneId !== lane.id
+      && !seen.has(pr.id)
+      && Boolean(pr.chatSessionIds?.includes(sessionId))
+    ))
+    : [];
+  return [...owned, ...linkedElsewhere].sort(comparePrTags);
 }
 
 export function selectLanePrTag(

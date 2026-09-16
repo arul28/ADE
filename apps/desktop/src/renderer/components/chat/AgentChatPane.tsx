@@ -8176,7 +8176,7 @@ export function AgentChatPane({
       return matches.slice(0, 20).map((pr) => ({
         number: pr.githubPrNumber,
         title: pr.title ?? "",
-        state: pr.state === "merged" || pr.state === "closed" ? pr.state : "open",
+        state: pr.state,
         url: pr.githubUrl || `https://github.com/${pr.repoOwner}/${pr.repoName}/pull/${pr.githubPrNumber}`,
         repo: pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : undefined,
       }));
@@ -8755,7 +8755,11 @@ export function AgentChatPane({
     })();
     if (!level) return;
 
-    const resolved = resolvePermissionLevel(level, next);
+    // ACP takes its mode from the OpenCode table on this surface, so it must be
+    // RESOLVED as that family too: resolving as "acp" reported an un-stepped
+    // level while applying a stepped one, landing ACP providers a rung above
+    // the user's choice.
+    const resolved = resolvePermissionLevel(level, next === "acp" ? "opencode" : next);
     switch (next) {
       case "claude":
         setClaudePermissionMode(resolved.claudePermissionMode);
@@ -8968,14 +8972,20 @@ export function AgentChatPane({
       cloneParallelSlotFromComposer({
         native: currentNativeControls,
         modelId,
-        reasoningEffort,
+        // Resolved, not raw: a parallel launch calls agentChat.create directly
+        // and would otherwise spawn on the provider default while the trigger
+        // displayed the remembered family effort.
+        reasoningEffort: effectiveReasoningEffort,
         fastMode,
         executionMode,
       }),
       cloneParallelSlotFromComposer({
         native: currentNativeControls,
         modelId,
-        reasoningEffort,
+        // Resolved, not raw: a parallel launch calls agentChat.create directly
+        // and would otherwise spawn on the provider default while the trigger
+        // displayed the remembered family effort.
+        reasoningEffort: effectiveReasoningEffort,
         fastMode,
         executionMode,
       }),
@@ -9245,7 +9255,10 @@ export function AgentChatPane({
       text,
       draft,
       modelId,
-      reasoningEffort,
+      // Resolved: this snapshot feeds the CLI launch path, which sends the
+      // value straight to the runtime. Raw state there spawned a CLI session on
+      // the provider default while the trigger displayed something else.
+      reasoningEffort: effectiveReasoningEffort,
       fastMode,
       cursorCloudServiceTier,
       executionMode,

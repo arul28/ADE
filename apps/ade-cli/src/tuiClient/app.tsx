@@ -7910,11 +7910,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // so "" caches like any typed query.
         const filesPromise = cache.filesByQuery.get(fileQuery)
           ? Promise.resolve(cache.filesByQuery.get(fileQuery)!)
-          : Promise.resolve(conn.action<Array<{ path: string }>>("file", "quickOpen", {
+          : Promise.resolve(conn.action<Array<{ path: string; isDirectory?: boolean }>>("file", "quickOpen", {
             workspaceId: laneId,
             query: fileQuery,
             limit: MENTION_FILE_ROWS,
             allowComposerPrefixFallback: true,
+            // The TUI `@` menu mirrors the desktop composer, folders included.
+            includeDirectories: true,
           }))
             .then((files) => {
               const safeFiles = Array.isArray(files) ? files : [];

@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "Cross-surface chip cases. The desktop reads this from chips.test.ts and iOS",
+    "reads the same file from its test bundle (ADETests/WorkComposerTriggerDetectorTests).",
+    "",
+    "It exists because iOS re-implements chips.ts and deeplinks.ts in Swift and",
+    "cannot import the TypeScript. Hand-written twin tests prove today's parity and",
+    "nothing about tomorrow's: two divergences were already found by review rather",
+    "than by a failing test. Adding a row here fails the iOS suite until Swift",
+    "matches, which is the only mechanism that makes silent divergence impossible.",
+    "",
+    "Add a row for every new deeplink shape. `label` is the compact display label.",
+    "",
+    "NOTE: ade://pr/<number> without owner/repo is REJECTED by parseDeeplink and is\ndeliberately absent — it must stay a generic ADE link on every surface."
+  ],
+  "cases": [
+    { "url": "https://github.com/arul28/ade/pull/1237", "kind": "pr", "label": "arul28/ade#1237" },
+    { "url": "ade://pr/arul28/ade/1237", "kind": "pr", "label": "#1237" },
+    { "url": "https://github.com/arul28/ade/issues/88", "kind": "issue", "label": "arul28/ade#88" },
+    { "url": "https://github.com/arul28/ade", "kind": "repo", "label": "arul28/ade" },
+    { "url": "https://github.com/arul28/ade/commit/80a6236e6abcdef", "kind": "commit", "label": "arul28/ade@80a6236" },
+    { "url": "ade://commit/80a6236e6abcdef", "kind": "commit", "label": "80a6236" },
+    { "url": "ade://lane/25f280a4-1b2c-4d3e-8f90-abcdef123456", "kind": "lane", "label": "Lane 25f280a4" },
+    { "url": "ade://session/9e2315e8ddef", "kind": "chat", "label": "Chat 9e2315e8" },
+    { "url": "ade://file/apps/desktop/src/shared/chips.ts", "kind": "file", "label": "chips.ts" },
+    { "url": "ade://file/apps/desktop/src/shared/chips.ts?line=42", "kind": "file", "label": "chips.ts:42" },
+    { "url": "ade://repo/arul28/ade/branch/main", "kind": "branch", "label": "main" },
+    { "url": "ade://repo/arul28/ade/branch/ade/t3gap-b-composer", "kind": "branch", "label": "ade/t3gap-b-composer" },
+    { "url": "ade://artifact/proof12345678", "kind": "artifact", "label": "Artifact proof123" },
+    { "url": "https://linear.app/ade/issue/ADE-431/fix-it", "kind": "linear_issue", "label": "ADE-431" },
+    { "url": "ade://linear-issue/ade-431", "kind": "linear_issue", "label": "ADE-431" },
+    { "url": "ade://lane/25f280a4/session/abc", "kind": "ade_link", "label": "ADE · lane/25f280a4/session/abc" },
+    { "url": "ade://something-a-newer-ade-minted/42", "kind": "ade_link", "label": "ADE · something-a-newer-ade-minted/42" }
+  ]
+}

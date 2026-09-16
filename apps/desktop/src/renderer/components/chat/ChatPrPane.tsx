@@ -24,9 +24,9 @@ import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
-import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
-import { selectPrsForChatInLane } from "../../lib/prChatScope";
-import { selectLanePrs } from "../lanes/lanePageModel";
+import { openLanePr, pickPrimaryPr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
+import { prStateTone, selectPrsForChatInLane } from "../../lib/prChatScope";
+import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
@@ -48,15 +48,7 @@ const titleBarIconButton =
 const paneAction =
   "inline-flex w-full items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-left text-[12px] font-medium text-fg/65 transition-colors hover:border-white/[0.10] hover:bg-white/[0.04] hover:text-fg/85";
 
-function stateTone(state: PrSummary["state"]): { dot: string; label: string } {
-  switch (state) {
-    case "open": return { dot: "bg-emerald-400", label: "Open" };
-    case "draft": return { dot: "bg-amber-400/70", label: "Draft" };
-    case "merged": return { dot: "bg-violet-400", label: "Merged" };
-    case "closed": return { dot: "bg-red-400/70", label: "Closed" };
-    default: return { dot: "bg-fg/25", label: String(state) };
-  }
-}
+const stateTone = prStateTone;
 
 /** Human relative age for a sync timestamp. Computed at render (no ticking). */
 function relTime(iso: string | null): string {
@@ -374,10 +366,11 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       if (typeof window.ade.prs.listAll === "function") {
         const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
         const scopedPrs = selectPrsForChatInLane(allPrs, laneId, sessionId);
-        const visiblePrs = selectLanePrs(laneForPr, scopedPrs);
+        const visiblePrs = selectChatPrs(laneForPr, scopedPrs, sessionId);
         setLinkedPrs(visiblePrs);
         const pinnedId = pinnedPrIdRef.current;
         cached = (pinnedId ? visiblePrs.find((entry) => entry.id === pinnedId) : null)
+          ?? pickPrimaryPr(visiblePrs)
           ?? selectPrimaryLanePr(laneForPr, scopedPrs);
       } else {
         const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
@@ -633,13 +626,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
                           : "border-border/15 bg-transparent text-fg/55 hover:bg-fg/[0.06]"
                       }`}
                     >
-                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                        entry.state === "merged"
-                          ? "bg-violet-400"
-                          : entry.state === "closed"
-                            ? "bg-red-400"
-                            : "bg-emerald-400"
-                      }`} />
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${prStateTone(entry.state).dot}`} />
                       <span className="shrink-0 font-medium">#{entry.githubPrNumber}</span>
                       <span className="truncate opacity-70">{entry.title || ""}</span>
                     </button>

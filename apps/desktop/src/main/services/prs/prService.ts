@@ -2860,7 +2860,6 @@ export function createPrService({
 
   const upsertRow = (
     summary: Omit<PrSummary, "projectId"> & { projectId?: string },
-
   ): string => {
     const now = nowIso();
     const hasMergeConflicts = Object.prototype.hasOwnProperty.call(summary, "mergeConflicts");
@@ -3391,12 +3390,20 @@ export function createPrService({
     const ignoredAutoLinks = listAutoLinkIgnores(repo);
 
     // Select ONE authoritative PR per lane before upserting. A reused branch can
-    // carry MULTIPLE historical PRs in a state:"all" snapshot; upserting all of
-    // them repeatedly adopts the same lane row (upsertRow identifies by lane +
-    // branch), so the last-processed — potentially oldest — PR would win and flip
-    // an active PR to a stale merged/closed one. Since this backfill now runs on
-    // focus reconcile, that could make merely opening a project mis-mark a PR.
-    // Prefer an open/draft PR; otherwise the newest (highest PR number).
+    // carry MULTIPLE historical PRs in a state:"all" snapshot.
+    //
+    // The original hazard was row collision: `upsertRow` identified a row by
+    // (lane, branch), so every historical PR landed on the SAME row and the
+    // last-processed — potentially oldest — one won, flipping an active PR to a
+    // stale merged/closed state. That can no longer happen: identity is now
+    // (repo, number), so each PR gets its own row.
+    //
+    // The dedupe is still required, for the other half of the reason. Without
+    // it this backfill would attach every historical PR of a reused branch to
+    // the lane, and they all match the lane's current branch — so a lane would
+    // acquire a pile of long-merged PRs on its badge and hover list simply
+    // because the project was opened. Prefer an open/draft PR; otherwise the
+    // newest (highest PR number).
     type BackfillCandidate = {
       rawPr: any;
       prNumber: number;

@@ -60,7 +60,11 @@ struct WorkSmartLink: Equatable {
       // A recognised shape gets its typed label; anything else keeps the
       // original descriptive form, because "ADE · lane/25f280a4/session/abc"
       // tells the reader far more than a bare "ADE link".
-      if let typed = WorkSmartLink.adeDeeplinkLabel(host: components.host, parts: parts) {
+      if let typed = WorkSmartLink.adeDeeplinkLabel(
+        host: components.host,
+        parts: parts,
+        lineQueryValue: components.queryItems?.first(where: { $0.name == "line" })?.value
+      ) {
         return typed
       }
       let target = ([components.host].compactMap { $0 } + parts).joined(separator: "/")
@@ -166,12 +170,11 @@ struct WorkSmartLink: Equatable {
     let segments = adeSegments(host: host, parts: parts)
     guard let head = segments.first?.lowercased() else { return nil }
     switch head {
-    // ade://pr/<owner>/<repo>/<number>, and the number-only ade://pr/<number>
-    // form the desktop parser also accepts.
+    // ade://pr/<owner>/<repo>/<number>. The number-only form is deliberately
+    // NOT accepted: parseDeeplink rejects it as malformed, and a chip that
+    // resolves on one surface and not the other is the bug this mirrors away.
     case "pr":
-      if segments.count == 4, workSmartLinkIsAsciiNumber(segments[3]) { return .pullRequest }
-      if segments.count == 2, workSmartLinkIsAsciiNumber(segments[1]) { return .pullRequest }
-      return nil
+      return segments.count == 4 && workSmartLinkIsAsciiNumber(segments[3]) ? .pullRequest : nil
     case "lane":
       return segments.count == 2 && isUuid(segments[1]) ? .lane : nil
     case "session":
@@ -197,17 +200,21 @@ struct WorkSmartLink: Equatable {
 
   /// Only labels a URL whose shape `adeDeeplinkKind` already accepted, so a
   /// malformed link never gets a confident-looking label.
-  static func adeDeeplinkLabel(host: String?, parts: [String]) -> String? {
+  static func adeDeeplinkLabel(host: String?, parts: [String], lineQueryValue: String? = nil) -> String? {
     let segments = adeSegments(host: host, parts: parts)
     guard let kind = adeDeeplinkKind(host: host, parts: parts) else { return nil }
     func shortId(_ value: String) -> String { String(value.prefix(8)) }
     switch kind {
-    case .pullRequest: return segments.count == 2 ? "#\(segments[1])" : "#\(segments[3])"
+    case .pullRequest: return "#\(segments[3])"
     case .lane: return "Lane \(shortId(segments[1]))"
     case .chat: return "Chat \(shortId(segments[1]))"
     case .file:
       let path = segments.dropFirst().joined(separator: "/")
-      return path.split(separator: "/").last.map(String.init) ?? path
+      let name = path.split(separator: "/").last.map(String.init) ?? path
+      // `?line=` is part of the label on the desktop (`name:42`); dropping it
+      // here made the same link read differently on the two surfaces.
+      if let line = lineQueryValue, !line.isEmpty { return "\(name):\(line)" }
+      return name
     case .commit: return String(segments[1].prefix(7))
     case .artifact: return "Artifact \(shortId(segments[1]))"
     case .branch: return segments[4...].joined(separator: "/")

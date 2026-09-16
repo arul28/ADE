@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  chipDisplayLabel,
   chipFromMention,
   chipFromPath,
   chipFromSmartLink,
@@ -8,6 +9,7 @@ import {
   splitTextIntoChipParts,
 } from "./chips";
 import { deriveSmartLinkPreview } from "./smartLinks";
+import chipCases from "./__fixtures__/chipCases.json";
 
 function previewFor(url: string) {
   const preview = deriveSmartLinkPreview(url);
@@ -101,5 +103,18 @@ describe("splitTextIntoChipParts", () => {
       .map((part) => (part.type === "text" ? part.text : part.chip.token))
       .join("");
     expect(rebuilt).toBe(text);
+  });
+});
+
+describe("cross-surface fixture", () => {
+  // The same file is loaded by the iOS suite. A new deeplink shape added here
+  // fails Swift until it matches, which is what stops the two implementations
+  // drifting apart between reviews.
+  it.each(chipCases.cases)("$url -> $kind / $label", ({ url, kind, label }) => {
+    const preview = deriveSmartLinkPreview(url);
+    expect(preview, `no preview for ${url}`).toBeTruthy();
+    const chip = chipFromSmartLink(preview!);
+    expect(chip.kind).toBe(kind);
+    expect(chipDisplayLabel(chip)).toBe(label);
   });
 });

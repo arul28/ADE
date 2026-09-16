@@ -368,11 +368,15 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     let artifact = link("ade://artifact/proof12345678")
     XCTAssertEqual(artifact?.kind, .artifact)
 
-    // The desktop parser accepts the number-only PR form and a branch name that
-    // contains slashes (ADE's own lane branches do). Both surfaces must agree.
+    // parseDeeplink REJECTS the number-only PR form, so it must stay a generic
+    // ADE link here too. Accepting it made iOS more permissive than the desktop.
     let prNumberOnly = link("ade://pr/1237")
-    XCTAssertEqual(prNumberOnly?.kind, .pullRequest)
-    XCTAssertEqual(prNumberOnly?.compactLabel, "#1237")
+    XCTAssertEqual(prNumberOnly?.kind, .adeLink)
+
+    // `?line=` belongs in the label, exactly as chips.ts renders it.
+    let fileWithLine = link("ade://file/apps/desktop/src/shared/chips.ts?line=42")
+    XCTAssertEqual(fileWithLine?.kind, .file)
+    XCTAssertEqual(fileWithLine?.compactLabel, "chips.ts:42")
 
     let slashBranch = link("ade://repo/arul28/ade/branch/ade/t3gap-b-composer")
     XCTAssertEqual(slashBranch?.kind, .branch)

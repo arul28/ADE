@@ -72,7 +72,12 @@ export function serializeComposerDom(root: Node): SerializedComposerDom {
     .replace(/[ \t]{2,}/g, " ")
     .replace(/[ \t]+\n/g, "\n");
   for (const [placeholder, value] of preservedChipText) {
-    text = text.replace(placeholder, value);
+    // A function replacer, because a string replacement interprets `$&`, "$`",
+    // `$'` and `$$`. The value is captured agent output — a sed expression or a
+    // regex snippet is routine in a coding tool — and `$&` would otherwise
+    // expand to the placeholder itself, sending a literal control sequence to
+    // the agent in place of the quoted text.
+    text = text.replace(placeholder, () => value);
   }
   return { text, labels };
 }

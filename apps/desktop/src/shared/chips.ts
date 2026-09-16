@@ -34,7 +34,7 @@
 
 import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
-import { findSmartLinks, type SmartLinkPreview, type SmartLinkProvider } from "./smartLinks";
+import { findSmartLinks, type SmartLinkPreview } from "./smartLinks";
 import type { ChatMentionKind } from "./types/chatMentions";
 
 /**
@@ -68,12 +68,8 @@ export type ChipKind =
 export type ChipSource =
   | { origin: "mention"; mentionKind: ChatMentionKind; id: string }
   | { origin: "path"; path: string }
-  // `provider` rides along on the two url-shaped variants so a chip rebuilt
-  // from text alone can still draw the brand mark. Without it a renderer can
-  // only ever fall back to the monogram, and the composer and the transcript
-  // end up showing different icons for the same link.
-  | { origin: "deeplink"; url: string; target: DeeplinkTarget; provider: SmartLinkProvider }
-  | { origin: "url"; url: string; provider: SmartLinkProvider };
+  | { origin: "deeplink"; url: string; target: DeeplinkTarget }
+  | { origin: "url"; url: string };
 
 export type Chip = {
   kind: ChipKind;
@@ -210,12 +206,8 @@ function defaultMentionLabel(mentionKind: ChatMentionKind, id: string): string {
  * difference between "ADE · pr/arul28/ade/1237" and a PR pill that looks and
  * behaves exactly like the one a github.com URL produces.
  */
-export function chipFromDeeplinkTarget(
-  url: string,
-  target: DeeplinkTarget,
-  provider: SmartLinkProvider = "ade",
-): Chip {
-  const source: ChipSource = { origin: "deeplink", url, target, provider };
+export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chip {
+  const source: ChipSource = { origin: "deeplink", url, target };
   switch (target.kind) {
     case "lane":
       return { kind: "lane", token: url, label: `Lane ${shortId(target.laneId)}`, source };
@@ -252,19 +244,22 @@ export function chipFromDeeplinkTarget(
         source,
       };
     case "linear-issue":
-      return { kind: "linear_issue", token: url, label: target.issueIdentifier, source };
+      // Uppercased to match `parseLinearLink`, which already normalises the
+      // identifier for the https form. Without this, ade://linear-issue/ade-431
+      // and the linear.app url for the same issue drew different labels.
+      return { kind: "linear_issue", token: url, label: target.issueIdentifier.toUpperCase(), source };
   }
 }
 
 /** Map one `SmartLinkPreview` onto the shared model, typing ADE links properly. */
 export function chipFromSmartLink(preview: SmartLinkPreview): Chip {
-  const source: ChipSource = { origin: "url", url: preview.url, provider: preview.provider };
+  const source: ChipSource = { origin: "url", url: preview.url };
   const base = { token: preview.url, title: preview.title ?? null, iconDataUrl: preview.iconDataUrl ?? null };
 
   if (preview.kind === "ade_deeplink" || looksLikeAdeDeeplink(preview.url)) {
     const parsed = parseDeeplink(preview.url);
     if (parsed.ok) {
-      const chip = chipFromDeeplinkTarget(preview.url, parsed.target, preview.provider);
+      const chip = chipFromDeeplinkTarget(preview.url, parsed.target);
       return { ...chip, title: base.title, iconDataUrl: base.iconDataUrl };
     }
     // A link this build cannot parse is still a link. Keep it addressable and

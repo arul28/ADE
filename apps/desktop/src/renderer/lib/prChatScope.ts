@@ -38,3 +38,18 @@ export function selectPrsForChatInLane(
   });
   return selectPrsForChat(owned, sessionId);
 }
+
+/**
+ * Dot colour and label for a PR state. One function because it was written
+ * three times and two of the copies rendered a DRAFT pull request green — the
+ * same PR read amber in the pane header and green in the pane's own selector.
+ */
+export function prStateTone(state: PrSummary["state"]): { dot: string; label: string } {
+  switch (state) {
+    case "open": return { dot: "bg-emerald-400", label: "Open" };
+    case "draft": return { dot: "bg-amber-400/70", label: "Draft" };
+    case "merged": return { dot: "bg-violet-400", label: "Merged" };
+    case "closed": return { dot: "bg-red-400/70", label: "Closed" };
+    default: return { dot: "bg-fg/25", label: String(state) };
+  }
+}

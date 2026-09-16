@@ -25,6 +25,8 @@ import { CHAT_MENTION_KINDS, CHAT_MENTION_MAX_PER_KIND, CHAT_MENTION_MAX_RESULTS
 import { composerAtFileRankFields, rankComposerAtMenuItems } from "../../../shared/composerAtMenuRanking";
 import type { ChatMentionKind, ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { cn } from "../ui/cn";
+import { prStateTone } from "../../lib/prChatScope";
+import type { PrSummary } from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,7 +42,7 @@ export type ChatCommandMenuItem =
 export type ComposerPrSuggestion = {
   number: number;
   title: string;
-  state: "open" | "merged" | "closed";
+  state: PrSummary["state"];
   url: string;
   repo?: string;
 };
@@ -596,11 +598,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                     }
 
                     if (item.type === "pr") {
-                      const stateDot = item.pr.state === "merged"
-                        ? "bg-violet-400"
-                        : item.pr.state === "closed"
-                          ? "bg-red-400"
-                          : "bg-emerald-400";
+                      const stateDot = prStateTone(item.pr.state).dot;
                       return (
                         <MenuRow
                           key={`pr:${item.pr.repo ?? ""}#${item.pr.number}`}
