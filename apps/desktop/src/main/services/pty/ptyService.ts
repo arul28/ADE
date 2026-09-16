@@ -1621,7 +1621,11 @@ function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
     || toolType === "claude-chat"
     || toolType === "opencode-chat"
     || toolType === "cursor"
-    || toolType === "droid-chat";
+    || toolType === "droid-chat"
+    || toolType === "qwen-chat"
+    || toolType === "kimi-chat"
+    || toolType === "grok-chat"
+    || toolType === "copilot-chat";
 }
 
 function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undefined): string | null {

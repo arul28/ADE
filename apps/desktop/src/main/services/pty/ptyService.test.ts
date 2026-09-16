@@ -9312,33 +9312,37 @@ describe("ptyService", () => {
       expect(list[0]?.active).toBe(true);
     });
 
-    it("listTerminals excludes persisted agent chat transcript rows", async () => {
-      const { service, sessionService } = createChatHarness();
+    it.each(["claude-chat", "qwen-chat", "kimi-chat", "grok-chat", "copilot-chat"] as const)(
+      "listTerminals excludes persisted %s transcript rows",
+      async (toolType) => {
+        const { service, sessionService } = createChatHarness();
 
-      const terminal = await service.create({
-        laneId: "lane-1",
-        title: "Claude Code",
-        cols: 80,
-        rows: 24,
-        toolType: "claude",
-      });
-      sessionService.create({
-        sessionId: "chat-row",
-        laneId: "lane-1",
-        ptyId: null,
-        tracked: true,
-        title: "Claude Chat",
-        startedAt: new Date().toISOString(),
-        transcriptPath: "/tmp/chat-row.jsonl",
-        toolType: "claude-chat",
-      });
+        const terminal = await service.create({
+          laneId: "lane-1",
+          title: "Claude Code",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+        });
+        sessionService.create({
+          sessionId: "chat-row",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Claude Chat",
+          startedAt: new Date().toISOString(),
+          transcriptPath: "/tmp/chat-row.jsonl",
+          toolType,
+        });
 
-      const ids = service.listTerminals({ laneId: "lane-1" }).map((session) => session.terminalId);
+        const ids = service.listTerminals({ laneId: "lane-1" }).map((session) => session.terminalId);
 
-      expect(ids).toContain(terminal.sessionId);
-      expect(ids).not.toContain("chat-row");
-      await expect(service.previewTerminal({ terminalId: "chat-row" })).rejects.toThrow("not a terminal");
-    });
+        expect(ids).toContain(terminal.sessionId);
+        expect(ids).not.toContain("chat-row");
+        expect(service.listTerminals({ chatSessionId: "chat-row" })).toEqual([]);
+        await expect(service.previewTerminal({ terminalId: "chat-row" })).rejects.toThrow("not a terminal");
+      },
+    );
 
     it("readTerminal returns transcript bytes from `since` and reports nextSince", async () => {
       const { service, sessionService } = createChatHarness();

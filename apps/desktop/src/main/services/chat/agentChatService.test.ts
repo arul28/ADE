@@ -50944,7 +50944,7 @@ describe("explicit provider-thread continuity recovery", () => {
     })}\n`);
     sessionService.setResumeCommand(resume.id, "chat:codex:thread-resume");
     sessionService.setResumeCommand(transcript.id, null);
-    sessionService.setResumeCommand(none.id, null);
+    sessionService.setResumeCommand(none.id, "chat:codex:   ");
     fs.writeFileSync(transcriptPath(transcript.id), `${JSON.stringify({
       sessionId: transcript.id,
       timestamp: new Date().toISOString(),
