@@ -282,6 +282,7 @@ import {
   type AttachmentUploadTicket,
 } from "./attachmentUploadService";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
+import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 export { selectChangesetBatchChunk } from "./changesetPump";
 export { SYNC_HOST_MOBILE_REPLICA_RESEED_GAP } from "./mobileReplicaReseed";
 const execFileAsync = promisify(execFile);
@@ -529,7 +530,7 @@ const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
 const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
 const DEFAULT_SYNC_SLOW_COMMAND_MS = 5_000;
-const MAX_SYNC_ARTIFACT_BYTES = 8 * 1024 * 1024;
+const MAX_SYNC_ARTIFACT_BYTES = CURSOR_CLOUD_ARTIFACT_MAX_BYTES;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
 export const SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS = 2_000;
@@ -905,6 +906,25 @@ type PeerState = {
   /** Local consent for this browser/phone; never mutates machine-wide consent. */
   productAnalyticsEnabled: boolean;
 };
+
+/**
+ * Cursor Cloud lifecycle writes are available to the interactive mobile/web
+ * clients, but not to another desktop or VPS peer acting as a read-only
+ * viewer. Prefer the server-recorded pairing identity when one exists; the
+ * metadata fallback only covers the bootstrap handshake before pairing.
+ */
+function isInteractiveControllerPeer(
+  peer: Pick<PeerState, "metadata" | "pairingRecord">,
+): boolean {
+  if (peer.pairingRecord) {
+    return peer.pairingRecord.peerPlatform === "iOS"
+      || peer.pairingRecord.peerDeviceType === "phone"
+      || peer.pairingRecord.peerDeviceType === "browser";
+  }
+  return peer.metadata?.platform === "iOS"
+    || peer.metadata?.deviceType === "phone"
+    || peer.metadata?.deviceType === "browser";
+}
 
 type PendingChangesetBatch = {
   batchId: string;
@@ -6506,7 +6526,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
     }
-    if (!policy.viewerAllowed) {
+    if (!policy.viewerAllowed && !(policy.controllerAllowed && isInteractiveControllerPeer(peer))) {
       reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
       return;
     }

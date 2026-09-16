@@ -6391,10 +6391,33 @@ describe("CTO-gated Linear sync commands", () => {
         // Resuming spends a provider turn, so it is a host mutation a
         // read-only viewer never gets to make.
         "chat.resumeUsageLimitNow",
+        // Cursor Cloud writes are controller-only: phone/browser controllers
+        // may invoke them, but a desktop viewer must not.
+        "ai.createCursorCloudRun",
+        "ai.archiveCursorCloudAgent",
+        "ai.unarchiveCursorCloudAgent",
+        "ai.deleteCursorCloudAgent",
+        "ai.cancelCursorCloudRun",
+        "ai.cursorCloudFollowUp",
+        "ai.cursorCloudResolveLane",
+        "ai.cursorCloudPullIntoLane",
+        "ai.cursorCloudStopRun",
+      ]);
+      const controllerAllowedActions = new Set<string>([
+        "ai.createCursorCloudRun",
+        "ai.archiveCursorCloudAgent",
+        "ai.unarchiveCursorCloudAgent",
+        "ai.deleteCursorCloudAgent",
+        "ai.cancelCursorCloudRun",
+        "ai.cursorCloudFollowUp",
+        "ai.cursorCloudResolveLane",
+        "ai.cursorCloudPullIntoLane",
+        "ai.cursorCloudStopRun",
       ]);
 
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
         const viewerBlocked = viewerBlockedActions.has(action);
+        const controllerAllowed = controllerAllowedActions.has(action);
         // Policy shape varies (lifecycle mutations are additionally queueable);
         // what matters for feature detection is that the action is advertised
         // with an accurate viewerAllowed bit.
@@ -6403,6 +6426,12 @@ describe("CTO-gated Linear sync commands", () => {
           scope: "project",
           policy: expect.objectContaining({ viewerAllowed: !viewerBlocked }),
         }));
+        if (controllerAllowed) {
+          expect(actions).toContainEqual(expect.objectContaining({
+            action,
+            policy: expect.objectContaining({ controllerAllowed: true }),
+          }));
+        }
 
         const requestId = `viewer-${action}`;
         peer.ws.send(encodeSyncEnvelope({
@@ -6423,7 +6452,7 @@ describe("CTO-gated Linear sync commands", () => {
 
         const result = await waitForEnvelope(peer.envelopes, "command_result", requestId);
         const errorCode = (result.payload as { error?: { code?: string } }).error?.code;
-        if (viewerBlocked) {
+        if (viewerBlocked && !controllerAllowed) {
           // The registry is the gate: a paired controller never reaches the
           // credential store, even though the action is advertised.
           expect(errorCode).toBe("forbidden_command");
@@ -6441,6 +6470,7 @@ describe("CTO-gated Linear sync commands", () => {
       cleanup();
     }
   });
+
 });
 
 describe("initial hydration priority", () => {

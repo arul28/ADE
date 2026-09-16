@@ -601,6 +601,7 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
     const runId = latest ? readString(latest.id) ?? readString(latest.runId) : null;
     if (!runId) throw new Error("This agent has no runs to stop.");
     await deps.cancelCursorCloudRun({ agentId: id, runId });
+    invalidateCache();
     return { stopped: true };
   };
 

@@ -23,6 +23,44 @@ final class CursorCloudContractDecodingTests: XCTestCase {
     XCTAssertNil(workCursorCloudSDKModelId(for: "cursor/"))
   }
 
+  func testCursorCloudLaunchFingerprintChangesOnlyWhenTheDraftChanges() {
+    let base = workCursorCloudLaunchFingerprint(
+      projectId: "project-1",
+      laneId: "lane-1",
+      promptText: "Fix the cloud run",
+      repoUrl: "https://github.com/acme/project",
+      startingRef: "main",
+      modelId: "grok-4.6",
+      serviceTier: nil,
+      autoCreatePR: false,
+      secretNames: ["GH_TOKEN"]
+    )
+    let unchanged = workCursorCloudLaunchFingerprint(
+      projectId: "project-1",
+      laneId: "lane-1",
+      promptText: "Fix the cloud run",
+      repoUrl: "https://github.com/acme/project",
+      startingRef: "main",
+      modelId: "grok-4.6",
+      serviceTier: nil,
+      autoCreatePR: false,
+      secretNames: ["GH_TOKEN"]
+    )
+    let changed = workCursorCloudLaunchFingerprint(
+      projectId: "project-1",
+      laneId: "lane-1",
+      promptText: "Fix the cloud run again",
+      repoUrl: "https://github.com/acme/project",
+      startingRef: "main",
+      modelId: "grok-4.6",
+      serviceTier: nil,
+      autoCreatePR: false,
+      secretNames: ["GH_TOKEN"]
+    )
+    XCTAssertEqual(base, unchanged)
+    XCTAssertNotEqual(base, changed)
+  }
+
   func testFleetResultDecodesEpochMsAndIsoTimestampsWithNullsAndUnknownFields() throws {
     // Mirrors desktop CursorCloudFleetResult: agent timestamps arrive as
     // epoch-ms numbers (typed) or ISO strings, `| null` fields may be absent,

@@ -446,6 +446,15 @@ describe("cursorCloudFleetService", () => {
       expect(harness.cancelCursorCloudRun).toHaveBeenCalledWith({ agentId: "bc-stop", runId: "run-77" });
     });
 
+    it("invalidates the fleet cache after cancelling a run", async () => {
+      const harness = buildHarness({ agents: [agent({ agentId: "bc-cache" })], runs: [{ id: "run-1", agentId: "bc-cache" }] });
+      await harness.service.getFleet({ includeArchived: true });
+      await harness.service.stopAgentRun("bc-cache");
+      await harness.service.getFleet({ includeArchived: true });
+
+      expect(harness.listCursorCloudAgents).toHaveBeenCalledTimes(2);
+    });
+
     it("says so when there is nothing to stop", async () => {
       const harness = buildHarness({ agents: [], runs: [] });
       await expect(harness.service.stopAgentRun("bc-idle")).rejects.toThrow(/no runs to stop/i);

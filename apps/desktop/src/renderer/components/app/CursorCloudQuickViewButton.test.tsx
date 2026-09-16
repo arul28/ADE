@@ -46,8 +46,7 @@ describe("Cursor Cloud connection-gated shell entry point", () => {
     render(<CursorCloudQuickViewButton />);
     await act(async () => {
       vi.advanceTimersByTime(2_000);
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
     });
 
     expect(screen.queryByRole("button", { name: "Cursor Cloud fleet" })).toBeNull();
@@ -67,8 +66,7 @@ describe("Cursor Cloud connection-gated shell entry point", () => {
     render(<CursorCloudQuickViewButton />);
     await act(async () => {
       vi.advanceTimersByTime(2_000);
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
     });
 
     const button = screen.getByRole("button", { name: "Cursor Cloud fleet" });
@@ -98,5 +96,53 @@ describe("Cursor Cloud connection-gated shell entry point", () => {
     const button = screen.getByRole("button", { name: "Cursor Cloud fleet" });
     expect(button.className).toContain("ade-shell-sidebar-item");
     expect(screen.getByText("Cursor Cloud")).toBeTruthy();
+  });
+
+  it("rechecks when two remote hosts expose the same project root", async () => {
+    const getStatus = vi.fn()
+      .mockResolvedValueOnce(cursorStatus(false))
+      .mockResolvedValueOnce(cursorStatus(true));
+    (window as any).ade = {
+      ai: {
+        getStatus,
+        cursorCloudFleet: vi.fn(),
+        onCursorCloudFleetEvent: vi.fn(() => () => {}),
+      },
+    };
+    useAppStore.setState({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:host-a:project",
+        rootPath: "/tmp/cursor-cloud-project",
+      },
+    } as any);
+
+    render(<CursorCloudQuickViewButton />);
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    });
+    expect(screen.queryByRole("button", { name: "Cursor Cloud fleet" })).toBeNull();
+
+    await act(async () => {
+      useAppStore.setState({
+        projectBinding: {
+          kind: "remote",
+          key: "remote:host-b:project",
+          rootPath: "/tmp/cursor-cloud-project",
+        },
+      } as any);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    });
+
+    await act(async () => {
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "Cursor Cloud fleet" })).toBeTruthy();
+    expect(getStatus).toHaveBeenCalledTimes(2);
   });
 });

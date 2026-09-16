@@ -2369,6 +2369,13 @@ function readStoredCursorCloudServiceTier(value: Record<string, unknown>): Curso
     : null;
 }
 
+export function resolveCursorCloudServiceTierOnModelChange(
+  cursorCloudMode: boolean,
+  options?: { serviceTier?: CursorCloudServiceTier | null },
+): CursorCloudServiceTier | null {
+  return cursorCloudMode && options ? options.serviceTier ?? null : null;
+}
+
 type LaunchConfigSessionSource = Pick<
   AgentChatSessionSummary,
   | "model"
@@ -13440,10 +13447,14 @@ export function AgentChatPane({
               }
               const previousFastMode = fastModeRef.current;
               const snapshot = buildModelSelectionSnapshot(nextModelId);
-              // A model change invalidates the previous cloud service-tier
-              // selection, even when the new model happens to advertise the
-              // same tier. The user must opt into it again.
-              const nextCursorCloudTier: CursorCloudServiceTier | null = null;
+              // Ordinary model selection clears the previous cloud service
+              // tier. A service-tier row selection carries the newly chosen
+              // tier through this same handler, even when it targets another
+              // model in the picker.
+              const nextCursorCloudTier = resolveCursorCloudServiceTierOnModelChange(
+                cursorCloudMode,
+                options,
+              );
               if (!selectedSessionId) {
                 draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
                 // The draft owns its thinking level and fast flag, so a model
@@ -13455,13 +13466,13 @@ export function AgentChatPane({
                 // change.
                 const reconciledControls = reconcileDraftModelControls(snapshot.nextDesc, {
                   reasoningEffort,
-                  fastMode: cursorCloudMode ? false : options ? options.fastMode : previousFastMode,
+                  fastMode: cursorCloudMode ? options?.fastMode === true : options ? options.fastMode : previousFastMode,
                 });
                 setReasoningEffort(reconciledControls.reasoningEffort);
-                setFastModeState(cursorCloudMode ? false : reconciledControls.fastMode);
+                setFastModeState(reconciledControls.fastMode);
                 setCursorCloudServiceTier(nextCursorCloudTier);
               } else if (options) {
-                setFastModeState(cursorCloudMode ? false : options.fastMode);
+                setFastModeState(options.fastMode);
                 setCursorCloudServiceTier(nextCursorCloudTier);
               } else {
                 setCursorCloudServiceTier(nextCursorCloudTier);

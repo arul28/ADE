@@ -2141,6 +2141,8 @@ export type SyncRemoteCommandAction =
 
 export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;
+  /** Allows only an authenticated phone/browser controller, never a desktop viewer. */
+  controllerAllowed?: boolean;
   requiresApproval?: boolean;
   localOnly?: boolean;
   queueable?: boolean;

@@ -39,19 +39,19 @@ const visibilityCacheByProject = new Map<string, VisibilityCacheEntry>();
  */
 function readCursorVisibilityCached(
   args: {
-    projectRoot: string | null | undefined;
+    cacheKey: string | null | undefined;
     reader: (() => Promise<AiSettingsStatus>) | undefined;
     force?: boolean;
   },
 ): Promise<boolean> {
-  const { projectRoot, reader, force = false } = args;
-  if (!projectRoot || !reader) return Promise.resolve(false);
+  const { cacheKey, reader, force = false } = args;
+  if (!cacheKey || !reader) return Promise.resolve(false);
   const now = Date.now();
-  const existing = visibilityCacheByProject.get(projectRoot);
+  const existing = visibilityCacheByProject.get(cacheKey);
   const entry = existing && existing.reader === reader
     ? existing
     : { reader, value: false, checkedAtMs: 0, inFlight: null };
-  visibilityCacheByProject.set(projectRoot, entry);
+  visibilityCacheByProject.set(cacheKey, entry);
   if (entry.inFlight) return entry.inFlight;
   const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
   if (!force && now - entry.checkedAtMs < ttl) return Promise.resolve(entry.value);
@@ -86,6 +86,10 @@ export function CursorCloudQuickViewButton({
   const projectBinding = useAppStore((s) => s.projectBinding);
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
+  // Remote hosts can expose the same project root path. The binding key is the
+  // host identity, so a disconnected result from one machine must never hide a
+  // connected Cursor Cloud entry on another machine.
+  const activeProjectVisibilityKey = projectBinding?.key ?? activeProjectRoot;
   const projectName = project?.displayName ?? null;
 
   const [visible, setVisible] = useState(false);
@@ -98,13 +102,13 @@ export function CursorCloudQuickViewButton({
 
   const loadVisibility = useCallback(
     (force = false) => readCursorVisibilityCached({
-      projectRoot: activeProjectRoot,
+      cacheKey: activeProjectVisibilityKey,
       reader: typeof window !== "undefined" && typeof window.ade?.ai?.getStatus === "function"
         ? readCursorStatus
         : undefined,
       force,
     }),
-    [activeProjectRoot, readCursorStatus],
+    [activeProjectVisibilityKey, readCursorStatus],
   );
 
   const shouldAutoCheckVisibility = Boolean(activeProjectRoot);
@@ -128,7 +132,7 @@ export function CursorCloudQuickViewButton({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeProjectRoot, loadVisibility, shouldAutoCheckVisibility]);
+  }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility]);
 
   useEffect(() => {
     if (!shouldAutoCheckVisibility || visible) return undefined;
@@ -155,7 +159,7 @@ export function CursorCloudQuickViewButton({
       if (timer != null) window.clearTimeout(timer);
       window.removeEventListener("ade:runtime-bridge-ready", queue);
     };
-  }, [activeProjectRoot, visible, loadVisibility, shouldAutoCheckVisibility]);
+  }, [activeProjectVisibilityKey, activeProjectRoot, visible, loadVisibility, shouldAutoCheckVisibility]);
 
   useEffect(() => {
     if (!shouldAutoCheckVisibility || !activeProjectRoot) return undefined;
@@ -170,7 +174,7 @@ export function CursorCloudQuickViewButton({
       cancelled = true;
       window.removeEventListener("focus", refresh);
     };
-  }, [activeProjectRoot, loadVisibility, shouldAutoCheckVisibility]);
+  }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility]);
 
   useEffect(() => {
     if (!shouldAutoCheckVisibility || visible || !activeProjectRoot) return undefined;
@@ -187,7 +191,7 @@ export function CursorCloudQuickViewButton({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [activeProjectRoot, loadVisibility, shouldAutoCheckVisibility, visibilityRetryIntervalMs, visible]);
+  }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility, visibilityRetryIntervalMs, visible]);
 
   // Relay-driven finish badge. No polling: the same event that wakes the
   // fleet rows lights the pill when the modal is closed.

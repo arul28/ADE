@@ -4325,6 +4325,7 @@ struct LaneTemplate: Codable, Equatable, Identifiable {
 
 struct SyncRemoteCommandPolicy: Codable, Equatable {
   var viewerAllowed: Bool
+  var controllerAllowed: Bool?
   var requiresApproval: Bool?
   var localOnly: Bool?
   var queueable: Bool?

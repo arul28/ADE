@@ -41,6 +41,7 @@ import {
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
 import { disabledProviderSet } from "../../../shared/providerEnablement";
+import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../shared/cursorCloudArtifactLimits";
 import { probeAllAcpProviderAuth } from "./acpAuthProbe";
 import { loadQwenUserSettings } from "./qwenUserSettings";
 import {
@@ -1498,6 +1499,11 @@ export function createAiIntegrationService(args: {
     const cloudAgent = await Agent.resume(id, { apiKey });
     try {
       const buffer = await cloudAgent.downloadArtifact(artifactPath);
+      if (buffer.byteLength > CURSOR_CLOUD_ARTIFACT_MAX_BYTES) {
+        throw new Error(
+          `Cursor Cloud artifact is too large to transfer (${buffer.byteLength} bytes; max ${CURSOR_CLOUD_ARTIFACT_MAX_BYTES} bytes).`,
+        );
+      }
       return {
         path: artifactPath,
         contents: Buffer.from(buffer).toString("base64"),

@@ -6,6 +6,7 @@ import type { SyncCommandPayload, SyncPairingConnectInfo, SyncWebPairingInfo } f
 import { parsePairingQrText } from "../../../../desktop/src/shared/pairingQr";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS } from "../../../../desktop/src/shared/syncMobileCompatibility";
+import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
@@ -140,6 +141,61 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("rejects an oversized Cursor Cloud artifact before returning it to a peer", async () => {
+    const downloadCursorCloudArtifact = vi.fn().mockResolvedValue({
+      path: "build.zip",
+      contents: "",
+      mimeType: null,
+      sizeBytes: CURSOR_CLOUD_ARTIFACT_MAX_BYTES + 1,
+    });
+    const { service } = createService({
+      aiIntegrationService: { downloadCursorCloudArtifact },
+    });
+
+    await expect(service.execute(makePayload("ai.downloadCursorCloudArtifact", {
+      agentId: "agent-1",
+      path: "build.zip",
+    }))).rejects.toThrow(/too large to transfer/i);
+    expect(downloadCursorCloudArtifact).toHaveBeenCalledWith({ agentId: "agent-1", path: "build.zip" });
+  });
+
+  it("advertises Cursor Cloud writes as controller-only and invalidates fleet reads", async () => {
+    const invalidateCache = vi.fn();
+    const createCursorCloudRun = vi.fn().mockResolvedValue({ agent: { agentId: "agent-1" }, run: { runId: "run-1" } });
+    const cursorCloudFollowUp = vi.fn().mockResolvedValue({ runId: "run-2", status: "running" });
+    const { service } = createService({
+      aiIntegrationService: { createCursorCloudRun },
+      agentChatService: { cursorCloudFollowUp },
+      cursorCloudFleetService: { invalidateCache },
+    });
+
+    for (const action of [
+      "ai.createCursorCloudRun",
+      "ai.archiveCursorCloudAgent",
+      "ai.unarchiveCursorCloudAgent",
+      "ai.deleteCursorCloudAgent",
+      "ai.cancelCursorCloudRun",
+      "ai.cursorCloudFollowUp",
+      "ai.cursorCloudResolveLane",
+      "ai.cursorCloudPullIntoLane",
+      "ai.cursorCloudStopRun",
+    ]) {
+      expect(service.getDescriptor(action)).toEqual(expect.objectContaining({
+        policy: expect.objectContaining({ viewerAllowed: false, controllerAllowed: true }),
+      }));
+    }
+
+    await service.execute(makePayload("ai.createCursorCloudRun", {
+      promptText: "launch",
+      repoUrl: "https://github.com/acme/project",
+    }));
+    await service.execute(makePayload("ai.cursorCloudFollowUp", {
+      agentId: "agent-1",
+      prompt: "continue",
+    }));
+    expect(invalidateCache).toHaveBeenCalledTimes(2);
+  });
+
   it("serves machine Attention to paired viewers without project context", async () => {
     const snapshot = {
       contractVersion: 1,

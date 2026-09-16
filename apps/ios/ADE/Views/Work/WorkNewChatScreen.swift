@@ -1,3 +1,5 @@
+import CryptoKit
+import Foundation
 import SwiftUI
 import os
 
@@ -11,6 +13,33 @@ struct WorkAutoLaneNameSuggestion {
 func workAutoLaneTemporaryBranch() -> String {
   let hex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
   return "ade/\(hex.prefix(8))"
+}
+
+func workCursorCloudLaunchFingerprint(
+  projectId: String?,
+  laneId: String,
+  promptText: String,
+  repoUrl: String,
+  startingRef: String?,
+  modelId: String?,
+  serviceTier: String?,
+  autoCreatePR: Bool,
+  secretNames: [String]
+) -> String {
+  let material = [
+    projectId ?? "",
+    laneId,
+    promptText,
+    repoUrl,
+    startingRef ?? "",
+    modelId ?? "",
+    serviceTier ?? "",
+    autoCreatePR ? "1" : "0",
+    secretNames.sorted().joined(separator: "\u{1f}"),
+  ].joined(separator: "\u{1e}")
+  return SHA256.hash(data: Data(material.utf8))
+    .map { String(format: "%02x", $0) }
+    .joined()
 }
 
 @MainActor
@@ -664,6 +693,12 @@ struct WorkNewChatScreen: View {
   @State private var cursorCloudSecretNames: [String] = []
   @State private var cursorCloudSelectedSecretNames: Set<String> = []
   @State private var cursorCloudRememberSecretNames: Bool = false
+  /// Scene-scoped so a timed-out create can be retried after an app restart
+  /// without creating a second Cursor agent for the same unchanged draft.
+  @SceneStorage("ade.work.newChat.cursorCloudLaunchFingerprint") private var cursorCloudLaunchFingerprint = ""
+  @SceneStorage("ade.work.newChat.cursorCloudLaunchKey") private var cursorCloudLaunchKey = ""
+  @SceneStorage("ade.work.newChat.cursorCloudLaunchSessionId") private var cursorCloudLaunchSessionId = ""
+  @SceneStorage("ade.work.newChat.cursorCloudLaunchTurnId") private var cursorCloudLaunchTurnId = ""
   @State private var shellLaunchBusy: Bool = false
   @State private var queuedShellLaneIds = Set<String>()
   @State private var usageRefreshRevision = 0
@@ -1359,6 +1394,19 @@ struct WorkNewChatScreen: View {
   }
 
   @MainActor
+  private func cursorCloudIdempotencyKey(for fingerprint: String) -> String {
+    if cursorCloudLaunchFingerprint != fingerprint || cursorCloudLaunchKey.isEmpty {
+      if cursorCloudLaunchSessionId.isEmpty {
+        cursorCloudLaunchSessionId = UUID().uuidString.lowercased()
+      }
+      cursorCloudLaunchTurnId = UUID().uuidString.lowercased()
+      cursorCloudLaunchFingerprint = fingerprint
+      cursorCloudLaunchKey = "ade:\(cursorCloudLaunchSessionId):\(cursorCloudLaunchTurnId):cursor-cloud:create"
+    }
+    return cursorCloudLaunchKey
+  }
+
+  @MainActor
   private func launchShell(in lane: LaneSummary) async {
     guard !busy && !shellLaunchBusy else { return }
     shellLaunchBusy = true
@@ -1531,6 +1579,19 @@ struct WorkNewChatScreen: View {
           throw NSError(domain: "ADE", code: 41, userInfo: [NSLocalizedDescriptionKey: "Choose a repository for this Cursor Cloud launch."])
         }
         let baseBranch = cursorCloudBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secretNames = cursorCloudSelectedSecretNames.sorted()
+        let launchFingerprint = workCursorCloudLaunchFingerprint(
+          projectId: activeProjectId,
+          laneId: targetLaneId,
+          promptText: rawText,
+          repoUrl: repoUrl,
+          startingRef: baseBranch.isEmpty ? nil : baseBranch,
+          modelId: workCursorCloudSDKModelId(for: modelId),
+          serviceTier: cursorCloudServiceTier,
+          autoCreatePR: cursorCloudAutoCreatePR,
+          secretNames: secretNames
+        )
+        let launchIdempotencyKey = cursorCloudIdempotencyKey(for: launchFingerprint)
         let created = try await syncService.createCursorCloudRun(
           promptText: rawText,
           repoUrl: repoUrl,
@@ -1540,8 +1601,10 @@ struct WorkNewChatScreen: View {
           laneId: targetLaneId,
           projectId: activeProjectId,
           autoCreatePR: cursorCloudAutoCreatePR,
-          secretNames: cursorCloudSelectedSecretNames.sorted(),
-          rememberSecretNames: cursorCloudRememberSecretNames
+          secretNames: secretNames,
+          rememberSecretNames: cursorCloudRememberSecretNames,
+          idempotencyKey: launchIdempotencyKey,
+          sessionId: cursorCloudLaunchSessionId
         )
         let opened = try await syncService.openCursorCloudChat(
           agentId: created.agent.agentId,
@@ -1554,6 +1617,11 @@ struct WorkNewChatScreen: View {
           throw NSError(domain: "ADE", code: 42, userInfo: [NSLocalizedDescriptionKey: "Cursor Cloud started, but ADE could not open its chat yet. Refresh the lane and try again."])
         }
         await onStarted(summary, opener, false, nil, [])
+        // The launch is now attached to an ADE chat. A future draft gets a
+        // fresh turn key; failures above deliberately leave this key intact.
+        cursorCloudLaunchFingerprint = ""
+        cursorCloudLaunchKey = ""
+        cursorCloudLaunchTurnId = ""
         if let createdLaneId, let autoCreatedFallbackName {
           startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName, temporaryBranch: autoCreatedTemporaryBranch, attachments: [])
         }

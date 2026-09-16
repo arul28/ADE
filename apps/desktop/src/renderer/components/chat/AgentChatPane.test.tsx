@@ -62,6 +62,7 @@ import {
   resolveChatComposerSessionId,
   resolveRenderedChatSessionId,
   resolveUnchangedHistoryTurnActive,
+  resolveCursorCloudServiceTierOnModelChange,
   resetChatBootModelRefreshMemoForTests,
   resolveSnapshotHistoryCursor,
   selectAgentChatSessionViewEvictions,
@@ -11766,6 +11767,14 @@ describe("AgentChatPane per-chat runtime routing", () => {
  */
 describe("AgentChatPane Cursor Cloud composer mode", () => {
   const CURSOR_MODEL_ID = "cursor/composer-cloud";
+
+  it("preserves a tier-row selection while ordinary model selection clears the tier", () => {
+    expect(resolveCursorCloudServiceTierOnModelChange(true, { serviceTier: "fast" })).toBe("fast");
+    expect(resolveCursorCloudServiceTierOnModelChange(true, { serviceTier: "standard" })).toBe("standard");
+    expect(resolveCursorCloudServiceTierOnModelChange(true)).toBeNull();
+    expect(resolveCursorCloudServiceTierOnModelChange(true, {})).toBeNull();
+    expect(resolveCursorCloudServiceTierOnModelChange(false, { serviceTier: "fast" })).toBeNull();
+  });
 
   function seedCursorChatCatalog(): string {
     const model = createDynamicCursorCliModelDescriptor("composer-cloud", "Composer Cloud", {

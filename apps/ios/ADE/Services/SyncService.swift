@@ -9791,7 +9791,9 @@ final class SyncService: ObservableObject {
     projectId: String?,
     autoCreatePR: Bool = false,
     secretNames: [String] = [],
-    rememberSecretNames: Bool = false
+    rememberSecretNames: Bool = false,
+    idempotencyKey: String? = nil,
+    sessionId: String? = nil
   ) async throws -> CursorCloudCreateRunResult {
     var args: [String: Any] = [
       "promptText": promptText,
@@ -9801,9 +9803,11 @@ final class SyncService: ObservableObject {
       "autoCreatePR": autoCreatePR,
       "skipReviewerRequest": true,
     ]
+    if let idempotencyKey, !idempotencyKey.isEmpty { args["idempotencyKey"] = idempotencyKey }
     if let startingRef, !startingRef.isEmpty { args["startingRef"] = startingRef }
     if let modelId, !modelId.isEmpty { args["modelId"] = modelId }
     if let serviceTier, !serviceTier.isEmpty { args["serviceTier"] = serviceTier }
+    if let sessionId, !sessionId.isEmpty { args["sessionId"] = sessionId }
     if let projectId, !projectId.isEmpty { args["projectId"] = projectId }
     if !secretNames.isEmpty {
       args["secretNames"] = secretNames
@@ -15781,7 +15785,8 @@ final class SyncService: ObservableObject {
   /// allowed to invoke, independent of the current transport state.
   func supportsViewerRemoteAction(_ action: String) -> Bool {
     guard supportsRemoteAction(action) else { return false }
-    return commandPolicy(for: action)?.viewerAllowed != false
+    let policy = commandPolicy(for: action)
+    return policy?.viewerAllowed != false || policy?.controllerAllowed == true
   }
 
   func isRemoteActionQueueable(_ action: String) -> Bool {
@@ -15805,7 +15810,8 @@ final class SyncService: ObservableObject {
         userInfo: [NSLocalizedDescriptionKey: "This action is not available for the current machine. Reconnect to refresh capabilities."]
       )
     }
-    guard commandPolicy(for: action)?.viewerAllowed != false else {
+    let policy = commandPolicy(for: action)
+    guard policy?.viewerAllowed != false || policy?.controllerAllowed == true else {
       throw NSError(
         domain: "ADE",
         code: 15,

@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { ClockCounterClockwise, PencilSimple, Play } from "@phosphor-icons/react";
 import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
+  AiSettingsStatus,
   AutomationDraftConfirmationRequirement,
   AutomationDraftIssue,
   AutomationIngressStatus,
@@ -91,6 +92,19 @@ function ruleMatchesSearch(rule: AutomationRuleSummary, query: string): boolean 
 
 type DetailView = "builder" | "history";
 
+export async function readCursorCloudConnectionForAutomation(
+  getStatus: () => Promise<AiSettingsStatus>,
+): Promise<boolean> {
+  try {
+    const status = await getStatus();
+    return status?.providerConnections?.cursor?.authAvailable === true;
+  } catch {
+    // A stale or unavailable AI bridge must not prevent unrelated automation
+    // data from loading; it only means the Cursor trigger is unavailable.
+    return false;
+  }
+}
+
 export function AutomationsWorkspace({
   active = true,
   pendingDraft,
@@ -159,14 +173,15 @@ export function AutomationsWorkspace({
         window.ade.lanes.list({ includeArchived: false, includeStatus: false }),
         window.ade.automations.getIngressStatus(),
         window.ade.projectConfig.get(),
-        window.ade.ai.getStatus(),
+        Promise.resolve()
+          .then(() => readCursorCloudConnectionForAutomation(() => window.ade.ai.getStatus())),
       ]);
       setRules(nextRules);
       setSuites(nextSuites);
       setLanes(nextLanes);
       setIngressStatus(nextIngress);
       setConfigTrustRequired(Boolean(snapshot.trust.requiresSharedTrust));
-      setCursorCloudConnected(aiStatus?.providerConnections?.cursor?.authAvailable === true);
+      setCursorCloudConnected(aiStatus);
       setSelectedRuleId((current) => {
         if (current && nextRules.some((r) => r.id === current)) return current;
         return nextRules[0]?.id ?? null;
