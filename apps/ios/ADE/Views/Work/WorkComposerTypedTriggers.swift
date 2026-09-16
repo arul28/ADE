@@ -57,10 +57,126 @@ struct WorkSmartLink: Equatable {
     case .linear:
       return workSmartLinkLinearIdentifier(components) ?? url
     case .ade:
-      let target = ([components.host].compactMap { $0 } + parts).joined(separator: "/")
-      return target.isEmpty ? "ADE link" : "ADE · \(target)"
+      return WorkSmartLink.adeDeeplinkLabel(host: components.host, parts: parts)
+        ?? "ADE link"
     case .web:
       return url
+    }
+  }
+
+  /// What this link points at, mirroring the desktop's shared chip model
+  /// (`apps/desktop/src/shared/chips.ts`). A pull request is one kind whether it
+  /// arrived as a github.com URL or an `ade://pr/...` deeplink, so both draw the
+  /// same pill on every surface.
+  enum Kind: Equatable {
+    case pullRequest
+    case issue
+    case repository
+    case commit
+    case branch
+    case actionsRun
+    case linearIssue
+    case lane
+    case chat
+    case file
+    case artifact
+    case webPage
+    /// An `ade://` URL this build cannot parse — a newer ADE minted it.
+    case adeLink
+
+    /// Single-cell glyphs, matching `CHIP_GLYPH` on the desktop.
+    var glyph: String {
+      switch self {
+      case .pullRequest: return "⇄"
+      case .issue: return "◉"
+      case .repository: return "▣"
+      case .commit: return "◆"
+      case .branch: return "⑂"
+      case .actionsRun: return "⚙"
+      case .linearIssue: return "L"
+      case .lane: return "◫"
+      case .chat: return "💬"
+      case .file: return "📄"
+      case .artifact: return "◈"
+      case .webPage: return "↗"
+      case .adeLink: return "A"
+      }
+    }
+  }
+
+  var kind: Kind {
+    guard let components = URLComponents(string: url) else { return .webPage }
+    let parts = workSmartLinkPathParts(components)
+    switch provider {
+    case .github:
+      let section = parts.indices.contains(2) ? parts[2].lowercased() : ""
+      if parts.count >= 4, section == "pull", workSmartLinkIsAsciiNumber(parts[3]) { return .pullRequest }
+      if parts.count >= 4, section == "issues", workSmartLinkIsAsciiNumber(parts[3]) { return .issue }
+      if parts.count >= 4, section == "commit" { return .commit }
+      if parts.count >= 5, section == "actions", parts[3].lowercased() == "runs" { return .actionsRun }
+      return .repository
+    case .linear:
+      return .linearIssue
+    case .ade:
+      return WorkSmartLink.adeDeeplinkKind(host: components.host, parts: parts) ?? .adeLink
+    case .web:
+      return .webPage
+    }
+  }
+
+  /// `ade://` links carry a precise target. Rendering every one of them as
+  /// "ADE · pr/owner/repo/1237" threw that away, so an ADE link to a pull
+  /// request looked nothing like the github.com link to the same pull request.
+  private static func adeSegments(host: String?, parts: [String]) -> [String] {
+    ([host].compactMap { $0 } + parts).filter { !$0.isEmpty }
+  }
+
+  static func adeDeeplinkKind(host: String?, parts: [String]) -> Kind? {
+    let segments = adeSegments(host: host, parts: parts)
+    guard let head = segments.first?.lowercased() else { return nil }
+    switch head {
+    case "pr": return segments.count >= 2 ? .pullRequest : nil
+    case "lane": return segments.count >= 2 ? .lane : nil
+    case "session": return segments.count >= 2 ? .chat : nil
+    case "file": return segments.count >= 2 ? .file : nil
+    case "commit": return segments.count >= 2 ? .commit : nil
+    case "artifact": return segments.count >= 2 ? .artifact : nil
+    case "repo": return segments.count >= 4 ? .branch : nil
+    case "linear-issue": return segments.count >= 2 ? .linearIssue : nil
+    default: return nil
+    }
+  }
+
+  static func adeDeeplinkLabel(host: String?, parts: [String]) -> String? {
+    let segments = adeSegments(host: host, parts: parts)
+    guard let head = segments.first?.lowercased() else { return nil }
+    func shortId(_ value: String) -> String { String(value.prefix(8)) }
+    switch head {
+    case "pr":
+      // ade://pr/<owner>/<repo>/<number>
+      if segments.count >= 4, workSmartLinkIsAsciiNumber(segments[3]) { return "#\(segments[3])" }
+      if segments.count >= 2, workSmartLinkIsAsciiNumber(segments[1]) { return "#\(segments[1])" }
+      return nil
+    case "lane":
+      return segments.count >= 2 ? "Lane \(shortId(segments[1]))" : nil
+    case "session":
+      return segments.count >= 2 ? "Chat \(shortId(segments[1]))" : nil
+    case "file":
+      guard segments.count >= 2 else { return nil }
+      let path = segments.dropFirst().joined(separator: "/")
+      return path.split(separator: "/").last.map(String.init) ?? path
+    case "commit":
+      return segments.count >= 2 ? String(segments[1].prefix(7)) : nil
+    case "artifact":
+      return segments.count >= 2 ? "Artifact \(shortId(segments[1]))" : nil
+    case "repo":
+      // ade://repo/<owner>/<repo>/branch/<branch>
+      guard segments.count >= 5, segments[3].lowercased() == "branch" else { return nil }
+      return segments[4]
+    case "linear-issue":
+      return segments.count >= 2 ? segments[1].uppercased() : nil
+    default:
+      return nil
     }
   }
 }
