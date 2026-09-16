@@ -30,7 +30,8 @@ func syncQuickOpenRequestArgs(
   query: String,
   limit: Int,
   includeIgnored: Bool,
-  allowComposerPrefixFallback: Bool
+  allowComposerPrefixFallback: Bool,
+  includeDirectories: Bool = false
 ) -> [String: Any] {
   var args: [String: Any] = [
     "workspaceId": workspaceId,
@@ -40,6 +41,13 @@ func syncQuickOpenRequestArgs(
   ]
   if allowComposerPrefixFallback {
     args["allowComposerPrefixFallback"] = true
+  }
+  // Only the composer's `@` menu wants folders, and it inserts a pointer into
+  // the draft rather than opening or attaching anything. Every other caller
+  // opens what it receives, so the flag stays off by default and is omitted
+  // entirely when false — an older host then ignores nothing it has not seen.
+  if includeDirectories {
+    args["includeDirectories"] = true
   }
   return args
 }
@@ -11441,7 +11449,8 @@ final class SyncService: ObservableObject {
     query: String,
     limit: Int = 30,
     includeIgnored: Bool,
-    allowComposerPrefixFallback: Bool = false
+    allowComposerPrefixFallback: Bool = false,
+    includeDirectories: Bool = false
   ) async throws -> [FilesQuickOpenItem] {
     let boundedLimit = min(max(limit, 1), 1000)
     return try decode(
@@ -11452,7 +11461,8 @@ final class SyncService: ObservableObject {
           query: query,
           limit: boundedLimit,
           includeIgnored: includeIgnored,
-          allowComposerPrefixFallback: allowComposerPrefixFallback
+          allowComposerPrefixFallback: allowComposerPrefixFallback,
+          includeDirectories: includeDirectories
         )
       ),
       as: [FilesQuickOpenItem].self

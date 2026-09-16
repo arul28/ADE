@@ -557,13 +557,15 @@ enum WorkChipDetector {
 
 // MARK: - Trigger detection
 
-/// The two typed triggers the composer recognizes, matching the shared
-/// desktop/TUI semantics: `/` opens the slash-command list, `@` opens file
-/// quick-open. Detection runs on the text *before* the cursor so a trigger can
-/// live anywhere in the draft ("fix @src/foo.ts then run /test").
+/// The typed triggers the composer recognizes, matching the shared desktop/TUI
+/// semantics: `/` opens the slash-command list, `@` opens file quick-open, and
+/// `#` opens the pull-request menu. Detection runs on the text *before* the
+/// cursor so a trigger can live anywhere in the draft ("fix @src/foo.ts then
+/// run /test").
 enum WorkComposerTriggerKind: Equatable {
   case slash
   case at
+  case hash
 }
 
 /// A live trigger resolved from the draft: which kind, the query typed after the
@@ -583,11 +585,15 @@ struct WorkComposerTriggerMatch: Equatable {
 /// Mirrors the desktop/TUI regexes exactly:
 ///   slash — `(?:^|\s)/([^\s/]*)$`
 ///   at    — `(?:^|[ \t\r\n])@([^@\r\n]*)$`
+///   hash  — `(?:^|[ \t\r\n])#([^\s#]*)$`
 /// The `@` query may contain spaces for multi-word entity names, but it stops
-/// at a newline or another `@`.
+/// at a newline or another `@`. The `#` query takes no whitespace at all, so a
+/// markdown heading (`# Title`) closes the token on its very next character
+/// and `owner/repo#12` never triggers — that text is already a chip.
 enum WorkComposerTriggerDetector {
   private static let slashRegex = try! NSRegularExpression(pattern: "(?:^|\\s)/([^\\s/]*)$")
   private static let atRegex = try! NSRegularExpression(pattern: "(?:^|[ \\t\\r\\n])@([^@\\r\\n]*)$")
+  private static let hashRegex = try! NSRegularExpression(pattern: "(?:^|[ \\t\\r\\n])#([^\\s#]*)$")
   private static let fileQueryRegex = try! NSRegularExpression(
     pattern: "^(.+?\\.[A-Za-z0-9_-]+)(?:[ \\t]+.*)?$"
   )
@@ -609,19 +615,15 @@ enum WorkComposerTriggerDetector {
       return WorkComposerTriggerMatch(kind: kind, query: query, range: span)
     }
 
-    let slash = consider(slashRegex, .slash)
-    let at = consider(atRegex, .at)
-
-    switch (slash, at) {
-    case let (s?, a?):
-      return s.range.location >= a.range.location ? s : a
-    case let (s?, nil):
-      return s
-    case let (nil, a?):
-      return a
-    default:
-      return nil
-    }
+    // The trigger typed closest to the cursor wins, so the menu always answers
+    // the token the user is still typing. Ties break the same way the desktop
+    // orders its comparisons: hash, then at, then slash.
+    let candidates = [
+      consider(hashRegex, .hash),
+      consider(atRegex, .at),
+      consider(slashRegex, .slash),
+    ].compactMap { $0 }
+    return candidates.max(by: { $0.range.location < $1.range.location })
   }
 
   /// Keep path-like file labels searchable when the user continues ordinary
@@ -755,6 +757,10 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
   let title: String
   let subtitle: String?
   let insertText: String
+  /// Only meaningful for `@` file rows. Changes the row's glyph; it never
+  /// changes what commit does, because an iOS `@` commit splices text and
+  /// stages nothing.
+  var isDirectory: Bool = false
 }
 
 /// Curated per-provider slash commands, ported from the retired
@@ -913,6 +919,8 @@ final class WorkComposerSuggestionController: ObservableObject {
       suggestions = WorkComposerSlashCatalog.suggestions(provider: provider, query: match.query)
     case .at:
       scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
+    case .hash:
+      schedulePrFetch(query: match.query)
     }
   }
 
@@ -969,23 +977,30 @@ final class WorkComposerSuggestionController: ObservableObject {
         // or `@build/out.log` means it, so composer suggestions keep reaching
         // into ignored trees even though Files search now defaults to skipping
         // them.
+        // Folders are suggestable too: "work on @src/main" is an ordinary
+        // instruction, and an @ selection on iOS only ever splices a pointer
+        // into the draft — it never stages an attachment — so a directory,
+        // which has no bytes to upload, is safe to offer here.
         let items = try await sync.quickOpen(
           workspaceId: workspaceId,
           query: query,
           limit: 20,
           includeIgnored: true,
-          allowComposerPrefixFallback: true
+          allowComposerPrefixFallback: true,
+          includeDirectories: true
         )
         guard !Task.isCancelled, self.laneGeneration == generation else { return }
         let mapped = items.map { item -> WorkComposerSuggestion in
           let name = (item.path as NSString).lastPathComponent
           let dir = (item.path as NSString).deletingLastPathComponent
+          let isDirectory = item.isDirectory == true
           return WorkComposerSuggestion(
             id: "file:\(item.path)",
             kind: .at,
             title: name.isEmpty ? item.path : name,
-            subtitle: dir.isEmpty ? nil : dir,
-            insertText: "@\(item.path)"
+            subtitle: dir.isEmpty ? (isDirectory ? "Folder" : nil) : dir,
+            insertText: "@\(item.path)",
+            isDirectory: isDirectory
           )
         }
         await MainActor.run {
@@ -1009,6 +1024,77 @@ final class WorkComposerSuggestionController: ObservableObject {
     // Only apply while an `@` trigger is still active — a later slash/no trigger
     // may have superseded this fetch.
     guard activeMatch?.kind == .at else { return }
+    isLoading = false
+    suggestions = items
+  }
+
+  /// `#` rows come from the pull requests this project has ALREADY synced, so
+  /// the menu answers from the local database rather than a host round-trip.
+  /// Mirrors the desktop's `searchPullRequests`: detached rows are history and
+  /// never offered, a numeric query prefix-matches the PR number, and anything
+  /// else matches the title or the number.
+  private func schedulePrFetch(query: String) {
+    fetchTask?.cancel()
+    isLoading = true
+    let sync = syncService
+    let generation = laneGeneration
+    fetchTask = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 40_000_000)
+      guard !Task.isCancelled else { return }
+      guard let self, let sync else {
+        await MainActor.run { self?.finishPrs([]) }
+        return
+      }
+      let items = (try? await sync.fetchPullRequestListItems()) ?? []
+      guard !Task.isCancelled, self.laneGeneration == generation else { return }
+      let mapped = Self.prSuggestions(from: items, query: query)
+      await MainActor.run {
+        guard self.laneGeneration == generation else { return }
+        self.finishPrs(mapped)
+      }
+    }
+  }
+
+  /// Pure — and deliberately `nonisolated` — so the ranking and the token are
+  /// testable without a sync service or a main-actor hop.
+  nonisolated static func prSuggestions(
+    from items: [PullRequestListItem],
+    query: String,
+    limit: Int = 20
+  ) -> [WorkComposerSuggestion] {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let isNumeric = !trimmed.isEmpty && trimmed.allSatisfy { $0.isASCII && $0.isNumber }
+    return items
+      .filter { item in
+        guard item.detached == nil else { return false }
+        guard !trimmed.isEmpty else { return true }
+        let number = String(item.githubPrNumber)
+        if isNumeric { return number.hasPrefix(trimmed) }
+        return item.title.lowercased().contains(trimmed) || number.hasPrefix(trimmed)
+      }
+      .prefix(limit)
+      .map { item in
+        // The token is the PR's github url, exactly as the desktop inserts it,
+        // so the sent message draws the same PR pill on every surface.
+        let repo = item.repoOwner.isEmpty || item.repoName.isEmpty
+          ? nil
+          : "\(item.repoOwner)/\(item.repoName)"
+        let url = item.githubUrl.isEmpty
+          ? "https://github.com/\(item.repoOwner)/\(item.repoName)/pull/\(item.githubPrNumber)"
+          : item.githubUrl
+        let label = repo.map { "\($0)#\(item.githubPrNumber)" } ?? "#\(item.githubPrNumber)"
+        return WorkComposerSuggestion(
+          id: "pr:\(item.id)",
+          kind: .hash,
+          title: label,
+          subtitle: item.title.isEmpty ? nil : item.title,
+          insertText: url
+        )
+      }
+  }
+
+  private func finishPrs(_ items: [WorkComposerSuggestion]) {
+    guard activeMatch?.kind == .hash else { return }
     isLoading = false
     suggestions = items
   }
@@ -1567,7 +1653,7 @@ struct WorkComposerTextView: UIViewRepresentable {
       case .slash:
         let body = UIFont.preferredFont(forTextStyle: .body)
         font = UIFont.monospacedSystemFont(ofSize: body.pointSize - 1, weight: .semibold)
-      case .at:
+      case .at, .hash:
         font = UIFont.preferredFont(forTextStyle: .body).withWeight(.semibold)
       }
       return [
@@ -1769,8 +1855,13 @@ struct WorkComposerTextView: UIViewRepresentable {
           next.append(chip)
         }
       }
-      let chipRange = NSRange(location: range.location, length: (chipText as NSString).length)
-      next.append((chipRange, chipText))
+      // A `#` selection inserts a pull-request URL. `restyle()` already draws
+      // every smart link and `atomicDeletionRange` already deletes one whole,
+      // so registering a composer chip over the same range would double-own it.
+      if suggestion.kind != .hash {
+        let chipRange = NSRange(location: range.location, length: (chipText as NSString).length)
+        next.append((chipRange, chipText))
+      }
       chips = next
 
       let storage = textView.textStorage
@@ -1928,12 +2019,28 @@ struct WorkComposerSuggestionStrip: View {
     }
   }
 
+  private var headerIcon: String {
+    switch controller.activeMatch?.kind {
+    case .at: return "doc.text"
+    case .hash: return "arrow.triangle.pull"
+    default: return "command"
+    }
+  }
+
+  private var headerTitle: String {
+    switch controller.activeMatch?.kind {
+    case .at: return "Files"
+    case .hash: return "Pull requests"
+    default: return "Commands"
+    }
+  }
+
   private var header: some View {
     HStack(spacing: 6) {
-      Image(systemName: controller.activeMatch?.kind == .at ? "doc.text" : "command")
+      Image(systemName: headerIcon)
         .font(.caption2.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
-      Text(controller.activeMatch?.kind == .at ? "Files" : "Commands")
+      Text(headerTitle)
         .font(.caption2.weight(.bold))
         .tracking(0.6)
         .foregroundStyle(ADEColor.textMuted)
@@ -1949,7 +2056,7 @@ struct WorkComposerSuggestionStrip: View {
   private var loadingRow: some View {
     HStack(spacing: 8) {
       ProgressView().controlSize(.mini)
-      Text("Searching files…")
+      Text(controller.activeMatch?.kind == .hash ? "Searching pull requests…" : "Searching files…")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
       Spacer(minLength: 0)
@@ -1958,12 +2065,23 @@ struct WorkComposerSuggestionStrip: View {
     .padding(.bottom, 10)
   }
 
+  private func rowIcon(for suggestion: WorkComposerSuggestion) -> String {
+    switch suggestion.kind {
+    case .at: return suggestion.isDirectory ? "folder" : "doc"
+    case .hash: return "arrow.triangle.pull"
+    case .slash: return "chevron.right.circle"
+    }
+  }
+
   private func row(_ suggestion: WorkComposerSuggestion) -> some View {
     HStack(spacing: 10) {
-      Image(systemName: suggestion.kind == .at ? "doc" : "chevron.right.circle")
+      Image(systemName: rowIcon(for: suggestion))
         .font(.footnote.weight(.semibold))
         .foregroundStyle(ADEColor.providerChatAccent(for: controller.provider))
         .frame(width: 18)
+        // Decorative: the title and subtitle already say what the row is, and
+        // VoiceOver reading "arrow triangle pull" before every PR is noise.
+        .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 1) {
         Text(suggestion.title)
           .font(suggestion.kind == .slash
@@ -1984,6 +2102,10 @@ struct WorkComposerSuggestionStrip: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
+    // A row with no subtitle (a slash command, a root-level file) is otherwise
+    // barely 33pt tall. The tap target is the whole row, so it holds the 44pt
+    // floor rather than the text's intrinsic height.
+    .frame(minHeight: 44)
     .contentShape(Rectangle())
   }
 }

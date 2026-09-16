@@ -4472,6 +4472,11 @@ struct FilesQuickOpenItem: Codable, Identifiable, Equatable {
   var id: String { path }
   var path: String
   var score: Double
+  /// True for a directory. Mirrors `FilesQuickOpenItem.isDirectory` on the
+  /// desktop, which only the composer's `@` menu asks for. Optional so an older
+  /// host that never sends the field still decodes — every row is then a file,
+  /// exactly as it was before folders became suggestable.
+  var isDirectory: Bool? = nil
 }
 
 struct FilesSearchTextMatch: Codable, Identifiable, Equatable {

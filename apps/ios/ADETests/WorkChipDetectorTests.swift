@@ -491,6 +491,211 @@ final class WorkChatLinkedPrSelectionTests: XCTestCase {
   }
 }
 
+/// The phone can be NEWER than the host it syncs from, and newer than the
+/// database file its own older build left on disk. Both of those show up the
+/// same way: `pull_request_chat_sessions` is simply not there. The PR list must
+/// still load, with every row falling back to the branch rule.
+final class WorkChatLegacyHostPrDecodingTests: XCTestCase {
+  private var directories: [URL] = []
+
+  override func tearDown() {
+    for url in directories { try? FileManager.default.removeItem(at: url) }
+    directories = []
+    super.tearDown()
+  }
+
+  private func makeDatabase(includeChatSessionLinks: Bool) -> DatabaseService {
+    let base = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    directories.append(base)
+
+    let chatSessionLinkTable = includeChatSessionLinks ? """
+      create table if not exists pull_request_chat_sessions (
+        id text primary key,
+        project_id text not null,
+        pr_id text not null,
+        session_id text not null,
+        lane_id text,
+        created_at text not null default '',
+        updated_at text not null default ''
+      );
+    """ : ""
+
+    return DatabaseService(baseURL: base, bootstrapSQL: """
+      create table if not exists projects (
+        id text primary key,
+        root_path text not null,
+        display_name text not null,
+        default_base_ref text not null,
+        created_at text not null,
+        last_opened_at text not null
+      );
+      create table if not exists lanes (
+        id text primary key,
+        project_id text not null default '',
+        name text not null,
+        description text,
+        lane_type text not null,
+        base_ref text not null,
+        branch_ref text not null,
+        worktree_path text not null,
+        attached_root_path text,
+        is_edit_protected integer not null default 0,
+        parent_lane_id text,
+        color text,
+        icon text,
+        tags_json text,
+        folder text,
+        status text not null default 'active',
+        created_at text not null,
+        archived_at text
+      );
+      create table if not exists pull_requests (
+        id text primary key,
+        project_id text not null,
+        lane_id text not null,
+        repo_owner text not null,
+        repo_name text not null,
+        github_pr_number integer not null,
+        github_url text not null,
+        github_node_id text,
+        title text,
+        state text not null,
+        base_branch text not null,
+        head_branch text not null,
+        checks_status text,
+        review_status text,
+        additions integer not null default 0,
+        deletions integer not null default 0,
+        last_synced_at text,
+        created_at text not null,
+        updated_at text not null,
+        merged_at text
+      );
+      \(chatSessionLinkTable)
+    """)
+  }
+
+  private func seed(_ database: DatabaseService) throws {
+    database.setActiveProjectId("project-1")
+    try database.executeSqlForTesting("""
+      insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+      values('project-1', '/tmp/p', 'P', 'main', '2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
+      insert into lanes(id, project_id, name, lane_type, base_ref, branch_ref, worktree_path, created_at)
+      values('lane-1', 'project-1', 'Lane 1', 'worktree', 'main', 'feature/a', '/tmp/w', '2026-08-01T00:00:00.000Z');
+      insert into pull_requests(
+        id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url,
+        title, state, base_branch, head_branch, checks_status, review_status,
+        additions, deletions, created_at, updated_at
+      ) values(
+        'pr-1', 'project-1', 'lane-1', 'arul28', 'ade', 1237,
+        'https://github.com/arul28/ade/pull/1237',
+        'A legacy row', 'open', 'main', 'feature/a', 'none', 'none',
+        0, 0, '2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z'
+      );
+    """)
+  }
+
+  /// A host/database that predates the link table. The correlated subquery is
+  /// skipped entirely, so the statement still prepares and the row decodes.
+  func testPrListLoadsWhenTheLinkTableDoesNotExist() throws {
+    let database = makeDatabase(includeChatSessionLinks: false)
+    try seed(database)
+
+    let items = database.fetchPullRequestListItems()
+    XCTAssertEqual(items.map(\.id), ["pr-1"])
+    XCTAssertNil(
+      items.first?.chatSessionIds,
+      "No link table means no links — not an empty list that would read as 'linked to nothing'."
+    )
+
+    // And the fallback still shows the PR to a chat on the matching branch.
+    let lane = LaneSummary(
+      id: "lane-1", name: "Lane 1", description: nil, laneType: "worktree", baseRef: "main",
+      branchRef: "feature/a", worktreePath: "/tmp/w", attachedRootPath: nil,
+      parentLaneId: nil, childCount: 0, stackDepth: 0, parentStatus: nil, isEditProtected: false,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil,
+      createdAt: "", archivedAt: nil, devicesOpen: nil
+    )
+    XCTAssertEqual(
+      workChatPullRequests(lane: lane, pullRequests: items, sessionId: "chat-1").map(\.id),
+      ["pr-1"]
+    )
+  }
+
+  /// The table exists but the host has written no rows for this PR — the same
+  /// "legacy data" state, reached from the other direction.
+  func testPrWithNoLinkRowsStillFallsBackToTheBranchRule() throws {
+    let database = makeDatabase(includeChatSessionLinks: true)
+    try seed(database)
+
+    let items = database.fetchPullRequestListItems()
+    XCTAssertEqual(items.map(\.id), ["pr-1"])
+    XCTAssertNil(items.first?.chatSessionIds)
+  }
+
+  /// A host that DOES send links puts them on the row, newline-joined by the
+  /// subquery and split back out here.
+  func testLinkRowsBecomeChatSessionIds() throws {
+    let database = makeDatabase(includeChatSessionLinks: true)
+    try seed(database)
+    try database.executeSqlForTesting("""
+      insert into pull_request_chat_sessions(id, project_id, pr_id, session_id, lane_id)
+      values('link-1', 'project-1', 'pr-1', 'chat-1', 'lane-1'),
+            ('link-2', 'project-1', 'pr-1', 'chat-2', 'lane-1');
+    """)
+
+    let items = database.fetchPullRequestListItems()
+    XCTAssertEqual(
+      Set(items.first?.chatSessionIds ?? []),
+      ["chat-1", "chat-2"]
+    )
+  }
+}
+
+/// A host that predates folder suggestions sends quick-open rows with no
+/// `isDirectory` at all. Every row must still decode, as a file.
+final class WorkComposerQuickOpenLegacyDecodingTests: XCTestCase {
+  func testQuickOpenRowWithoutIsDirectoryDecodesAsAFile() throws {
+    let legacy = Data(#"[{"path":"src/main.swift","score":12.5}]"#.utf8)
+    let items = try JSONDecoder().decode([FilesQuickOpenItem].self, from: legacy)
+    XCTAssertEqual(items.map(\.path), ["src/main.swift"])
+    XCTAssertNil(items.first?.isDirectory)
+    XCTAssertFalse(items.first?.isDirectory == true)
+  }
+
+  func testQuickOpenRowWithIsDirectoryDecodes() throws {
+    let modern = Data(#"[{"path":"src","score":9,"isDirectory":true}]"#.utf8)
+    let items = try JSONDecoder().decode([FilesQuickOpenItem].self, from: modern)
+    XCTAssertEqual(items.first?.isDirectory, true)
+  }
+
+  /// The flag is omitted rather than sent as `false`, so an older host is never
+  /// handed a key it has no opinion about.
+  func testIncludeDirectoriesIsOnlySentWhenAsked() {
+    let plain = syncQuickOpenRequestArgs(
+      workspaceId: "workspace-1",
+      query: "src",
+      limit: 20,
+      includeIgnored: true,
+      allowComposerPrefixFallback: true
+    )
+    XCTAssertNil(plain["includeDirectories"])
+
+    let withFolders = syncQuickOpenRequestArgs(
+      workspaceId: "workspace-1",
+      query: "src",
+      limit: 20,
+      includeIgnored: true,
+      allowComposerPrefixFallback: true,
+      includeDirectories: true
+    )
+    XCTAssertEqual(withFolders["includeDirectories"] as? Bool, true)
+  }
+}
+
 /// What a blocking question is allowed to take away from the composer.
 ///
 /// The defect these pin: the question card locked the whole composer, so the

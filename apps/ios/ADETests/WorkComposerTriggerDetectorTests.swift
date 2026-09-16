@@ -283,6 +283,185 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertNil(detect("ping foo@bar"))
   }
 
+  // MARK: Hash
+
+  func testHashOpensThePullRequestMenu() {
+    let match = detect("fix #12")
+    XCTAssertEqual(match?.kind, .hash)
+    XCTAssertEqual(match?.query, "12")
+    XCTAssertEqual(match?.range, NSRange(location: 4, length: 3))
+  }
+
+  func testBareHashHasEmptyQuery() {
+    let match = detect("#")
+    XCTAssertEqual(match?.kind, .hash)
+    XCTAssertEqual(match?.query, "")
+  }
+
+  func testHashTakesNoWhitespaceSoAMarkdownHeadingNeverTriggers() {
+    // "# Title" — the space closes the token, so the caret is past it.
+    XCTAssertNil(detect("# Title"))
+  }
+
+  func testHashInsideAWordDoesNotTrigger() {
+    // `owner/repo#12` is already a chip; it must not reopen the menu.
+    XCTAssertNil(detect("arul28/ade#12"))
+  }
+
+  func testDoubleHashDoesNotTrigger() {
+    XCTAssertNil(detect("##"))
+  }
+
+  func testHashWinsWhenItIsClosestToTheCursor() {
+    let match = detect("look at @a #12")
+    XCTAssertEqual(match?.kind, .hash)
+    XCTAssertEqual(match?.query, "12")
+  }
+
+  func testAtStillWinsWhenTheHashIsFurtherFromTheCursor() {
+    let match = detect("#12 then @src/foo.ts")
+    XCTAssertEqual(match?.kind, .at)
+    XCTAssertEqual(match?.query, "src/foo.ts")
+  }
+
+  /// `matchForSelection` narrows only `@` triggers, exactly as the desktop's
+  /// `composerTriggerForSelection` returns early for anything but "at". A `#`
+  /// selection replaces its whole span.
+  func testHashSelectionReplacesTheWholeTriggerSpan() throws {
+    let match = try XCTUnwrap(detect("fix #12"))
+    let suggestion = WorkComposerSuggestion(
+      id: "pr:pr-1",
+      kind: .hash,
+      title: "arul28/ade#1237",
+      subtitle: "A title",
+      insertText: "https://github.com/arul28/ade/pull/1237"
+    )
+    XCTAssertEqual(
+      WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion).range,
+      match.range
+    )
+  }
+
+  // MARK: Pull-request rows
+
+  private func prItem(
+    id: String,
+    number: Int,
+    title: String,
+    state: String = "open",
+    githubUrl: String? = nil,
+    repoOwner: String = "arul28",
+    repoName: String = "ade",
+    detached: PrDetachedLane? = nil
+  ) -> PullRequestListItem {
+    PullRequestListItem(
+      id: id,
+      laneId: "lane-1",
+      laneName: nil,
+      projectId: "project-1",
+      repoOwner: repoOwner,
+      repoName: repoName,
+      githubPrNumber: number,
+      githubUrl: githubUrl ?? "https://github.com/\(repoOwner)/\(repoName)/pull/\(number)",
+      title: title,
+      state: state,
+      baseBranch: "main",
+      headBranch: "feature/a",
+      checksStatus: "none",
+      reviewStatus: "none",
+      additions: 0,
+      deletions: 0,
+      lastSyncedAt: nil,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+      adeKind: "single",
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil,
+      detached: detached
+    )
+  }
+
+  /// The token is the PR's github url, never its label — the same rule the
+  /// rest of the chip model follows, and what makes a sent `#` selection draw
+  /// an identical pill on the desktop, the phone, and the TUI.
+  func testPrSuggestionInsertsTheUrlAndLabelsItRepoHashNumber() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [prItem(id: "pr-1", number: 1237, title: "One chip model")],
+      query: ""
+    )
+    XCTAssertEqual(rows.count, 1)
+    XCTAssertEqual(rows[0].kind, .hash)
+    XCTAssertEqual(rows[0].insertText, "https://github.com/arul28/ade/pull/1237")
+    XCTAssertEqual(rows[0].title, "arul28/ade#1237")
+    XCTAssertEqual(rows[0].subtitle, "One chip model")
+
+    // And the inserted token is what the transcript re-reads as a PR chip.
+    let chip = WorkChipDetector.chips(in: rows[0].insertText as NSString).first
+    XCTAssertEqual(chip?.kind, .pullRequest)
+    XCTAssertEqual(chip?.label, "arul28/ade#1237")
+  }
+
+  func testNumericQueryPrefixMatchesThePrNumber() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [
+        prItem(id: "pr-1", number: 1237, title: "Chips"),
+        prItem(id: "pr-2", number: 12, title: "Something else"),
+        prItem(id: "pr-3", number: 88, title: "Not a match"),
+      ],
+      query: "12"
+    )
+    XCTAssertEqual(rows.map(\.id), ["pr:pr-1", "pr:pr-2"])
+  }
+
+  func testTextQueryMatchesTheTitleCaseInsensitively() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [
+        prItem(id: "pr-1", number: 1, title: "One CHIP model"),
+        prItem(id: "pr-2", number: 2, title: "Unrelated"),
+      ],
+      query: "chip"
+    )
+    XCTAssertEqual(rows.map(\.id), ["pr:pr-1"])
+  }
+
+  /// Detached rows are history, exactly as they are in the chat's PR list.
+  func testDetachedPrsAreNeverOffered() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [
+        prItem(
+          id: "pr-gone",
+          number: 5,
+          title: "Gone",
+          detached: PrDetachedLane(
+            at: "2026-09-01T00:00:00.000Z", laneName: "old", laneColor: nil,
+            chats: 0, artifacts: 0, checkpoints: 0
+          )
+        ),
+      ],
+      query: ""
+    )
+    XCTAssertTrue(rows.isEmpty)
+  }
+
+  func testPrRowsAreBounded() {
+    let many = (1...50).map { prItem(id: "pr-\($0)", number: $0, title: "PR \($0)") }
+    XCTAssertEqual(WorkComposerSuggestionController.prSuggestions(from: many, query: "").count, 20)
+  }
+
+  /// A row whose `github_url` never synced still addresses the right PR.
+  func testMissingGithubUrlIsReconstructed() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [prItem(id: "pr-1", number: 7, title: "T", githubUrl: "")],
+      query: ""
+    )
+    XCTAssertEqual(rows.first?.insertText, "https://github.com/arul28/ade/pull/7")
+  }
+
   // MARK: Cursor relativity
 
   func testDetectsAtCursorNotEndOfText() {
