@@ -6,6 +6,25 @@ final class SyncEnvelopeChunkAssemblerTests: XCTestCase {
     Data(text.utf8).base64EncodedString()
   }
 
+  /// `JSONSerialization` writes object keys in Swift `Dictionary` iteration
+  /// order, and that order is seeded per hash-table instance — two dictionaries
+  /// holding identical keys can serialize them in different orders inside a
+  /// single process, depending on nothing but allocation history. Encoder
+  /// outputs are therefore only comparable after the one dimension the wire
+  /// format does not define — key order — is normalised away. Everything else
+  /// still has to match byte for byte.
+  private func canonical(_ text: String) throws -> String {
+    let object = try JSONSerialization.jsonObject(
+      with: Data(text.utf8),
+      options: [.fragmentsAllowed]
+    )
+    let data = try JSONSerialization.data(
+      withJSONObject: object,
+      options: [.sortedKeys, .fragmentsAllowed]
+    )
+    return String(decoding: data, as: UTF8.self)
+  }
+
   func testRoundTripsPartsInOrder() {
     var assembler = SyncEnvelopeChunkAssembler()
     XCTAssertNil(assembler.add(chunkId: "a", index: 0, total: 3, part: base64("{\"type\":\"file_re")))
@@ -104,7 +123,11 @@ final class SyncEnvelopeChunkAssemblerTests: XCTestCase {
       compressionCodec: .gzip,
       compressionThresholdBytes: Int.max
     )
-    XCTAssertEqual(legacy, [direct], "No-capability output must remain byte-identical.")
+    XCTAssertEqual(
+      try legacy.map(canonical),
+      [try canonical(direct)],
+      "No-capability output must remain byte-identical."
+    )
 
     let frames = try syncEncodeEnvelopeFrames(
       type: "changeset_batch",
@@ -132,7 +155,10 @@ final class SyncEnvelopeChunkAssemblerTests: XCTestCase {
         part: try XCTUnwrap(decoded["part"] as? String)
       ) ?? reassembled
     }
-    XCTAssertEqual(reassembled, direct)
+    XCTAssertEqual(
+      try canonical(try XCTUnwrap(reassembled)),
+      try canonical(direct)
+    )
   }
 
   func testCompressionAndChunkingMatrixRoundTrips() throws {

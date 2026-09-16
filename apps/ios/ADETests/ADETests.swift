@@ -5589,6 +5589,19 @@ final class ADETests: XCTestCase {
 
   @MainActor
   func testRapidFullChatSnapshotRequestsAreCoalesced() async throws {
+    // A host profile left in `UserDefaults` by an earlier test — or by an
+    // earlier run on this device — makes the hello below look like a machine
+    // switch, and `saveProfile` then resets chat state. That reset is correct
+    // behaviour, but it is not what this test measures, so start from no
+    // remembered machine.
+    let profileKey = "ade.sync.hostProfile"
+    let profilesKey = "ade.sync.hostProfiles"
+    UserDefaults.standard.removeObject(forKey: profileKey)
+    UserDefaults.standard.removeObject(forKey: profilesKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: profileKey)
+      UserDefaults.standard.removeObject(forKey: profilesKey)
+    }
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     try service.applyHelloPayloadForTesting([
       "brain": [
@@ -5602,8 +5615,14 @@ final class ADETests: XCTestCase {
     service.configureConnectedTransportForTesting()
     service.beginOutboundEnvelopeCaptureForTesting()
     defer { service.endOutboundEnvelopeCaptureForTesting() }
+    // Coalescing is a relative contract, so measure it from whatever revision
+    // connecting itself left behind rather than from a fixed number.
+    let connectedRevision = service.localStateRevision
 
     let firstRequestDispatched = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+    // Only the first request may touch local state, and only once: it is the
+    // one that creates the subscription.
+    let revisionAfterFirstRequest = service.localStateRevision
     let secondRequestCoalesced = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
     let thirdRequestCoalesced = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
     XCTAssertTrue(firstRequestDispatched)
@@ -5612,7 +5631,10 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1"]))
     XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 1)
-    XCTAssertEqual(service.localStateRevision, 1)
+    XCTAssertEqual(revisionAfterFirstRequest, connectedRevision + 1)
+    // The coalesced repeats sent no envelope, so they must not invalidate any
+    // view either.
+    XCTAssertEqual(service.localStateRevision, revisionAfterFirstRequest)
     XCTAssertTrue(service.isFullChatEventSnapshotPending(sessionId: "session-1"))
 
     service.disconnect(clearCredentials: false)
