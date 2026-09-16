@@ -65,10 +65,6 @@ describe("laneEnvironmentService", () => {
   });
 
   function createService(
-    // Trusted by default: the gate is required in production, so the helper
-    // supplies a config service that always allows execution and each trust
-    // test passes its own.
-    projectConfigService: { getExecutableConfig: () => unknown } = { getExecutableConfig: () => ({}) },
     logger: any = createLogger(),
   ) {
     return createLaneEnvironmentService({
@@ -76,18 +72,7 @@ describe("laneEnvironmentService", () => {
       adeDir,
       logger,
       broadcastEvent: (ev) => events.push(ev),
-      projectConfigService
     });
-  }
-
-  function untrustedConfigService() {
-    return {
-      getExecutableConfig: () => {
-        const error = new Error("ADE_TRUST_REQUIRED: shared config not trusted") as Error & { code?: string };
-        error.code = "ADE_TRUST_REQUIRED";
-        throw error;
-      }
-    };
   }
 
   describe("env file copying/templating", () => {
@@ -411,34 +396,17 @@ describe("laneEnvironmentService", () => {
       expect(result.overallStatus).toBe("failed");
     });
 
-    it("refuses to run setup scripts while the shared config is untrusted", async () => {
-      // `.ade/ade.yaml` is repo-committed, so `laneEnvInit`/`laneTemplates` can
-      // carry an attacker's shell. Failing loudly beats executing it, and beats
-      // skipping it silently (which reads as success).
-      const worktreePath = path.join(projectRoot, "wt-setup-untrusted");
-      fs.mkdirSync(worktreePath, { recursive: true });
-
-      const lane = makeLane({ id: "lane-setup-untrusted", name: "untrusted", worktreePath });
-      const service = createService(untrustedConfigService());
-      const result = await service.initLaneEnvironment(
-        lane,
-        { setupScript: { commands: ["touch pwned.txt"] } },
-        {},
-      );
-
-      expect(result.overallStatus).toBe("failed");
-      const step = result.steps.find((entry) => entry.kind === "setup-script");
-      expect(step?.status).toBe("failed");
-      expect(step?.error).toContain("isn't trusted yet");
-      expect(fs.existsSync(path.join(worktreePath, "pwned.txt"))).toBe(false);
-    });
-
-    it("runs setup scripts once the shared config is trusted", async () => {
+    // The trust gate this pair covered guarded a repo-committed `.ade/ade.yaml`
+    // that could carry an attacker's shell on any clone. Both the gate and the
+    // committed file are gone: lane templates and env init are personal now,
+    // scoped to an account or a machine, so the shell a setup step runs is one
+    // this user wrote.
+    it("runs setup scripts", async () => {
       const worktreePath = path.join(projectRoot, "wt-setup-trusted");
       fs.mkdirSync(worktreePath, { recursive: true });
 
       const lane = makeLane({ id: "lane-setup-trusted", name: "trusted", worktreePath });
-      const service = createService({ getExecutableConfig: () => ({}) });
+      const service = createService();
       const result = await service.initLaneEnvironment(
         lane,
         { setupScript: { commands: ["touch allowed.txt"] } },
@@ -651,7 +619,7 @@ describe("laneEnvironmentService", () => {
       const { composePath, cleanup: removeStub } = installSlowDockerStub();
       try {
         const warnings: { event: string; meta?: any }[] = [];
-        const service = createService(undefined, {
+        const service = createService({
           ...createLogger(),
           warn: (event: string, meta?: any) => warnings.push({ event, meta }),
         });

@@ -1876,7 +1876,6 @@ export type AiConfig = {
   orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
   // OpenCode/runtime-backed fields
-  defaultModel?: ModelId;
   apiKeys?: Record<string, string>;
   localProviders?: AiLocalProviderConfigs;
   /** User-defined OpenAI-compatible providers injected into the OpenCode server config. */
@@ -2093,8 +2092,6 @@ export type ProjectConfigValidationResult = {
 export type ProjectConfigTrust = {
   sharedHash: string;
   localHash: string;
-  approvedSharedHash: string | null;
-  requiresSharedTrust: boolean;
 };
 
 export type ProjectConfigSnapshot = {
@@ -2114,8 +2111,6 @@ export type ProjectConfigDiff = {
   localChanged: boolean;
   sharedHash: string;
   localHash: string;
-  approvedSharedHash: string | null;
-  requiresSharedTrust: boolean;
 };
 
 export type TestRunSummary = {

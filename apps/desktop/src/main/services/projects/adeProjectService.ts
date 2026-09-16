@@ -33,8 +33,6 @@ type AdeProjectServiceArgs = {
       trust?: {
         sharedHash: string;
         localHash: string;
-        approvedSharedHash?: string | null;
-        requiresSharedTrust: boolean;
       };
     };
   };
@@ -571,8 +569,6 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
         trust: {
           sharedHash: configSnapshot.trust?.sharedHash ?? "",
           localHash: configSnapshot.trust?.localHash ?? "",
-          approvedSharedHash: configSnapshot.trust?.approvedSharedHash ?? null,
-          requiresSharedTrust: configSnapshot.trust?.requiresSharedTrust ?? false,
         },
       },
     };

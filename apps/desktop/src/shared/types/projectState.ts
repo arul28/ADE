@@ -55,8 +55,6 @@ export type AdeProjectSnapshot = {
     trust: {
       sharedHash: string;
       localHash: string;
-      approvedSharedHash?: string | null;
-      requiresSharedTrust: boolean;
     };
   };
 };

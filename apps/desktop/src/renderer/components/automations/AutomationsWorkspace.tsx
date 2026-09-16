@@ -137,7 +137,6 @@ export function AutomationsWorkspace({
   const [manualRunPending, setManualRunPending] = useState(false);
   const manualRunPendingRef = useRef(false);
   const [running, setRunning] = useState(false);
-  const [configTrustRequired, setConfigTrustRequired] = useState(false);
   const [cursorCloudConnected, setCursorCloudConnected] = useState(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
   const savedSnapshotRef = useRef<string | null>(null);
@@ -180,7 +179,6 @@ export function AutomationsWorkspace({
       setSuites(nextSuites);
       setLanes(nextLanes);
       setIngressStatus(nextIngress);
-      setConfigTrustRequired(Boolean(snapshot.trust.requiresSharedTrust));
       setCursorCloudConnected(aiStatus);
       setSelectedRuleId((current) => {
         if (current && nextRules.some((r) => r.id === current)) return current;
@@ -365,20 +363,8 @@ export function AutomationsWorkspace({
     }
   }, []);
 
-  const confirmTrust = useCallback(async () => {
-    setError(null);
-    try {
-      await window.ade.projectConfig.confirmTrust();
-      await refresh();
-    } catch (err) {
-      setError(extractError(err));
-    }
-  }, [refresh]);
-
   const selectedRule = selectedRuleId ? rules.find((r) => r.id === selectedRuleId) ?? null : null;
   const delivery = ingressStatus?.delivery ?? null;
-  // Computed on the UNFILTERED rules so a search can't hide the trust recovery CTA.
-  const sharedTrustBlocked = configTrustRequired && rules.some((rule) => rule.source !== "local");
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.15 }} className="flex h-full min-h-0">
@@ -388,7 +374,6 @@ export function AutomationsWorkspace({
         search={search}
         loading={loading}
         error={error}
-        configTrustRequired={sharedTrustBlocked}
         ingressStatus={ingressStatus}
         delivery={delivery}
         onSearch={setSearch}
@@ -427,7 +412,6 @@ export function AutomationsWorkspace({
           setDetailView("builder");
         }}
         onRefresh={() => void refresh()}
-        onConfirmTrust={() => void confirmTrust()}
       />
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

@@ -512,14 +512,18 @@ describe("projectConfigService - shared config trust on save", () => {
     );
   }
 
-  it("does not trust an unreviewed shared config just because a lane template was saved", () => {
-    // `save` takes both scopes, so every local-only writer round-trips the
-    // shared snapshot untouched. Trusting on every save meant editing one lane
-    // template silently approved a repo-committed `.ade/ade.yaml` nobody read —
-    // exactly the attacker-supplied file the setup-script gate exists to stop.
-    const { root, adeDir } = makeProjectFixture("ade-project-config-trust-template-");
+  // The trust gate these three tests covered is gone with the committed
+  // `.ade/ade.yaml` it guarded. ADE's configuration is personal now — scoped to
+  // an account or a machine — so nothing arrives from a repository that could
+  // run on your computer, and there is no approval left to grant or revoke.
+  //
+  // It was also unopenable by the end: the only control that called
+  // `confirmTrust` was a banner that renders solely when the rule list holds a
+  // shared rule, so a repository with `automations: []` could reach a state
+  // where test runs refused with no UI able to clear it.
+  it("no longer gates execution on approving a committed config", () => {
+    const { root, adeDir } = makeProjectFixture("config-trust-retired");
     writeUntrustedSharedConfig(adeDir);
-
     const service = createProjectConfigService({
       projectRoot: root,
       adeDir,
@@ -527,92 +531,13 @@ describe("projectConfigService - shared config trust on save", () => {
       db: makeDb(),
       logger: quietLogger(),
     });
-    expect(service.get().trust.requiresSharedTrust).toBe(true);
 
-    const templateService = createLaneTemplateService({
-      projectConfigService: service,
-      logger: quietLogger(),
-    });
-    templateService.saveTemplate({ id: "tpl-1", name: "Backend" });
-
-    expect(service.get().trust.requiresSharedTrust).toBe(true);
-    expect(templateService.listTemplates()).toHaveLength(1);
-
-    // Same for the other local-scope writers.
-    templateService.setDefaultTemplateId("tpl-1");
-    expect(service.get().trust.requiresSharedTrust).toBe(true);
-    templateService.deleteTemplate("tpl-1");
-    expect(service.get().trust.requiresSharedTrust).toBe(true);
+    // A shared config nobody approved resolves rather than refusing.
+    expect(() => service.getEffective()).not.toThrow();
+    // And the snapshot carries content hashes only — no verdict to disagree with.
+    expect(Object.keys(service.get().trust).sort()).toEqual(["localHash", "sharedHash"]);
   });
 
-  it("trusts the shared config when the caller actually edits the shared scope", () => {
-    // The user reviewed what they just wrote, so an explicit shared edit still
-    // carries trust — otherwise saving through Settings would leave the project
-    // permanently unable to run its own setup scripts.
-    const { root, adeDir } = makeProjectFixture("ade-project-config-trust-shared-edit-");
-    writeUntrustedSharedConfig(adeDir);
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-1",
-      db: makeDb(),
-      logger: quietLogger(),
-    });
-    const snapshot = service.get();
-    expect(snapshot.trust.requiresSharedTrust).toBe(true);
-
-    const saved = service.save({
-      shared: { ...snapshot.shared, laneEnvInit: { setupScript: { commands: ["npm run bootstrap"] } } },
-      local: snapshot.local,
-    });
-
-    expect(saved.trust.requiresSharedTrust).toBe(false);
-    expect(service.get().trust.requiresSharedTrust).toBe(false);
-  });
-
-  it("keeps an already-trusted hand-formatted shared config trusted across a local-only save", () => {
-    // Trust is a hash of the RAW bytes, but every save rewrites `.ade/ade.yaml`
-    // canonically. Without carrying trust across that reserialization, saving a
-    // lane template (a local-scope write) silently revoked trust on a shared
-    // file the user had already approved, and the trust gate reappeared with no
-    // user action behind it.
-    const { root, adeDir } = makeProjectFixture("ade-project-config-trust-reserialize-");
-    fs.writeFileSync(
-      path.join(adeDir, "ade.yaml"),
-      [
-        "# hand-written, deliberately not canonical",
-        "version: 1",
-        "laneEnvInit:",
-        "  setupScript:",
-        "    commands:",
-        '      - "npm run bootstrap"',
-        "testSuites: []",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-1",
-      db: makeDb(),
-      logger: quietLogger(),
-    });
-    expect(service.get().trust.requiresSharedTrust).toBe(true);
-    service.confirmTrust();
-    expect(service.get().trust.requiresSharedTrust).toBe(false);
-
-    const templateService = createLaneTemplateService({
-      projectConfigService: service,
-      logger: quietLogger(),
-    });
-    templateService.saveTemplate({ id: "tpl-1", name: "Backend" });
-
-    expect(service.get().trust.requiresSharedTrust).toBe(false);
-    expect(service.getEffective().laneEnvInit?.setupScript?.commands).toEqual(["npm run bootstrap"]);
-  });
 });
 
 describe("projectConfigService - AI mode migration", () => {
@@ -858,7 +783,7 @@ describe("projectConfigService - AI mode migration", () => {
     ]);
     expect(merged?.customModelSlugs).toEqual(["acme/m2"]);
 
-    const kept = mergeAiConfig(shared, { defaultModel: "openai/gpt-5.4" });
+    const kept = mergeAiConfig(shared, { defaultProvider: "claude" });
     expect(kept?.customProviders).toEqual(shared.customProviders);
     expect(kept?.customModelSlugs).toEqual(shared.customModelSlugs);
 
@@ -876,7 +801,7 @@ describe("projectConfigService - AI mode migration", () => {
     const narrowed = mergeAiConfig(shared, { disabledProviders: ["grok"] });
     expect(narrowed?.disabledProviders).toEqual(["grok"]);
 
-    const kept = mergeAiConfig(shared, { defaultModel: "openai/gpt-5.4" });
+    const kept = mergeAiConfig(shared, { defaultProvider: "claude" });
     expect(kept?.disabledProviders).toEqual(["grok", "copilot"]);
 
     const cleared = mergeAiConfig(shared, { disabledProviders: [] });

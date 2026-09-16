@@ -98,6 +98,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   storage: { only: ["cleanup", "runMaintenanceNow"] },
   search: { only: ["rebuildIndex"] },
   project_secret: { only: ["exportEnv"] },
+  account_vault: { only: ["get"] },
   /*
    * Fail-closed, and that is the whole point. `cto_memory` reads and rewrites the
    * durable memory injected into every CTO session, so it is operator state, not
@@ -719,8 +720,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
-  project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
+  project_config: ["diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
   project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv"],
+  // Reads and writes of the user's own account-scoped settings. No secret
+  // values pass through here — the vault is a separate domain with its own
+  // approval rules, precisely so "change my theme" and "read my API key"
+  // cannot share a permission.
+  account_settings: ["list", "get", "set", "remove", "sync"],
+  // `list` reports names and readability, never values, which is why it sits
+  // beside the harmless actions. `get` returns a credential and is gated below
+  // for the same reason `project_secret.exportEnv` is.
+  account_vault: ["list", "get", "set", "remove", "sync"],
   linear_credentials: [
     "clearOAuthClientCredentials",
     "clearToken",

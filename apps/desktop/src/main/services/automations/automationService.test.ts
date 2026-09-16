@@ -201,7 +201,7 @@ describe("normalizeRuntimeRule", () => {
 describe("automation ingress enable gating", () => {
   function makeProjectConfigHarness(rule: any, ui: Record<string, unknown> = {}) {
     let snapshot: any = {
-      trust: { requiresSharedTrust: false },
+      trust: { sharedHash: "", localHash: "" },
       shared: {},
       local: { automations: [{ id: rule.id, enabled: rule.enabled }] },
       effective: { automations: [rule], providerMode: "guest", ui },
@@ -755,7 +755,7 @@ describe("automationService integration", () => {
     });
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         local: { automations: [rule] },
         effective: { automations: [rule], providerMode: "guest" },
       }),
@@ -851,7 +851,7 @@ describe("automationService integration", () => {
     });
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         local: { automations: [rule] },
         effective: { automations: [rule], providerMode: "guest" },
       }),
@@ -967,7 +967,7 @@ describe("automationService integration", () => {
     });
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         local: { automations: [rule] },
         effective: { automations: [rule], providerMode: "guest" },
       }),
@@ -1075,7 +1075,7 @@ describe("automationService integration", () => {
       } as any,
       projectConfigService: {
         get: () => ({
-          trust: { requiresSharedTrust: false },
+          trust: { sharedHash: "", localHash: "" },
           local: { automations: [rule] },
           effective: { automations: [rule], providerMode: "guest" },
         }),
@@ -1144,7 +1144,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1194,7 +1194,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       }),
       save: () => {
@@ -1243,7 +1243,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       }),
       save: () => {
@@ -1297,7 +1297,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1350,7 +1350,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1401,7 +1401,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1456,7 +1456,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1525,7 +1525,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1620,7 +1620,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1702,7 +1702,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1749,7 +1749,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         shared: {},
         local: { automations: [rule] },
         effective: { automations: [rule], providerMode: "guest" }
@@ -1792,7 +1792,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1894,7 +1894,12 @@ describe("automationService integration", () => {
     });
   });
 
-  it("blocks shared automations when shared config trust is required", async () => {
+  // This test used to assert that a shared rule refused to run while the
+  // committed config was unapproved. Both the gate and the committed config are
+  // gone: an automation is personal now, so no rule reaches this service that
+  // the signed-in user did not write. What matters instead is that a rule which
+  // once would have been blocked simply runs.
+  it("runs a rule that the retired trust gate would have blocked", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
     const projectId = "proj";
@@ -1910,7 +1915,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: true },
+        trust: { sharedHash: "", localHash: "" },
         shared: { automations: [{ id: rule.id }] },
         local: {},
         effective: { automations: [rule], providerMode: "guest" }
@@ -1932,10 +1937,9 @@ describe("automationService integration", () => {
       projectConfigService
     });
 
-    await expect(service.triggerManually({ id: rule.id })).rejects.toThrow(
-      "Shared project config (.ade/ade.yaml) changed and is untrusted. Review and trust it from the Automations tab to run shared automations.",
-    );
+    await expect(service.triggerManually({ id: rule.id })).resolves.toBeTruthy();
   });
+
 
   it("simulates manual dry runs without starting automation side effects", async () => {
     const { db } = createInMemoryAdeDb();
@@ -1967,7 +1971,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -2035,7 +2039,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -2105,7 +2109,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -2189,7 +2193,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -2249,7 +2253,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -2331,7 +2335,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -2407,7 +2411,7 @@ describe("automationService integration", () => {
 
     const projectConfigService = {
       get: () => ({
-        trust: { requiresSharedTrust: false },
+        trust: { sharedHash: "", localHash: "" },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -2486,7 +2490,7 @@ describe("automationService integration", () => {
         projectRoot: "/tmp",
         laneService,
         projectConfigService: {
-          get: () => ({ trust: { requiresSharedTrust: false }, effective: { automations: [rule], providerMode: "guest" } }),
+          get: () => ({ trust: { sharedHash: "", localHash: "" }, effective: { automations: [rule], providerMode: "guest" } }),
         } as any,
       });
       return { service, raw, laneService };
@@ -2741,7 +2745,7 @@ describe("automationService integration", () => {
       };
 
       const projectConfigService = {
-        get: () => ({ trust: { requiresSharedTrust: false }, effective: { automations: [rule], providerMode: "guest" } })
+        get: () => ({ trust: { sharedHash: "", localHash: "" }, effective: { automations: [rule], providerMode: "guest" } })
       } as any;
       const laneService = {
         create: createLane,
@@ -2937,7 +2941,7 @@ describe("automation ingress storage bounds", () => {
       } as any,
       projectConfigService: {
         get: () => ({
-          trust: { requiresSharedTrust: false },
+          trust: { sharedHash: "", localHash: "" },
           effective: { automations: [], providerMode: "guest" },
         }),
       } as any,

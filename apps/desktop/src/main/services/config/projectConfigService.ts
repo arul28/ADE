@@ -76,7 +76,6 @@ import type { AdeDb } from "../state/kvDb";
 import { isRecord, resolvePathWithinRoot } from "../shared/utils";
 import { ensureSharedAdeProjectScaffold, initializeOrRepairAdeProject } from "../projects/adeProjectService";
 
-const TRUSTED_SHARED_HASH_KEY = "project_config:trusted_shared_hash";
 const VERSION = 1;
 const EMPTY_CONTENT_HASH = createHash("sha256").update("").digest("hex");
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -1673,9 +1672,6 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   );
   if (sessionIntelligence) out.sessionIntelligence = sessionIntelligence;
 
-  const defaultModel = asString(value.defaultModel)?.trim();
-  if (defaultModel) out.defaultModel = defaultModel;
-
   const apiKeys = asStringMap(value.apiKeys);
   if (apiKeys && Object.keys(apiKeys).length) out.apiKeys = apiKeys;
 
@@ -2073,7 +2069,6 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
   const out: AiConfig = {
     mode: localAi?.mode ?? sharedAi?.mode,
     defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
-    defaultModel: localAi?.defaultModel ?? sharedAi?.defaultModel,
     ...(Object.keys(taskRouting).length ? { taskRouting } : {}),
     ...(Object.keys(features).length ? { features } : {}),
     ...(Object.keys(budgets).length ? { budgets } : {}),
@@ -3137,14 +3132,6 @@ function validateEffectiveConfig(
   };
 }
 
-function trustError(sharedHash: string): Error {
-  const err = new Error(
-    `ADE_TRUST_REQUIRED: Shared config changed and must be confirmed before execution (sharedHash=${sharedHash})`
-  );
-  (err as Error & { code?: string }).code = "ADE_TRUST_REQUIRED";
-  return err;
-}
-
 function invalidConfigError(validation: ProjectConfigValidationResult): Error {
   const first = validation.issues[0];
   const msg = first ? `${first.path}: ${first.message}` : "Unknown config validation failure";
@@ -3172,21 +3159,27 @@ export function createProjectConfigService({
   let lastSeenSharedHash: string | null = null;
   let lastSeenLocalHash: string | null = null;
 
-  const getTrustedSharedHash = (): string | null => db.getJson<string>(TRUSTED_SHARED_HASH_KEY);
-
-  const setTrustedSharedHash = (hash: string) => {
-    db.setJson(TRUSTED_SHARED_HASH_KEY, hash);
-  };
-
-  const buildTrust = ({ sharedHash, localHash }: { sharedHash: string; localHash: string }): ProjectConfigTrust => {
-    const approvedSharedHash = getTrustedSharedHash();
-    return {
-      sharedHash,
-      localHash,
-      approvedSharedHash,
-      requiresSharedTrust: approvedSharedHash == null ? sharedHash !== EMPTY_CONTENT_HASH : approvedSharedHash !== sharedHash
-    };
-  };
+  /**
+   * Two content hashes, and no verdict.
+   *
+   * There used to be a trust gate here: a committed `.ade/ade.yaml` could
+   * introduce commands a teammate never approved, so execution refused until
+   * someone confirmed the file. That gate went with the file it guarded — ADE's
+   * configuration is now personal, scoped to an account or a machine, and
+   * nothing arrives from a repository that could run on your computer.
+   *
+   * It was also, by the end, a gate nobody could open. The only control that
+   * called `confirmTrust` was a banner in the Automations tab that renders only
+   * when the rule list contains a shared rule, so a repository with
+   * `automations: []` — ADE's own, among others — could reach a state where
+   * test runs refused and no UI existed to clear it.
+   *
+   * The hashes stay because change detection still needs them.
+   */
+  const buildTrust = ({ sharedHash, localHash }: { sharedHash: string; localHash: string }): ProjectConfigTrust => ({
+    sharedHash,
+    localHash,
+  });
 
   const syncSnapshots = (effective: EffectiveProjectConfig) => {
     const now = new Date().toISOString();
@@ -3301,16 +3294,6 @@ export function createProjectConfigService({
     );
     const sharedScopeEdited = sharedYaml !== sharedOnDiskYaml;
 
-    // Trust is a hash of the RAW bytes, but every save rewrites `.ade/ade.yaml`
-    // as canonical YAML — so a local-only save of an already-trusted but
-    // hand-formatted shared file changes the bytes and would silently revoke
-    // trust, popping the "trust this project" gate with no user action. Carry
-    // trust across the reserialization when the pre-write bytes were the ones
-    // the user already approved. That does not reopen the laundering hole the
-    // `sharedScopeEdited` gate closed: re-affirming content that was already
-    // approved (and, canonically, is unchanged) approves nothing new.
-    const sharedWasTrusted = getTrustedSharedHash() === hashContent(sharedOnDisk.raw);
-
     if (shouldWriteShared) {
       ensureSharedAdeProjectScaffold(projectRoot, { logger });
     } else {
@@ -3323,19 +3306,12 @@ export function createProjectConfigService({
     writeFileAtomicSync(localPath, localYaml);
 
     const sharedHash = hashContent(shouldWriteShared ? sharedYaml : "");
-    // Trust follows the new bytes when the save either edited the shared scope
-    // (the user reviewed what they just wrote) or merely reserialized bytes that
-    // were already trusted. An untrusted round-trip stays untrusted.
-    if (shouldWriteShared && (sharedScopeEdited || sharedWasTrusted)) {
-      setTrustedSharedHash(sharedHash);
-    }
 
     logger.info("projectConfig.save", {
       sharedPath,
       localPath,
       sharedHash,
       sharedScopeEdited,
-      sharedWasTrusted,
     });
 
     const snapshot = readSnapshotFromDisk();
@@ -3385,23 +3361,6 @@ export function createProjectConfigService({
         localChanged,
         sharedHash: snapshot.trust.sharedHash,
         localHash: snapshot.trust.localHash,
-        approvedSharedHash: snapshot.trust.approvedSharedHash,
-        requiresSharedTrust: snapshot.trust.requiresSharedTrust
-      };
-    },
-
-    confirmTrust({ sharedHash }: { sharedHash?: string } = {}): ProjectConfigTrust {
-      const snapshot = readSnapshotFromDisk();
-      if (sharedHash && sharedHash !== snapshot.trust.sharedHash) {
-        throw new Error("Shared hash mismatch while confirming trust");
-      }
-
-      setTrustedSharedHash(snapshot.trust.sharedHash);
-      logger.info("projectConfig.confirmTrust", { sharedHash: snapshot.trust.sharedHash });
-      return {
-        ...snapshot.trust,
-        approvedSharedHash: snapshot.trust.sharedHash,
-        requiresSharedTrust: false
       };
     },
 
@@ -3415,17 +3374,5 @@ export function createProjectConfigService({
       return snapshot.effective;
     },
 
-    getExecutableConfig(): EffectiveProjectConfig {
-      const snapshot = readSnapshotFromDisk();
-      lastSeenSharedHash = snapshot.trust.sharedHash;
-      lastSeenLocalHash = snapshot.trust.localHash;
-      if (!snapshot.validation.ok) {
-        throw invalidConfigError(snapshot.validation);
-      }
-      if (snapshot.trust.requiresSharedTrust) {
-        throw trustError(snapshot.trust.sharedHash);
-      }
-      return snapshot.effective;
-    }
   };
 }

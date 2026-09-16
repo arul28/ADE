@@ -3901,13 +3901,10 @@ export function createAutomationService({
     trigger: TriggerContext,
     options: { dryRun?: boolean } = {},
   ): Promise<AutomationRun | null> => {
-    const snapshot = projectConfigService.get();
-    const sharedAutomations = snapshot.shared?.automations;
-    const isSharedRule = Array.isArray(sharedAutomations)
-      && sharedAutomations.some((sharedRule) => sharedRule?.id === rule.id);
-    if (snapshot.trust.requiresSharedTrust && isSharedRule) {
-      throw new Error("Shared project config (.ade/ade.yaml) changed and is untrusted. Review and trust it from the Automations tab to run shared automations.");
-    }
+    // A shared rule used to refuse here until someone confirmed the committed
+    // config. That gate is gone with the committed config itself: automations
+    // are personal now, so no rule arrives from a repository that this user did
+    // not write.
     if (options.dryRun) {
       return await simulateDryRun(rule, trigger);
     }

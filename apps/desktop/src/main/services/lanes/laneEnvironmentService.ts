@@ -135,15 +135,6 @@ function resolveShellInvocation(commandLine: string, env: NodeJS.ProcessEnv): Sp
 /** Timeout per setup command / script, matching the Docker step's budget. */
 const SETUP_SCRIPT_TIMEOUT_MS = 300_000;
 
-/**
- * Shown when the project's shared (repo-committed) config has not been trusted
- * yet. Setup scripts run unrestricted shell, and `.ade/ade.yaml` is a file any
- * contributor can push, so an untrusted shared config fails the step rather
- * than executing it — or silently skipping, which would look like success.
- */
-const SHARED_CONFIG_UNTRUSTED_MESSAGE =
-  "This project's shared configuration isn't trusted yet. Trust it in ADE's desktop Settings to run setup scripts.";
-
 export type LaneEnvInitOptions = {
   /**
    * Last-moment "is this init still wanted?" check, evaluated INSIDE the lane
@@ -167,24 +158,11 @@ export function createLaneEnvironmentService({
   adeDir,
   logger,
   broadcastEvent,
-  projectConfigService
 }: {
   projectRoot: string;
   adeDir: string;
   logger: Logger;
   broadcastEvent: (ev: LaneEnvInitEvent) => void;
-  /**
-   * Trust gate for the setup-script step. `laneEnvInit` and `laneTemplates`
-   * both merge in from `.ade/ade.yaml`, which is repo-committed and therefore
-   * attacker-supplied on any clone, so the shell the setup step runs must be
-   * gated the same way test suites are (`getExecutableConfig` throws
-   * `ADE_TRUST_REQUIRED` while the shared config is untrusted).
-   *
-   * Required, not optional: a security gate whose default is "off" is one
-   * forgotten wiring away from running an untrusted repo's shell. Tests that do
-   * not exercise trust pass `{ getExecutableConfig: () => ({}) }`.
-   */
-  projectConfigService: { getExecutableConfig: () => unknown };
 }) {
   // Track in-progress and completed init progress per lane
   const progressMap = new Map<string, LaneEnvInitProgress>();
@@ -541,25 +519,6 @@ export function createLaneEnvironmentService({
   }
 
   /**
-   * Refuse to execute setup scripts while the project's shared config is
-   * untrusted. Returns an operator-facing message to fail the step with, or
-   * null when execution is allowed. Non-trust config errors (a malformed
-   * `ade.yaml`) propagate and fail the step with their own message.
-   */
-  function blockedBySharedConfigTrust(laneId: string): string | null {
-    try {
-      projectConfigService.getExecutableConfig();
-      return null;
-    } catch (error) {
-      if ((error as { code?: string } | null)?.code === "ADE_TRUST_REQUIRED") {
-        logger.warn("lane_env_init.setup_script_untrusted", { laneId });
-        return SHARED_CONFIG_UNTRUSTED_MESSAGE;
-      }
-      throw error;
-    }
-  }
-
-  /**
    * Run the template's setup script as the final init step: each configured
    * command in order, then the script file if one is configured. Fail-fast like
    * every other step — the first non-zero exit returns an error excerpt.
@@ -574,9 +533,6 @@ export function createLaneEnvironmentService({
     laneVars: Record<string, string>,
     laneId: string
   ): Promise<string | null> {
-    const untrusted = blockedBySharedConfigTrust(laneId);
-    if (untrusted) return untrusted;
-
     const env: NodeJS.ProcessEnv = { ...process.env, ...laneVars };
     if (resolved.injectPrimaryPath) {
       // The primary lane's root is the project checkout ADE manages lanes from.

@@ -29,6 +29,8 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "ade_project",
   "project_config",
   "project_secret",
+  "account_settings",
+  "account_vault",
   "linear_credentials",
   "linear_oauth",
   "linear_issue_tracker",

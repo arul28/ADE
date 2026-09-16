@@ -979,7 +979,6 @@ export const IPC = {
   projectConfigValidate: "ade.projectConfig.validate",
   projectConfigSave: "ade.projectConfig.save",
   projectConfigDiffAgainstDisk: "ade.projectConfig.diffAgainstDisk",
-  projectConfigConfirmTrust: "ade.projectConfig.confirmTrust",
   orchestratorGetWorkerStates: "ade.orchestrator.getWorkerStates",
   orchestratorGetModelCapabilities: "ade.orchestrator.getModelCapabilities",
   orchestratorGetTeamMembers: "ade.orchestrator.getTeamMembers",
