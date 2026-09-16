@@ -949,6 +949,44 @@ Runtime support files outside `services/sync/`:
   paths use different backoffs: the read-only path backs off on any miss, while
   the creating path backs off only when the keychain was *unavailable*, so a
   `not_found` miss can never starve first-run item creation.
+- `apps/push-relay/src/accountSettings.ts` and
+  `apps/push-relay/migrations/0008_account_settings.sql` — the account settings
+  store, the half of "sign in once and your setup follows you" that is not a
+  secret. It lives in the push relay rather than the account directory because
+  the directory's only write route is the machine heartbeat, which the brain
+  alone may call; the relay already takes authenticated writes from the brain,
+  iOS, and the hosted web client, so a phone can change a setting without a
+  second Worker growing a client-facing write path. One row per setting, never
+  one document per account: the merge rule is last writer wins **per key**, and
+  a blob cannot express that — a machine that had been offline would post back a
+  whole document and silently revert every key it had not seen. `updated_at` is
+  stamped by the Worker and never by the caller, so no machine with a wrong
+  clock can win an exchange; the caller's own `changedAt` is kept beside it for
+  diagnostics and is never authoritative. Machine-scoped settings never arrive
+  here at all.
+- `apps/ade-cli/src/services/account/accountSettingsStore.ts` — the machine's
+  copy. Reads never touch the network, because a settings page that waited on a
+  Worker would be unusable on a train. A write lands in the cache, is answered
+  at once, and queues; `sync()` uploads the queue and then pulls. Three
+  invariants are load-bearing and each is pinned by a test:
+  **upload before pull**, because a pull that ran first would hand back the
+  server's older row for a key this machine just changed and the user would
+  watch their own edit revert; **a pulled row must be strictly newer than the
+  cached one**, because the page is fetched from a cursor taken before that
+  upload and legitimately contains stale rows; and **the queue clears by
+  sequence, not by timestamp**, because two writes to one key inside a
+  millisecond share a timestamp and clearing by it loses the edit a user made
+  while the previous upload was in flight. A cache belonging to a different
+  account is discarded rather than merged. The store is keyed by machine ADE
+  directory so every project scope in a brain shares one cache and one cursor,
+  and it is built only when sync is enabled — a `--no-sync` brain has no store
+  at all, which is a stronger guarantee that a test runtime cannot reach the
+  account than a store with its uploads turned off.
+- `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) —
+  how desktop, `ade code`, the CLI, and iOS all reach the store through the
+  brain rather than each holding their own copy. Deliberately separate from the
+  vault's domain so "change my theme" and "read my API key" cannot share one
+  permission.
 - `apps/account-directory/src/directory.ts` — the Clerk-scoped machine
   register/list/delete Worker routes. Machine listing selects the owner's 500
   most recently seen rows before computing online-first order and exposes

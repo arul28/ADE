@@ -479,51 +479,34 @@ which together reproduce the pre-setting behavior. `off` is honored in
 remote-tracking fetch and per-lane behind-count rather than just hiding
 the result.
 
-## Trust model
+## The trust model is retired
 
-Shared config can introduce new commands that the user has not
-approved. `ProjectConfigTrust` tracks:
+Shared config used to be able to introduce commands a user had not approved, so
+`ProjectConfigTrust` carried an `approvedSharedHash` and `getExecutableConfig()`
+refused while `requiresSharedTrust` was true.
 
-- `sharedHash` — current sha256 of `ade.yaml`
-- `localHash` — current sha256 of `local.yaml`
-- `approvedSharedHash` — last sha the user trusted
-- `requiresSharedTrust` — `sharedHash !== approvedSharedHash`
+That gate is gone, along with the repo-committed `.ade/ade.yaml` it guarded.
+ADE's configuration is personal now — scoped to an account or to a machine —
+so nothing arrives from a repository that could run on your computer, and there
+is no approval left to grant or to revoke.
 
-`getExecutableConfig()` throws if `requiresSharedTrust` is true —
-callers that bypass must use `{ skipTrust: true }` deliberately.
+Two things are worth recording about why it went rather than being fixed:
 
-### What a save does to trust
+- **It was unopenable.** The only control that ever called `confirmTrust` was a
+  banner in the Automations tab, and that banner renders solely when the rule
+  list contains a shared (non-`local`) rule. A repository with `automations: []`
+  — ADE's own among them — could therefore reach a state where test runs and
+  lane setup scripts refused, with no user interface anywhere able to clear it.
+  The documented `SettingsPage` trust dialog did not exist, and neither did the
+  `{ skipTrust: true }` escape hatch the old text described.
+- **It was not the boundary it looked like.** `laneEnvInit.dependencies[].command`
+  and the Docker compose path both reached `execCommand` through `getEffective()`,
+  which never checked trust at all. Only test suites, setup scripts, and manual
+  runs of shared automation rules were ever gated.
 
-`save` takes both scopes, so a local-only writer
-(`laneTemplateService.saveTemplate` / `deleteTemplate` /
-`setDefaultTemplateId`, `setPrTranscriptGists`) still round-trips the
-loaded shared snapshot back to disk. Approving on every save therefore
-meant editing one lane template silently trusted an unreviewed,
-repo-committed `.ade/ade.yaml` — exactly the file the setup-script trust
-gate exists to stop. A save now re-approves the shared scope only when
-one of two things is true:
+`ProjectConfigTrust` now carries two content hashes and no verdict. They stay
+because change detection still needs them.
 
-- **The shared scope was actually edited.** The pre-write file is parsed
-  and re-serialized before comparing, so a formatting-only rewrite of an
-  untrusted file does not count as an edit.
-- **The pre-write bytes were already the trusted ones.** Trust is a hash
-  of raw bytes and every save rewrites `ade.yaml` as canonical YAML, so
-  without this a local-only save of a hand-formatted but already-trusted
-  file would revoke trust and pop the gate with no user action.
-  Re-affirming content the user already approved approves nothing new.
-
-An untrusted shared config that a save merely passed through stays
-untrusted. Both decisions are logged with the save.
-
-The trust confirmation dialog in `SettingsPage` calls `projectConfigService.confirmTrust()`, which
-writes the new approved hash. The Automations tab exposes the same
-`confirmTrust()` via a `Trust config` banner, but only when the rule
-list contains a shared-config (non-`local`) rule; `runRuleNow` blocks
-a manual run solely for rules defined in `.ade/ade.yaml`, so
-local-only automations keep running while shared config is untrusted.
-
-Local config is not trust-gated; users only need to trust their own
-overrides.
 
 ## Validation
 
