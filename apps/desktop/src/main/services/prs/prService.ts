@@ -1763,39 +1763,31 @@ export function createPrService({
   };
 
   const writeChatSessionDismissal = (prId: string, sessionId: string): void => {
-    try {
-      const existing = db.get<{ id: string }>(
-        `
-          select id
-            from pull_request_chat_session_dismissals
-           where project_id = ? and pr_id = ? and session_id = ?
-           limit 1
-        `,
-        [projectId, prId, sessionId],
-      );
-      const now = nowIso();
-      if (existing) {
-        db.run(
-          "update pull_request_chat_session_dismissals set updated_at = ? where id = ? and project_id = ?",
-          [now, existing.id, projectId],
-        );
-        return;
-      }
+    const existing = db.get<{ id: string }>(
+      `
+        select id
+          from pull_request_chat_session_dismissals
+         where project_id = ? and pr_id = ? and session_id = ?
+         limit 1
+      `,
+      [projectId, prId, sessionId],
+    );
+    const now = nowIso();
+    if (existing) {
       db.run(
-        `
-          insert into pull_request_chat_session_dismissals(
-            id, project_id, pr_id, session_id, created_at, updated_at
-          ) values (?, ?, ?, ?, ?, ?)
-        `,
-        [randomUUID(), projectId, prId, sessionId, now, now],
+        "update pull_request_chat_session_dismissals set updated_at = ? where id = ? and project_id = ?",
+        [now, existing.id, projectId],
       );
-    } catch (error) {
-      logger.warn("prs.chat_session_dismissal_write_failed", {
-        prId,
-        sessionId,
-        error: getErrorMessage(error),
-      });
+      return;
     }
+    db.run(
+      `
+        insert into pull_request_chat_session_dismissals(
+          id, project_id, pr_id, session_id, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?)
+      `,
+      [randomUUID(), projectId, prId, sessionId, now, now],
+    );
   };
 
   const linkPrToChatSession = (args: {
@@ -1894,12 +1886,23 @@ export function createPrService({
     const sessionId = resolveCanonicalChatSessionId(args.sessionId);
     if (!sessionId) return false;
     try {
-      db.run(
-        `delete from pull_request_chat_sessions
-          where project_id = ? and pr_id = ? and session_id = ?`,
-        [projectId, args.prId, sessionId],
-      );
-      if (args.dismiss !== false) writeChatSessionDismissal(args.prId, sessionId);
+      db.run("begin immediate");
+      try {
+        db.run(
+          `delete from pull_request_chat_sessions
+            where project_id = ? and pr_id = ? and session_id = ?`,
+          [projectId, args.prId, sessionId],
+        );
+        if (args.dismiss !== false) writeChatSessionDismissal(args.prId, sessionId);
+        db.run("commit");
+      } catch (error) {
+        try {
+          db.run("rollback");
+        } catch {
+          // Preserve the original unlink error.
+        }
+        throw error;
+      }
       return true;
     } catch (error) {
       logger.warn("prs.chat_session_unlink_failed", {

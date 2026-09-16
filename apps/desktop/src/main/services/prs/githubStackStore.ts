@@ -64,6 +64,17 @@ function stackKey(owner: string, name: string, stackNumber: number): string {
 
 /** Leave headroom under the 4-minute `prs.mergeGithubStack` IPC budget. */
 const STACK_MERGE_POLL_DEADLINE_MS = 3.5 * 60_000;
+/** Leave headroom under the 2-minute `prs.rebaseGithubStack` IPC budget. */
+const STACK_REBASE_POLL_DEADLINE_MS = 90_000;
+
+function pullIsMerged(data: Record<string, unknown>): boolean {
+  return Boolean(data.merged) || Boolean(asString(data.merged_at).trim());
+}
+
+function pullHeadSha(data: Record<string, unknown>): string {
+  const head = isRecord(data.head) ? data.head : null;
+  return asString(head?.sha).trim() || asString(data.head_sha).trim();
+}
 
 function stackFromRows(
   row: GitHubPrStackRow,
@@ -615,8 +626,7 @@ export function createGithubStackStore(args: {
         method: "GET",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,
       });
-      const merged = Boolean(data.merged) || Boolean(asString(data.merged_at));
-      if (merged) {
+      if (pullIsMerged(data)) {
         const sha = asString(data.merge_commit_sha).trim() || null;
         return { merged: true, sha };
       }
@@ -625,6 +635,51 @@ export function createGithubStackStore(args: {
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
     return { merged: false, sha: null };
+  };
+
+  const pollUntilPullsMerged = async (
+    repo: GitHubRepoRef,
+    prNumbers: number[],
+    deadlineMs: number,
+  ): Promise<boolean> => {
+    const remaining = new Set(prNumbers.filter((number) => number > 0));
+    while (remaining.size > 0 && Date.now() < deadlineMs) {
+      for (const prNumber of [...remaining]) {
+        const { data } = await githubService.apiRequest<Record<string, unknown>>({
+          method: "GET",
+          path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,
+        });
+        if (pullIsMerged(data)) remaining.delete(prNumber);
+      }
+      if (remaining.size === 0) return true;
+      const waitMs = Math.min(1_000, deadlineMs - Date.now());
+      if (waitMs <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    return remaining.size === 0;
+  };
+
+  const pollUntilHeadMoved = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+    previousHeadSha: string,
+    deadlineMs: number,
+  ): Promise<boolean> => {
+    const previous = previousHeadSha.trim();
+    if (!previous) return true;
+    while (Date.now() < deadlineMs) {
+      const { data } = await githubService.apiRequest<Record<string, unknown>>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,
+      });
+      if (pullIsMerged(data)) return true;
+      const head = pullHeadSha(data);
+      if (head && head !== previous) return true;
+      const waitMs = Math.min(1_000, deadlineMs - Date.now());
+      if (waitMs <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    return false;
   };
 
   const mergeViaPullRequests = async (
@@ -667,14 +722,22 @@ export function createGithubStackStore(args: {
     const openEntries = stack.entries
       .filter((entry) => !entry.mergedAt && entry.state !== "closed")
       .sort((left, right) => left.position - right.position);
+    const deadlineMs = Date.now() + STACK_REBASE_POLL_DEADLINE_MS;
     for (const entry of openEntries) {
+      const previousHeadSha = entry.headSha.trim();
       const body: Record<string, unknown> = {};
-      if (entry.headSha.trim()) body.expected_head_sha = entry.headSha.trim();
+      if (previousHeadSha) body.expected_head_sha = previousHeadSha;
       await githubService.apiRequest<unknown>({
         method: "PUT",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${entry.githubPrNumber}/update-branch`,
         body,
       });
+      const moved = await pollUntilHeadMoved(repo, entry.githubPrNumber, previousHeadSha, deadlineMs);
+      if (!moved) {
+        throw new Error(
+          `GitHub did not finish updating #${entry.githubPrNumber} in stack #${stackNumber}.`,
+        );
+      }
     }
     return await replaceFromRemote(repo, stackNumber);
   };
@@ -728,20 +791,20 @@ export function createGithubStackStore(args: {
         });
         if (response?.status === 202) {
           const stack = list(repo).find((entry) => entry.number === stackNumber);
-          const bottom = stack?.entries
-            .filter((entry) => !entry.mergedAt)
-            .sort((left, right) => left.position - right.position)[0];
-          if (bottom) {
-            const polled = await pollMergedPull(
+          const openNumbers = (stack?.entries ?? [])
+            .filter((entry) => !entry.mergedAt && entry.state !== "closed")
+            .map((entry) => entry.githubPrNumber);
+          if (openNumbers.length > 0) {
+            const allMerged = await pollUntilPullsMerged(
               repo,
-              bottom.githubPrNumber,
+              openNumbers,
               Date.now() + STACK_MERGE_POLL_DEADLINE_MS,
             );
-            if (!polled.merged) {
+            if (!allMerged) {
               return stackMutationFailure(
                 repo,
                 stackNumber,
-                new Error(`GitHub did not finish merging #${bottom.githubPrNumber} in stack #${stackNumber}.`),
+                new Error(`GitHub did not finish merging every open pull in stack #${stackNumber}.`),
                 "merge",
                 "stack_api",
               );

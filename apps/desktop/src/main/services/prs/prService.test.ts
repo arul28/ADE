@@ -8857,3 +8857,30 @@ describe("parseSyntheticGithubPrId", () => {
     expect(parseSyntheticGithubPrId(prId)).toBeNull();
   });
 });
+
+describe("unlinkChatSession tombstones", () => {
+  it("rolls back the edge delete when the dismissal write fails", () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from terminal_sessions")) return { id: "chat-1" };
+      if (text.includes("from pull_request_chat_session_dismissals")) return null;
+      return null;
+    });
+    db.run.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("insert into pull_request_chat_session_dismissals")) {
+        throw new Error("UNIQUE constraint failed");
+      }
+    });
+    const { service, logger } = buildService({ db });
+    expect(service.unlinkChatSession({ prId: "pr-1", sessionId: "chat-1" })).toEqual({ ok: false });
+    expect(db.run).toHaveBeenCalledWith("begin immediate");
+    expect(db.run).toHaveBeenCalledWith("rollback");
+    expect(db.run).not.toHaveBeenCalledWith("commit");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "prs.chat_session_unlink_failed",
+      expect.objectContaining({ prId: "pr-1", sessionId: "chat-1" }),
+    );
+  });
+});

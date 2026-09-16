@@ -9346,8 +9346,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     if (!connection) {
       setPrByLaneId({});
+      allPrsForChatRef.current = [];
+      setChatLinkedPrs([]);
       return;
     }
+    allPrsForChatRef.current = [];
+    setChatLinkedPrs([]);
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
     const refreshPrsByLane = async () => {

@@ -22,7 +22,12 @@ function stackRow() {
   };
 }
 
-function entryRow() {
+function entryRow(overrides: Partial<{
+  github_pr_number: number;
+  position: number;
+  head_branch: string;
+  head_sha: string;
+}> = {}) {
   return {
     project_id: projectId,
     repo_owner: "ade",
@@ -35,10 +40,11 @@ function entryRow() {
     merged_at: null,
     head_branch: "feat/layer",
     head_sha: "abc123",
+    ...overrides,
   };
 }
 
-function githubStackPayload() {
+function githubStackPayload(prNumbers = [7]) {
   return {
     id: "stack-4",
     number: 4,
@@ -46,19 +52,22 @@ function githubStackPayload() {
     open: true,
     created_at: "2026-01-01T00:00:00.000Z",
     base: { ref: "main" },
-    pull_requests: [{
-      number: 7,
+    pull_requests: prNumbers.map((number, index) => ({
+      number,
       state: "closed",
       draft: false,
       merged_at: "2026-01-01T00:01:00.000Z",
-      head: { ref: "feat/layer", sha: "abc123" },
-    }],
+      head: { ref: `feat/layer-${number}`, sha: `sha-${number}` },
+      position: index + 1,
+    })),
   };
 }
 
-function createStore(apiRequest: GithubService["apiRequest"]) {
+function createStore(
+  apiRequest: GithubService["apiRequest"],
+  entries = [entryRow()],
+) {
   const stacks = [stackRow()];
-  const entries = [entryRow()];
   const db = {
     all: (sql: string) => {
       if (sql.includes("from github_pr_stack_entries")) return entries;
@@ -201,6 +210,53 @@ describe("githubStackStore.merge", () => {
     expect(results.every((result) => result.ok)).toBe(true);
     expect(mergePosts).toBe(2);
   });
+
+  it("does not treat a 202 stack merge as done until every open layer is merged", async () => {
+    vi.useFakeTimers();
+    let layerEightGets = 0;
+    const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
+      if (args.method === "POST" && args.path.endsWith("/stacks/4/merge")) {
+        return { data: {}, response: { status: 202 } };
+      }
+      if (args.method === "GET" && args.path.endsWith("/pulls/7")) {
+        return {
+          data: { merged: true, merged_at: "2026-01-01T00:01:00.000Z", merge_commit_sha: "aaa" },
+          response: { status: 200 },
+        };
+      }
+      if (args.method === "GET" && args.path.endsWith("/pulls/8")) {
+        layerEightGets += 1;
+        if (layerEightGets < 3) {
+          return { data: { merged: false }, response: { status: 200 } };
+        }
+        return {
+          data: { merged: true, merged_at: "2026-01-01T00:01:05.000Z", merge_commit_sha: "bbb" },
+          response: { status: 200 },
+        };
+      }
+      if (args.method === "GET" && args.path.endsWith("/stacks/4")) {
+        return { data: githubStackPayload([7, 8]), response: { status: 200 } };
+      }
+      throw new Error(`unexpected ${args.method} ${args.path}`);
+    });
+    try {
+      const store = createStore(apiRequest as unknown as GithubService["apiRequest"], [
+        entryRow(),
+        entryRow({ github_pr_number: 8, position: 2, head_branch: "feat/top", head_sha: "def456" }),
+      ]);
+      const pending = store.merge(repo, 4);
+      await vi.advanceTimersByTimeAsync(4_000);
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      expect(layerEightGets).toBeGreaterThanOrEqual(3);
+      expect(apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({
+        method: "PUT",
+        path: "/repos/ade/desktop/pulls/7/merge-async",
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("githubStackStore.rebase", () => {
@@ -221,5 +277,55 @@ describe("githubStackStore.rebase", () => {
       method: "unavailable",
     });
     expect(result.disabledReason).toMatch(/does not expose stack rebase/i);
+  });
+
+  it("waits for each update-branch head to move before rebasing the next layer", async () => {
+    vi.useFakeTimers();
+    const order: string[] = [];
+    let layerSevenGets = 0;
+    const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
+      if (args.method === "POST" && args.path.endsWith("/stacks/4/rebase")) {
+        throw new Error("Not Found");
+      }
+      if (args.method === "PUT" && args.path.endsWith("/pulls/7/update-branch")) {
+        order.push("update-7");
+        return { data: {}, response: { status: 202 } };
+      }
+      if (args.method === "PUT" && args.path.endsWith("/pulls/8/update-branch")) {
+        order.push("update-8");
+        return { data: {}, response: { status: 202 } };
+      }
+      if (args.method === "GET" && args.path.endsWith("/pulls/7")) {
+        layerSevenGets += 1;
+        order.push(`get-7-${layerSevenGets}`);
+        if (layerSevenGets < 3) {
+          return { data: { merged: false, head: { sha: "abc123" } }, response: { status: 200 } };
+        }
+        return { data: { merged: false, head: { sha: "abc999" } }, response: { status: 200 } };
+      }
+      if (args.method === "GET" && args.path.endsWith("/pulls/8")) {
+        order.push("get-8");
+        return { data: { merged: false, head: { sha: "def999" } }, response: { status: 200 } };
+      }
+      if (args.method === "GET" && args.path.endsWith("/stacks/4")) {
+        return { data: githubStackPayload([7, 8]), response: { status: 200 } };
+      }
+      throw new Error(`unexpected ${args.method} ${args.path}`);
+    });
+    try {
+      const store = createStore(apiRequest as unknown as GithubService["apiRequest"], [
+        entryRow(),
+        entryRow({ github_pr_number: 8, position: 2, head_branch: "feat/top", head_sha: "def456" }),
+      ]);
+      const pending = store.rebase(repo, 4);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      expect(result.method).toBe("update_branch");
+      expect(order.indexOf("update-8")).toBeGreaterThan(order.indexOf("get-7-3"));
+      expect(order.indexOf("update-8")).toBeGreaterThan(order.indexOf("update-7"));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

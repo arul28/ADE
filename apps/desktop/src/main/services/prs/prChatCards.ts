@@ -578,6 +578,7 @@ export async function emitPrCardsForChange(args: {
   if (merged) {
     cards.push(buildPrMergedCard(pr));
   }
+  const stackNumber = pr.stack?.number ?? null;
   const results = await Promise.allSettled([
     ...ordinarySessions.flatMap((session) => cards.map((card) => (
       chat.emitAdeCard({
@@ -585,12 +586,12 @@ export async function emitPrCardsForChange(args: {
         card,
       })
     ))),
-    ...(stackLanded && pr.stack
+    ...(stackLanded && stackNumber != null
       ? stackSessions.map((session) => chat.emitAdeCard({
         sessionId: session.sessionId,
         card: buildPrStackLandCard({
           pr,
-          stackNumber: pr.stack.number,
+          stackNumber,
           layers: stackLayers.map((layer) => ({
             githubPrNumber: layer.githubPrNumber,
             title: layer.title,
@@ -607,5 +608,5 @@ export async function emitPrCardsForChange(args: {
       `Failed to emit ${failures.length} of ${cards.length} PR chat cards.`,
     );
   }
-  return cards.length + (stackLanded && pr.stack ? 1 : 0);
+  return cards.length + (stackLanded && stackNumber != null ? 1 : 0);
 }
