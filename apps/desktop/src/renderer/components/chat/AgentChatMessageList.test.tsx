@@ -5298,7 +5298,21 @@ describe("turn-level file-change de-clutter", () => {
 
     expect(rendered.container.textContent).toContain("2 files");
     const text = rendered.container.textContent ?? "";
-    expect(text.lastIndexOf("2 files")).toBeLessThan(text.lastIndexOf("10:00"));
+    // Find the closing time by SHAPE, and take the LAST one.
+    //
+    // This asserted `lastIndexOf("10:00")` — the UTC hour of the fixture
+    // timestamp. The app renders times in the LOCAL zone, so off UTC the
+    // string is never present, `lastIndexOf` answers -1, and the assertion
+    // compares against "not found" instead of a position. It passed only
+    // because CI runners are UTC; it failed on any developer machine that is
+    // not, which is exactly backwards from what a test should do.
+    //
+    // The last match is the one that matters: the turn also renders an OPENING
+    // time, so a first-match search would compare against the wrong end and
+    // claim the summary is below the time when it is above it.
+    const timeIndexes = [...text.matchAll(/\d{1,2}:\d{2}/g)].map((match) => match.index ?? -1);
+    expect(timeIndexes.length).toBeGreaterThan(0);
+    expect(text.lastIndexOf("2 files")).toBeLessThan(timeIndexes[timeIndexes.length - 1]!);
   });
 
   it("combines tools and files on one line above the done-divider time", () => {
