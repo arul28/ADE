@@ -915,13 +915,14 @@ export async function callAccountAction(args: {
  */
 export type AccountRefreshBroker = {
   /**
-   * Resolves to a current access token, or rejects.
+   * Resolves to a current access token, resolves to null when no broker is
+   * reachable right now, or rejects for a reachable broker failure.
    *
    * A rejection must mean "ask again later", never "the session is gone". The
    * broker sees only transport failures; it cannot observe the issuer, so it is
    * never entitled to condemn a session.
    */
-  getAccessToken(options: { forceRefresh: boolean; signal?: AbortSignal }): Promise<string>;
+  getAccessToken(options: { forceRefresh: boolean; signal?: AbortSignal }): Promise<string | null>;
 };
 
 /**
@@ -958,11 +959,11 @@ export function createAccountAuthService(args: {
    * processes can still both be legitimately entitled to exchange.
    *
    * A broker removes the race by construction rather than by timing: exactly
-   * one process ever POSTs the credential. When the broker cannot be reached,
-   * this service does **not** fall back to exchanging locally — that would
-   * reinstate the race precisely when the brain is unhealthy. It raises
-   * `AccountRefreshUnavailableError` instead, which is transient and leaves the
-   * stored session untouched, exactly as an unreachable issuer does.
+   * one process ever POSTs the credential. A broker that reports no brain at
+   * this instant returns null, which safely selects the local path because no
+   * competing brain is available; a broker that was reachable but failed still
+   * raises `AccountRefreshUnavailableError` and leaves the stored session
+   * untouched.
    *
    * Read at call time, not at construction. `getSharedAccountAuthService`
    * caches one service per secrets directory, so the first caller to ask for it
@@ -1058,6 +1059,7 @@ export function createAccountAuthService(args: {
     sessionReadFailureReason = state === "unreadable" ? reason : null;
   };
   let lastObservedSignedIn: boolean | null = null;
+  let lastObservedUserId: string | null = null;
   let locallyRejectedSessionRaw: string | null = null;
   /**
    * Why the locally-rejected raw record is rejected. A grant the provider
@@ -1220,6 +1222,7 @@ export function createAccountAuthService(args: {
       rotationJournal.clear("session_removed");
     }
     lastObservedSignedIn = record != null;
+    lastObservedUserId = record?.userId?.trim() || null;
     logSessionMutation({
       action: action ?? (record ? "persist" : "delete"),
       reason,
@@ -1257,6 +1260,7 @@ export function createAccountAuthService(args: {
     }
     authEpoch += 1;
     lastObservedSignedIn = false;
+    lastObservedUserId = null;
     setSessionReadState("missing");
     logSessionMutation({
       action: "delete",
@@ -1406,6 +1410,7 @@ export function createAccountAuthService(args: {
     }
     authEpoch += 1;
     lastObservedSignedIn = false;
+    lastObservedUserId = null;
     setSessionReadState("missing");
     rotationJournal.clear("grant_rejected", accountTokenGeneration(session.refreshToken));
     logSessionMutation({
@@ -1562,6 +1567,7 @@ export function createAccountAuthService(args: {
     }
     if (persisted) {
       lastObservedSignedIn = true;
+      lastObservedUserId = refreshed.userId?.trim() || null;
       locallyRejectedSessionRaw = null;
       locallyRejectedSessionState = "signed_out";
       storedSessionRejected = false;
@@ -2436,11 +2442,23 @@ export function createAccountAuthService(args: {
     // perfectly serviceable through the brain.
     const refreshBroker = resolveRefreshBroker();
     if (refreshBroker) {
+      let brokered: string | null;
       try {
-        const brokered = await refreshBroker.getAccessToken({
+        brokered = await refreshBroker.getAccessToken({
           forceRefresh: options.forceRefresh === true,
           signal,
         });
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (error instanceof AccountRefreshUnavailableError) throw error;
+        // Never fall through to a local exchange after a reachable brain
+        // failed. That is exactly when a second refresher does the most damage.
+        throw new AccountRefreshUnavailableError(
+          "ADE could not reach this machine's brain to refresh the account token.",
+          { cause: error },
+        );
+      }
+      if (brokered !== null) {
         const token = brokered.trim();
         if (!token) {
           throw new AccountRefreshUnavailableError(
@@ -2448,16 +2466,9 @@ export function createAccountAuthService(args: {
           );
         }
         return token;
-      } catch (error) {
-        signal?.throwIfAborted();
-        if (error instanceof AccountRefreshUnavailableError) throw error;
-        // Never fall through to a local exchange. A brain that cannot answer is
-        // exactly when a second refresher does the most damage.
-        throw new AccountRefreshUnavailableError(
-          "ADE could not reach this machine's brain to refresh the account token.",
-          { cause: error },
-        );
       }
+      // No brain was listening at this instant. The local exchange below is
+      // safe because no other process was available to consume the grant.
     }
 
     if (!record.refreshToken) {
@@ -2794,22 +2805,33 @@ export function createAccountAuthService(args: {
     // Ahead of the credential watcher, and it records the transition so the
     // watcher's own debounce does not fire a second, duplicate notification.
     lastObservedSignedIn = false;
+    lastObservedUserId = null;
     notifySignedOut();
     return getStatus();
   };
 
   let credentialChangeTimer: ReturnType<typeof setTimeout> | null = null;
-  lastObservedSignedIn = getStatus().signedIn;
+  const initialObservedStatus = getStatus();
+  lastObservedSignedIn = initialObservedStatus.signedIn;
+  lastObservedUserId = initialObservedStatus.signedIn
+    ? initialObservedStatus.userId?.trim() || null
+    : null;
   const unsubscribeCredentialChanges = args.credentialStore.onDidChange?.(() => {
     if (credentialChangeTimer) clearTimeout(credentialChangeTimer);
     credentialChangeTimer = setTimeout(() => {
       credentialChangeTimer = null;
-      const signedIn = getStatus().signedIn;
-      if (signedIn && lastObservedSignedIn === false) notifySignedIn();
+      const status = getStatus();
+      const signedIn = status.signedIn;
+      const userId = signedIn ? status.userId?.trim() || null : null;
+      const accountChanged = signedIn
+        && lastObservedSignedIn === true
+        && userId !== lastObservedUserId;
+      if (signedIn && (lastObservedSignedIn === false || accountChanged)) notifySignedIn();
       // The other half: someone ran `ade logout` (or signed out in the desktop
       // app) and this brain only learns about it from the file changing.
       if (!signedIn && lastObservedSignedIn === true) notifySignedOut();
       lastObservedSignedIn = signedIn;
+      lastObservedUserId = userId;
     }, 25);
     credentialChangeTimer.unref?.();
   }) ?? (() => {});

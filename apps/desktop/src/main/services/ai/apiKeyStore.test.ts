@@ -494,6 +494,31 @@ describe("apiKeyStore", () => {
     expect(vault.set).not.toHaveBeenCalled();
   });
 
+  it("binds hydrated API keys to their account and purges only account-origin values", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    let accountUserId: string | null = "account-a";
+    store.initApiKeyStore(tempRoot, {
+      credentialStore,
+      getAccountUserId: () => accountUserId,
+    });
+
+    store.storeApiKey("cursor", "device-key", { deviceOnly: true });
+    store.storeApiKey("openai", "hydrated-key", {
+      deviceOnly: true,
+      source: "account",
+      accountUserId: "account-a",
+    });
+    expect(store.getApiKeyProvenance("cursor")).toEqual({ source: "device", accountUserId: null });
+    expect(store.getApiKeyProvenance("openai")).toEqual({ source: "account", accountUserId: "account-a" });
+
+    accountUserId = null;
+    store.purgeAccountApiKeys();
+
+    expect(store.getApiKey("cursor")).toBe("device-key");
+    expect(store.getApiKey("openai")).toBeNull();
+  });
+
   it("hydrates only provider keys missing from the local store", async () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
@@ -513,11 +538,16 @@ describe("apiKeyStore", () => {
     store.initApiKeyStore(tempRoot, {
       credentialStore,
       getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
     });
 
     await store.hydrateApiKeysFromVault();
 
     expect(store.getApiKey("anthropic")).toBe("sk-vault-key");
+    expect(store.getApiKeyProvenance("anthropic")).toEqual({
+      source: "account",
+      accountUserId: "account-a",
+    });
     expect(store.getApiKey("openai")).toBe("sk-local-key");
     expect(vault.get).toHaveBeenCalledWith("all", "provider_api_key", "anthropic");
     expect(vault.set).not.toHaveBeenCalled();

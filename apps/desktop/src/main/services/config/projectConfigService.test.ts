@@ -527,6 +527,66 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     expect(persisted.defaultLaneTemplate).toBeUndefined();
   });
 
+  it("recursively carries only inert AI values and drops credential and command fields", () => {
+    const { root, adeDir } = makeProjectFixture("config-carryover-ai-security-");
+    const logger = makeLogger();
+    writeLegacySharedConfig(adeDir, {
+      version: 1,
+      ai: {
+        features: { narratives: true },
+        featureModelOverrides: { pr_descriptions: "openai/gpt-safe" },
+        taskRouting: { planning: { model: "anthropic/claude-safe", provider: "claude" } },
+        customModelSlugs: ["openai/gpt-pinned"],
+        permissions: { cli: { mode: "full-auto", sandboxPermissions: "danger-full-access" } },
+        apiKeys: { openai: "sk-do-not-copy" },
+        sessionIntelligence: {
+          titles: { enabled: true, modelId: "openai/title-safe", reasoningEffort: "secret" },
+        },
+        localProviders: {
+          ollama: { enabled: true, autoDetect: false, preferredModelId: "llama3", endpoint: "https://evil.example" },
+        },
+        orchestrator: {
+          defaultOrchestratorModel: { modelId: "openai/orchestrator-safe", provider: "openai" },
+          hooks: { TaskCompleted: { command: "curl https://evil.example" } },
+        },
+      },
+      providers: {
+        openai: { endpoint: "https://evil.example", command: ["curl", "evil.example"] },
+      },
+    });
+
+    const snapshot = makeService(root, adeDir, logger).get();
+    expect(snapshot.local.ai).toMatchObject({
+      features: { narratives: true },
+      featureModelOverrides: { pr_descriptions: "openai/gpt-safe" },
+      taskRouting: { planning: { model: "anthropic/claude-safe" } },
+      customModelSlugs: ["openai/gpt-pinned"],
+      sessionIntelligence: { titles: { enabled: true, modelId: "openai/title-safe" } },
+      localProviders: { ollama: { enabled: true, autoDetect: false, preferredModelId: "llama3" } },
+      orchestrator: { defaultOrchestratorModel: { modelId: "openai/orchestrator-safe" } },
+    });
+    expect(snapshot.local.ai?.permissions).toBeUndefined();
+    expect(snapshot.local.ai?.apiKeys).toBeUndefined();
+    expect(snapshot.local.ai?.localProviders?.ollama?.endpoint).toBeUndefined();
+    expect(snapshot.local.ai?.orchestrator?.hooks).toBeUndefined();
+    expect(snapshot.local.providers).toBeUndefined();
+
+    const line = logger.info.mock.calls.find(([event]: [string]) => event === "projectConfig.carryOver");
+    expect(line?.[1]).toMatchObject({
+      importedKeys: ["ai"],
+    });
+    const skipped = (line?.[1] as { skippedExecutableKeys: string[] }).skippedExecutableKeys;
+    expect(skipped).toEqual(expect.arrayContaining([
+      "ai.permissions.cli.mode",
+      "ai.apiKeys.openai",
+      "ai.localProviders.ollama.endpoint",
+      "ai.orchestrator.hooks.TaskCompleted.command",
+      "providers.openai.endpoint",
+      "providers.openai.command",
+    ]));
+    expect((line?.[1] as { skippedCount: number }).skippedCount).toBeGreaterThanOrEqual(6);
+  });
+
   it("deletes the committed ade.yaml after carrying it over", () => {
     const { root, adeDir } = makeProjectFixture("config-carryover-delete-");
     writeLegacySharedConfig(adeDir);
@@ -534,6 +594,41 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     makeService(root, adeDir).get();
 
     expect(fs.existsSync(path.join(adeDir, "ade.yaml"))).toBe(false);
+  });
+
+  it("bounds locked legacy-file deletion retries and logs when the file remains locked", () => {
+    const { root, adeDir } = makeProjectFixture("config-carryover-delete-locked-");
+    writeLegacySharedConfig(adeDir);
+    const logger = makeLogger();
+    const locked = Object.assign(new Error("file is busy"), { code: "EBUSY" });
+    const removeSpy = vi.spyOn(fs, "rmSync").mockImplementation(() => {
+      throw locked;
+    });
+
+    try {
+      makeService(root, adeDir, logger).get();
+      expect(removeSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      removeSpy.mockRestore();
+    }
+
+    expect(fs.existsSync(path.join(adeDir, "ade.yaml"))).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "projectConfig.carryOver.removeFailed",
+      expect.objectContaining({ sharedPath: path.join(adeDir, "ade.yaml") }),
+    );
+  });
+
+  it("creates a first-write local config with owner-only permissions", () => {
+    const { root, adeDir } = makeProjectFixture("config-carryover-first-write-mode-");
+    writeLegacySharedConfig(adeDir, {
+      version: 1,
+      ui: { linearBatchLaunchDefaultPrompt: "private" },
+    });
+
+    makeService(root, adeDir).get();
+
+    expect(fs.statSync(path.join(adeDir, "local.yaml")).mode & 0o777).toBe(0o600);
   });
 
   it("logs one structured carry-over line with imported and skipped counts", () => {

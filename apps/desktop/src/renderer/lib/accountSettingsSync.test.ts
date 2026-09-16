@@ -318,6 +318,84 @@ describe("accountSettingsSync (renderer)", () => {
     stop();
   });
 
+  it("rehydrates a direct account switch and ignores the old account's in-flight response", async () => {
+    const { store, state } = createStore({ theme: "local" });
+    const api = createApi();
+    let userId: string | null = "account-a";
+    let resolveAccountA: (result: AccountSettingRow[]) => void = () => {};
+    const accountA = new Promise<AccountSettingRow[]>((resolve) => {
+      resolveAccountA = resolve;
+    });
+    api.list
+      .mockImplementationOnce(async () => ({ ok: true as const, value: await accountA }))
+      .mockResolvedValueOnce({ ok: true as const, value: [row("theme", "from-account-b", "2030-01-01T00:00:00.000Z")] });
+    const notifiers: Array<() => void> = [];
+    const stop = startAccountSettingsSync(
+      baseOptions({
+        store,
+        getApi: () => api,
+        isSignedIn: () => userId !== null,
+        getAccountUserId: () => userId,
+        subscribeSignedIn: (listener) => {
+          notifiers.push(listener);
+          return () => {};
+        },
+      }),
+    );
+
+    userId = "account-b";
+    notifiers[0]?.();
+    resolveAccountA([row("theme", "from-account-a", "2030-02-01T00:00:00.000Z")]);
+    await settle();
+
+    expect(state.theme).toBe("from-account-b");
+    expect(api.list).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("keeps signed-out changes dirty and flushes them after the next sign-in", async () => {
+    const { store, state } = createStore({ theme: "dark" });
+    const api = createApi();
+    const storage = createStorage();
+    let signedIn = false;
+    let userId: string | null = null;
+    const notifiers: Array<() => void> = [];
+    const stop = startAccountSettingsSync(
+      baseOptions({
+        store,
+        storage,
+        getApi: () => api,
+        isSignedIn: () => signedIn,
+        getAccountUserId: () => userId,
+        subscribeSignedIn: (listener) => {
+          notifiers.push(listener);
+          return () => {};
+        },
+      }),
+    );
+    await settle();
+
+    (state.setTheme as (value: unknown) => void)("light");
+    expect(api.set).not.toHaveBeenCalled();
+    expect(JSON.parse(storage.map.get("ade.accountSettings.dirty.v1") ?? "[]")).toContain(
+      "__signed-out__\u0000theme",
+    );
+    expect(storage.map.has("ade.accountSettings.stamps.v1")).toBe(false);
+
+    signedIn = true;
+    userId = "account-a";
+    notifiers[0]?.();
+    await settle();
+
+    expect(api.set).toHaveBeenCalledWith({ scope: "all", key: "theme", value: "light" });
+    const stamps = JSON.parse(storage.map.get("ade.accountSettings.stamps.v1") ?? "{}");
+    expect(stamps["account-a"]).toMatchObject({ "all theme": expect.any(String) });
+    expect(JSON.parse(storage.map.get("ade.accountSettings.dirty.v1") ?? "[]")).not.toContain(
+      "__signed-out__\u0000theme",
+    );
+    stop();
+  });
+
   it("keeps the local value when the bridge is missing entirely", async () => {
     const { store, state } = createStore({ theme: "dark" });
     const stop = startAccountSettingsSync(

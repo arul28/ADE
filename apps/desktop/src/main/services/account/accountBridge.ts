@@ -64,6 +64,8 @@ type AccountBridgeOptions = {
    * dependency on the attention stack.
    */
   purgeMachineActivity?: (machineKey: string) => Promise<void>;
+  /** Remove account-origin local credentials on sign-out or account switch. */
+  purgeAccountCredentials?: () => void;
   /**
    * Calls an `account.call` action on THIS machine's ADE brain.
    *
@@ -483,8 +485,9 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   >();
   const accountMachineNames = new Map<string, string>();
 
-  const service = () =>
-    getSharedAccountAuthService({
+  let accountLifecycleBound = false;
+  const service = () => {
+    const accountService = getSharedAccountAuthService({
       secretsDir,
       projectRoots: () => {
         const root = options.getProjectRoot();
@@ -492,6 +495,35 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       },
       logger: options.logger,
     });
+    if (!accountLifecycleBound) {
+      accountLifecycleBound = true;
+      let lastUserId = accountService.getStatus().userId;
+      accountService.onSignedOut?.(() => {
+        try {
+          options.purgeAccountCredentials?.();
+        } catch (error) {
+          options.logger?.warn("account.local_credentials_purge_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+        lastUserId = null;
+      });
+      accountService.onSignedIn?.(() => {
+        const nextUserId = accountService.getStatus().userId;
+        if (lastUserId && nextUserId && lastUserId !== nextUserId) {
+          try {
+            options.purgeAccountCredentials?.();
+          } catch (error) {
+            options.logger?.warn("account.local_credentials_purge_failed", {
+              error: error instanceof Error ? error.message : String(error ?? ""),
+            });
+          }
+        }
+        lastUserId = nextUserId;
+      });
+    }
+    return accountService;
+  };
 
   const configured = () => isLoginConfigured(options.getProjectRoot());
   const directoryService = () => new AccountMachineDirectoryService(service(), {

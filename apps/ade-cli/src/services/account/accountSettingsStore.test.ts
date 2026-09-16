@@ -214,6 +214,59 @@ describe("account settings store", () => {
     expect(relay.getAccountSettings).not.toHaveBeenCalled();
   });
 
+  it("drops signed-out mutations and logs each dropped operation once", () => {
+    accountUserId = null;
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const store = makeStore({ logger });
+
+    store.set("all", "appearance.theme", "must-not-persist");
+    store.remove("all", "appearance.theme");
+
+    expect(fs.existsSync(store.cachePathForTests())).toBe(false);
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenNthCalledWith(1, "account.settings_mutation_dropped", { reason: "signed_out" });
+    expect(logger.warn).toHaveBeenNthCalledWith(2, "account.settings_mutation_dropped", { reason: "signed_out" });
+  });
+
+  it("drops a mutation when the owner changes during its entry checks", () => {
+    let reads = 0;
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const store = createAccountSettingsStore({
+      adeDir,
+      relay: relay as unknown as AccountSettingsRelay,
+      getAccountUserId: () => {
+        reads += 1;
+        if (reads === 2) accountUserId = "user_grace";
+        return accountUserId;
+      },
+      logger,
+    });
+
+    store.set("all", "appearance.theme", "must-not-persist");
+
+    expect(fs.existsSync(store.cachePathForTests())).toBe(false);
+    expect(store.get("all", "appearance.theme")).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith("account.settings_mutation_dropped", { reason: "owner_changed" });
+  });
+
+  it("drops a mutation when the account changes while it is being queued", () => {
+    let reads = 0;
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const store = makeStore({
+      getAccountUserId: () => {
+        reads += 1;
+        if (reads === 4) accountUserId = "user_grace";
+        return accountUserId;
+      },
+      logger,
+    });
+
+    store.set("all", "appearance.theme", "must-not-persist");
+
+    expect(fs.existsSync(store.cachePathForTests())).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith("account.settings_mutation_dropped", { reason: "owner_changed" });
+  });
+
   // The caller is a 30-second timer plus whatever a user action triggers, so
   // two overlapping syncs racing the cursor is a real scenario.
   it("runs one sync at a time", async () => {

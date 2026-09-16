@@ -75,6 +75,7 @@ export type AccountCacheStoreConfig<
   /** Log event names, so each store keeps the telemetry it already emits. */
   events: {
     writeFailed: string;
+    mutationDropped: string;
     uploadFailed: string;
     pullFailed: string;
     pullTruncated: string;
@@ -102,6 +103,9 @@ export type AccountCacheStoreConfig<
    * already here. Only called once the row is known to be newer.
    */
   toRow(remote: TRemote, cached: TRow | undefined): TRow | null;
+  /** Optional codec for stores whose cache file is encrypted at rest. */
+  readFile?: (cachePath: string) => unknown | null;
+  writeFile?: (cachePath: string, contents: string) => void;
 };
 
 export type AccountCacheStore<
@@ -111,6 +115,11 @@ export type AccountCacheStore<
   readCache(): AccountCacheFile<TRow, TPending>;
   persist(): void;
   queue(write: Omit<TPending, "seq">): void;
+  /** Apply a local mutation only while its owner and cache generation remain current. */
+  mutate(mutator: (
+    current: AccountCacheFile<TRow, TPending>,
+    queue: (write: Omit<TPending, "seq">) => void,
+  ) => void): boolean;
   sync(): Promise<void>;
   startPeriodicSync(intervalMs?: number): () => void;
   /** Empty the cache and write the empty file. */
@@ -168,7 +177,9 @@ export function createAccountCacheStore<
     }
     let parsed: unknown = null;
     try {
-      parsed = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+      parsed = config.readFile
+        ? config.readFile(cachePath)
+        : JSON.parse(fs.readFileSync(cachePath, "utf8"));
     } catch {
       // Missing or unreadable is a cold cache, not an error. The Worker is the
       // authority; the worst case is one pull.
@@ -204,7 +215,12 @@ export function createAccountCacheStore<
     try {
       fs.mkdirSync(config.adeDir, { recursive: true });
       // 0600, like every other file ADE keeps account state in.
-      writeFileAtomic(cachePath, `${JSON.stringify(serialized, null, 2)}\n`, { mode: 0o600 });
+      const contents = `${JSON.stringify(serialized, null, 2)}\n`;
+      if (config.writeFile) {
+        config.writeFile(cachePath, contents);
+      } else {
+        writeFileAtomic(cachePath, contents, { mode: 0o600 });
+      }
     } catch (error) {
       // A cache that cannot be written still serves this process correctly, so
       // failing the user's change would be worse than losing the copy.
@@ -214,14 +230,58 @@ export function createAccountCacheStore<
     }
   }
 
-  function queue(write: Omit<TPending, "seq">): void {
-    const current = readCache();
+  function queueInto(
+    current: AccountCacheFile<TRow, TPending>,
+    write: Omit<TPending, "seq">,
+  ): void {
     current.seqCounter += 1;
     const entry = { ...write, seq: current.seqCounter } as TPending;
     // One entry per key: only the newest local intent is worth uploading, and
     // replaying an older one would resurrect a value the user already replaced.
     current.pending = current.pending.filter((existing) => !config.pendingMatches(existing, write));
     current.pending.push(entry);
+  }
+
+  function queue(write: Omit<TPending, "seq">): void {
+    queueInto(readCache(), write);
+  }
+
+  function dropMutation(reason: "signed_out" | "owner_changed" | "epoch_changed"): void {
+    logger.warn(config.events.mutationDropped, { reason });
+  }
+
+  function mutate(
+    mutator: (
+      current: AccountCacheFile<TRow, TPending>,
+      queue: (write: Omit<TPending, "seq">) => void,
+    ) => void,
+  ): boolean {
+    const ownerAtEntry = config.getAccountUserId();
+    const epochAtEntry = epoch;
+    if (!ownerAtEntry) {
+      dropMutation("signed_out");
+      return false;
+    }
+
+    const current = readCache();
+    const ownerAfterRead = config.getAccountUserId();
+    if (epoch !== epochAtEntry || ownerAfterRead !== ownerAtEntry || current.accountUserId !== ownerAtEntry) {
+      dropMutation(epoch !== epochAtEntry ? "epoch_changed" : "owner_changed");
+      return false;
+    }
+
+    mutator(current, (write) => queueInto(current, write));
+
+    // The callback is synchronous today, but keep the check on both sides of
+    // it so a future mutation cannot persist a cache after a synchronous
+    // account switch/reset performed by a collaborator.
+    if (epoch !== epochAtEntry || config.getAccountUserId() !== ownerAtEntry) {
+      if (cache === current) cache = null;
+      dropMutation(epoch !== epochAtEntry ? "epoch_changed" : "owner_changed");
+      return false;
+    }
+    persist();
+    return true;
   }
 
   const stopPeriodicSync = (): void => {
@@ -327,6 +387,7 @@ export function createAccountCacheStore<
     readCache,
     persist,
     queue,
+    mutate,
     cachePath,
 
     /**

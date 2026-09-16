@@ -33,6 +33,8 @@ type ProjectSecretIndexEntry = {
   updatedAt: string;
   valueLength: number;
   storage: ProjectSecretStorage;
+  source: "device" | "account";
+  accountUserId: string | null;
 };
 
 type ProjectSecretIndex = {
@@ -49,6 +51,7 @@ const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
 export type ProjectSecretServiceOptions = {
   downloadsDir?: string;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
+  getAccountUserId?: () => string | null;
   logger?: {
     warn?(message: string, meta?: Record<string, unknown>): void;
   } | null;
@@ -91,6 +94,14 @@ function parseIndex(raw: string | null): ProjectSecretIndex {
         updatedAt,
         valueLength,
         storage: normalizeStorage(candidate.storage),
+        source: candidate.source === "account" && typeof candidate.accountUserId === "string"
+          && candidate.accountUserId.trim().length > 0
+          ? "account"
+          : "device",
+        accountUserId: candidate.source === "account" && typeof candidate.accountUserId === "string"
+          && candidate.accountUserId.trim().length > 0
+          ? candidate.accountUserId.trim()
+          : null,
       };
     }
     return { version: 1, entries: normalizedEntries };
@@ -140,6 +151,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
   });
 
   const getAccountScope = (): string | null => accountRepoScopeKey(readGitOriginUrl(projectRoot));
+  const getAccountUserId = (): string | null => options.getAccountUserId?.()?.trim() || null;
   const resolveStorage = (
     entry: ProjectSecretIndexEntry,
     accountScope = getAccountScope(),
@@ -261,6 +273,8 @@ export function createProjectSecretService(projectRoot: string, options: Project
           updatedAt: now,
           valueLength: secret.value.length,
           storage,
+          source: "device",
+          accountUserId: null,
         };
         saved.push({ ...secret, storage });
       }
@@ -323,6 +337,8 @@ export function createProjectSecretService(projectRoot: string, options: Project
           updatedAt: now,
           valueLength: nextValue.length,
           storage,
+          source: "device",
+          accountUserId: null,
         };
         values[valueKey(name)] = nextValue;
         index.entries[name] = entry;
@@ -336,6 +352,8 @@ export function createProjectSecretService(projectRoot: string, options: Project
 
     async hydrateFromVault(): Promise<void> {
       const accountScope = getAccountScope();
+      const accountUserId = getAccountUserId();
+      if (!accountUserId) return;
       if (!accountScope) return;
       const vault = resolveAccountVault("list", "*");
       if (!vault) return;
@@ -351,6 +369,8 @@ export function createProjectSecretService(projectRoot: string, options: Project
         logVaultFailure("list", "*", listed);
         return;
       }
+
+      if (getAccountUserId() !== accountUserId) return;
 
       for (const item of listed.value) {
         if (item.scope !== accountScope || item.kind !== "project_secret") continue;
@@ -378,6 +398,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
           value = fetched.value;
         }
         if (!value?.length || readIndex().entries[name]) continue;
+        if (getAccountUserId() !== accountUserId) return;
 
         try {
           const now = nowIso();
@@ -390,6 +411,8 @@ export function createProjectSecretService(projectRoot: string, options: Project
               updatedAt: now,
               valueLength: value!.length,
               storage: "account",
+              source: "account",
+              accountUserId,
             };
             values[INDEX_KEY] = serializeIndex(index);
             return;
@@ -473,6 +496,33 @@ export function createProjectSecretService(projectRoot: string, options: Project
       });
       if (deleted) removeSecretFromVault(name, deletedStorage);
       return { deleted, name };
+    },
+
+    /** Provenance used by account migration; values are never returned here. */
+    getSecretProvenance(name: string): { source: "device" | "account"; accountUserId: string | null } | null {
+      const normalized = normalizeSecretName(name);
+      const entry = readIndex().entries[normalized];
+      return entry
+        ? { source: entry.source, accountUserId: entry.accountUserId }
+        : null;
+    },
+
+    /** Delete account-hydrated values while retaining device-origin secrets. */
+    purgeAccountCredentials(): void {
+      if (!fs.existsSync(credentialsPath)) return;
+      store.updateSync((values) => {
+        const index = parseIndex(values[INDEX_KEY] ?? null);
+        let changed = false;
+        for (const [name, entry] of Object.entries(index.entries)) {
+          if (entry.source !== "account") continue;
+          delete values[valueKey(name)];
+          delete index.entries[name];
+          changed = true;
+        }
+        if (!changed) return false;
+        values[INDEX_KEY] = serializeIndex(index);
+        return;
+      });
     },
   };
 }

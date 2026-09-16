@@ -75,7 +75,10 @@ describe("createProjectSecretService", () => {
     const projectRoot = makeProjectRoot();
     addOrigin(projectRoot);
     const vault = makeVaultMock();
-    const service = createProjectSecretService(projectRoot, { getAccountVault: () => vault });
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
 
     const saved = service.set({ name: "ACCOUNT_TOKEN", value: "account-value", storage: "account" });
 
@@ -118,7 +121,10 @@ describe("createProjectSecretService", () => {
       }],
     });
     vault.get.mockResolvedValue({ ok: true, value: "account-value" });
-    const service = createProjectSecretService(projectRoot, { getAccountVault: () => vault });
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
 
     await service.hydrateFromVault();
 
@@ -150,6 +156,35 @@ describe("createProjectSecretService", () => {
       "project_secret",
       "MOVE_ME",
     );
+  });
+
+  it("records account provenance for hydrated secrets and purges it on sign-out", async () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    vault.list.mockResolvedValue({
+      ok: true,
+      value: [{
+        scope: "repo:github.com/acme/project",
+        kind: "project_secret",
+        key: "FROM_ACCOUNT",
+        value: "account-value",
+        updatedAt: "2026-07-16T00:00:00.000Z",
+      }],
+    });
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+
+    await service.hydrateFromVault();
+    expect(service.getSecretProvenance("FROM_ACCOUNT")).toEqual({
+      source: "account",
+      accountUserId: "account-a",
+    });
+
+    service.purgeAccountCredentials();
+    expect(service.list().secrets).toEqual([]);
   });
 
   it("requires delete confirmation to match the secret name", () => {

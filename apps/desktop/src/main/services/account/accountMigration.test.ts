@@ -98,4 +98,23 @@ describe("runAccountMigration", () => {
     expect(second.completed.map(({ source }) => source)).toEqual(["provider_api_keys"]);
     expect(provider).toHaveBeenCalledTimes(2);
   });
+
+  it("does not record project-secret migration complete while a project scope is unresolved", async () => {
+    const receiptDir = makeReceiptDir();
+    const projectSecrets = vi.fn(() => ({ moved: 0, skipped: 0, complete: false }));
+
+    const first = await runAccountMigration({
+      receiptDir,
+      sources: { project_secrets: projectSecrets },
+    });
+    const second = await runAccountMigration({
+      receiptDir,
+      sources: { project_secrets: projectSecrets },
+    });
+
+    expect(first.pending).toEqual(["project_secrets"]);
+    expect(second.pending).toEqual(["project_secrets"]);
+    expect(projectSecrets).toHaveBeenCalledTimes(2);
+    expect(fs.existsSync(path.join(receiptDir, "account-migration.json"))).toBe(false);
+  });
 });

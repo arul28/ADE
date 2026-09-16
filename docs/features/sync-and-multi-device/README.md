@@ -982,6 +982,13 @@ Runtime support files outside `services/sync/`:
   and it is built only when sync is enabled — a `--no-sync` brain has no store
   at all, which is a stronger guarantee that a test runtime cannot reach the
   account than a store with its uploads turned off.
+- `apps/ade-cli/src/services/account/accountVaultStore.ts` — the machine's
+  account-credential cache. It uses `account-vault.json.enc`, an atomic
+  machine-key-encrypted envelope with `0600` permissions; a legacy
+  `account-vault.json` is accepted only for migration and is removed after a
+  successful encrypted write. Mutations capture the signed-in owner and cache
+  generation, so a sign-out or account switch drops a delayed write instead of
+  resurrecting another account's credential.
 - `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) —
   how desktop, `ade code`, the CLI, and iOS all reach the store through the
   brain rather than each holding their own copy. Deliberately separate from the

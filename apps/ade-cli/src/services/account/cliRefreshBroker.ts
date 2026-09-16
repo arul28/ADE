@@ -25,13 +25,14 @@ export type CliRefreshBrokerDeps = {
    */
   connect: () => Promise<CliRefreshBrokerClient | null>;
   /**
-   * Cheap "is there a brain listening" probe, used once at install time.
+   * Cheap "is there a brain listening" probe, used immediately before each
+   * token request. Keeping this dynamic matters because the TUI can start the
+   * brain after the CLI installs its process-wide broker.
    *
    * Deliberately separate from `connect`: install runs on EVERY `ade` command,
    * so it must not perform a handshake, must not hang on a socket that accepts
    * but never answers, and must not show up in the RPC traffic a command makes.
-   * Defaults to opening and immediately closing a `connect()` client, which is
-   * what the tests use.
+   * Defaults to opening and immediately closing a `connect()` client.
    */
   isBrainReachable?: () => Promise<boolean>;
   timeoutMs?: number;
@@ -74,44 +75,46 @@ async function connectQuietly(
  * (`account.call` / `getToken`), same refusal to forward `forceRefresh`, same
  * `AccountRefreshUnavailableError` for a brain that answered badly.
  *
- * Resolves to `null` when no brain is reachable. A headless machine with no
- * brain has no second refresher to race, so it keeps its local exchange — which
- * is only correct because a null broker (not a throwing one) is what leaves the
- * service on that path.
+ * Its `getAccessToken` resolves to `null` when no brain is reachable. A
+ * headless machine with no brain has no second refresher to race, so it keeps
+ * its local exchange — a null token is what leaves the service on that path.
  *
  * Never installed by the brain itself: see the call sites in `cli.ts` and
  * `tuiClient/cli.tsx`.
  */
 export async function createCliRefreshBroker(
   deps: CliRefreshBrokerDeps,
-): Promise<AccountRefreshBroker | null> {
+): Promise<AccountRefreshBroker> {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_BROKER_TIMEOUT_MS;
-  if (deps.isBrainReachable) {
-    let reachable = false;
-    try {
-      reachable = await deps.isBrainReachable();
-    } catch {
-      reachable = false;
-    }
-    if (!reachable) return null;
-  } else {
-    const probe = await connectQuietly(deps.connect);
-    if (!probe) return null;
-    // Reachability proved; the probe is not held open for the life of the
-    // process. Each refresh opens its own short-lived connection so a command
-    // never keeps a socket alive it is not using.
-    try {
-      probe.close();
-    } catch {}
-  }
   return {
     async getAccessToken() {
+      let reachable = false;
+      if (deps.isBrainReachable) {
+        try {
+          reachable = await deps.isBrainReachable();
+        } catch {
+          reachable = false;
+        }
+      } else {
+        const probe = await connectQuietly(deps.connect);
+        if (probe) {
+          reachable = true;
+          // Reachability is sampled per call; never hold the probe open while
+          // the auth service decides whether it needs a fresh token.
+          try {
+            probe.close();
+          } catch {}
+        }
+      }
+      // A missing brain is not a broker failure. Returning null deliberately
+      // hands the request back to AccountAuthService's local exchange path.
+      if (!reachable) return null;
       // `forceRefresh` is deliberately not forwarded: only the brain decides
       // when the credential is exchanged.
       const client = await connectQuietly(deps.connect);
       if (!client) {
         throw new AccountRefreshUnavailableError(
-          "ADE's background service isn't running on this computer, so the account token could not be refreshed.",
+          "ADE's background service could not accept the account refresh request.",
         );
       }
       try {
@@ -155,7 +158,6 @@ export async function installCliRefreshBroker(
 ): Promise<boolean> {
   try {
     const broker = await createCliRefreshBroker(deps);
-    if (!broker) return false;
     setSharedAccountRefreshBroker(broker);
     return true;
   } catch {

@@ -42,17 +42,34 @@ describe("createCliRefreshBroker", () => {
     expect(JSON.stringify(calls)).not.toContain("forceRefresh");
   });
 
-  it("is null when no brain is reachable, so the service keeps its local exchange", async () => {
-    await expect(
-      createCliRefreshBroker({ connect: async () => null }),
-    ).resolves.toBeNull();
-    await expect(
-      createCliRefreshBroker({
-        connect: async () => {
-          throw new Error("connect ECONNREFUSED");
-        },
-      }),
-    ).resolves.toBeNull();
+  it("returns null per request when no brain is reachable, so the service keeps its local exchange", async () => {
+    const broker = await createCliRefreshBroker({ connect: async () => null });
+    await expect(broker.getAccessToken({ forceRefresh: false })).resolves.toBeNull();
+
+    const refusedBroker = await createCliRefreshBroker({
+      connect: async () => {
+        throw new Error("connect ECONNREFUSED");
+      },
+    });
+    await expect(refusedBroker.getAccessToken({ forceRefresh: false })).resolves.toBeNull();
+  });
+
+  it("notices a brain that starts after broker installation", async () => {
+    let listening = false;
+    const broker = await createCliRefreshBroker({
+      connect: async () => {
+        if (!listening) return null;
+        return fakeClient(async () => ({
+          domain: "account",
+          action: "getToken",
+          result: "token-after-start",
+        }));
+      },
+    });
+
+    await expect(broker.getAccessToken({ forceRefresh: false })).resolves.toBeNull();
+    listening = true;
+    await expect(broker.getAccessToken({ forceRefresh: false })).resolves.toBe("token-after-start");
   });
 
   it("maps a brain-side failure to transient unavailability, not a dead session", async () => {

@@ -1744,8 +1744,10 @@ proxy fabricates callable namespaces for missing properties, so
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
 | Keep-awake level | `GlobalState` in `<userData>/ade-state.json` under `keepAwakePreferences` | machine-scoped; anything unreadable normalizes to `never` |
 | GitHub credentials | Keychain via `safeStorage` | tokens encrypted; a store ADE cannot decrypt reports `credentialStoreUnreadable` rather than "not connected" |
-| AI provider API keys | Machine credential store plus account vault | Account-scoped keys hydrate on a machine when its local store is missing them; `deviceOnly` writes stay local |
-| Linear credentials | Active project's `.ade/secrets` plus account vault | Access-token/OAuth state is local; the OAuth refresh token uses the `linear_refresh_token` account item when available |
+| Account settings cache | `~/.ade/account-settings.json` | Plaintext, owner-tagged cache; settings survive sign-out and stamps are namespaced by account |
+| Account vault cache | `~/.ade/account-vault.json.enc` | Encrypted with the machine credential-store key, written atomically with `0600`; legacy plaintext is removed after a successful encrypted write |
+| AI provider API keys | Machine credential store plus account vault | Every local value records device/account provenance; account-hydrated keys are purged on sign-out or account switch, while device-origin keys remain |
+| Linear credentials | Machine credential store or active project's `.ade/secrets`, plus account vault | Local token, refresh-token, OAuth-client, and project-secret records carry provenance; account-origin values are purged on sign-out or account switch |
 | OpenAI API key (CTO voice) | Machine ADE home — `~/.ade/secrets` (or `$ADE_HOME`) via `resolveMachineAdeLayout` | machine-scoped, never read back to the renderer; an `OPENAI_API_KEY` in the environment is the read-only last tier |
 | Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
 
@@ -1858,14 +1860,12 @@ desktop the first caller can run before the runtime pool exists; installing the
 broker separately means startup order cannot decide whether a process refreshes
 locally.
 
-**A broker that cannot be reached never condemns a session.** It raises
-`AccountRefreshUnavailableError`, which is transient, leaves the stored record
-untouched, and explicitly does not fall back to a local exchange — a brain that
-cannot answer is exactly when a second refresher does the most damage. This is
-the same treatment an unreachable issuer already gets: only a definitive
-`invalid_grant` marks a session dead, and every other refresh failure rethrows
-with the record intact, so an offline machine stays signed in with a stale token
-for as long as it takes.
+**The broker probes dynamically.** CLI and TUI install it unconditionally on
+their non-brain paths, then probe the brain socket for each refresh. A missing
+brain returns null so the service safely uses its local exchange; a brain that
+was reachable but fails still raises transient
+`AccountRefreshUnavailableError` and leaves the stored record untouched. Only
+a definitive `invalid_grant` marks a session dead.
 
 **An unreadable store repairs itself once before the user sees it.**
 `accountBridge.status()` runs `repairCredentialStore()` on the first

@@ -146,6 +146,7 @@ const ITEM_KINDS = new Set([
   "integration",
   "provider_api_key",
   "linear_refresh_token",
+  "project_secret",
 ]);
 
 export type AccountVaultRow = {

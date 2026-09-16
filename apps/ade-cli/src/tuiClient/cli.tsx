@@ -182,10 +182,11 @@ export async function runAdeCodeCli(argv: string[] = process.argv.slice(2)): Pro
   }
   suppressTerminalWarnings();
   // The TUI is never the machine brain, so it must not exchange the rotating
-  // refresh token itself: it asks the brain through this broker. Resolves to no
-  // broker when no brain is listening, which leaves a brain-less machine on its
-  // local exchange. Installed before the app mounts, i.e. before the connection
-  // pool's first getSharedAccountAuthService() call.
+  // refresh token itself: it asks the brain through this broker. A broker
+  // request returns null when no brain is listening at that moment, which
+  // leaves a brain-less machine on its local exchange. Installed before the
+  // app mounts, i.e. before the connection pool's first
+  // getSharedAccountAuthService() call.
   const {
     installCliRefreshBroker,
     connectMachineBrainForRefresh,

@@ -16,6 +16,7 @@ import {
   LinearOAuthRefreshLockTimeoutError,
   withLinearOAuthRefreshLock,
 } from "./linearOAuthRefreshLock";
+import { writeFileAtomic } from "../state/durableFile";
 
 // Bundled OAuth client ID — ships with ADE so users get "Sign in with Linear"
 // out of the box without configuring their own OAuth app.
@@ -25,12 +26,14 @@ const BUNDLED_LINEAR_OAUTH_CLIENT_ID: string | null =
 
 const TOKEN_FILE = "linear-token.v1.bin";
 const OAUTH_CLIENT_FILE = "linear-oauth-client.v1.bin";
+const PROVENANCE_FILE = "linear-credential-provenance.v1.bin";
 const IMPORT_SENTINEL = "linear-token.imported.v1";
 const MACHINE_TOKEN_KEY = "linear.token.v1";
 const MACHINE_AUTH_MODE_KEY = "linear.authMode.v1";
 const MACHINE_TOKEN_EXPIRES_AT_KEY = "linear.tokenExpiresAt.v1";
 const MACHINE_REFRESH_TOKEN_KEY = "linear.refreshToken.v1";
 const MACHINE_OAUTH_CLIENT_KEY = "linear.oauthClient.v1";
+const MACHINE_PROVENANCE_KEY = "linear.credentialProvenance.v1";
 const MACHINE_LEGACY_PROJECTS_MIGRATED_KEY = "linear.legacy_projects_migrated.v1";
 const OAUTH_CONFIG_FILES = [
   "linear-oauth.v1.json",
@@ -46,6 +49,7 @@ type LinearCredentialServiceArgs = {
   logger?: Logger | null;
   credentialStore?: SyncCredentialStore | null;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
+  getAccountUserId?: () => string | null;
   fetchImpl?: typeof fetch;
 };
 
@@ -59,6 +63,11 @@ type StoredLinearToken = {
 type LinearOAuthClientCredentials = {
   clientId: string;
   clientSecret?: string | null;
+};
+
+type LinearCredentialProvenance = {
+  source: "device" | "account";
+  accountUserId: string | null;
 };
 
 function extractLegacyToken(raw: string): string | null {
@@ -262,6 +271,88 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   };
 
+  const deviceProvenance = (): LinearCredentialProvenance => ({
+    source: "device",
+    accountUserId: null,
+  });
+
+  const normalizeProvenance = (value: unknown): LinearCredentialProvenance | null => {
+    if (!isRecord(value)) return null;
+    if (value.source === "device") return deviceProvenance();
+    if (value.source !== "account" || typeof value.accountUserId !== "string") return null;
+    const accountUserId = value.accountUserId.trim();
+    return accountUserId ? { source: "account", accountUserId } : null;
+  };
+
+  const normalizeProvenanceMap = (value: unknown): Record<string, LinearCredentialProvenance> => {
+    if (!isRecord(value)) return {};
+    const out: Record<string, LinearCredentialProvenance> = {};
+    for (const [key, raw] of Object.entries(value)) {
+      const normalized = normalizeProvenance(raw);
+      if (normalized) out[key] = normalized;
+    }
+    return out;
+  };
+
+  const readProvenanceMap = (): Record<string, LinearCredentialProvenance> => {
+    if (credentialStore) {
+      const raw = readMachineCredential(MACHINE_PROVENANCE_KEY);
+      if (!raw) return {};
+      try {
+        return normalizeProvenanceMap(JSON.parse(raw));
+      } catch {
+        return {};
+      }
+    }
+    if (!fs.existsSync(path.join(secretsDir, PROVENANCE_FILE)) || !safeStorage.isEncryptionAvailable()) {
+      return {};
+    }
+    try {
+      const raw = safeStorage.decryptString(fs.readFileSync(path.join(secretsDir, PROVENANCE_FILE)));
+      return normalizeProvenanceMap(JSON.parse(raw));
+    } catch {
+      return {};
+    }
+  };
+
+  const writeProvenanceMap = (map: Record<string, LinearCredentialProvenance>): void => {
+    if (credentialStore) {
+      writeMachineCredential(MACHINE_PROVENANCE_KEY, JSON.stringify(map));
+      return;
+    }
+    if (!safeStorage.isEncryptionAvailable()) return;
+    fs.mkdirSync(secretsDir, { recursive: true });
+    writeFileAtomic(
+      path.join(secretsDir, PROVENANCE_FILE),
+      safeStorage.encryptString(JSON.stringify(map)),
+      { mode: 0o600 },
+    );
+  };
+
+  const setCredentialProvenance = (key: string, value: LinearCredentialProvenance): void => {
+    const map = readProvenanceMap();
+    map[key] = value;
+    writeProvenanceMap(map);
+  };
+
+  const deleteCredentialProvenance = (key: string): void => {
+    const map = readProvenanceMap();
+    if (!(key in map)) return;
+    delete map[key];
+    writeProvenanceMap(map);
+  };
+
+  const getCredentialProvenance = (key: string): LinearCredentialProvenance => {
+    return readProvenanceMap()[key] ?? deviceProvenance();
+  };
+
+  const accountProvenance = (accountUserId?: string | null): LinearCredentialProvenance => {
+    const normalized = accountUserId?.trim() || args.getAccountUserId?.()?.trim() || "";
+    return normalized
+      ? { source: "account", accountUserId: normalized }
+      : deviceProvenance();
+  };
+
   const readMachineToken = (): StoredLinearToken | null => {
     const token = readMachineCredential(MACHINE_TOKEN_KEY);
     if (!token) return null;
@@ -328,22 +419,53 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     return null;
   };
 
-  const persistMachineTokenLocally = (record: StoredLinearToken | null): void => {
+  const persistMachineTokenLocally = (
+    record: StoredLinearToken | null,
+    source: LinearCredentialProvenance = deviceProvenance(),
+    refreshSource: LinearCredentialProvenance = source,
+  ): void => {
+    const hasToken = Boolean(record?.token?.trim());
+    const hasRefreshToken = Boolean(record?.refreshToken?.trim());
+    // The ownership record must land before an account-origin value. If a
+    // later credential write fails, the stale metadata is conservative (it
+    // cannot be migrated as a device value), while the reverse ordering would
+    // leave an account credential eligible for migration.
+    if (hasToken && source.source === "account") setCredentialProvenance(MACHINE_TOKEN_KEY, source);
+    if (hasRefreshToken && refreshSource.source === "account") {
+      setCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY, refreshSource);
+    }
     writeMachineCredential(MACHINE_TOKEN_KEY, record?.token ?? null);
     writeMachineCredential(MACHINE_AUTH_MODE_KEY, record?.authMode ?? null);
     writeMachineCredential(MACHINE_REFRESH_TOKEN_KEY, record?.refreshToken ?? null);
     writeMachineCredential(MACHINE_TOKEN_EXPIRES_AT_KEY, record?.expiresAt ?? null);
+    if (hasToken) {
+      if (source.source !== "account") setCredentialProvenance(MACHINE_TOKEN_KEY, source);
+    } else {
+      deleteCredentialProvenance(MACHINE_TOKEN_KEY);
+    }
+    if (hasRefreshToken) {
+      if (refreshSource.source !== "account") {
+        setCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY, refreshSource);
+      }
+    } else {
+      deleteCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY);
+    }
   };
 
-  const persistMachineOAuthClientCredentials = (record: LinearOAuthClientCredentials | null): void => {
+  const persistMachineOAuthClientCredentials = (
+    record: LinearOAuthClientCredentials | null,
+    source: LinearCredentialProvenance = deviceProvenance(),
+  ): void => {
     if (!record?.clientId?.trim()) {
       writeMachineCredential(MACHINE_OAUTH_CLIENT_KEY, null);
+      deleteCredentialProvenance(MACHINE_OAUTH_CLIENT_KEY);
       return;
     }
     writeMachineCredential(MACHINE_OAUTH_CLIENT_KEY, JSON.stringify({
       clientId: record.clientId.trim(),
       clientSecret: record.clientSecret?.trim() || null,
     }));
+    setCredentialProvenance(MACHINE_OAUTH_CLIENT_KEY, source);
   };
 
   const migrateLegacyProjectCredentialsIfNeeded = (): void => {
@@ -390,9 +512,13 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   };
 
-  const persistTokenLocally = (record: StoredLinearToken | null): void => {
+  const persistTokenLocally = (
+    record: StoredLinearToken | null,
+    source: LinearCredentialProvenance = deviceProvenance(),
+    refreshSource: LinearCredentialProvenance = source,
+  ): void => {
     if (credentialStore) {
-      persistMachineTokenLocally(record);
+      persistMachineTokenLocally(record, source, refreshSource);
       unlinkIfExists(tokenPath);
       return;
     }
@@ -404,6 +530,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       } catch {
         // best effort — file may not exist
       }
+      deleteCredentialProvenance(MACHINE_TOKEN_KEY);
+      deleteCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY);
       return;
     }
 
@@ -411,6 +539,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       throw new Error("OS secure storage is unavailable. Cannot store Linear token.");
     }
 
+    if (source.source === "account") setCredentialProvenance(MACHINE_TOKEN_KEY, source);
+    if (refreshSource.source === "account" && record?.refreshToken?.trim()) {
+      setCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY, refreshSource);
+    }
     fs.mkdirSync(secretsDir, { recursive: true });
     const encrypted = safeStorage.encryptString(JSON.stringify({
       token,
@@ -424,10 +556,26 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     } catch {
       // best effort
     }
+    if (record?.token?.trim()) {
+      if (source.source !== "account") setCredentialProvenance(MACHINE_TOKEN_KEY, source);
+    } else {
+      deleteCredentialProvenance(MACHINE_TOKEN_KEY);
+    }
+    if (record?.refreshToken?.trim()) {
+      if (refreshSource.source !== "account") setCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY, refreshSource);
+    } else {
+      deleteCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY);
+    }
   };
 
-  function persistToken(record: StoredLinearToken | null): void {
-    persistTokenLocally(record);
+  function persistToken(
+    record: StoredLinearToken | null,
+    source: LinearCredentialProvenance = record ? getCredentialProvenance(MACHINE_TOKEN_KEY) : deviceProvenance(),
+    refreshSource: LinearCredentialProvenance = record
+      ? getCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY)
+      : deviceProvenance(),
+  ): void {
+    persistTokenLocally(record, source, refreshSource);
     const refreshToken = record?.refreshToken?.trim() ?? "";
     if (refreshToken.length) {
       syncRefreshTokenToVault(refreshToken);
@@ -436,9 +584,12 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   }
 
-  const persistOAuthClientCredentials = (record: LinearOAuthClientCredentials | null): void => {
+  const persistOAuthClientCredentials = (
+    record: LinearOAuthClientCredentials | null,
+    source: LinearCredentialProvenance = deviceProvenance(),
+  ): void => {
     if (credentialStore) {
-      persistMachineOAuthClientCredentials(record);
+      persistMachineOAuthClientCredentials(record, source);
       unlinkIfExists(oauthClientPath);
       return;
     }
@@ -468,6 +619,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     } catch {
       // best effort
     }
+    if (record?.clientId?.trim()) setCredentialProvenance(MACHINE_OAUTH_CLIENT_KEY, source);
+    else deleteCredentialProvenance(MACHINE_OAUTH_CLIENT_KEY);
   };
 
   let legacyImportDone = false;
@@ -684,6 +837,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   };
 
   const hydrateFromVault = async (): Promise<void> => {
+    const accountUserId = args.getAccountUserId?.()?.trim() || null;
+    if (!accountUserId) return;
     let stored: StoredLinearToken | null;
     try {
       stored = getStoredToken();
@@ -721,6 +876,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
     const refreshToken = result.value?.trim() ?? "";
     if (!refreshToken.length) return;
+    if ((args.getAccountUserId?.()?.trim() || null) !== accountUserId) return;
 
     try {
       const latest = getStoredToken();
@@ -728,11 +884,20 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       if (credentialStore && readMachineCredential(MACHINE_REFRESH_TOKEN_KEY)) return;
       if (latest && latest.authMode !== "oauth") return;
 
+      const refreshProvenance = accountProvenance(accountUserId);
       if (credentialStore) {
+        // Record ownership before exposing the hydrated refresh token. If the
+        // metadata write fails, no account credential is left to be mistaken
+        // for a device value during migration.
+        setCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY, refreshProvenance);
         writeMachineCredential(MACHINE_REFRESH_TOKEN_KEY, refreshToken);
         if (latest) cachedToken = { ...latest, refreshToken };
       } else if (latest) {
-        persistTokenLocally({ ...latest, refreshToken });
+        persistTokenLocally(
+          { ...latest, refreshToken },
+          getCredentialProvenance(MACHINE_TOKEN_KEY),
+          refreshProvenance,
+        );
         cachedToken = { ...latest, refreshToken };
       }
     } catch (error) {
@@ -751,6 +916,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       return stored?.authMode === "oauth" ? stored.refreshToken ?? null : null;
     },
 
+    getRefreshTokenProvenance(): LinearCredentialProvenance {
+      return getCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY);
+    },
+
     getTokenOrThrow(): string {
       const token = getStoredToken()?.token ?? null;
       if (!token) throw new Error("Linear token missing. Set it in Settings > Linear.");
@@ -758,7 +927,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     },
 
     setToken(token: string): void {
-      persistToken({ token, authMode: "manual" });
+      persistToken({ token, authMode: "manual" }, deviceProvenance());
       invalidateCache();
     },
 
@@ -767,12 +936,16 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       refreshToken?: string | null;
       expiresAt?: string | null;
     }): void {
-      persistToken({
-        token: args.accessToken,
-        authMode: "oauth",
-        refreshToken: args.refreshToken ?? null,
-        expiresAt: args.expiresAt ?? null,
-      });
+      persistToken(
+        {
+          token: args.accessToken,
+          authMode: "oauth",
+          refreshToken: args.refreshToken ?? null,
+          expiresAt: args.expiresAt ?? null,
+        },
+        deviceProvenance(),
+        deviceProvenance(),
+      );
       invalidateCache();
     },
 
@@ -798,6 +971,41 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
     clearOAuthClientCredentials(): void {
       persistOAuthClientCredentials(null);
+      invalidateCache();
+    },
+
+    /** Remove account-hydrated Linear values while retaining device values. */
+    purgeAccountCredentials(): void {
+      const tokenSource = getCredentialProvenance(MACHINE_TOKEN_KEY);
+      const refreshSource = getCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY);
+      const oauthClientSource = getCredentialProvenance(MACHINE_OAUTH_CLIENT_KEY);
+      const stored = getStoredToken();
+
+      if (credentialStore) {
+        if (tokenSource.source === "account") writeMachineCredential(MACHINE_TOKEN_KEY, null);
+        if (refreshSource.source === "account") writeMachineCredential(MACHINE_REFRESH_TOKEN_KEY, null);
+        if (oauthClientSource.source === "account") writeMachineCredential(MACHINE_OAUTH_CLIENT_KEY, null);
+        if (tokenSource.source === "account") deleteCredentialProvenance(MACHINE_TOKEN_KEY);
+        if (refreshSource.source === "account") deleteCredentialProvenance(MACHINE_REFRESH_TOKEN_KEY);
+        if (oauthClientSource.source === "account") deleteCredentialProvenance(MACHINE_OAUTH_CLIENT_KEY);
+      } else {
+        if (stored && tokenSource.source === "account") {
+          // The legacy safeStorage token file stores access and refresh tokens
+          // in one envelope. An account-owned access token takes the whole
+          // envelope with it; retaining it after sign-out would be misleading.
+          persistTokenLocally(null);
+        } else if (stored && refreshSource.source === "account") {
+          // The access token can still be device-origin while its refresh
+          // token was hydrated from the account. Preserve the former and
+          // remove only the account-owned half.
+          persistTokenLocally(
+            { ...stored, refreshToken: null },
+            tokenSource,
+            deviceProvenance(),
+          );
+        }
+        if (oauthClientSource.source === "account") persistOAuthClientCredentials(null);
+      }
       invalidateCache();
     },
 

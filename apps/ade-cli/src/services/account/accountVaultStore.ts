@@ -1,8 +1,11 @@
+import fs from "node:fs";
+import path from "node:path";
 import {
   createAccountCacheStore,
   createStoreRegistry,
   type AccountCacheLogger,
 } from "./accountCacheStore";
+import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import type {
   AccountVaultItem,
   AccountVaultItemKind,
@@ -28,9 +31,11 @@ import type {
  * shared or handed-on laptop.
  */
 
-const CACHE_FILE = "account-vault.json";
+const CACHE_FILE = "account-vault.json.enc";
+const LEGACY_CACHE_FILE = "account-vault.json";
 const CACHE_VERSION = 1;
 const DEFAULT_SYNC_INTERVAL_MS = 30_000;
+const CACHE_PAYLOAD_KEY = "account.vault.cache.v1";
 
 /** Separator for the composite cache key. NUL cannot occur in any of the three. */
 const KEY_SEPARATOR = "\u0000";
@@ -95,6 +100,65 @@ export function createAccountVaultStore(args: {
 }) {
   const now = args.now ?? Date.now;
   const logger = args.logger ?? { info: () => {}, warn: () => {} };
+  const cachePath = path.join(args.adeDir, CACHE_FILE);
+  const legacyCachePath = path.join(args.adeDir, LEGACY_CACHE_FILE);
+  // The cache payload uses the same machine key as credentials.json.enc, but
+  // has its own encrypted envelope and path. Tests can point both paths at a
+  // temporary directory without touching the user's live ADE state.
+  const encryptedCacheStore = new EncryptedFileCredentialStore({
+    credentialsPath: cachePath,
+    machineKeyPath: path.join(args.adeDir, "secrets", ".machine-key"),
+    lockPath: `${cachePath}.lock`,
+  });
+  let legacyCacheLoaded = false;
+
+  const removeLegacyCache = (): void => {
+    if (!fs.existsSync(legacyCachePath)) {
+      legacyCacheLoaded = false;
+      return;
+    }
+    try {
+      fs.rmSync(legacyCachePath, { force: true });
+      legacyCacheLoaded = false;
+    } catch (error) {
+      logger.warn("account.vault_legacy_cache_remove_failed", {
+        error: error instanceof Error ? error.message : String(error ?? ""),
+      });
+    }
+  };
+
+  const readCacheFile = (targetPath: string): unknown | null => {
+    if (fs.existsSync(targetPath)) {
+      const encrypted = encryptedCacheStore.getSync(CACHE_PAYLOAD_KEY);
+      if (!encrypted) return null;
+      try {
+        const parsed = JSON.parse(encrypted) as unknown;
+        // A previous migration may have completed before its cleanup. Once a
+        // valid encrypted copy is readable, the plaintext sibling is no longer
+        // needed and must not remain as a second credential source.
+        removeLegacyCache();
+        return parsed;
+      } catch {
+        return null;
+      }
+    }
+    if (!fs.existsSync(legacyCachePath)) return null;
+    try {
+      legacyCacheLoaded = true;
+      return JSON.parse(fs.readFileSync(legacyCachePath, "utf8")) as unknown;
+    } catch {
+      legacyCacheLoaded = false;
+      return null;
+    }
+  };
+
+  const writeCacheFile = (_targetPath: string, contents: string): void => {
+    // EncryptedFileCredentialStore performs the lock, atomic replacement, and
+    // 0600 creation. The plaintext legacy file is removed only after this
+    // encrypted write succeeds.
+    encryptedCacheStore.setSync(CACHE_PAYLOAD_KEY, contents);
+    if (legacyCacheLoaded || fs.existsSync(legacyCachePath)) removeLegacyCache();
+  };
 
   const cache = createAccountCacheStore<CachedItem, PendingWrite, AccountVaultItem>({
     adeDir: args.adeDir,
@@ -106,11 +170,14 @@ export function createAccountVaultStore(args: {
     defaultSyncIntervalMs: DEFAULT_SYNC_INTERVAL_MS,
     events: {
       writeFailed: "account.vault_cache_write_failed",
+      mutationDropped: "account.vault_mutation_dropped",
       uploadFailed: "account.vault_upload_failed",
       pullFailed: "account.vault_pull_failed",
       pullTruncated: "account.vault_pull_truncated",
       purgeFailed: "account.vault_purge_failed",
     },
+    readFile: readCacheFile,
+    writeFile: writeCacheFile,
     hasRelay: () => args.relay !== null,
     pendingMatches: (existing, write) =>
       existing.scope === write.scope
@@ -206,23 +273,23 @@ export function createAccountVaultStore(args: {
       value: string,
       options?: { refreshOwner?: string | null },
     ): void {
-      const current = cache.readCache();
       const refreshOwner = options?.refreshOwner ?? null;
-      current.rows[cacheKey(scope, kind, key)] = {
-        value,
-        updatedAt: new Date(now()).toISOString(),
-        writerDeviceId: args.getDeviceId?.() ?? null,
-        refreshOwner,
-      };
-      cache.queue({ scope, kind, key, value, deleted: false, refreshOwner });
-      cache.persist();
+      cache.mutate((current, queue) => {
+        current.rows[cacheKey(scope, kind, key)] = {
+          value,
+          updatedAt: new Date(now()).toISOString(),
+          writerDeviceId: args.getDeviceId?.() ?? null,
+          refreshOwner,
+        };
+        queue({ scope, kind, key, value, deleted: false, refreshOwner });
+      });
     },
 
     remove(scope: string, kind: AccountVaultItemKind, key: string): void {
-      const current = cache.readCache();
-      delete current.rows[cacheKey(scope, kind, key)];
-      cache.queue({ scope, kind, key, value: null, deleted: true, refreshOwner: null });
-      cache.persist();
+      cache.mutate((current, queue) => {
+        delete current.rows[cacheKey(scope, kind, key)];
+        queue({ scope, kind, key, value: null, deleted: true, refreshOwner: null });
+      });
     },
 
     /** Flush what is queued, then take what changed. Single-flight. */
@@ -248,6 +315,7 @@ export function createAccountVaultStore(args: {
      */
     purge(): void {
       cache.resetAndDelete();
+      removeLegacyCache();
       logger.info("account.vault_purged", {});
     },
 

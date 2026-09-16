@@ -50,6 +50,7 @@ export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
  * preferences migration cannot silently reset every key's sync clock.
  */
 const STAMPS_STORAGE_KEY = "ade.accountSettings.stamps.v1";
+const DIRTY_STORAGE_KEY = "ade.accountSettings.dirty.v1";
 
 /**
  * The app-store slice this module reads and writes.
@@ -135,6 +136,8 @@ export type AccountSettingsSyncOptions = {
   getApi: () => AccountSettingsApi | null | undefined;
   /** Whether an account is signed in right now. Re-read, never captured. */
   isSignedIn: () => boolean;
+  /** Current account identity; null while signed out. */
+  getAccountUserId?: () => string | null;
   /** Fires whenever the signed-in account changes. */
   subscribeSignedIn?: (listener: () => void) => () => void;
   /** The open project's git remote, for `account-repo` keys. */
@@ -148,23 +151,53 @@ export type AccountSettingsSyncOptions = {
 };
 
 type Stamps = Record<string, string>;
+type StampsByUser = Record<string, Stamps>;
 
-function readStamps(storage: Pick<Storage, "getItem" | "setItem"> | undefined): Stamps {
+function readStampNamespaces(storage: Pick<Storage, "getItem" | "setItem"> | undefined): StampsByUser {
   try {
     const raw = storage?.getItem(STAMPS_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const stamps: Stamps = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === "string") stamps[key] = value;
+    const namespaces: StampsByUser = {};
+    for (const [userId, rawStamps] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!rawStamps || typeof rawStamps !== "object" || Array.isArray(rawStamps)) continue;
+      const stamps: Stamps = {};
+      for (const [key, value] of Object.entries(rawStamps as Record<string, unknown>)) {
+        if (typeof value === "string") stamps[key] = value;
+      }
+      if (Object.keys(stamps).length) namespaces[userId] = stamps;
     }
-    return stamps;
+    // A flat pre-identity map is intentionally ignored. Reusing it for a new
+    // account would let one user's history suppress another user's rows.
+    return namespaces;
   } catch {
     // An unreadable stamp file is a cold start, not an error: every remote row
     // then looks newer, so the machine converges to the account's copy — the
     // right outcome for a machine that has lost its own history.
     return {};
+  }
+}
+
+function readStamps(
+  storage: Pick<Storage, "getItem" | "setItem"> | undefined,
+  userId: string | null,
+): Stamps {
+  return userId ? readStampNamespaces(storage)[userId] ?? {} : {};
+}
+
+function readDirtyKeys(storage: Pick<Storage, "getItem" | "setItem"> | undefined): Set<string> {
+  try {
+    const raw = storage?.getItem(DIRTY_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : [],
+    );
+  } catch {
+    return new Set();
   }
 }
 
@@ -199,14 +232,36 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
 
   let stopped = false;
   let applying = false;
-  let stamps = readStamps(storage);
+  const resolveAccountUserId = (): string | null => {
+    if (!options.isSignedIn()) return null;
+    // The fallback keeps the standalone engine compatible with older test and
+    // hosted-web callers that only exposed a boolean status. The desktop hook
+    // always supplies the real user id, which is what namespaces credentials.
+    return options.getAccountUserId?.()?.trim() || "__signed-in__";
+  };
+  let accountUserId = resolveAccountUserId();
+  let identityGeneration = 0;
+  let stamps = readStamps(storage, accountUserId);
+  const dirtyKeys = readDirtyKeys(storage);
 
   const persistStamps = (): void => {
     try {
-      storage?.setItem(STAMPS_STORAGE_KEY, JSON.stringify(stamps));
+      if (!accountUserId) return;
+      const namespaces = readStampNamespaces(storage);
+      namespaces[accountUserId] = stamps;
+      storage?.setItem(STAMPS_STORAGE_KEY, JSON.stringify(namespaces));
     } catch {
       // A stamp we could not persist costs one redundant apply after a reload.
       // Failing the user's setting change over it would be far worse.
+    }
+  };
+
+  const persistDirtyKeys = (): void => {
+    try {
+      storage?.setItem(DIRTY_STORAGE_KEY, JSON.stringify(Array.from(dirtyKeys).sort()));
+    } catch {
+      // The local setting already applied; losing the retry marker only costs a
+      // later convergence attempt on a storage implementation that is full.
     }
   };
 
@@ -223,6 +278,8 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
   };
 
   const stampKey = (scopeKey: string, key: string): string => `${scopeKey} ${key}`;
+  const dirtyKey = (userId: string | null, key: string): string =>
+    `${userId ?? "__signed-out__"}\u0000${key}`;
 
   const snapshot = (): Map<string, unknown> => {
     const state = options.store.getState();
@@ -236,7 +293,14 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
   /** Pull the account's rows and apply the ones that are newer than ours. */
   const hydrate = async (): Promise<void> => {
     const api = options.getApi();
-    if (!api || !options.isSignedIn() || stopped) return;
+    const userIdAtStart = resolveAccountUserId();
+    const generationAtStart = identityGeneration;
+    if (!api || !userIdAtStart || stopped || userIdAtStart !== accountUserId) return;
+    const isCurrentIdentity = (): boolean =>
+      !stopped
+      && identityGeneration === generationAtStart
+      && resolveAccountUserId() === userIdAtStart
+      && accountUserId === userIdAtStart;
     const byKey = new Map(settings.map((entry) => [entry.key, entry]));
     const scopes = new Set<string>();
     for (const entry of settings) {
@@ -245,11 +309,12 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
     }
     for (const scope of scopes) {
       const result = await api.list({ scope });
-      if (stopped || !result.ok) continue;
+      if (!isCurrentIdentity() || !result.ok) return;
       const state = options.store.getState();
       for (const row of result.value) {
         const entry = byKey.get(row.key);
         if (!entry || scopeKeyFor(entry) !== row.scope) continue;
+        if (dirtyKeys.has(dirtyKey(userIdAtStart, entry.key)) || dirtyKeys.has(dirtyKey(null, entry.key))) continue;
         const stamp = stamps[stampKey(row.scope, row.key)];
         // Strictly newer. An equal stamp means this machine already holds the
         // row it is being handed, and re-applying it would be a write with no
@@ -264,23 +329,65 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
         stamps[stampKey(row.scope, row.key)] = row.updatedAt;
         lastSeen.set(entry.key, entry.read(options.store.getState()));
       }
+      if (!isCurrentIdentity()) return;
       persistStamps();
     }
   };
 
-  /** Push one local change. Stamped before it leaves, so a racing pull loses. */
-  const push = (entry: AccountSyncedSetting, value: unknown): void => {
+  function markDirty(userId: string | null, key: string): void {
+    dirtyKeys.add(dirtyKey(userId, key));
+    persistDirtyKeys();
+  }
+
+  /** Push one local change, stamping only after the request is queued. */
+  function push(
+    entry: AccountSyncedSetting,
+    value: unknown,
+    existingDirtyKey = dirtyKey(accountUserId, entry.key),
+  ): void {
     const api = options.getApi();
     const scopeKey = scopeKeyFor(entry);
-    if (!scopeKey) return;
-    stamps[stampKey(scopeKey, entry.key)] = new Date(now()).toISOString();
-    persistStamps();
-    if (!api || !options.isSignedIn()) return;
-    void api.set({ scope: scopeKey, key: entry.key, value }).catch(() => {
-      // The brain's own store queues and retries uploads. Nothing useful is
-      // left for the renderer to do, and a toast for a theme change that DID
-      // take effect locally would be noise.
-    });
+    const userIdAtQueue = accountUserId;
+    if (!scopeKey || !api || !options.isSignedIn() || !userIdAtQueue) {
+      markDirty(userIdAtQueue, entry.key);
+      return;
+    }
+    try {
+      const generationAtQueue = identityGeneration;
+      if (resolveAccountUserId() !== userIdAtQueue) {
+        markDirty(userIdAtQueue, entry.key);
+        return;
+      }
+      // Calling set is the queue boundary. Do not move the stamp earlier: a
+      // signed-out edit must remain dirty and must not suppress its next pull.
+      const pending = api.set({ scope: scopeKey, key: entry.key, value });
+      if (identityGeneration !== generationAtQueue || resolveAccountUserId() !== userIdAtQueue) {
+        markDirty(userIdAtQueue, entry.key);
+        return;
+      }
+      stamps[stampKey(scopeKey, entry.key)] = new Date(now()).toISOString();
+      dirtyKeys.delete(existingDirtyKey);
+      persistStamps();
+      persistDirtyKeys();
+      void Promise.resolve(pending).then((result) => {
+        if (!result || result.ok !== true) markDirty(userIdAtQueue, entry.key);
+      }).catch(() => {
+        markDirty(userIdAtQueue, entry.key);
+      });
+    } catch {
+      markDirty(userIdAtQueue, entry.key);
+    }
+  }
+
+  const flushDirty = (): void => {
+    if (!options.isSignedIn() || !accountUserId || !options.getApi()) return;
+    const state = options.store.getState();
+    for (const entry of settings) {
+      const accountDirtyKey = dirtyKey(accountUserId, entry.key);
+      const signedOutDirtyKey = dirtyKey(null, entry.key);
+      if (!dirtyKeys.has(accountDirtyKey) && !dirtyKeys.has(signedOutDirtyKey)) continue;
+      push(entry, entry.read(state), dirtyKeys.has(accountDirtyKey) ? accountDirtyKey : signedOutDirtyKey);
+    }
   };
 
   const onStoreChange = (): void => {
@@ -297,10 +404,15 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
   const unsubscribeStore = options.store.subscribe(onStoreChange);
 
   const unsubscribeAccount = options.subscribeSignedIn?.(() => {
-    // A fresh sign-in is the one moment the account certainly holds rows this
-    // machine has never seen. Re-read the stamps too: a different account's
-    // history must not decide what counts as newer for this one.
-    stamps = readStamps(storage);
+    const nextUserId = resolveAccountUserId();
+    if (nextUserId === accountUserId) return;
+    // Invalidate every pending list response before switching the namespace.
+    identityGeneration += 1;
+    accountUserId = nextUserId;
+    stamps = readStamps(storage, accountUserId);
+    lastSeen.clear();
+    for (const [key, value] of snapshot()) lastSeen.set(key, value);
+    flushDirty();
     void hydrate();
   });
 
@@ -312,6 +424,7 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
     // `sync` flushes this machine's queue and takes what changed; `list` then
     // reads the merged result out of the local cache, so the poll costs one
     // round trip to the Worker rather than one per key.
+    flushDirty();
     void api
       .sync()
       .catch(() => null)
@@ -326,4 +439,3 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
     unschedule(timer);
   };
 }
-

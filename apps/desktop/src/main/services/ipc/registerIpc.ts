@@ -131,6 +131,7 @@ import {
   createMachineRegisterRefusalObserver,
 } from "../analytics/reliabilityTelemetry";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
+import { purgeAccountApiKeys } from "../ai/apiKeyStore";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
 import { runGit } from "../git/git";
@@ -1731,6 +1732,7 @@ function getAllowedDirs(getCtx: () => AppContext): string[] {
 export function registerIpc({
   getCtx,
   getResourceUsageContexts,
+  purgeClosedAccountCredentials,
   getSyncService,
   resolveSyncService,
   runWithIpcWindow,
@@ -1768,6 +1770,7 @@ export function registerIpc({
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
+  purgeClosedAccountCredentials?: () => void;
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
@@ -10971,6 +10974,38 @@ export function registerIpc({
     reconcileAccountOwnership: runtimeBridge.reconcileAccountOwnership,
     purgeMachineActivity: (machineKey) =>
       attentionAccountCoordinator.purgeMachineActivity(machineKey),
+    purgeAccountCredentials: () => {
+      try {
+        purgeAccountApiKeys();
+      } catch (error) {
+        getCtx().logger.warn("account.local_api_keys_purge_failed", {
+          error: error instanceof Error ? error.message : String(error ?? ""),
+        });
+      }
+      for (const context of openAccountContexts()) {
+        try {
+          context.projectSecretService?.purgeAccountCredentials();
+        } catch (error) {
+          getCtx().logger.warn("account.local_project_secrets_purge_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+        try {
+          context.linearCredentialService?.purgeAccountCredentials();
+        } catch (error) {
+          getCtx().logger.warn("account.local_linear_credentials_purge_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      }
+      try {
+        purgeClosedAccountCredentials?.();
+      } catch (error) {
+        getCtx().logger.warn("account.closed_project_credentials_purge_failed", {
+          error: error instanceof Error ? error.message : String(error ?? ""),
+        });
+      }
+    },
     // Routed to the brain rather than performed here: the push revocation's
     // live gate is in that process, and this client initializes as `cto`
     // (RuntimeRpcClient.initialize), which is what `account.call` requires.
@@ -11090,8 +11125,10 @@ export function registerIpc({
   const migrateProviderApiKeys = async (): Promise<AccountMigrationSourceResult> => {
     let keys: Record<string, string>;
     try {
-      const { getAllApiKeys } = await import("../ai/apiKeyStore");
-      keys = getAllApiKeys();
+      const { getAllApiKeys, getApiKeyProvenance } = await import("../ai/apiKeyStore");
+      keys = Object.fromEntries(
+        Object.entries(getAllApiKeys()).filter(([provider]) => getApiKeyProvenance(provider).source === "device"),
+      );
     } catch {
       // API keys are initialized with the first project context. Defer this
       // source when sign-in happens before any project has opened.
@@ -11126,8 +11163,11 @@ export function registerIpc({
       .filter((service): service is NonNullable<AppContext["linearCredentialService"]> => Boolean(service));
     if (services.length === 0) return { moved: 0, skipped: 0, complete: false };
     const refreshToken = services
-      .map((service) => service.getRefreshToken())
-      .find((value): value is string => Boolean(value));
+      .map((service) => ({
+        value: service.getRefreshToken(),
+        provenance: service.getRefreshTokenProvenance(),
+      }))
+      .find((entry) => Boolean(entry.value) && entry.provenance.source === "device")?.value ?? null;
     if (!refreshToken) return { moved: 0, skipped: 0 };
 
     const listed = await listVaultItems("all");
@@ -11148,15 +11188,27 @@ export function registerIpc({
     const contexts = openAccountContexts();
     if (contexts.length === 0) return { moved: 0, skipped: 0, complete: false };
     let sawProject = false;
+    let unresolvedProject = false;
     let moved = 0;
     let skipped = 0;
     for (const context of contexts) {
       const service = context.projectSecretService;
       const root = context.project?.rootPath;
-      if (!service || !root) continue;
+      if (!root) continue;
       sawProject = true;
+      if (!service) {
+        // A project context without its local secret store is not resolved;
+        // acknowledging it would suppress the migration forever.
+        unresolvedProject = true;
+        continue;
+      }
       const scope = accountRepoScopeKey(readGitOriginUrl(root));
-      if (!scope) continue;
+      if (!scope) {
+        // The project is eligible, but its repository identity is not ready;
+        // acknowledging this source would make the receipt suppress the retry.
+        unresolvedProject = true;
+        continue;
+      }
       const listed = await listVaultItems(scope);
       if (!listed) return { moved, skipped, complete: false };
       const present = new Set(
@@ -11166,6 +11218,7 @@ export function registerIpc({
       );
       for (const secret of service.list().secrets) {
         if (secret.storage !== "account") continue;
+        if (service.getSecretProvenance(secret.name)?.source !== "device") continue;
         const local = service.get({ name: secret.name });
         const existing = await accountVaultBridge.get(scope, "project_secret", secret.name);
         if (!existing.ok) return { moved, skipped, complete: false };
@@ -11178,7 +11231,9 @@ export function registerIpc({
         moved += 1;
       }
     }
-    return sawProject ? { moved, skipped } : { moved, skipped, complete: false };
+    return sawProject && !unresolvedProject
+      ? { moved, skipped }
+      : { moved, skipped, complete: false };
   };
 
   let accountMigrationInFlight: Promise<void> | null = null;

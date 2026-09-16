@@ -8,6 +8,7 @@ import type { MachineApiKeySource, MachineApiKeyStatus } from "../../../shared/t
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import type { Logger } from "../logging/logger";
+import { writeFileAtomic } from "../state/durableFile";
 
 // electron.safeStorage is only available inside an Electron main process.
 // When this module is bundled into the ADE CLI headless runtime, `electron`
@@ -26,11 +27,17 @@ try {
 
 type StoredKeys = Record<string, string>;
 
+export type ApiKeyProvenance = {
+  source: "device" | "account";
+  accountUserId: string | null;
+};
+
 export type ApiKeyCredentialStore = SyncCredentialStore;
 
 export type InitApiKeyStoreOptions = {
   credentialStore?: ApiKeyCredentialStore | null;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
+  getAccountUserId?: () => string | null;
   logger?: Pick<Logger, "warn"> | null;
 };
 
@@ -75,8 +82,11 @@ const MACOS_KEYCHAIN_MISSING_PATTERNS = [
 ];
 const SECURITY_TIMEOUT_MS = 5_000;
 const CREDENTIAL_PROVIDER_INDEX_KEY = "ai.api_key.index.v1";
+const CREDENTIAL_PROVIDER_PROVENANCE_KEY = "ai.api_key.provenance.v1";
+const PROVENANCE_FILE_SUFFIX = ".provenance";
 
 let getAccountVault: (() => AccountVaultBridge | null | undefined) | null = null;
+let getAccountUserId: (() => string | null) | null = null;
 let vaultLogger: Pick<Logger, "warn"> | null = null;
 
 function describeVaultFailure(detail: unknown): string {
@@ -145,6 +155,7 @@ type ApiKeyScopeState = {
   projectRootPath: string | null;
   credentialStore: ApiKeyCredentialStore | null;
   cache: StoredKeys | null;
+  provenance: Record<string, ApiKeyProvenance> | null;
   decryptionFailed: boolean;
   macosKeychainError: string | null;
   missingMacosKeychainProviders: Set<string>;
@@ -171,6 +182,7 @@ function emptyScopeState(): ApiKeyScopeState {
     projectRootPath: null,
     credentialStore: null,
     cache: null,
+    provenance: null,
     decryptionFailed: false,
     macosKeychainError: null,
     missingMacosKeychainProviders: new Set<string>(),
@@ -218,6 +230,7 @@ let cursorKeyOrigin: "oauth" | "pasted" | null = null;
 export function __setSafeStorageForTests(next: SafeStorage | null): void {
   safeStorage = next;
   projectScope.cache = null;
+  projectScope.provenance = null;
   projectScope.missingMacosKeychainProviders = new Set<string>();
   machineScopeState = null;
 }
@@ -239,6 +252,30 @@ function isPersistentSecureStorageAvailable(scope: ApiKeyScopeState): boolean {
 
 function normalizeProvider(provider: string): string {
   return provider.trim().toLowerCase();
+}
+
+function deviceProvenance(): ApiKeyProvenance {
+  return { source: "device", accountUserId: null };
+}
+
+function normalizeProvenance(value: unknown): ApiKeyProvenance | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.source === "device") return deviceProvenance();
+  if (record.source !== "account" || typeof record.accountUserId !== "string") return null;
+  const accountUserId = record.accountUserId.trim();
+  return accountUserId ? { source: "account", accountUserId } : null;
+}
+
+function normalizeProvenanceMap(value: unknown): Record<string, ApiKeyProvenance> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, ApiKeyProvenance> = {};
+  for (const [provider, raw] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedProvider = normalizeProvider(provider);
+    const normalized = normalizeProvenance(raw);
+    if (normalizedProvider && normalized) out[normalizedProvider] = normalized;
+  }
+  return out;
 }
 
 function normalizeStoredKeys(value: unknown): StoredKeys {
@@ -379,6 +416,78 @@ function deleteCredentialSecret(scope: ApiKeyScopeState, key: string): void {
   if (!store) return;
   store.deleteSync(key);
   scope.decryptionFailed = false;
+}
+
+function provenancePath(scope: ApiKeyScopeState): string | null {
+  return scope.storePath ? `${scope.storePath}${PROVENANCE_FILE_SUFFIX}` : null;
+}
+
+function loadEncryptedProvenance(scope: ApiKeyScopeState): Record<string, ApiKeyProvenance> {
+  const target = provenancePath(scope);
+  if (!target || !fs.existsSync(target) || !isSecureStorageAvailable()) return {};
+  try {
+    const decrypted = safeStorage!.decryptString(fs.readFileSync(target));
+    return normalizeProvenanceMap(JSON.parse(decrypted));
+  } catch {
+    return {};
+  }
+}
+
+function readCredentialProvenance(scope: ApiKeyScopeState): Record<string, ApiKeyProvenance> {
+  const raw = readCredentialSecret(scope, CREDENTIAL_PROVIDER_PROVENANCE_KEY);
+  if (!raw) return {};
+  try {
+    return normalizeProvenanceMap(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}
+
+function persistProvenance(
+  scope: ApiKeyScopeState,
+  next: Record<string, ApiKeyProvenance> = scope.provenance ?? {},
+): void {
+  if (scope.credentialStore) {
+    writeCredentialSecret(scope, CREDENTIAL_PROVIDER_PROVENANCE_KEY, JSON.stringify(next));
+    return;
+  }
+  const target = provenancePath(scope);
+  if (!target || !isSecureStorageAvailable()) return;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  writeFileAtomic(target, safeStorage!.encryptString(JSON.stringify(next)), { mode: 0o600 });
+}
+
+function ensureProvenance(scope: ApiKeyScopeState, providers: Iterable<string>): Record<string, ApiKeyProvenance> {
+  if (!scope.provenance) {
+    scope.provenance = scope.credentialStore
+      ? readCredentialProvenance(scope)
+      : loadEncryptedProvenance(scope);
+  }
+  let changed = false;
+  for (const provider of providers) {
+    const normalizedProvider = normalizeProvider(provider);
+    if (normalizedProvider && !scope.provenance[normalizedProvider]) {
+      // Existing stores predate provenance. Treat their values as device-only
+      // so a later account cannot inherit account ownership; the value remains
+      // eligible for this machine's one-time device migration.
+      scope.provenance[normalizedProvider] = deviceProvenance();
+      changed = true;
+    }
+  }
+  if (changed) persistProvenance(scope);
+  return scope.provenance;
+}
+
+function setProvenance(scope: ApiKeyScopeState, provider: string, value: ApiKeyProvenance): void {
+  ensureProvenance(scope, [])[provider] = value;
+  persistProvenance(scope);
+}
+
+function deleteProvenance(scope: ApiKeyScopeState, provider: string): void {
+  if (!scope.provenance) return;
+  if (!(provider in scope.provenance)) return;
+  delete scope.provenance[provider];
+  persistProvenance(scope);
 }
 
 function readCredentialProviderIndex(scope: ApiKeyScopeState): { exists: boolean; providers: string[] } {
@@ -630,6 +739,7 @@ function ensureStore(scope: ApiKeyScopeState): StoredKeys {
     // "this process deleted the Keychain copy", which no external write undoes,
     // and clearing it would resurrect a stale Keychain value.
     scope.cache = null;
+    scope.provenance = null;
     scope.missingCredentialProviders = new Set<string>();
   }
   scope.cacheStamp = stamp;
@@ -639,6 +749,7 @@ function ensureStore(scope: ApiKeyScopeState): StoredKeys {
     const index = readCredentialProviderIndex(scope);
     const credentialValues = index.exists ? readCredentialStore(scope, index.providers) : {};
     scope.cache = migrateLegacyStoresIntoCredentialStore(scope, credentialValues);
+    ensureProvenance(scope, Object.keys(scope.cache));
     return scope.cache;
   }
 
@@ -646,16 +757,48 @@ function ensureStore(scope: ApiKeyScopeState): StoredKeys {
   if (isMacosKeychainAvailable()) {
     if (canPersistEncryptedStore(scope)) {
       scope.cache = migrateLegacyMacosKeychainIntoEncryptedStore(scope, encryptedStore);
+      ensureProvenance(scope, Object.keys(scope.cache));
       return scope.cache;
     }
 
     const index = readMacosKeychainProviderIndex(scope);
     scope.cache = index.exists ? readMacosKeychainStore(scope, index.providers) : encryptedStore;
+    ensureProvenance(scope, Object.keys(scope.cache));
     return scope.cache;
   }
 
   scope.cache = encryptedStore;
+  ensureProvenance(scope, Object.keys(scope.cache));
   return scope.cache;
+}
+
+function purgeForeignAccountApiKeys(scope: ApiKeyScopeState): Set<string> {
+  const store = ensureStore(scope);
+  const metadata = ensureProvenance(scope, Object.keys(store));
+  const currentUserId = getAccountUserId?.()?.trim() || null;
+  const foreign = Object.entries(metadata)
+    .filter(([, value]) => value.source === "account" && value.accountUserId !== currentUserId)
+    .map(([provider]) => provider);
+  if (!foreign.length) return new Set();
+
+  const nextStore = { ...store };
+  for (const provider of foreign) {
+    delete nextStore[provider];
+    if (scope.credentialStore) deleteCredentialSecret(scope, credentialProviderKey(provider));
+    delete metadata[provider];
+    scope.missingCredentialProviders.add(provider);
+    scope.missingMacosKeychainProviders.add(provider);
+  }
+  if (scope.credentialStore) {
+    const index = readCredentialProviderIndex(scope);
+    writeCredentialProviderIndex(scope, index.providers.filter((provider) => !foreign.includes(provider)));
+  } else if (canPersistEncryptedStore(scope)) {
+    persistEncryptedStore(scope, nextStore);
+    for (const provider of foreign) deleteMacosKeychainSecretBestEffort(scope, provider);
+  }
+  scope.cache = nextStore;
+  persistProvenance(scope, metadata);
+  return new Set(foreign);
 }
 
 function persistEncryptedStore(scope: ApiKeyScopeState, nextStore: StoredKeys = scope.cache ?? {}): void {
@@ -686,6 +829,7 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
     credentialStore: options.credentialStore ?? null,
   };
   getAccountVault = options.getAccountVault ?? null;
+  getAccountUserId = options.getAccountUserId ?? null;
   vaultLogger = options.logger ?? null;
   cursorKeyOrigin = null;
   // A re-init can hand over a different credential store instance. The machine
@@ -764,6 +908,7 @@ function createMachineScopeState(): ApiKeyScopeState {
     // a process that already cached the store.
     watchedPaths: [
       storePath,
+      `${storePath}${PROVENANCE_FILE_SUFFIX}`,
       legacyStorePath,
       path.join(secretsDir, "credentials.json.enc"),
       path.join(secretsDir, "credentials.safe.enc"),
@@ -806,6 +951,7 @@ export function initMachineApiKeyStore(options: InitMachineApiKeyStoreOptions): 
 function invalidatePeerScopeCache(scope: ApiKeyScopeState): void {
   if (scope === machineScopeState) {
     projectScope.cache = null;
+    projectScope.provenance = null;
     projectScope.missingCredentialProviders = new Set<string>();
     return;
   }
@@ -890,7 +1036,12 @@ function storeApiKeyIn(
   scope: ApiKeyScopeState,
   provider: string,
   key: string,
-  options: { deviceOnly?: boolean } = {},
+  options: {
+    deviceOnly?: boolean;
+    /** Internal provenance used only when hydrating a value from the vault. */
+    source?: "device" | "account";
+    accountUserId?: string | null;
+  } = {},
 ): void {
   const normalizedProvider = normalizeProvider(provider);
   const normalizedKey = key.trim();
@@ -898,14 +1049,27 @@ function storeApiKeyIn(
     throw new Error("Provider and key are required.");
   }
   invalidatePeerScopeCache(scope);
+  ensureStore(scope);
+  if (scope === projectScope) purgeForeignAccountApiKeys(scope);
   const store = ensureStore(scope);
+  const source = options.source === "account" ? "account" : "device";
+  const currentUserId = getAccountUserId?.()?.trim() || null;
+  const accountUserId = source === "account"
+    ? options.accountUserId?.trim() || currentUserId
+    : null;
+  const accountOwnerMatches = !getAccountUserId || accountUserId === currentUserId;
+  const normalizedProvenance: ApiKeyProvenance = accountUserId && accountOwnerMatches
+    ? { source: "account", accountUserId }
+    : deviceProvenance();
   if (scope.credentialStore) {
+    if (normalizedProvenance.source === "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
     writeCredentialSecret(scope, credentialProviderKey(normalizedProvider), normalizedKey);
     store[normalizedProvider] = normalizedKey;
     scope.missingCredentialProviders.delete(normalizedProvider);
     const index = readCredentialProviderIndex(scope);
     writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
     noteStoreWriteCommitted(scope);
+    if (normalizedProvenance.source !== "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
     if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
     if (!options.deviceOnly) {
       fireAndForgetVaultCall(
@@ -917,11 +1081,13 @@ function storeApiKeyIn(
     return;
   }
   const nextStore = { ...store, [normalizedProvider]: normalizedKey };
+  if (normalizedProvenance.source === "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
   persistEncryptedStore(scope, nextStore);
   deleteMacosKeychainSecretBestEffort(scope, normalizedProvider);
   scope.missingMacosKeychainProviders.add(normalizedProvider);
   scope.cache = nextStore;
   noteStoreWriteCommitted(scope);
+  if (normalizedProvenance.source !== "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
   if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
   if (!options.deviceOnly) {
     fireAndForgetVaultCall(
@@ -935,7 +1101,11 @@ function storeApiKeyIn(
 export function storeApiKey(
   provider: string,
   key: string,
-  options: { deviceOnly?: boolean } = {},
+  options: {
+    deviceOnly?: boolean;
+    source?: "device" | "account";
+    accountUserId?: string | null;
+  } = {},
 ): void {
   storeApiKeyIn(projectScope, provider, key, options);
 }
@@ -943,6 +1113,8 @@ export function storeApiKey(
 function getApiKeyIn(scope: ApiKeyScopeState, provider: string): string | null {
   const normalizedProvider = normalizeProvider(provider);
   if (!normalizedProvider.length) return null;
+  ensureStore(scope);
+  if (scope === projectScope) purgeForeignAccountApiKeys(scope);
   const store = ensureStore(scope);
   const stored = store[normalizedProvider];
   if (stored) return stored;
@@ -952,6 +1124,7 @@ function getApiKeyIn(scope: ApiKeyScopeState, provider: string): string | null {
       store[normalizedProvider] = credentialValue;
       const index = readCredentialProviderIndex(scope);
       writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
+      setProvenance(scope, normalizedProvider, deviceProvenance());
       return credentialValue;
     }
     scope.missingCredentialProviders.add(normalizedProvider);
@@ -966,8 +1139,10 @@ function getApiKeyIn(scope: ApiKeyScopeState, provider: string): string | null {
         writeCredentialSecret(scope, credentialProviderKey(normalizedProvider), keychainValue);
         const index = readCredentialProviderIndex(scope);
         writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
+        setProvenance(scope, normalizedProvider, deviceProvenance());
       } else if (canPersistEncryptedStore(scope)) {
         persistEncryptedStore(scope, store);
+        setProvenance(scope, normalizedProvider, deviceProvenance());
       }
       return keychainValue;
     }
@@ -989,6 +1164,8 @@ function deleteApiKeyIn(scope: ApiKeyScopeState, provider: string): void {
   const normalizedProvider = normalizeProvider(provider);
   if (!normalizedProvider.length) return;
   invalidatePeerScopeCache(scope);
+  ensureStore(scope);
+  if (scope === projectScope && purgeForeignAccountApiKeys(scope).has(normalizedProvider)) return;
   const store = ensureStore(scope);
   if (normalizedProvider === "cursor") cursorKeyOrigin = null;
   if (scope.credentialStore) {
@@ -998,6 +1175,7 @@ function deleteApiKeyIn(scope: ApiKeyScopeState, provider: string): void {
     const index = readCredentialProviderIndex(scope);
     writeCredentialProviderIndex(scope, index.providers.filter((entry) => entry !== normalizedProvider));
     noteStoreWriteCommitted(scope);
+    deleteProvenance(scope, normalizedProvider);
     if (scope === projectScope) {
       fireAndForgetVaultCall(
         "remove",
@@ -1016,6 +1194,7 @@ function deleteApiKeyIn(scope: ApiKeyScopeState, provider: string): void {
   scope.missingMacosKeychainProviders.add(normalizedProvider);
   scope.cache = nextStore;
   noteStoreWriteCommitted(scope);
+  deleteProvenance(scope, normalizedProvider);
   if (scope === projectScope) {
     fireAndForgetVaultCall(
       "remove",
@@ -1030,11 +1209,51 @@ export function deleteApiKey(provider: string): void {
 }
 
 function listStoredProvidersIn(scope: ApiKeyScopeState): string[] {
+  ensureStore(scope);
+  if (scope === projectScope) purgeForeignAccountApiKeys(scope);
   return Object.keys(ensureStore(scope));
 }
 
 export function listStoredProviders(): string[] {
   return listStoredProvidersIn(projectScope);
+}
+
+/** Return persisted origin metadata without exposing the credential itself. */
+export function getApiKeyProvenance(provider: string): ApiKeyProvenance {
+  const normalizedProvider = normalizeProvider(provider);
+  if (!normalizedProvider.length) return deviceProvenance();
+  ensureStore(projectScope);
+  purgeForeignAccountApiKeys(projectScope);
+  const store = ensureStore(projectScope);
+  return ensureProvenance(projectScope, Object.keys(store))[normalizedProvider] ?? deviceProvenance();
+}
+
+/** Remove account-hydrated provider keys while retaining device-origin keys. */
+export function purgeAccountApiKeys(): void {
+  const store = ensureStore(projectScope);
+  const metadata = ensureProvenance(projectScope, Object.keys(store));
+  const accountProviders = Object.entries(metadata)
+    .filter(([, value]) => value.source === "account")
+    .map(([provider]) => provider);
+  if (!accountProviders.length) return;
+
+  const nextStore = { ...store };
+  for (const provider of accountProviders) {
+    delete nextStore[provider];
+    if (projectScope.credentialStore) deleteCredentialSecret(projectScope, credentialProviderKey(provider));
+    delete metadata[provider];
+    projectScope.missingCredentialProviders.add(provider);
+    projectScope.missingMacosKeychainProviders.add(provider);
+  }
+  if (projectScope.credentialStore) {
+    const index = readCredentialProviderIndex(projectScope);
+    writeCredentialProviderIndex(projectScope, index.providers.filter((provider) => !accountProviders.includes(provider)));
+  } else if (canPersistEncryptedStore(projectScope)) {
+    persistEncryptedStore(projectScope, nextStore);
+    for (const provider of accountProviders) deleteMacosKeychainSecretBestEffort(projectScope, provider);
+  }
+  projectScope.cache = nextStore;
+  persistProvenance(projectScope, metadata);
 }
 
 /**
@@ -1043,6 +1262,8 @@ export function listStoredProviders(): string[] {
  * values, so readable rows are fetched individually before they are stored.
  */
 export async function hydrateApiKeysFromVault(): Promise<void> {
+  const accountUserId = getAccountUserId?.()?.trim() || null;
+  if (!accountUserId) return;
   const vault = resolveAccountVault("list", "*");
   if (!vault) return;
 
@@ -1079,10 +1300,15 @@ export async function hydrateApiKeysFromVault(): Promise<void> {
       value = fetched.value?.trim() ?? "";
     }
     if (!value.length) continue;
+    if ((getAccountUserId?.()?.trim() || null) !== accountUserId) return;
 
     try {
       if (getApiKey(provider)) continue;
-      storeApiKey(provider, value, { deviceOnly: true });
+      storeApiKey(provider, value, {
+        deviceOnly: true,
+        source: "account",
+        accountUserId,
+      });
     } catch (error) {
       logVaultFailure("hydrate", provider, error);
     }
@@ -1115,5 +1341,7 @@ export function getCursorApiKeyOrigin(): "oauth" | "pasted" | null {
 }
 
 export function getAllApiKeys(): Record<string, string> {
+  ensureStore(projectScope);
+  purgeForeignAccountApiKeys(projectScope);
   return { ...ensureStore(projectScope) };
 }

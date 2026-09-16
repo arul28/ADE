@@ -96,6 +96,7 @@ export function createAccountSettingsStore(args: {
     defaultSyncIntervalMs: DEFAULT_SYNC_INTERVAL_MS,
     events: {
       writeFailed: "account.settings_cache_write_failed",
+      mutationDropped: "account.settings_mutation_dropped",
       uploadFailed: "account.settings_upload_failed",
       pullFailed: "account.settings_pull_failed",
       pullTruncated: "account.settings_pull_truncated",
@@ -165,31 +166,31 @@ export function createAccountSettingsStore(args: {
      * store's problem, not the caller's.
      */
     set(scope: string, key: string, value: unknown): void {
-      const current = cache.readCache();
       const changedAt = new Date(now()).toISOString();
-      current.rows[cacheKey(scope, key)] = {
-        value,
-        // Provisional until the relay stamps it. Marked with the local clock so
-        // a later pull, whose stamps come from the Worker, always wins a tie.
-        updatedAt: changedAt,
-        changedAt,
-        writerDeviceId: args.getDeviceId?.() ?? null,
-      };
-      cache.queue({ scope, key, value, deleted: false, changedAt });
-      cache.persist();
+      cache.mutate((current, queue) => {
+        current.rows[cacheKey(scope, key)] = {
+          value,
+          // Provisional until the relay stamps it. Marked with the local clock so
+          // a later pull, whose stamps come from the Worker, always wins a tie.
+          updatedAt: changedAt,
+          changedAt,
+          writerDeviceId: args.getDeviceId?.() ?? null,
+        };
+        queue({ scope, key, value, deleted: false, changedAt });
+      });
     },
 
     remove(scope: string, key: string): void {
-      const current = cache.readCache();
-      delete current.rows[cacheKey(scope, key)];
-      cache.queue({
-        scope,
-        key,
-        value: undefined,
-        deleted: true,
-        changedAt: new Date(now()).toISOString(),
+      cache.mutate((current, queue) => {
+        delete current.rows[cacheKey(scope, key)];
+        queue({
+          scope,
+          key,
+          value: undefined,
+          deleted: true,
+          changedAt: new Date(now()).toISOString(),
+        });
       });
-      cache.persist();
     },
 
     /** Flush what is queued, then take what changed. Single-flight. */

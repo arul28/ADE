@@ -295,6 +295,7 @@ describe("linearCredentialService", () => {
       logger: createLogger(),
       credentialStore: store,
       getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
     });
 
     service.setOAuthToken({ accessToken: "at", refreshToken: "rt-account" });
@@ -315,6 +316,7 @@ describe("linearCredentialService", () => {
       logger: createLogger(),
       credentialStore: store,
       getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
     });
 
     await service.hydrateFromVault();
@@ -329,6 +331,32 @@ describe("linearCredentialService", () => {
     await service.hydrateFromVault();
     expect(store.getSync("linear.refreshToken.v1")).toBe("rt-local");
     expect(vault.get).not.toHaveBeenCalled();
+  });
+
+  it("records account provenance for hydrated refresh tokens and purges it on sign-out", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-provenance-"));
+    const store = new MemoryCredentialStore();
+    store.setSync("linear.token.v1", "at-local");
+    store.setSync("linear.authMode.v1", "oauth");
+    const vault = createVaultMock();
+    vault.get.mockResolvedValue({ ok: true, value: "rt-from-account" } as never);
+    const service = createLinearCredentialService({
+      adeDir: path.join(root, ".ade"),
+      logger: createLogger(),
+      credentialStore: store,
+      getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
+    });
+
+    await service.hydrateFromVault();
+    expect(service.getRefreshTokenProvenance()).toEqual({
+      source: "account",
+      accountUserId: "account-a",
+    });
+
+    service.purgeAccountCredentials();
+    expect(store.getSync("linear.refreshToken.v1")).toBeNull();
+    expect(store.getSync("linear.token.v1")).toBe("at-local");
   });
 
   it("removes the Linear refresh token from both local storage and the account vault", () => {

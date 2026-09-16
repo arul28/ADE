@@ -38,18 +38,22 @@ import {
 export function useAccountSettingsSync(): void {
   useEffect(() => {
     let signedIn = false;
+    let accountUserId: string | null = null;
     const stop = startAccountSettingsSync({
       store: rootAppStoreApi as unknown as AccountSyncedStore,
       getApi: () => window.ade?.accountSettings ?? null,
       isSignedIn: () => signedIn,
+      getAccountUserId: () => accountUserId,
       subscribeSignedIn: (listener) =>
         subscribeAccountStatus((status) => {
           // Only a CHANGE is worth a pull. The status bus republishes the same
           // signed-in status on every cached read, and hydrating on each of
           // those would be a request storm carrying no new information.
-          if (status.signedIn === signedIn) return;
+          const nextUserId = status.signedIn ? status.userId?.trim() || null : null;
+          if (status.signedIn === signedIn && nextUserId === accountUserId) return;
           signedIn = status.signedIn;
-          if (signedIn) listener();
+          accountUserId = nextUserId;
+          listener();
         }),
       getProjectRemote: () => null,
     });

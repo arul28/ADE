@@ -262,6 +262,73 @@ describe("account vault store", () => {
     expect(fs.statSync(store.cachePathForTests()).mode & 0o777).toBe(0o600);
   });
 
+  it("encrypts the vault cache at rest and migrates a legacy plaintext cache on write", () => {
+    const legacyPath = path.join(adeDir, "account-vault.json");
+    fs.writeFileSync(legacyPath, JSON.stringify({
+      version: 1,
+      seqCounter: 0,
+      accountUserId: USER,
+      cursor: null,
+      items: {
+        "all\u0000provider_key\u0000legacy": {
+          value: "sk-legacy-secret",
+          updatedAt: "2026-09-16T00:00:00.000Z",
+          writerDeviceId: null,
+          refreshOwner: null,
+        },
+      },
+      pending: [],
+    }), "utf8");
+
+    const store = makeStore();
+    expect(store.get("all", "provider_key", "legacy")).toBe("sk-legacy-secret");
+    store.set("all", "provider_key", "new", "sk-new-secret");
+
+    const encryptedPath = store.cachePathForTests();
+    expect(encryptedPath.endsWith("account-vault.json.enc")).toBe(true);
+    expect(fs.readFileSync(encryptedPath, "utf8")).not.toContain("sk-new-secret");
+    expect(fs.existsSync(legacyPath)).toBe(false);
+  });
+
+  it("drops signed-out mutations and logs each dropped operation once", () => {
+    accountUserId = null;
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const store = createAccountVaultStore({
+      adeDir,
+      relay: relay as unknown as AccountVaultRelay,
+      getAccountUserId: () => accountUserId,
+      logger,
+    });
+
+    store.set("all", "provider_key", "blocked", "must-not-persist");
+    store.remove("all", "provider_key", "blocked");
+
+    expect(fs.existsSync(store.cachePathForTests())).toBe(false);
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenNthCalledWith(1, "account.vault_mutation_dropped", { reason: "signed_out" });
+    expect(logger.warn).toHaveBeenNthCalledWith(2, "account.vault_mutation_dropped", { reason: "signed_out" });
+  });
+
+  it("drops a mutation when the owner changes during its entry checks", () => {
+    let reads = 0;
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const store = createAccountVaultStore({
+      adeDir,
+      relay: relay as unknown as AccountVaultRelay,
+      getAccountUserId: () => {
+        reads += 1;
+        if (reads === 2) accountUserId = "user_grace";
+        return accountUserId;
+      },
+      logger,
+    });
+
+    store.set("all", "provider_key", "blocked", "must-not-persist");
+
+    expect(fs.existsSync(store.cachePathForTests())).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith("account.vault_mutation_dropped", { reason: "owner_changed" });
+  });
+
   it("keeps the same key apart across kinds and scopes", () => {
     const store = makeStore();
     store.set("all", "provider_key", "linear", "a-key");

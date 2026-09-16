@@ -21,13 +21,20 @@ lane `setupScript`, or an agent prompt; the trust gate that used to guard it is
 retired, and ignoring the file is what makes that retirement safe. If a legacy
 `.ade/ade.yaml` is still in a working tree, the first snapshot read carries its
 non-executable keys over into `local.yaml` — `project`, `environments`,
-`github`, `git`, `ai`, `laneCleanup`, `providers`, `linearSync`, `ui`,
+`github`, `git`, `ai`, `laneCleanup`, `linearSync`, `ui`,
 `browser`, with local winning every conflict — drops the executable ones
 (`testSuites`, `laneOverlayPolicies`, `automations`, `laneEnvInit`,
 `laneTemplates`, `defaultLaneTemplate`), logs one `projectConfig.carryOver`
 line with both counts, and then deletes the file from the working tree. Deleting
 it is what makes the carry-over idempotent; an unreadable file is left in place,
 logged as `projectConfig.carryOver.unreadable`, and the project still opens.
+
+The carried `ai` value is recursively allowlisted: model ids, feature toggles,
+feature model overrides, session-intelligence model/enabled flags, and local
+provider enabled/auto-detect/preferred-model fields are inert and may carry
+over. Permissions, API keys, endpoints, hooks, and commands are skipped and
+counted in the carry-over log. The legacy top-level `providers` bag is not
+carried because its conflict-resolver entries can execute commands.
 
 `local.yaml` uses the lenient `ProjectConfigFile` shape at parse time and
 resolves into the strict `EffectiveProjectConfig` at read time.

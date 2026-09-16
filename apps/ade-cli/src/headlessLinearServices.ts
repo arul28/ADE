@@ -2701,6 +2701,9 @@ function createHeadlessLinearCredentialService(args: {
         ? readCredential(refreshTokenKey)
         : null;
     },
+    getRefreshTokenProvenance() {
+      return { source: "device" as const, accountUserId: null };
+    },
     getStatus() {
       const { token, source } = readToken();
       const authMode =
@@ -2780,6 +2783,10 @@ function createHeadlessLinearCredentialService(args: {
     },
     clearOAuthClientCredentials() {
       writeCredential(oauthClientKey, null);
+    },
+    purgeAccountCredentials() {
+      // Headless mode has no account-vault hydration; all credentials it owns
+      // are device-origin and therefore intentionally retained.
     },
     getOAuthClientCredentials() {
       // Resolution order lives in readOAuthClientCredentials: user-configured

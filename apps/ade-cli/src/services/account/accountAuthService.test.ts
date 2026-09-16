@@ -188,6 +188,44 @@ describe("AccountAuthService persisted session notifications", () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
+  it("detects an account switch persisted by another process", async () => {
+    vi.useFakeTimers();
+    const store = new MemoryCredentialStore();
+    store.values.set(
+      ACCOUNT_SESSION_CREDENTIAL_KEY,
+      JSON.stringify(storedSession({ expiresAt: "2026-07-14T13:00:00.000Z" })),
+    );
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client" }),
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(service);
+    const listener = vi.fn();
+    service.onSignedIn(listener);
+
+    store.values.set(
+      ACCOUNT_SESSION_CREDENTIAL_KEY,
+      JSON.stringify(storedSession({
+        accessToken: jwt({ sub: "user_new", email: "new@example.com", name: "New User" }),
+        userId: "user_new",
+        email: "new@example.com",
+        name: "New User",
+        expiresAt: "2026-07-14T13:00:00.000Z",
+      })),
+    );
+    store.notifyExternalChange();
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(service.getStatus()).toMatchObject({ signedIn: true, userId: "user_new" });
+
+    store.notifyExternalChange();
+    await vi.advanceTimersByTimeAsync(25);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   /**
    * The vault is purged from this notification. Without it a machine keeps
    * every synced credential readable on disk after its user signs out — and the
@@ -3504,9 +3542,9 @@ describe("AccountAuthService refresh broker", () => {
     expect(getAccessToken).not.toHaveBeenCalled();
   });
 
-  // A brain that cannot answer is exactly when a second refresher does the most
-  // damage, so there is deliberately no local fallback — and the failure must
-  // never be mistaken for a rejection.
+  // A reachable brain that cannot answer is exactly when a second refresher
+  // does the most damage, so there is deliberately no local fallback — and the
+  // failure must never be mistaken for a rejection.
   it("does not fall back to a local exchange when the broker fails, and leaves the session intact", async () => {
     const store = expiredSessionStore();
     const raw = store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
@@ -3546,6 +3584,29 @@ describe("AccountAuthService refresh broker", () => {
 
     await expect(service.getAccessToken()).rejects.toBeInstanceOf(AccountRefreshUnavailableError);
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(raw);
+  });
+
+  it("falls back to the local exchange only when the broker reports no brain", async () => {
+    const store = expiredSessionStore();
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      access_token: jwt({ sub: "user_old", exp: Math.floor((nowMs + 3_600_000) / 1000) }),
+      refresh_token: "refresh-new",
+      token_type: "Bearer",
+      expires_in: 3600,
+    }));
+    const getAccessToken = vi.fn(async () => null);
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      getRefreshBroker: () => ({ getAccessToken }),
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await service.getAccessToken();
+    expect(getAccessToken).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalled();
   });
 
   // The broker is read per call, not captured at construction, because the

@@ -5,6 +5,7 @@ import YAML from "yaml";
 
 import type { ProjectIcon } from "../../../shared/types";
 import { isWithinDir, resolvePathWithinRoot } from "../shared/utils";
+import { writeFileAtomic } from "../state/durableFile";
 import { ensureSharedAdeProjectScaffold } from "./adeProjectService";
 
 const ICON_MAX_BYTES = 10 * 1024 * 1024;
@@ -701,18 +702,7 @@ function writeProjectIconPathOverride(projectRoot: string, iconPath: string | nu
   config.project = project;
   config.version = typeof config.version === "number" ? config.version : 1;
 
-  fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
-  // Write to a sibling temp file then rename so a crash mid-write can never
-  // leave .ade/local.yaml truncated/corrupted. The rename is atomic on the
-  // same filesystem.
-  const tempPath = `${localConfigPath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tempPath, YAML.stringify(config, { indent: 2 }));
-  try {
-    fs.renameSync(tempPath, localConfigPath);
-  } catch (renameError) {
-    try { fs.unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
-    throw renameError;
-  }
+  writeFileAtomic(localConfigPath, YAML.stringify(config, { indent: 2 }), { mode: 0o600 });
 }
 
 export function setProjectIconOverride(projectRoot: string, iconPath: string): ProjectIcon {

@@ -142,6 +142,7 @@ describe("projectIconResolver", () => {
 
     expect(icon.sourcePath).toBe(iconPath);
     expect(fs.readFileSync(path.join(root, ".ade", "local.yaml"), "utf8")).toContain("iconPath: assets/icon.svg");
+    expect(fs.statSync(path.join(root, ".ade", "local.yaml")).mode & 0o777).toBe(0o600);
   });
 
   it("persists a project-relative icon path when the root is spelled non-canonically", () => {

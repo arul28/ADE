@@ -187,11 +187,21 @@ describe("account vault", () => {
   });
 
   it("accepts the account credential kinds ADE actually stores", async () => {
-    for (const kind of ["secret", "provider_key", "integration", "provider_api_key", "linear_refresh_token"]) {
+    for (const kind of ["secret", "provider_key", "integration", "provider_api_key", "linear_refresh_token", "project_secret"]) {
       expect((await put([sealed({ kind, key: `k-${kind}` })])).status, kind).toBe(200);
     }
     const read = await call("GET", "/attention/account/vault");
-    expect(read.body.items).toHaveLength(5);
+    expect(read.body.items).toHaveLength(6);
+  });
+
+  it("round-trips a project secret kind", async () => {
+    expect((await put([sealed({ kind: "project_secret", key: "DATABASE_URL", value: "postgres://local" })])).body)
+      .toMatchObject({ ok: true, written: 1 });
+
+    const read = await call("GET", "/attention/account/vault");
+    expect(read.body.items).toMatchObject([
+      { scope: "all", kind: "project_secret", key: "DATABASE_URL", value: "postgres://local" },
+    ]);
   });
 
   it("never returns another account's credentials", async () => {
