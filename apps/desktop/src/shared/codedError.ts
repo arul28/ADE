@@ -94,3 +94,18 @@ export function parseCodedErrorMessage(error: unknown): ParsedCodedError {
 export function extractCodeFromMessage(error: unknown): string | null {
   return parseCodedErrorMessage(error).code ?? null;
 }
+
+export const ACTION_NOT_CALLABLE_CODE = "action_not_callable";
+export const ACTION_NOT_EXPOSED_CODE = "action_not_exposed";
+
+const UNSUPPORTED_ADE_ACTION_MESSAGE =
+  /^Action ['"][^'"]+['"] is (?:not callable|not exposed through ADE actions)\.?$/i;
+
+/** Mixed-version hosts still send the English sentence; current brains prefix a code. */
+export function isUnsupportedAdeActionError(error: unknown): boolean {
+  const parsed = parseCodedErrorMessage(error);
+  if (parsed.code === ACTION_NOT_CALLABLE_CODE || parsed.code === ACTION_NOT_EXPOSED_CODE) {
+    return true;
+  }
+  return UNSUPPORTED_ADE_ACTION_MESSAGE.test(parsed.message);
+}

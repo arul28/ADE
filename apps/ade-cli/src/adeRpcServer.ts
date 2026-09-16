@@ -29,6 +29,11 @@ import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
+  ACTION_NOT_CALLABLE_CODE,
+  ACTION_NOT_EXPOSED_CODE,
+  encodeCodedErrorMessage,
+} from "../../desktop/src/shared/codedError";
+import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
@@ -3941,10 +3946,19 @@ async function runTool(args: {
     }
     let callable = service[action];
     if (typeof callable !== "function") {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not callable.`);
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        encodeCodedErrorMessage(ACTION_NOT_CALLABLE_CODE, `Action '${domain}.${action}' is not callable.`),
+      );
     }
     if (!isAllowedAdeAction(domain, action)) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not exposed through ADE actions.`);
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        encodeCodedErrorMessage(
+          ACTION_NOT_EXPOSED_CODE,
+          `Action '${domain}.${action}' is not exposed through ADE actions.`,
+        ),
+      );
     }
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACTION_NOT_CALLABLE_CODE,
+  ACTION_NOT_EXPOSED_CODE,
   codedError,
   encodeCodedErrorMessage,
   extractCodeFromMessage,
   isErrnoLikeCode,
+  isUnsupportedAdeActionError,
   parseCodedErrorMessage,
   UNKNOWN_SYSTEM_ERRNO_PATTERN,
 } from "./codedError";
@@ -115,5 +118,20 @@ describe("UNKNOWN_SYSTEM_ERRNO_PATTERN", () => {
       .toBe(true);
     expect(UNKNOWN_SYSTEM_ERRNO_PATTERN.test("unknown system error 11")).toBe(true);
     expect(UNKNOWN_SYSTEM_ERRNO_PATTERN.test("ADE couldn't read this project's data.")).toBe(false);
+  });
+});
+
+describe("isUnsupportedAdeActionError", () => {
+  it("recognizes a coded brain reply and the legacy English sentence", () => {
+    expect(isUnsupportedAdeActionError(new Error(
+      encodeCodedErrorMessage(ACTION_NOT_CALLABLE_CODE, "Action 'git.getSyncStatuses' is not callable."),
+    ))).toBe(true);
+    expect(isUnsupportedAdeActionError(new Error(
+      encodeCodedErrorMessage(ACTION_NOT_EXPOSED_CODE, "Action 'prs.getDetailBundle' is not exposed through ADE actions."),
+    ))).toBe(true);
+    expect(isUnsupportedAdeActionError(new Error(
+      "Error invoking remote method 'ade.remoteRuntime.callAction': Error: Action 'git.getSyncStatuses' is not callable.",
+    ))).toBe(true);
+    expect(isUnsupportedAdeActionError(new Error("Sync service is not available"))).toBe(false);
   });
 });

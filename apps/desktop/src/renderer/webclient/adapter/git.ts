@@ -3,6 +3,7 @@ import type {
   GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
 } from "../../../shared/types";
+import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../../../shared/gitSyncStatuses";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg as Pin } from "./runtimePinGuard";
 
@@ -20,33 +21,19 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
   }
 
   async function getSyncStatuses(args: GitSyncStatusesArgs): Promise<GitSyncStatuses> {
-    const laneIds = Array.from(
-      new Set(
-        (Array.isArray(args?.laneIds) ? args.laneIds : [])
-          .map((laneId) => typeof laneId === "string" ? laneId.trim() : "")
-          .filter(Boolean),
-      ),
-    );
+    const laneIds = normalizeSyncStatusLaneIds(args);
     if (laneIds.length === 0) return {};
     if (commands.hasAction("git.getSyncStatuses")) {
       return await call<GitSyncStatuses>("git.getSyncStatuses", { laneIds }, {});
     }
 
-    const entries = await Promise.all(
-      laneIds.map(async (laneId) => {
-        try {
-          const status = await commands.call<GitUpstreamSyncStatus | null>(
-            "git.getSyncStatus",
-            { laneId },
-            { fallback: null },
-          );
-          return [laneId, status] as const;
-        } catch {
-          return [laneId, null] as const;
-        }
-      }),
+    return settleLaneSyncStatuses(laneIds, (laneId) =>
+      commands.call<GitUpstreamSyncStatus | null>(
+        "git.getSyncStatus",
+        { laneId },
+        { fallback: null },
+      ),
     );
-    return Object.fromEntries(entries);
   }
 
   /**

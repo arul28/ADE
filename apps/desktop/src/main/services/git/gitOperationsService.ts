@@ -39,6 +39,7 @@ import type {
   LaneType,
   OperationRecord,
 } from "../../../shared/types";
+import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../../../shared/gitSyncStatuses";
 import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
@@ -1171,25 +1172,8 @@ export function createGitOperationsService({
     },
 
     async getSyncStatuses(args: GitSyncStatusesArgs): Promise<GitSyncStatuses> {
-      const laneIds = Array.from(
-        new Set(
-          (Array.isArray(args?.laneIds) ? args.laneIds : [])
-            .map((laneId) => typeof laneId === "string" ? laneId.trim() : "")
-            .filter(Boolean),
-        ),
-      );
-      const entries = await Promise.all(
-        laneIds.map(async (laneId) => {
-          try {
-            return [laneId, await service.getSyncStatus({ laneId })] as const;
-          } catch {
-            // Match the Graph's previous per-lane best-effort behavior: one
-            // missing worktree must not blank the other lanes' statuses.
-            return [laneId, null] as const;
-          }
-        }),
-      );
-      return Object.fromEntries(entries);
+      const laneIds = normalizeSyncStatusLaneIds(args);
+      return settleLaneSyncStatuses(laneIds, async (laneId) => service.getSyncStatus({ laneId }));
     },
 
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {

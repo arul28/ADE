@@ -5,7 +5,9 @@ import {
   type SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
 import { IPC } from "../shared/ipc";
-import { stripElectronErrorWrapper } from "../shared/codedError";
+import { isUnsupportedAdeActionError } from "../shared/codedError";
+import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
+import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
@@ -1961,61 +1963,36 @@ function callPinnedOrBoundRuntimeActionOr<T>(
   return callProjectRuntimeActionOr<T>(domain, action, request, local);
 }
 
-function isUnsupportedRuntimeActionError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const normalizedMessage = stripElectronErrorWrapper(message);
-  return /^Action ['"][^'"]+['"] is (?:not callable|not exposed through ADE actions)\.?$/i.test(normalizedMessage);
-}
-
-function normalizeGraphSyncLaneIds(args: GitSyncStatusesArgs): string[] {
-  return Array.from(
-    new Set(
-      (Array.isArray(args?.laneIds) ? args.laneIds : [])
-        .map((laneId) => typeof laneId === "string" ? laneId.trim() : "")
-        .filter(Boolean),
+async function readLegacySyncStatuses(
+  laneIds: string[],
+  pin?: OpenProjectBinding | null,
+): Promise<GitSyncStatuses> {
+  return settleLaneSyncStatuses(laneIds, (laneId) =>
+    callPinnedOrBoundRuntimeActionOr<GitUpstreamSyncStatus>(
+      pin,
+      "git",
+      "getSyncStatus",
+      { args: { laneId } },
+      () => ipcRenderer.invoke(IPC.gitGetSyncStatus, { laneId }),
     ),
   );
 }
 
-async function readLegacyGraphSyncStatuses(
-  laneIds: string[],
-  pin?: OpenProjectBinding | null,
-): Promise<GitSyncStatuses> {
-  const entries = await Promise.all(
-    laneIds.map(async (laneId) => {
-      try {
-        const status = await callPinnedOrBoundRuntimeActionOr<GitUpstreamSyncStatus>(
-          pin,
-          "git",
-          "getSyncStatus",
-          { args: { laneId } },
-          () => ipcRenderer.invoke(IPC.gitGetSyncStatus, { laneId }),
-        );
-        return [laneId, status] as const;
-      } catch {
-        return [laneId, null] as const;
-      }
-    }),
-  );
-  return Object.fromEntries(entries);
-}
-
-async function readLegacyGraphPrDetailBundle(prId: string): Promise<PrDetailBundle> {
-  const [status, checks, reviews, comments] = await Promise.all([
-    callPrReadRuntimeActionOr<PrStatus | null>(null, "getStatus", { arg: prId }, () =>
+function readLegacyPrDetailBundle(prId: string): Promise<PrDetailBundle> {
+  return settlePrDetailBundle({
+    status: () => callPrReadRuntimeActionOr<PrStatus | null>(null, "getStatus", { arg: prId }, () =>
       ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
-    ).catch(() => null),
-    callPrReadRuntimeActionOr<PrCheck[]>(null, "getChecks", { arg: prId }, () =>
+    ),
+    checks: () => callPrReadRuntimeActionOr<PrCheck[]>(null, "getChecks", { arg: prId }, () =>
       ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
-    ).catch(() => []),
-    callPrReadRuntimeActionOr<PrReview[]>(null, "getReviews", { arg: prId }, () =>
+    ),
+    reviews: () => callPrReadRuntimeActionOr<PrReview[]>(null, "getReviews", { arg: prId }, () =>
       ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
-    ).catch(() => []),
-    callPrReadRuntimeActionOr<PrComment[]>(null, "getComments", { arg: prId }, () =>
+    ),
+    comments: () => callPrReadRuntimeActionOr<PrComment[]>(null, "getComments", { arg: prId }, () =>
       ipcRenderer.invoke(IPC.prsGetComments, { prId }),
-    ).catch(() => []),
-  ]);
-  return { status, checks, reviews, comments };
+    ),
+  });
 }
 
 // A lane's PR record lives in the `.ade` database of the machine that owns the
@@ -9745,7 +9722,7 @@ const adeBridge = {
       args: GitSyncStatusesArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<GitSyncStatuses> => {
-      const laneIds = normalizeGraphSyncLaneIds(args);
+      const laneIds = normalizeSyncStatusLaneIds(args);
       if (laneIds.length === 0) return {};
       try {
         return await callPinnedOrBoundRuntimeActionOr<GitSyncStatuses>(
@@ -9756,8 +9733,8 @@ const adeBridge = {
           () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, { laneIds }),
         );
       } catch (error) {
-        if (!isUnsupportedRuntimeActionError(error)) throw error;
-        return await readLegacyGraphSyncStatuses(laneIds, pin);
+        if (!isUnsupportedAdeActionError(error)) throw error;
+        return await readLegacySyncStatuses(laneIds, pin);
       }
     },
     getOriginRemote: async (
@@ -10713,8 +10690,8 @@ const adeBridge = {
           ipcRenderer.invoke(IPC.prsGetDetailBundle, { prId }),
         );
       } catch (error) {
-        if (!isUnsupportedRuntimeActionError(error)) throw error;
-        return await readLegacyGraphPrDetailBundle(prId);
+        if (!isUnsupportedAdeActionError(error)) throw error;
+        return await readLegacyPrDetailBundle(prId);
       }
     },
     getFiles: async (prId: string): Promise<PrFile[]> =>

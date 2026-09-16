@@ -6,6 +6,7 @@ import type {
   PrSummary,
   PrWithConflicts,
 } from "../../../shared/types";
+import { EMPTY_PR_DETAIL_BUNDLE, settlePrDetailBundle } from "../../../shared/prDetailBundle";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
@@ -65,20 +66,14 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
 
   async function getDetailBundle(prId: string): Promise<PrDetailBundle> {
     if (commands.hasAction("prs.getDetailBundle")) {
-      return await read<PrDetailBundle>("prs.getDetailBundle", { prId }, {
-        status: null,
-        checks: [],
-        reviews: [],
-        comments: [],
-      });
+      return await read<PrDetailBundle>("prs.getDetailBundle", { prId }, EMPTY_PR_DETAIL_BUNDLE);
     }
-    const [status, checks, reviews, comments] = await Promise.all([
-      read<PrDetailBundle["status"]>("prs.getStatus", { prId }, null).catch(() => null),
-      read<PrDetailBundle["checks"]>("prs.getChecks", { prId }, []).catch(() => []),
-      read<PrDetailBundle["reviews"]>("prs.getReviews", { prId }, []).catch(() => []),
-      read<PrDetailBundle["comments"]>("prs.getComments", { prId }, []).catch(() => []),
-    ]);
-    return { status, checks, reviews, comments };
+    return settlePrDetailBundle({
+      status: () => read<PrDetailBundle["status"]>("prs.getStatus", { prId }, null),
+      checks: () => read<PrDetailBundle["checks"]>("prs.getChecks", { prId }, []),
+      reviews: () => read<PrDetailBundle["reviews"]>("prs.getReviews", { prId }, []),
+      comments: () => read<PrDetailBundle["comments"]>("prs.getComments", { prId }, []),
+    });
   }
 
   // ---- Batched GitHub detail ----

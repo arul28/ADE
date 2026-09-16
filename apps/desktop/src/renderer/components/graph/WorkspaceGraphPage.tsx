@@ -42,8 +42,10 @@ import type {
   MergeMethod,
   MergeSimulationResult,
   PrWithConflicts,
-  IntegrationProposal
+  IntegrationProposal,
+  PrDetailBundle,
 } from "../../../shared/types";
+import { EMPTY_PR_DETAIL_BUNDLE } from "../../../shared/prDetailBundle";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useLaneListInvalidation } from "../../hooks/useLaneListInvalidation";
 import {
@@ -99,6 +101,7 @@ import {
   collectDescendants,
   prChecksLabel
 } from "./graphHelpers";
+import { mergeGeneratedPrDraft } from "./graphPrDraft";
 import {
   buildDefaultFilter,
   coalesceGraphFilters,
@@ -1867,6 +1870,18 @@ function GraphInner({ active = true }: { active?: boolean }) {
     [getDropIntegratePlan, laneById, lanes, overlapFilesByPair]
   );
 
+  const applyPrDetailBundle = React.useCallback((
+    match: (prev: PrDialogState) => boolean,
+    bundle: PrDetailBundle,
+    extra?: Partial<PrDialogState>,
+  ) => {
+    setPrDialog((prev) =>
+      prev && match(prev)
+        ? { ...prev, loadingDetails: false, ...bundle, ...extra }
+        : prev
+    );
+  }, []);
+
   const openPrDialogForLane = React.useCallback(
     (laneId: string, baseLaneId: string) => {
       const lane = laneById.get(laneId);
@@ -1875,13 +1890,15 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
       const existing = prByLaneId.get(laneId) ?? null;
       const baseBranch = baseLane.branchRef;
+      const baselineTitle = existing?.title ?? lane.name ?? "";
+      const baselineBody = "";
 
       setPrDialog({
         laneId,
         baseLaneId,
         baseBranch,
-        title: existing?.title ?? lane.name ?? "",
-        body: "",
+        title: baselineTitle,
+        body: baselineBody,
         draft: existing?.state === "draft",
         creating: false,
         existingPr: existing,
@@ -1899,29 +1916,30 @@ function GraphInner({ active = true }: { active?: boolean }) {
         void window.ade.prs
           .draftDescription({ laneId })
           .then((draft) => {
-            setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, title: draft.title, body: draft.body, loadingDraft: false } : prev));
+            setPrDialog((prev) => mergeGeneratedPrDraft(
+              prev,
+              laneId,
+              draft,
+              { title: baselineTitle, body: baselineBody },
+            ));
           })
           .catch((error) => {
             const message = error instanceof Error ? error.message : String(error);
-            setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, loadingDraft: false, error: message } : prev));
+            setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, error: message } : prev));
           });
         return;
       }
 
       void window.ade.prs.getDetailBundle(existing.id)
-        .then(({ status, checks, reviews, comments }) => {
-          setPrDialog((prev) =>
-            prev && prev.laneId === laneId
-              ? { ...prev, loadingDetails: false, status, checks, reviews, comments }
-              : prev
-          );
+        .then((bundle) => {
+          applyPrDetailBundle((prev) => prev.laneId === laneId, bundle);
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
-          setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, loadingDetails: false, error: message } : prev));
+          applyPrDetailBundle((prev) => prev.laneId === laneId, EMPTY_PR_DETAIL_BUNDLE, { error: message });
         });
     },
-    [laneById, prByLaneId]
+    [applyPrDetailBundle, laneById, prByLaneId]
   );
 
   const runGraphPrReview = React.useCallback(
@@ -2057,15 +2075,15 @@ function GraphInner({ active = true }: { active?: boolean }) {
       setPrDialog(null);
       return;
     }
-    const { status, checks, reviews, comments } = await window.ade.prs
+    const bundle = await window.ade.prs
       .getDetailBundle(refreshed.id)
-      .catch(() => ({ status: null, checks: [], reviews: [], comments: [] }));
-    setPrDialog((prev) => (
-      prev && prev.existingPr?.id === refreshed.id
-        ? { ...prev, existingPr: refreshed, status, checks, reviews, comments, loadingDetails: false }
-        : prev
-    ));
-  }, [prDialog, refreshPrs]);
+      .catch(() => EMPTY_PR_DETAIL_BUNDLE);
+    applyPrDetailBundle(
+      (prev) => prev.existingPr?.id === refreshed.id,
+      bundle,
+      { existingPr: refreshed },
+    );
+  }, [applyPrDetailBundle, prDialog, refreshPrs]);
 
   const onNodeDragStop = React.useCallback(
     (_event: React.MouseEvent, node: Node<GraphNodeData>) => {
@@ -3886,22 +3904,13 @@ function GraphInner({ active = true }: { active?: boolean }) {
                           writeGraphPrCache(projectRootRef.current, refreshed);
                           setPrs(refreshed);
                           const createdPr = refreshed.find((entry) => entry.id === created.id) ?? null;
-                          const { status, checks, reviews, comments } = await window.ade.prs
+                          const bundle = await window.ade.prs
                             .getDetailBundle(created.id)
-                            .catch(() => ({ status: null, checks: [], reviews: [], comments: [] }));
-                          setPrDialog((prev) =>
-                            prev && prev.laneId === laneId
-                              ? {
-                                  ...prev,
-                                  creating: false,
-                                  existingPr: createdPr,
-                                  loadingDetails: false,
-                                  status,
-                                  checks,
-                                  reviews,
-                                  comments
-                                }
-                              : prev
+                            .catch(() => EMPTY_PR_DETAIL_BUNDLE);
+                          applyPrDetailBundle(
+                            (prev) => prev.laneId === laneId,
+                            bundle,
+                            { creating: false, existingPr: createdPr },
                           );
                         })
                         .catch((error) => {
