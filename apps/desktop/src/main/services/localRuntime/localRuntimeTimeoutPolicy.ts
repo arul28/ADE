@@ -140,6 +140,9 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
   ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
   ["ios_simulator.ensurePreviewWorkspace", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
+  // Per-layer merge-async + poll; stacks can have many open layers.
+  ["prs.mergeGithubStack", 4 * 60_000],
+  ["prs.rebaseGithubStack", 120_000],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

@@ -98,7 +98,7 @@ describe("githubStackStore.merge", () => {
       }
       throw new Error(`unexpected ${args.method} ${args.path}`);
     });
-    const store = createStore(apiRequest as GithubService["apiRequest"]);
+    const store = createStore(apiRequest as unknown as GithubService["apiRequest"]);
     const result = await store.merge(repo, 4);
     expect(result.ok).toBe(true);
     expect(result.method).toBe("merge_async");
@@ -115,7 +115,7 @@ describe("githubStackStore.merge", () => {
       }
       throw new Error(`unexpected ${args.method} ${args.path}`);
     });
-    const store = createStore(apiRequest as GithubService["apiRequest"]);
+    const store = createStore(apiRequest as unknown as GithubService["apiRequest"]);
     const result = await store.merge(repo, 4);
     expect(result).toMatchObject({
       ok: false,
@@ -153,7 +153,7 @@ describe("githubStackStore.merge", () => {
       }
       throw new Error(`unexpected ${args.method} ${args.path}`);
     });
-    const store = createStore(apiRequest as GithubService["apiRequest"]);
+    const store = createStore(apiRequest as unknown as GithubService["apiRequest"]);
     const first = store.merge(repo, 4);
     await firstPosted;
     const second = store.merge(repo, 4);
@@ -177,7 +177,7 @@ describe("githubStackStore.rebase", () => {
       }
       throw new Error(`unexpected ${args.method} ${args.path}`);
     });
-    const store = createStore(apiRequest as GithubService["apiRequest"]);
+    const store = createStore(apiRequest as unknown as GithubService["apiRequest"]);
     const result = await store.rebase(repo, 4);
     expect(result).toMatchObject({
       ok: false,

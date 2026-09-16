@@ -266,7 +266,7 @@ describe("FooterControls", () => {
       return stripAnsi(result.lastFrame() ?? "");
     };
     expect(frameAt(0)).toContain("○");
-    expect(frameAt(100)).toContain("◝");
+    expect(frameAt(100)).toContain("●");
   });
 
   it("renders the approval prompt hints when an approval is active", () => {

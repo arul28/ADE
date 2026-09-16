@@ -9356,7 +9356,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // survive `selectPrsForChat`. Lane-header badges still use `prs` from
         // `listPrsByLane` only — an unscoped `listAll` must not feed checksStatus.
         const prs = await listPrsByLane(connection);
-        const listed = await connection.action<Array<Record<string, unknown>>>("pr", "listAll", {}).catch(() => [] as Array<Record<string, unknown>>);
         if (cancelled) return;
         const next: Record<string, LanePrSummary> = {};
         for (const pr of prs) {
@@ -9370,10 +9369,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           };
         }
         setPrByLaneId(next);
-        const catalog = (Array.isArray(listed) ? listed : []) as PrSummary[];
-        allPrsForChatRef.current = catalog;
+        try {
+          const listed = await connection.action<Array<Record<string, unknown>>>("pr", "listAll", {});
+          if (cancelled) return;
+          allPrsForChatRef.current = (Array.isArray(listed) ? listed : []) as PrSummary[];
+        } catch {
+          // Keep the previous chat-linked catalog. An empty fallback would
+          // erase peek chips until the next successful poll.
+        }
         setChatLinkedPrs(selectPrsForChat(
-          catalog,
+          allPrsForChatRef.current,
           chatPrSessionIdRef.current,
           { currentBranch: chatPrBranchRef.current },
         ));

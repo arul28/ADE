@@ -14865,6 +14865,16 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "prs.createFromLane", args: args)
   }
 
+  private func throwIfCommandRefused(_ raw: Any, fallback: String) throws {
+    guard let record = raw as? [String: Any], (record["ok"] as? Bool) == false else { return }
+    let message = (record["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    throw NSError(
+      domain: "ADE",
+      code: 8,
+      userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? fallback : message]
+    )
+  }
+
   func linkPullRequestChatSession(prId: String, sessionId: String, allowCrossLane: Bool = false) async throws {
     guard supportsRemoteAction("prs.linkChatSession") else {
       throw sessionLifecycleUnsupportedError("prs.linkChatSession")
@@ -14876,17 +14886,23 @@ final class SyncService: ObservableObject {
     if allowCrossLane {
       args["allowCrossLane"] = true
     }
-    _ = try await sendCommand(action: "prs.linkChatSession", args: args)
+    try throwIfCommandRefused(
+      try await sendCommand(action: "prs.linkChatSession", args: args),
+      fallback: "Could not link this pull request."
+    )
   }
 
   func unlinkPullRequestChatSession(prId: String, sessionId: String) async throws {
     guard supportsRemoteAction("prs.unlinkChatSession") else {
       throw sessionLifecycleUnsupportedError("prs.unlinkChatSession")
     }
-    _ = try await sendCommand(action: "prs.unlinkChatSession", args: [
-      "prId": prId,
-      "sessionId": sessionId,
-    ])
+    try throwIfCommandRefused(
+      try await sendCommand(action: "prs.unlinkChatSession", args: [
+        "prId": prId,
+        "sessionId": sessionId,
+      ]),
+      fallback: "Could not unlink this pull request."
+    )
   }
 
   func linkPullRequestChatStack(
@@ -14902,14 +14918,7 @@ final class SyncService: ObservableObject {
       ]
       if let prId, !prId.isEmpty { args["prId"] = prId }
       let raw = try await sendCommand(action: "prs.linkChatStack", args: args)
-      if let record = raw as? [String: Any], (record["ok"] as? Bool) == false {
-        let message = (record["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        throw NSError(
-          domain: "ADE",
-          code: 8,
-          userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? "Could not link this GitHub stack." : message]
-        )
-      }
+      try throwIfCommandRefused(raw, fallback: "Could not link this GitHub stack.")
       return
     }
     guard supportsRemoteAction("prs.linkChatSession") else {

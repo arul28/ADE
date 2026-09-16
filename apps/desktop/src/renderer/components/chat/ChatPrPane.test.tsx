@@ -77,6 +77,8 @@ function installAde(over?: {
   getFiles?: PrFile[];
   getStackLinkOffer?: unknown;
   linkChatStack?: unknown;
+  linkChatSession?: ReturnType<typeof vi.fn>;
+  unlinkChatSession?: ReturnType<typeof vi.fn>;
 }) {
   (globalThis.window as { ade?: unknown }).ade = {
     prs: {
@@ -90,8 +92,8 @@ function installAde(over?: {
       listAll: over?.listAll,
       getFiles: vi.fn().mockResolvedValue(over?.getFiles ?? []),
       getStackLinkOffer: vi.fn().mockResolvedValue(over?.getStackLinkOffer ?? null),
-      linkChatSession: vi.fn().mockResolvedValue({ ok: true }),
-      unlinkChatSession: vi.fn().mockResolvedValue({ ok: true }),
+      linkChatSession: over?.linkChatSession ?? vi.fn().mockResolvedValue({ ok: true }),
+      unlinkChatSession: over?.unlinkChatSession ?? vi.fn().mockResolvedValue({ ok: true }),
       linkChatStack: over?.linkChatStack
         ?? vi.fn().mockResolvedValue({ ok: true, linked: 1 }),
     },
@@ -545,7 +547,7 @@ describe("ChatPrPane title bar", () => {
     expect(await screen.findByText(/Also in GitHub Stack #3/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Link stack" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Link stack" }));
-    const ade = (globalThis.window as { ade: { prs: { linkChatStack: ReturnType<typeof vi.fn> } } }).ade;
+    const ade = (globalThis.window as unknown as { ade: { prs: { linkChatStack: ReturnType<typeof vi.fn> } } }).ade;
     await waitFor(() => {
       expect(ade.prs.linkChatStack).toHaveBeenCalledWith({
         sessionId: "chat-1",
@@ -594,5 +596,29 @@ describe("ChatPrPane title bar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Link stack" }));
     expect(await screen.findByText("Could not link this GitHub stack.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Link stack" })).toBeTruthy();
+  });
+
+  it("keeps the picker open when linkChatSession is refused", async () => {
+    const first = makePr({
+      id: "pr-1",
+      githubPrNumber: 11,
+      title: "Bottom layer",
+      chatSessionIds: ["chat-1"],
+    });
+    const candidate = makePr({
+      id: "pr-2",
+      githubPrNumber: 12,
+      title: "Unclaimed sibling",
+      laneId: "lane-2",
+    });
+    installAde({
+      listAll: vi.fn().mockResolvedValue([first, candidate]),
+      linkChatSession: vi.fn().mockResolvedValue({ ok: false }),
+    });
+    renderPane({ sessionId: "chat-1" });
+    fireEvent.click(await screen.findByRole("button", { name: /Link another PR/ }));
+    fireEvent.click(screen.getByRole("button", { name: /#12/ }));
+    expect(await screen.findByText("Could not link this pull request.")).toBeTruthy();
+    expect(screen.getByText("Link another PR")).toBeTruthy();
   });
 });

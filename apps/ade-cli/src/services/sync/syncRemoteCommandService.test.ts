@@ -274,6 +274,8 @@ describe("createSyncRemoteCommandService", () => {
       "prs.getComments",
       "prs.getFiles",
       "prs.getGitHubSnapshot",
+      "prs.getStackLinkOffer",
+      "prs.listChatSessionsForPr",
       "prs.listGithubStacks",
       "prs.getReviewThreads",
       "prs.getActionRuns",

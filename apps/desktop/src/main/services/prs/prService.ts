@@ -1802,7 +1802,21 @@ export function createPrService({
         [args.prId, projectId],
       );
       if (!pr) return false;
-      const crossLane = pr.lane_id !== args.laneId;
+      const canonicalSessionId = resolveCanonicalChatSessionId(sessionId);
+      if (!canonicalSessionId) {
+        logger.warn("prs.chat_session_link_session_missing", {
+          prId: args.prId,
+          laneId: args.laneId,
+          sessionId,
+        });
+        return false;
+      }
+      const sessionLane = db.get<{ lane_id: string }>(
+        "select lane_id from terminal_sessions where id = ? limit 1",
+        [canonicalSessionId],
+      );
+      const sessionLaneId = String(sessionLane?.lane_id ?? "").trim();
+      const crossLane = Boolean(sessionLaneId) && sessionLaneId !== pr.lane_id;
       if (crossLane && !args.allowCrossLane) {
         try {
           if (
@@ -1816,16 +1830,6 @@ export function createPrService({
         } catch {
           return false;
         }
-      }
-
-      const canonicalSessionId = resolveCanonicalChatSessionId(sessionId);
-      if (!canonicalSessionId) {
-        logger.warn("prs.chat_session_link_session_missing", {
-          prId: args.prId,
-          laneId: args.laneId,
-          sessionId,
-        });
-        return false;
       }
       const now = nowIso();
       const existing = db.get<{ id: string }>(
@@ -12362,7 +12366,7 @@ export function createPrService({
       const offer = getStackLinkOffer({ sessionId: args.sessionId, prId: args.prId });
       if (!offer || offer.stackNumber !== args.stackNumber) return { ok: false, linked: 0 };
       const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
-      let linked = 0;
+      const linkedIds: string[] = [];
       for (const sibling of unclaimed) {
         const ok = linkPrToChatSession({
           prId: sibling.prId,
@@ -12370,10 +12374,16 @@ export function createPrService({
           sessionId: offer.sessionId,
           allowCrossLane: true,
         });
-        if (ok) linked += 1;
+        if (!ok) {
+          for (const prId of linkedIds) {
+            unlinkPrFromChatSession({ prId, sessionId: offer.sessionId });
+          }
+          return { ok: false, linked: 0 };
+        }
+        linkedIds.push(sibling.prId);
       }
-      if (linked > 0) emitPrsUpdated();
-      return { ok: linked === unclaimed.length, linked };
+      if (linkedIds.length > 0) emitPrsUpdated();
+      return { ok: true, linked: linkedIds.length };
     },
 
     listChatSessionsForPr(args: ListPrChatSessionsArgs): PrChatSessionLink[] {

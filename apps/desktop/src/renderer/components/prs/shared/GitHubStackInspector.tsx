@@ -69,7 +69,8 @@ export function GitHubStackInspector({
   const [pendingConfirm, setPendingConfirm] = React.useState<"unstack" | "merge" | "rebase" | null>(null);
   const [mergeMethod, setMergeMethod] = React.useState<MergeMethod>("squash");
   const [error, setError] = React.useState<string | null>(null);
-  const [unavailableReason, setUnavailableReason] = React.useState<string | null>(null);
+  const [rebaseUnavailableReason, setRebaseUnavailableReason] = React.useState<string | null>(null);
+  const [mergeUnavailableReason, setMergeUnavailableReason] = React.useState<string | null>(null);
   const itemByPr = React.useMemo(
     () => new Map(items.map((item) => [item.githubPrNumber, item] as const)),
     [items],
@@ -77,6 +78,13 @@ export function GitHubStackInspector({
   const selectedPosition = stack.entries.find(
     (entry) => entry.githubPrNumber === selectedPrNumber,
   )?.position;
+
+  React.useEffect(() => {
+    setRebaseUnavailableReason(null);
+    setMergeUnavailableReason(null);
+    setError(null);
+    setPendingConfirm(null);
+  }, [stack.number]);
 
   const addPullRequests = async () => {
     const pullRequests = parsePullRequests(pullInput);
@@ -115,17 +123,19 @@ export function GitHubStackInspector({
   };
 
   const applyMutationResult = (
+    kind: "merge" | "rebase",
     result: GitHubStackMutationResult,
     fallback: string,
   ): boolean => {
+    const setUnavailable = kind === "merge" ? setMergeUnavailableReason : setRebaseUnavailableReason;
     if (result.ok) {
-      setUnavailableReason(null);
+      setUnavailable(null);
       setError(null);
       setPendingConfirm(null);
       return true;
     }
     if (result.method === "unavailable") {
-      setUnavailableReason(result.disabledReason || result.error || fallback);
+      setUnavailable(result.disabledReason || result.error || fallback);
       setError(null);
       return false;
     }
@@ -142,7 +152,7 @@ export function GitHubStackInspector({
     setError(null);
     try {
       const result = await onMerge(mergeMethod);
-      applyMutationResult(result, "GitHub could not merge this stack.");
+      applyMutationResult("merge", result, "GitHub could not merge this stack.");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "GitHub could not merge this stack.");
     } finally {
@@ -159,7 +169,7 @@ export function GitHubStackInspector({
     setError(null);
     try {
       const result = await onRebase();
-      applyMutationResult(result, "GitHub could not rebase this stack.");
+      applyMutationResult("rebase", result, "GitHub could not rebase this stack.");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "GitHub could not rebase this stack.");
     } finally {
@@ -295,26 +305,26 @@ export function GitHubStackInspector({
               </button>
               <button
                 type="button"
-                disabled={busyAction != null || !stack.open || Boolean(unavailableReason)}
+                disabled={busyAction != null || !stack.open || Boolean(rebaseUnavailableReason)}
                 onClick={() => { void rebaseStack(); }}
                 title={
-                  unavailableReason
+                  rebaseUnavailableReason
                     ?? (stack.open ? "Rebase every open layer onto the stack base" : "Completed stacks cannot be rebased")
                 }
-                style={outlineButton({ height: 28, padding: "0 9px", fontSize: 11, opacity: busyAction || !stack.open || unavailableReason ? 0.6 : 1 })}
+                style={outlineButton({ height: 28, padding: "0 9px", fontSize: 11, opacity: busyAction || !stack.open || rebaseUnavailableReason ? 0.6 : 1 })}
               >
                 <ArrowsClockwise size={12} />
                 {busyAction === "rebase" ? "Rebasing..." : pendingConfirm === "rebase" ? "Confirm rebase" : "Rebase stack"}
               </button>
               <button
                 type="button"
-                disabled={busyAction != null || !stack.open || Boolean(unavailableReason)}
+                disabled={busyAction != null || !stack.open || Boolean(mergeUnavailableReason)}
                 onClick={() => { void mergeStack(); }}
                 title={
-                  unavailableReason
+                  mergeUnavailableReason
                     ?? (stack.open ? "Merge every open layer through GitHub, bottom to top" : "Completed stacks cannot be merged")
                 }
-                style={primaryButton({ height: 28, padding: "0 9px", fontSize: 11, opacity: busyAction || !stack.open || unavailableReason ? 0.6 : 1 })}
+                style={primaryButton({ height: 28, padding: "0 9px", fontSize: 11, opacity: busyAction || !stack.open || mergeUnavailableReason ? 0.6 : 1 })}
               >
                 <GitMerge size={12} />
                 {busyAction === "merge" ? "Merging..." : pendingConfirm === "merge" ? "Confirm merge" : "Merge stack"}
@@ -410,9 +420,14 @@ export function GitHubStackInspector({
               </div>
             ) : null}
 
-            {unavailableReason ? (
+            {rebaseUnavailableReason ? (
               <div role="status" style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                {unavailableReason}
+                {rebaseUnavailableReason}
+              </div>
+            ) : null}
+            {mergeUnavailableReason ? (
+              <div role="status" style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                {mergeUnavailableReason}
               </div>
             ) : null}
             {error ? (

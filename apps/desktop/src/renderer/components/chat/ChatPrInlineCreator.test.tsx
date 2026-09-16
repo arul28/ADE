@@ -195,6 +195,7 @@ describe("ChatPrInlineCreator create", () => {
       draft: false,
       baseBranch: "main",
       sessionId: "chat-1",
+      source: "human",
     });
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith({ id: "pr-1" }));
   });

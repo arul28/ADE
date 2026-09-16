@@ -607,7 +607,7 @@ export function createGithubStackStore(args: {
     prNumber: number,
   ): Promise<{ merged: boolean; sha: string | null }> => {
     const started = Date.now();
-    while (Date.now() - started < 8_000) {
+    while (Date.now() - started < 3_000) {
       const { data } = await githubService.apiRequest<Record<string, unknown>>({
         method: "GET",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,

@@ -395,6 +395,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const [stackOffer, setStackOffer] = useState<StackLinkOffer | null>(null);
   const [dismissedOfferKey, setDismissedOfferKey] = useState<string | null>(null);
   const [stackLinkError, setStackLinkError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
   const [linkBusy, setLinkBusy] = useState(false);
   // Manual title-bar ↻ sync in flight.
@@ -724,8 +725,13 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const linkPr = useCallback(async (prId: string, allowCrossLane = false) => {
     if (!sessionId || typeof window.ade.prs.linkChatSession !== "function") return;
     setLinkBusy(true);
+    setLinkError(null);
     try {
-      await window.ade.prs.linkChatSession({ prId, sessionId, allowCrossLane });
+      const result = await window.ade.prs.linkChatSession({ prId, sessionId, allowCrossLane });
+      if (!result?.ok) {
+        setLinkError("Could not link this pull request.");
+        return;
+      }
       setLinkPickerOpen(false);
       await refresh({ live: true });
     } finally {
@@ -736,8 +742,13 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const unlinkCurrent = useCallback(async () => {
     if (!sessionId || !pr || typeof window.ade.prs.unlinkChatSession !== "function") return;
     setLinkBusy(true);
+    setLinkError(null);
     try {
-      await window.ade.prs.unlinkChatSession({ prId: pr.id, sessionId });
+      const result = await window.ade.prs.unlinkChatSession({ prId: pr.id, sessionId });
+      if (!result?.ok) {
+        setLinkError("Could not unlink this pull request.");
+        return;
+      }
       await refresh();
     } finally {
       setLinkBusy(false);
@@ -913,6 +924,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
                     >
                       Cancel
                     </button>
+                    {linkError ? (
+                      <p role="alert" className="mt-1.5 text-[11px] leading-relaxed text-red-300/85">{linkError}</p>
+                    ) : null}
                   </div>
                 ) : (
                   <button
@@ -934,6 +948,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
                   <LinkBreak size={12} weight="bold" />
                   Unlink this PR
                 </button>
+                {!linkPickerOpen && linkError ? (
+                  <p role="alert" className="text-[11px] leading-relaxed text-red-300/85">{linkError}</p>
+                ) : null}
               </div>
             ) : null}
           </div>

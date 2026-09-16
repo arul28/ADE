@@ -887,25 +887,25 @@ describe("prMergeAutoSettlementService", () => {
     });
 
     expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
-      ["chat-ready"],
-      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
-    );
-    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
       ["cli-blocked"],
       { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
+    );
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalledWith(
+      ["chat-ready"],
+      expect.anything(),
     );
     expect(emitEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: "pr-sessions-auto-settled",
       prId: "pr-1",
-      settledSessionIds: ["chat-ready", "cli-blocked"],
-      settledCount: 2,
+      settledSessionIds: ["cli-blocked"],
+      settledCount: 1,
     }));
 
     await service.processSnapshot({
       prs: [mergedPr],
       polledAt: "2026-03-24T12:02:00.000Z",
     });
-    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(2);
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
   });
 
 
@@ -962,33 +962,30 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
-    expect(settleSessionsReportingAborts).toHaveBeenLastCalledWith(
-      ["chat-waiting"],
-      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
-    );
-    expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual(["pr-1"]);
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalled();
+    expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds ?? []).toEqual([]);
 
-    // The user reactivates the chat. The old merged PR is already handled, so
-    // it must not immediately file the chat again.
+    // The user reactivates the chat. The first merge stayed unhandled because
+    // an open sibling was still linked, so a later terminal snapshot can still
+    // file the chat.
     settled = false;
     await service.processSnapshot({
       prs: [mergedPr, openSecondPr],
       polledAt: "2026-03-24T12:02:00.000Z",
     });
-    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalled();
 
-    // A distinct PR on the same lane gets its own one-shot settlement.
+    // Once every linked sibling is terminal, the deferred merge settles.
     await service.processSnapshot({
       prs: [mergedPr, mergedSecondPr],
       polledAt: "2026-03-24T12:03:05.000Z",
     });
 
-    expect(settleSessionsReportingAborts).toHaveBeenLastCalledWith(
+    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
       ["chat-waiting"],
-      { outcome: "PR #202 merged", settledAt: "2026-03-24T12:03:05.000Z", source: "pr_merge" },
+      { outcome: "PR #101 merged", settledAt: "2026-03-24T12:03:05.000Z", source: "pr_merge" },
     );
-    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(2);
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
     expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual(["pr-1", "pr-2"]);
   });
 
@@ -1054,6 +1051,7 @@ describe("prMergeAutoSettlementService", () => {
       githubPrNumber: 202,
       state: "merged",
       mergedAt: "2026-03-24T12:03:00.000Z",
+      chatSessionIds: ["chat-ready"],
     });
     await service.processSnapshot({
       prs: [oldMerge, futureMerge],
@@ -1547,13 +1545,13 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:05:00.000Z",
     });
 
-    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(2);
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalled();
     expect(emitEvent).not.toHaveBeenCalled();
 
     // And a merge we actually watch still announces itself, so the fix does not
     // simply mute the feature.
     const watched = createSummary({
-      id: "pr-991", githubPrNumber: 991, state: "open",
+      id: "pr-991", githubPrNumber: 991, state: "open", chatSessionIds: ["chat-ready"],
     });
     await service.processSnapshot({
       prs: [...historic, watched],
@@ -1661,6 +1659,7 @@ describe("prMergeAutoSettlementService", () => {
     const { service, settleSessionsReportingAborts } = createLaneSweepService({
       sessions: [
         { laneId: "lane-1", id: "chat-merged-work", toolType: "codex-chat" },
+        { laneId: "lane-1", id: "cli-merged-work", toolType: "codex" },
         { laneId: "lane-1", id: "chat-other-pr", toolType: "codex-chat" },
       ],
     });
@@ -1688,8 +1687,12 @@ describe("prMergeAutoSettlementService", () => {
     });
 
     expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
-      ["chat-merged-work"],
+      ["cli-merged-work"],
       { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
+    );
+    expect(settleSessionsReportingAborts).not.toHaveBeenCalledWith(
+      ["chat-merged-work"],
+      expect.anything(),
     );
     expect(settleSessionsReportingAborts).not.toHaveBeenCalledWith(
       ["chat-other-pr"],

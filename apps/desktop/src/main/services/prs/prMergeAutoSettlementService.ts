@@ -289,6 +289,7 @@ export function createPrMergeAutoSettlementService(args: {
             laneId: pr.laneId,
             sessionId: session.id,
           });
+          abandonedThisPr = true;
           continue;
         }
         if (await hasActiveChatTurn(session.id)) {
