@@ -1019,8 +1019,9 @@ describe("lane vs chat PR scoping", () => {
 
   it("selectChatPrs drops detached rows on both arms", () => {
     const lane = makeLane({ id: "lane-1", branchRef: "ade/mine" });
-    const detachedOwned = makePr({ id: "a", laneId: "lane-1", headBranch: "origin/ade/mine", detached: true });
-    const detachedForeign = makePr({ id: "b", laneId: "lane-2", chatSessionIds: ["sess-a"], detached: true });
+    const DETACHED = { at: "2026-09-16T00:00:00.000Z", laneName: null, laneColor: null, chats: 0, artifacts: 0, checkpoints: 0 };
+    const detachedOwned = makePr({ id: "a", laneId: "lane-1", headBranch: "origin/ade/mine", detached: DETACHED });
+    const detachedForeign = makePr({ id: "b", laneId: "lane-2", chatSessionIds: ["sess-a"], detached: DETACHED });
 
     expect(selectChatPrs(lane, [detachedOwned, detachedForeign], "sess-a")).toEqual([]);
   });
