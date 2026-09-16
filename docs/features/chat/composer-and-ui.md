@@ -1304,7 +1304,10 @@ before/after SHAs.
 appears in the session's `turn_diff_summary` set suppresses the fallback, so a
 turn never shows two files-changed summaries. The timeline drops
 `work_log_group` rows outright, so neither summary competes with per-burst file
-panels.
+panels. iOS and ADE Code follow the same turn-end contract documented in
+[transcript-and-turns.md](transcript-and-turns.md#render-pipeline) (turn-end
+marker + activity sheet on iOS; `turnEndRows` summary → expanded detail → time
+on the TUI).
 
 ## Rewind files confirmation
 

@@ -389,13 +389,33 @@ implements a two-layer transform:
    checkpoint `turn_diff_summary` already covers the turn), instead of once per uninterrupted burst of tool
    entries — a turn whose bursts were broken up by prose used to stack six
    near-identical panels through one reply. Assistant narration is unchanged.
-   Desktop and hosted web share this
-   presentation in `AgentChatMessageList`; iOS opens the activity in a sheet so
-   the working row stays readable at narrow widths; ADE Code expands the same
-   activity from its working or turn-finished row. This is capability
-   preserving: clients show only events and file data the selected provider
-   actually emitted, without synthesizing Claude-style file histories for
-   other runtimes.
+
+   **Desktop and hosted web** implement this in `AgentChatMessageList` through
+   `ChatTurnWorkSummary` on the done divider: one expandable `N tools · M files`
+   row sits immediately above the turn's existing time/usage cutout, left-aligned
+   with Thought; expanding lists tools (`ChatToolActivityDetails`) and files
+   between that summary and the footer, which stays last. The list filters
+   `work_log_group` envelopes out of the rendered timeline entirely so grouped
+   tools never occupy a second inline row.
+
+   **iOS** puts the same counts on `WorkTurnEndMarkerView` at each
+   `turnEndMarker`, including turns that pause at a usage limit (the marker
+   shows the work summary and folds usage into the marker instead of a separate
+   usage row beside it). Tapping opens that turn's tool/file activity in a
+   sheet. `workPresentedTimelineEntries` drops settled `.toolGroup` and
+   `.changedFiles` rows from the inline transcript once a turn-end marker
+   exists; only the live turn keeps inline clusters. Chat Info still retains the
+   underlying events.
+
+   **ADE Code** mirrors the stack in `ChatView.tsx` `turnEndRows` on each
+   `turn-end` block: collapsed `N tools · M files` when present, expanded tool
+   and file entry rows when open, then the time / `Ran for` / status footer
+   last. Settled `tool-calls-group` and non-live `files-changed-group` blocks
+   are omitted from scrollback (`isTranscriptBlockVisible`).
+
+   This is capability preserving: clients show only events and file data the
+   selected provider actually emitted, without synthesizing Claude-style file
+   histories for other runtimes.
 
 Each work-log entry carries a `collapseKey` built from `turnId`,
 `logicalItemId` (preferred) or `itemId`, and tool/command identity.
