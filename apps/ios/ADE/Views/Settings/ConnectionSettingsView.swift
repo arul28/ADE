@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import UIKit
 import UserNotifications
 
 struct ConnectionSettingsView: View {
@@ -21,6 +22,15 @@ struct ConnectionSettingsView: View {
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
     ADEColorSchemeChoice(rawValue: colorSchemeRaw) ?? .system
+  }
+
+  /// "This iPhone" / "This iPad", from the device rather than a literal.
+  ///
+  /// The desktop group is sourced from `THIS_MACHINE_NAME` for exactly this
+  /// reason: a hardcoded model name is wrong on every other device, and the
+  /// user notices immediately.
+  private var thisDeviceGroupLabel: String {
+    "This \(UIDevice.current.model)"
   }
 
   var body: some View {
@@ -56,18 +66,16 @@ struct ConnectionSettingsView: View {
             .padding(.horizontal, 16)
             .padding(.top, 4)
           } else {
-            // Settings IA (M5): account card → connection status → connections
-            // (machines list, then the ways to add one).
-
-            // 1. Account card (identity / sign-in). Self-hides with no Clerk key.
-            AccountConnectionsSection(onConnectMachine: connectToAccountMachine)
-              .padding(.horizontal, 16)
-              .padding(.top, 4)
-
-            // 2. Connection status.
+            // Settings is organised by SCOPE, in the same four groups and the
+            // same order as the desktop app: Account, Preferences, this
+            // repository, this device. The group name is the answer to "where
+            // does this save", said once, instead of a badge on every row.
+            //
+            // Connection sits ABOVE the groups rather than inside one. It is
+            // not a scope — it is the thing you open Settings to fix when it
+            // breaks — so burying it under a heading would put the most urgent
+            // row behind the least urgent question.
             VStack(alignment: .leading, spacing: 12) {
-              SettingsSectionHeader(label: "CONNECTION")
-
               SettingsConnectionHeader(
                 snapshot: presentationModel.connectionSnapshot,
                 onDisconnect: { syncService.disconnectForUserConnectionChange() },
@@ -83,9 +91,15 @@ struct ConnectionSettingsView: View {
               )
             }
             .padding(.horizontal, 16)
+            .padding(.top, 4)
 
-            // 3. Connections: your machines (top 3 + See all), then how to add.
-            VStack(alignment: .leading, spacing: 16) {
+            // ── ACCOUNT ──────────────────────────────────────────────────
+            VStack(alignment: .leading, spacing: 12) {
+              SettingsSectionHeader(label: "ACCOUNT")
+
+              // Identity. Self-hides when there is no Clerk key configured.
+              AccountConnectionsSection(onConnectMachine: connectToAccountMachine)
+
               SettingsMachinesSection(
                 syncService: syncService,
                 onPairWithPin: { host in
@@ -97,16 +111,7 @@ struct ConnectionSettingsView: View {
                 snapshot: presentationModel.pairingSnapshot,
                 presentedSheet: $presentedSheet
               )
-            }
-            .padding(.horizontal, 16)
 
-            SettingsAppearanceSection()
-              .padding(.horizontal, 16)
-
-            VStack(spacing: 8) {
-              // One Usage destination — cost, activity, and live limits on a
-              // single scroll rather than a limits section here and a stats
-              // screen somewhere else.
               SettingsNavigationRow(
                 title: "Usage",
                 subtitle: "Cost, activity, and live limits",
@@ -114,6 +119,42 @@ struct ConnectionSettingsView: View {
               ) {
                 SettingsUsagePage(syncService: syncService)
               }
+            }
+            .padding(.horizontal, 16)
+
+            // ── PREFERENCES ──────────────────────────────────────────────
+            // Only what this device can act on. A phone showing a terminal
+            // font size or a lane rebase rule would be offering a control
+            // whose result it cannot show you.
+            VStack(alignment: .leading, spacing: 12) {
+              SettingsSectionHeader(
+                label: "PREFERENCES",
+                hint: "Applies to every computer you sign in on"
+              )
+
+              SettingsAppearanceSection()
+
+              SettingsNavigationRow(
+                title: "Notifications",
+                subtitle: "Alerts and Live Activities",
+                systemImage: "bell.badge"
+              ) {
+                SettingsDestinationPage(title: "Notifications") {
+                  SettingsPushDeliverySection(
+                    snapshot: presentationModel.pushDeliverySnapshot,
+                    pushService: PushNotificationService.shared
+                  )
+                }
+              }
+            }
+            .padding(.horizontal, 16)
+
+            // ── THIS DEVICE ──────────────────────────────────────────────
+            // Named from the device, never spelled out, for the same reason
+            // the desktop group is sourced rather than hardcoded: an iPad
+            // reading "This iPhone" is a small lie the user notices.
+            VStack(alignment: .leading, spacing: 12) {
+              SettingsSectionHeader(label: thisDeviceGroupLabel.uppercased())
 
               SettingsNavigationRow(
                 title: "Connection details",
@@ -124,32 +165,6 @@ struct ConnectionSettingsView: View {
                   SettingsDiagnosticsSection(
                     snapshot: presentationModel.diagnosticsSnapshot,
                     content: .connection
-                  )
-                }
-              }
-
-              SettingsNavigationRow(
-                title: "About",
-                subtitle: "App, machine, and device information",
-                systemImage: "info.circle"
-              ) {
-                SettingsDestinationPage(title: "About") {
-                  SettingsDiagnosticsSection(
-                    snapshot: presentationModel.diagnosticsSnapshot,
-                    content: .about
-                  )
-                }
-              }
-
-              SettingsNavigationRow(
-                title: "Push delivery",
-                subtitle: "Notifications and Live Activities",
-                systemImage: "bell.badge"
-              ) {
-                SettingsDestinationPage(title: "Push delivery") {
-                  SettingsPushDeliverySection(
-                    snapshot: presentationModel.pushDeliverySnapshot,
-                    pushService: PushNotificationService.shared
                   )
                 }
               }
@@ -167,8 +182,21 @@ struct ConnectionSettingsView: View {
                   )
                 }
               }
+
+              SettingsNavigationRow(
+                title: "About",
+                subtitle: "App, machine, and device information",
+                systemImage: "info.circle"
+              ) {
+                SettingsDestinationPage(title: "About") {
+                  SettingsDiagnosticsSection(
+                    snapshot: presentationModel.diagnosticsSnapshot,
+                    content: .about
+                  )
+                }
+              }
             }
-              .padding(.horizontal, 16)
+            .padding(.horizontal, 16)
           }
 
           Spacer(minLength: 20)
