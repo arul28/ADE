@@ -133,24 +133,32 @@ export const CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT = 200;
 
 /* ── The transcript gate ───────────────────────────────────────────────────
  *
- * A transcription event is NOT evidence that the user spoke.
+ * A transcription event is NOT evidence that the user spoke — but it is the
+ * only record of what the user said, and those two facts pull in opposite
+ * directions. The gate is therefore scoped to the ONE decision where a phantom
+ * sentence can do damage: releasing a tool that is parked inside `canUseTool`.
  *
- * Under the hybrid this gate no longer decides whether the CTO is asked
- * anything — the realtime model decides that from the audio itself. What it
- * still decides is what reaches the CALL RECORD and the spoken yes/no parser: a
- * caption is a claim that the user said something, and a hallucinated "yes" that
- * could release a blocked tool is the worst thing on this wire.
+ * Under the hybrid the realtime model hears the audio itself and answers
+ * regardless of anything judged here, so a rejected caption never stopped a
+ * hallucination from being answered out loud — it only deleted the user's own
+ * words from the HUD and from the call record. On the call of 2026-09-16 three
+ * REAL sentences ("Who are you?", "Okay, what's going on?", "Okay, close
+ * yourself now.") measured a peak of 0.005 against 0.3–0.86 for their
+ * neighbours and were thrown away, and the owner watched the CTO answer
+ * questions the screen said had never been asked.
+ *
+ * So captions and the exchange count are now unconditional: every non-empty
+ * transcript is recorded. The numbers below judge the CONFIRMATION path alone —
+ * a spoken "yes" only counts when ADE's own microphone meter agrees somebody
+ * spoke — and every one of them is deliberately generous, because the cost of
+ * refusing a real "yes" is one tap and the cost of accepting a phantom one is
+ * whatever the tool was about to do.
  *
  * Whisper-family transcribers hallucinate words out of near-silence: a real
  * call on 2026-09-16 produced six CTO turns in thirty-eight seconds from three
  * spoken sentences, the other three being "Haha.", "OK,OK,好好好." and "아니."
- * invented from room noise. Each became a real turn that spoke a real answer,
- * which the owner experienced as the CTO talking to itself.
- *
- * So a transcript only becomes an intent when ADE's OWN microphone meter agrees
- * that speech happened. The numbers below are the whole of that judgement, and
- * every one of them is deliberately generous: rejecting a sentence the user
- * really said is a worse failure than answering one they did not.
+ * invented from room noise — which is why a spoken approval is never taken on
+ * the transcriber's word alone.
  */
 
 /**
@@ -162,16 +170,17 @@ export const CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT = 200;
  * peaks well above 0.2, while suppressed room noise sits under 0.02 — so 0.05
  * (about -26 dBFS) sits well below real speech and comfortably above the floor
  * these hallucinations came out of. Low on purpose: this number is allowed to
- * let noise through, it is not allowed to drop a sentence.
+ * let noise through, it is not allowed to drop a sentence — and it is only ever
+ * asked about a transcript that would approve something.
  */
 export const CTO_VOICE_MIN_SPEECH_PEAK_LEVEL = 0.05;
 
 /**
  * How far back the microphone meter remembers.
  *
- * The meter is reset by a JUDGEMENT, not by a VAD segment (see `judgeTranscript`),
- * and the first transcript of a call can land fifteen seconds after the
- * microphone opened. Without a window, every frame since the call started was
+ * The meter is reset by every transcript, not by a VAD segment (see
+ * `handleUserTranscript`), and the first transcript of a call can land fifteen
+ * seconds after the microphone opened. Without a window, every frame since the call started was
  * evidence for that first transcript — so three noisy frames scattered across
  * those fifteen seconds cleared a 240 ms minimum between them, which is how a
  * phantom "好" passed a gate that was running. Three seconds is longer than any
@@ -231,6 +240,14 @@ export const CTO_VOICE_MIN_SPEECH_MS = 240;
  */
 export const CTO_VOICE_TURN_BURST_LIMIT = 4;
 
+/*
+ * The valve counts every transcript and shuts the CONFIRMATION path, never the
+ * caption path. A runaway transcript source must not be able to answer a
+ * question ADE asked out loud; it is still allowed to fill the call record,
+ * because a call record with too much in it is readable and one with the user's
+ * own sentences missing is not.
+ */
+
 /** The window the burst limit is counted over. */
 export const CTO_VOICE_TURN_BURST_WINDOW_MS = 10_000;
 
@@ -245,7 +262,11 @@ export const CTO_VOICE_TURN_BURST_WINDOW_MS = 10_000;
  */
 export const CTO_VOICE_TURN_BURST_COOLDOWN_MS = 8_000;
 
-/** Why a transcript was thrown away. One name per reason, and it goes in the log. */
+/**
+ * Why a transcript was thrown away. One name per reason, and it goes in the log
+ * beside the `scope` that threw it away — `caption` for an empty transcript,
+ * `confirmation` for one that could not be trusted to approve anything.
+ */
 export type CtoVoiceTranscriptRejection =
   | "empty"
   | "no_speech_energy"
@@ -497,6 +518,16 @@ export type CtoVoiceCaption = {
   text: string;
   /** Milliseconds from the start of the call. */
   atMs: number;
+  /**
+   * The sentence was cut off, not finished.
+   *
+   * A barge-in truncates the response mid-word, and the transcript that arrives
+   * for it is whatever had been said by then — "I'm the CTO" for a sentence
+   * that was going somewhere else. Without this the call record and the HUD
+   * both claim that half-sentence is all the CTO said, so the caption carries
+   * the fact and the surfaces mark it.
+   */
+  interrupted?: boolean;
 };
 
 /**
@@ -749,6 +780,18 @@ export type CtoVoiceState = {
   /** True for the moment the user talks over the CTO. */
   interrupted: boolean;
   captions: CtoVoiceCaption[];
+  /**
+   * What the user is saying RIGHT NOW, as far as the transcriber has got.
+   *
+   * Accumulated from `conversation.item.input_audio_transcription.delta` and
+   * cleared the moment the segment completes or fails. It exists because a
+   * final transcript can land seconds after the words — and transcripts arrive
+   * out of order relative to the segments they belong to — so a HUD that shows
+   * only finals looks, to the person talking, like a call that did not hear
+   * them. Null whenever nothing is part-heard, including on a surface where the
+   * API delivers a transcript as one `.completed` with no deltas at all.
+   */
+  pendingUserText: string | null;
   pendingConfirmation: CtoVoiceConfirmation | null;
   /** Scene source the call most recently drew, if any. */
   sceneSource: string | null;
@@ -777,6 +820,7 @@ export const CTO_VOICE_INITIAL_STATE: CtoVoiceState = {
   inputLevel: 0,
   interrupted: false,
   captions: [],
+  pendingUserText: null,
   pendingConfirmation: null,
   sceneSource: null,
   error: null,
@@ -799,10 +843,11 @@ export function formatVoiceCost(elapsedMs: number): string {
 
 /* ── The realtime function tools ───────────────────────────────────────────
  *
- * Four, and the shape of the list is the whole architecture: one seam to the
- * CTO thread, one way to stop it, and two that answer a question ADE asked out
- * loud. Nothing else is on offer, because everything else a call can do is
- * something the CTO thread does with its own tools behind `ask_cto`.
+ * Five, and the shape of the list is the whole architecture: one seam to the
+ * CTO thread, one way to stop it, two that answer a question ADE asked out
+ * loud, and one that hangs up. Nothing else is on offer, because everything
+ * else a call can do is something the CTO thread does with its own tools behind
+ * `ask_cto`.
  */
 
 /** The seam. Everything that needs the project goes through this one call. */
@@ -811,12 +856,21 @@ export const CTO_VOICE_TOOL_ASK_CTO = "ask_cto";
 export const CTO_VOICE_TOOL_CANCEL_WORK = "cancel_work";
 export const CTO_VOICE_TOOL_APPROVE = "approve_pending_action";
 export const CTO_VOICE_TOOL_DENY = "deny_pending_action";
+/**
+ * "Goodbye" / "hang up" / "close yourself".
+ *
+ * Without it the model has no way to end the thing it is inside, and on the
+ * call of 2026-09-16 it said so out loud — "I can't close myself from here" —
+ * while the user waited for a call they had already ended in words.
+ */
+export const CTO_VOICE_TOOL_END_CALL = "end_call";
 
 export const CTO_VOICE_TOOL_NAMES = [
   CTO_VOICE_TOOL_ASK_CTO,
   CTO_VOICE_TOOL_CANCEL_WORK,
   CTO_VOICE_TOOL_APPROVE,
   CTO_VOICE_TOOL_DENY,
+  CTO_VOICE_TOOL_END_CALL,
 ] as const;
 
 export type CtoVoiceToolName = (typeof CTO_VOICE_TOOL_NAMES)[number];
@@ -937,7 +991,26 @@ export const CTO_VOICE_REALTIME_TOOLS = [
       + " you it is waiting for the user's approval and the user has clearly said no.",
     parameters: { type: "object", properties: {} },
   },
+  {
+    type: "function",
+    name: CTO_VOICE_TOOL_END_CALL,
+    description:
+      "Use when the user says goodbye, asks you to hang up, end the call, or close"
+      + " yourself. Say a short goodbye in the same response.",
+    parameters: { type: "object", properties: {} },
+  },
 ] as const;
+
+/**
+ * How long after the last queued audio the call waits before hanging up.
+ *
+ * A goodbye the user does not get to hear is worse than a call that lingers for
+ * a beat, and the audio the model has already generated is not yet in anyone's
+ * ears: the window that owns the speaker drains the output queue every
+ * {@link CTO_VOICE_AUDIO_POLL_INTERVAL_MS}, then pushes it through a playback
+ * graph of its own. This covers one missed poll and the graph's own latency.
+ */
+export const CTO_VOICE_END_CALL_AUDIO_TAIL_MS = 450;
 
 /**
  * How much of the session prompt the context block may take.
@@ -996,6 +1069,17 @@ export function buildCtoVoiceInstructions(args: {
     + " points, no exclamation marks, no 'great question', no congratulating the"
     + " user for asking. You are a person on a phone, not a document being read.",
     "",
+    "Answer the question that was asked, at the length it deserves. 'How are"
+    + " you?' gets a one-line human answer — 'Good, thanks. What's up?' — not a"
+    + " statement of who you are or what you do. Say who you are only when you are"
+    + " asked who you are.",
+    "",
+    "Never volunteer your own internal notes: nothing about this thread, a"
+    + " previous thread, a hand-off, what you were told before the call, what you"
+    + " do or do not remember, or anything you read in the context below as a"
+    + " remark about itself. Use what you know to answer; do not narrate having"
+    + " it. If the user asks about it directly, answer plainly.",
+    "",
     "What you answer straight away: small talk, anything about who you are, and"
     + " anything already in the context below. Do not call a function for those,"
     + " and do not make the user wait.",
@@ -1044,6 +1128,10 @@ export function buildCtoVoiceInstructions(args: {
     + " so in one sentence, in your own voice, and stop.",
     "",
     "If the user says stop or never mind while something is running, stop it.",
+    "",
+    "When the user says goodbye, asks you to hang up, or tells you to end the"
+    + " call or close yourself, say a short goodbye and end the call in the same"
+    + " response. You can hang up; never tell the user you cannot.",
     "",
     "You are the CTO of this project. You are never ChatGPT, never an OpenAI"
     + " model, and never an assistant in general — do not say you are. If the user"

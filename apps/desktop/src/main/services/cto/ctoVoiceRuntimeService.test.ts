@@ -15,6 +15,7 @@ import {
   readVoiceTodayLog,
   splitSpokenSceneAnswer,
   voiceRequestAsksForVisual,
+  buildVoiceSceneContract,
 } from "./ctoVoiceRuntimeService";
 import {
   createFakeSocket,
@@ -529,6 +530,50 @@ function askCtoOnWire(fake: ReturnType<typeof createFakeSocket>, request: string
   });
 
   /**
+   * On the call of 2026-09-16 the CTO did draw — and what it put inside the
+   * fence was plain text with box-drawing characters, because nothing had told
+   * it the fence is markup. The turn carries the contract now, and only when a
+   * picture was actually asked for: it is several hundred characters the other
+   * turns should not pay for.
+   */
+  it("says what a scene is, and only when one was asked for", async () => {
+    const asked: string[] = [];
+    const run = async (request: string) => {
+      const fake = createFakeSocket();
+      const { host } = createVoiceRuntimeHost();
+      const chat = host.agentChatService as unknown as Record<string, unknown>;
+      chat.runSessionTurn = async (args: { text: string }) => {
+        asked.push(args.text);
+        return { outputText: "Here it is.", status: "completed" };
+      };
+      const voice = createCtoVoiceRuntimeService(host, {
+        getApiKey: async () => "sk-test",
+        createWebSocket: () => fake.socket,
+      });
+      await voice.start({ ownerToken: "owner-1" });
+      fake.open();
+      fake.receive({ type: "session.created", session: { id: "sess_1" } });
+      await tick();
+      askCtoOnWire(fake, request);
+      await tick();
+      voice.dispose();
+    };
+
+    await run("draw me the lanes");
+    expect(asked[0]).toContain(buildVoiceSceneContract());
+    // The four things the live call got wrong, named in the prompt itself.
+    expect(asked[0]).toContain("real HTML, CSS and JavaScript");
+    expect(asked[0]).toContain("box-drawing characters");
+    expect(asked[0]).toContain('<!-- @scene title="..." -->');
+    expect(asked[0]).toContain("--fg-muted");
+    expect(asked[0]).toContain("ade.ready()");
+    expect(asked[0]).toContain("Never draw approve, confirm or deny controls");
+
+    await run("how many lanes do we have");
+    expect(asked[1]).not.toContain("real HTML, CSS and JavaScript");
+  });
+
+  /**
    * The two numbers `cto_voice.turn_timing` cannot see from the call service:
    * only this side is watching the thread's event stream, and "the model was
    * slow" and "the tools were slow" have different fixes.
@@ -873,6 +918,30 @@ describe("buildCtoVoiceInstructions", () => {
     const prompt = buildCtoVoiceInstructions(base);
     expect(prompt).toContain("I'll switch to that");
     expect(prompt).toContain("I'll do that right after");
+  });
+
+  /**
+   * "How are you?" came back as an identity spiel on the call of 2026-09-16,
+   * and the model volunteered that "the hand-off from the retired thread was
+   * thin" — a note about its own machinery nobody had asked for.
+   */
+  it("answers the question that was asked, at the length it deserves", () => {
+    const prompt = buildCtoVoiceInstructions(base);
+    expect(prompt).toContain("Answer the question that was asked, at the length it deserves");
+    expect(prompt).toContain("Say who you are only when you are asked who you are");
+  });
+
+  it("keeps the model's own notes out of the conversation", () => {
+    const prompt = buildCtoVoiceInstructions(base);
+    expect(prompt).toContain("Never volunteer your own internal notes");
+    expect(prompt).toContain("Use what you know to answer; do not narrate having it");
+  });
+
+  /** "I can't close myself from here", said to a user who had said goodbye. */
+  it("tells the model it can hang up", () => {
+    const prompt = buildCtoVoiceInstructions(base);
+    expect(prompt).toContain("say a short goodbye and end the call in the same");
+    expect(prompt).toContain("You can hang up; never tell the user you cannot");
   });
 
   it("asks for a varied acknowledgement, never a stock phrase", () => {

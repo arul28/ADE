@@ -190,6 +190,44 @@ export function voiceRequestAsksForVisual(request: string): boolean {
   return CTO_VOICE_VISUAL_WORDS.some((word) => text.includes(word));
 }
 
+/**
+ * What a scene IS, said to a CTO that has never read the skill.
+ *
+ * "End your sentences with a ```scene fence" was the whole instruction, and on
+ * the call of 2026-09-16 the CTO obeyed it exactly: it drew a box out of
+ * box-drawing characters and put the plain text inside the fence. The frame
+ * renders HTML, so the user got a picture of a monospace rectangle rendered as
+ * a paragraph. Nothing had told it the fence was markup.
+ *
+ * This is the `ade-scene` skill distilled to what a one-shot voice turn can act
+ * on: the shape of the block, the variables that make it look like ADE, the
+ * things the sandbox does not have, the two layouts that are almost always
+ * right, and one example short enough to copy. The skill itself stays the long
+ * form — a turn on a call cannot be asked to go and read it.
+ */
+export function buildVoiceSceneContract(): string {
+  return [
+    `The \`\`\`${SCENE_FENCE_LANGUAGE} fence is real HTML, CSS and JavaScript — ADE renders it in a sandboxed frame. It is NEVER plain text, a code listing, ASCII art or box-drawing characters; text inside the fence renders as an unstyled paragraph.`,
+    `First line of the fence: <!-- @scene title="..." -->. Then your markup.`,
+    "Style it with ADE's own CSS variables, already set on :root: --bg, --surface, --border, --fg, --fg-muted, --accent, --success, --warning, --danger, --font-sans, --font-mono.",
+    "The frame has no network, no libraries, no remote fonts and no remote images: every value you are showing must be written into the markup, and any image must be a data: URL. Call ade.ready() when it is drawn.",
+    "Prefer a table or a grid of cards with real values and real labels. It must be readable when it stops moving — a scene that only makes sense mid-animation means nothing afterwards. Never draw approve, confirm or deny controls; ADE owns permission. Keep the whole fence under about 8 KB.",
+    "A scene looks like this:",
+    `\`\`\`${SCENE_FENCE_LANGUAGE}`,
+    '<!-- @scene title="Merged yesterday" -->',
+    "<style>",
+    "  table { width: 100%; border-collapse: collapse; font: 13px var(--font-sans); color: var(--fg); }",
+    "  th { text-align: left; color: var(--fg-muted); font-weight: 500; padding: 6px 8px; }",
+    "  td { padding: 6px 8px; border-top: 1px solid var(--border); }",
+    "  .ok { color: var(--success); }",
+    "</style>",
+    "<table><thead><tr><th>PR</th><th>Title</th><th>Checks</th></tr></thead>",
+    '<tbody><tr><td>#1237</td><td>Persistent director</td><td class="ok">passed</td></tr></tbody></table>',
+    "<script>ade.ready();</script>",
+    "```",
+  ].join("\n");
+}
+
 /** How many rows of any one kind the work board contributes. */
 const CTO_VOICE_ACTIVE_WORK_MAX_PER_KIND = 4;
 /** How many of today's log entries the block carries. */
@@ -896,7 +934,7 @@ export function createCtoVoiceRuntimeService(
               // "you may add a fence" reads as an option and "show me" did not
               // read as an instruction to draw.
               voiceRequestAsksForVisual(intent)
-                ? `The user asked to SEE this, so draw it: end your sentences with exactly one \`\`\`${SCENE_FENCE_LANGUAGE} fence containing a real rendering of what they asked for — actual values, actual labels, not a placeholder or a description of a picture. Say your sentences as well; the fence is what they look at while you talk.`
+                ? `The user asked to SEE this, so draw it: end your sentences with exactly one \`\`\`${SCENE_FENCE_LANGUAGE} fence containing a real rendering of what they asked for — actual values, actual labels, not a placeholder or a description of a picture. Say your sentences as well; the fence is what they look at while you talk.\n${buildVoiceSceneContract()}`
                 : `When a picture says it better than words, you may add exactly one \`\`\`${SCENE_FENCE_LANGUAGE} fence after your sentences. Never more than one, and never instead of speaking.`,
               // This sentence does not create the gate — the hold in
               // `setCallConfirmMode` does. It only tells the CTO what is about

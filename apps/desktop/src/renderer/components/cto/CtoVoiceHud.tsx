@@ -320,6 +320,40 @@ export function CtoVoiceHud({
                 <span style={{ color: COLORS.textDim }}>you · </span>
               ) : null}
               {latestCaption.text}
+              {/* A response the user talked over stops mid-sentence, and the
+                  transcript is whatever had been said by then. The ellipsis is
+                  the difference between "that is all it said" and "that is
+                  where you cut it off". */}
+              {latestCaption.interrupted ? (
+                <span style={{ color: COLORS.textDim }} data-testid="cto-voice-caption-cut">…</span>
+              ) : null}
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+
+        {/* What the user is saying right now, as the transcriber hears it.
+            Dim and italic because it is not yet a fact: it is still being
+            revised. It sits under the captions so the finished line and the
+            one being spoken never swap places. Without it the HUD stayed
+            blank for the seconds a final transcript takes, and the user
+            repeated themselves into a call that had heard them. */}
+        <AnimatePresence>
+          {showCaptions && state.pendingUserText ? (
+            <motion.div
+              key="pending-user-text"
+              initial={reduced ? false : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="max-w-[420px] rounded-xl px-3 py-1.5 text-[11px] italic leading-snug"
+              style={{
+                background: "rgba(10,9,14,0.78)",
+                border: `1px solid ${COLORS.borderMuted}`,
+                color: COLORS.textDim,
+              }}
+              data-testid="cto-voice-pending-caption"
+            >
+              <span>you · </span>
+              {state.pendingUserText}
             </motion.div>
           ) : null}
         </AnimatePresence>

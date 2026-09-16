@@ -8,6 +8,7 @@ import {
   type CtoVoiceSocket,
 } from "./ctoVoiceCallService";
 import {
+  CTO_VOICE_END_CALL_AUDIO_TAIL_MS,
   CTO_VOICE_MIN_SPEECH_MS,
   CTO_VOICE_MODEL,
   CTO_VOICE_SAMPLE_RATE,
@@ -218,7 +219,7 @@ describe("createCtoVoiceCallService", () => {
       create_response: true,
       interrupt_response: true,
     });
-    // The four functions, and nothing else: everything a call can DO happens on
+    // The five functions, and nothing else: everything a call can DO happens on
     // the other side of `ask_cto`.
     expect(update.session.tool_choice).toBe("auto");
     expect((update.session.tools as Array<{ name: string }>).map((tool) => tool.name))
@@ -1440,7 +1441,30 @@ describe("the transcript gate", () => {
   function rejections(info: ReturnType<typeof vi.fn>) {
     return info.mock.calls
       .filter(([event]) => event === "cto_voice.transcript_rejected")
-      .map(([, meta]) => meta as { reason: string; text: string });
+      .map(([, meta]) => meta as { reason: string; text: string; scope: string });
+  }
+
+  /**
+   * A question ADE asked out loud, so the meter has something to judge.
+   *
+   * The gate is scoped to this path alone now: everywhere else a transcript is
+   * captioned whatever the microphone thought, because rejecting it never
+   * stopped the realtime model answering — it only deleted the user's words.
+   */
+  function askForApproval(harness: ReturnType<typeof createService>) {
+    harness.service.raiseApproval({
+      itemId: "item-1",
+      toolName: "openPr",
+      prompt: "Open a pull request for ade/sync-fix?",
+    });
+    // The question is spoken, and the answer arrives after it has been said —
+    // otherwise every frame of the reply lands while a response is in flight
+    // and the echo rule, not the energy rule, is what refuses it.
+    harness.fake.receive({ type: "response.created", response: { id: "resp_ask" } });
+    harness.fake.receive({
+      type: "response.done",
+      response: { id: "resp_ask", status: "completed", output: [] },
+    });
   }
 
   function gatedCall() {
@@ -1467,25 +1491,56 @@ describe("the transcript gate", () => {
     expect(spoken(harness.fake)).toEqual([]);
     expect(harness.latest().captions).toEqual([]);
     expect(rejections(info).map((entry) => entry.reason)).toEqual(["empty", "empty"]);
+    expect(new Set(rejections(info).map((entry) => entry.scope))).toEqual(new Set(["caption"]));
   });
 
-  it("throws away words the transcriber invented out of a quiet room", async () => {
-    const { harness, info } = gatedCall();
+  /**
+   * The failure this scoping exists for.
+   *
+   * On the call of 2026-09-16 three REAL sentences measured a peak of 0.005 and
+   * were thrown away, so the user watched the CTO answer questions the HUD said
+   * had never been asked. The model answers from the audio whatever the meter
+   * thinks, so a rejected caption only ever deletes the user's own words.
+   */
+  it("writes down what the user said even when the meter heard nothing", async () => {
+    const { harness, info, captions } = gatedCall();
     await openCall(harness);
 
-    // The exact transcripts from the owner's call, over the microphone level a
-    // quiet room actually produces.
-    for (const phantom of ["Haha.", "OK,OK,好好好。", "아니."]) {
-      utter(harness, phantom, { level: ROOM_NOISE_LEVEL });
-      await tick();
-    }
+    utter(harness, "Who are you?", { level: 0.005 });
+    await tick();
+    utter(harness, "Okay, what's going on?", { level: 0 });
+    await tick();
 
-    expect(spoken(harness.fake)).toEqual([]);
-    expect(harness.latest().captions).toEqual([]);
-    expect(rejections(info).map((entry) => entry.text))
-      .toEqual(["Haha.", "OK,OK,好好好。", "아니."]);
-    expect(new Set(rejections(info).map((entry) => entry.reason)))
-      .toEqual(new Set(["no_speech_energy"]));
+    expect(captions()).toEqual(["Who are you?", "Okay, what's going on?"]);
+    expect(rejections(info)).toEqual([]);
+  });
+
+  it("will not let a phantom yes approve anything", async () => {
+    const { harness, info, captions } = gatedCall();
+    await openCall(harness);
+    askForApproval(harness);
+
+    // The transcriber writes a word out of a quiet room while a tool is parked
+    // inside `canUseTool`. It is written down — it is the only record of what
+    // the transcriber claimed — and it decides nothing.
+    utter(harness, "yes", { level: ROOM_NOISE_LEVEL });
+    await tick();
+
+    expect(captions()).toContain("yes");
+    expect(harness.latest().pendingConfirmation?.toolName).toBe("openPr");
+    expect(rejections(info).map((entry) => ({ reason: entry.reason, scope: entry.scope })))
+      .toEqual([{ reason: "no_speech_energy", scope: "confirmation" }]);
+  });
+
+  it("lets a yes the microphone heard release the question", async () => {
+    const { harness } = gatedCall();
+    await openCall(harness);
+    askForApproval(harness);
+
+    utter(harness, "yes");
+    await tick();
+
+    expect(harness.latest().pendingConfirmation).toBeNull();
   });
 
   it("writes down a transcript the microphone heard the user say", async () => {
@@ -1510,21 +1565,25 @@ describe("the transcript gate", () => {
     expect(captions()).toEqual(["yes"]);
   });
 
-  it("rejects a click that carried a sentence", async () => {
+  it("refuses a decision to a click that carried a sentence", async () => {
     const { harness, info, captions } = gatedCall();
     await openCall(harness);
+    askForApproval(harness);
 
-    // One loud frame — 85 ms — is a door or a keyboard, not a sentence.
-    utter(harness, "ship it", { frames: 1 });
+    // One loud frame — 85 ms — is a door or a keyboard, not a spoken "go
+    // ahead". It is captioned; it does not open the gate.
+    utter(harness, "go ahead", { frames: 1 });
     await tick();
 
-    expect(captions()).toEqual([]);
+    expect(captions()).toContain("go ahead");
+    expect(harness.latest().pendingConfirmation?.toolName).toBe("openPr");
     expect(rejections(info).map((entry) => entry.reason)).toEqual(["too_short"]);
   });
 
   it("ignores its own voice arriving back through the microphone", async () => {
     const { harness, info } = gatedCall();
     await openCall(harness);
+    askForApproval(harness);
 
     // ADE is speaking, and every frame of the segment lands under that speech at
     // the level echo cancellation leaves behind.
@@ -1534,15 +1593,15 @@ describe("the transcript gate", () => {
     harness.fake.receive({ type: "input_audio_buffer.speech_stopped" });
     harness.fake.receive({
       type: "conversation.item.input_audio_transcription.completed",
-      transcript: "Three merged yesterday.",
+      transcript: "Yes, go ahead.",
     });
     await tick();
 
-    expect(harness.latest().captions).toEqual([]);
+    expect(harness.latest().pendingConfirmation?.toolName).toBe("openPr");
     expect(rejections(info).map((entry) => entry.reason)).toEqual(["echo"]);
   });
 
-  it("shuts the gate on a runaway, and opens it again after quiet", async () => {
+  it("shuts the confirmation path on a runaway, and opens it again after quiet", async () => {
     let clock = 1_000_000;
     const info = vi.fn();
     const harness = createService({ logger: { info, warn: vi.fn() }, now: () => clock } as never);
@@ -1560,20 +1619,23 @@ describe("the transcript gate", () => {
     expect(info.mock.calls.some(([event]) => event === "cto_voice.transcript_valve_tripped"))
       .toBe(true);
 
-    // Real speech is now turned away too: a gate that only half closes does not
-    // stop a runaway.
+    // The valve shuts the DECISION, never the record: a transcript source
+    // running away must not be able to answer a question ADE asked out loud,
+    // and it is still allowed to fill the call record.
+    askForApproval(harness);
     clock += 1_500;
-    utter(harness, "please stop");
+    utter(harness, "yes");
     await tick();
-    expect(captions()).toHaveLength(5);
+    expect(captions().at(-1)).toBe("yes");
+    expect(harness.latest().pendingConfirmation?.toolName).toBe("openPr");
     expect(rejections(info).map((entry) => entry.reason)).toEqual(["runaway"]);
 
-    // Quiet is what opens it: no transcript for the cooldown, and the user has
-    // their call back.
+    // Quiet is what opens it: no transcript for the cooldown, and the user's
+    // spoken answer counts again.
     clock += CTO_VOICE_TURN_BURST_COOLDOWN_MS + 1;
-    utter(harness, "are you there");
+    utter(harness, "yes");
     await tick();
-    expect(captions().at(-1)).toBe("are you there");
+    expect(harness.latest().pendingConfirmation).toBeNull();
     expect(info.mock.calls.some(([event]) => event === "cto_voice.transcript_valve_cleared"))
       .toBe(true);
   });
@@ -1617,6 +1679,7 @@ describe("the transcript gate", () => {
   it("does not add up transients scattered across a long quiet stretch", async () => {
     const call = timedCall();
     await openCall(call.harness);
+    askForApproval(call.harness);
 
     // Fifteen seconds of a room the renderer never stops metering: mostly
     // silence, with one transient — a key, a chair — about once a second. The
@@ -1633,11 +1696,11 @@ describe("the transcript gate", () => {
     }
     call.harness.fake.receive({
       type: "conversation.item.input_audio_transcription.completed",
-      transcript: "好",
+      transcript: "yes",
     });
     await tick();
 
-    expect(call.captions()).toEqual([]);
+    expect(call.harness.latest().pendingConfirmation?.toolName).toBe("openPr");
     expect(rejections(call.info).map((entry) => entry.reason)).toEqual(["too_short"]);
   });
 
@@ -1668,6 +1731,7 @@ describe("the transcript gate", () => {
   it("forgets a loud moment that has fallen out of the window", async () => {
     const call = timedCall();
     await openCall(call.harness);
+    askForApproval(call.harness);
 
     // A real sentence, and then ten seconds of nothing. The sentence is over
     // and it does not get to vouch for whatever the transcriber writes next.
@@ -1680,11 +1744,11 @@ describe("the transcript gate", () => {
     call.advance(85);
     call.harness.fake.receive({
       type: "conversation.item.input_audio_transcription.completed",
-      transcript: "아니.",
+      transcript: "yes",
     });
     await tick();
 
-    expect(call.captions()).toEqual([]);
+    expect(call.harness.latest().pendingConfirmation?.toolName).toBe("openPr");
     expect(rejections(call.info).map((entry) => entry.reason)).toEqual(["too_short"]);
   });
 
@@ -1751,7 +1815,15 @@ describe("what a call tells the CTO row", () => {
     expect(reports.at(-1)).toEqual({ exchanges: 3, live: false });
   });
 
-  it("does not count a transcript nobody said", async () => {
+  /**
+   * An exchange is a transcript with words in it, and nothing else.
+   *
+   * The meter used to decide this too, and on the call of 2026-09-16 it
+   * subtracted three sentences the user really said from a count the CTO row
+   * shows them. Silence the transcriber wrote punctuation for is still not an
+   * exchange, because there is nothing in it.
+   */
+  it("counts every transcript with words in it, and nothing without", async () => {
     const reports: Array<{ exchanges: number; live: boolean }> = [];
     const harness = createService({
       backchannelsEnabled: () => false,
@@ -1763,10 +1835,13 @@ describe("what a call tells the CTO row", () => {
     utter(harness, "hey there");
     await tick();
     harness.fake.receive({ type: "response.done", response: { status: "completed" } });
-    utter(harness, "OK,OK,好好好。", { level: ROOM_NOISE_LEVEL });
+    // A sentence the meter did not hear is still a sentence the user said.
+    utter(harness, "what's going on", { level: 0 });
+    await tick();
+    utter(harness, " … ");
     await tick();
 
-    expect(reports).toEqual([{ exchanges: 1, live: true }]);
+    expect(reports).toEqual([{ exchanges: 1, live: true }, { exchanges: 2, live: true }]);
   });
 
   it("reads as one exchange in the singular, and as none before anything is said", async () => {
@@ -1776,6 +1851,224 @@ describe("what a call tells the CTO row", () => {
     expect(ctoVoiceStatusLine({ exchanges: 0, live: false })).toBe("Voice call ended");
     expect(ctoVoiceStatusLine({ exchanges: 2, live: false }))
       .toBe("Voice call ended · 2 exchanges");
+  });
+});
+
+/**
+ * The words appearing as they are heard.
+ *
+ * A final transcript can land seconds after the sentence, and on the call of
+ * 2026-09-16 the owner repeated themselves into a HUD that showed nothing until
+ * it did.
+ */
+describe("the live partial caption", () => {
+  it("shows what is being heard, and clears it when the transcript lands", async () => {
+    const harness = createService();
+    await openCall(harness);
+
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.delta",
+      delta: "what merged",
+    });
+    expect(harness.latest().pendingUserText).toBe("what merged");
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.delta",
+      delta: " yesterday",
+    });
+    expect(harness.latest().pendingUserText).toBe("what merged yesterday");
+
+    hearMic(harness);
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "what merged yesterday",
+    });
+    await tick();
+
+    expect(harness.latest().pendingUserText).toBeNull();
+    expect(harness.latest().captions.map((caption) => caption.text))
+      .toEqual(["what merged yesterday"]);
+  });
+
+  it("clears the partial when the transcription fails", async () => {
+    const harness = createService();
+    await openCall(harness);
+
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.delta",
+      delta: "what mer",
+    });
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.failed",
+      error: { message: "audio too short" },
+    });
+    await tick();
+
+    expect(harness.latest().pendingUserText).toBeNull();
+  });
+
+  /**
+   * Some surfaces deliver a transcript as one `.completed` with no deltas at
+   * all, and nothing about the captions may depend on the deltas arriving.
+   */
+  it("changes nothing when the API sends no deltas", async () => {
+    const harness = createService();
+    await openCall(harness);
+
+    utter(harness, "what merged yesterday");
+    await tick();
+
+    expect(harness.latest().pendingUserText).toBeNull();
+    expect(harness.latest().captions.map((caption) => caption.text))
+      .toEqual(["what merged yesterday"]);
+  });
+});
+
+/**
+ * A call the CTO can end.
+ *
+ * On the call of 2026-09-16 the user said "close yourself now" and the model
+ * answered that it could not — there was no tool for it, so the only way out of
+ * a call was the End button.
+ */
+describe("end_call", () => {
+  /** The audio one second of PCM16 at the session rate is carried in. */
+  const ONE_SECOND_OF_AUDIO = Buffer.alloc(CTO_VOICE_SAMPLE_RATE * 2).toString("base64");
+
+  function endCallOnWire(harness: ReturnType<typeof createService>) {
+    harness.fake.receive({
+      type: "response.done",
+      response: {
+        id: "resp_bye",
+        status: "completed",
+        output: [{ type: "function_call", name: "end_call", call_id: "call_bye", arguments: "{}" }],
+      },
+    });
+  }
+
+  it("says goodbye, waits for the audio, then ends the call as a normal ending", async () => {
+    vi.useFakeTimers();
+    try {
+      const ended: string[] = [];
+      const harness = createService({
+        logger: {
+          info: (event: string, meta?: unknown) => {
+            if (event === "cto_voice.call_end") ended.push(String((meta as { reason?: unknown }).reason));
+          },
+          warn: vi.fn(),
+        },
+      } as never);
+      await openCall(harness);
+
+      // The goodbye is spoken in the same response the call arrives in, so its
+      // audio is already on the wire when the call is dispatched.
+      harness.fake.receive({ type: "response.created", response: { id: "resp_bye" } });
+      harness.fake.receive({ type: "response.output_audio.delta", delta: ONE_SECOND_OF_AUDIO });
+      endCallOnWire(harness);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The call answers its own function call and does not ask for a second
+      // response to talk over the goodbye.
+      const outputs = harness.fake.sent.filter((message) => {
+        const item = message.item as { type?: unknown } | undefined;
+        return item?.type === "function_call_output";
+      });
+      expect(outputs).toHaveLength(1);
+
+      // Still up while the goodbye is playing: hanging up on `response.done`
+      // cuts the one sentence the user is guaranteed to be listening to.
+      expect(harness.latest().phase).not.toBe("ended");
+      await vi.advanceTimersByTimeAsync(900);
+      expect(harness.latest().phase).not.toBe("ended");
+
+      await vi.advanceTimersByTimeAsync(100 + CTO_VOICE_END_CALL_AUDIO_TAIL_MS);
+      expect(harness.latest().phase).toBe("ended");
+      expect(harness.latest().error).toBeNull();
+      expect(ended).toEqual(["assistant_end"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends after the tail alone when the model said goodbye without audio", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createService();
+      await openCall(harness);
+
+      endCallOnWire(harness);
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_END_CALL_AUDIO_TAIL_MS + 1);
+
+      expect(harness.latest().phase).toBe("ended");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("arms one hang-up however many times the model asks for it", async () => {
+    vi.useFakeTimers();
+    try {
+      const persistCall = vi.fn(async () => {});
+      const harness = createService({ persistCall } as never);
+      await openCall(harness);
+
+      endCallOnWire(harness);
+      harness.fake.receive({
+        type: "response.function_call_arguments.done",
+        name: "end_call",
+        call_id: "call_bye_2",
+        arguments: "{}",
+      });
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_END_CALL_AUDIO_TAIL_MS + 1);
+
+      expect(persistCall).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * A caption that was cut off says so.
+ *
+ * A barge-in truncates the response mid-word and the transcript that arrives is
+ * whatever had been said — "I'm the CTO" for a sentence going somewhere else —
+ * so the record has to carry the fact that the user stopped it.
+ */
+describe("an interrupted caption", () => {
+  it("marks the assistant caption the user talked over", async () => {
+    const harness = createService();
+    await openCall(harness);
+
+    harness.fake.receive({ type: "response.created", response: { id: "resp_1" } });
+    harness.fake.receive({ type: "response.output_audio_transcript.delta", delta: "I'm" });
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    harness.fake.receive({
+      type: "response.output_audio_transcript.done",
+      transcript: "I'm the CTO",
+    });
+    await tick();
+
+    expect(harness.latest().captions.at(-1)).toMatchObject({
+      role: "assistant",
+      text: "I'm the CTO",
+      interrupted: true,
+    });
+  });
+
+  it("leaves an ordinary answer unmarked", async () => {
+    const harness = createService();
+    await openCall(harness);
+
+    harness.fake.receive({ type: "response.created", response: { id: "resp_1" } });
+    harness.fake.receive({
+      type: "response.output_audio_transcript.done",
+      transcript: "Three merged yesterday.",
+    });
+    await tick();
+
+    expect(harness.latest().captions.at(-1)?.interrupted).toBeUndefined();
   });
 });
 
