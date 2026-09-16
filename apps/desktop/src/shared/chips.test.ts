@@ -123,3 +123,17 @@ describe("cross-surface fixture", () => {
     expect(chipDisplayLabel(chip)).toBe(label);
   });
 });
+
+describe("cross-surface fixture: mentions", () => {
+  // The iOS suite drives these same rows through its Swift mention grammar.
+  // Driving them here too is what makes the fixture a two-sided gate: a row
+  // that only one side asserts gates nothing.
+  it("has rows, so an emptied mention fixture cannot pass silently", () => {
+    expect(chipCases.mentions.length).toBeGreaterThan(5);
+  });
+
+  it.each(chipCases.mentions)("$text", ({ text, chips }) => {
+    const found = parseChips(text).map((chip) => ({ kind: chip.kind, token: chip.token, label: chip.label }));
+    expect(found).toEqual(chips);
+  });
+});
