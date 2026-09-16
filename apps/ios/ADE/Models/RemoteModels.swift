@@ -1546,6 +1546,9 @@ struct CtoRecentSession: Codable, Hashable, Identifiable {
   var provider: String?
   var modelId: String?
   var capabilityMode: String?
+  /// Optional: hosts released before the count shipped omit it, and so does any
+  /// session whose transcript could not be read.
+  var turnCount: Int?
   var createdAt: String?
 }
 

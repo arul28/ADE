@@ -30,6 +30,15 @@ export type MicrophoneAccessResult = {
   status: MicrophoneAccessStatus;
   /** Null when access was granted. The reason a caller can act on otherwise. */
   block: CtoVoiceMicrophoneBlockKind | null;
+  /**
+   * What a denial on THIS build means, whether or not one happened.
+   *
+   * `getUserMedia` can refuse with `NotAllowedError` long after this gate said
+   * yes, and only the main process knows whether that refusal is something the
+   * user can grant. Answering it here keeps `isPackaged` out of the renderer
+   * rather than shipping a second copy of the same judgement.
+   */
+  deniedBlock: CtoVoiceMicrophoneBlockKind;
 };
 
 /**
@@ -57,27 +66,30 @@ export async function requestMicrophoneAccess(
       // included, so the settings pane really is the fix and "start it from a
       // terminal" would be false advice.
       if (status === "denied" || status === "restricted") {
-        return { status, block: "os-denied" };
+        return { status, block: "os-denied", deniedBlock: "os-denied" };
       }
-      return { status: "granted", block: null };
+      return { status: "granted", block: null, deniedBlock: "os-denied" };
     } catch {
-      return { status: "granted", block: null };
+      return { status: "granted", block: null, deniedBlock: "os-denied" };
     }
   }
 
   if (platform !== "darwin") {
-    return { status: "granted", block: null };
+    return { status: "granted", block: null, deniedBlock: "os-denied" };
   }
 
-  /** A settled macOS refusal, attributed to whoever can actually undo it. */
+  /** Whoever can actually undo a refusal on this build. */
+  const deniedBlock: CtoVoiceMicrophoneBlockKind = options.isPackaged ? "os-denied" : "dev-build";
+  /** A settled macOS refusal, attributed to them. */
   const refused = (status: MicrophoneAccessStatus): MicrophoneAccessResult => ({
     status,
-    block: options.isPackaged ? "os-denied" : "dev-build",
+    block: deniedBlock,
+    deniedBlock,
   });
 
   const current = preferences.getMediaAccessStatus("microphone");
   if (current === "granted") {
-    return { status: "granted", block: null };
+    return { status: "granted", block: null, deniedBlock };
   }
   if (current === "not-determined") {
     try {
@@ -85,7 +97,7 @@ export async function requestMicrophoneAccess(
       // does; on an unsigned one it returns false without showing anything,
       // which is the whole reason the answer below is attributed differently.
       const granted = await preferences.askForMediaAccess("microphone");
-      return granted ? { status: "granted", block: null } : refused("denied");
+      return granted ? { status: "granted", block: null, deniedBlock } : refused("denied");
     } catch {
       return refused("denied");
     }

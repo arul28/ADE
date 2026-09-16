@@ -35,6 +35,7 @@ function installBridge(overrides: {
   micStatus?: string;
   micBlock?: string | null;
   getUserMedia?: () => Promise<MediaStream>;
+  audioInputs?: number;
   platform?: string;
 } = {}) {
   // Typed with the parameter so the reason it carries can be asserted.
@@ -64,7 +65,11 @@ function installBridge(overrides: {
     configurable: true,
     value: {
       getUserMedia: overrides.getUserMedia
-        ?? (() => Promise.reject(new Error("Permission denied"))),
+        ?? (() => Promise.reject(new DOMException("Could not start source", "NotReadableError"))),
+      enumerateDevices: async () => Array.from(
+        { length: overrides.audioInputs ?? 1 },
+        (_unused, index) => ({ kind: "audioinput", deviceId: `mic-${index}` }),
+      ),
     },
   });
   return { end };
@@ -85,13 +90,31 @@ describe("useCtoVoiceAudioOwner", () => {
     // `granted` plus a rejected `getUserMedia` is not a permissions problem, and
     // sending the user to a settings pane where ADE is already ticked is the
     // failure this classification exists to stop.
-    const { end } = installBridge();
+    const { end } = installBridge({
+      getUserMedia: () => Promise.reject(new DOMException("Could not start source", "NotReadableError")),
+    });
 
     render(<AudioOwner state={liveOwner} />);
 
     await waitFor(() => expect(end).toHaveBeenCalled());
     expect(end).toHaveBeenCalledWith(ctoVoiceMicrophoneMessage("in-use", "darwin"));
     expect(end.mock.calls[0]?.[0]).toBe("Another app may be holding the microphone. Close it and try again.");
+  });
+
+  it("says there is no microphone when the machine has no input at all", async () => {
+    // The owner's Mac Studio: the OS grant is fine and there is simply nothing
+    // to open. Sending him to a privacy pane where ADE was already ticked is
+    // the answer this replaces.
+    const getUserMedia = vi.fn(async () => { throw new Error("must not be asked"); });
+    const { end } = installBridge({ audioInputs: 0, getUserMedia });
+
+    render(<AudioOwner state={liveOwner} />);
+
+    await waitFor(() => expect(end).toHaveBeenCalled());
+    expect(end.mock.calls[0]?.[0]).toBe(
+      "No microphone is connected. Plug one in or pick an input under System Settings, Sound.",
+    );
+    expect(getUserMedia).not.toHaveBeenCalled();
   });
 
   it("sends a development build to the sentence it can act on", async () => {

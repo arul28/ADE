@@ -1352,7 +1352,9 @@ declare global {
         requestMicAccess: () => Promise<{
           status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
           /** Why it was refused, when it was. Absent on older hosts. */
-          block?: "os-denied" | "dev-build" | "in-use" | "unavailable" | null;
+          block?: "os-denied" | "dev-build" | "no-device" | "in-use" | "unavailable" | null;
+          /** What a later `NotAllowedError` would mean on this build. */
+          deniedBlock?: "os-denied" | "dev-build" | "no-device" | "in-use" | "unavailable";
         }>;
       };
       modelPicker: {

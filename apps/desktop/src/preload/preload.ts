@@ -5078,7 +5078,8 @@ const adeBridge = {
     // refusal is not one the user can grant in System Settings.
     requestMicAccess: async (): Promise<{
       status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
-      block?: "os-denied" | "dev-build" | "in-use" | "unavailable" | null;
+      block?: "os-denied" | "dev-build" | "no-device" | "in-use" | "unavailable" | null;
+      deniedBlock?: "os-denied" | "dev-build" | "no-device" | "in-use" | "unavailable";
     }> => ipcRenderer.invoke(IPC.transcriptionRequestMicAccess),
   },
   modelPicker: {

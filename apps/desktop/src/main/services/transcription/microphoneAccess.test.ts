@@ -14,7 +14,7 @@ describe("requestMicrophoneAccess", () => {
     const deps = preferences("denied");
 
     await expect(requestMicrophoneAccess("win32", deps, { isPackaged: true }))
-      .resolves.toEqual({ status: "denied", block: "os-denied" });
+      .resolves.toEqual({ status: "denied", block: "os-denied", deniedBlock: "os-denied" });
     expect(deps.getMediaAccessStatus).toHaveBeenCalledWith("microphone");
     expect(deps.askForMediaAccess).not.toHaveBeenCalled();
   });
@@ -26,14 +26,14 @@ describe("requestMicrophoneAccess", () => {
     const deps = preferences("denied");
 
     await expect(requestMicrophoneAccess("win32", deps, { isPackaged: false }))
-      .resolves.toEqual({ status: "denied", block: "os-denied" });
+      .resolves.toEqual({ status: "denied", block: "os-denied", deniedBlock: "os-denied" });
   });
 
   it("lets Chromium handle Windows microphone access when the global policy is inconclusive", async () => {
     const deps = preferences("unknown");
 
     await expect(requestMicrophoneAccess("win32", deps, { isPackaged: true }))
-      .resolves.toEqual({ status: "granted", block: null });
+      .resolves.toEqual({ status: "granted", block: null, deniedBlock: "os-denied" });
     expect(deps.askForMediaAccess).not.toHaveBeenCalled();
   });
 
@@ -43,7 +43,7 @@ describe("requestMicrophoneAccess", () => {
     const deps = preferences("not-determined", true);
 
     await expect(requestMicrophoneAccess("darwin", deps, { isPackaged: true }))
-      .resolves.toEqual({ status: "granted", block: null });
+      .resolves.toEqual({ status: "granted", block: null, deniedBlock: "os-denied" });
     expect(deps.askForMediaAccess).toHaveBeenCalledWith("microphone");
   });
 
@@ -51,7 +51,7 @@ describe("requestMicrophoneAccess", () => {
     const deps = preferences("not-determined", false);
 
     await expect(requestMicrophoneAccess("darwin", deps, { isPackaged: true }))
-      .resolves.toEqual({ status: "denied", block: "os-denied" });
+      .resolves.toEqual({ status: "denied", block: "os-denied", deniedBlock: "os-denied" });
   });
 
   it("calls the same refusal on an unpackaged build a development build", async () => {
@@ -61,16 +61,16 @@ describe("requestMicrophoneAccess", () => {
     const deps = preferences("not-determined", false);
 
     await expect(requestMicrophoneAccess("darwin", deps, { isPackaged: false }))
-      .resolves.toEqual({ status: "denied", block: "dev-build" });
+      .resolves.toEqual({ status: "denied", block: "dev-build", deniedBlock: "dev-build" });
     expect(deps.askForMediaAccess).toHaveBeenCalledWith("microphone");
   });
 
   it("attributes a settled macOS denial by who can undo it", async () => {
     for (const status of ["denied", "restricted"] as const) {
       await expect(requestMicrophoneAccess("darwin", preferences(status), { isPackaged: true }))
-        .resolves.toEqual({ status, block: "os-denied" });
+        .resolves.toEqual({ status, block: "os-denied", deniedBlock: "os-denied" });
       await expect(requestMicrophoneAccess("darwin", preferences(status), { isPackaged: false }))
-        .resolves.toEqual({ status, block: "dev-build" });
+        .resolves.toEqual({ status, block: "dev-build", deniedBlock: "dev-build" });
     }
   });
 
@@ -81,14 +81,14 @@ describe("requestMicrophoneAccess", () => {
     };
 
     await expect(requestMicrophoneAccess("darwin", deps, { isPackaged: false }))
-      .resolves.toEqual({ status: "denied", block: "dev-build" });
+      .resolves.toEqual({ status: "denied", block: "dev-build", deniedBlock: "dev-build" });
   });
 
   it("leaves unsupported platforms to Chromium permission handling", async () => {
     const deps = preferences("denied");
 
     await expect(requestMicrophoneAccess("linux", deps, { isPackaged: true }))
-      .resolves.toEqual({ status: "granted", block: null });
+      .resolves.toEqual({ status: "granted", block: null, deniedBlock: "os-denied" });
     expect(deps.getMediaAccessStatus).not.toHaveBeenCalled();
   });
 });

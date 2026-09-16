@@ -54,6 +54,13 @@ function relativeTime(iso: string, now: Date = new Date()): string {
   return `${Math.floor(seconds / 86_400)}d ago`;
 }
 
+/** "12 turns", or null when the session predates the count or lost its transcript. */
+export function sessionTurns(entry: CtoSessionLogEntry): string | null {
+  const turns = entry.turnCount;
+  if (typeof turns !== "number" || !Number.isFinite(turns) || turns < 0) return null;
+  return `${turns} ${turns === 1 ? "turn" : "turns"}`;
+}
+
 /** Null while a session is still open — there is no duration to state yet. */
 export function sessionDuration(entry: CtoSessionLogEntry): string | null {
   if (!entry.endedAt) return null;
@@ -92,6 +99,7 @@ function Meta({ children, width }: { children: React.ReactNode; width?: number }
 function SessionRow({ entry, onOpen }: { entry: CtoSessionLogEntry; onOpen?: (entry: CtoSessionLogEntry) => void }) {
   const model = entry.modelId ? getModelById(entry.modelId) : undefined;
   const duration = sessionDuration(entry);
+  const turns = sessionTurns(entry);
   const title = sessionTitle(entry);
   const interactive = Boolean(onOpen);
   return (
@@ -156,7 +164,10 @@ function SessionRow({ entry, onOpen }: { entry: CtoSessionLogEntry; onOpen?: (en
       {entry.capabilityMode === "fallback" ? <Meta>Limited tools</Meta> : null}
 
       {/* Fixed, right-aligned so the numbers form columns down the list
-          instead of drifting with the width of whatever is beside them. */}
+          instead of drifting with the width of whatever is beside them. An
+          entry with no count renders the column empty rather than shifting
+          every row beside it. */}
+      <Meta width={58}>{turns ?? ""}</Meta>
       <Meta width={52}>{duration ?? ""}</Meta>
       <Meta width={62}>{relativeTime(entry.createdAt)}</Meta>
     </div>

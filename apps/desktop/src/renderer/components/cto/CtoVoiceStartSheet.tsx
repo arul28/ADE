@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { OpenAiKeySheet } from "../settings/OpenAiKeySheet";
 import {
@@ -65,19 +65,43 @@ type SheetFailure = {
 };
 
 /**
- * Open the OS pane for the microphone.
+ * The pane that can actually fix this cause, and what the button should say.
  *
- * By pane id, never by URL: `x-apple.systempreferences:` and `ms-settings:` are
- * deliberately outside the external-URL scheme allowlist, so main resolves a
- * small enum against a vetted table instead of the renderer handing it a
- * string. See `shared/types/systemSettings.ts`.
+ * Permission and hardware are different problems in different panes: a machine
+ * with no microphone needs the one that lists INPUTS, not the one that lists
+ * apps, and sending it to the permission pane is how "ADE is already allowed"
+ * becomes a dead end.
  */
-async function openMicrophoneSettings(): Promise<void> {
+function settingsActionFor(kind: CtoVoiceMicrophoneBlockKind | null): {
+  label: string;
+  paneId: SystemSettingsPaneId;
+} | null {
+  if (!kind) return null;
+  const windows = rendererRuntimeTarget().platform === "win32";
+  if (kind === "no-device" || kind === "unavailable") {
+    return {
+      label: "Open sound settings",
+      paneId: windows ? "windows-sound" : "macos-sound-input",
+    };
+  }
+  if (kind === "in-use") return null;
+  return {
+    label: "Open microphone settings",
+    paneId: windows ? "windows-microphone" : "macos-microphone",
+  };
+}
+
+/**
+ * Open an OS pane by id, never by URL.
+ *
+ * `x-apple.systempreferences:` and `ms-settings:` are deliberately outside the
+ * external-URL scheme allowlist, so main resolves a small enum against a vetted
+ * table instead of the renderer handing it a string. See
+ * `shared/types/systemSettings.ts`.
+ */
+async function openSettingsPane(paneId: SystemSettingsPaneId): Promise<void> {
   const open = window.ade?.app?.openSystemSettingsPane;
   if (!open) return;
-  const paneId: SystemSettingsPaneId = rendererRuntimeTarget().platform === "win32"
-    ? "windows-microphone"
-    : "macos-microphone";
   try {
     await open(paneId);
   } catch {
@@ -115,7 +139,11 @@ function SheetButton({
 export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
   const { state, start } = useCtoVoiceCall();
   const microphoneFailure = useCtoMicrophoneFailure();
-  const [phase, setPhase] = useState<"key" | "connecting" | "blocked">("key");
+  // Connecting first, always. The key step is a FALLBACK reached by asking and
+  // being told there is no key — not a branch decided by probing for one — so
+  // there is one path through this sheet whether a key exists or not, and a
+  // machine that already has one goes straight to trying.
+  const [phase, setPhase] = useState<"key" | "connecting" | "blocked">("connecting");
   const [failure, setFailure] = useState<SheetFailure | null>(null);
 
   const live = isVoiceCallLive(state.phase) && state.isCallOwner;
@@ -129,6 +157,11 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
     try {
       const result = await start();
       if (result.ok) return;
+      // The one refusal with a next step rather than a sentence.
+      if (result.error === "missing-key") {
+        setPhase("key");
+        return;
+      }
       setFailure({
         title: START_FAILURE_TITLE,
         message: describeStartFailure(result.error, result.detail),
@@ -146,6 +179,16 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
       console.error("[cto-voice] start failed", error);
     }
   }, [start]);
+
+  // The sheet starts the call itself, once, on mount. A ref rather than a
+  // dependency guard because `run` is recreated whenever `start` is, and a
+  // second call is the one mistake this must not make.
+  const startedRef = useRef(false);
+  useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void run();
+  }, [run]);
 
   // The microphone is opened by the HUD host, not by this sheet, so its verdict
   // arrives asynchronously after `start()` has already answered `ok`.
@@ -200,6 +243,8 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
     );
   }
 
+  const settingsAction = settingsActionFor(failure?.microphone ?? null);
+
   return (
     <div data-testid="cto-voice-sheet-blocked">
       <div className="text-[12px] font-semibold" style={{ color: COLORS.textPrimary }}>
@@ -209,11 +254,11 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
         {failure?.message ?? DEFAULT_START_FAILURE}
       </p>
       <div className="mt-3 flex items-center justify-end gap-2">
-        {failure?.microphone ? (
+        {settingsAction ? (
           <SheetButton
-            label="Open microphone settings"
+            label={settingsAction.label}
             testId="cto-voice-open-mic-settings"
-            onClick={() => { void openMicrophoneSettings(); }}
+            onClick={() => { void openSettingsPane(settingsAction.paneId); }}
           />
         ) : null}
         <SheetButton

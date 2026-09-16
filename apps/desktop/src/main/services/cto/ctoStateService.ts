@@ -82,6 +82,12 @@ type PersistedDoc<T> = {
 
 const CTO_CURRENT_CONTEXT_RELATIVE_PATH = ".ade/cto/CURRENT.md";
 
+/** The envelope a user turn writes. Matched as text; see `countUserTurns`. */
+const USER_MESSAGE_MARKER = '"type":"user_message"';
+
+/** A transcript larger than this is not counted; a close must not stall. */
+const TRANSCRIPT_SCAN_MAX_BYTES = 32 * 1024 * 1024;
+
 const CTO_MODEL_PROVIDER_GROUPS: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode"];
 
 function buildCtoModelSelectionKnowledge(): string[] {
@@ -461,6 +467,12 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
   const capabilityMode = source.capabilityMode === "full_tooling" || source.capabilityMode === "full_mcp"
     ? "full_tooling"
     : "fallback";
+  // Absent on every entry written before the field existed, and on every entry
+  // whose transcript could not be read. Both are "not recorded", not zero.
+  const rawTurns = source.turnCount;
+  const turnCount = typeof rawTurns === "number" && Number.isFinite(rawTurns) && rawTurns >= 0
+    ? Math.floor(rawTurns)
+    : null;
   return {
     id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
     prevHash: typeof source.prevHash === "string" && source.prevHash.trim().length ? source.prevHash.trim() : null,
@@ -471,6 +483,7 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
     provider,
     modelId: typeof source.modelId === "string" && source.modelId.trim().length ? source.modelId.trim() : null,
     capabilityMode,
+    turnCount,
     createdAt,
   };
 }
@@ -856,6 +869,17 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const getSessionLogs = (limit = 20): CtoSessionLogEntry[] => {
     reconcileAll();
     const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    // The turn count lives in the append-only file half of this log, not in
+    // `cto_session_logs` — that table's columns are fixed in the schema and a
+    // count is not worth a migration. The DB still decides which entries exist
+    // and in what order; the file only says how many turns each one had, keyed
+    // the way `reconcileSessionLogs` keys them.
+    const turnsByKey = new Map<string, number>();
+    for (const entry of listSessionLogsFromFile()) {
+      if (typeof entry.turnCount === "number") {
+        turnsByKey.set(`${entry.sessionId}::${entry.createdAt}`, entry.turnCount);
+      }
+    }
     return args.db
       .all<Record<string, unknown>>(
         `
@@ -880,7 +904,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
           createdAt: row.created_at,
         })
       )
-      .filter((entry): entry is CtoSessionLogEntry => entry != null);
+      .filter((entry): entry is CtoSessionLogEntry => entry != null)
+      .map((entry) => {
+        const turnCount = turnsByKey.get(`${entry.sessionId}::${entry.createdAt}`);
+        return turnCount === undefined ? entry : { ...entry, turnCount };
+      });
   };
 
   const getSnapshot = (recentLimit = 20): CtoSnapshot => {
@@ -927,6 +955,45 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     writeTextAtomic(currentContextPath, `${currentContextBody}\n`);
   };
 
+  /**
+   * How many turns the user took in a chat session.
+   *
+   * The transcript is the cheapest DURABLE source of this number, and the only
+   * honest one. There is no turn counter anywhere in the schema, and
+   * `usage_events` counts model requests — a single user turn that runs tools
+   * or retries produces several, so it would report a number the user did not
+   * recognise. One indexed row for the path, then one pass counting
+   * `user_message` envelopes.
+   *
+   * Counted by matching the line rather than parsing it: a transcript line can
+   * be tens of kilobytes of tool output, and `JSON.parse` on every one of them
+   * to read a type field is work this does not need to do. Bounded by
+   * `TRANSCRIPT_SCAN_MAX_BYTES` so a runaway transcript cannot stall a close.
+   *
+   * Returns null — never 0 — when the transcript is missing or unreadable, so
+   * "we do not know" stays distinguishable from "they said nothing".
+   */
+  const countUserTurns = (sessionId: string): number | null => {
+    try {
+      const row = args.db.get<{ transcript_path?: unknown }>(
+        `select transcript_path from terminal_sessions where id = ?`,
+        [sessionId],
+      );
+      const transcriptPath = typeof row?.transcript_path === "string" ? row.transcript_path.trim() : "";
+      if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+      const stat = fs.statSync(transcriptPath);
+      if (stat.size > TRANSCRIPT_SCAN_MAX_BYTES) return null;
+      const raw = fs.readFileSync(transcriptPath, "utf8");
+      let count = 0;
+      for (const line of raw.split(/\r?\n/)) {
+        if (line.includes(USER_MESSAGE_MARKER)) count += 1;
+      }
+      return count;
+    } catch {
+      return null;
+    }
+  };
+
   const appendSessionLog = (entry: AppendCtoSessionLogArgs): CtoSessionLogEntry => {
     reconcileAll();
     const next: CtoSessionLogEntry = {
@@ -938,6 +1005,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       provider: entry.provider,
       modelId: entry.modelId,
       capabilityMode: entry.capabilityMode,
+      turnCount: countUserTurns(entry.sessionId),
       createdAt: nowIso(),
     };
     insertSessionLogToDb(next);

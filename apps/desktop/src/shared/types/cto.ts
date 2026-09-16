@@ -51,6 +51,15 @@ export type CtoSessionLogEntry = {
   provider: string;
   modelId: string | null;
   capabilityMode: CtoCapabilityMode;
+  /**
+   * How many turns the user took in this session.
+   *
+   * Optional because the field arrived after the log did: every entry written
+   * before it simply has no count, and nothing backfills them. Null and absent
+   * mean the same thing — "not recorded" — and the UI hides the column rather
+   * than print a zero it cannot stand behind.
+   */
+  turnCount?: number | null;
   createdAt: string;
 };
 

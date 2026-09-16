@@ -132,6 +132,15 @@ export type CtoVoiceMicrophoneBlockKind =
    * sees is the packaged app's, not this one's.
    */
   | "dev-build"
+  /**
+   * There is no microphone at all.
+   *
+   * A Mac Studio has no built-in one, so a perfectly granted permission and an
+   * empty device list are the ordinary state of that machine — and "another app
+   * may be holding the microphone" sent the owner looking for an app that did
+   * not exist.
+   */
+  | "no-device"
   /** The OS said yes and `getUserMedia` still refused: something else has it. */
   | "in-use"
   /** A stream arrived with no usable track. Rare, and not the user's doing. */
@@ -170,6 +179,10 @@ export function ctoVoiceMicrophoneMessage(
       return windows
         ? "ADE could not open the microphone. Allow microphone access for ADE in Windows Settings, Privacy, Microphone."
         : "ADE could not open the microphone. Allow microphone access for ADE in System Settings, Privacy & Security, Microphone.";
+    case "no-device":
+      return windows
+        ? "No microphone is connected. Plug one in or pick an input under Windows Settings, Sound."
+        : "No microphone is connected. Plug one in or pick an input under System Settings, Sound.";
     case "in-use":
       return "Another app may be holding the microphone. Close it and try again.";
     case "unavailable":
@@ -191,7 +204,8 @@ export function ctoVoiceMicrophoneMessage(
  * must classify all of them to the one coarse analytics outcome.
  */
 export function isCtoVoiceMicrophoneMessage(reason: string): boolean {
-  const kinds: CtoVoiceMicrophoneBlockKind[] = ["os-denied", "dev-build", "in-use", "unavailable"];
+  const kinds: CtoVoiceMicrophoneBlockKind[] =
+    ["os-denied", "dev-build", "no-device", "in-use", "unavailable"];
   return kinds.some((kind) =>
     reason === ctoVoiceMicrophoneMessage(kind, "darwin")
     || reason === ctoVoiceMicrophoneMessage(kind, "win32"));

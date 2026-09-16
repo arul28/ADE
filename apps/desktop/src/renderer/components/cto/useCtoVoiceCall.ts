@@ -186,34 +186,108 @@ export class MicrophoneBlockedError extends Error {
  * rather than growing a second one. Absent bridge — the browser preview — is
  * not a denial, and falls through to `getUserMedia` as before.
  */
-async function microphoneBlockKind(): Promise<CtoVoiceMicrophoneBlockKind | null> {
+type MicrophoneGate = {
+  /** Set when the OS has already refused, before anything is opened. */
+  blocked: CtoVoiceMicrophoneBlockKind | null;
+  /** What a later `NotAllowedError` means on this build. */
+  denied: CtoVoiceMicrophoneBlockKind;
+};
+
+async function microphoneGate(): Promise<MicrophoneGate> {
   const ensureAccess = window.ade?.transcription?.requestMicAccess;
-  if (!ensureAccess) return null;
+  // An absent bridge — the browser preview — is not a denial.
+  if (!ensureAccess) return { blocked: null, denied: "os-denied" };
   try {
     const access = await ensureAccess();
-    if (access.status === "granted") return null;
     // An older host answers with a status and no kind; a settled refusal it
     // cannot classify is still a refusal the OS owns.
-    return access.block ?? "os-denied";
+    const denied = access.deniedBlock ?? "os-denied";
+    return {
+      blocked: access.status === "granted" ? null : (access.block ?? denied),
+      denied,
+    };
   } catch {
     // An unreachable gate is not a denial; let `getUserMedia` decide.
-    return null;
+    return { blocked: null, denied: "os-denied" };
+  }
+}
+
+/**
+ * Is there a microphone on this machine at all?
+ *
+ * Asked BEFORE `getUserMedia`, because a Mac Studio has no built-in one and a
+ * granted permission over an empty device list is that machine's ordinary
+ * state — not a fault. Prompting anyway produces `NotFoundError`, which the
+ * first version of this read as "another app is holding it" and sent the user
+ * hunting for an app that did not exist.
+ *
+ * Labels are never read, only the count: `enumerateDevices` returns unlabelled
+ * entries until a stream has been opened, and the label is the one part of a
+ * device list that is about the user's hardware rather than its existence.
+ */
+async function hasAudioInput(): Promise<boolean> {
+  const enumerate = navigator.mediaDevices?.enumerateDevices;
+  // A browser that cannot enumerate is not a machine with no microphone.
+  if (typeof enumerate !== "function") return true;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.some((device) => device.kind === "audioinput");
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * What `getUserMedia` actually refused with.
+ *
+ * The names are the spec's, and they mean genuinely different things — a
+ * missing device, a busy device and a refused permission need three different
+ * sentences. Guessing one for all of them is what produced "another app may be
+ * holding the microphone" on a Mac with no microphone.
+ */
+function classifyCaptureError(error: unknown, denied: CtoVoiceMicrophoneBlockKind): {
+  kind: CtoVoiceMicrophoneBlockKind;
+  name: string;
+} {
+  // NOT `instanceof Error`: `getUserMedia` rejects with a `DOMException`, which
+  // is its own interface and does not inherit from `Error`. Testing for one
+  // sent every real refusal — the whole reason this function exists — to the
+  // default branch.
+  const raw = (error as { name?: unknown } | null)?.name;
+  const name = typeof raw === "string" && raw ? raw : "UnknownError";
+  switch (name) {
+    case "NotFoundError":
+    case "OverconstrainedError":
+      return { kind: "no-device", name };
+    case "NotReadableError":
+    case "AbortError":
+      return { kind: "in-use", name };
+    case "NotAllowedError":
+    case "SecurityError":
+      return { kind: denied, name };
+    default:
+      return { kind: "unavailable", name };
   }
 }
 
 async function startCapture() {
   if (mediaStream) return;
-  const blocked = await microphoneBlockKind();
-  if (blocked) throw new MicrophoneBlockedError(blocked);
+  const gate = await microphoneGate();
+  if (gate.blocked) throw new MicrophoneBlockedError(gate.blocked);
+  // No device is not a permission problem, and prompting for one produces a
+  // `NotFoundError` that reads like a fault. Answer it before asking.
+  if (!await hasAudioInput()) throw new MicrophoneBlockedError("no-device");
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-  } catch {
-    // The OS said yes and Chromium still could not open the device. In practice
-    // that is another application holding it, which is a thing the user can fix
-    // and a very different instruction from "allow ADE in System Settings".
-    throw new MicrophoneBlockedError("in-use");
+  } catch (error) {
+    const classified = classifyCaptureError(error, gate.denied);
+    // The name is diagnostic, not user-facing: it goes to the log so an
+    // unrecognised refusal can be classified later, and never into a sentence.
+    // eslint-disable-next-line no-console
+    console.warn("[cto-voice] microphone refused", classified.name);
+    throw new MicrophoneBlockedError(classified.kind);
   }
   // A stream with no audio track, or one that is already over, is a failure
   // that arrived as a success. `muted` is deliberately NOT checked: a track can

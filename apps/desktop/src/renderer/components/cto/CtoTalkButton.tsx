@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Microphone } from "@phosphor-icons/react";
 
-import { CtoVoiceStartSheet, describeStartFailure } from "./CtoVoiceStartSheet";
+import { CtoVoiceStartSheet } from "./CtoVoiceStartSheet";
 import { isVoiceCallLive } from "../../../shared/types/ctoVoice";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { getFocusableElements } from "../ui/dialogFocus";
@@ -204,44 +204,35 @@ export type CtoTalkButtonProps = {
 };
 
 export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
-  const { state, start } = useCtoVoiceCall();
+  const { state } = useCtoVoiceCall();
   useTalkStyle();
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [starting, setStarting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   // `isVoiceCallLive`, not "not idle": a failed call is over, and the old
   // check left this button disabled forever after one.
   const live = isVoiceCallLive(state.phase);
 
-  const onClick = useCallback(async () => {
-    if (live || starting) return;
-    setStarting(true);
+  /**
+   * Talk opens the sheet. Always, key or no key.
+   *
+   * The button used to start the call itself and only open the sheet for a
+   * missing key, which meant every OTHER failure — a microphone that would not
+   * open, a socket that never came up — landed as a one-line notice under the
+   * page header with nothing to press. "No microphone is connected" needs an
+   * "Open sound settings" button next to it, and a header notice cannot carry
+   * one. The sheet is where a failure can be acted on, so the press goes there
+   * first and the sheet does the connecting.
+   */
+  const onClick = useCallback(() => {
+    if (live || sheetOpen) return;
     setNotice(null);
-    try {
-      const result = await start();
-      if (result.ok) return;
-      // No key yet is the one failure that has a next step rather than a
-      // message, so it opens the sheet.
-      if (result.error === "missing-key") {
-        setSheetOpen(true);
-        return;
-      }
-      // Everything else used to fall through to nothing at all: the button
-      // flickered "Connecting…" and went back to "Talk" with no HUD, no sheet
-      // and no error. A control that silently does nothing is worse than one
-      // that says why it cannot.
-      setNotice(describeStartFailure(result.error, result.detail));
-    } catch (error) {
-      // `ipcMain.handle` turns a main-process throw into a rejected invoke, and
-      // `void onClick()` swallowed it as an unhandled rejection.
-      setNotice(describeStartFailure(undefined, undefined));
-      // eslint-disable-next-line no-console
-      console.error("[cto-voice] start failed", error);
-    } finally {
-      setStarting(false);
-    }
-  }, [live, start, starting]);
+    setSheetOpen(true);
+  }, [live, sheetOpen]);
+
+  // The sheet owns the attempt, so the button is "connecting" exactly while it
+  // is open and the call is not yet up.
+  const starting = sheetOpen && !live;
 
   // A call that fails after it starts (a refused socket, a dropped connection)
   // reports through the call state, not the start result — and then the call
@@ -286,7 +277,7 @@ export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
         <span className="cto-talk-aurora" aria-hidden />
         <button
           type="button"
-          onClick={() => { void onClick(); }}
+          onClick={onClick}
           disabled={live}
           data-testid="cto-talk-button"
           title={live ? "A call is already running" : "Talk to the CTO"}
