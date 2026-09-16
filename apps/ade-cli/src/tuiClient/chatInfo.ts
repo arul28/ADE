@@ -11,9 +11,11 @@ import { deriveMissionSnapshot } from "../../../desktop/src/renderer/components/
 import { deriveTodoItems } from "../../../desktop/src/renderer/components/chat/chatExecutionSummary";
 import type {
   AdeCodeProvider,
+  ChatInfoPrSummary,
   ChatInfoSnapshot,
   SubagentSnapshot,
 } from "./types";
+import type { PrSummary } from "../../../desktop/src/shared/types/prs";
 
 import type { TokenStats } from "./adeApi";
 
@@ -123,6 +125,30 @@ export function formatMcpCapabilityNote(
       return _exhaustive;
     }
   }
+}
+
+export function chatInfoPrFromSummaries(prs: readonly PrSummary[]): ChatInfoPrSummary | null {
+  const primary = prs[0];
+  if (!primary) return null;
+  const extras = prs.slice(1).map((pr) => pr.githubPrNumber).filter((number) => Number.isInteger(number) && number > 0);
+  return {
+    number: primary.githubPrNumber,
+    state: primary.state === "merged" ? "merged" : primary.state === "closed" ? "closed" : "open",
+    checksPassed: 0,
+    checksTotal: 0,
+    checksStatus: primary.checksStatus,
+    linkedNumbers: extras.length > 0 ? extras : undefined,
+  };
+}
+
+/** Compact header chip: `#42` or `#42 +2`, matching the desktop Work peek. */
+export function formatChatPrHeaderLabel(prs: readonly PrSummary[]): string | null {
+  const numbers = prs
+    .map((pr) => pr.githubPrNumber)
+    .filter((number) => Number.isInteger(number) && number > 0);
+  if (numbers.length === 0) return null;
+  if (numbers.length === 1) return `#${numbers[0]}`;
+  return `#${numbers[0]} +${numbers.length - 1}`;
 }
 
 export function deriveChatInfoSnapshot(args: {

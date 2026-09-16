@@ -6557,6 +6557,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const [stack] = MOCK_GITHUB_SNAPSHOT.stacks.splice(index, 1);
         return stack ?? null;
       },
+      mergeGitHubStack: async (args: { stackNumber: number }) => {
+        const stack = MOCK_GITHUB_SNAPSHOT.stacks.find(
+          (candidate: any) => candidate.number === Number(args?.stackNumber),
+        );
+        return { ok: Boolean(stack), stack: stack ?? null, method: "stack_api" as const };
+      },
+      rebaseGitHubStack: async (args: { stackNumber: number }) => {
+        const stack = MOCK_GITHUB_SNAPSHOT.stacks.find(
+          (candidate: any) => candidate.number === Number(args?.stackNumber),
+        );
+        return { ok: Boolean(stack), stack: stack ?? null, method: "stack_api" as const };
+      },
+      linkChatSession: async () => ({ ok: true }),
+      unlinkChatSession: async () => ({ ok: true }),
+      linkChatStack: async () => ({ ok: true, linked: 0 }),
+      listChatSessionsForPr: async () => [],
+      getStackLinkOffer: async () => null,
       listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
       aiResolutionStart: async () => ({
         sessionId: "mock-pr-ai-session",

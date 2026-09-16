@@ -4737,6 +4737,14 @@ struct GitHubPrStack: Codable, Identifiable, Equatable {
   var lastError: String?
 }
 
+struct GitHubStackMutationResult: Codable, Equatable {
+  var ok: Bool
+  var stack: GitHubPrStack?
+  var method: String
+  var disabledReason: String?
+  var error: String?
+}
+
 struct PrSummary: Codable, Identifiable, Equatable {
   var id: String
   var laneId: String
@@ -4763,6 +4771,10 @@ struct PrSummary: Codable, Identifiable, Equatable {
   var creationStrategy: String? = nil
   /// Native GitHub stack membership. Nil against hosts before stacked PR support.
   var stack: GitHubPrStackMembership? = nil
+  /// Chats that explicitly opened or worked on this PR.
+  var chatSessionIds: [String]? = nil
+  /// Chats that unlinked this PR. Fallback display must not revive these.
+  var dismissedChatSessionIds: [String]? = nil
   /// ADE-135. One sentence explaining a non-obvious checks rollup, e.g. "3 checks
   /// reported, none from a CI provider." Nil when the state speaks for itself, and
   /// on hosts that predate the rollup.
@@ -4800,6 +4812,8 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   var workflowDisplayState: String?
   var cleanupState: String?
   var stack: GitHubPrStackMembership? = nil
+  var chatSessionIds: [String]? = nil
+  var dismissedChatSessionIds: [String]? = nil
   var mergedAt: String? = nil
   var detached: PrDetachedLane? = nil
   var mergedBy: PrMergedBy? = nil

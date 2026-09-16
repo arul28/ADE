@@ -465,6 +465,15 @@ import type {
   PrSummary,
   PrWithConflicts,
   UnstackGitHubPrStackArgs,
+  MergeGitHubPrStackArgs,
+  RebaseGitHubPrStackArgs,
+  GitHubStackMutationResult,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   PrDeployment,
   PrAiSummary,
   PostPrReviewCommentArgs,
@@ -3416,6 +3425,22 @@ declare global {
         unstackGitHubStack: (
           args: UnstackGitHubPrStackArgs,
         ) => Promise<GitHubPrStack | null>;
+        mergeGitHubStack: (
+          args: MergeGitHubPrStackArgs,
+        ) => Promise<GitHubStackMutationResult>;
+        rebaseGitHubStack: (
+          args: RebaseGitHubPrStackArgs,
+        ) => Promise<GitHubStackMutationResult>;
+        linkChatSession: (args: LinkPrChatSessionArgs) => Promise<{ ok: boolean }>;
+        unlinkChatSession: (args: UnlinkPrChatSessionArgs) => Promise<{ ok: boolean }>;
+        linkChatStack: (args: LinkPrChatStackArgs) => Promise<{ ok: boolean; linked: number }>;
+        listChatSessionsForPr: (
+          args: ListPrChatSessionsArgs,
+        ) => Promise<PrChatSessionLink[]>;
+        getStackLinkOffer: (args: {
+          sessionId: string;
+          prId?: string | null;
+        }) => Promise<StackLinkOffer | null>;
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,
         ) => Promise<IntegrationProposal[]>;
@@ -3424,7 +3449,10 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => () => void;
         getDetail: (prId: string) => Promise<PrDetail>;
-        getFiles: (prId: string) => Promise<PrFile[]>;
+        getFiles: (
+          prId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrFile[]>;
         getCommits: (prId: string) => Promise<PrCommit[]>;
         getActionRuns: (prId: string) => Promise<PrActionRun[]>;
         getActivity: (prId: string) => Promise<PrActivityEvent[]>;

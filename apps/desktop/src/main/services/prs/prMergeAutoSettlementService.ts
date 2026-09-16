@@ -1,6 +1,7 @@
 import type { createSessionService } from "../sessions/sessionService";
 import type { AdeDb } from "../state/kvDb";
 import type { PrEventPayload, PrSummary } from "../../../shared/types";
+import { sessionHasOpenLinkedPrs } from "../../../shared/prChatScope";
 import {
   getPrMergeAutoSettlementState,
   getSessionLifecycleSettings,
@@ -145,12 +146,13 @@ export function createPrMergeAutoSettlementService(args: {
    *
    * Declared sessions are looked up by id rather than found inside a lane page:
    * the PR named them, so a long-lived lane whose session list runs past the
-   * page size must not silently drop the ones it named. The explicit lane check
-   * reproduces what the lane-scoped listing gave for free — a declared link can
-   * outlive a lane move, and only this lane's work is this merge's to file.
+   * page size must not silently drop the ones it named. Linked chats may live
+   * on another lane (GitHub stack members), so this path does not re-filter
+   * them back onto the PR's lane.
    *
    * The sweep keeps the bounded listing: it is a guess, and a guess should stay
-   * bounded.
+   * bounded. It also skips chat tool types — chats settle only through explicit
+   * edges, and only after every other linked open PR is terminal.
    */
   const candidateSessionsFor = (scope: MergeSettlementScope, pr: PrSummary) => {
     switch (scope.kind) {
@@ -159,11 +161,11 @@ export function createPrMergeAutoSettlementService(args: {
       case "linked":
         return [...scope.sessionIds]
           .map((sessionId) => args.sessionService.get(sessionId))
-          .filter((session): session is NonNullable<typeof session> => session != null)
-          .filter((session) => session.laneId === pr.laneId);
+          .filter((session): session is NonNullable<typeof session> => session != null);
       case "sweep":
         return args.sessionService.list({ laneId: pr.laneId, limit: 500 })
-          .filter((session) => !scope.claimedByOtherPrs.has(session.id));
+          .filter((session) => !scope.claimedByOtherPrs.has(session.id))
+          .filter((session) => !isChatToolType(session.toolType));
     }
   };
 
@@ -281,6 +283,15 @@ export function createPrMergeAutoSettlementService(args: {
         // runs. That — and nothing else — is deferred, on every attempt, with
         // no time cap. A deferral is never an abandonment; the retry costs one
         // poll.
+        if (sessionHasOpenLinkedPrs(prs, session.id, { excludingPrId: pr.id })) {
+          args.logger?.debug("prs.auto_settle_deferred_open_linked_prs", {
+            prNumber: pr.githubPrNumber,
+            laneId: pr.laneId,
+            sessionId: session.id,
+          });
+          abandonedThisPr = true;
+          continue;
+        }
         if (await hasActiveChatTurn(session.id)) {
           args.logger?.debug("prs.auto_settle_deferred_active_turn", {
             prNumber: pr.githubPrNumber,

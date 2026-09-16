@@ -6,12 +6,13 @@ import {
   CaretUp,
   CheckCircle,
   Circle,
+  GitMerge,
   GitPullRequest,
   Plus,
   Stack,
   Warning,
 } from "@phosphor-icons/react";
-import type { GitHubPrListItem, GitHubPrStack } from "../../../../shared/types";
+import type { GitHubPrListItem, GitHubPrStack, GitHubStackMutationResult, MergeMethod } from "../../../../shared/types";
 import {
   COLORS,
   MONO_FONT,
@@ -46,6 +47,8 @@ export function GitHubStackInspector({
   onSync,
   onAddPullRequests,
   onUnstack,
+  onMerge,
+  onRebase,
 }: {
   stack: GitHubPrStack;
   items: GitHubPrListItem[];
@@ -56,13 +59,18 @@ export function GitHubStackInspector({
   onSync: () => void;
   onAddPullRequests: (pullRequests: number[]) => Promise<void>;
   onUnstack: () => Promise<void>;
+  onMerge: (mergeMethod: MergeMethod) => Promise<GitHubStackMutationResult>;
+  onRebase: () => Promise<GitHubStackMutationResult>;
 }): React.ReactElement {
   const [expanded, setExpanded] = React.useState(true);
   const [manageOpen, setManageOpen] = React.useState(false);
   const [pullInput, setPullInput] = React.useState("");
-  const [busyAction, setBusyAction] = React.useState<"add" | "unstack" | null>(null);
-  const [confirmUnstack, setConfirmUnstack] = React.useState(false);
+  const [busyAction, setBusyAction] = React.useState<"add" | "unstack" | "merge" | "rebase" | null>(null);
+  const [pendingConfirm, setPendingConfirm] = React.useState<"unstack" | "merge" | "rebase" | null>(null);
+  const [mergeMethod, setMergeMethod] = React.useState<MergeMethod>("squash");
   const [error, setError] = React.useState<string | null>(null);
+  const [rebaseUnavailableReason, setRebaseUnavailableReason] = React.useState<string | null>(null);
+  const [mergeUnavailableReason, setMergeUnavailableReason] = React.useState<string | null>(null);
   const itemByPr = React.useMemo(
     () => new Map(items.map((item) => [item.githubPrNumber, item] as const)),
     [items],
@@ -70,6 +78,13 @@ export function GitHubStackInspector({
   const selectedPosition = stack.entries.find(
     (entry) => entry.githubPrNumber === selectedPrNumber,
   )?.position;
+
+  React.useEffect(() => {
+    setRebaseUnavailableReason(null);
+    setMergeUnavailableReason(null);
+    setError(null);
+    setPendingConfirm(null);
+  }, [stack.number]);
 
   const addPullRequests = async () => {
     const pullRequests = parsePullRequests(pullInput);
@@ -91,17 +106,72 @@ export function GitHubStackInspector({
   };
 
   const unstack = async () => {
-    if (!confirmUnstack) {
-      setConfirmUnstack(true);
+    if (pendingConfirm !== "unstack") {
+      setPendingConfirm("unstack");
       return;
     }
     setBusyAction("unstack");
     setError(null);
     try {
       await onUnstack();
-      setConfirmUnstack(false);
+      setPendingConfirm(null);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "GitHub could not update this stack.");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const applyMutationResult = (
+    kind: "merge" | "rebase",
+    result: GitHubStackMutationResult,
+    fallback: string,
+  ): boolean => {
+    const setUnavailable = kind === "merge" ? setMergeUnavailableReason : setRebaseUnavailableReason;
+    if (result.ok) {
+      setUnavailable(null);
+      setError(null);
+      setPendingConfirm(null);
+      return true;
+    }
+    if (result.method === "unavailable") {
+      setUnavailable(result.disabledReason || result.error || fallback);
+      setError(null);
+      return false;
+    }
+    setError(result.error || result.disabledReason || fallback);
+    return false;
+  };
+
+  const mergeStack = async () => {
+    if (pendingConfirm !== "merge") {
+      setPendingConfirm("merge");
+      return;
+    }
+    setBusyAction("merge");
+    setError(null);
+    try {
+      const result = await onMerge(mergeMethod);
+      applyMutationResult("merge", result, "GitHub could not merge this stack.");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "GitHub could not merge this stack.");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const rebaseStack = async () => {
+    if (pendingConfirm !== "rebase") {
+      setPendingConfirm("rebase");
+      return;
+    }
+    setBusyAction("rebase");
+    setError(null);
+    try {
+      const result = await onRebase();
+      applyMutationResult("rebase", result, "GitHub could not rebase this stack.");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "GitHub could not rebase this stack.");
     } finally {
       setBusyAction(null);
     }
@@ -206,7 +276,7 @@ export function GitHubStackInspector({
                         {item?.title ?? entry.headBranch}
                       </span>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
-                        #{entry.githubPrNumber} · {entry.headBranch}
+                        #{entry.githubPrNumber} · {entry.position}/{stack.entries.length} · {entry.headBranch}
                       </span>
                     </button>
                     <span style={{ paddingLeft: 8, fontFamily: SANS_FONT, fontSize: 10, color: merged ? COLORS.success : COLORS.textMuted }}>
@@ -221,22 +291,75 @@ export function GitHubStackInspector({
               </div>
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.05)", flexWrap: "wrap" }}>
               <button
                 type="button"
                 onClick={() => {
                   setManageOpen((value) => !value);
-                  setConfirmUnstack(false);
+                  setPendingConfirm(null);
                   setError(null);
                 }}
                 style={outlineButton({ height: 28, padding: "0 9px", fontSize: 11 })}
               >
                 <Plus size={12} /> Manage stack
               </button>
-              <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>
-                GitHub manages rebases, review requirements, and merging.
-              </span>
+              <button
+                type="button"
+                disabled={busyAction != null || !stack.open || Boolean(rebaseUnavailableReason)}
+                onClick={() => { void rebaseStack(); }}
+                title={
+                  rebaseUnavailableReason
+                    ?? (stack.open ? "Rebase every open layer onto the stack base" : "Completed stacks cannot be rebased")
+                }
+                style={outlineButton({ height: 28, padding: "0 9px", fontSize: 11, opacity: busyAction || !stack.open || rebaseUnavailableReason ? 0.6 : 1 })}
+              >
+                <ArrowsClockwise size={12} />
+                {busyAction === "rebase" ? "Rebasing..." : pendingConfirm === "rebase" ? "Confirm rebase" : "Rebase stack"}
+              </button>
+              <button
+                type="button"
+                disabled={busyAction != null || !stack.open || Boolean(mergeUnavailableReason)}
+                onClick={() => { void mergeStack(); }}
+                title={
+                  mergeUnavailableReason
+                    ?? (stack.open ? "Merge every open layer through GitHub, bottom to top" : "Completed stacks cannot be merged")
+                }
+                style={primaryButton({ height: 28, padding: "0 9px", fontSize: 11, opacity: busyAction || !stack.open || mergeUnavailableReason ? 0.6 : 1 })}
+              >
+                <GitMerge size={12} />
+                {busyAction === "merge" ? "Merging..." : pendingConfirm === "merge" ? "Confirm merge" : "Merge stack"}
+              </button>
             </div>
+
+            {pendingConfirm === "merge" ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                {(["squash", "merge", "rebase"] as MergeMethod[]).map((method) => (
+                  <button
+                    key={method}
+                    type="button"
+                    onClick={() => setMergeMethod(method)}
+                    style={outlineButton({
+                      height: 26,
+                      padding: "0 8px",
+                      fontSize: 10,
+                      borderColor: mergeMethod === method ? "rgba(167,139,250,0.45)" : undefined,
+                      background: mergeMethod === method ? "rgba(139,92,246,0.12)" : undefined,
+                    })}
+                  >
+                    {method}
+                  </button>
+                ))}
+                <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>
+                  Lands every open layer into {stack.baseBranch}.
+                </span>
+              </div>
+            ) : null}
+
+            {pendingConfirm === "rebase" ? (
+              <div style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted }}>
+                GitHub rebases each open layer onto the layer below it, keeping expected head SHAs.
+              </div>
+            ) : null}
 
             {manageOpen ? (
               <div style={{ display: "grid", gap: 8, marginTop: 10, padding: 10, borderRadius: 8, background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.06)" }}>
@@ -291,12 +414,22 @@ export function GitHubStackInspector({
                       opacity: busyAction ? 0.6 : 1,
                     })}
                   >
-                    {busyAction === "unstack" ? "Updating..." : confirmUnstack ? "Confirm unstack" : "Unstack"}
+                    {busyAction === "unstack" ? "Updating..." : pendingConfirm === "unstack" ? "Confirm unstack" : "Unstack"}
                   </button>
                 </div>
               </div>
             ) : null}
 
+            {rebaseUnavailableReason ? (
+              <div role="status" style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                {rebaseUnavailableReason}
+              </div>
+            ) : null}
+            {mergeUnavailableReason ? (
+              <div role="status" style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                {mergeUnavailableReason}
+              </div>
+            ) : null}
             {error ? (
               <div role="alert" style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.danger }}>
                 {error}

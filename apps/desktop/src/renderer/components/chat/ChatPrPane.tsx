@@ -3,20 +3,32 @@ import { useNavigate } from "react-router-dom";
 import {
   ArrowsClockwise,
   ArrowSquareOut,
+  CaretDown,
   CheckCircle,
   Clock,
   Copy,
   Check,
+  File,
   GithubLogo,
   GitPullRequest,
+  LinkBreak,
   MinusCircle,
+  Plus,
   Sparkle,
   X,
   XCircle,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import type { OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import type {
+  OpenProjectBinding,
+  PrCheck,
+  PrFile,
+  PrReview,
+  PrStatus,
+  PrSummary,
+  StackLinkOffer,
+} from "../../../shared/types";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
 import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
@@ -25,9 +37,11 @@ import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
-import { selectPrsForChat } from "../../lib/prChatScope";
+import { rankPrFilesByChurn, selectPrsForChat } from "../../../shared/prChatScope";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
+import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
+import { ChatPrStackOffer } from "./ChatPrStackOffer";
 
 /**
  * Left floating info-pane for an ADE chat's pull request. Mirrors the right
@@ -46,6 +60,15 @@ const titleBarIconButton =
 
 const paneAction =
   "inline-flex w-full items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-left text-[12px] font-medium text-fg/65 transition-colors hover:border-white/[0.10] hover:bg-white/[0.04] hover:text-fg/85";
+
+const paneActionPrimary =
+  "inline-flex w-full items-center gap-2 rounded-lg border border-violet-400/25 bg-violet-500/[0.10] px-2.5 py-1.5 text-left text-[12px] font-medium text-violet-100/90 transition-colors hover:border-violet-400/40 hover:bg-violet-500/[0.16]";
+
+function filePeekLabel(filename: string): string {
+  const parts = filename.replace(/\\/g, "/").split("/").filter(Boolean);
+  if (parts.length <= 2) return parts.join("/") || filename;
+  return parts.slice(-2).join("/");
+}
 
 function stateTone(state: PrSummary["state"]): { dot: string; label: string } {
   switch (state) {
@@ -174,7 +197,9 @@ function PrDetails({
   status,
   relay,
   copied,
-  onOpenAde,
+  files,
+  filesRemaining,
+  onOpenFiles,
   onOpenGitHub,
   onCopy,
 }: {
@@ -184,7 +209,9 @@ function PrDetails({
   status: PrStatus | null;
   relay: RelayState;
   copied: boolean;
-  onOpenAde: () => void;
+  files: PrFile[];
+  filesRemaining: number;
+  onOpenFiles: () => void;
   onOpenGitHub: () => void;
   onCopy: () => void;
 }) {
@@ -221,7 +248,7 @@ function PrDetails({
             <span className="font-mono text-[10px] text-fg/35">base {pr.stack.baseBranch}</span>
           </div>
           <p className="mt-1.5 text-[11px] leading-relaxed text-fg/50">
-            This pull request belongs to GitHub Stack #{pr.stack.number}. Review rebases and merge the stack on GitHub.
+            Merge and rebase this stack on the PRs tab.
           </p>
         </div>
       ) : mergeReady ? (
@@ -262,10 +289,36 @@ function PrDetails({
         <div className="text-[11px] text-red-300/75">⚠ Merge conflicts</div>
       ) : null}
 
+      {files.length > 0 ? (
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-2">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-wide text-fg/40">
+            <File size={11} weight="bold" />
+            Files
+          </div>
+          <div className="space-y-1">
+            {files.map((file) => (
+              <div key={file.filename} className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg/70" title={file.filename}>
+                  {filePeekLabel(file.filename)}
+                </span>
+                <span className="shrink-0 font-mono text-[10px] tabular-nums">
+                  <span className="text-emerald-400/70">+{file.additions}</span>
+                  {" "}
+                  <span className="text-red-400/70">−{file.deletions}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+          {filesRemaining > 0 ? (
+            <div className="mt-1.5 text-[10.5px] text-fg/40">+{filesRemaining} more files</div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="flex flex-col gap-1.5 pt-1">
-        <button type="button" onClick={onOpenAde} className={paneAction}>
-          <GitPullRequest size={12} weight="bold" />
-          Open in ADE
+        <button type="button" onClick={onOpenFiles} className={paneActionPrimary}>
+          <File size={12} weight="bold" />
+          {files.length > 0 ? "Open files on PRs tab" : "Open files"}
         </button>
         <button type="button" onClick={onOpenGitHub} className={paneAction}>
           <GithubLogo size={12} weight="bold" />
@@ -327,6 +380,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   runtimePinRef.current = runtimePin;
   const runtimePinKey = runtimePin?.key ?? null;
   const pinMachineName = useMachineEntryForBinding(runtimePin)?.machineName ?? null;
+  const [linkedPrs, setLinkedPrs] = useState<PrSummary[]>([]);
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
+  const [catalogPrs, setCatalogPrs] = useState<PrSummary[]>([]);
   const [pr, setPr] = useState<PrSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const { copy, copied } = useCopyToClipboard();
@@ -334,6 +390,14 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const [reviews, setReviews] = useState<PrReview[] | null>(null);
   const [status, setStatus] = useState<PrStatus | null>(null);
   const [relay, setRelay] = useState<RelayState>(null);
+  const [peekFiles, setPeekFiles] = useState<PrFile[]>([]);
+  const [filesRemaining, setFilesRemaining] = useState(0);
+  const [stackOffer, setStackOffer] = useState<StackLinkOffer | null>(null);
+  const [dismissedOfferKey, setDismissedOfferKey] = useState<string | null>(null);
+  const [stackLinkError, setStackLinkError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkPickerOpen, setLinkPickerOpen] = useState(false);
+  const [linkBusy, setLinkBusy] = useState(false);
   // Manual title-bar ↻ sync in flight.
   const [syncing, setSyncing] = useState(false);
   // Backend reconcile-on-focus running (project-scoped); drives the subtle
@@ -342,14 +406,24 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const [reconciling, setReconciling] = useState(false);
   const reconcileHideTimerRef = useRef<number | null>(null);
   const currentPrIdRef = useRef<string | null>(null);
+  const selectedPrIdRef = useRef<string | null>(null);
   const laneIdRef = useRef(laneId);
   const refreshRequestRef = useRef(0);
   laneIdRef.current = laneId;
+  selectedPrIdRef.current = selectedPrId;
 
-  const setCurrentPr = useCallback((nextPr: PrSummary | null) => {
+  const applyScopedPrs = useCallback((scoped: PrSummary[], preferredId?: string | null) => {
+    const preferred = String(preferredId ?? selectedPrIdRef.current ?? "").trim();
+    const nextPr = (preferred ? scoped.find((candidate) => candidate.id === preferred) : null)
+      ?? selectPrimaryLanePr(laneForPr, scoped)
+      ?? scoped[0]
+      ?? null;
+    setLinkedPrs(scoped);
+    setSelectedPrId(nextPr?.id ?? null);
     currentPrIdRef.current = nextPr?.id ?? null;
     setPr(nextPr);
-  }, []);
+    return nextPr;
+  }, [laneForPr]);
 
   const refresh = useCallback(async (options: { live?: boolean } = {}) => {
     const requestId = refreshRequestRef.current + 1;
@@ -359,40 +433,69 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     try {
       if (typeof window.ade.prs.listAll === "function") {
         const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
-        const ownedPrs = allPrs.filter((candidate) => candidate.laneId === laneId && !candidate.detached);
-        const scopedPrs = selectPrsForChat(ownedPrs, sessionId);
-        cached = selectPrimaryLanePr(
-          laneForPr,
-          scopedPrs,
-        );
+        if (!requestIsCurrent()) return;
+        const livePrs = allPrs.filter((candidate) => !candidate.detached);
+        setCatalogPrs(livePrs);
+        const scopedPrs = sessionId
+          ? selectPrsForChat(livePrs, sessionId, { currentBranch: branchName ?? laneBranchRef })
+          : selectPrsForChat(
+            livePrs.filter((candidate) => candidate.laneId === laneId),
+            null,
+          );
+        cached = applyScopedPrs(scopedPrs);
       } else {
         const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
-        cached = selectPrimaryLanePr(laneForPr, legacy ? [legacy] : []);
+        if (!requestIsCurrent()) return;
+        const scoped = legacy ? [legacy] : [];
+        setCatalogPrs(scoped);
+        cached = applyScopedPrs(scoped);
       }
       if (!requestIsCurrent()) return;
-      setCurrentPr(cached);
       setLoading(false);
       if (options.live && cached && !cached.unmapped) {
         const refreshed = await refreshLinkedPrCoalesced(cached, { projectRoot, pin: runtimePinRef.current });
-        if (!requestIsCurrent()) return;
-        setCurrentPr(refreshed);
+        if (!requestIsCurrent() || !refreshed) return;
+        setLinkedPrs((current) => {
+          const next = current.map((candidate) => (
+            candidate.id === refreshed.id ? { ...candidate, ...refreshed } : candidate
+          ));
+          return next.some((candidate) => candidate.id === refreshed.id) ? next : [...next, refreshed];
+        });
+        currentPrIdRef.current = refreshed.id;
+        setSelectedPrId(refreshed.id);
+        setPr(refreshed);
       }
     } catch {
-      if (!cached && requestIsCurrent()) setCurrentPr(null);
+      if (!cached && requestIsCurrent()) {
+        applyScopedPrs([]);
+      }
     } finally {
       if (requestIsCurrent()) setLoading(false);
     }
     // See ChatGitToolbar: read via ref, but the identity must still follow the
     // pin so the effects keyed on it re-read from the new machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneForPr, laneId, projectRoot, runtimePinKey, sessionId, setCurrentPr]);
+  }, [applyScopedPrs, branchName, laneBranchRef, laneId, projectRoot, runtimePinKey, sessionId]);
 
   // The inline creator hands us the freshly-created PR the moment createFromLane
   // resolves — swap to the details view instantly rather than waiting for the
   // next relay round-trip (`prs-updated`) to refresh the row.
   const handleCreated = useCallback((created: PrSummary) => {
-    setCurrentPr(created);
-  }, [setCurrentPr]);
+    setLinkedPrs((current) => {
+      const next = current.some((candidate) => candidate.id === created.id)
+        ? current.map((candidate) => (candidate.id === created.id ? created : candidate))
+        : [...current, created];
+      setCatalogPrs((catalog) => (
+        catalog.some((candidate) => candidate.id === created.id)
+          ? catalog.map((candidate) => (candidate.id === created.id ? { ...candidate, ...created } : candidate))
+          : [...catalog, created]
+      ));
+      setSelectedPrId(created.id);
+      currentPrIdRef.current = created.id;
+      setPr(created);
+      return next;
+    });
+  }, []);
 
   useEffect(() => { void refresh({ live: true }); }, [refresh]);
 
@@ -471,12 +574,14 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       const eventIncludesCurrentPr = currentPrId ? event.prs.some((next) => next.id === currentPrId) : false;
       if (eventIncludesLanePr || eventIncludesCurrentPr || !currentPrId) {
         void refresh();
+      } else if (typeof window.ade.prs.listAll !== "function") {
+        applyScopedPrs([]);
       } else {
-        setCurrentPr(null);
+        void refresh();
       }
     }, runtimePinRef.current);
     return unsubscribe;
-  }, [laneId, refresh, runtimePinKey, setCurrentPr]);
+  }, [applyScopedPrs, laneId, refresh, runtimePinKey]);
 
   // Hot-refresh enriched detail (checks / reviews / merge status) whenever this
   // PR's content changes — driven by the relay's `prs-updated`, not a timer.
@@ -514,6 +619,46 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     return () => { cancelled = true; };
   }, [pr, runtimePinKey]);
 
+  const peekFileKey = pr && !pr.unmapped ? `${pr.id}:${pr.headSha ?? pr.updatedAt}` : null;
+  useEffect(() => {
+    if (!peekFileKey || !pr || typeof window.ade.prs.getFiles !== "function") {
+      setPeekFiles([]);
+      setFilesRemaining(0);
+      return;
+    }
+    let cancelled = false;
+    void window.ade.prs.getFiles(pr.id, runtimePinRef.current).then((files) => {
+      if (cancelled) return;
+      const ranked = rankPrFilesByChurn(files, 3);
+      setPeekFiles(ranked.files);
+      setFilesRemaining(ranked.remaining);
+    }).catch(() => {
+      if (!cancelled) {
+        setPeekFiles([]);
+        setFilesRemaining(0);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [peekFileKey, pr, runtimePinKey]);
+
+  useEffect(() => {
+    if (!sessionId || !pr?.stack || typeof window.ade.prs.getStackLinkOffer !== "function") {
+      setStackOffer(null);
+      return;
+    }
+    let cancelled = false;
+    void window.ade.prs.getStackLinkOffer({ sessionId, prId: pr.id })
+      .then((offer) => {
+        if (cancelled) return;
+        const linkable = (offer?.siblings ?? []).filter((sibling) => !sibling.claimedByOtherChat);
+        setStackOffer(linkable.length > 0 ? offer : null);
+      })
+      .catch(() => {
+        if (!cancelled) setStackOffer(null);
+      });
+    return () => { cancelled = true; };
+  }, [pr, runtimePinKey, sessionId]);
+
   // Best-effort: is the webhook relay actually connected for this repo? Drives
   // the live/stale/offline dot so the pane reflects real webhook status.
   const prRepoOwner = pr?.repoOwner ?? null;
@@ -532,11 +677,23 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   }, [prRepoOwner, prRepoName]);
 
   // Same rule the sidebar badge follows: a PR id only resolves on the machine
-  // that owns it, so a pinned pane's "Open in ADE" would land on an empty PRs
+  // that owns it, so a pinned pane's "Open files" would land on an empty PRs
   // tab. `openLanePr` sends a foreign PR to GitHub instead.
-  const openInAde = useCallback(() => {
+  const openFiles = useCallback(() => {
     if (!pr) return;
-    openLanePr(pr, { foreign: Boolean(runtimePin), navigate });
+    openLanePr(pr, {
+      foreign: Boolean(runtimePin),
+      navigate,
+      localPath: `/prs${buildPrsRouteSearch({
+        activeTab: "normal",
+        selectedPrId: pr.id,
+        selectedPrNumber: pr.githubPrNumber,
+        repoOwner: pr.repoOwner,
+        repoName: pr.repoName,
+        selectedRebaseItemId: null,
+        detailTab: "files",
+      })}`,
+    });
   }, [pr, navigate, runtimePin]);
 
   const openInGitHub = useCallback(async () => {
@@ -552,6 +709,74 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     if (!pr) return;
     await copy(pr.githubUrl);
   }, [copy, pr]);
+
+  const offerKey = stackOffer ? `${stackOffer.sessionId}:${stackOffer.stackNumber}` : null;
+  const visibleOffer = stackOffer && offerKey !== dismissedOfferKey ? stackOffer : null;
+  const linkableCatalog = useMemo(() => {
+    if (!sessionId) return [];
+    const linkedIds = new Set(linkedPrs.map((candidate) => candidate.id));
+    return catalogPrs.filter((candidate) => {
+      if (linkedIds.has(candidate.id)) return false;
+      const claimed = (candidate.chatSessionIds ?? []).some((id) => id !== sessionId);
+      return !claimed;
+    });
+  }, [catalogPrs, linkedPrs, sessionId]);
+
+  const linkPr = useCallback(async (prId: string, allowCrossLane = false) => {
+    if (!sessionId || typeof window.ade.prs.linkChatSession !== "function") return;
+    setLinkBusy(true);
+    setLinkError(null);
+    try {
+      const result = await window.ade.prs.linkChatSession({ prId, sessionId, allowCrossLane });
+      if (!result?.ok) {
+        setLinkError("Could not link this pull request.");
+        return;
+      }
+      setLinkPickerOpen(false);
+      await refresh({ live: true });
+    } finally {
+      setLinkBusy(false);
+    }
+  }, [refresh, sessionId]);
+
+  const unlinkCurrent = useCallback(async () => {
+    if (!sessionId || !pr || typeof window.ade.prs.unlinkChatSession !== "function") return;
+    setLinkBusy(true);
+    setLinkError(null);
+    try {
+      const result = await window.ade.prs.unlinkChatSession({ prId: pr.id, sessionId });
+      if (!result?.ok) {
+        setLinkError("Could not unlink this pull request.");
+        return;
+      }
+      await refresh();
+    } finally {
+      setLinkBusy(false);
+    }
+  }, [pr, refresh, sessionId]);
+
+  const linkStack = useCallback(async () => {
+    if (!visibleOffer) return;
+    setLinkBusy(true);
+    setStackLinkError(null);
+    try {
+      const result = await window.ade.prs.linkChatStack({
+        sessionId: visibleOffer.sessionId,
+        stackNumber: visibleOffer.stackNumber,
+        prId: visibleOffer.prId,
+      });
+      if (!result?.ok) {
+        setStackLinkError("Could not link this GitHub stack.");
+        return;
+      }
+      setDismissedOfferKey(`${visibleOffer.sessionId}:${visibleOffer.stackNumber}`);
+      await refresh({ live: true });
+    } catch (error) {
+      setStackLinkError(error instanceof Error ? error.message : "Could not link this GitHub stack.");
+    } finally {
+      setLinkBusy(false);
+    }
+  }, [refresh, visibleOffer]);
 
   // Ambient status accent on the pane's inner edge: red while checks fail,
   // green while it's merge-ready. Kept as an inset shadow so it never shifts
@@ -573,12 +798,58 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     <div className="flex h-full min-h-0 flex-col font-sans" style={accentShadow ? { boxShadow: accentShadow } : undefined}>
       <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-white/[0.06] px-3">
         <GitPullRequest size={12} weight="bold" className="shrink-0 text-fg/45" />
-        <span className="min-w-0 truncate text-[11.5px] font-medium text-fg/70">Pull request</span>
+        {linkedPrs.length > 1 ? (
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+            {linkedPrs.map((candidate) => (
+              <button
+                key={candidate.id}
+                type="button"
+                onClick={() => {
+                  setSelectedPrId(candidate.id);
+                  currentPrIdRef.current = candidate.id;
+                  setPr(candidate);
+                }}
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10.5px] tabular-nums transition-colors",
+                  candidate.id === pr?.id
+                    ? "bg-white/[0.08] text-fg/85"
+                    : "text-fg/40 hover:bg-white/[0.04] hover:text-fg/70",
+                )}
+                aria-pressed={candidate.id === pr?.id}
+                aria-label={`Show pull request #${candidate.githubPrNumber}`}
+                title={candidate.title}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-1.5 w-1.5 rounded-full",
+                    candidate.state === "merged"
+                      ? "bg-violet-400"
+                      : candidate.state === "closed"
+                        ? "bg-red-400/70"
+                        : candidate.checksStatus === "failing"
+                          ? "bg-red-400"
+                          : candidate.checksStatus === "passing"
+                            ? "bg-emerald-400"
+                            : "bg-fg/30",
+                  )}
+                />
+                #{candidate.githubPrNumber}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span
+            className="min-w-0 truncate font-mono text-[11.5px] font-medium tabular-nums text-fg/70"
+            title={pr?.title ?? undefined}
+          >
+            {pr?.githubPrNumber ? `#${pr.githubPrNumber}` : "Pull request"}
+          </span>
+        )}
         <button
           type="button"
           onClick={() => void handleSyncLanePr()}
           disabled={syncing}
-          className={cn(titleBarIconButton, "ml-auto")}
+          className={cn(titleBarIconButton, linkedPrs.length > 1 ? "ml-1" : "ml-auto")}
           title={syncSpinning ? "Syncing PR status…" : "Refresh pull request"}
           aria-label="Refresh pull request"
         >
@@ -598,17 +869,91 @@ export const ChatPrPane = React.memo(function ChatPrPane({
         {loading ? (
           <p className="px-1 py-6 text-center text-[12px] text-fg/40">Loading…</p>
         ) : pr ? (
-          <PrDetails
-            pr={pr}
-            checks={checks}
-            reviews={reviews}
-            status={status}
-            relay={relay}
-            copied={copied}
-            onOpenAde={openInAde}
-            onOpenGitHub={() => void openInGitHub()}
-            onCopy={() => void copyLink()}
-          />
+          <div className="space-y-3">
+            {visibleOffer ? (
+              <ChatPrStackOffer
+                offer={visibleOffer}
+                busy={linkBusy}
+                error={stackLinkError}
+                onLink={() => void linkStack()}
+                onDismiss={() => setDismissedOfferKey(offerKey)}
+              />
+            ) : null}
+            <PrDetails
+              pr={pr}
+              checks={checks}
+              reviews={reviews}
+              status={status}
+              relay={relay}
+              copied={copied}
+              files={peekFiles}
+              filesRemaining={filesRemaining}
+              onOpenFiles={openFiles}
+              onOpenGitHub={() => void openInGitHub()}
+              onCopy={() => void copyLink()}
+            />
+            {sessionId && !runtimePin ? (
+              <div className="space-y-1.5 border-t border-white/[0.06] pt-3">
+                {linkPickerOpen ? (
+                  <div className="rounded-lg border border-white/[0.08] bg-white/[0.02] p-2">
+                    <div className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wide text-fg/40">
+                      Link another PR
+                    </div>
+                    {linkableCatalog.length === 0 ? (
+                      <p className="px-1 py-2 text-[11px] text-fg/40">No other unclaimed pull requests.</p>
+                    ) : (
+                      <div className="max-h-40 space-y-0.5 overflow-y-auto">
+                        {linkableCatalog.map((candidate) => (
+                          <button
+                            key={candidate.id}
+                            type="button"
+                            disabled={linkBusy}
+                            onClick={() => void linkPr(candidate.id, candidate.laneId !== laneId)}
+                            className="flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-white/[0.05] disabled:opacity-50"
+                          >
+                            <span className="shrink-0 font-mono text-[11px] text-fg/55">#{candidate.githubPrNumber}</span>
+                            <span className="min-w-0 truncate text-[11px] text-fg/75">{candidate.title}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setLinkPickerOpen(false)}
+                      className="mt-1 text-[11px] text-fg/40 hover:text-fg/65"
+                    >
+                      Cancel
+                    </button>
+                    {linkError ? (
+                      <p role="alert" className="mt-1.5 text-[11px] leading-relaxed text-red-300/85">{linkError}</p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setLinkPickerOpen(true)}
+                    className={paneAction}
+                  >
+                    <Plus size={12} weight="bold" />
+                    Link another PR
+                    <CaretDown size={10} className="ml-auto opacity-50" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={linkBusy}
+                  onClick={() => void unlinkCurrent()}
+                  className={paneAction}
+                >
+                  <LinkBreak size={12} weight="bold" />
+                  Unlink this PR
+                </button>
+                {!linkPickerOpen && linkError ? (
+                  <p role="alert" className="text-[11px] leading-relaxed text-red-300/85">{linkError}</p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         ) : runtimePin ? (
           // Reading a foreign lane's PR is now routed to its machine; CREATING
           // one is not. The creator derives its branch, base and Linear link

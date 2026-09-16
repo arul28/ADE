@@ -28,9 +28,10 @@ import {
   lanePrAttentionColor,
   lanePrsForLane,
   openLanePr,
+  pickPrimaryPr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
-import { selectPrsForChat } from "../../lib/prChatScope";
+import { selectPrsForChat } from "../../../shared/prChatScope";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 // ---------------------------------------------------------------------------
@@ -60,6 +61,34 @@ type ChatGitToolbarProps = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function extraLinkedPrsAction(args: {
+  count: number;
+  onTogglePrPane?: () => void;
+  runtimePin: OpenProjectBinding | null | undefined;
+  onOpenPrimary: () => void;
+  onOpenLaneTab: () => void;
+}): { title: string; "aria-label": string; onClick: () => void } {
+  if (args.onTogglePrPane) {
+    return {
+      title: `Show ${args.count} linked pull requests`,
+      "aria-label": `Show ${args.count} linked pull requests`,
+      onClick: args.onTogglePrPane,
+    };
+  }
+  if (args.runtimePin) {
+    return {
+      title: "Open the primary pull request on its owning machine; hover for all",
+      "aria-label": "Open the primary pull request on its owning machine",
+      onClick: args.onOpenPrimary,
+    };
+  }
+  return {
+    title: `Show all ${args.count} pull requests for this lane`,
+    "aria-label": `Show all ${args.count} pull requests for this lane`,
+    onClick: args.onOpenLaneTab,
+  };
+}
 
 function dirtyFileCount(changes: DiffChanges): number {
   // Distinct paths, not the sum of the two lists. `git status` reports a file
@@ -210,8 +239,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       let lanePrs: PrSummary[];
       if (typeof window.ade.prs.listAll === "function") {
         const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
-        const ownedPrs = allPrs.filter((pr) => pr.laneId === laneId && !pr.detached);
-        lanePrs = selectPrsForChat(ownedPrs, sessionId);
+        lanePrs = sessionId
+          ? selectPrsForChat(
+            allPrs.filter((pr) => !pr.detached),
+            sessionId,
+            { currentBranch: laneBranchRef },
+          )
+          : allPrs.filter((pr) => pr.laneId === laneId && !pr.detached);
       } else {
         // Older web-preview/test bridges only expose the original single-PR
         // lookup. Keep that compatibility path while the desktop bridge rolls
@@ -219,8 +253,15 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
         lanePrs = legacy ? [legacy] : [];
       }
-      const visibleLanePrs = lanePrsForLane(laneForPr, lanePrs);
-      const pr = selectPrimaryLanePr(laneForPr, lanePrs);
+      // Chat-scoped edges may include cross-lane GitHub stack members.
+      // Lane-header filtering would drop those. Lane surfaces still use
+      // `lanePrsForLane` so a header never shows another chat's PR.
+      const visibleLanePrs = sessionId
+        ? lanePrs
+        : lanePrsForLane(laneForPr, lanePrs);
+      const pr = sessionId
+        ? pickPrimaryPr(visibleLanePrs)
+        : selectPrimaryLanePr(laneForPr, lanePrs);
       if (!requestIsCurrent()) return null;
       // Keep the aggregate badge attention scoped to the same current-branch
       // rows as the primary badge. A compact legacy row may have no branch
@@ -502,27 +543,20 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           <button
             type="button"
             className={cn(btnBase, "px-1.5 font-mono text-[9px] tabular-nums")}
-            onClick={() => {
-              if (runtimePin) {
-                // The local PR tab cannot resolve a foreign machine's rows.
-                // The hover list still exposes every PR; the counter opens the
-                // owning machine's primary PR instead of a misleading empty tab.
-                openPr(linkedPr);
-                return;
-              }
-              navigate(`/prs${buildPrsRouteSearch({
-                activeTab: "normal",
-                selectedPrId: null,
-                selectedLaneId: laneId,
-                selectedRebaseItemId: null,
-              })}`);
-            }}
-            title={runtimePin
-              ? "Open the primary pull request on its owning machine; hover for all"
-              : `Show all ${allPrs.length} pull requests for this lane`}
-            aria-label={runtimePin
-              ? "Open the primary pull request on its owning machine"
-              : `Show all ${allPrs.length} pull requests for this lane`}
+            {...extraLinkedPrsAction({
+              count: allPrs.length,
+              onTogglePrPane,
+              runtimePin,
+              onOpenPrimary: () => openPr(linkedPr),
+              onOpenLaneTab: () => {
+                navigate(`/prs${buildPrsRouteSearch({
+                  activeTab: "normal",
+                  selectedPrId: null,
+                  selectedLaneId: laneId,
+                  selectedRebaseItemId: null,
+                })}`);
+              },
+            })}
           >
             +{allPrs.length - 1}
           </button>
@@ -536,7 +570,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
                   type="button"
                   key={candidate.id}
                   className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.06]"
-                  onClick={() => openPr(candidate)}
+                  onClick={() => {
+                    if (onTogglePrPane && !prPaneOpen) onTogglePrPane();
+                    if (!onTogglePrPane) openPr(candidate);
+                  }}
                   title={candidate.title || `PR #${candidate.githubPrNumber}`}
                 >
                   <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: lanePrAttentionColor(lanePrAggregateAttention([candidate])) }} />
@@ -558,7 +595,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         ) : null}
       </div>
     );
-  }, [laneId, linkedPr, linkedPrs, navigate, onTogglePrPane, openPr, prPillActive]);
+  }, [laneId, linkedPr, linkedPrs, navigate, onTogglePrPane, openPr, prPaneOpen, prPillActive, runtimePin]);
 
   // Slide-out panel that appears to the right of the PR badge when toggled.
   const prMenu = useMemo(() => {

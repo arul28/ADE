@@ -149,6 +149,24 @@ final class WorkCardExpansionTests: XCTestCase {
     XCTAssertEqual(workAdeCardCollapsedGlyph(card), "checklist")
   }
 
+  func testCollapsedStackLandRowUsesTheStackGlyph() throws {
+    let card = try adeCard(
+      """
+      {
+        "cardId": "pr-stack-land:ade:desktop:4",
+        "variant": "pr_stack_land",
+        "state": "terminal",
+        "title": "GitHub Stack #4 landed",
+        "subtitle": "2 pull requests merged",
+        "fallbackText": "GitHub Stack #4 landed. #8, #7 merged."
+      }
+      """
+    )
+
+    XCTAssertEqual(workAdeCardCollapsedGlyph(card), "square.stack.3d.up.fill")
+    XCTAssertEqual(workAdeCardCollapsedSummary(card), "GitHub Stack #4 landed · 2 pull requests merged")
+  }
+
   func testCollapsedCiRowOmitsAZeroChip() throws {
     let card = try adeCard(
       """

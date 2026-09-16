@@ -49,6 +49,10 @@ struct PrDetailView: View {
   @State private var laneLinkItem: GitHubPrListItem?
   @State private var editorSheet: PrDetailEditorSheet?
   @State private var mergeMethodSheetPresented: Bool = false
+  @State private var githubStackMergeUnavailableReason: String?
+  @State private var githubStackRebaseUnavailableReason: String?
+  @State private var githubStackBusy = false
+  @State private var githubStackConfirm: String?
   @State private var actionsSheetPresented: Bool = false
   /// Closing a PR from the actions sheet asks first, matching desktop. The
   /// inline merge rail has its own two-tap confirm; this covers the other entry
@@ -1181,7 +1185,15 @@ struct PrDetailView: View {
       PrOverviewGitHubStackCard(
         stack: stack,
         prNumber: currentPr.githubPrNumber,
-        onOpenGitHub: { openGitHub(urlString: currentPr.githubUrl) }
+        onOpenGitHub: { openGitHub(urlString: currentPr.githubUrl) },
+        canMergeStack: syncService.supportsRemoteAction("prs.mergeGithubStack"),
+        canRebaseStack: syncService.supportsRemoteAction("prs.rebaseGithubStack"),
+        mergeUnavailableReason: githubStackMergeUnavailableReason,
+        rebaseUnavailableReason: githubStackRebaseUnavailableReason,
+        stackBusy: githubStackBusy,
+        pendingConfirm: githubStackConfirm,
+        onMerge: { mutateGithubStack(action: "merge") },
+        onRebase: { mutateGithubStack(action: "rebase") }
       )
       .prListRow()
     } else {
@@ -1744,7 +1756,7 @@ struct PrDetailView: View {
     commitBody: String? = nil
   ) {
     guard nativeStackMembership == nil else {
-      openGitHub(urlString: currentPr.githubUrl)
+      performGithubStackMutation(action: "merge")
       return
     }
     // Stale-head guard: pass the SHA the status was computed against so GitHub
@@ -1760,6 +1772,57 @@ struct PrDetailView: View {
         commitBody: commitBody,
         expectedHeadSha: expectedHeadSha
       )
+    }
+  }
+
+  private func mutateGithubStack(action: String) {
+    if githubStackConfirm != action {
+      githubStackConfirm = action
+      return
+    }
+    performGithubStackMutation(action: action)
+  }
+
+  private func performGithubStackMutation(action: String) {
+    guard let membership = nativeStackMembership else { return }
+    githubStackBusy = true
+    errorMessage = nil
+    Task {
+      defer { githubStackBusy = false }
+      do {
+        let result: GitHubStackMutationResult
+        if action == "rebase" {
+          result = try await syncService.rebaseGitHubStack(
+            stackNumber: membership.number,
+            repoOwner: currentPr.repoOwner,
+            repoName: currentPr.repoName
+          )
+        } else {
+          result = try await syncService.mergeGitHubStack(
+            stackNumber: membership.number,
+            mergeMethod: mergeMethod.rawValue,
+            repoOwner: currentPr.repoOwner,
+            repoName: currentPr.repoName
+          )
+        }
+        if result.ok {
+          githubStackMergeUnavailableReason = nil
+          githubStackRebaseUnavailableReason = nil
+          githubStackConfirm = nil
+          await reload(includeLiveSidecars: true)
+        } else if result.method == "unavailable" {
+          let reason = result.disabledReason ?? result.error
+          if action == "rebase" {
+            githubStackRebaseUnavailableReason = reason
+          } else {
+            githubStackMergeUnavailableReason = reason
+          }
+        } else {
+          errorMessage = result.error ?? result.disabledReason ?? "GitHub could not update this stack."
+        }
+      } catch {
+        errorMessage = error.localizedDescription
+      }
     }
   }
 

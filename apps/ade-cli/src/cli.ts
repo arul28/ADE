@@ -2493,6 +2493,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs stacks create --pulls 12,13,14        Create a stack, ordered bottom to top
     $ ade prs stacks add --stack 8 --pulls 15       Add pull requests above the current stack top
     $ ade prs stacks unstack --stack 8              Remove eligible pull requests from a GitHub stack
+    $ ade prs stacks merge --stack 8 --method squash
+                                                    Merge every open stack layer through GitHub
+    $ ade prs stacks rebase --stack 8               Rebase every open stack layer onto the layer below
+    $ ade prs link-chat --pr <pr> --session <id>    Link a pull request to a chat
+    $ ade prs unlink-chat --pr <pr> --session <id>  Unlink a pull request from a chat (does not revive as fallback)
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -7297,6 +7302,29 @@ function buildPrPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "link-chat" || sub === "unlink-chat") {
+    const sessionId = requireValue(readValue(args, ["--session", "--session-id", "--chat"]), "sessionId");
+    const linkedPrId = requireValue(
+      prId ?? readValue(args, ["--pr", "--pr-id"]) ?? firstPositional(args),
+      "prId",
+    );
+    const input: JsonObject = { prId: linkedPrId, sessionId };
+    if (sub === "link-chat" && readFlag(args, ["--cross-lane", "--allow-cross-lane"])) {
+      input.allowCrossLane = true;
+    }
+    return {
+      kind: "execute",
+      label: sub === "link-chat" ? "PR link chat" : "PR unlink chat",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          sub === "link-chat" ? "linkChatSession" : "unlinkChatSession",
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
+  }
 
   const scalarPrActions: Record<string, string> = {
     status: "getStatus",
@@ -7691,7 +7719,36 @@ function buildPrPlan(args: string[]): CliPlan {
         ],
       };
     }
-    throw new CliUsageError("prs stacks supports list, sync, create, add, and unstack.");
+    if (mode === "merge") {
+      const mergeMethod = readValue(args, ["--method", "--merge-method"]) ?? "squash";
+      if (mergeMethod !== "merge" && mergeMethod !== "squash" && mergeMethod !== "rebase") {
+        throw new CliUsageError("prs stacks merge --method must be merge, squash, or rebase.");
+      }
+      return {
+        kind: "execute",
+        label: "GitHub stack merge",
+        steps: [
+          actionStep("result", "pr", "mergeGithubStack", {
+            ...repoArgs,
+            stackNumber,
+            mergeMethod,
+          }),
+        ],
+      };
+    }
+    if (mode === "rebase") {
+      return {
+        kind: "execute",
+        label: "GitHub stack rebase",
+        steps: [
+          actionStep("result", "pr", "rebaseGithubStack", {
+            ...repoArgs,
+            stackNumber,
+          }),
+        ],
+      };
+    }
+    throw new CliUsageError("prs stacks supports list, sync, create, add, unstack, merge, and rebase.");
   }
   if (sub === "conflicts") {
     const mode = firstPositional(args) ?? "list";

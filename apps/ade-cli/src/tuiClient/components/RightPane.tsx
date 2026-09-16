@@ -1312,7 +1312,7 @@ function ChatInfoTasksBlock({ info, brandColor, width }: { info: ChatInfoSnapsho
   );
 }
 
-// Desktop ChatPrPane parity: the lane's PR rollup with a /pr handoff hint.
+// Desktop ChatPrPane parity: the chat's linked PR rollup with a /pr handoff hint.
 // Rendered BELOW the roster so the click line-math stays intact.
 function ChatInfoPrBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
   const pr = info.pr;
@@ -1324,8 +1324,16 @@ function ChatInfoPrBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; 
       : theme.color.t4;
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="PR" hint={`#${pr.number}`} color={brandColor} width={width} />
+      <ChatInfoSectionHead
+        title="PR"
+        hint={pr.linkedNumbers?.length ? `#${pr.number} +${pr.linkedNumbers.length}` : `#${pr.number}`}
+        color={brandColor}
+        width={width}
+      />
       <Text color={stateColor} bold>{pr.state}</Text>
+      {pr.linkedNumbers?.length ? (
+        <Text color={theme.color.violet}>{[`#${pr.number}`, ...pr.linkedNumbers.map((n) => `#${n}`)].join("  ")}</Text>
+      ) : null}
       <Text color={theme.color.t4} dimColor>{"/pr for details"}</Text>
     </Box>
   );

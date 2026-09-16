@@ -111,6 +111,11 @@ export type PrSummary = {
   changedFiles?: number | null;
   /** Chats that explicitly opened or worked on this PR. Empty/absent means legacy lane-wide routing. */
   chatSessionIds?: string[];
+  /**
+   * Chats that unlinked this PR. Fallback display must not revive these;
+   * an explicit re-link clears the tombstone.
+   */
+  dismissedChatSessionIds?: string[];
 };
 
 /**
@@ -324,6 +329,68 @@ export type UnstackGitHubPrStackArgs = {
   stackNumber: number;
 };
 
+export const DEFAULT_GITHUB_STACK_MERGE_METHOD: MergeMethod = "squash";
+
+export type MergeGitHubPrStackArgs = {
+  repo?: GitHubRepoRef | null;
+  stackNumber: number;
+  mergeMethod?: MergeMethod;
+};
+
+export type RebaseGitHubPrStackArgs = {
+  repo?: GitHubRepoRef | null;
+  stackNumber: number;
+};
+
+export type GitHubStackMutationResult = {
+  ok: boolean;
+  stack: GitHubPrStack | null;
+  method: "stack_api" | "merge_async" | "update_branch" | "unavailable";
+  disabledReason?: string | null;
+  error?: string | null;
+};
+
+export type LinkPrChatSessionArgs = {
+  prId: string;
+  sessionId: string;
+  /** Explicit picker / stack member: allow a chat on another lane. */
+  allowCrossLane?: boolean;
+};
+
+export type UnlinkPrChatSessionArgs = {
+  prId: string;
+  sessionId: string;
+};
+
+export type LinkPrChatStackArgs = {
+  sessionId: string;
+  stackNumber: number;
+  prId?: string | null;
+};
+
+export type ListPrChatSessionsArgs = {
+  prId: string;
+};
+
+export type PrChatSessionLink = {
+  sessionId: string;
+  title: string | null;
+  laneId: string | null;
+};
+
+export type StackLinkOffer = {
+  sessionId: string;
+  prId: string;
+  stackNumber: number;
+  siblings: Array<{
+    prId: string;
+    githubPrNumber: number;
+    title: string;
+    laneId: string;
+    claimedByOtherChat: boolean;
+  }>;
+};
+
 export type GitHubPrListItem = {
   id: string;
   scope: "repo" | "external";
@@ -534,6 +601,11 @@ export type CreatePrFromLaneArgs = {
   laneId: string;
   /** The chat that initiated this PR, when the action came from a chat surface. */
   sessionId?: string | null;
+  /**
+   * Agents silent-expand the next GitHub stack layer onto the parent chat.
+   * Humans get a stack-link offer instead. Unset is treated as human.
+   */
+  source?: "agent" | "human";
   title: string;
   body: string;
   draft: boolean;

@@ -26,6 +26,90 @@ func workChatPrBadgeModel(tag: LanePrTag?, pr: PullRequestListItem?, summary: Pr
   )
 }
 
+func workChatNormalizeBranch(_ value: String?) -> String {
+  (value ?? "")
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .replacingOccurrences(of: "^refs/heads/", with: "", options: [.regularExpression, .caseInsensitive])
+    .lowercased()
+}
+
+func workChatSelectPrsForChat(
+  _ prs: [PullRequestListItem],
+  sessionId: String?,
+  currentBranch: String?
+) -> [PullRequestListItem] {
+  let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !trimmed.isEmpty else { return prs }
+  let edged = prs.filter { ($0.chatSessionIds ?? []).contains(trimmed) }
+  if !edged.isEmpty { return edged }
+  let branch = workChatNormalizeBranch(currentBranch)
+  return prs.filter { pr in
+    if (pr.dismissedChatSessionIds ?? []).contains(trimmed) { return false }
+    if !((pr.chatSessionIds ?? []).isEmpty) { return false }
+    if branch.isEmpty { return true }
+    let head = workChatNormalizeBranch(pr.headBranch)
+    return head.isEmpty || head == branch
+  }
+}
+
+struct WorkChatStackOffer: Equatable {
+  let stackNumber: Int
+  let siblings: [PullRequestListItem]
+}
+
+func workChatStackOffer(
+  selected: PullRequestListItem,
+  catalog: [PullRequestListItem],
+  sessionId: String
+) -> WorkChatStackOffer? {
+  guard let stack = selected.stack else { return nil }
+  let linkedIds = Set(
+    catalog
+      .filter { ($0.chatSessionIds ?? []).contains(sessionId) }
+      .map(\.id)
+  )
+  let siblings = catalog.filter { candidate in
+    guard candidate.id != selected.id else { return false }
+    guard candidate.stack?.number == stack.number else { return false }
+    guard candidate.repoOwner.caseInsensitiveCompare(selected.repoOwner) == .orderedSame else { return false }
+    guard candidate.repoName.caseInsensitiveCompare(selected.repoName) == .orderedSame else { return false }
+    if linkedIds.contains(candidate.id) { return false }
+    let claimedByOther = (candidate.chatSessionIds ?? []).contains { $0 != sessionId }
+    return !claimedByOther
+  }
+  guard !siblings.isEmpty else { return nil }
+  return WorkChatStackOffer(stackNumber: stack.number, siblings: siblings)
+}
+
+func workChatRankPrFilesByChurn(_ files: [PrFile], limit: Int = 3) -> (files: [PrFile], remaining: Int) {
+  let ranked = files.sorted { lhs, rhs in
+    let left = lhs.additions + lhs.deletions
+    let right = rhs.additions + rhs.deletions
+    if left != right { return left > right }
+    return lhs.filename < rhs.filename
+  }
+  let cap = max(0, limit)
+  return (Array(ranked.prefix(cap)), max(0, ranked.count - cap))
+}
+
+func workChatLinkableCatalog(
+  catalog: [PullRequestListItem],
+  linked: [PullRequestListItem],
+  sessionId: String
+) -> [PullRequestListItem] {
+  let linkedIds = Set(linked.map(\.id))
+  return catalog.filter { candidate in
+    if linkedIds.contains(candidate.id) { return false }
+    return !((candidate.chatSessionIds ?? []).contains { $0 != sessionId })
+  }
+}
+
+private func workChatFilePeekLabel(_ filename: String) -> String {
+  let parts = filename.split(separator: "/").filter { !$0.isEmpty }
+  if parts.count <= 2 { return parts.map(String.init).joined(separator: "/") }
+  return parts.suffix(2).map(String.init).joined(separator: "/")
+}
+
 struct WorkChatPrActivePopup: View {
   let badge: WorkChatPrBadgeModel
   let onOpen: () -> Void
@@ -110,6 +194,12 @@ struct WorkChatPrDetailsSheet: View {
   let pr: PullRequestListItem?
   let summary: PrSummary?
   let snapshot: PullRequestSnapshot?
+  let linkedPrs: [PullRequestListItem]
+  let selectedPrId: String?
+  let stackOffer: WorkChatStackOffer?
+  let linkablePrs: [PullRequestListItem]
+  let canLink: Bool
+  let linkBusy: Bool
   let laneColor: Color?
   let canCreate: Bool
   let createBlockedReason: String?
@@ -117,12 +207,75 @@ struct WorkChatPrDetailsSheet: View {
   let errorMessage: String?
   let onRefresh: () -> Void
   let onCreate: () -> Void
+  let onSelectPr: (String) -> Void
+  let onOpenFiles: () -> Void
   let onOpenPrsTab: () -> Void
   let onOpenGitHub: () -> Void
+  let onLinkStack: () -> Void
+  let onDismissStackOffer: () -> Void
+  let onLinkPr: (String, Bool) -> Void
+  let onUnlink: () -> Void
+
+  @State private var linkPickerOpen = false
+
+  init(
+    tag: LanePrTag?,
+    pr: PullRequestListItem?,
+    summary: PrSummary?,
+    snapshot: PullRequestSnapshot?,
+    linkedPrs: [PullRequestListItem] = [],
+    selectedPrId: String? = nil,
+    stackOffer: WorkChatStackOffer? = nil,
+    linkablePrs: [PullRequestListItem] = [],
+    canLink: Bool = false,
+    linkBusy: Bool = false,
+    laneColor: Color?,
+    canCreate: Bool,
+    createBlockedReason: String?,
+    isRefreshing: Bool,
+    errorMessage: String?,
+    onRefresh: @escaping () -> Void,
+    onCreate: @escaping () -> Void,
+    onSelectPr: @escaping (String) -> Void = { _ in },
+    onOpenFiles: @escaping () -> Void = {},
+    onOpenPrsTab: @escaping () -> Void,
+    onOpenGitHub: @escaping () -> Void,
+    onLinkStack: @escaping () -> Void = {},
+    onDismissStackOffer: @escaping () -> Void = {},
+    onLinkPr: @escaping (String, Bool) -> Void = { _, _ in },
+    onUnlink: @escaping () -> Void = {}
+  ) {
+    self.tag = tag
+    self.pr = pr
+    self.summary = summary
+    self.snapshot = snapshot
+    self.linkedPrs = linkedPrs
+    self.selectedPrId = selectedPrId
+    self.stackOffer = stackOffer
+    self.linkablePrs = linkablePrs
+    self.canLink = canLink
+    self.linkBusy = linkBusy
+    self.laneColor = laneColor
+    self.canCreate = canCreate
+    self.createBlockedReason = createBlockedReason
+    self.isRefreshing = isRefreshing
+    self.errorMessage = errorMessage
+    self.onRefresh = onRefresh
+    self.onCreate = onCreate
+    self.onSelectPr = onSelectPr
+    self.onOpenFiles = onOpenFiles
+    self.onOpenPrsTab = onOpenPrsTab
+    self.onOpenGitHub = onOpenGitHub
+    self.onLinkStack = onLinkStack
+    self.onDismissStackOffer = onDismissStackOffer
+    self.onLinkPr = onLinkPr
+    self.onUnlink = onUnlink
+  }
 
   private var sheetTitle: String {
+    if linkedPrs.count > 1 { return "Pull requests" }
     guard let tag else { return "Pull request" }
-    return "PR #\(tag.githubPrNumber) \(lanePrStateLabel(tag.state))"
+    return "#\(tag.githubPrNumber)"
   }
 
   private var githubUrl: String {
@@ -152,6 +305,10 @@ struct WorkChatPrDetailsSheet: View {
     pr?.deletions ?? summary?.deletions ?? 0
   }
 
+  private var peekFiles: (files: [PrFile], remaining: Int) {
+    workChatRankPrFilesByChurn(snapshot?.files ?? [])
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       topBar
@@ -169,30 +326,60 @@ struct WorkChatPrDetailsSheet: View {
   }
 
   private var topBar: some View {
-    ZStack {
-      Text(sheetTitle)
-        .font(.headline.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .padding(.horizontal, 58)
+    VStack(alignment: .leading, spacing: 10) {
+      ZStack {
+        Text(sheetTitle)
+          .font(.headline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .padding(.horizontal, 58)
 
-      HStack {
-        Spacer()
-        Button(action: onRefresh) {
-          if isRefreshing {
-            ProgressView()
-              .controlSize(.small)
-          } else {
-            Image(systemName: "arrow.clockwise")
-              .font(.system(size: 16, weight: .bold))
+        HStack {
+          Spacer()
+          Button(action: onRefresh) {
+            if isRefreshing {
+              ProgressView()
+                .controlSize(.small)
+            } else {
+              Image(systemName: "arrow.clockwise")
+                .font(.system(size: 16, weight: .bold))
+            }
+          }
+          .foregroundStyle(ADEColor.accent)
+          .frame(width: 36, height: 36)
+          .background(ADEColor.surfaceBackground.opacity(0.86), in: Circle())
+          .overlay(Circle().stroke(ADEColor.glassBorder.opacity(0.8), lineWidth: 0.7))
+          .disabled(isRefreshing)
+          .accessibilityLabel("Refresh pull request details")
+        }
+      }
+
+      if linkedPrs.count > 1 {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 6) {
+            ForEach(linkedPrs) { candidate in
+              Button {
+                onSelectPr(candidate.id)
+              } label: {
+                Text("#\(candidate.githubPrNumber)")
+                  .font(.caption.weight(.semibold).monospacedDigit())
+                  .foregroundStyle(candidate.id == selectedPrId ? ADEColor.textPrimary : ADEColor.textSecondary)
+                  .padding(.horizontal, 9)
+                  .padding(.vertical, 5)
+                  .background(
+                    ADEColor.surfaceBackground.opacity(candidate.id == selectedPrId ? 0.95 : 0.45),
+                    in: Capsule(style: .continuous)
+                  )
+                  .overlay(
+                    Capsule(style: .continuous)
+                      .stroke(ADEColor.glassBorder.opacity(candidate.id == selectedPrId ? 0.9 : 0.45), lineWidth: 0.7)
+                  )
+              }
+              .buttonStyle(.plain)
+              .accessibilityLabel("Show pull request #\(candidate.githubPrNumber)")
+            }
           }
         }
-        .foregroundStyle(ADEColor.accent)
-        .frame(width: 36, height: 36)
-        .background(ADEColor.surfaceBackground.opacity(0.86), in: Circle())
-        .overlay(Circle().stroke(ADEColor.glassBorder.opacity(0.8), lineWidth: 0.7))
-        .disabled(isRefreshing)
-        .accessibilityLabel("Refresh pull request details")
       }
     }
     .padding(.horizontal, 18)
@@ -204,8 +391,31 @@ struct WorkChatPrDetailsSheet: View {
     let branches = workChatPrBranches(pr: pr, summary: summary, tag: tag)
     let stateTint = workChatPrStateTint(tag.state)
     let branchTint = laneColor ?? stateTint
+    let ranked = peekFiles
 
     return VStack(alignment: .leading, spacing: 12) {
+      if let stackOffer {
+        VStack(alignment: .leading, spacing: 8) {
+          Label("Also in GitHub Stack #\(stackOffer.stackNumber)", systemImage: "square.stack.3d.up.fill")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(stackOffer.siblings.map { "#\($0.githubPrNumber)" }.joined(separator: ", "))
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(ADEColor.textSecondary)
+          HStack(spacing: 8) {
+            Button("Link stack", action: onLinkStack)
+              .font(.caption.weight(.semibold))
+              .disabled(linkBusy)
+            Button("Not now", action: onDismissStackOffer)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ADEColor.tintPRs.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+      }
+
       WorkChatPrSummaryHeader(
         title: tag.title,
         updatedText: "Updated \(prRelativeTime(tag.updatedAt))",
@@ -222,7 +432,7 @@ struct WorkChatPrDetailsSheet: View {
       if let stack = tag.stack ?? pr?.stack ?? summary?.stack {
         HStack(spacing: 9) {
           GitHubStackPositionBadge(stack: stack)
-          Text("GitHub manages review, rebase, and merge for this stack.")
+          Text("Merge and rebase this stack on the PRs tab.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -237,6 +447,37 @@ struct WorkChatPrDetailsSheet: View {
         WorkChatPrChecksMetricCard(status: checksStatus, reason: checksReason)
       }
 
+      if !ranked.files.isEmpty {
+        VStack(alignment: .leading, spacing: 7) {
+          Label("Files", systemImage: "doc.text")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+          ForEach(ranked.files) { file in
+            HStack {
+              Text(workChatFilePeekLabel(file.filename))
+                .font(.caption.monospaced())
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+              Spacer(minLength: 8)
+              Text("+\(file.additions)")
+                .foregroundStyle(ADEColor.success)
+              Text("-\(file.deletions)")
+                .foregroundStyle(ADEColor.danger)
+            }
+            .font(.caption.monospacedDigit())
+          }
+          if ranked.remaining > 0 {
+            Text("+\(ranked.remaining) more files")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      }
+
       if let errorMessage, !errorMessage.isEmpty {
         Text(errorMessage)
           .font(.footnote)
@@ -245,11 +486,11 @@ struct WorkChatPrDetailsSheet: View {
 
       HStack(spacing: 10) {
         WorkChatPrActionButton(
-          title: "Open in ADE",
-          symbol: "rectangle.grid.1x2",
+          title: ranked.files.isEmpty ? "Open files" : "Open files on PRs tab",
+          symbol: "doc.text",
           tint: ADEColor.accent,
           prominent: true,
-          action: onOpenPrsTab
+          action: onOpenFiles
         )
 
         WorkChatPrActionButton(
@@ -258,6 +499,58 @@ struct WorkChatPrDetailsSheet: View {
           tint: ADEColor.accent,
           disabled: githubUrl.isEmpty,
           action: onOpenGitHub
+        )
+      }
+
+      if canLink {
+        if linkPickerOpen {
+          VStack(alignment: .leading, spacing: 8) {
+            Text("Link another PR")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+            if linkablePrs.isEmpty {
+              Text("No other unclaimed pull requests.")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textMuted)
+            } else {
+              ForEach(Array(linkablePrs.prefix(8))) { candidate in
+                Button {
+                  onLinkPr(candidate.id, candidate.laneId != (pr?.laneId ?? ""))
+                } label: {
+                  HStack {
+                    Text("#\(candidate.githubPrNumber)")
+                      .font(.caption.monospacedDigit())
+                      .foregroundStyle(ADEColor.textSecondary)
+                    Text(candidate.title)
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textPrimary)
+                      .lineLimit(1)
+                  }
+                }
+                .buttonStyle(.plain)
+                .disabled(linkBusy)
+              }
+            }
+            Button("Cancel") { linkPickerOpen = false }
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .padding(12)
+          .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+          WorkChatPrActionButton(
+            title: "Link another PR",
+            symbol: "plus",
+            tint: ADEColor.accent,
+            action: { linkPickerOpen = true }
+          )
+        }
+        WorkChatPrActionButton(
+          title: "Unlink this PR",
+          symbol: "minus.circle",
+          tint: ADEColor.textSecondary,
+          disabled: linkBusy,
+          action: onUnlink
         )
       }
     }

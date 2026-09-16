@@ -45,6 +45,16 @@ describe("Header", () => {
     expect(frame.match(/ADE/g)).toHaveLength(1);
   });
 
+  it("shows the compact linked PR chip next to the chat title", () => {
+    const result = render(
+      <Header projectName="ADE" lane={null} prLabel="#42 +1" />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("pr ");
+    expect(frame).toContain("#42 +1");
+  });
+
   it("shows concise lane and branch context without model details", () => {
     const result = render(<Header projectName="Project" lane={lane()} chatTitle="Design pass" />);
     const frame = stripAnsi(result.lastFrame() ?? "");

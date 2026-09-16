@@ -126,6 +126,27 @@ export function boundMachineLanePrs(
   return byLane.get(laneBoundMachineKey(laneId)) ?? [];
 }
 
+/** Flatten every lane's PRs for one machine so chat scoping can see cross-lane edges. */
+export function machineCatalogPrs(
+  byLane: Map<string, PrSummary[]>,
+  options?: { machineId?: string | null; bound?: boolean },
+): PrSummary[] {
+  const prefix = options?.bound || !options?.machineId
+    ? "bound:"
+    : `${options.machineId}:`;
+  const seen = new Set<string>();
+  const catalog: PrSummary[] = [];
+  for (const [key, list] of byLane) {
+    if (!key.startsWith(prefix)) continue;
+    for (const pr of list) {
+      if (seen.has(pr.id)) continue;
+      seen.add(pr.id);
+      catalog.push(pr);
+    }
+  }
+  return catalog;
+}
+
 /** What a foreign row renders — its own machine's answer, never another's. */
 export function lanePrsForMachine(
   byLane: Map<string, PrSummary[]>,

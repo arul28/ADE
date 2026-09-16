@@ -109,6 +109,15 @@ import type {
   GitHubWebhookIngestResult,
   ListGitHubPrStacksArgs,
   UnstackGitHubPrStackArgs,
+  MergeGitHubPrStackArgs,
+  RebaseGitHubPrStackArgs,
+  GitHubStackMutationResult,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   PrDetail,
   PrFile,
   PrGithubCoords,
@@ -190,6 +199,8 @@ import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
+import { selectStackSiblings } from "../../../shared/prChatScope";
+import { DEFAULT_GITHUB_STACK_MERGE_METHOD } from "../../../shared/types/prs";
 import {
   buildLinearPrTitle,
   dedupeLinearPrIssueReferences,
@@ -1624,6 +1635,7 @@ export function createPrService({
    */
   const LIVE_PR_ROWS = "detached_at is null";
   type PullRequestChatSessionRow = { pr_id: string; session_id: string };
+  type PullRequestChatDismissalRow = { pr_id: string; session_id: string };
 
   const chatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> => {
     const ids = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
@@ -1654,23 +1666,135 @@ export function createPrService({
     return result;
   };
 
+  const dismissedChatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> => {
+    const ids = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+    const result = new Map<string, string[]>();
+    if (ids.length === 0) return result;
+    try {
+      const placeholders = ids.map(() => "?").join(", ");
+      const rows = db.all<PullRequestChatDismissalRow>(
+        `
+          select pr_id, session_id
+            from pull_request_chat_session_dismissals
+           where project_id = ?
+             and pr_id in (${placeholders})
+           order by created_at asc, id asc
+        `,
+        [projectId, ...ids],
+      );
+      for (const row of rows) {
+        const sessionId = String(row.session_id ?? "").trim();
+        if (!sessionId) continue;
+        const current = result.get(row.pr_id) ?? [];
+        if (!current.includes(sessionId)) current.push(sessionId);
+        result.set(row.pr_id, current);
+      }
+    } catch (error) {
+      logger.warn("prs.chat_session_dismissals_read_failed", { error: getErrorMessage(error) });
+    }
+    return result;
+  };
+
   const withChatSessionLinks = (summaries: PrSummary[]): PrSummary[] => {
-    const links = chatSessionIdsByPrId(summaries.map((summary) => summary.id));
+    const prIds = summaries.map((summary) => summary.id);
+    const links = chatSessionIdsByPrId(prIds);
+    const dismissals = dismissedChatSessionIdsByPrId(prIds);
     return summaries.map((summary) => {
       const sessionIds = links.get(summary.id);
-      return sessionIds?.length ? { ...summary, chatSessionIds: sessionIds } : summary;
+      const dismissed = dismissals.get(summary.id);
+      return {
+        ...summary,
+        ...(sessionIds?.length ? { chatSessionIds: sessionIds } : {}),
+        ...(dismissed?.length ? { dismissedChatSessionIds: dismissed } : {}),
+      };
     });
   };
 
-  const removeChatSessionLinksFromOtherLanes = (prId: string, laneId: string): void => {
+  const resolveCanonicalChatSessionId = (sessionId: string): string | null => {
+    const trimmed = String(sessionId ?? "").trim();
+    if (!trimmed) return null;
+    try {
+      const session = db.get<{ id: string }>(
+        `
+          select id
+            from terminal_sessions
+           where id = ?
+          union all
+          select chat_session_id as id
+            from claude_sessions
+           where session_id = ? and chat_session_id is not null
+           limit 1
+        `,
+        [trimmed, trimmed],
+      );
+      return String(session?.id ?? "").trim() || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const hasChatSessionDismissal = (prId: string, sessionId: string): boolean => {
+    try {
+      const row = db.get<{ id: string }>(
+        `
+          select id
+            from pull_request_chat_session_dismissals
+           where project_id = ? and pr_id = ? and session_id = ?
+           limit 1
+        `,
+        [projectId, prId, sessionId],
+      );
+      return Boolean(row?.id);
+    } catch {
+      return false;
+    }
+  };
+
+  const clearChatSessionDismissal = (prId: string, sessionId: string): void => {
     try {
       db.run(
-        `delete from pull_request_chat_sessions
-          where project_id = ? and pr_id = ? and lane_id <> ?`,
-        [projectId, prId, laneId],
+        `delete from pull_request_chat_session_dismissals
+          where project_id = ? and pr_id = ? and session_id = ?`,
+        [projectId, prId, sessionId],
       );
     } catch {
-      // Older test/embedded databases may predate the optional edge table.
+      // Older test/embedded databases may predate the tombstone table.
+    }
+  };
+
+  const writeChatSessionDismissal = (prId: string, sessionId: string): void => {
+    try {
+      const existing = db.get<{ id: string }>(
+        `
+          select id
+            from pull_request_chat_session_dismissals
+           where project_id = ? and pr_id = ? and session_id = ?
+           limit 1
+        `,
+        [projectId, prId, sessionId],
+      );
+      const now = nowIso();
+      if (existing) {
+        db.run(
+          "update pull_request_chat_session_dismissals set updated_at = ? where id = ? and project_id = ?",
+          [now, existing.id, projectId],
+        );
+        return;
+      }
+      db.run(
+        `
+          insert into pull_request_chat_session_dismissals(
+            id, project_id, pr_id, session_id, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?)
+        `,
+        [randomUUID(), projectId, prId, sessionId, now, now],
+      );
+    } catch (error) {
+      logger.warn("prs.chat_session_dismissal_write_failed", {
+        prId,
+        sessionId,
+        error: getErrorMessage(error),
+      });
     }
   };
 
@@ -1678,43 +1802,52 @@ export function createPrService({
     prId: string;
     laneId: string;
     sessionId?: string | null;
-  }): void => {
+    allowCrossLane?: boolean;
+  }): boolean => {
     const sessionId = String(args.sessionId ?? "").trim();
-    if (!sessionId) return;
+    if (!sessionId) return false;
 
     try {
-      const pr = db.get<{ id: string; lane_id: string }>(
-        "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
+      const pr = db.get<{
+        id: string;
+        lane_id: string;
+        repo_owner: string;
+        repo_name: string;
+        github_pr_number: number;
+      }>(
+        "select id, lane_id, repo_owner, repo_name, github_pr_number from pull_requests where id = ? and project_id = ? limit 1",
         [args.prId, projectId],
       );
-      if (!pr || pr.lane_id !== args.laneId) return;
-
-      // Chat surfaces use the terminal-session id. The Claude pointer fallback
-      // keeps imported/older chats addressable when only their provider session
-      // id was persisted.
-      const session = db.get<{ id: string }>(
-        `
-          select id
-            from terminal_sessions
-           where id = ? and lane_id = ?
-          union all
-          select chat_session_id as id
-            from claude_sessions
-           where session_id = ? and lane_id = ? and chat_session_id is not null
-           limit 1
-        `,
-        [sessionId, args.laneId, sessionId, args.laneId],
-      );
-      if (!session) {
+      if (!pr) return false;
+      const canonicalSessionId = resolveCanonicalChatSessionId(sessionId);
+      if (!canonicalSessionId) {
         logger.warn("prs.chat_session_link_session_missing", {
           prId: args.prId,
           laneId: args.laneId,
           sessionId,
         });
-        return;
+        return false;
       }
-      const canonicalSessionId = String(session.id ?? "").trim();
-      if (!canonicalSessionId) return;
+      const sessionLane = db.get<{ lane_id: string }>(
+        "select lane_id from terminal_sessions where id = ? limit 1",
+        [canonicalSessionId],
+      );
+      const sessionLaneId = String(sessionLane?.lane_id ?? "").trim();
+      const crossLane = Boolean(sessionLaneId) && sessionLaneId !== pr.lane_id;
+      if (crossLane && !args.allowCrossLane) {
+        try {
+          if (
+            githubStackStore.knownStackNumberForPr(
+              { owner: pr.repo_owner, name: pr.repo_name },
+              Number(pr.github_pr_number),
+            ) == null
+          ) {
+            return false;
+          }
+        } catch {
+          return false;
+        }
+      }
       const now = nowIso();
       const existing = db.get<{ id: string }>(
         `
@@ -1728,7 +1861,7 @@ export function createPrService({
       if (existing) {
         db.run(
           "update pull_request_chat_sessions set lane_id = ?, updated_at = ? where id = ? and project_id = ?",
-          [args.laneId, now, existing.id, projectId],
+          [pr.lane_id, now, existing.id, projectId],
         );
       } else {
         db.run(
@@ -1737,14 +1870,96 @@ export function createPrService({
               id, project_id, pr_id, lane_id, session_id, created_at, updated_at
             ) values (?, ?, ?, ?, ?, ?, ?)
           `,
-          [randomUUID(), projectId, args.prId, args.laneId, canonicalSessionId, now, now],
+          [randomUUID(), projectId, args.prId, pr.lane_id, canonicalSessionId, now, now],
         );
       }
+      clearChatSessionDismissal(args.prId, canonicalSessionId);
+      return true;
     } catch (error) {
       logger.warn("prs.chat_session_link_write_failed", {
         prId: args.prId,
         laneId: args.laneId,
         sessionId,
+        error: getErrorMessage(error),
+      });
+      return false;
+    }
+  };
+
+  const unlinkPrFromChatSession = (args: {
+    prId: string;
+    sessionId: string;
+    dismiss?: boolean;
+  }): boolean => {
+    const sessionId = resolveCanonicalChatSessionId(args.sessionId);
+    if (!sessionId) return false;
+    try {
+      db.run(
+        `delete from pull_request_chat_sessions
+          where project_id = ? and pr_id = ? and session_id = ?`,
+        [projectId, args.prId, sessionId],
+      );
+      if (args.dismiss !== false) writeChatSessionDismissal(args.prId, sessionId);
+      return true;
+    } catch (error) {
+      logger.warn("prs.chat_session_unlink_failed", {
+        prId: args.prId,
+        sessionId,
+        error: getErrorMessage(error),
+      });
+      return false;
+    }
+  };
+
+  const attachNewStackLayerToParentChats = (args: { prId: string; laneId: string }): void => {
+    try {
+      const parent = db.get<{ parent_lane_id: string | null }>(
+        "select parent_lane_id from lanes where id = ? limit 1",
+        [args.laneId],
+      );
+      const parentLaneId = String(parent?.parent_lane_id ?? "").trim();
+      if (!parentLaneId) return;
+      const pr = db.get<{ repo_owner: string; repo_name: string; github_pr_number: number }>(
+        "select repo_owner, repo_name, github_pr_number from pull_requests where id = ? and project_id = ? limit 1",
+        [args.prId, projectId],
+      );
+      if (!pr) return;
+      const stackNumber = githubStackStore.knownStackNumberForPr(
+        { owner: pr.repo_owner, name: pr.repo_name },
+        Number(pr.github_pr_number),
+      );
+      if (stackNumber == null) return;
+      const parentSessions = db.all<{ session_id: string }>(
+        `
+          select distinct pcs.session_id as session_id
+            from pull_request_chat_sessions pcs
+            join pull_requests sibling
+              on sibling.id = pcs.pr_id
+             and sibling.project_id = pcs.project_id
+            join github_pr_stack_entries entry
+              on entry.project_id = pcs.project_id
+             and lower(entry.repo_owner) = lower(sibling.repo_owner)
+             and lower(entry.repo_name) = lower(sibling.repo_name)
+             and entry.github_pr_number = sibling.github_pr_number
+           where pcs.project_id = ?
+             and pcs.lane_id = ?
+             and entry.github_stack_number = ?
+             and pcs.pr_id <> ?
+        `,
+        [projectId, parentLaneId, stackNumber, args.prId],
+      );
+      for (const row of parentSessions) {
+        linkPrToChatSession({
+          prId: args.prId,
+          laneId: args.laneId,
+          sessionId: row.session_id,
+          allowCrossLane: true,
+        });
+      }
+    } catch (error) {
+      logger.warn("prs.stack_parent_chat_attach_failed", {
+        prId: args.prId,
+        laneId: args.laneId,
         error: getErrorMessage(error),
       });
     }
@@ -7476,8 +7691,10 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
-    removeChatSessionLinksFromOtherLanes(prId, lane.id);
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
+    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
+    if (args.source === "agent") {
+      attachNewStackLayerToParentChats({ prId, laneId: lane.id });
+    }
 
     await publishLinearPrCardsForLane({
       lane,
@@ -7612,8 +7829,7 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
-    removeChatSessionLinksFromOtherLanes(prId, lane.id);
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
+    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
 
     await publishLinearPrCardsForLane({
       lane,
@@ -11759,6 +11975,33 @@ export function createPrService({
     }
   };
 
+  const getStackLinkOffer = (args: { sessionId: string; prId?: string | null }): StackLinkOffer | null => {
+    const sessionId = resolveCanonicalChatSessionId(args.sessionId);
+    if (!sessionId) return null;
+    const summaries = withGithubStackMemberships(listRows().map(rowToSummary));
+    const focus = args.prId
+      ? summaries.find((pr) => pr.id === args.prId)
+      : summaries.find((pr) => (pr.chatSessionIds ?? []).includes(sessionId) && pr.stack);
+    if (!focus?.stack) return null;
+    const siblings = selectStackSiblings(summaries, focus).filter((pr) => (
+      pr.id !== focus.id
+      && !(pr.chatSessionIds ?? []).includes(sessionId)
+    ));
+    if (siblings.length === 0) return null;
+    return {
+      sessionId,
+      prId: focus.id,
+      stackNumber: focus.stack.number,
+      siblings: siblings.map((pr) => ({
+        prId: pr.id,
+        githubPrNumber: pr.githubPrNumber,
+        title: pr.title,
+        laneId: pr.laneId,
+        claimedByOtherChat: (pr.chatSessionIds ?? []).some((id) => id !== sessionId),
+      })),
+    };
+  };
+
   return {
     async createFromLane(args: CreatePrFromLaneArgs): Promise<PrSummary> {
       return await createFromLane(args);
@@ -12103,6 +12346,102 @@ export function createPrService({
       emitPrsUpdated();
       return stack;
     },
+
+    async mergeGithubStack(args: MergeGitHubPrStackArgs): Promise<GitHubStackMutationResult> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const result = await githubStackStore.merge(repo, args.stackNumber, args.mergeMethod ?? DEFAULT_GITHUB_STACK_MERGE_METHOD);
+      emitPrsUpdated();
+      return result;
+    },
+
+    async rebaseGithubStack(args: RebaseGitHubPrStackArgs): Promise<GitHubStackMutationResult> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const result = await githubStackStore.rebase(repo, args.stackNumber);
+      emitPrsUpdated();
+      return result;
+    },
+
+    linkChatSession(args: LinkPrChatSessionArgs): { ok: boolean } {
+      const pr = db.get<{ id: string; lane_id: string }>(
+        "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
+        [args.prId, projectId],
+      );
+      if (!pr) return { ok: false };
+      const ok = linkPrToChatSession({
+        prId: pr.id,
+        laneId: pr.lane_id,
+        sessionId: args.sessionId,
+        allowCrossLane: args.allowCrossLane === true,
+      });
+      if (ok) emitPrsUpdated();
+      return { ok };
+    },
+
+    unlinkChatSession(args: UnlinkPrChatSessionArgs): { ok: boolean } {
+      const ok = unlinkPrFromChatSession(args);
+      if (ok) emitPrsUpdated();
+      return { ok };
+    },
+
+    linkChatStack(args: LinkPrChatStackArgs): { ok: boolean; linked: number } {
+      const offer = getStackLinkOffer({ sessionId: args.sessionId, prId: args.prId });
+      if (!offer || offer.stackNumber !== args.stackNumber) return { ok: false, linked: 0 };
+      const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
+      const canonicalSessionId = resolveCanonicalChatSessionId(offer.sessionId) ?? offer.sessionId;
+      const restoreDismissals = new Set(
+        unclaimed
+          .filter((sibling) => hasChatSessionDismissal(sibling.prId, canonicalSessionId))
+          .map((sibling) => sibling.prId),
+      );
+      const linkedIds: string[] = [];
+      for (const sibling of unclaimed) {
+        const ok = linkPrToChatSession({
+          prId: sibling.prId,
+          laneId: sibling.laneId,
+          sessionId: offer.sessionId,
+          allowCrossLane: true,
+        });
+        if (!ok) {
+          for (const prId of linkedIds) {
+            unlinkPrFromChatSession({
+              prId,
+              sessionId: offer.sessionId,
+              dismiss: restoreDismissals.has(prId),
+            });
+          }
+          return { ok: false, linked: 0 };
+        }
+        linkedIds.push(sibling.prId);
+      }
+      if (linkedIds.length > 0) emitPrsUpdated();
+      return { ok: true, linked: linkedIds.length };
+    },
+
+    listChatSessionsForPr(args: ListPrChatSessionsArgs): PrChatSessionLink[] {
+      try {
+        return db.all<PrChatSessionLink>(
+          `
+            select pcs.session_id as sessionId,
+                   ts.title as title,
+                   pcs.lane_id as laneId
+              from pull_request_chat_sessions pcs
+              left join terminal_sessions ts on ts.id = pcs.session_id
+             where pcs.project_id = ?
+               and pcs.pr_id = ?
+             order by pcs.created_at asc
+          `,
+          [projectId, args.prId],
+        ).map((row) => ({
+          sessionId: String(row.sessionId ?? "").trim(),
+          title: row.title ?? null,
+          laneId: row.laneId ?? null,
+        })).filter((row) => row.sessionId);
+      } catch {
+        return [];
+      }
+    },
+
+    getStackLinkOffer,
 
     async reconcileGithubStack(repo: GitHubRepoRef, stackNumber: number): Promise<GitHubPrStack> {
       return await githubStackStore.reconcile(repo, stackNumber);

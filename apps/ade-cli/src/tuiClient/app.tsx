@@ -79,7 +79,8 @@ import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../.
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
 import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
-import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
+import { selectPrsForChat } from "../../../desktop/src/shared/prChatScope";
+import type { GitHubPrStackMembership, PrChecksStatus, PrSummary } from "../../../desktop/src/shared/types/prs";
 import {
   approveToolUse,
   archiveChatSession,
@@ -171,7 +172,7 @@ import {
   type TokenStats,
 } from "./adeApi";
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
-import { deriveChatInfoSnapshot, mergeSubagentSnapshots, snapshotFromRuntimeSubagent } from "./chatInfo";
+import { chatInfoPrFromSummaries, deriveChatInfoSnapshot, formatChatPrHeaderLabel, mergeSubagentSnapshots, snapshotFromRuntimeSubagent } from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
 import {
   parseWorkSearchQuery,
@@ -3496,6 +3497,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const lanesRef = useRef<LaneSummary[]>([]);
   const [prByLaneId, setPrByLaneId] = useState<Record<string, LanePrSummary>>({});
+  const [chatLinkedPrs, setChatLinkedPrs] = useState<PrSummary[]>([]);
+  const allPrsForChatRef = useRef<PrSummary[]>([]);
+  const chatPrSessionIdRef = useRef<string | null>(null);
+  const chatPrBranchRef = useRef<string | null>(null);
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   /**
@@ -4573,6 +4578,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => sessions.find((session) => session.sessionId === activeSessionId) ?? null,
     [activeSessionId, sessions],
   );
+  chatPrSessionIdRef.current = activeSession?.sessionId ?? activeSessionId;
+  chatPrBranchRef.current = activeLane?.branchRef ?? null;
+  useEffect(() => {
+    setChatLinkedPrs(selectPrsForChat(
+      allPrsForChatRef.current,
+      activeSession?.sessionId ?? activeSessionId,
+      { currentBranch: activeLane?.branchRef ?? null },
+    ));
+  }, [activeLane?.branchRef, activeSession?.sessionId, activeSessionId]);
   useEffect(() => {
     const sessionId = activeSession?.sessionId;
     const agentId = activeSession?.cursorCloudAgentId?.trim();
@@ -4771,7 +4785,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       goal: currentGoal,
       streaming,
       inspectedSubagentId,
-      pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
+      pr: chatInfoPrFromSummaries(chatLinkedPrs)
+        ?? (activeDisplaySession ? null : ((chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null)),
       resumableTerminal: isTerminalSessionResumable(activeTerminalSession),
       usageLimitResumeNotice: usageLimitResumeNotice
         && usageLimitResumeNotice.sessionId === activeDisplaySession?.sessionId
@@ -4784,6 +4799,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeLaneId,
     activeTerminalSession,
     chatInfoEvents,
+    chatLinkedPrs,
     currentGoal,
     inspectedSubagentId,
     lanes,
@@ -4816,7 +4832,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       goal: currentGoal,
       streaming,
       inspectedSubagentId,
-      pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
+      pr: chatInfoPrFromSummaries(chatLinkedPrs)
+        ?? (activeDisplaySession ? null : ((chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null)),
       resumableTerminal: isTerminalSessionResumable(activeTerminalSession),
       usageLimitResumeNotice: usageLimitResumeNotice
         && usageLimitResumeNotice.sessionId === activeDisplaySession?.sessionId
@@ -4828,6 +4845,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeLane,
     activeLaneId,
     activeTerminalSession,
+    chatLinkedPrs,
     currentGoal,
     events,
     inspectedSubagentId,
@@ -9334,15 +9352,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     let unsubscribe: (() => void) | null = null;
     const refreshPrsByLane = async () => {
       try {
-        // ADE-135: `PrLaneSummary` now carries the service's canonical
-        // `checksStatus`, so consumers gate on that instead of inferring a pass
-        // from `checksPassed === checksTotal`.
-        // An earlier revision joined a second unscoped `pr listAll` call for the
-        // same field: redundant, an extra whole-history serialization on a 30s
-        // refresh, and strictly less correct — projection-backed and detached
-        // lanes are absent from `pull_requests`, so their status came back
-        // undefined and fell through to exactly the producer-blind green this
-        // ticket exists to remove.
+        // Chat-scoped peek needs the full PR catalog so cross-lane stack edges
+        // survive `selectPrsForChat`. Lane-header badges still use `prs` from
+        // `listPrsByLane` only — an unscoped `listAll` must not feed checksStatus.
         const prs = await listPrsByLane(connection);
         if (cancelled) return;
         const next: Record<string, LanePrSummary> = {};
@@ -9357,6 +9369,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           };
         }
         setPrByLaneId(next);
+        try {
+          const listed = await connection.action<Array<Record<string, unknown>>>("pr", "listAll", {});
+          if (cancelled) return;
+          allPrsForChatRef.current = (Array.isArray(listed) ? listed : []) as PrSummary[];
+        } catch {
+          // Keep the previous chat-linked catalog. An empty fallback would
+          // erase peek chips until the next successful poll.
+        }
+        setChatLinkedPrs(selectPrsForChat(
+          allPrsForChatRef.current,
+          chatPrSessionIdRef.current,
+          { currentBranch: chatPrBranchRef.current },
+        ));
       } catch {
         // PR checks are rate-limit sensitive; keep the previous cache on transient failures.
       }
@@ -11460,8 +11485,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setRightPane({ kind: "details", title: name.slice(1) || "PR", body: "No active lane is selected." });
         return;
       }
-      const prs = await conn.action<Array<Record<string, unknown>>>("pr", "listAll", laneId ? { laneId } : {});
-      const activePr = prs[0] ?? null;
+      const listedPrs = await conn.action<Array<Record<string, unknown>>>("pr", "listAll", {});
+      const sessionId = activeSession?.sessionId ?? activeSessionId ?? null;
+      const scopedPrs = selectPrsForChat(
+        listedPrs as PrSummary[],
+        sessionId,
+        { currentBranch: activeLane?.branchRef ?? null },
+      );
+      const activePr = (scopedPrs[0] ?? null) as Record<string, unknown> | null;
       const prId = activePr ? String(activePr.id ?? activePr.prId ?? "") : "";
       if (name === "/pr") {
         const ahead = activeLane?.status?.ahead ?? 0;
@@ -11469,10 +11500,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           setRightPane({
             kind: "details",
             title: "PR",
-            // "linked" is gone on purpose: nothing about a PR requires a lane
-            // mapping any more, and this pane is simply reporting that *this*
-            // lane has no PR of its own yet.
-            body: `This lane has no pull request yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open to create a pull request.`,
+            body: `This chat has no pull request yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open to create a pull request.`,
           });
           return;
         }
@@ -11531,6 +11559,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           title: args,
           body: "",
           draft: false,
+          sessionId,
+          source: "human",
         });
         setRightPane({ kind: "details", title: "PR open", body: formatPrSummary(created) });
         return;
@@ -11542,7 +11572,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setRightPane({
           kind: "details",
           title: name.slice(1),
-          body: "This lane has no pull request yet.\nRun /pr open to create one, or use  ade prs <subcommand> <pr>  for any other PR in the repo.",
+          body: "This chat has no pull request yet.\nRun /pr open to create one, or use  ade prs <subcommand> <pr>  for any other PR in the repo.",
         });
         return;
       }
@@ -12877,6 +12907,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         title,
         body,
         draft: false,
+        sessionId: activeSession?.sessionId ?? activeSessionId ?? null,
+        source: "human",
       });
       setRightPane({ kind: "details", title: "PR open", body: renderObject(created, 24) });
       addNotice("Created PR.", "success");
@@ -17888,6 +17920,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           chatTitle={draftChatActive ? "New chat" : activeTerminalSession?.title ?? activeSession?.title ?? activeSession?.goal ?? activeSession?.summary ?? null}
           remoteLabel={activeRemoteLabel}
           accountLabel={accountLabel}
+          prLabel={formatChatPrHeaderLabel(chatLinkedPrs)}
         />
         {goalBannerText ? (
           <Box paddingX={1} flexShrink={0}>

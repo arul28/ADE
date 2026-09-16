@@ -86,6 +86,7 @@ add an eligible PR or lane to the top
 adopt a remote stack into local lanes
 sync local and remote state
 request a clean GitHub rebase
+merge the stack through GitHub
 resolve conflicts locally with ADE
 unstack with a consequence preview
 open the GitHub review/merge surface
@@ -146,6 +147,38 @@ chat cards until a user adopts them into an ADE work session.
 Card actions navigate to the stack inspector, GitHub review surface, or owning
 agent. Rebase, restructure, and unstack never execute directly from transcript
 history.
+
+## Chat linking
+
+Work chats own PRs through hybrid edges (`pull_request_chat_sessions`) plus
+unlink tombstones (`pull_request_chat_session_dismissals`). The Work peek stays
+a peek: `#N` header or a chip switcher, status, three churn-ranked files, a
+banner to link unclaimed GitHub stack siblings, and a jump to the PRs tab
+Files view. Merge and rebase are not peek actions.
+
+- Humans see the stack-offer banner in the peek and choose Link stack or Not
+  now. Agents silent-expand the next layer onto parent chats that already
+  linked the base; they do not emit `pr_stack_offer`.
+- A chat that created a layer edges that PR. Parent chats that already linked
+  an earlier stack member also receive the new layer. Child chats do not get
+  the parent's base PR dumped onto them.
+- Cross-lane links are allowed for GitHub stack members or an explicit pick.
+  Lane headers stay lane-scoped.
+- Searching `#N` in the palette returns the Work chats linked to that PR.
+
+When every member of a GitHub stack is merged, linked Work chats receive one
+stable `pr_stack_land` card (`pr-stack-land:{owner}:{repo}:{stackNumber}`) so
+later layers update the same episode.
+
+## Merge and rebase on the PRs tab
+
+The GitHub stack inspector is the merge/rebase surface. It tries
+`POST /repos/{owner}/{repo}/stacks/{number}/merge` (API version `2026-03-10`)
+and falls back to bottom-up `merge-async` plus GET polling until `merged_at`
+or the four-minute stack-merge action budget ends. Rebase tries the stack rebase endpoint, then cascading
+`update-branch` with `expected_head_sha`. A 404/403/405 leaves Merge stack and
+Rebase stack visibly disabled with the GitHub reason — the peek only jumps
+here. Windows uses the same GitHub HTTP + SQLite path.
 
 ## Agent behavior
 

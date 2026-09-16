@@ -4,6 +4,7 @@ import type {
   CreateLaneFromPrBranchPreflightResult,
   GitHubPrListItem,
   GitHubPrSnapshot,
+  GitHubStackMutationResult,
   LaneSummary,
   MergeMethod,
   PrEventPayload,
@@ -581,6 +582,41 @@ export function GitHubTab({
     await loadSnapshot({ silent: true });
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
+  const handleMergeStack = React.useCallback(async (mergeMethod: MergeMethod): Promise<GitHubStackMutationResult> => {
+    if (!selectedStack || !snapshot?.repo) {
+      return {
+        ok: false,
+        stack: null,
+        method: "stack_api",
+        error: "Select a GitHub stack to merge.",
+      };
+    }
+    const result = await window.ade.prs.mergeGitHubStack({
+      repo: snapshot.repo,
+      stackNumber: selectedStack.number,
+      mergeMethod,
+    });
+    await loadSnapshot({ silent: true });
+    return result;
+  }, [loadSnapshot, selectedStack, snapshot?.repo]);
+
+  const handleRebaseStack = React.useCallback(async (): Promise<GitHubStackMutationResult> => {
+    if (!selectedStack || !snapshot?.repo) {
+      return {
+        ok: false,
+        stack: null,
+        method: "stack_api",
+        error: "Select a GitHub stack to rebase.",
+      };
+    }
+    const result = await window.ade.prs.rebaseGitHubStack({
+      repo: snapshot.repo,
+      stackNumber: selectedStack.number,
+    });
+    await loadSnapshot({ silent: true });
+    return result;
+  }, [loadSnapshot, selectedStack, snapshot?.repo]);
+
   const handleLoadOlderHistory = React.useCallback(async () => {
     if (loadingOlderHistory) return;
     const nextLimit = Math.min(
@@ -851,6 +887,8 @@ export function GitHubTab({
           onSync: () => { void handleSync(); },
           onAddStackPullRequests: handleAddStackPullRequests,
           onUnstack: handleUnstack,
+          onMergeStack: handleMergeStack,
+          onRebaseStack: handleRebaseStack,
           onFilterChange: handleFilterChange,
         }}
       />
