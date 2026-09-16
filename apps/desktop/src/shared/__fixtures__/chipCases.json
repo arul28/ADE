@@ -36,5 +36,72 @@
     { "url": "ade://linear-issue/ade-431", "kind": "linear_issue", "label": "ADE-431" },
     { "url": "ade://lane/25f280a4/session/abc", "kind": "ade_link", "label": "ADE · lane/25f280a4/session/abc" },
     { "url": "ade://something-a-newer-ade-minted/42", "kind": "ade_link", "label": "ADE · something-a-newer-ade-minted/42" }
+  ],
+  "_mentionsComment": [
+    "Mention-grammar parity rows (`@chat:` / `@lane:` / `@term:`). `text` is a",
+    "whole message body, not a bare token, because the grammar is boundary-",
+    "sensitive: the desktop's regex only matches after start-of-string or one of",
+    "[ \\t\\r\\n ( [ { , ], which is what keeps emails and `foo@chat:bar` out.",
+    "",
+    "`chips` lists every chip the unified one-pass parser must emit, in document",
+    "order, with no overlaps — mentions AND links together. An empty list means",
+    "the text must produce no chips at all."
+  ],
+  "mentions": [
+    {
+      "text": "@chat:9e2315e8ddef",
+      "chips": [{ "kind": "chat", "token": "@chat:9e2315e8ddef", "label": "Chat 9e2315e8" }]
+    },
+    {
+      "text": "see @lane:25f280a4-1b2c-4d3e-8f90-abcdef123456 for the fix",
+      "chips": [
+        {
+          "kind": "lane",
+          "token": "@lane:25f280a4-1b2c-4d3e-8f90-abcdef123456",
+          "label": "Lane 25f280a4"
+        }
+      ]
+    },
+    {
+      "text": "tail (@term:tty-7) while it runs",
+      "chips": [{ "kind": "terminal", "token": "@term:tty-7", "label": "Terminal tty-7" }]
+    },
+    {
+      "text": "short id @chat:ab",
+      "chips": [{ "kind": "chat", "token": "@chat:ab", "label": "Chat ab" }]
+    },
+    {
+      "text": "arul@chat:nope is an email-shaped substring, not a mention",
+      "chips": []
+    },
+    {
+      "text": "@bogus:123 and @chat: are not mentions",
+      "chips": []
+    },
+    {
+      "text": "compare @lane:abc123de with https://github.com/arul28/ade/pull/1237 please",
+      "chips": [
+        { "kind": "lane", "token": "@lane:abc123de", "label": "Lane abc123de" },
+        {
+          "kind": "pr",
+          "token": "https://github.com/arul28/ade/pull/1237",
+          "label": "arul28/ade#1237"
+        }
+      ]
+    },
+    {
+      "text": "ade://session/9e2315e8ddef then @term:t1",
+      "chips": [
+        { "kind": "chat", "token": "ade://session/9e2315e8ddef", "label": "Chat 9e2315e8" },
+        { "kind": "terminal", "token": "@term:t1", "label": "Terminal t1" }
+      ]
+    },
+    {
+      "text": "@chat:one and @chat:one twice keeps both pills",
+      "chips": [
+        { "kind": "chat", "token": "@chat:one", "label": "Chat one" },
+        { "kind": "chat", "token": "@chat:one", "label": "Chat one" }
+      ]
+    }
   ]
 }

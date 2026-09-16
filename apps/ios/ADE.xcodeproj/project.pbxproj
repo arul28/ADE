@@ -202,6 +202,7 @@
 		D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */; };
 		D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000008 /* PrMergeMergeStateTests.swift */; };
 		D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */; };
+		D30000000000000000000F32 /* WorkChipDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F31 /* WorkChipDetectorTests.swift */; };
 		D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000000A /* WorkPromptStashTests.swift */; };
 		D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F0D /* WorkToolsContractTests.swift */; };
 		D31000000000000000000F20 /* WorkProofRowModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F20 /* WorkProofRowModelTests.swift */; };
@@ -531,6 +532,7 @@
 		D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownStreamingParsingTests.swift; path = ADETests/WorkMarkdownStreamingParsingTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000008 /* PrMergeMergeStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeMergeStateTests.swift; path = ADETests/PrMergeMergeStateTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTriggerDetectorTests.swift; path = ADETests/WorkComposerTriggerDetectorTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000F31 /* WorkChipDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChipDetectorTests.swift; path = ADETests/WorkChipDetectorTests.swift; sourceTree = "<group>"; };
 		D3000000000000000000000A /* WorkPromptStashTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStashTests.swift; path = ADETests/WorkPromptStashTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F0D /* WorkToolsContractTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkToolsContractTests.swift; path = ADETests/WorkToolsContractTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F20 /* WorkProofRowModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProofRowModelTests.swift; path = ADETests/WorkProofRowModelTests.swift; sourceTree = "<group>"; };
@@ -1240,6 +1242,7 @@
 				D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */,
 				D30000000000000000000008 /* PrMergeMergeStateTests.swift */,
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
+				D30000000000000000000F31 /* WorkChipDetectorTests.swift */,
 				D3000000000000000000000A /* WorkPromptStashTests.swift */,
 				D30000000000000000000F0D /* WorkToolsContractTests.swift */,
 				D30000000000000000000F20 /* WorkProofRowModelTests.swift */,
@@ -1797,6 +1800,7 @@
 				D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */,
 				D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */,
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
+				D30000000000000000000F32 /* WorkChipDetectorTests.swift in Sources */,
 				D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */,
 				D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */,
 				D31000000000000000000F20 /* WorkProofRowModelTests.swift in Sources */,

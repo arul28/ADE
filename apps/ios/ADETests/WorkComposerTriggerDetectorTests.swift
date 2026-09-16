@@ -374,6 +374,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     case .linearIssue: return "linear_issue"
     case .lane: return "lane"
     case .chat: return "chat"
+    case .terminal: return "terminal"
     case .file: return "file"
     case .artifact: return "artifact"
     case .webPage: return "web_page"

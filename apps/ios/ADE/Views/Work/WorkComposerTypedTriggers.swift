@@ -88,6 +88,7 @@ struct WorkSmartLink: Equatable {
     case linearIssue
     case lane
     case chat
+    case terminal
     case file
     case artifact
     case webPage
@@ -106,6 +107,7 @@ struct WorkSmartLink: Equatable {
       case .linearIssue: return "L"
       case .lane: return "◫"
       case .chat: return "💬"
+      case .terminal: return "▶"
       case .file: return "📄"
       case .artifact: return "◈"
       case .webPage: return "↗"
@@ -319,6 +321,237 @@ enum WorkSmartLinkDetector {
     let start = intersected.reduce(range.location) { min($0, $1.range.location) }
     let end = intersected.reduce(NSMaxRange(range)) { max($0, NSMaxRange($1.range)) }
     return NSRange(location: start, length: end - start)
+  }
+}
+
+// MARK: - Chat mentions
+
+/// Swift twin of the `@chat:` / `@lane:` / `@term:` grammar in
+/// `apps/desktop/src/shared/chatMentions.ts`.
+///
+/// A mention is a POINTER, never an attachment: the token is the canonical text
+/// and the label is display only, so the same draft round-trips through the
+/// desktop composer, the `ade code` TUI, and this app without changing meaning.
+struct WorkChatMention: Equatable {
+  enum Kind: Equatable {
+    case chat
+    case lane
+    case terminal
+
+    /// Token prefix per kind. `term` is deliberately short for typing, matching
+    /// `CHAT_MENTION_TOKEN_PREFIX` on the desktop.
+    var tokenPrefix: String {
+      switch self {
+      case .chat: return "chat"
+      case .lane: return "lane"
+      case .terminal: return "term"
+      }
+    }
+
+    static func from(tokenPrefix: String) -> Kind? {
+      switch tokenPrefix {
+      case "chat": return .chat
+      case "lane": return .lane
+      case "term": return .terminal
+      default: return nil
+      }
+    }
+
+    /// The shared chip kind this mention produces. `@lane:<id>` and
+    /// `ade://lane/<id>` are the same pill; only the token differs.
+    var chipKind: WorkSmartLink.Kind {
+      switch self {
+      case .chat: return .chat
+      case .lane: return .lane
+      case .terminal: return .terminal
+      }
+    }
+  }
+
+  let kind: Kind
+  let id: String
+  /// The matched token text, e.g. `@chat:abc123`.
+  let token: String
+  let range: NSRange
+
+  /// `defaultMentionLabel` in `chips.ts`: the first 8 characters of the id, so
+  /// a mention is legible with no network access and no host lookup.
+  var defaultLabel: String {
+    let short = String(id.prefix(8))
+    switch kind {
+    case .chat: return "Chat \(short)"
+    case .lane: return "Lane \(short)"
+    case .terminal: return "Terminal \(short)"
+    }
+  }
+}
+
+enum WorkChatMentionDetector {
+  /// Serialize one mention into its chip/draft token form.
+  static func formatToken(kind: WorkChatMention.Kind, id: String) -> String {
+    "@\(kind.tokenPrefix):\(id)"
+  }
+
+  // Character-for-character the desktop's `MENTION_TOKEN_SOURCE`. Ids are
+  // opaque (uuids, slugs); `:` is excluded so the prefix split is unambiguous,
+  // and the token must sit at a word boundary so emails and `foo@chat:bar`
+  // substrings never match.
+  private static let regex = try! NSRegularExpression(
+    pattern: "(?:^|[\\s(\\[{,])@(chat|lane|term):([A-Za-z0-9._-]+)",
+    options: []
+  )
+
+  /// Every mention token in `text`, in document order.
+  static func mentions(in text: NSString) -> [WorkChatMention] {
+    guard text.length > 0, text.range(of: "@").location != NSNotFound else { return [] }
+    let full = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: full).compactMap { match in
+      guard match.numberOfRanges == 3 else { return nil }
+      let prefix = text.substring(with: match.range(at: 1))
+      guard let kind = WorkChatMention.Kind.from(tokenPrefix: prefix) else { return nil }
+      let id = text.substring(with: match.range(at: 2))
+      let token = "@\(prefix):\(id)"
+      // match[0] may include one leading boundary char; anchor on the `@`.
+      let start = NSMaxRange(match.range) - (token as NSString).length
+      return WorkChatMention(
+        kind: kind,
+        id: id,
+        token: token,
+        range: NSRange(location: start, length: (token as NSString).length)
+      )
+    }
+  }
+}
+
+// MARK: - Unified chips
+
+/// One pill, whichever grammar produced it — the Swift twin of the `Chip` type
+/// in `apps/desktop/src/shared/chips.ts`.
+///
+/// `token` is the canonical plain text (copy, drafts, and the plain-text
+/// clipboard flavour all write it). `label` is display only.
+struct WorkChip: Equatable {
+  enum Origin: Equatable {
+    case mention(WorkChatMention)
+    case link(WorkSmartLink)
+  }
+
+  let kind: WorkSmartLink.Kind
+  let token: String
+  let label: String
+  let range: NSRange
+  let origin: Origin
+
+  var glyph: String { kind.glyph }
+
+  init(mention: WorkChatMention) {
+    kind = mention.kind.chipKind
+    token = mention.token
+    label = mention.defaultLabel
+    range = mention.range
+    origin = .mention(mention)
+  }
+
+  init(link: WorkSmartLink) {
+    kind = link.kind
+    token = link.url
+    label = link.compactLabel
+    range = link.range
+    origin = .link(link)
+  }
+}
+
+/// A message body split into plain runs and chips — what a renderer wants, so
+/// it walks the parts in order and never computes offsets itself.
+enum WorkChipTextPart: Equatable {
+  case text(String)
+  case chip(WorkChip)
+}
+
+/// One scan over the text, every grammar, in document order, no overlaps.
+/// Mirrors `parseChips` / `splitTextIntoChipParts`.
+///
+/// File-path chips are deliberately NOT detected: a bare path is ambiguous with
+/// ordinary prose, so paths become chips only when the composer inserts them.
+enum WorkChipDetector {
+  static let defaultLimit = 24
+  /// Serialization is not a render, so it is not bounded by what fits on a
+  /// screen — but it is still bounded, so a pathological paste cannot fan out.
+  static let canonicalTextChipLimit = 512
+
+  static func chips(in text: NSString, limit: Int = defaultLimit) -> [WorkChip] {
+    guard text.length > 0, limit > 0 else { return [] }
+
+    var candidates: [WorkChip] = WorkChatMentionDetector.mentions(in: text).map(WorkChip.init(mention:))
+    candidates.append(contentsOf: WorkSmartLinkDetector.links(in: text).prefix(limit).map(WorkChip.init(link:)))
+
+    // Sort by start offset, tie-broken by discovery order so the sort is stable
+    // the way the desktop's `Array.prototype.sort` is. Mentions start with `@`
+    // and links with a scheme, so a tie is not reachable today — but a stable
+    // order is what keeps the two surfaces identical if that ever changes.
+    let ordered = candidates.enumerated()
+      .sorted { lhs, rhs in
+        lhs.element.range.location == rhs.element.range.location
+          ? lhs.offset < rhs.offset
+          : lhs.element.range.location < rhs.element.range.location
+      }
+      .map(\.element)
+
+    var out: [WorkChip] = []
+    var consumedTo = -1
+    for chip in ordered {
+      if chip.range.location < consumedTo { continue }
+      out.append(chip)
+      consumedTo = NSMaxRange(chip.range)
+      if out.count >= limit { break }
+    }
+    return out
+  }
+
+  static func parts(in text: String, limit: Int = defaultLimit) -> [WorkChipTextPart] {
+    let ns = text as NSString
+    let matches = chips(in: ns, limit: limit)
+    guard !matches.isEmpty else { return text.isEmpty ? [] : [.text(text)] }
+
+    var parts: [WorkChipTextPart] = []
+    var cursor = 0
+    for chip in matches {
+      if chip.range.location > cursor {
+        parts.append(.text(ns.substring(with: NSRange(location: cursor, length: chip.range.location - cursor))))
+      }
+      parts.append(.chip(chip))
+      cursor = NSMaxRange(chip.range)
+    }
+    if cursor < ns.length {
+      parts.append(.text(ns.substring(from: cursor)))
+    }
+    return parts
+  }
+
+  /// The canonical plain-text form of a selection: labels never leak into the
+  /// clipboard, so a chip pasted into a terminal, a commit message, or another
+  /// ADE surface is still a meaningful, re-parseable pointer. Mirrors the
+  /// `text/plain` flavour of `apps/desktop/src/shared/composerClipboard.ts`.
+  ///
+  /// Today this is the identity on iOS — the composer and the transcript both
+  /// store raw text and render chips from it, so there is no label-bearing DOM
+  /// to lose. It exists as the one named place that guarantees that, and as the
+  /// hook for any future surface that stores labels instead.
+  static func canonicalPlainText(_ text: String) -> String {
+    let ns = text as NSString
+    let matches = chips(in: ns, limit: canonicalTextChipLimit)
+    guard !matches.isEmpty else { return text }
+    var out = ""
+    var cursor = 0
+    for chip in matches {
+      if chip.range.location > cursor {
+        out += ns.substring(with: NSRange(location: cursor, length: chip.range.location - cursor))
+      }
+      out += chip.token
+      cursor = NSMaxRange(chip.range)
+    }
+    if cursor < ns.length { out += ns.substring(from: cursor) }
+    return out
   }
 }
 
