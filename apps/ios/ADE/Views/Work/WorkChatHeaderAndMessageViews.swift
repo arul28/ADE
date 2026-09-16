@@ -888,14 +888,7 @@ struct WorkTurnEndMarkerView: View {
   /// line, no FAILED, no red. The turn's usage numbers move behind the details
   /// toggle below rather than sitting in their own row beside it.
   private var workSummaryLabel: String? {
-    var parts: [String] = []
-    if toolCount > 0 {
-      parts.append("\(toolCount) \(toolCount == 1 ? "tool" : "tools")")
-    }
-    if fileCount > 0 {
-      parts.append("\(fileCount) \(fileCount == 1 ? "file" : "files")")
-    }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    workFormatTurnWorkSummaryLabel(toolCount: toolCount, fileCount: fileCount)
   }
 
   private var usageLimitLine: String {
@@ -1001,6 +994,7 @@ struct WorkTurnEndMarkerView: View {
       Text(workSummaryLabel)
         .font(.caption2.weight(.medium))
         .foregroundStyle(ADEColor.textMuted)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 

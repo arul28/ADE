@@ -718,6 +718,73 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertNotNil(markers[0].usage, "usage rides the marker so it can move behind the details toggle")
   }
 
+  /// Desktop keeps the turn work summary on a usage-limit pause (`1 tool` above
+  /// `Paused · usage limit`), left-aligned like Thought — not only on completed turns.
+  func testUsageLimitPauseStillIndexesSettledToolsForWorkSummary() {
+    XCTAssertEqual(workFormatTurnWorkSummaryLabel(toolCount: 1, fileCount: 1), "1 tool · 1 file")
+    XCTAssertEqual(workFormatTurnWorkSummaryLabel(toolCount: 2, fileCount: 0), "2 tools")
+    XCTAssertNil(workFormatTurnWorkSummaryLabel(toolCount: 0, fileCount: 0))
+
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-08T19:00:00.000Z",
+        sequence: 1,
+        event: .userMessage(
+          text: "Keep shipping the fix.",
+          attachments: nil,
+          turnId: "turn-limit",
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-08T19:02:00.000Z",
+        sequence: 2,
+        event: .command(
+          command: "npm test",
+          cwd: "/repo",
+          output: "ok",
+          status: .completed,
+          itemId: "command-1",
+          exitCode: 0,
+          durationMs: 12,
+          turnId: "turn-limit"
+        )
+      ),
+      doneEnvelope(turnId: "turn-limit", apiErrorStatus: 429, sequence: 3),
+    ]
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let index = workTurnToolActivityIndex(from: snapshot.timeline)
+    XCTAssertEqual(index.completedByTurnId["turn-limit"]?.count, 1)
+    XCTAssertEqual(
+      workFormatTurnWorkSummaryLabel(
+        toolCount: index.completedByTurnId["turn-limit"]?.count ?? 0,
+        fileCount: 0
+      ),
+      "1 tool"
+    )
+    let marker = snapshot.timeline.compactMap { entry -> WorkTurnEndMarker? in
+      guard case .turnEndMarker(let marker) = entry.payload else { return nil }
+      return marker
+    }.first
+    XCTAssertEqual(marker?.usageLimitPaused, true)
+    XCTAssertTrue(
+      workPresentedTimelineEntries(snapshot.timeline).allSatisfy { entry in
+        if case .toolGroup = entry.payload { return false }
+        return true
+      },
+      "settled tool clusters leave the inline transcript on a usage-limit turn too"
+    )
+  }
+
   /// The 429 has to survive the real sync path, not just a hand-built envelope.
   ///
   /// `AgentChatEvent.done` does not decode `apiErrorStatus`, so the field only

@@ -1939,6 +1939,19 @@ private func workSubagentStoppedGroupIdPrefix(
   }
 }
 
+/// Mirrors desktop `formatTurnWorkSummaryLabel` — one muted line above the turn
+/// footer hairline (`N tool(s) · M file(s)`).
+func workFormatTurnWorkSummaryLabel(toolCount: Int, fileCount: Int) -> String? {
+  var parts: [String] = []
+  if toolCount > 0 {
+    parts.append("\(toolCount) \(toolCount == 1 ? "tool" : "tools")")
+  }
+  if fileCount > 0 {
+    parts.append("\(fileCount) \(fileCount == 1 ? "file" : "files")")
+  }
+  return parts.isEmpty ? nil : parts.joined(separator: " · ")
+}
+
 /// The rows the transcript actually draws, from the rows the timeline holds.
 ///
 /// This is the seam where presentation-only rules belong. Tool and file-change
