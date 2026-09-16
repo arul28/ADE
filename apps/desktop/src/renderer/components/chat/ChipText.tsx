@@ -10,12 +10,26 @@
 // The raw text is never destroyed — it is still `event.text`, the copy button
 // still yields canonical tokens, and a chip's `title` shows the token it stands
 // for.
+//
+// Two things a sent pill does that its composer twin already did:
+//
+//   - **Enrichment.** The composer asks the runtime for a page title and
+//     favicon and redraws its chip when the answer lands; the transcript now
+//     asks the SAME route (`chipPreviewStore`) and swaps the same two fields in.
+//     The first paint is always synchronous from the raw label, so a message
+//     never waits on the network to appear.
+//   - **Hover cards.** A pointer chip (`#1237`, a lane id, a chat id, `ADE-431`)
+//     answers "what is this" on hover instead of sending you to another tab.
 
 import { useMemo } from "react";
 
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { chipDisplayLabel, chipGlyph, splitTextIntoChipParts, type Chip } from "../../../shared/chips";
+import { deriveSmartLinkPreview, type SmartLinkProvider } from "../../../shared/smartLinks";
 import { navigateToAppTarget, openAdeDeeplink, openLinkFromUi } from "../../lib/openExternal";
+import { useChipHoverCard } from "./ChipHoverCard";
+import { chipPreviewUrl, useChipPreview } from "./chipPreviewStore";
+import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 
 /** Where a click on this chip should land, or null when it is not actionable. */
 function openChip(chip: Chip): void {
@@ -46,10 +60,92 @@ function isActionable(chip: Chip): boolean {
   return chip.source.origin !== "mention" || chip.source.mentionKind !== "terminal";
 }
 
+/**
+ * Brand mark for a web-link chip, matching the composer's icon slot.
+ *
+ * Only http(s) chips take a mark. An `ade://` chip stays on its TYPED glyph
+ * (`⇄` for a PR, `◫` for a lane) because the deeplink already told us exactly
+ * what it points at, and an ADE monogram would throw that away.
+ */
+function chipProvider(chip: Chip): SmartLinkProvider | null {
+  if (chip.source.origin !== "url") return null;
+  if (!/^https?:\/\//i.test(chip.source.url)) return null;
+  return deriveSmartLinkPreview(chip.source.url)?.provider ?? null;
+}
+
+function chipProviderMarkSvg(chip: Chip): string | null {
+  const provider = chipProvider(chip);
+  return provider ? smartLinkChipMarkSvg(provider) : null;
+}
+
+const ICON_MARK_CLASS = "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center opacity-80";
+
+function ChipIcon({ chip, markSvg, iconDataUrl }: { chip: Chip; markSvg: string | null; iconDataUrl: string | null }) {
+  if (iconDataUrl) {
+    return (
+      <span aria-hidden className={ICON_MARK_CLASS}>
+        <img src={iconDataUrl} alt="" draggable={false} className="h-full w-full rounded-[2px] object-contain" />
+      </span>
+    );
+  }
+  // Constant, module-owned SVG selected by a provider enum — `smartLinkChipMark`
+  // interpolates nothing from the message. The composer assigns the same string
+  // to `innerHTML`; this is the React spelling of that, not a new trust boundary.
+  if (markSvg) return <span aria-hidden className={ICON_MARK_CLASS} dangerouslySetInnerHTML={{ __html: markSvg }} />;
+  return <span aria-hidden className="shrink-0 opacity-70">{chipGlyph(chip.kind)}</span>;
+}
+
 const CHIP_CLASS =
   "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center gap-1 rounded-md border border-white/[0.14]"
   + " bg-white/[0.08] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*11/14)]"
   + " leading-5 text-white/90";
+
+/**
+ * One pill. A component rather than inline JSX because each chip owns two
+ * subscriptions (its preview, its hover card) and those must not re-render the
+ * whole message — a transcript draws hundreds of these.
+ */
+function TranscriptChip({ chip }: { chip: Chip }) {
+  // The chip object comes from a memoized parse, so these are stable per
+  // message — neither the URL parse nor the provider lookup reruns on a
+  // re-render, which matters when a transcript holds hundreds of pills.
+  const previewUrl = useMemo(() => chipPreviewUrl(chip), [chip]);
+  const markSvg = useMemo(() => chipProviderMarkSvg(chip), [chip]);
+  const preview = useChipPreview(previewUrl);
+
+  const label = chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
+  const actionable = isActionable(chip);
+  const hoverCard = useChipHoverCard(chip, preview?.title ?? null);
+  const tokenTitle = chip.detail ? `${chip.token} — ${chip.detail}` : chip.token;
+
+  return (
+    <>
+      <span
+        ref={hoverCard.triggerRef}
+        className={`${CHIP_CLASS}${actionable ? " cursor-pointer transition-colors hover:bg-white/[0.14]" : ""}`}
+        // The token is the truth behind the label; a hover always reveals it.
+        // Suppressed only while a hover card is up, so the OS tooltip does not
+        // draw a second box on top of it.
+        title={hoverCard.visible ? undefined : tokenTitle}
+        role={actionable ? "button" : undefined}
+        tabIndex={actionable ? 0 : undefined}
+        onClick={actionable ? () => openChip(chip) : undefined}
+        onKeyDown={actionable
+          ? (event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            openChip(chip);
+          }
+          : undefined}
+        {...hoverCard.triggerProps}
+      >
+        <ChipIcon chip={chip} markSvg={markSvg} iconDataUrl={preview?.iconDataUrl ?? null} />
+        <span className="truncate">{label}</span>
+      </span>
+      {hoverCard.card}
+    </>
+  );
+}
 
 export function ChipText({ text, className }: { text: string; className?: string }) {
   // Memoized on the text: this renders for every user message in the
@@ -64,33 +160,11 @@ export function ChipText({ text, className }: { text: string; className?: string
 
   return (
     <div className={className}>
-      {parts.map((part, index) => {
-        if (part.type === "text") return <span key={`t-${index}`}>{part.text}</span>;
-        const chip = part.chip;
-        const label = chipDisplayLabel(chip);
-        const actionable = isActionable(chip);
-        return (
-          <span
-            key={`c-${index}`}
-            className={`${CHIP_CLASS}${actionable ? " cursor-pointer transition-colors hover:bg-white/[0.14]" : ""}`}
-            // The token is the truth behind the label; a hover always reveals it.
-            title={chip.detail ? `${chip.token} — ${chip.detail}` : chip.token}
-            role={actionable ? "button" : undefined}
-            tabIndex={actionable ? 0 : undefined}
-            onClick={actionable ? () => openChip(chip) : undefined}
-            onKeyDown={actionable
-              ? (event) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                openChip(chip);
-              }
-              : undefined}
-          >
-            <span aria-hidden className="shrink-0 opacity-70">{chipGlyph(chip.kind)}</span>
-            <span className="truncate">{label}</span>
-          </span>
-        );
-      })}
+      {parts.map((part, index) => (
+        part.type === "text"
+          ? <span key={`t-${index}`}>{part.text}</span>
+          : <TranscriptChip key={`c-${index}`} chip={part.chip} />
+      ))}
     </div>
   );
 }
