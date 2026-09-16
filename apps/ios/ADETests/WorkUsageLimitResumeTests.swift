@@ -769,6 +769,8 @@ final class WorkUsageLimitResumeTests: XCTestCase {
         turnId: "turn-limit",
         apiErrorStatus: 429,
         sequence: 4,
+        // Snapshot rows sort by timestamp. A done frame earlier than the tools
+        // ranks them as live work after the turn end, so they never index.
         timestamp: "2026-09-08T19:03:00.000Z"
       ),
     ]
