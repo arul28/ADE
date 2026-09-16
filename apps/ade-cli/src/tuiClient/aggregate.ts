@@ -754,14 +754,11 @@ function appendRuntimeActivityBlock(
 }
 
 function removeFoldedActivityEntry(blocks: AggregatedBlock[], foldKey: string): void {
-  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+  for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
     const block = blocks[blockIndex];
     if (!block || block.kind !== "activity-bundle") continue;
-    const entryIndex = block.entries.findIndex((entry) => entry.foldKey === foldKey);
-    if (entryIndex < 0) continue;
-    block.entries.splice(entryIndex, 1);
+    block.entries = block.entries.filter((entry) => entry.foldKey !== foldKey);
     if (block.entries.length === 0) blocks.splice(blockIndex, 1);
-    return;
   }
 }
 
@@ -975,6 +972,7 @@ export function aggregateChatBlocks(args: {
     else hasUntaggedCheckpoint = true;
   }
   let toolActivitySegmentStart = 0;
+  let segmentHasCheckpoint = false;
   let interruptedTerminusCluster: {
     startBlockIndex: number;
     turnEndBlock?: Extract<AggregatedBlock, { kind: "turn-end" }>;
@@ -1047,6 +1045,7 @@ export function aggregateChatBlocks(args: {
       segmentWorkItemStartedAt.clear();
       passthrough(id, "user-bubble");
       toolActivitySegmentStart = blocks.length;
+      segmentHasCheckpoint = false;
       turnStartedAt.set(turnKey, safeMs(envelope.timestamp));
       continue;
     }
@@ -1365,7 +1364,7 @@ export function aggregateChatBlocks(args: {
       const uniqueEntries = Array.from(new Map(entries.map((toolEntry) => [toolEntry.itemId, toolEntry])).values());
       const suppressCheckpointFiles = turnId
         ? checkpointDiffTurnIds.has(turnId)
-        : hasUntaggedCheckpoint;
+        : hasUntaggedCheckpoint || segmentHasCheckpoint;
       const fileEntries = suppressCheckpointFiles
         ? []
         : blocks
@@ -1415,6 +1414,7 @@ export function aggregateChatBlocks(args: {
         blocks.push(turnEndBlock);
       }
       toolActivitySegmentStart = blocks.length;
+      segmentHasCheckpoint = false;
       toolEntryByItemKey.clear();
       segmentToolEntryByItemId.clear();
       workItemStartedAt.clear();
@@ -1429,14 +1429,17 @@ export function aggregateChatBlocks(args: {
       for (const block of blocks) {
         if (block.kind === "turn-end") latestTurnEnd = block;
       }
+      let claimedExistingTurnEnd = false;
       for (const block of blocks) {
         if (block.kind !== "turn-end") continue;
         const matchesTurn = turnId ? block.turnId === turnId : !block.turnId;
         const coversUntaggedDone = Boolean(turnId && !block.turnId && block === latestTurnEnd);
         if (matchesTurn || coversUntaggedDone) {
           block.fileEntries = [];
+          claimedExistingTurnEnd = true;
         }
       }
+      if (!claimedExistingTurnEnd) segmentHasCheckpoint = true;
       passthrough(id, "notice");
       continue;
     }
