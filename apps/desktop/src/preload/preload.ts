@@ -11359,24 +11359,6 @@ const adeBridge = {
         ? runtime.result
         : ipcRenderer.invoke(IPC.projectConfigDiffAgainstDisk);
     },
-    confirmTrust: async (
-      arg: { sharedHash?: string } = {},
-    ): Promise<ProjectConfigTrust> => {
-      projectConfigSnapshotCache.clear();
-      try {
-        const runtime =
-          await callProjectRuntimeActionIfBound<ProjectConfigTrust>(
-            "project_config",
-            "confirmTrust",
-            { args: arg },
-          );
-        return runtime.handled
-          ? runtime.result
-          : ipcRenderer.invoke(IPC.projectConfigConfirmTrust, arg);
-      } finally {
-        projectConfigSnapshotCache.clear();
-      }
-    },
   },
   zoom: {
     getLevel: (): number => webFrame.getZoomLevel(),

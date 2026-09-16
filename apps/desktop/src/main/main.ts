@@ -3381,7 +3381,6 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
       // Setup scripts run unrestricted shell and can come from repo-committed
       // shared config, so the executor gets the same trust gate test suites use.
-      projectConfigService,
     });
 
     const laneTemplateService = createLaneTemplateService({

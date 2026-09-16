@@ -98,6 +98,15 @@ export function accountSessionState(status: AdeAccountStatus): AdeAccountSession
  *   name/email/login to show — hence the generic "Account" for `active`.
  * - `connectionsSubtitle`: the Connections panel's second line; for `active` it
  *   is the fallback used when the account has no email to show.
+ * - `banner`: the permanent shell bar ADE shows on every surface while the
+ *   account is not usable. It is deliberately not dismissable, so the only way
+ *   to clear it is to resolve it. `unreadable` offers repair instead of
+ *   sign-in, for the same reason `notice` does: a fresh sign-in overwrites a
+ *   stored session that was only unreadable.
+ * - `gate`: what the launch gate does for this state. `required` has no
+ *   pass-through, because ADE requires an account from the first run.
+ *   `recoverable` always offers one, because the user already had a session
+ *   and their local work must never be blocked.
  */
 const ACCOUNT_SESSION_LABELS: Record<
   AdeAccountSessionState,
@@ -108,6 +117,8 @@ const ACCOUNT_SESSION_LABELS: Record<
     connectionsSubtitle: string;
     connectionsAction: string;
     connectionsActionAria: string;
+    banner: { title: string; detail: string; action: string } | null;
+    gate: AccountGateMode;
   }
 > = {
   active: {
@@ -117,6 +128,8 @@ const ACCOUNT_SESSION_LABELS: Record<
     connectionsSubtitle: "Manage your account",
     connectionsAction: "Manage account",
     connectionsActionAria: "Manage account",
+    banner: null,
+    gate: "none",
   },
   signed_out: {
     notice: null,
@@ -125,6 +138,12 @@ const ACCOUNT_SESSION_LABELS: Record<
     connectionsSubtitle: "Sign in to easily connect your machines",
     connectionsAction: "Sign in",
     connectionsActionAria: "Sign in to ADE",
+    banner: {
+      title: "Signed out of ADE",
+      detail: "Your settings and secrets are not syncing to this computer.",
+      action: "Sign in",
+    },
+    gate: "required",
   },
   expired: {
     notice: "Your ADE sign-in expired — sign in again.",
@@ -133,6 +152,12 @@ const ACCOUNT_SESSION_LABELS: Record<
     connectionsSubtitle: "Sign in to easily connect your machines",
     connectionsAction: "Sign in",
     connectionsActionAria: "Sign in to ADE",
+    banner: {
+      title: "Your ADE sign-in expired",
+      detail: "Your settings and secrets are not syncing to this computer.",
+      action: "Sign in",
+    },
+    gate: "recoverable",
   },
   unreadable: {
     notice:
@@ -142,8 +167,38 @@ const ACCOUNT_SESSION_LABELS: Record<
     connectionsSubtitle: "Your session is still there — open your account to fix it",
     connectionsAction: "Fix sign-in",
     connectionsActionAria: "Fix your sign-in",
+    banner: {
+      title: "ADE can't read your sign-in",
+      detail: "Your session is still there. Repair it before you sign in again.",
+      action: "Repair",
+    },
+    gate: "recoverable",
   },
 };
+
+/**
+ * What the launch gate does for one session state.
+ *
+ * `required` — no session has ever existed on this computer. ADE requires an
+ * account, so there is nothing to pass through to.
+ * `recoverable` — a session existed and something happened to it. The gate
+ * always offers a pass-through, because local work must never be blocked.
+ */
+export type AccountGateMode = "none" | "required" | "recoverable";
+
+export function accountGateMode(status: AdeAccountStatus): AccountGateMode {
+  return ACCOUNT_SESSION_LABELS[accountSessionState(status)].gate;
+}
+
+/**
+ * The permanent shell bar's copy, or `null` when the account is usable.
+ * Every surface reads this, so the four states cannot drift apart.
+ */
+export function accountSessionBanner(
+  state: AdeAccountSessionState,
+): { title: string; detail: string; action: string } | null {
+  return ACCOUNT_SESSION_LABELS[state].banner;
+}
 
 export function accountSessionNotice(state: AdeAccountSessionState): string | null {
   return ACCOUNT_SESSION_LABELS[state].notice;

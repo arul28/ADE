@@ -3655,9 +3655,6 @@ declare global {
           candidate: ProjectConfigCandidate,
         ) => Promise<ProjectConfigSnapshot>;
         diffAgainstDisk: () => Promise<ProjectConfigDiff>;
-        confirmTrust: (arg?: {
-          sharedHash?: string;
-        }) => Promise<ProjectConfigTrust>;
       };
       zoom: {
         getLevel: () => number;

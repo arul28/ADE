@@ -809,7 +809,11 @@ import {
 } from "../transcription/microphoneAccess";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
-import { createAccountBridge, createBrainAccountActionCaller } from "../account/accountBridge";
+import {
+  createAccountBridge,
+  createBrainAccountActionCaller,
+  createBrainRefreshBroker,
+} from "../account/accountBridge";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
@@ -846,7 +850,10 @@ import type { createKeybindingsService } from "../keybindings/keybindingsService
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
-import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import {
+  getSharedAccountAuthService,
+  setSharedAccountRefreshBroker,
+} from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
@@ -10935,6 +10942,16 @@ export function registerIpc({
     return ctx.feedbackReporterService.list();
   });
 
+  // Electron main stops exchanging the account refresh credential here, and
+  // asks the brain for a token instead. Exactly one process per machine may
+  // POST a single-use rotating credential; every `invalid_grant` sign-out in
+  // the brain log is two processes that both thought they could. Installed
+  // rather than passed to the service, because the shared service caches one
+  // instance per secrets directory and can be built before this point.
+  setSharedAccountRefreshBroker(
+    createBrainRefreshBroker(localRuntimeConnectionPool, LOCAL_RUNTIME_SYNC_TIMEOUT_MS),
+  );
+
   // Machine-owned ADE account (Clerk identity, #815). The bridge owns the auth
   // service in main and only ever exposes the token-free surface to the
   // renderer — getToken is deliberately never wired here.
@@ -12095,12 +12112,6 @@ export function registerIpc({
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectConfigService"] as const);
     return ctx.projectConfigService.diffAgainstDisk();
-  });
-
-  ipcMain.handle(IPC.projectConfigConfirmTrust, async (_event, arg: { sharedHash?: string } = {}): Promise<ProjectConfigTrust> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectConfigService"] as const);
-    return ctx.projectConfigService.confirmTrust(arg);
   });
 
   // ── CTO state IPC ─────────────────────────────────────────────────

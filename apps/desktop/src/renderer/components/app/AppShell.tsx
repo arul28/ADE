@@ -12,6 +12,7 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { AccountSignedOutBanner } from "../account/AccountSignedOutBanner";
 import { CommandPalette } from "./CommandPalette";
 import { IntegrationBannerHost } from "./IntegrationBannerHost";
 import { TabNav } from "./TabNav";
@@ -1225,6 +1226,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <ProjectTransitionErrorAlert />
+
+      {/*
+        Above the update banner, and outside every project condition below it:
+        ADE requires an account, so an unusable session outranks an update and
+        has to be visible on welcome and projectless surfaces too.
+      */}
+      <AccountSignedOutBanner navigate={navigate} />
 
       <AutoUpdateBanner />
 

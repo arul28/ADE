@@ -3060,8 +3060,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     trust: {
       sharedHash: "mock",
       localHash: "mock",
-      approvedSharedHash: null,
-      requiresSharedTrust: false,
     },
     paths: {
       sharedPath: "/tmp/.ade/ade.yaml",
@@ -3530,8 +3528,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           trust: {
             sharedHash: "",
             localHash: "",
-            approvedSharedHash: null,
-            requiresSharedTrust: false,
           },
         },
       }),
@@ -6776,12 +6772,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       validate: resolvedArg({ ok: true, issues: [] as any[] }),
       save: resolvedArg(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
       diffAgainstDisk: resolved({ changed: false } as any),
-      confirmTrust: resolved({
-        sharedHash: "mock",
-        localHash: "mock",
-        approvedSharedHash: null,
-        requiresSharedTrust: false,
-      } as any),
     },
     adeCli: {
       getStatus: resolved({

@@ -14,6 +14,10 @@ import {
   resolveAccountOAuthConfig,
   resolveOfficialAccountDirectoryBaseUrl,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import {
+  AccountRefreshUnavailableError,
+  type AccountRefreshBroker,
+} from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
@@ -297,6 +301,45 @@ export function createBrainAccountActionCaller(
 }
 
 /**
+ * Builds the desktop's refresh broker: the object that makes Electron main ask
+ * the brain for an account token instead of exchanging the refresh credential
+ * itself.
+ *
+ * This is the fix for the only sign-out this machine has ever actually
+ * suffered. The refresh token is single-use and rotating, and desktop, brain,
+ * and CLI all held it. Every `invalid_grant` in the brain log follows an
+ * interrupted rotation, and three of the four name a desktop pid: the desktop
+ * started an exchange, the brain started another, and whichever lost had a
+ * perfectly good session marked dead. The rotation journal narrowed that window
+ * but could not close it, because both processes were legitimately entitled to
+ * exchange. Taking the entitlement away from one of them closes it.
+ *
+ * Returns `null` when there is no pool to ask, which leaves the service on its
+ * local path — correct for a desktop that has no brain to defer to yet.
+ */
+export function createBrainRefreshBroker(
+  pool: BrainAccountActionCaller | null | undefined,
+  timeoutMs: number,
+): AccountRefreshBroker | null {
+  const call = createBrainAccountActionCaller(pool, timeoutMs);
+  if (!call) return null;
+  return {
+    async getAccessToken() {
+      // `forceRefresh` is deliberately not forwarded. Only the brain may decide
+      // when the credential is exchanged; a caller that could force it would be
+      // a second refresher wearing a different hat.
+      const token = unwrapBrainAccountResult(await call("getToken"));
+      if (typeof token !== "string" || !token.trim()) {
+        throw new AccountRefreshUnavailableError(
+          "The ADE brain did not return an account token.",
+        );
+      }
+      return token.trim();
+    },
+  };
+}
+
+/**
  * Translate a failed reconnect into one sentence the user can act on.
  *
  * Same contract as `describeAttentionOpenFailure`: the raw text is preserved as
@@ -511,7 +554,11 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     }
   };
 
-  return {
+  // Once per desktop process. Declared out here so `status()` can consult it
+  // without the flag resetting on every call.
+  let autoRepairAttempted = false;
+
+  const bridge: AccountBridge = {
     status: () => {
       const accountService = service();
       // Read the state alongside the status: `signedIn: false` with an
@@ -523,6 +570,47 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       // Optional call: a runtime that predates the split simply reports no read
       // state, and the renderer then falls back to its previous behaviour.
       const readState = accountService.getSessionReadState?.();
+
+      // An unreadable store is usually a key-binding divergence this process
+      // can converge on its own, and the overwhelmingly common cause is
+      // transient — 1,148 of these in one day on this developer's own machine
+      // were all ENOSPC on the lock file. Showing "Can't read your sign-in"
+      // before ADE has even tried the repair it is about to offer puts a
+      // frightening question to the user that the machine could have answered
+      // silently.
+      //
+      // So: try once, then report whatever is true afterwards.
+      //
+      // Once per process, and the flag is set BEFORE the attempt — a repair
+      // that throws must not turn every subsequent status read into another
+      // attempt at the same broken file. The brain is deliberately NOT
+      // restarted here; that half is disruptive, needs a user's intent, and
+      // cannot fix a credential-store condition anyway.
+      if (readState === "unreadable" && !autoRepairAttempted) {
+        autoRepairAttempted = true;
+        try {
+          const report = bridge.repairCredentialStore();
+          getMachineLogger()?.info("account.credential_store_auto_repair", {
+            outcome: report.outcome,
+            readable: report.readable,
+            recoveredKeys: report.recoveredKeys,
+          });
+          if (report.readable) {
+            return toAccountStatus(
+              accountService.getStatus(),
+              configured(),
+              accountService.getSessionReadState?.(),
+            );
+          }
+        } catch (error) {
+          // A failed repair is not news the user can act on differently — the
+          // surface they are about to see already offers the manual Repair.
+          options.logger?.warn("account.credential_store_auto_repair_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      }
+
       return toAccountStatus(status, configured(), readState);
     },
 
@@ -800,4 +888,6 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       return result;
     },
   };
+
+  return bridge;
 }
