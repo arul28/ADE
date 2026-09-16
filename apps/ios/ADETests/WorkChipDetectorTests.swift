@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import ADE
 
@@ -202,5 +203,131 @@ final class WorkChipDetectorTests: XCTestCase {
         XCTAssertEqual(actual.label, expected.label, "label for \(row.text.debugDescription)")
       }
     }
+  }
+}
+
+
+/// How a sent message turns into chips, and where each chip's tap goes.
+final class WorkChipMessageRenderingTests: XCTestCase {
+  private func chip(_ text: String) -> WorkChip {
+    let found = WorkChipDetector.chips(in: text as NSString)
+    return found[0]
+  }
+
+  func testInlineLabelIsGlyphPlusLabel() {
+    XCTAssertEqual(workChipInlineLabel(chip("@lane:abc123de")), "◫ Lane abc123de")
+    XCTAssertEqual(workChipInlineLabel(chip("@term:t1")), "▶ Terminal t1")
+    XCTAssertEqual(
+      workChipInlineLabel(chip("https://github.com/arul28/ade/pull/1237")),
+      "⇄ arul28/ade#1237"
+    )
+  }
+
+  func testWebChipsKeepTheirOwnURL() {
+    XCTAssertEqual(
+      workChipNavigationURL(chip("https://github.com/arul28/ade/pull/1237"))?.absoluteString,
+      "https://github.com/arul28/ade/pull/1237"
+    )
+    XCTAssertEqual(
+      workChipNavigationURL(chip("ade://lane/25f280a4-1b2c-4d3e-8f90-abcdef123456"))?.absoluteString,
+      "ade://lane/25f280a4-1b2c-4d3e-8f90-abcdef123456"
+    )
+  }
+
+  func testLaneAndChatMentionsGetInAppDeeplinks() {
+    let lane = workChipNavigationURL(chip("@lane:25f280a4-1b2c-4d3e-8f90-abcdef123456"))
+    XCTAssertEqual(lane?.scheme, "ade")
+    XCTAssertEqual(lane?.host, "lane")
+    XCTAssertTrue(lane?.path.contains("25f280a4-1b2c-4d3e-8f90-abcdef123456") == true)
+
+    let chat = workChipNavigationURL(chip("@chat:9e2315e8ddef"))
+    XCTAssertEqual(chat?.scheme, "ade")
+    XCTAssertEqual(chat?.host, "session")
+    XCTAssertTrue(chat?.path.contains("9e2315e8ddef") == true)
+  }
+
+  func testTerminalMentionHasNoTapTarget() {
+    // No `ade://` shape addresses a terminal on any surface, so the pill must
+    // stay inert rather than pretend to navigate.
+    XCTAssertNil(workChipNavigationURL(chip("@term:tty-7")))
+  }
+
+  func testAttributedMessageReplacesTokensWithLabelsAndKeepsProse() {
+    let rendered = workChipAttributedMessage(
+      "look at @lane:abc123de now",
+      chipForeground: .white,
+      chipBackground: .clear
+    )
+    XCTAssertEqual(String(rendered.characters), "look at ◫ Lane abc123de now")
+  }
+
+  func testAttributedMessagePreservesHardNewlines() {
+    // A flow layout of word subviews would have eaten these. The transcript
+    // renders real prompts, and real prompts have paragraphs.
+    let rendered = workChipAttributedMessage(
+      "first line\n\nsecond @chat:abc line",
+      chipForeground: .white,
+      chipBackground: .clear
+    )
+    XCTAssertEqual(String(rendered.characters), "first line\n\nsecond 💬 Chat abc line")
+  }
+
+  func testPlainMessageIsUnchanged() {
+    let rendered = workChipAttributedMessage(
+      "no chips here at all",
+      chipForeground: .white,
+      chipBackground: .clear
+    )
+    XCTAssertEqual(String(rendered.characters), "no chips here at all")
+  }
+
+  func testChipRunCarriesItsLinkAndPlainProseDoesNot() {
+    let rendered = workChipAttributedMessage(
+      "see https://example.com/x ok",
+      chipForeground: .white,
+      chipBackground: .clear
+    )
+    let links = rendered.runs.compactMap(\.link?.absoluteString)
+    XCTAssertEqual(links, ["https://example.com/x"])
+  }
+}
+
+
+/// Copy on iOS must yield canonical TOKENS, never display labels — the
+/// `text/plain` half of `apps/desktop/src/shared/composerClipboard.ts`.
+///
+/// iOS has no label-bearing surface to lose: the composer's `UITextView`
+/// stores the raw token and only DRAWS a pill behind it, and a sent message is
+/// copied from `message.markdown`. These tests pin the invariant that makes
+/// that true, so a future "copy the pretty label" change fails here.
+final class WorkChipClipboardCanonicalTextTests: XCTestCase {
+  func testEveryChipTokenIsTheExactSourceSubstring() {
+    let text = "ship @lane:abc123de and @term:t1 per https://github.com/arul28/ade/pull/1237 "
+      + "plus ade://session/9e2315e8ddef"
+    let ns = text as NSString
+    let found = WorkChipDetector.chips(in: ns)
+    XCTAssertEqual(found.count, 4)
+    for chip in found {
+      XCTAssertEqual(
+        chip.token,
+        ns.substring(with: chip.range),
+        "a chip token that is not the source text cannot survive a raw-text copy"
+      )
+    }
+  }
+
+  func testCanonicalPlainTextIsIdempotentAndReparseable() {
+    let text = "@chat:9e2315e8ddef then @lane:abc123de"
+    let once = WorkChipDetector.canonicalPlainText(text)
+    XCTAssertEqual(once, text)
+    XCTAssertEqual(WorkChipDetector.canonicalPlainText(once), once)
+    XCTAssertEqual(WorkChipDetector.chips(in: once as NSString).count, 2)
+  }
+
+  func testLabelsNeverAppearInTheCanonicalText() {
+    let text = "@lane:25f280a4-1b2c-4d3e-8f90-abcdef123456"
+    let plain = WorkChipDetector.canonicalPlainText(text)
+    XCTAssertFalse(plain.contains("Lane "))
+    XCTAssertFalse(plain.contains("◫"))
   }
 }
