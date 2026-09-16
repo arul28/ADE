@@ -155,6 +155,14 @@ export function requestChipPreview(url: string, scope = ""): Promise<ChipPreview
  * swaps in the title and favicon in place.
  */
 export function useChipPreview(url: string | null): ChipPreview | null {
+  // The project tab's scope is the CORRECT one here, and the only one available:
+  // `resolveSmartLinkPreview` takes no pin (see preload — it is a plain
+  // `callProjectRuntimeActionOr` on the "chat" domain), so the fetch always runs
+  // on the tab's bound runtime. The cache must describe the runtime that
+  // actually served it. A chat-scoped key would claim a per-machine answer this
+  // route does not give. Contrast the hover card, which reads per-machine data
+  // and therefore goes through `useChatRuntimeScope`.
+  //
   // The CONTEXTUAL store, not the root one: a chat pane renders inside its
   // project's own store, and `useAppStore.getState()` would read the root's
   // (empty) project instead — scoping every preview to the same wrong bucket.

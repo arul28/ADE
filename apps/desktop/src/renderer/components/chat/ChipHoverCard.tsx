@@ -22,16 +22,40 @@
 //     already live in app state. PRs go through `listPrsCoalesced`, the same
 //     coalesced reader the composer's `#` suggestions use, and only once the
 //     user has actually hovered.
+//   - **The CHAT's machine, not the tab's.** A lane id is unique per machine,
+//     not globally, so resolving one against the project tab's lane list can
+//     match a DIFFERENT lane that happens to share the id — and then print its
+//     name and branch. A chat pinned to a remote machine must read that
+//     machine's lanes, sessions and PRs, which is what `useChatRuntimeScope()`
+//     plus `useLanesForPin` / `useMachineEntryForBinding` resolve. Nothing here
+//     touches a global store read.
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { Chip } from "../../../shared/chips";
-import type { PrState } from "../../../shared/types";
+import type {
+  LaneSummary,
+  OpenProjectBinding,
+  PrState,
+  TerminalSessionSummary,
+} from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
 import { relativeWhen } from "../../lib/format";
-import { selectActiveProjectStateKey, useAppStoreApi, type AppStoreApi } from "../../state/appStore";
+import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosition";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
+
+/** Everything a card may read, all of it belonging to the CHAT's machine. */
+export type ChipCardSources = {
+  lanes: LaneSummary[];
+  sessions: TerminalSessionSummary[];
+  /** Pin for pin-aware preload calls. Null = the chat runs on the tab's binding. */
+  pin: OpenProjectBinding | null;
+};
+
+const EMPTY_LANES: LaneSummary[] = [];
+const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
 
 /** Long enough that skimming a message never flashes cards; short enough to feel attached. */
 const HOVER_DELAY_MS = 360;
@@ -98,8 +122,7 @@ export function chipCardTarget(chip: Chip): ChipCardTarget | null {
 }
 
 /** Linear titles ADE already knows locally, from lanes that link the issue. */
-function linearTitleFromLanes(store: AppStoreApi, identifier: string): string | null {
-  const lanes = store.getState().lanes;
+function linearTitleFromLanes(lanes: LaneSummary[], identifier: string): string | null {
   for (const lane of lanes) {
     if (lane.linearIssue?.identifier?.toUpperCase() === identifier) return lane.linearIssue.title || null;
     for (const link of lane.linearIssueLinks ?? []) {
@@ -115,21 +138,16 @@ function linearTitleFromLanes(store: AppStoreApi, identifier: string): string | 
  * has something to show without a second round trip.
  */
 export async function loadChipCardData(
-  store: AppStoreApi,
+  sources: ChipCardSources,
   target: ChipCardTarget,
   previewTitle: string | null,
 ): Promise<ChipCardData | null> {
   if (target.kind === "lane") {
-    const lane = store.getState().lanes.find((candidate) => candidate.id === target.laneId);
+    const lane = sources.lanes.find((candidate) => candidate.id === target.laneId);
     return lane ? { kind: "lane", name: lane.name, branch: lane.branchRef || null } : null;
   }
   if (target.kind === "chat") {
-    // The Work tab's per-project session cache is the app's own list of chats;
-    // reading it means a hover costs nothing and works even while offline.
-    const state = store.getState();
-    const scope = selectActiveProjectStateKey(state);
-    const sessions = (scope ? state.sessionsCacheByProject[scope] : null) ?? [];
-    const session = sessions.find((candidate) => candidate.id === target.sessionId);
+    const session = sources.sessions.find((candidate) => candidate.id === target.sessionId);
     if (!session) return null;
     return {
       kind: "chat",
@@ -138,11 +156,15 @@ export async function loadChipCardData(
     };
   }
   if (target.kind === "linear") {
-    const title = linearTitleFromLanes(store, target.identifier) ?? previewTitle;
+    const title = linearTitleFromLanes(sources.lanes, target.identifier) ?? previewTitle;
     return title ? { kind: "linear", identifier: target.identifier, title } : null;
   }
 
-  const prs = await listPrsCoalesced().catch(() => [] as Awaited<ReturnType<typeof listPrsCoalesced>>);
+  // Pinned so the read lands on the chat's machine: a PR row lives in the
+  // `.ade` database of the machine that owns its lane, and an unpinned read
+  // would query the project tab's machine for a row it does not have.
+  const prs = await listPrsCoalesced({ pin: sources.pin })
+    .catch(() => [] as Awaited<ReturnType<typeof listPrsCoalesced>>);
   const match = prs.find((pr) => {
     if (pr.githubPrNumber !== target.number) return false;
     if (!target.owner || !target.repo) return true;
@@ -231,9 +253,26 @@ export type ChipHoverCard = {
  */
 export function useChipHoverCard(chip: Chip, previewTitle: string | null): ChipHoverCard {
   const cardId = useId();
-  // The contextual store — the chat pane runs inside its project's own store,
-  // and the root store would not know that project's lanes or sessions.
-  const storeApi = useAppStoreApi();
+  // The machine this CHAT runs on. `AgentChatMessageList` sits under
+  // `ChatRuntimeScopeProvider`, exactly like `UserMessageIssueContext` next
+  // door, so the scope is already the right answer here — no prop drilling and,
+  // crucially, no global store read of the project tab's lanes.
+  const scope = useChatRuntimeScope();
+  const machine = useMachineEntryForBinding(scope.binding);
+  const scopedLanes = useLanesForPin(scope.binding);
+  // Held in a ref, not in the effect's deps: a lane-status refresh replaces
+  // these arrays constantly, and depending on them would reload an open card on
+  // every tick. This is the ref form the chat-scope lint rule sanctions.
+  const sourcesRef = useRef<ChipCardSources>({ lanes: EMPTY_LANES, sessions: EMPTY_SESSIONS, pin: null });
+  sourcesRef.current = {
+    lanes: scopedLanes ?? EMPTY_LANES,
+    sessions: machine?.sessions ?? EMPTY_SESSIONS,
+    pin: scope.pin,
+  };
+  // A stable key, so re-pinning the chat reloads an open card without the
+  // binding object's identity churn doing it on every merge.
+  const pinKey = scope.pin?.key ?? null;
+
   // `chip` is stable per message (memoized parse), so a PR chip parses its
   // GitHub URL once rather than on every re-render of the transcript.
   const target = useMemo(() => chipCardTarget(chip), [chip]);
@@ -278,7 +317,7 @@ export function useChipHoverCard(chip: Chip, previewTitle: string | null): ChipH
   useEffect(() => {
     if (!open || !target) return;
     let cancelled = false;
-    void loadChipCardData(storeApi, target, previewTitle)
+    void loadChipCardData(sourcesRef.current, target, previewTitle)
       .catch(() => null)
       .then((loaded) => {
         if (!cancelled) setData(loaded);
@@ -286,7 +325,7 @@ export function useChipHoverCard(chip: Chip, previewTitle: string | null): ChipH
     return () => {
       cancelled = true;
     };
-  }, [open, target, previewTitle, storeApi]);
+  }, [open, target, previewTitle, pinKey]);
 
   // Escape dismisses, and any scroll does too: the card is absolutely placed
   // against a trigger that a scrolling transcript moves out from under it.

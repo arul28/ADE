@@ -3,15 +3,60 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { LaneSummary } from "../../../shared/types";
+import type { CrossMachineMachineLanes } from "../../state/appStore";
+import type { LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { ChipText } from "./ChipText";
 import { resetChipPreviewCacheForTesting } from "./chipPreviewStore";
 
 const LANE_ID = "25f280a4-9c1b-4f2e-8a77-1d5c0b3e6a44";
+const CHAT_BINDING: OpenProjectBinding = {
+  kind: "remote",
+  key: "remote:macbook:/repo",
+  targetId: "macbook",
+  runtimeName: "MacBook Pro",
+  projectId: "p1",
+  rootPath: "/repo",
+  displayName: "repo",
+};
 
 function laneChipText(): string {
   return `look at ade://lane/${LANE_ID}`;
+}
+
+/**
+ * Render a transcript the way the app does: under the chat's runtime scope,
+ * with the chat's machine holding its own lanes and sessions. The project tab's
+ * `lanes` are seeded separately by the tests that care, precisely to prove the
+ * card never reads them.
+ */
+function renderInChatScope(
+  text: string,
+  machine: Partial<Pick<CrossMachineMachineLanes, "lanes" | "sessions">> = {},
+) {
+  useAppStore.setState({
+    crossMachineLanesByMachineId: {
+      macbook: {
+        machineId: "macbook",
+        machineName: "MacBook Pro (97)",
+        targetId: "macbook",
+        projectId: "p1",
+        binding: CHAT_BINDING,
+        online: true,
+        lanes: machine.lanes ?? [],
+        sessions: machine.sessions ?? [],
+        prs: [],
+        lastSyncedAtMs: null,
+        error: null,
+      },
+    },
+  });
+  return render(
+    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={null}>
+      <ChipText text={text} />
+    </ChatRuntimeScopeProvider>,
+  );
 }
 
 describe("ChipText", () => {
@@ -21,7 +66,7 @@ describe("ChipText", () => {
 
   afterEach(() => {
     cleanup();
-    useAppStore.setState({ lanes: [] });
+    useAppStore.setState({ lanes: [], crossMachineLanesByMachineId: {} });
     delete (window as unknown as { ade?: unknown }).ade;
   });
 
@@ -78,11 +123,9 @@ describe("ChipText", () => {
   });
 
   it("shows a lane hover card on focus and hides it on Escape", async () => {
-    useAppStore.setState({
+    renderInChatScope(laneChipText(), {
       lanes: [{ id: LANE_ID, name: "Composer chips", branchRef: "ade/composer-chips" } as LaneSummary],
     });
-
-    render(<ChipText text={laneChipText()} />);
     const chip = screen.getByRole("button");
 
     // Focus, not hover: the card must be reachable by keyboard, and focusing
@@ -95,6 +138,39 @@ describe("ChipText", () => {
 
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+  });
+
+  it("reads the CHAT's machine, never the project tab's lane list", async () => {
+    // Lane ids are unique per machine, not globally. The tab's list holds a
+    // DIFFERENT lane under the same id; printing its name and branch is the
+    // multi-machine bug this card must not have.
+    useAppStore.setState({
+      lanes: [{ id: LANE_ID, name: "Local impostor", branchRef: "ade/local-impostor" } as LaneSummary],
+    });
+    renderInChatScope(laneChipText(), {
+      lanes: [{ id: LANE_ID, name: "Remote lane", branchRef: "ade/remote" } as LaneSummary],
+    });
+
+    fireEvent.focus(screen.getByRole("button"));
+    await waitFor(() => expect(screen.getByRole("tooltip")).toBeTruthy());
+    expect(screen.getByRole("tooltip").textContent).toContain("Remote lane");
+    expect(screen.getByRole("tooltip").textContent).not.toContain("Local impostor");
+  });
+
+  it("shows a chat card from the chat machine's own session list", async () => {
+    const sessionId = "8b1f0c2e-33aa-4b7d-9f10-6d2a51c7e004";
+    renderInChatScope(`ping @chat:${sessionId}`, {
+      sessions: [{
+        id: sessionId,
+        title: "Composer chips defaults",
+        lastActivityAt: new Date(Date.now() - 120_000).toISOString(),
+      } as TerminalSessionSummary],
+    });
+
+    fireEvent.focus(screen.getByRole("button"));
+    await waitFor(() => expect(screen.getByRole("tooltip")).toBeTruthy());
+    expect(screen.getByRole("tooltip").textContent).toContain("Composer chips defaults");
+    expect(screen.getByRole("tooltip").textContent).toContain("Last activity 2m ago");
   });
 
   it("shows no card at all when the lane is unknown", async () => {
