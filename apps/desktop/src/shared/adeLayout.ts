@@ -49,7 +49,6 @@ export type AdeLayoutPaths = {
 
 export const ADE_LAYOUT_DEFINITIONS: AdePathEntryDefinition[] = [
   { relativePath: ".gitignore", kind: "tracked", pathType: "file" },
-  { relativePath: "ade.yaml", kind: "tracked", pathType: "file" },
   { relativePath: "cto", kind: "tracked", pathType: "directory" },
   { relativePath: "templates", kind: "tracked", pathType: "directory" },
   { relativePath: "skills", kind: "tracked", pathType: "directory" },
@@ -134,7 +133,6 @@ export function buildAdeGitignore(): string {
     "",
     "# Shared ADE project config",
     "!.gitignore",
-    "!ade.yaml",
     "",
     "# Shared user-authored ADE assets",
     "!templates/",
