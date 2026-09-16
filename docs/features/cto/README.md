@@ -43,7 +43,7 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 - `apps/desktop/src/main/services/chat/codexCtoToolDeferral.ts` — Codex's dynamic-tool wire shape and the two pure functions that build it: `CodexDynamicToolSpec`, `jsonSchemaForExecutableTool()`, `buildCodexDynamicToolSpecs()`, and the CTO defer predicate `codexDeferCtoTool()`. Service-side types are imported `type`-only, so a unit test for the defer rule costs a zod import rather than the Cursor SDK pool, the Droid worker, and the whole chat graph.
 - `apps/desktop/src/main/services/ai/tools/universalTools.ts` — carries `recordDiscovery`, the append-only tool every agent gets (see [Worker discoveries](#worker-discoveries)).
 - `apps/desktop/src/shared/types/cto.ts` — the discriminated `CtoAttentionState` (`idle`, `awaiting-input`, or `unknown`), the shape every attention transport returns. `unknown` means inspection failed and clients must retain their last known badge state. It also splits `CtoModelPreferences` out as its own type, because `CtoIdentity.modelPreferences` is now `CtoModelPreferences | null`.
-- `apps/desktop/src/shared/types/ctoVoice.ts` — the cross-surface voice contract, and the one place the policy is written. It imports nothing, which is what lets the action policy tables and the approval gate read it without dragging `ws`, the API key store and the chat service graph in behind them: `CTO_VOICE_MODEL` (`gpt-live-1`), `CTO_VOICE_ENDPOINT`, `CTO_VOICE_USD_PER_MINUTE` (0.05), `CTO_VOICE_SAMPLE_RATE` (24,000), `CTO_VOICE_AUDIO_POLL_INTERVAL_MS` (100 ms), `CTO_VOICE_OWNER_IDLE_TIMEOUT_MS` (15 s), `CTO_VOICE_PREOPEN_AUDIO_LIMIT` (50 frames) and `CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT` (200 chunks), the `CTO_VOICE_ACTIONS` list and its `CtoVoiceAction` type, the `CTO_VOICE_VOICES` list and `CTO_VOICE_DEFAULT` (`marin`), the `CtoVoicePhase` union with `isVoiceCallLive()` / `isVoiceCallVisible()`, `CtoVoiceState` + `CTO_VOICE_INITIAL_STATE`, `CtoVoiceBridge`, `CtoVoiceConfirmation`, `CTO_VOICE_SPOKEN_CONFIRM_WINDOW_MS` (20 s), `CTO_VOICE_DESTRUCTIVE_TOOLS` + `isDestructiveVoiceTool()`, `isDestructiveVoiceCommand()` and `describeVoiceApproval()`, `ctoVoiceMicrophoneUnavailableMessage()`, `CTO_VOICE_CAPTURE_DEFAULT_NOTE`, the `voiceCostUsd` / `formatVoiceElapsed` / `formatVoiceCost` formatters, and `buildCtoVoiceInstructions()` — the spoken persona plus the backchannel, interruption, and delegation policy blocks. Detailed procedure deliberately stays with the backend; the live model only needs to know how to talk and when to hand off.
+- `apps/desktop/src/shared/types/ctoVoice.ts` — the cross-surface voice contract, and the one place the policy is written. It imports nothing, which is what lets the action policy tables and the approval gate read it without dragging `ws`, the API key store and the chat service graph in behind them: `CTO_VOICE_MODEL` (`gpt-realtime-2.1`), `CTO_VOICE_ENDPOINT` (`wss://api.openai.com/v1/realtime`) with `ctoVoiceEndpointUrl()`, `CTO_VOICE_TRANSCRIBE_MODEL` (`gpt-4o-mini-transcribe`), `CTO_VOICE_USD_PER_MINUTE` (0.05), `CTO_VOICE_SAMPLE_RATE` (24,000), `CTO_VOICE_AUDIO_POLL_INTERVAL_MS` (100 ms), `CTO_VOICE_OWNER_IDLE_TIMEOUT_MS` (15 s), `CTO_VOICE_PREOPEN_AUDIO_LIMIT` (50 frames) and `CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT` (200 chunks), the `CTO_VOICE_ACTIONS` list and its `CtoVoiceAction` type, the `CTO_VOICE_VOICES` list and `CTO_VOICE_DEFAULT` (`marin`), the `CtoVoicePhase` union with `isVoiceCallLive()` / `isVoiceCallVisible()`, `CtoVoiceState` + `CTO_VOICE_INITIAL_STATE`, `CtoVoiceBridge`, `CtoVoiceConfirmation`, `CTO_VOICE_SPOKEN_CONFIRM_WINDOW_MS` (20 s), `CTO_VOICE_DESTRUCTIVE_TOOLS` + `isDestructiveVoiceTool()`, `isDestructiveVoiceCommand()` and `describeVoiceApproval()`, `ctoVoiceMicrophoneUnavailableMessage()`, `CTO_VOICE_CAPTURE_DEFAULT_NOTE`, the `voiceCostUsd` / `formatVoiceElapsed` / `formatVoiceCost` formatters, `buildCtoVoiceInstructions()` — who the realtime model is speaking as and how to deliver a line, and nothing else, because it is never asked a question — and `buildCtoVoiceSpeakInstructions()`, which wraps one answer as the fenced read-aloud instruction of a single `response.create`. Detailed procedure deliberately stays with the backend; the realtime model is ears and a mouth.
 - `apps/desktop/src/main/services/cto/ctoVoiceCallService.ts` — `createCtoVoiceCallService(deps)`: the WebSocket, the delegation loop, the keep-alive, and `endCall`'s durable `persistCall` write. Every dependency is injected (`getApiKey`, `runBackendTurn`, `persistCall`, `createWebSocket`), so the service never imports the chat service and the delegation loop is testable without a model.
 - `apps/desktop/src/main/services/cto/ctoVoiceRuntimeService.ts` — `createCtoVoiceRuntimeService(host)`: the runtime-hosted owner of a call. It builds the call service's deps out of an `AdeRuntime` (chat, CTO identity, durable memory, lanes), holds the confirm-first hold and the `ownerToken`, publishes state on the `cto_voice` event category, and keeps the output-audio queue that `pullAudio` drains. Constructed in `apps/ade-cli/src/bootstrap.ts` and exposed as `AdeRuntime.ctoVoiceCallService`. See [The call brain lives in the runtime](#the-call-brain-lives-in-the-runtime-and-the-desktop-is-a-router).
 - `apps/desktop/src/main/services/cto/ctoVoiceWiring.ts` — the desktop router: the nine `CTO_VOICE_ACTIONS` behind one transport interface (`resolveTransport` returns the runtime pool's when a pool exists, the in-process service otherwise, or the sentence explaining why there is neither), the owner window and `isCallOwner` broadcast, the 100 ms audio pump, the per-call `CallSlot`, and the close/reload watchers. It owns no call state of its own.
@@ -413,14 +413,64 @@ for the canonical derivation and the full cross-surface matrix.
 
 ## Voice calls
 
-**Talk** in the CTO header opens a spoken call with the CTO. It runs on GPT Live (`CTO_VOICE_MODEL` = `gpt-live-1`) against `CTO_VOICE_ENDPOINT`, opened with `delegation: { type: "client" }`.
+**Talk** in the CTO header opens a spoken call with the CTO. It runs on OpenAI's Realtime API: `CTO_VOICE_ENDPOINT` is `wss://api.openai.com/v1/realtime` and `ctoVoiceEndpointUrl()` adds `?model=` from `CTO_VOICE_MODEL` (`gpt-realtime-2.1`), so the model is spelled once. The upgrade carries `Authorization: Bearer <key>` and no beta header.
 
-That flag is the whole architecture. The voice model owns *the conversation* — turn-taking, barge-in, prosody, when to hand off — and ADE owns *the reasoning*, which it routes to the CTO thread through the injected `runBackendTurn`. Two things follow, and both are the reason the split is worth the extra moving parts:
+**The realtime model is ears and a mouth. It never answers.** That is not a prompt instruction, it is the session configuration: `session.update` sets `audio.input.turn_detection` to `{ type: "server_vad", create_response: false, interrupt_response: false }`. Server voice-activity detection still segments the user's speech, commits it and transcribes it — which is what gives ADE an intent to work with — and is refused permission to answer any of it. Every response on that socket is one ADE asked for, carrying words the CTO thread already wrote. Two things follow, and both are the reason the split is worth the extra moving parts:
 
 - **The CTO's thinking does not move.** It stays on whatever provider and plan `modelPreferences` already names — the same Claude/Codex/Cursor session, the same memory, the same tools. A call is a new mouth on the existing thread, not a second CTO.
 - **Only the voice minutes bill to the user.** The key is the user's own OpenAI key, `CTO_VOICE_USD_PER_MINUTE` is `$0.05`, and it bills by the second. The cost sentence is stated before the field rather than discovered on an invoice — see [Onboarding and settings › The OpenAI key follows the machine](../onboarding-and-settings/README.md#the-openai-key-follows-the-machine).
 
-It also means permissions live in ADE's code rather than in a prompt the model is free to reinterpret. `buildCtoVoiceInstructions` tells the live model how to speak and when to delegate; it is told nothing about what it is allowed to do, because it decides none of that.
+It also means permissions live in ADE's code rather than in a prompt the model is free to reinterpret. `buildCtoVoiceInstructions` tells the realtime model who it is speaking as and how to deliver a line; it is told nothing about what it is allowed to do, because it decides none of that — and nothing about the project, because it is never asked a question.
+
+#### The events, in both directions
+
+Sent by ADE:
+
+| Event | When |
+| --- | --- |
+| `session.update` | Once, on `open`. Instructions, `output_modalities: ["audio"]`, PCM16 in and out at `CTO_VOICE_SAMPLE_RATE`, the chosen `audio.output.voice`, `audio.input.transcription` (`CTO_VOICE_TRANSCRIBE_MODEL`), and the `create_response: false` turn detection above. |
+| `input_audio_buffer.append` | Every microphone frame, and a 100 ms buffer of silence while muted. |
+| `response.create` | Every time the CTO says something. |
+| `response.cancel` | Barge-in, and only while a response is actually in flight. |
+| `conversation.item.create` | A `system` item recording a mid-call capture. Silent — no response is asked for, so nothing is read out. |
+
+Handled from OpenAI:
+
+| Event | Effect |
+| --- | --- |
+| `session.created` / `session.updated` / `conversation.created` | Whichever lands first starts the call's clock and moves the HUD to `listening`. |
+| `input_audio_buffer.speech_started` | A new utterance opens; if the CTO is speaking or thinking, this is a barge-in. |
+| `input_audio_buffer.speech_stopped` | Ignored — the transcription is what matters. |
+| `conversation.item.input_audio_transcription.delta` / `.completed` | The intent. `.completed` is what drives a CTO turn. |
+| `conversation.item.input_audio_transcription.failed` | "Sorry — I didn't catch that.", rather than silence. |
+| `response.created` | A response is in flight. |
+| `response.output_audio.delta` (and `response.audio.delta`) | Base64 PCM16 straight to the renderer's audio queue. |
+| `response.output_audio_transcript.delta` / `.done` | The `speaking` phase, and the assistant caption. |
+| `response.done` / `.failed` / `.cancelled` | Releases the response lock and lets the next queued sentence out. |
+| `error` | The real reason something failed — see below. |
+
+Both spellings of the audio and transcript deltas are handled because the GA surface renamed them (`response.audio.delta` → `response.output_audio.delta`) and one socket's vocabulary is not a thing to guess at.
+
+#### How the CTO's answer gets spoken
+
+The Realtime API has no "say this" event, and `conversation.item.create` with an
+assistant message is **not** it: that puts text in the history and produces no
+audio at all, and the next `response.create` would then have the model answer
+*itself* — the one thing this architecture must never allow.
+
+What the API does have is per-response `instructions` on `response.create`, which
+is the documented way to steer a single response. So the CTO's sentence rides as
+that response's instruction, fenced by markers and prefixed with "read this word
+for word" (`buildCtoVoiceSpeakInstructions`), with `output_modalities: ["audio"]`.
+The markers are load bearing: an answer that itself ends in a question ("Shall I
+open the PR?") has to be *read*, not answered. The audio response the server
+generates is added to the conversation by the server, so the history still holds
+what was said without ADE writing it twice.
+
+**One response at a time.** A second `response.create` while one is generating is
+answered with an error rather than with speech, so speech is queued and drained
+on `response.done`. That is why the filler and the answer behind it are one
+stretch of `speaking` rather than two.
 
 ### The call brain lives in the runtime, and the desktop is a router
 
@@ -605,7 +655,7 @@ dropping the event subscription a moment before the runtime's `failed` arrived.
 
 Three rules close it. The runtime never sends on a socket that is not open
 (pre-open microphone frames are buffered to `CTO_VOICE_PREOPEN_AUDIO_LIMIT` and
-flushed after `session.start`, and `pushAudio` cannot throw at all). The router
+flushed after `session.update`, and `pushAudio` cannot throw at all). The router
 holds one `CallSlot` per call instead of six module-level variables, and its
 teardown keeps the state subscription attached across the `end` round trip — so
 the runtime's own terminal state still wins if it lands, and only when it has
@@ -616,7 +666,49 @@ window, a dead event stream, an explicit hang-up. The router never invents a
 *live* phase — the only state it authors is that one `ended` — and once the
 subscription is released a late event cannot put the HUD back on screen.
 
-**A connection that fails says which way it failed.**
+**A connection that fails says which way it failed — and a session that fails says it in OpenAI's own words.**
+
+There are two halves to this, and the first version of the feature had only one.
+
+A rejected *upgrade* never carries OpenAI's explanation: the handshake fails
+before there is a session to explain anything, so all ADE has is an HTTP status.
+An upgrade that *succeeds* and then fails does carry it — the reason arrives as
+an `error` event, and its message is the truth. Pointing at the wrong endpoint
+hid that for a whole release: `/v1/live/sessions` answers 401 to every upgrade,
+so the only diagnosis available was a guess at a status code, and "OpenAI
+rejected this key" was printed over an account whose key had simply expired.
+
+`describeCtoVoiceServerError` maps the `error` event. It is pure, so the table is
+testable without a socket:
+
+| The message says | The user reads | Fatal |
+| --- | --- | --- |
+| …expired… | "Your OpenAI key has expired. Create a new key at platform.openai.com and paste it under CTO settings, Voice." | yes |
+| …quota / billing / insufficient_quota / payment… | "Your OpenAI account has no credit for voice calls. Add billing at platform.openai.com." | yes |
+| "Incorrect API key", "Invalid API key", `invalid_api_key`, "Invalid authentication" | "OpenAI rejected this key. Check it under CTO settings, Voice." | yes |
+| anything else | **OpenAI's own sentence, verbatim, trimmed to one line** | no |
+
+The order matters and the third row is deliberately narrow. Quota is checked
+before the key because "You exceeded your current quota, please check your plan
+and billing details" is about the *account*, and sending someone to re-paste a
+working key wastes their afternoon. And a bare `/invalid/` would also match
+"Invalid value: 'chirp' for session.audio.output.voice" — telling a user their
+key is bad when a parameter is bad sends them to the one place nothing is wrong.
+
+The last row is the point of the whole mapping: a message we cannot classify is
+still a message someone wrote to be read, so it is passed through rather than
+replaced with a house sentence. The raw message travels with its `code` and
+`type` in the `cto_voice.session_error` warn line whatever the verdict.
+
+A fatal one is the same terminal event a rejected upgrade is: it takes the same
+latch (so the socket close behind it cannot overwrite the sentence with a
+generic one), reports `rejected_key` to analytics, and ends the call rather than
+leaving the HUD counting time against a session that is gone. Two errors this
+service's own timing can cause — cancelling a response the server has already
+finished, and a `response.create` that crosses a `response.done` — are
+recognised and logged instead of becoming a banner over a call that works.
+
+
 `describeCtoVoiceSocketFailure` is a pure mapping from what the failed upgrade
 told us to one sentence: 401/403 is "OpenAI rejected this key. Check it under
 CTO settings, Voice.", 429 is "OpenAI is rate limiting this key. Try again in a
@@ -689,11 +781,15 @@ call, so a change in Settings → Voice applies to the next call with no restart
 Both are load bearing and neither is obvious from the API shape.
 
 - **A real microphone never stops.** If the client stops sending input audio the session stalls mid-sentence. So `pushAudio` keeps the stream fed from the renderer's capture node, and a 100 ms `keepAlive` interval sends a buffer of PCM silence for as long as the user is muted. Mute is not "stop sending"; it is "send nothing, continuously."
-- **`session.delegation.created` carries an id and no task text.** The event names the delegation and says nothing about what was asked, so the intent has to be rebuilt on ADE's side: the service accumulates `session.input_transcript.delta` into `utterance.text` and hands *that* to `runBackendTurn` when the delegation arrives, rather than waiting for a turn object that never comes.
+- **The transcript IS the intent.** Nothing on the wire carries "what the user asked" as a field, and nothing hands work back to the client — there is no delegation in this API. What arrives is `conversation.item.input_audio_transcription.completed`, and that event is what drives a CTO turn. Its `transcript` is authoritative; the `.delta` stream is accumulated as a fallback for a completion that carries none.
 
-  The utterance is one record — `{ id, text, open, consumed }` — because the two events are independent on the wire and either can arrive first. So the id turns over when a *new* utterance opens rather than when one finishes, the text survives `done` (a delegation for it may still be in flight) and is consumed exactly once. Rotating on `done` bound a confirmation to the id the user's *next* reply would carry, which made a spoken "yes" impossible to honour; reading a consumed utterance asked the CTO the question it had just answered.
+  The utterance is one record — `{ id, text, open, consumed }` — and its id turns over when a *new* utterance OPENS (`input_audio_buffer.speech_started`), never when one finishes. Rotating on completion would bind a confirmation to the id the user's *next* reply carries, which makes a spoken "yes" impossible to honour; `consumed` is what stops a redelivered completion asking the CTO the question it just answered.
 
-The filler goes out before any backend work starts — `speak(delegationId, "Let me check that.")` on the first line of `handleDelegation`, then `think(...)` with the reconstructed intent as silent context — because the entire point of the `thinking` phase is that the user does not hear silence while ADE works. `speak` posts `session.commentary.append` (paraphrased aloud); `think` posts `session.thinking.append` (usable, never read out).
+The filler goes out before any backend work starts — `speak("Let me check that.")` on the first line of `runCtoTurn` — because the entire point of the `thinking` phase is that the user does not hear silence while ADE works. It is the one thing the **Thinking out loud** setting (`voiceBackchannels`) still controls: under `create_response: false` the model cannot make a noise of its own, so the setting either lets ADE speak that one line or keeps the call quiet until the answer is ready.
+
+`speak` queues a `response.create`; `think` posts a `system` `conversation.item.create` and asks for no response at all, which is how a mid-call capture is recorded without being read out.
+
+**Barge-in is two cancellations, not one.** `input_audio_buffer.speech_started` while the CTO is speaking or thinking sends `response.cancel` *and* aborts the CTO turn behind it, because an answer that arrives seconds later is an answer to a question the user has moved on from. The one exception is a pending confirmation: that turn is parked inside `canUseTool` waiting for exactly this reply, so the audio stops, the card stays, and the turn lives — aborting it would kill the work the user's "yes" is one word away from releasing. `interrupt_response` is `false` on the session for the same reason: letting the server cancel too would race ADE's own `response.cancel` and answer it with an error.
 
 ### A call can do anything the chat can — it just has to ask
 
@@ -711,7 +807,7 @@ The hold is also keyed by **session**, because one brain process hosts every ope
 
 The gate is a promise parked inside `canUseTool`, so a turn waiting on it has not returned — nothing comes back through `runBackendTurn` to say the CTO is stuck. Without a second channel the call simply goes quiet mid-sentence and you have to go find the chat to unblock it, which is the one thing a call exists to avoid.
 
-So for the life of a call the runtime service subscribes to the CTO thread's own events (`watchApprovals`). An `approval_request` on that session becomes a `CtoVoiceConfirmation`, the HUD moves to `confirming`, and the question is spoken with no `delegation_id` — this is ADE asking, not an answer to something the voice model delegated. Your answer goes back through `approveToolUse`, the same call the approval card in the chat makes: a spoken yes and a tap land on one code path, because the call is a second mouth on the CTO thread and not a second permission system.
+So for the life of a call the runtime service subscribes to the CTO thread's own events (`watchApprovals`). An `approval_request` on that session becomes a `CtoVoiceConfirmation`, the HUD moves to `confirming`, and the question is spoken through the same `response.create` path everything else is — this is ADE asking, in ADE's words, not a sentence the model composed. Your answer goes back through `approveToolUse`, the same call the approval card in the chat makes: a spoken yes and a tap land on one code path, because the call is a second mouth on the CTO thread and not a second permission system.
 
 `describeVoiceApproval` bridges the two vocabularies, and it takes two
 independent readings because no provider carries both. The NAME comes out of the

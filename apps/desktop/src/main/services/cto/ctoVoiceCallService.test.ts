@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createCtoVoiceCallService,
+  describeCtoVoiceServerError,
   describeCtoVoiceSocketFailure,
   forwardUnexpectedResponse,
   type CtoVoiceSocket,
 } from "./ctoVoiceCallService";
-import type { CtoVoiceState } from "../../../shared/types/ctoVoice";
+import {
+  CTO_VOICE_MODEL,
+  CTO_VOICE_SAMPLE_RATE,
+  CTO_VOICE_TRANSCRIBE_MODEL,
+  type CtoVoiceState,
+} from "../../../shared/types/ctoVoice";
 import { createFakeSocket } from "./ctoVoiceTestDoubles";
 
 function createService(overrides: Partial<Parameters<typeof createCtoVoiceCallService>[0]> = {}) {
@@ -25,6 +31,37 @@ function createService(overrides: Partial<Parameters<typeof createCtoVoiceCallSe
   return { service, fake, states, latest: () => states[states.length - 1] };
 }
 
+/** Ten milliseconds of silence is enough to let every queued microtask run. */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Bring a call up to the point where OpenAI has answered with a session. */
+async function openCall(harness: ReturnType<typeof createService>) {
+  await harness.service.start();
+  harness.fake.open();
+  harness.fake.receive({ type: "session.created", session: { id: "sess_1" } });
+}
+
+/**
+ * One user turn, exactly as the wire delivers it: VAD opens the turn, VAD
+ * closes it, and the transcription lands separately.
+ */
+function utter(fake: ReturnType<typeof createFakeSocket>, transcript: string) {
+  fake.receive({ type: "input_audio_buffer.speech_started" });
+  fake.receive({ type: "input_audio_buffer.speech_stopped" });
+  fake.receive({
+    type: "conversation.item.input_audio_transcription.completed",
+    item_id: "item-1",
+    transcript,
+  });
+}
+
+/** Every response this call asked for, as the text it was told to read. */
+function spoken(fake: ReturnType<typeof createFakeSocket>): string[] {
+  return fake.sent
+    .filter((message) => message.type === "response.create")
+    .map((message) => String((message.response as { instructions?: unknown }).instructions ?? ""));
+}
+
 describe("createCtoVoiceCallService", () => {
   it("refuses to start without a key, and says so", async () => {
     const { service, latest } = createService({ getApiKey: async () => null });
@@ -34,16 +71,67 @@ describe("createCtoVoiceCallService", () => {
     expect(latest().error).toContain("API key");
   });
 
-  it("opens the session as client-delegated, so the brain stays ours", async () => {
-    const { service, fake } = createService();
+  it("opens the realtime endpoint with the model as its one query parameter", async () => {
+    const urls: string[] = [];
+    const fake = createFakeSocket();
+    const { service } = createService({
+      createWebSocket: (url: string) => { urls.push(url); return fake.socket; },
+    } as never);
     await service.start();
-    fake.open();
-    const start = fake.lastOfType("session.start") as Record<string, any>;
-    expect(start.session.model).toBe("gpt-live-1");
-    expect(start.session.delegation).toEqual({ type: "client" });
+    expect(urls).toEqual([`wss://api.openai.com/v1/realtime?model=${CTO_VOICE_MODEL}`]);
+  });
+
+  /**
+   * The event that decides whether this is a CTO call or a chat with a
+   * stranger. `create_response: false` is the whole architecture: the session
+   * still segments, commits and transcribes the user's speech for us, and is
+   * refused permission to answer any of it. If this ever goes green with
+   * `create_response` missing, the voice model is answering from its own
+   * knowledge and the CTO is no longer the brain.
+   */
+  it("configures the session so the voice model cannot answer for itself", async () => {
+    const harness = createService({ voice: () => "cedar" } as never);
+    await harness.service.start();
+    harness.fake.open();
+
+    const update = harness.fake.lastOfType("session.update") as Record<string, any>;
+    expect(update).toBeTruthy();
+    expect(update.session.type).toBe("realtime");
+    expect(update.session.output_modalities).toEqual(["audio"]);
+    expect(update.session.audio.input.turn_detection).toEqual({
+      type: "server_vad",
+      create_response: false,
+      interrupt_response: false,
+    });
+    // Without transcription there is no intent to hand the CTO at all.
+    expect(update.session.audio.input.transcription)
+      .toEqual({ model: CTO_VOICE_TRANSCRIBE_MODEL });
+    expect(update.session.audio.input.format)
+      .toEqual({ type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE });
+    expect(update.session.audio.output.format)
+      .toEqual({ type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE });
+    expect(update.session.audio.output.voice).toBe("cedar");
     // Nothing in the session names a backend model — that is what keeps the
     // CTO's own thinking on whatever plan it already runs on.
-    expect(JSON.stringify(start.session)).not.toContain("responses");
+    expect(JSON.stringify(update.session)).not.toContain("responses");
+  });
+
+  it("starts the clock when OpenAI answers with a session", async () => {
+    const harness = createService();
+    await harness.service.start();
+    harness.fake.open();
+    expect(harness.latest().phase).toBe("connecting");
+    harness.fake.receive({ type: "session.created", session: { id: "sess_1" } });
+    expect(harness.latest().phase).toBe("listening");
+  });
+
+  it("sends microphone audio as input_audio_buffer.append", async () => {
+    const harness = createService();
+    await openCall(harness);
+    harness.fake.sent.length = 0;
+    harness.service.pushAudio("AAAA");
+    const appended = harness.fake.sent.filter((m) => m.type === "input_audio_buffer.append");
+    expect(appended.map((m) => m.audio)).toEqual(["AAAA"]);
   });
 
   /**
@@ -53,54 +141,161 @@ describe("createCtoVoiceCallService", () => {
   it("speaks a filler before the backend work starts", async () => {
     const order: string[] = [];
     let releaseBackend: () => void = () => {};
-    const { service, fake } = createService({
+    const harness = createService({
       runBackendTurn: async () => {
         order.push("backend-started");
         await new Promise<void>((resolve) => { releaseBackend = resolve; });
         return { spoken: "Three merged yesterday." };
       },
     });
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    fake.receive({ type: "session.input_transcript.delta", delta: "what merged yesterday" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1", target: "client" } });
-    await Promise.resolve();
+    await openCall(harness);
+    utter(harness.fake, "what merged yesterday");
+    await tick();
 
-    const commentaryBefore = fake.sent.filter((m) => m.type === "session.commentary.append");
-    expect(commentaryBefore.length).toBeGreaterThan(0);
+    expect(spoken(harness.fake).join("\n")).toContain("Let me check that.");
     expect(order).toEqual(["backend-started"]);
+    expect(harness.latest().phase).toBe("thinking");
     releaseBackend();
   });
 
-  it("rebuilds the intent from the transcript, because the delegation carries none", async () => {
+  it("stays quiet before the answer when listening noises are off", async () => {
+    const harness = createService({ backchannelsEnabled: () => false });
+    await openCall(harness);
+    utter(harness.fake, "what merged yesterday");
+    await tick();
+
+    const said = spoken(harness.fake).join("\n");
+    expect(said).not.toContain("Let me check that.");
+    expect(said).toContain("Three merged yesterday.");
+  });
+
+  /**
+   * The Realtime API has no "say this" event. The CTO's sentence rides as the
+   * `instructions` of one `response.create`, fenced and marked read-aloud, so
+   * an answer that itself contains a question is READ rather than answered.
+   */
+  it("speaks the CTO's answer by asking for a response that reads it out", async () => {
+    const harness = createService({
+      backchannelsEnabled: () => false,
+      runBackendTurn: async () => ({ spoken: "Shall I open the PR?" }),
+    });
+    await openCall(harness);
+    utter(harness.fake, "what next");
+    await tick();
+
+    const request = harness.fake.lastOfType("response.create") as Record<string, any>;
+    expect(request.response.output_modalities).toEqual(["audio"]);
+    expect(String(request.response.instructions)).toContain("word for word");
+    expect(String(request.response.instructions)).toContain("Shall I open the PR?");
+    expect(harness.latest().phase).toBe("speaking");
+  });
+
+  /**
+   * One response at a time is an API rule, not a style choice: a second
+   * `response.create` while one is generating is answered with an error instead
+   * of with speech, so the answer would simply never be heard.
+   */
+  it("waits for the filler to finish before it speaks the answer", async () => {
+    const harness = createService();
+    await openCall(harness);
+    utter(harness.fake, "what merged yesterday");
+    await tick();
+
+    expect(spoken(harness.fake)).toHaveLength(1);
+    expect(spoken(harness.fake)[0]).toContain("Let me check that.");
+
+    harness.fake.receive({ type: "response.done", response: { status: "completed" } });
+    expect(spoken(harness.fake)).toHaveLength(2);
+    expect(spoken(harness.fake)[1]).toContain("Three merged yesterday.");
+  });
+
+  it("asks the CTO exactly what the transcript said", async () => {
     const seen: string[] = [];
-    const { service, fake } = createService({
+    const harness = createService({
       runBackendTurn: async ({ intent }) => { seen.push(intent); return { spoken: "ok" }; },
     });
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    fake.receive({ type: "session.input_transcript.delta", delta: "what is the " });
-    fake.receive({ type: "session.input_transcript.delta", delta: "status of the PRs" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
-    await new Promise((r) => setTimeout(r, 0));
+    await openCall(harness);
+    utter(harness.fake, "what is the status of the PRs");
+    await tick();
     expect(seen).toEqual(["what is the status of the PRs"]);
+  });
+
+  it("builds the intent from transcription deltas when that is all that arrives", async () => {
+    const seen: string[] = [];
+    const harness = createService({
+      runBackendTurn: async ({ intent }) => { seen.push(intent); return { spoken: "ok" }; },
+    });
+    await openCall(harness);
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    harness.fake.receive({ type: "conversation.item.input_audio_transcription.delta", delta: "what is the " });
+    harness.fake.receive({ type: "conversation.item.input_audio_transcription.delta", delta: "status of the PRs" });
+    // A completion with no transcript field: the deltas are the record.
+    harness.fake.receive({ type: "conversation.item.input_audio_transcription.completed" });
+    await tick();
+    expect(seen).toEqual(["what is the status of the PRs"]);
+  });
+
+  it("never carries one utterance's words into the next one's question", async () => {
+    const seen: string[] = [];
+    const harness = createService({
+      runBackendTurn: async ({ intent }) => { seen.push(intent); return { spoken: "ok" }; },
+    });
+    await openCall(harness);
+    utter(harness.fake, "what merged yesterday");
+    await tick();
+    harness.fake.receive({ type: "response.done", response: { status: "completed" } });
+    utter(harness.fake, "and what is left");
+    await tick();
+    expect(seen).toEqual(["what merged yesterday", "and what is left"]);
+  });
+
+  it("asks an utterance exactly once, however many times it is delivered", async () => {
+    const seen: string[] = [];
+    const harness = createService({
+      runBackendTurn: async ({ intent }) => { seen.push(intent); return { spoken: "ok" }; },
+    });
+    await openCall(harness);
+    utter(harness.fake, "what merged yesterday");
+    await tick();
+    // The same completion again, without a new turn opening.
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "what merged yesterday",
+    });
+    await tick();
+    expect(seen).toEqual(["what merged yesterday"]);
+  });
+
+  it("says it did not catch a turn the transcriber could not read", async () => {
+    const seen: string[] = [];
+    const harness = createService({
+      runBackendTurn: async ({ intent }) => { seen.push(intent); return { spoken: "ok" }; },
+    });
+    await openCall(harness);
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.failed",
+      error: { message: "audio too short" },
+    });
+    await tick();
+
+    // No turn was burned on a question nobody could read...
+    expect(seen).toEqual([]);
+    // ...and the call did not simply go quiet.
+    expect(spoken(harness.fake).join("\n")).toContain("didn't catch that");
   });
 
   it("holds a mutation behind a confirmation instead of running it", async () => {
     // The confirmation comes from the CTO thread's own approval — the turn is
     // parked inside `canUseTool` — not from a field on the turn's result.
-    const { service, fake, latest } = createService();
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    fake.receive({ type: "session.input_transcript.delta", delta: "open a pr for the sync lane" });
-    service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
+    const harness = createService();
+    await openCall(harness);
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    harness.service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
 
-    expect(latest().phase).toBe("confirming");
-    expect(latest().pendingConfirmation?.toolName).toBe("openPr");
-    expect(latest().pendingConfirmation?.destructive).toBe(false);
+    expect(harness.latest().phase).toBe("confirming");
+    expect(harness.latest().pendingConfirmation?.toolName).toBe("openPr");
+    expect(harness.latest().pendingConfirmation?.destructive).toBe(false);
   });
 
   it("drops a superseded answer instead of speaking it over the next one", async () => {
@@ -110,7 +305,8 @@ describe("createCtoVoiceCallService", () => {
     // WRONG controller — by then it named the superseding turn — so the stale
     // answer was spoken over the live one.
     const release: Array<() => void> = [];
-    const { service, fake } = createService({
+    const harness = createService({
+      backchannelsEnabled: () => false,
       runBackendTurn: async ({ intent }) => {
         if (intent.includes("first")) {
           await new Promise<void>((r) => release.push(r));
@@ -119,134 +315,70 @@ describe("createCtoVoiceCallService", () => {
         return { spoken: "FRESH ANSWER" };
       },
     });
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
+    await openCall(harness);
 
-    fake.receive({ type: "session.input_transcript.delta", delta: "the first question" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
-    await new Promise((r) => setTimeout(r, 0));
-
-    fake.receive({ type: "session.input_transcript.done", text: "the first question" });
-    fake.receive({ type: "session.input_transcript.delta", delta: "no wait, the second question" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d2" } });
-    await new Promise((r) => setTimeout(r, 0));
+    utter(harness.fake, "the first question");
+    await tick();
+    utter(harness.fake, "no wait, the second question");
+    await tick();
 
     // The first turn only finishes now, after it was superseded.
     release.forEach((fn) => fn());
-    await new Promise((r) => setTimeout(r, 0));
+    await tick();
 
-    const spoken = fake.sent
-      .filter((m) => m.type === "session.commentary.append")
-      .map((m) => String(m.content));
-    expect(spoken).toContain("FRESH ANSWER");
-    expect(spoken).not.toContain("STALE ANSWER");
+    const said = spoken(harness.fake).join("\n");
+    expect(said).toContain("FRESH ANSWER");
+    expect(said).not.toContain("STALE ANSWER");
   });
 
-  it("answers a delegation it has no transcript for, rather than going silent", async () => {
-    // Every other path replies to the delegation. One that returns without a
-    // commentary or thinking append leaves the voice model waiting on a client
-    // that never speaks, and the user hearing nothing at all.
-    const intents: string[] = [];
-    const { service, fake } = createService({
-      runBackendTurn: async ({ intent }) => {
-        intents.push(intent);
-        return { spoken: "ok" };
-      },
-    });
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    // No transcript at all before the delegation.
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
-    await new Promise((r) => setTimeout(r, 0));
+  it("accepts a spoken yes from the utterance after the question", async () => {
+    const harness = createService();
+    await openCall(harness);
 
-    // No turn was burned on an empty question...
-    expect(intents).toEqual([]);
-    // ...but the delegation was still answered.
-    const spoken = fake.lastOfType("session.commentary.append") as Record<string, unknown>;
-    expect(spoken?.delegation_id).toBe("d1");
-    expect(String(spoken?.content)).toContain("didn't catch that");
-  });
+    utter(harness.fake, "open a pr for the sync lane");
+    await tick();
+    harness.service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
+    expect(harness.latest().pendingConfirmation?.toolName).toBe("openPr");
 
-  it("still knows what was asked when the delegation lands after the transcript closes", async () => {
-    // The two events are independent on the wire. Clearing the transcript on
-    // `done` and reading it on delegation meant that in this ordering the CTO
-    // thread was handed an empty intent and asked nothing at all.
-    const intents: string[] = [];
-    const { service, fake } = createService({
-      runBackendTurn: async ({ intent }) => {
-        intents.push(intent);
-        return { spoken: "Three merged yesterday." };
-      },
-    });
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    fake.receive({ type: "session.input_transcript.delta", delta: "what merged yesterday" });
-    fake.receive({ type: "session.input_transcript.done", text: "what merged yesterday" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
-    await new Promise((r) => setTimeout(r, 0));
-    expect(intents).toEqual(["what merged yesterday"]);
-  });
-
-  it("does not glue a self-answered utterance onto the next intent", async () => {
-    const intents: string[] = [];
-    const { service, fake } = createService({
-      runBackendTurn: async ({ intent }) => {
-        intents.push(intent);
-        return { spoken: "ok" };
-      },
-    });
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    // The voice model answers this one itself: no delegation follows.
-    fake.receive({ type: "session.input_transcript.delta", delta: "thanks" });
-    fake.receive({ type: "session.input_transcript.done", text: "thanks" });
-    // A later utterance that does delegate must carry only its own words.
-    fake.receive({ type: "session.input_transcript.delta", delta: "what is the PR status" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
-    await new Promise((r) => setTimeout(r, 0));
-    expect(intents).toEqual(["what is the PR status"]);
-  });
-
-  it("accepts a spoken yes when the delegation lands after the transcript closes", async () => {
-    // The two events are independent, so either order is legal on the wire.
-    // Closing the transcript first used to rotate the utterance id BEFORE the
-    // confirmation captured it, binding the question to the id the reply would
-    // carry — and the "same utterance" guard then rejected every spoken yes.
-    const { service, fake, latest } = createService();
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-
-    fake.receive({ type: "session.input_transcript.delta", delta: "open a pr for the sync lane" });
-    fake.receive({ type: "session.input_transcript.done", text: "open a pr for the sync lane" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
-    await new Promise((r) => setTimeout(r, 0));
-    service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
-    expect(latest().pendingConfirmation?.toolName).toBe("openPr");
-
-    fake.receive({ type: "session.input_transcript.delta", delta: "yes" });
-    fake.receive({ type: "session.input_transcript.done", text: "yes" });
-    await new Promise((r) => setTimeout(r, 0));
-    expect(latest().pendingConfirmation).toBeNull();
+    utter(harness.fake, "yes");
+    await tick();
+    expect(harness.latest().pendingConfirmation).toBeNull();
   });
 
   it("never lets the utterance that raised a question also answer it", async () => {
-    const { service, fake, latest } = createService();
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
+    const harness = createService();
+    await openCall(harness);
 
-    // One utterance that both asks and sounds like consent.
-    fake.receive({ type: "session.input_transcript.delta", delta: "open a pr, yes do it" });
-    service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
-    await new Promise((r) => setTimeout(r, 0));
-    fake.receive({ type: "session.input_transcript.done", text: "open a pr, yes do it" });
-    await new Promise((r) => setTimeout(r, 0));
-    expect(latest().pendingConfirmation?.toolName).toBe("openPr");
+    // One utterance that both asks and sounds like consent. The approval lands
+    // while that turn is still open, so it is bound to the same utterance id.
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    harness.service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "open a pr, yes do it",
+    });
+    await tick();
+    expect(harness.latest().pendingConfirmation?.toolName).toBe("openPr");
+  });
+
+  it("does not start a second CTO turn while one is parked on a confirmation", async () => {
+    // The turn that raised the question is still inside `canUseTool`. A reply
+    // that decides nothing must not become a fresh question on the same
+    // session, or two turns collide on one thread.
+    const intents: string[] = [];
+    const harness = createService({
+      runBackendTurn: async ({ intent }) => { intents.push(intent); return { spoken: "ok" }; },
+    });
+    await openCall(harness);
+    utter(harness.fake, "open a pr for the sync lane");
+    await tick();
+    harness.service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request?" });
+
+    utter(harness.fake, "what time is it");
+    await tick();
+
+    expect(intents).toEqual(["open a pr for the sync lane"]);
+    expect(harness.latest().pendingConfirmation?.toolName).toBe("openPr");
   });
 
   /**
@@ -279,101 +411,168 @@ describe("createCtoVoiceCallService", () => {
     }
 
     it("asks out loud, then lets the blocked turn through on a spoken yes", async () => {
-      const { service, fake, latest, resolved, raise } = createCallWithApprovals();
-      await service.start();
-      fake.open();
-      fake.receive({ type: "session.started" });
-      fake.receive({ type: "session.input_transcript.delta", delta: "open a pr for the sync lane" });
-      fake.receive({ type: "session.input_transcript.done", text: "open a pr for the sync lane" });
+      // The real sequence: the turn is still running — parked inside
+      // `canUseTool` — when the approval is raised, so it has not returned an
+      // answer and the only thing ahead of the question is the filler.
+      let releaseBackend: () => void = () => {};
+      const harness = createCallWithApprovals({
+        runBackendTurn: async () => {
+          await new Promise<void>((resolve) => { releaseBackend = resolve; });
+          return { spoken: "Opened it." };
+        },
+      });
+      await openCall(harness);
+      utter(harness.fake, "open a pr for the sync lane");
+      await tick();
+      harness.fake.receive({ type: "response.done", response: { status: "completed" } });
 
-      raise({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
-      expect(latest().phase).toBe("confirming");
-      expect(latest().pendingConfirmation?.prompt).toContain("pull request");
+      harness.raise({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
+      expect(harness.latest().phase).toBe("confirming");
+      expect(harness.latest().pendingConfirmation?.prompt).toContain("pull request");
       // The user has to HEAR the question, not find it in the chat.
-      const asked = fake.lastOfType("session.commentary.append") as Record<string, unknown>;
-      expect(String(asked.content)).toContain("pull request");
+      expect(spoken(harness.fake).join("\n")).toContain("pull request");
 
-      fake.receive({ type: "session.input_transcript.delta", delta: "yes" });
-      fake.receive({ type: "session.input_transcript.done", text: "yes" });
-      await new Promise((r) => setTimeout(r, 0));
+      utter(harness.fake, "yes");
+      await tick();
 
-      expect(latest().pendingConfirmation).toBeNull();
-      expect(resolved).toEqual([{ itemId: "item-1", approved: true }]);
+      expect(harness.latest().pendingConfirmation).toBeNull();
+      expect(harness.resolved).toEqual([{ itemId: "item-1", approved: true }]);
+      releaseBackend();
+    });
+
+    /**
+     * Answering out loud while the CTO is still reading the question is the
+     * ordinary case, not an edge one. The audio has to stop — but the turn
+     * behind it is the one parked on this very approval, and aborting it would
+     * kill the work the "yes" exists to release.
+     */
+    it("does not abandon the parked turn when the user answers over the question", async () => {
+      const seenSignal: { current: AbortSignal | null } = { current: null };
+      let releaseBackend: () => void = () => {};
+      const harness = createCallWithApprovals({
+        runBackendTurn: async ({ signal }: { signal: AbortSignal }) => {
+          seenSignal.current = signal;
+          await new Promise<void>((resolve) => { releaseBackend = resolve; });
+          return { spoken: "Opened it." };
+        },
+      });
+      await openCall(harness);
+      utter(harness.fake, "open a pr for the sync lane");
+      await tick();
+      harness.fake.receive({ type: "response.done", response: { status: "completed" } });
+
+      harness.raise({ itemId: "item-9", toolName: "openPr", prompt: "Open a pull request?" });
+      harness.fake.receive({ type: "response.created", response: { id: "resp_q" } });
+
+      // Talking over the question: the audio stops, the card stays, the turn lives.
+      harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+      expect(harness.fake.typesSent()).toContain("response.cancel");
+      expect(seenSignal.current?.aborted).toBe(false);
+      expect(harness.latest().phase).toBe("confirming");
+      expect(harness.latest().pendingConfirmation?.id).toBeTruthy();
+
+      harness.fake.receive({
+        type: "conversation.item.input_audio_transcription.completed",
+        transcript: "yes",
+      });
+      await tick();
+      expect(harness.resolved).toEqual([{ itemId: "item-9", approved: true }]);
+      releaseBackend();
     });
 
     it("turns the tool away on a spoken no", async () => {
-      const { service, fake, latest, resolved, raise } = createCallWithApprovals();
-      await service.start();
-      fake.open();
-      fake.receive({ type: "session.started" });
-      fake.receive({ type: "session.input_transcript.delta", delta: "clean up the branch" });
-      fake.receive({ type: "session.input_transcript.done", text: "clean up the branch" });
+      const harness = createCallWithApprovals();
+      await openCall(harness);
+      utter(harness.fake, "clean up the branch");
+      await tick();
 
-      raise({ itemId: "item-2", toolName: "openPr", prompt: "Open a pull request?" });
-      fake.receive({ type: "session.input_transcript.delta", delta: "no, don't" });
-      fake.receive({ type: "session.input_transcript.done", text: "no, don't" });
-      await new Promise((r) => setTimeout(r, 0));
+      harness.raise({ itemId: "item-2", toolName: "openPr", prompt: "Open a pull request?" });
+      utter(harness.fake, "no, don't");
+      await tick();
 
-      expect(latest().pendingConfirmation).toBeNull();
-      expect(resolved).toEqual([{ itemId: "item-2", approved: false }]);
+      expect(harness.latest().pendingConfirmation).toBeNull();
+      expect(harness.resolved).toEqual([{ itemId: "item-2", approved: false }]);
     });
 
     it("will not let a voice approve a force-push, however clearly it is said", async () => {
-      const { service, fake, latest, resolved, raise } = createCallWithApprovals();
-      await service.start();
-      fake.open();
-      fake.receive({ type: "session.started" });
-      fake.receive({ type: "session.input_transcript.delta", delta: "force push it" });
-      fake.receive({ type: "session.input_transcript.done", text: "force push it" });
+      const harness = createCallWithApprovals();
+      await openCall(harness);
+      utter(harness.fake, "force push it");
+      await tick();
 
-      raise({ itemId: "item-3", toolName: "gitForcePush", prompt: "Force-push ade/sync-fix?" });
-      expect(latest().pendingConfirmation?.destructive).toBe(true);
+      harness.raise({ itemId: "item-3", toolName: "gitForcePush", prompt: "Force-push ade/sync-fix?" });
+      expect(harness.latest().pendingConfirmation?.destructive).toBe(true);
 
-      fake.receive({ type: "session.input_transcript.delta", delta: "yes do it" });
-      fake.receive({ type: "session.input_transcript.done", text: "yes do it" });
-      await new Promise((r) => setTimeout(r, 0));
+      utter(harness.fake, "yes do it");
+      await tick();
 
       // Still waiting on a tap, and nothing was released.
-      expect(latest().pendingConfirmation?.id).toBeTruthy();
-      expect(resolved).toEqual([]);
+      expect(harness.latest().pendingConfirmation?.id).toBeTruthy();
+      expect(harness.resolved).toEqual([]);
 
       // The card is the only way through.
-      service.approve(latest().pendingConfirmation!.id);
-      await new Promise((r) => setTimeout(r, 0));
-      expect(resolved).toEqual([{ itemId: "item-3", approved: true }]);
+      harness.service.approve(harness.latest().pendingConfirmation!.id);
+      await tick();
+      expect(harness.resolved).toEqual([{ itemId: "item-3", approved: true }]);
     });
 
     it("stops watching the chat when the call ends", async () => {
-      const { service, fake, wasWatcherReleased } = createCallWithApprovals();
-      await service.start();
-      fake.open();
-      fake.receive({ type: "session.started" });
-      expect(wasWatcherReleased()).toBe(false);
-      await service.end();
-      expect(wasWatcherReleased()).toBe(true);
+      const harness = createCallWithApprovals();
+      await openCall(harness);
+      expect(harness.wasWatcherReleased()).toBe(false);
+      await harness.service.end();
+      expect(harness.wasWatcherReleased()).toBe(true);
     });
   });
 
   it("marks a history-rewriting tool destructive, so voice cannot approve it", async () => {
-    const { service, fake, latest } = createService();
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    fake.receive({ type: "session.input_transcript.delta", delta: "force-push the sync lane" });
-    service.raiseApproval({ itemId: "item-1", toolName: "gitForcePush", prompt: "Force-push ade/sync-fix?" });
-    expect(latest().pendingConfirmation?.destructive).toBe(true);
+    const harness = createService();
+    await openCall(harness);
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    harness.service.raiseApproval({ itemId: "item-1", toolName: "gitForcePush", prompt: "Force-push ade/sync-fix?" });
+    expect(harness.latest().pendingConfirmation?.destructive).toBe(true);
   });
 
-  it("shows a barge-in landing when the user talks over the answer", async () => {
-    const { service, fake, latest } = createService();
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    fake.receive({ type: "session.output_transcript.delta", delta: "A deployment pipeline" });
-    expect(latest().phase).toBe("speaking");
-    fake.receive({ type: "session.input_transcript.delta", delta: "wait, stop" });
-    expect(latest().interrupted).toBe(true);
-    expect(latest().phase).toBe("listening");
+  /**
+   * Barge-in is two cancellations, not one. `response.cancel` stops the audio
+   * the user is talking over; aborting the controller stops the CTO turn behind
+   * it, whose answer would otherwise arrive seconds later and be read out over
+   * the new question.
+   */
+  it("cancels the response and the turn when the user talks over the answer", async () => {
+    const seenSignal: { current: AbortSignal | null } = { current: null };
+    let releaseBackend: () => void = () => {};
+    const harness = createService({
+      runBackendTurn: async ({ signal }) => {
+        seenSignal.current = signal;
+        await new Promise<void>((resolve) => { releaseBackend = resolve; });
+        return { spoken: "STALE ANSWER" };
+      },
+    });
+    await openCall(harness);
+    utter(harness.fake, "what merged yesterday");
+    await tick();
+    harness.fake.receive({ type: "response.created", response: { id: "resp_1" } });
+
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+
+    expect(harness.fake.typesSent()).toContain("response.cancel");
+    expect(seenSignal.current?.aborted).toBe(true);
+    expect(harness.latest().interrupted).toBe(true);
+    expect(harness.latest().phase).toBe("listening");
+
+    releaseBackend();
+    await tick();
+    expect(spoken(harness.fake).join("\n")).not.toContain("STALE ANSWER");
+  });
+
+  it("does not cancel a response that is not running", async () => {
+    // `response.cancel` with nothing in flight is an error event, and an error
+    // event is a banner over a call that is working perfectly.
+    const harness = createService();
+    await openCall(harness);
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    expect(harness.fake.typesSent()).not.toContain("response.cancel");
   });
 
   it("restores the CTO's mode when the call is ended before its socket opens", async () => {
@@ -406,57 +605,71 @@ describe("createCtoVoiceCallService", () => {
 
   it("writes the call down even when nothing else went right", async () => {
     const persistCall = vi.fn<[{ captions: unknown[] }], Promise<void>>(async () => {});
-    const { service, fake } = createService({ persistCall });
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    fake.receive({ type: "session.input_transcript.done", text: "hello" });
-    await service.end();
+    const harness = createService({ persistCall });
+    await openCall(harness);
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "hello",
+    });
+    await harness.service.end();
     expect(persistCall).toHaveBeenCalledTimes(1);
     expect(persistCall.mock.calls[0]?.[0]?.captions.length).toBe(1);
   });
 
+  it("captions what the CTO said from the response transcript", async () => {
+    const harness = createService();
+    await openCall(harness);
+    harness.fake.receive({ type: "response.output_audio_transcript.delta", delta: "Three" });
+    expect(harness.latest().phase).toBe("speaking");
+    harness.fake.receive({
+      type: "response.output_audio_transcript.done",
+      transcript: "Three merged yesterday.",
+    });
+    harness.fake.receive({ type: "response.done", response: { status: "completed" } });
+    expect(harness.latest().captions.at(-1))
+      .toMatchObject({ role: "assistant", text: "Three merged yesterday." });
+    expect(harness.latest().phase).toBe("listening");
+  });
+
   /**
-   * GPT Live's client-delegation appends carry a plain string, so the voice
-   * model cannot read an image. The only place a captured window can actually
-   * be looked at is the backend that does the thinking.
+   * The realtime model is ears and a mouth: it cannot read an image. The only
+   * place a captured window can actually be looked at is the backend that does
+   * the thinking.
    */
   it("sends a captured image to the backend, not to the voice model", async () => {
     const seen: Array<string | null | undefined> = [];
-    const { service, fake } = createService({
+    const harness = createService({
       runBackendTurn: async ({ imageBase64 }) => { seen.push(imageBase64); return { spoken: "ok" }; },
     });
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
+    await openCall(harness);
 
-    service.attachImage({ pngBase64: "PNGDATA", note: "the CI run" });
-    // The model is told it happened, and told in the silent channel.
-    const think = fake.lastOfType("session.thinking.append") as Record<string, unknown>;
-    expect(String(think.content)).toContain("the CI run");
-    expect(JSON.stringify(fake.sent)).not.toContain("PNGDATA");
+    harness.service.attachImage({ pngBase64: "PNGDATA", note: "the CI run" });
+    // The model is told it happened, and told in the silent channel: a
+    // conversation item, with no response asked for, so nothing is read out.
+    const item = harness.fake.lastOfType("conversation.item.create") as Record<string, any>;
+    expect(item.item.role).toBe("system");
+    expect(JSON.stringify(item.item.content)).toContain("the CI run");
+    expect(JSON.stringify(harness.fake.sent)).not.toContain("PNGDATA");
 
-    fake.receive({ type: "session.input_transcript.delta", delta: "what is this showing" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d1" } });
-    await new Promise((r) => setTimeout(r, 0));
+    utter(harness.fake, "what is this showing");
+    await tick();
     expect(seen).toEqual(["PNGDATA"]);
 
-    // One capture, one delegation: it must not ride along on the next turn too.
-    fake.receive({ type: "session.input_transcript.done", text: "what is this showing" });
-    fake.receive({ type: "session.input_transcript.delta", delta: "and the one before it" });
-    fake.receive({ type: "session.delegation.created", delegation: { id: "d2" } });
-    await new Promise((r) => setTimeout(r, 0));
+    // One capture, one turn: it must not ride along on the next one too.
+    harness.fake.receive({ type: "response.done", response: { status: "completed" } });
+    utter(harness.fake, "and the one before it");
+    await tick();
     expect(seen).toEqual(["PNGDATA", null]);
   });
 
   it("hands output audio straight to the renderer", async () => {
     const chunks: string[] = [];
-    const { service, fake } = createService({ onOutputAudio: (b64) => chunks.push(b64) });
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    fake.receive({ type: "session.output_audio.delta", delta: "AAAB" });
-    fake.receive({ type: "session.output_audio.delta", delta: "AAAC" });
+    const harness = createService({ onOutputAudio: (b64: string) => chunks.push(b64) } as never);
+    await openCall(harness);
+    harness.fake.receive({ type: "response.output_audio.delta", delta: "AAAB" });
+    // The same event under the name the older surface still uses for it.
+    harness.fake.receive({ type: "response.audio.delta", delta: "AAAC" });
     expect(chunks).toEqual(["AAAB", "AAAC"]);
   });
 
@@ -468,16 +681,16 @@ describe("createCtoVoiceCallService", () => {
    */
   it("puts the CTO in confirm-first mode for the life of the call, and restores it after", async () => {
     const calls: boolean[] = [];
-    const { service, fake } = createService({ setCallConfirmMode: async (v) => { calls.push(v); } });
+    const harness = createService({ setCallConfirmMode: async (v: boolean) => { calls.push(v); } } as never);
 
-    await service.start();
+    await harness.service.start();
     // Read-only is on BEFORE the socket exists — no audio may be in flight
     // while the CTO can still write.
     expect(calls).toEqual([true]);
 
-    fake.open();
-    fake.receive({ type: "session.started" });
-    await service.end();
+    harness.fake.open();
+    harness.fake.receive({ type: "session.created", session: { id: "sess_1" } });
+    await harness.service.end();
     expect(calls).toEqual([true, false]);
   });
 
@@ -491,16 +704,82 @@ describe("createCtoVoiceCallService", () => {
   });
 
   it("stops sending audio while muted", async () => {
-    const { service, fake } = createService();
-    await service.start();
-    fake.open();
-    fake.receive({ type: "session.started" });
-    service.setMuted(true);
-    service.pushAudio("AAAA");
-    expect(fake.typesSent()).not.toContain("session.input_audio.append");
-    service.setMuted(false);
-    service.pushAudio("AAAA");
-    expect(fake.typesSent()).toContain("session.input_audio.append");
+    const harness = createService();
+    await openCall(harness);
+    harness.service.setMuted(true);
+    harness.fake.sent.length = 0;
+    harness.service.pushAudio("AAAA");
+    expect(harness.fake.typesSent()).not.toContain("input_audio_buffer.append");
+    harness.service.setMuted(false);
+    harness.service.pushAudio("AAAA");
+    expect(harness.fake.typesSent()).toContain("input_audio_buffer.append");
+  });
+});
+
+/**
+ * The second half of the bug this protocol swap fixed.
+ *
+ * A rejected upgrade never carries OpenAI's explanation — the handshake fails
+ * before there is a session to explain anything. An upgrade that SUCCEEDS and
+ * then fails does, as an `error` event, and that message is the truth.
+ */
+describe("a session that answers with an error", () => {
+  it("names an expired key, because 'rejected' sends the user to the wrong fix", async () => {
+    const warn = vi.fn();
+    const harness = createService({ logger: { info: () => {}, warn } } as never);
+    await openCall(harness);
+
+    harness.fake.receive({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        code: "invalid_api_key",
+        message: "Your API key has expired. Create a new API key to continue.",
+      },
+    });
+    await tick();
+
+    expect(harness.service.getState().error).toBe(
+      "Your OpenAI key has expired. Create a new key at platform.openai.com"
+      + " and paste it under CTO settings, Voice.",
+    );
+    expect(harness.states.some((state) => state.phase === "failed")).toBe(true);
+    // A refused key does not recover, so the call ends rather than sitting there.
+    expect(harness.states.at(-1)?.phase).toBe("ended");
+    expect(harness.service.getConnectionFailureKind()).toBe("rejected_key");
+    // The raw error, with its code and type, is in the trace.
+    expect(warn).toHaveBeenCalledWith("cto_voice.session_error", expect.objectContaining({
+      code: "invalid_api_key",
+      type: "invalid_request_error",
+      message: "Your API key has expired. Create a new API key to continue.",
+    }));
+  });
+
+  it("surfaces an error it cannot classify in OpenAI's own words", async () => {
+    const harness = createService();
+    await openCall(harness);
+
+    harness.fake.receive({
+      type: "error",
+      error: { type: "invalid_request_error", message: "Unknown parameter: 'session.wobble'." },
+    });
+
+    // Verbatim, not "The voice connection failed." — a sentence someone wrote
+    // to be read is better than a guess, whatever we do with it.
+    expect(harness.service.getState().error).toBe("Unknown parameter: 'session.wobble'.");
+    // Not fatal: the session is still there and the call keeps going.
+    expect(harness.service.getState().phase).toBe("listening");
+  });
+
+  it("says nothing about a response it cancelled a beat too late", async () => {
+    const harness = createService();
+    await openCall(harness);
+    harness.fake.receive({
+      type: "error",
+      error: { type: "invalid_request_error", message: "Cancellation failed: no active response found" },
+    });
+    expect(harness.service.getState().error).toBeNull();
+    expect(harness.service.getState().phase).toBe("listening");
   });
 });
 
@@ -736,5 +1015,85 @@ describe("a call that never connects", () => {
 
     const failed = states.find((state) => state.phase === "failed");
     expect(failed?.error).toBe("ADE could not reach OpenAI. Check your internet connection.");
+  });
+});
+
+describe("describeCtoVoiceServerError", () => {
+  const EXPIRED = "Your OpenAI key has expired. Create a new key at platform.openai.com"
+    + " and paste it under CTO settings, Voice.";
+  const REJECTED = "OpenAI rejected this key. Check it under CTO settings, Voice.";
+  const NO_CREDIT = "Your OpenAI account has no credit for voice calls."
+    + " Add billing at platform.openai.com.";
+
+  it("names an expired key, which is a different fix from a wrong one", () => {
+    expect(describeCtoVoiceServerError({
+      message: "Your API key has expired. Create a new API key to continue.",
+    })).toEqual({ message: EXPIRED, kind: "expired_key", fatal: true });
+  });
+
+  it("keeps the rejected-key sentence for a key OpenAI does not recognise", () => {
+    for (const message of [
+      "Incorrect API key provided: sk-abc***. You can find your API key at …",
+      "Invalid API key",
+    ]) {
+      expect(describeCtoVoiceServerError({ message }))
+        .toEqual({ message: REJECTED, kind: "rejected_key", fatal: true });
+    }
+    expect(describeCtoVoiceServerError({ code: "invalid_api_key", message: "" }).kind)
+      .toBe("rejected_key");
+  });
+
+  it("sends an account with no credit to billing, not back to the key field", () => {
+    expect(describeCtoVoiceServerError({
+      code: "insufficient_quota",
+      message: "You exceeded your current quota, please check your plan and billing details.",
+    })).toEqual({ message: NO_CREDIT, kind: "no_credit", fatal: true });
+  });
+
+  it("does not blame the key for a parameter it did not like", () => {
+    // The trap in a bare /invalid/: this is about a field, not a credential,
+    // and "check your key" would send the user to the one place nothing is wrong.
+    const reason = describeCtoVoiceServerError({
+      type: "invalid_request_error",
+      message: "Invalid value: 'chirp' for session.audio.output.voice.",
+    });
+    expect(reason.kind).toBe("other");
+    expect(reason.message).toBe("Invalid value: 'chirp' for session.audio.output.voice.");
+    expect(reason.fatal).toBe(false);
+  });
+
+  it("passes an unrecognised message through, trimmed to one line", () => {
+    expect(describeCtoVoiceServerError({
+      message: "  The server had a problem.  \nStack: at foo (bar.js:1)\n",
+    })).toEqual({ message: "The server had a problem.", kind: "other", fatal: false });
+  });
+
+  it("still says something when the error carried no message at all", () => {
+    expect(describeCtoVoiceServerError()).toEqual({
+      message: "The voice session reported an error.",
+      kind: "other",
+      fatal: false,
+    });
+  });
+});
+
+describe("a question raised before the socket opened", () => {
+  it("is still asked out loud once the session exists", async () => {
+    // `watchApprovals` is attached before the connection is made, so a tool
+    // that asks during the handshake has a question waiting with nowhere to go.
+    const harness = createService();
+    await harness.service.start();
+    harness.service.raiseApproval({
+      itemId: "item-early",
+      toolName: "openPr",
+      prompt: "Open a pull request?",
+    });
+    expect(harness.fake.typesSent()).toEqual([]);
+
+    harness.fake.open();
+    const asked = harness.fake.sent
+      .filter((message) => message.type === "response.create")
+      .map((message) => String((message.response as { instructions?: unknown }).instructions ?? ""));
+    expect(asked.join("\n")).toContain("Open a pull request?");
   });
 });

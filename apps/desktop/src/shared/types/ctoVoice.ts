@@ -1,23 +1,56 @@
 /**
  * CTO voice call — the cross-surface contract.
  *
- * The call runs on GPT Live (`gpt-live-1`) with client delegation: the voice
- * model owns the conversation, and ADE owns the reasoning. That split is the
- * reason the CTO's thinking can stay on the user's existing ChatGPT plan while
- * only the voice minutes bill to their own API key.
+ * The call runs on OpenAI's Realtime API over a WebSocket. The realtime model
+ * is ears and mouth only: it transcribes what the user says and speaks what it
+ * is handed. It never composes an answer, because the session is configured
+ * with server-side turn detection that does NOT create a response
+ * (`turn_detection.create_response: false`) — every response on that socket is
+ * one ADE asked for, carrying text the CTO thread already wrote.
  *
+ * That split is the reason the CTO's thinking can stay on whatever plan it
+ * already runs on while only the voice minutes bill to the user's own API key.
  * It also means ADE — not the model — owns permissions and confirmations, so
  * every rule about what a call may do lives here in code rather than in a
  * prompt the model is free to reinterpret.
  */
 
-export const CTO_VOICE_MODEL = "gpt-live-1";
-export const CTO_VOICE_ENDPOINT = "wss://api.openai.com/v1/live/sessions";
+/**
+ * The realtime model the call speaks with.
+ *
+ * `gpt-live-1` shipped here once, and there is no such model — as there was no
+ * such endpoint, no such events and no such delegation. This is the documented
+ * current realtime model.
+ */
+export const CTO_VOICE_MODEL = "gpt-realtime-2.1";
+
+/**
+ * The realtime WebSocket, without its model.
+ *
+ * The model rides as a query parameter so it stays ONE constant rather than
+ * being spelled a second time inside a URL — the first version of this file
+ * pointed at `/v1/live/sessions`, which answers 401 to every upgrade and, because
+ * the failure happens at the handshake, never delivers OpenAI's explanation.
+ */
+export const CTO_VOICE_ENDPOINT = "wss://api.openai.com/v1/realtime";
+
+/** The realtime endpoint for one model. */
+export function ctoVoiceEndpointUrl(model: string = CTO_VOICE_MODEL): string {
+  return `${CTO_VOICE_ENDPOINT}?model=${encodeURIComponent(model)}`;
+}
+
+/**
+ * The model that turns the user's audio into the text the CTO answers.
+ *
+ * Input transcription is not on by default, and without it the call has nothing
+ * to ask the CTO: the transcript IS the intent.
+ */
+export const CTO_VOICE_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
 
 /** Billed per second; the pill shows the running total from this. */
 export const CTO_VOICE_USD_PER_MINUTE = 0.05;
 
-/** PCM16 mono. The rate the Live session is configured with, both directions. */
+/** PCM16 mono. The rate the realtime session is configured with, both directions. */
 export const CTO_VOICE_SAMPLE_RATE = 24_000;
 
 /**
@@ -55,7 +88,7 @@ export const CTO_VOICE_PREOPEN_AUDIO_LIMIT = 50;
 /**
  * Output audio chunks the runtime will hold for an owner that is not draining.
  *
- * About twenty seconds at the rate GPT Live emits them. Past that the oldest
+ * About twenty seconds at the rate the realtime session emits them. Past that the oldest
  * are dropped rather than the process growing without bound; the drop count
  * travels with the drain so the desktop can say the audio broke up rather than
  * silently playing a stale tail.
@@ -554,44 +587,58 @@ export function formatVoiceCost(elapsedMs: number): string {
 }
 
 /**
- * The conversation prompt, in OpenAI's documented shape for GPT Live: role and
- * tone, then the three policy blocks. Detailed procedure stays with the backend
- * (the CTO thread); the live model only needs to know how to talk and when to
- * hand off.
+ * The session prompt.
+ *
+ * Deliberately short, and deliberately not a persona brief: under this protocol
+ * the realtime model never decides what to say. Server turn detection is
+ * configured with `create_response: false`, so the only responses on the socket
+ * are the ones ADE asks for, and each carries the exact words to read. What is
+ * left for a prompt to do is name who is speaking and how, so the delivery
+ * matches the CTO the user reads in the thread.
+ *
+ * Detailed procedure stays with the backend (the CTO thread), which is where
+ * the thinking happens and where every tool lives.
  */
 export function buildCtoVoiceInstructions(args: {
   ctoName: string;
   projectName: string;
-  backchannels: boolean;
 }): string {
-  const backchannel = args.backchannels
-    ? "Backchannel policy: Use moderate backchannels. Acknowledge naturally without competing with the main response."
-    : "Backchannel policy: Do not use backchannels. Stay quiet while the user is speaking.";
   return [
-    `You are ${args.ctoName}, the CTO of ${args.projectName}, speaking with the engineer who owns it.`,
-    "Speak at an unhurried pace in full sentences. Explain the reasoning before the recommendation when the reasoning is what makes it make sense; skip it when the answer is obvious.",
-    "Stay level. No exclamation marks, no 'great question', no congratulating the user for asking.",
-    "If you do not know, say so and say what you are checking.",
+    `You are the speaking voice of ${args.ctoName}, the CTO of ${args.projectName}.`,
     "",
-    backchannel,
+    "You do not answer questions and you do not have opinions of your own. Every"
+    + " turn you are given the exact words to say. Read them, and only them.",
     "",
-    "Interruption policy: Stop speaking when the user interrupts. Listen to what they say.",
+    "Delivery: unhurried, level, in full sentences. No exclamation marks, no"
+    + " 'great question', no congratulating the user for asking. Never add a"
+    + " greeting, a sign-off, a summary, an apology or a follow-up question that"
+    + " was not in the words you were given.",
     "",
-    "Delegation policy:",
-    "Backend tools:",
-    "- Project state: lanes, pull requests, CI checks, chats, git status, and the project's own memory.",
-    "- Project actions: opening lanes, starting work, committing, opening pull requests.",
+    "If the user interrupts you, stop speaking immediately.",
+  ].join("\n");
+}
+
+/**
+ * Wrap one answer as the instruction that reads it aloud.
+ *
+ * The Realtime API has no "say this" event. What it has is `response.create`
+ * with per-response `instructions`, so the text the CTO wrote is handed over as
+ * the instruction for that one response — fenced by markers, because an answer
+ * that itself contains a question ("Shall I open the PR?") must be READ, not
+ * answered.
+ *
+ * Here rather than in the service because it is the contract between what the
+ * CTO thread writes and what the user hears, and it is worth being able to test
+ * without a socket.
+ */
+export function buildCtoVoiceSpeakInstructions(text: string): string {
+  return [
+    "Read the text between the markers out loud, word for word.",
+    "Do not answer it, do not summarise it, do not add or remove anything, and"
+    + " do not read the markers themselves.",
     "",
-    "Delegate to the backend when:",
-    "- The request needs live project state, or careful reasoning about this project.",
-    "- The user asks you to do something in ADE.",
-    "- A correction changes work already requested.",
-    "",
-    "Do not delegate to the backend when:",
-    "- You can answer from the conversation or a result that is still current.",
-    "- You need one short clarification to understand the request.",
-    "",
-    "Delegate before giving an answer that depends on backend work. Do not guess the result while waiting.",
-    "Never say an action has happened before the backend confirms it.",
+    "<<<SAY>>>",
+    text,
+    "<<<END>>>",
   ].join("\n");
 }

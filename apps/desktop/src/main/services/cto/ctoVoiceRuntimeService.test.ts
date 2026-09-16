@@ -56,8 +56,8 @@ describe("createCtoVoiceRuntimeService", () => {
 
     expect(await voice.start({ ownerToken: "owner-1" })).toEqual({ ok: true });
     fake.open();
-    fake.receive({ type: "session.output_audio.delta", delta: "AAAA" });
-    fake.receive({ type: "session.output_audio.delta", delta: "BBBB" });
+    fake.receive({ type: "response.output_audio.delta", delta: "AAAA" });
+    fake.receive({ type: "response.output_audio.delta", delta: "BBBB" });
 
     // A window that does not hold the call cannot drain its audio out from
     // under the one that does.
@@ -217,7 +217,7 @@ describe("createCtoVoiceRuntimeService", () => {
 
     await voice.start({ ownerToken: "owner-1" });
     fake.open();
-    fake.receive({ type: "session.output_audio.delta", delta: "AAAA" });
+    fake.receive({ type: "response.output_audio.delta", delta: "AAAA" });
 
     expect(pushed.length).toBeGreaterThan(0);
     expect(new Set(pushed.map((event) => event.category))).toEqual(new Set(["cto_voice"]));
@@ -241,7 +241,7 @@ describe("createCtoVoiceRuntimeService", () => {
     fake.sent.length = 0;
     voice.pushAudio({ ownerToken: "owner-1", chunks: ["one", "two"], level: 0.4 });
 
-    const appended = fake.sent.filter((m) => m.type === "session.input_audio.append");
+    const appended = fake.sent.filter((m) => m.type === "input_audio_buffer.append");
     expect(appended.map((m) => m.audio)).toEqual(["one", "two"]);
     expect(voice.getState().inputLevel).toBeCloseTo(0.4);
   });
@@ -330,7 +330,7 @@ describe("splitSpokenSceneAnswer", () => {
   });
 
   it("says something when the answer was only a picture", () => {
-    // `session.commentary.append` with an empty string produces no audio at all,
+    // A `response.create` whose instructions are empty produces no audio at all,
     // and the HUD then sits in `speaking` with nothing to hear and no way out.
     const result = splitSpokenSceneAnswer("\`\`\`scene\n<div>chart</div>\n\`\`\`");
     expect(result.sceneSource).toContain("<div>chart</div>");
