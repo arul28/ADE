@@ -326,6 +326,71 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertNil(detect("/rev", cursor: -1))
   }
 
+  /// An `ade://` link must name what it points at, exactly as its github.com
+  /// equivalent does. Both used to collapse to "ADE · pr/owner/repo/1237",
+  /// which is why an ADE deeplink looked nothing like the same pull request
+  /// pasted as a web URL. Mirrors `chips.test.ts` on the desktop.
+  func testAdeDeeplinksResolveToTypedKindsAndLabels() {
+    func link(_ url: String) -> WorkSmartLink? {
+      WorkSmartLinkDetector.links(in: url as NSString).first
+    }
+
+    let pr = link("ade://pr/arul28/ade/1237")
+    XCTAssertEqual(pr?.kind, .pullRequest)
+    XCTAssertEqual(pr?.compactLabel, "#1237")
+
+    let lane = link("ade://lane/25f280a4-1b2c-4d3e-8f90-abcdef123456")
+    XCTAssertEqual(lane?.kind, .lane)
+    XCTAssertEqual(lane?.compactLabel, "Lane 25f280a4")
+
+    let chat = link("ade://session/9e2315e8ddef")
+    XCTAssertEqual(chat?.kind, .chat)
+    XCTAssertEqual(chat?.compactLabel, "Chat 9e2315e8")
+
+    let file = link("ade://file/apps/desktop/src/shared/chips.ts")
+    XCTAssertEqual(file?.kind, .file)
+    XCTAssertEqual(file?.compactLabel, "chips.ts")
+
+    let commit = link("ade://commit/80a6236e6abcdef")
+    XCTAssertEqual(commit?.kind, .commit)
+    XCTAssertEqual(commit?.compactLabel, "80a6236")
+
+    // A lane id that is not a UUID is not a lane link, exactly as the desktop
+    // parser decides. It stays a generic ADE link rather than claiming a type.
+    let notALane = link("ade://lane/25f280a4/session/abc")
+    XCTAssertEqual(notALane?.kind, .adeLink)
+    XCTAssertEqual(notALane?.compactLabel, "ADE · lane/25f280a4/session/abc")
+
+    let branch = link("ade://repo/arul28/ade/branch/main")
+    XCTAssertEqual(branch?.kind, .branch)
+    XCTAssertEqual(branch?.compactLabel, "main")
+
+    let artifact = link("ade://artifact/proof12345678")
+    XCTAssertEqual(artifact?.kind, .artifact)
+
+    let issue = link("ade://linear-issue/ade-431")
+    XCTAssertEqual(issue?.kind, .linearIssue)
+    XCTAssertEqual(issue?.compactLabel, "ADE-431")
+  }
+
+  /// A github.com pull request and an ade:// pull request are ONE kind, so both
+  /// draw the same pill. This is the property the shared chip model exists for.
+  func testGithubAndAdePullRequestsShareOneKind() {
+    let fromWeb = WorkSmartLinkDetector.links(in: "https://github.com/arul28/ADE/pull/835" as NSString).first
+    let fromAde = WorkSmartLinkDetector.links(in: "ade://pr/arul28/ade/835" as NSString).first
+    XCTAssertEqual(fromWeb?.kind, .pullRequest)
+    XCTAssertEqual(fromAde?.kind, .pullRequest)
+    XCTAssertEqual(fromWeb?.kind, fromAde?.kind)
+  }
+
+  /// An `ade://` URL a newer ADE minted stays an addressable link rather than
+  /// falling back to raw text.
+  func testUnparseableAdeLinkStaysAddressable() {
+    let unknown = WorkSmartLinkDetector.links(in: "ade://something-new/42" as NSString).first
+    XCTAssertEqual(unknown?.kind, .adeLink)
+    XCTAssertEqual(unknown?.url, "ade://something-new/42")
+  }
+
   func testSmartLinkCataloguePreservesURLsAndCompactLabels() throws {
     let text = "https://github.com/arul28/ADE/pull/835 https://linear.app/ade/issue/ADE-89/title https://evil.github.com/x/y https://example.com/foo(bar)." as NSString
     let links = WorkSmartLinkDetector.links(in: text)

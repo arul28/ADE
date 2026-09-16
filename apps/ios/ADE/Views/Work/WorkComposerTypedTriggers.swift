@@ -57,8 +57,14 @@ struct WorkSmartLink: Equatable {
     case .linear:
       return workSmartLinkLinearIdentifier(components) ?? url
     case .ade:
-      return WorkSmartLink.adeDeeplinkLabel(host: components.host, parts: parts)
-        ?? "ADE link"
+      // A recognised shape gets its typed label; anything else keeps the
+      // original descriptive form, because "ADE · lane/25f280a4/session/abc"
+      // tells the reader far more than a bare "ADE link".
+      if let typed = WorkSmartLink.adeDeeplinkLabel(host: components.host, parts: parts) {
+        return typed
+      }
+      let target = ([components.host].compactMap { $0 } + parts).joined(separator: "/")
+      return target.isEmpty ? "ADE link" : "ADE · \(target)"
     case .web:
       return url
     }
@@ -131,51 +137,79 @@ struct WorkSmartLink: Equatable {
     ([host].compactMap { $0 } + parts).filter { !$0.isEmpty }
   }
 
+  /// Shape validation mirroring `parseDeeplink` on the desktop
+  /// (`apps/desktop/src/shared/deeplinks.ts`). Matching on the leading segment
+  /// alone was too loose: `ade://lane/<not-a-uuid>/session/abc` would report
+  /// itself as a plain lane link and drop the rest of the path, while the
+  /// desktop rejects that same URL outright. Both surfaces must agree, or one
+  /// chip means two things.
+  private static func isUuid(_ value: String) -> Bool {
+    UUID(uuidString: value) != nil
+  }
+
+  private static func isCommitSha(_ value: String) -> Bool {
+    let hex = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+    return (7...40).contains(value.count)
+      && value.unicodeScalars.allSatisfy { hex.contains($0) }
+  }
+
+  private static func isLinearIdentifier(_ value: String) -> Bool {
+    let parts = value.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return false }
+    let key = parts[0]
+    guard key.count <= 10, key.first?.isLetter == true,
+          key.allSatisfy({ $0.isLetter || $0.isNumber }) else { return false }
+    return workSmartLinkIsAsciiNumber(String(parts[1]))
+  }
+
   static func adeDeeplinkKind(host: String?, parts: [String]) -> Kind? {
     let segments = adeSegments(host: host, parts: parts)
     guard let head = segments.first?.lowercased() else { return nil }
     switch head {
-    case "pr": return segments.count >= 2 ? .pullRequest : nil
-    case "lane": return segments.count >= 2 ? .lane : nil
-    case "session": return segments.count >= 2 ? .chat : nil
-    case "file": return segments.count >= 2 ? .file : nil
-    case "commit": return segments.count >= 2 ? .commit : nil
-    case "artifact": return segments.count >= 2 ? .artifact : nil
-    case "repo": return segments.count >= 4 ? .branch : nil
-    case "linear-issue": return segments.count >= 2 ? .linearIssue : nil
-    default: return nil
+    // ade://pr/<owner>/<repo>/<number>
+    case "pr":
+      return segments.count == 4 && workSmartLinkIsAsciiNumber(segments[3]) ? .pullRequest : nil
+    case "lane":
+      return segments.count == 2 && isUuid(segments[1]) ? .lane : nil
+    case "session":
+      return segments.count == 2 && !segments[1].isEmpty ? .chat : nil
+    // A repo-relative path legitimately contains slashes, so this one is open-ended.
+    case "file":
+      return segments.count >= 2 ? .file : nil
+    case "commit":
+      return segments.count == 2 && isCommitSha(segments[1]) ? .commit : nil
+    case "artifact":
+      return segments.count == 2 && !segments[1].isEmpty ? .artifact : nil
+    // ade://repo/<owner>/<repo>/branch/<branch>
+    case "repo":
+      return segments.count == 5 && segments[3].lowercased() == "branch" ? .branch : nil
+    case "linear-issue":
+      return segments.count == 2 && isLinearIdentifier(segments[1]) ? .linearIssue : nil
+    default:
+      return nil
     }
   }
 
+  /// Only labels a URL whose shape `adeDeeplinkKind` already accepted, so a
+  /// malformed link never gets a confident-looking label.
   static func adeDeeplinkLabel(host: String?, parts: [String]) -> String? {
     let segments = adeSegments(host: host, parts: parts)
-    guard let head = segments.first?.lowercased() else { return nil }
+    guard let kind = adeDeeplinkKind(host: host, parts: parts),
+          let head = segments.first?.lowercased() else { return nil }
     func shortId(_ value: String) -> String { String(value.prefix(8)) }
-    switch head {
-    case "pr":
-      // ade://pr/<owner>/<repo>/<number>
-      if segments.count >= 4, workSmartLinkIsAsciiNumber(segments[3]) { return "#\(segments[3])" }
-      if segments.count >= 2, workSmartLinkIsAsciiNumber(segments[1]) { return "#\(segments[1])" }
-      return nil
-    case "lane":
-      return segments.count >= 2 ? "Lane \(shortId(segments[1]))" : nil
-    case "session":
-      return segments.count >= 2 ? "Chat \(shortId(segments[1]))" : nil
-    case "file":
-      guard segments.count >= 2 else { return nil }
+    switch kind {
+    case .pullRequest: return "#\(segments[3])"
+    case .lane: return "Lane \(shortId(segments[1]))"
+    case .chat: return "Chat \(shortId(segments[1]))"
+    case .file:
       let path = segments.dropFirst().joined(separator: "/")
       return path.split(separator: "/").last.map(String.init) ?? path
-    case "commit":
-      return segments.count >= 2 ? String(segments[1].prefix(7)) : nil
-    case "artifact":
-      return segments.count >= 2 ? "Artifact \(shortId(segments[1]))" : nil
-    case "repo":
-      // ade://repo/<owner>/<repo>/branch/<branch>
-      guard segments.count >= 5, segments[3].lowercased() == "branch" else { return nil }
-      return segments[4]
-    case "linear-issue":
-      return segments.count >= 2 ? segments[1].uppercased() : nil
+    case .commit: return String(segments[1].prefix(7))
+    case .artifact: return "Artifact \(shortId(segments[1]))"
+    case .branch: return segments[4]
+    case .linearIssue: return segments[1].uppercased()
     default:
+      _ = head
       return nil
     }
   }
