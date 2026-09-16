@@ -894,7 +894,12 @@ export type AccountSettingsPage = {
 export type PushRelayClient = ReturnType<typeof createPushRelayClient>;
 
 /** What ADE stores in the vault. Closed, because each kind needs an owner. */
-export type AccountVaultItemKind = "secret" | "provider_key" | "integration";
+export type AccountVaultItemKind =
+  | "secret"
+  | "provider_key"
+  | "integration"
+  | "provider_api_key"
+  | "linear_refresh_token";
 
 export type AccountVaultItem = {
   scope: string;

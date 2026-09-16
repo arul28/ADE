@@ -62,11 +62,18 @@ function toItem(value: unknown): AccountVaultItem | null {
   const kind = typeof value.kind === "string" ? value.kind : null;
   const key = typeof value.key === "string" ? value.key : null;
   const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : null;
+  const hasValue = Object.prototype.hasOwnProperty.call(value, "value");
   const itemValue = value.value === null || typeof value.value === "string" ? value.value : null;
-  if (!scope || !kind || !key || !updatedAt || (value.value !== null && typeof value.value !== "string")) {
+  if (
+    !scope
+    || !kind
+    || !key
+    || !updatedAt
+    || (hasValue && value.value !== null && typeof value.value !== "string")
+  ) {
     return null;
   }
-  return { scope, kind, key, value: itemValue, updatedAt };
+  return { scope, kind, key, value: hasValue ? itemValue : null, updatedAt };
 }
 
 export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {

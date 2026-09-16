@@ -3,6 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
+import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "./linearAppClient";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
@@ -44,6 +45,7 @@ type LinearCredentialServiceArgs = {
   adeDir: string;
   logger?: Logger | null;
   credentialStore?: SyncCredentialStore | null;
+  getAccountVault?: () => AccountVaultBridge | null | undefined;
   fetchImpl?: typeof fetch;
 };
 
@@ -83,6 +85,60 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const oauthClientPath = path.join(secretsDir, OAUTH_CLIENT_FILE);
   const importSentinelPath = path.join(secretsDir, IMPORT_SENTINEL);
   const credentialStore = args.credentialStore ?? null;
+
+  const describeVaultFailure = (detail: unknown): string => {
+    if (detail instanceof Error) return detail.message;
+    if (isRecord(detail) && typeof detail.message === "string") return detail.message;
+    return getErrorMessage(detail);
+  };
+
+  const logVaultFailure = (operation: string, detail: unknown): void => {
+    args.logger?.warn("linear_sync.account_vault_sync_failed", {
+      operation,
+      error: describeVaultFailure(detail),
+    });
+  };
+
+  const fireAndForgetVaultCall = (
+    operation: "set" | "remove" | "get",
+    call: (vault: AccountVaultBridge) => Promise<unknown>,
+  ): void => {
+    let vault: AccountVaultBridge | null | undefined;
+    try {
+      vault = args.getAccountVault?.() ?? null;
+    } catch (error) {
+      logVaultFailure(operation, error);
+      return;
+    }
+    if (!vault) return;
+
+    let pending: Promise<unknown>;
+    try {
+      pending = call(vault);
+    } catch (error) {
+      logVaultFailure(operation, error);
+      return;
+    }
+    void Promise.resolve(pending).then((result) => {
+      if (!isRecord(result) || result.ok !== true) logVaultFailure(operation, result);
+    }).catch((error: unknown) => {
+      logVaultFailure(operation, error);
+    });
+  };
+
+  const syncRefreshTokenToVault = (refreshToken: string): void => {
+    fireAndForgetVaultCall(
+      "set",
+      (vault) => vault.set("all", "linear_refresh_token", "default", refreshToken),
+    );
+  };
+
+  const removeRefreshTokenFromVault = (): void => {
+    fireAndForgetVaultCall(
+      "remove",
+      (vault) => vault.remove("all", "linear_refresh_token", "default"),
+    );
+  };
 
   const unlinkIfExists = (filePath: string): void => {
     try {
@@ -272,7 +328,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     return null;
   };
 
-  const persistMachineToken = (record: StoredLinearToken | null): void => {
+  const persistMachineTokenLocally = (record: StoredLinearToken | null): void => {
     writeMachineCredential(MACHINE_TOKEN_KEY, record?.token ?? null);
     writeMachineCredential(MACHINE_AUTH_MODE_KEY, record?.authMode ?? null);
     writeMachineCredential(MACHINE_REFRESH_TOKEN_KEY, record?.refreshToken ?? null);
@@ -300,7 +356,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     if (!readMachineToken()) {
       const legacyToken = readEncryptedToken();
       if (legacyToken) {
-        persistMachineToken(legacyToken);
+        persistToken(legacyToken);
         unlinkIfExists(tokenPath);
       } else {
         const legacyPath = path.join(args.adeDir, "local.secret.yaml");
@@ -308,7 +364,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
           const raw = fs.readFileSync(legacyPath, "utf8");
           const token = extractLegacyToken(raw);
           if (token) {
-            persistMachineToken({ token, authMode: "manual" });
+            persistToken({ token, authMode: "manual" });
           }
         } catch (error: unknown) {
           if (!isEnoentError(error)) {
@@ -334,9 +390,9 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   };
 
-  const persistToken = (record: StoredLinearToken | null): void => {
+  const persistTokenLocally = (record: StoredLinearToken | null): void => {
     if (credentialStore) {
-      persistMachineToken(record);
+      persistMachineTokenLocally(record);
       unlinkIfExists(tokenPath);
       return;
     }
@@ -369,6 +425,16 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       // best effort
     }
   };
+
+  function persistToken(record: StoredLinearToken | null): void {
+    persistTokenLocally(record);
+    const refreshToken = record?.refreshToken?.trim() ?? "";
+    if (refreshToken.length) {
+      syncRefreshTokenToVault(refreshToken);
+    } else {
+      removeRefreshTokenFromVault();
+    }
+  }
 
   const persistOAuthClientCredentials = (record: LinearOAuthClientCredentials | null): void => {
     if (credentialStore) {
@@ -617,6 +683,63 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     await refreshInFlight;
   };
 
+  const hydrateFromVault = async (): Promise<void> => {
+    let stored: StoredLinearToken | null;
+    try {
+      stored = getStoredToken();
+      if (stored?.refreshToken) return;
+      if (credentialStore && readMachineCredential(MACHINE_REFRESH_TOKEN_KEY)) return;
+      // A refresh token only belongs on an OAuth connection. Manual tokens and
+      // environment-provided tokens must remain authoritative on this machine.
+      if (stored && stored.authMode !== "oauth") return;
+    } catch (error) {
+      args.logger?.warn("linear_sync.account_vault_hydrate_failed", {
+        error: getErrorMessage(error),
+      });
+      return;
+    }
+
+    let vault: AccountVaultBridge | null | undefined;
+    try {
+      vault = args.getAccountVault?.() ?? null;
+    } catch (error) {
+      logVaultFailure("get", error);
+      return;
+    }
+    if (!vault) return;
+
+    let result: Awaited<ReturnType<AccountVaultBridge["get"]>>;
+    try {
+      result = await vault.get("all", "linear_refresh_token", "default");
+    } catch (error) {
+      logVaultFailure("get", error);
+      return;
+    }
+    if (!result.ok) {
+      logVaultFailure("get", result);
+      return;
+    }
+    const refreshToken = result.value?.trim() ?? "";
+    if (!refreshToken.length) return;
+
+    try {
+      const latest = getStoredToken();
+      if (latest?.refreshToken) return;
+      if (credentialStore && readMachineCredential(MACHINE_REFRESH_TOKEN_KEY)) return;
+      if (latest && latest.authMode !== "oauth") return;
+
+      if (credentialStore) {
+        writeMachineCredential(MACHINE_REFRESH_TOKEN_KEY, refreshToken);
+        if (latest) cachedToken = { ...latest, refreshToken };
+      } else if (latest) {
+        persistTokenLocally({ ...latest, refreshToken });
+        cachedToken = { ...latest, refreshToken };
+      }
+    } catch (error) {
+      logVaultFailure("hydrate", error);
+    }
+  };
+
   return {
     getToken(): string | null {
       return getStoredToken()?.token ?? null;
@@ -706,6 +829,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     },
 
     ensureFreshToken,
+    hydrateFromVault,
   };
 }
 

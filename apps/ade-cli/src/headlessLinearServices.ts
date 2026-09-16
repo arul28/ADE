@@ -2756,6 +2756,7 @@ function createHeadlessLinearCredentialService(args: {
       writeCredential(refreshTokenKey, null);
       writeCredential(tokenExpiresAtKey, null);
     },
+    hydrateFromVault: async () => {},
     setOAuthClientCredentials(args: {
       clientId: string;
       clientSecret?: string | null;

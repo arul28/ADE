@@ -6,6 +6,8 @@ import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/cr
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { MachineApiKeySource, MachineApiKeyStatus } from "../../../shared/types/config";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import type { Logger } from "../logging/logger";
 
 // electron.safeStorage is only available inside an Electron main process.
 // When this module is bundled into the ADE CLI headless runtime, `electron`
@@ -28,6 +30,8 @@ export type ApiKeyCredentialStore = SyncCredentialStore;
 
 export type InitApiKeyStoreOptions = {
   credentialStore?: ApiKeyCredentialStore | null;
+  getAccountVault?: () => AccountVaultBridge | null | undefined;
+  logger?: Pick<Logger, "warn"> | null;
 };
 
 export type InitMachineApiKeyStoreOptions = {
@@ -71,6 +75,59 @@ const MACOS_KEYCHAIN_MISSING_PATTERNS = [
 ];
 const SECURITY_TIMEOUT_MS = 5_000;
 const CREDENTIAL_PROVIDER_INDEX_KEY = "ai.api_key.index.v1";
+
+let getAccountVault: (() => AccountVaultBridge | null | undefined) | null = null;
+let vaultLogger: Pick<Logger, "warn"> | null = null;
+
+function describeVaultFailure(detail: unknown): string {
+  if (detail instanceof Error) return detail.message;
+  if (detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string") {
+    return detail.message;
+  }
+  return String(detail ?? "unknown error");
+}
+
+function logVaultFailure(operation: string, provider: string, detail: unknown): void {
+  vaultLogger?.warn("ai.api_key_vault_sync_failed", {
+    operation,
+    provider,
+    error: describeVaultFailure(detail),
+  });
+}
+
+function resolveAccountVault(operation: string, provider: string): AccountVaultBridge | null {
+  try {
+    return getAccountVault?.() ?? null;
+  } catch (error) {
+    logVaultFailure(operation, provider, error);
+    return null;
+  }
+}
+
+function fireAndForgetVaultCall(
+  operation: "set" | "remove",
+  provider: string,
+  call: (vault: AccountVaultBridge) => Promise<unknown>,
+): void {
+  const vault = resolveAccountVault(operation, provider);
+  if (!vault) return;
+
+  let pending: Promise<unknown>;
+  try {
+    pending = call(vault);
+  } catch (error) {
+    logVaultFailure(operation, provider, error);
+    return;
+  }
+
+  void Promise.resolve(pending).then((result) => {
+    if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true) {
+      logVaultFailure(operation, provider, result);
+    }
+  }).catch((error: unknown) => {
+    logVaultFailure(operation, provider, error);
+  });
+}
 
 /**
  * Everything the store resolves from one root, held in one object.
@@ -628,6 +685,8 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
     legacyStorePath: layout.legacyApiKeysPath,
     credentialStore: options.credentialStore ?? null,
   };
+  getAccountVault = options.getAccountVault ?? null;
+  vaultLogger = options.logger ?? null;
   cursorKeyOrigin = null;
   // A re-init can hand over a different credential store instance. The machine
   // scope may be borrowing the project's one (when no machine store was
@@ -754,7 +813,7 @@ function invalidatePeerScopeCache(scope: ApiKeyScopeState): void {
 }
 
 export function storeMachineApiKey(provider: string, key: string): void {
-  storeApiKeyIn(machineScope(), provider, key);
+  storeApiKeyIn(machineScope(), provider, key, { deviceOnly: true });
 }
 
 export function getMachineApiKey(provider: string): string | null {
@@ -827,7 +886,12 @@ export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
   return getApiKeyStoreStatusIn(projectScope);
 }
 
-function storeApiKeyIn(scope: ApiKeyScopeState, provider: string, key: string): void {
+function storeApiKeyIn(
+  scope: ApiKeyScopeState,
+  provider: string,
+  key: string,
+  options: { deviceOnly?: boolean } = {},
+): void {
   const normalizedProvider = normalizeProvider(provider);
   const normalizedKey = key.trim();
   if (!normalizedProvider.length || !normalizedKey.length) {
@@ -843,6 +907,13 @@ function storeApiKeyIn(scope: ApiKeyScopeState, provider: string, key: string): 
     writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
     noteStoreWriteCommitted(scope);
     if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
+    if (!options.deviceOnly) {
+      fireAndForgetVaultCall(
+        "set",
+        normalizedProvider,
+        (vault) => vault.set("all", "provider_api_key", normalizedProvider, normalizedKey),
+      );
+    }
     return;
   }
   const nextStore = { ...store, [normalizedProvider]: normalizedKey };
@@ -852,10 +923,21 @@ function storeApiKeyIn(scope: ApiKeyScopeState, provider: string, key: string): 
   scope.cache = nextStore;
   noteStoreWriteCommitted(scope);
   if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
+  if (!options.deviceOnly) {
+    fireAndForgetVaultCall(
+      "set",
+      normalizedProvider,
+      (vault) => vault.set("all", "provider_api_key", normalizedProvider, normalizedKey),
+    );
+  }
 }
 
-export function storeApiKey(provider: string, key: string): void {
-  storeApiKeyIn(projectScope, provider, key);
+export function storeApiKey(
+  provider: string,
+  key: string,
+  options: { deviceOnly?: boolean } = {},
+): void {
+  storeApiKeyIn(projectScope, provider, key, options);
 }
 
 function getApiKeyIn(scope: ApiKeyScopeState, provider: string): string | null {
@@ -916,6 +998,13 @@ function deleteApiKeyIn(scope: ApiKeyScopeState, provider: string): void {
     const index = readCredentialProviderIndex(scope);
     writeCredentialProviderIndex(scope, index.providers.filter((entry) => entry !== normalizedProvider));
     noteStoreWriteCommitted(scope);
+    if (scope === projectScope) {
+      fireAndForgetVaultCall(
+        "remove",
+        normalizedProvider,
+        (vault) => vault.remove("all", "provider_api_key", normalizedProvider),
+      );
+    }
     return;
   }
   const nextStore = { ...store };
@@ -927,6 +1016,13 @@ function deleteApiKeyIn(scope: ApiKeyScopeState, provider: string): void {
   scope.missingMacosKeychainProviders.add(normalizedProvider);
   scope.cache = nextStore;
   noteStoreWriteCommitted(scope);
+  if (scope === projectScope) {
+    fireAndForgetVaultCall(
+      "remove",
+      normalizedProvider,
+      (vault) => vault.remove("all", "provider_api_key", normalizedProvider),
+    );
+  }
 }
 
 export function deleteApiKey(provider: string): void {
@@ -939,6 +1035,58 @@ function listStoredProvidersIn(scope: ApiKeyScopeState): string[] {
 
 export function listStoredProviders(): string[] {
   return listStoredProvidersIn(projectScope);
+}
+
+/**
+ * Copy account-scoped provider keys into the local store without replacing a
+ * value this machine already has. The vault list intentionally omits secret
+ * values, so readable rows are fetched individually before they are stored.
+ */
+export async function hydrateApiKeysFromVault(): Promise<void> {
+  const vault = resolveAccountVault("list", "*");
+  if (!vault) return;
+
+  let listed: Awaited<ReturnType<AccountVaultBridge["list"]>>;
+  try {
+    listed = await vault.list("all");
+  } catch (error) {
+    logVaultFailure("list", "*", error);
+    return;
+  }
+  if (!listed.ok) {
+    logVaultFailure("list", "*", listed);
+    return;
+  }
+
+  for (const item of listed.value) {
+    if (item.scope !== "all" || item.kind !== "provider_api_key") continue;
+    const provider = normalizeProvider(item.key);
+    if (!provider.length) continue;
+
+    let value = typeof item.value === "string" ? item.value.trim() : "";
+    if (!value.length) {
+      let fetched: Awaited<ReturnType<AccountVaultBridge["get"]>>;
+      try {
+        fetched = await vault.get("all", "provider_api_key", provider);
+      } catch (error) {
+        logVaultFailure("get", provider, error);
+        continue;
+      }
+      if (!fetched.ok) {
+        logVaultFailure("get", provider, fetched);
+        continue;
+      }
+      value = fetched.value?.trim() ?? "";
+    }
+    if (!value.length) continue;
+
+    try {
+      if (getApiKey(provider)) continue;
+      storeApiKey(provider, value, { deviceOnly: true });
+    } catch (error) {
+      logVaultFailure("hydrate", provider, error);
+    }
+  }
 }
 
 /**

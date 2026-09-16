@@ -140,6 +140,16 @@ class MemoryCredentialStore {
   }
 }
 
+function createVaultMock() {
+  return {
+    list: vi.fn(async () => ({ ok: true, value: [] })),
+    get: vi.fn(async () => ({ ok: true, value: null })),
+    set: vi.fn(async () => ({ ok: true, value: null })),
+    remove: vi.fn(async () => ({ ok: true, value: null })),
+    sync: vi.fn(async () => ({ ok: true, value: null })),
+  };
+}
+
 describe("apiKeyStore", () => {
   let tempRoot: string;
   let keychain: Map<string, string>;
@@ -452,6 +462,106 @@ describe("apiKeyStore", () => {
       encryptedStorePath: null,
       decryptionFailed: false,
     });
+  });
+
+  it("writes a provider API key to the account vault without waiting for it", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const vault = createVaultMock();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, {
+      credentialStore,
+      getAccountVault: () => vault as never,
+    });
+
+    store.storeApiKey(" OpenAI ", " sk-account-key ");
+
+    expect(store.getApiKey("openai")).toBe("sk-account-key");
+    expect(vault.set).toHaveBeenCalledWith("all", "provider_api_key", "openai", "sk-account-key");
+  });
+
+  it("skips account-vault writes for device-only provider keys", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const vault = createVaultMock();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, {
+      credentialStore,
+      getAccountVault: () => vault as never,
+    });
+
+    store.storeApiKey("cursor", "crsr-device-key", { deviceOnly: true });
+
+    expect(store.getApiKey("cursor")).toBe("crsr-device-key");
+    expect(vault.set).not.toHaveBeenCalled();
+  });
+
+  it("hydrates only provider keys missing from the local store", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("ai.api_key.index.v1", JSON.stringify(["openai"]));
+    credentialStore.setSync("ai.api_key.openai.v1", "sk-local-key");
+    const vault = createVaultMock();
+    vault.list.mockResolvedValue({
+      ok: true,
+      value: [
+        { scope: "all", kind: "provider_api_key", key: "anthropic", value: "sk-vault-key", updatedAt: "now" },
+        { scope: "all", kind: "provider_api_key", key: "openai", value: "sk-vault-stale", updatedAt: "now" },
+      ],
+    } as never);
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, {
+      credentialStore,
+      getAccountVault: () => vault as never,
+    });
+
+    await store.hydrateApiKeysFromVault();
+
+    expect(store.getApiKey("anthropic")).toBe("sk-vault-key");
+    expect(store.getApiKey("openai")).toBe("sk-local-key");
+    expect(vault.get).not.toHaveBeenCalled();
+    expect(vault.set).not.toHaveBeenCalled();
+  });
+
+  it("removes a provider API key from both local storage and the account vault", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const vault = createVaultMock();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, {
+      credentialStore,
+      getAccountVault: () => vault as never,
+    });
+    store.storeApiKey("openai", "sk-account-key");
+    vault.set.mockClear();
+
+    store.deleteApiKey("openai");
+
+    expect(store.getApiKey("openai")).toBeNull();
+    expect(vault.remove).toHaveBeenCalledWith("all", "provider_api_key", "openai");
+  });
+
+  it("keeps local API-key operations synchronous and logs an unavailable vault failure", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const vault = createVaultMock();
+    const logger = { warn: vi.fn() };
+    vault.set.mockRejectedValueOnce(new Error("runtime unavailable"));
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, {
+      credentialStore,
+      getAccountVault: () => vault as never,
+      logger,
+    });
+
+    expect(() => store.storeApiKey("openai", "sk-local-key")).not.toThrow();
+    expect(store.getApiKey("openai")).toBe("sk-local-key");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(logger.warn).toHaveBeenCalledWith("ai.api_key_vault_sync_failed", expect.objectContaining({
+      operation: "set",
+      provider: "openai",
+    }));
+
+    const unavailable = await loadStoreModule();
+    unavailable.initApiKeyStore(tempRoot, { credentialStore });
+    await expect(unavailable.hydrateApiKeysFromVault()).resolves.toBeUndefined();
   });
 });
 

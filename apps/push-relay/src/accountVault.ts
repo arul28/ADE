@@ -23,10 +23,8 @@
  * What is deliberately NOT here: vendor CLI logins for Claude, Codex, and
  * Cursor. Those rotate their refresh tokens and their issuers rate-limit
  * refresh storms — ADE already carries a 24-hour rejection cooldown because of
- * it. Two machines holding one single-use refresh token is precisely the bug
- * that produced every unexplained sign-out in this product's history, and
- * syncing them would reproduce it deliberately, per account, forever. The
- * Machines page shows a per-machine sign-in checklist instead.
+ * it. The small set of account credentials that ARE safe to share has an
+ * explicit owner in the item-kind allowlist below.
  */
 import {
   accountPageResult,
@@ -142,7 +140,13 @@ const VAULT_KEY_COLUMNS = ["scope_key", "item_kind", "item_key"];
  * a credential ADE does not know how to refresh, revoke, or show, and accepting
  * one now is how a store grows a category nobody owns.
  */
-const ITEM_KINDS = new Set(["secret", "provider_key", "integration"]);
+const ITEM_KINDS = new Set([
+  "secret",
+  "provider_key",
+  "integration",
+  "provider_api_key",
+  "linear_refresh_token",
+]);
 
 export type AccountVaultRow = {
   scope: string;

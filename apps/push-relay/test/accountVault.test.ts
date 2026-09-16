@@ -186,12 +186,12 @@ describe("account vault", () => {
     expect((await put([sealed({ kind: "" })])).status).toBe(400);
   });
 
-  it("accepts the three kinds ADE actually stores", async () => {
-    for (const kind of ["secret", "provider_key", "integration"]) {
+  it("accepts the account credential kinds ADE actually stores", async () => {
+    for (const kind of ["secret", "provider_key", "integration", "provider_api_key", "linear_refresh_token"]) {
       expect((await put([sealed({ kind, key: `k-${kind}` })])).status, kind).toBe(200);
     }
     const read = await call("GET", "/attention/account/vault");
-    expect(read.body.items).toHaveLength(3);
+    expect(read.body.items).toHaveLength(5);
   });
 
   it("never returns another account's credentials", async () => {
