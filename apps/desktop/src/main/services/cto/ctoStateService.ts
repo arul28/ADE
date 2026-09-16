@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import { CTO_VOICE_VOICES } from "../../../shared/types/ctoVoice";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import YAML from "yaml";
 import type {
   CtoIdentity,
   CtoOnboardingState,
   CtoSessionLogEntry,
   CtoSnapshot,
+  CtoStaticContextSection,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
 import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
@@ -512,6 +513,14 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
  * re-measure rather than silently start truncating.
  */
 export const CTO_LIVE_STATE_MAX_CHARS = 6000;
+
+/**
+ * Heading of the static context section, and the marker the chat service looks
+ * for to decide whether a send actually delivered it. Exported so the two sides
+ * cannot drift into a marker that is never found — which would silently re-stage
+ * 21 KB on every turn.
+ */
+export const CTO_STATIC_CONTEXT_TITLE = "CTO Runtime Identity";
 
 // Per-section row caps. A CTO with 200 lanes needs to know that, not to read
 // 200 lines about it — every section reports its own overflow count.
@@ -1157,14 +1166,19 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const getLiveStateSnapshot = (): CtoLiveStateSnapshot | null => liveStateCache;
 
   /**
-   * The per-turn CTO context.
+   * The VOLATILE half of the CTO's per-turn context: identity, working context,
+   * memory sections and the live project-state block. Every one of these can
+   * differ between two consecutive turns, so this rides every send.
    *
-   * Deliberately does NOT carry `buildCtoEnvironmentKnowledge()`. The only
-   * caller (`refreshReconstructionContext` in the agent chat service) prepends
-   * `previewSystemPrompt().prompt`, whose `knowledge` section is that same ~10 KB
-   * document verbatim — emitting it here too doubled it in every single user
-   * turn. Anything that needs the knowledge block standalone should read the
-   * prompt preview's `knowledge` section rather than reintroduce the copy.
+   * Its immutable counterpart is `buildStaticContextSection()`, which the chat
+   * service stages once per provider thread. Keep the two disjoint: anything
+   * that lands in both is paid for on every single turn for nothing.
+   *
+   * This is also why it deliberately does NOT carry
+   * `buildCtoEnvironmentKnowledge()` — the static section's `knowledge` block is
+   * that same ~10 KB document verbatim. Anything that needs the document
+   * standalone should read the prompt preview's `knowledge` section rather than
+   * reintroduce the copy.
    */
   const buildReconstructionContext = (recentLimit = 8): string => {
     const snapshot = getSnapshot(recentLimit);
@@ -1307,6 +1321,31 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
   };
 
+  /**
+   * The STATIC half of the CTO's per-turn context.
+   *
+   * Doctrine, continuity model, memory guidance, the ADE environment knowledge
+   * document and the capability manifest — ~21 KB that is identical on turn 2
+   * and turn 200 of the same thread. The chat service stages it once per
+   * provider thread rather than on every send, because a live thread already
+   * holds it: re-sending it grew a real CTO thread by ~12k input tokens a turn
+   * and walked it into auto-compaction mid-voice-call.
+   *
+   * `key` is the content identity of the body, so an identity rename or an
+   * edited prompt extension re-stages it on the very next turn instead of being
+   * silently withheld until the thread rotates.
+   */
+  const buildStaticContextSection = (
+    identityOverride?: Partial<CtoIdentity>,
+  ): CtoStaticContextSection => {
+    const body = previewSystemPrompt(identityOverride).prompt;
+    return {
+      title: CTO_STATIC_CONTEXT_TITLE,
+      body,
+      key: createHash("sha256").update(body, "utf8").digest("hex").slice(0, 16),
+    };
+  };
+
   // Ensure the state is initialized as soon as the service is created.
   reconcileAll();
   syncDerivedContextDoc();
@@ -1318,6 +1357,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     updateIdentity,
     appendSessionLog,
     buildReconstructionContext,
+    buildStaticContextSection,
     refreshLiveState,
     getLiveStateSnapshot,
     getOnboardingState,

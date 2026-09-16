@@ -182,10 +182,16 @@ The guarantee is that a deterministic flush always runs before anything can be l
 
 #### What the per-turn prefix does and does not repeat
 
-The prefix is the one thing that rides every CTO turn, so anything duplicated inside it is paid for again on every single send — and on a long thread that is what walks the provider window into auto-compaction.
+The prefix is the one thing that rides every CTO turn, so anything duplicated inside it is paid for again on every single send — and on a long thread that is what walks the provider window into auto-compaction. The owner's thread went 46k → 237k input tokens in 18 turns and Codex auto-compacted mid-turn, for 27 seconds, during a voice call.
 
-- **The environment knowledge document appears once.** `refreshReconstructionContext` prepends `previewSystemPrompt().prompt`, whose `knowledge` section already carries the ~10 KB ADE architecture document. `buildReconstructionContext()` therefore does **not** emit it: the two strings are concatenated, so a second copy was pure duplication. Read the preview's `knowledge` section if something needs the document standalone.
+- **The prefix is split by lifetime, and only the perishable half repeats.** `ctoStateService` exposes the two halves as two functions, and `refreshReconstructionContext` stages them on two different clocks:
+  - **Static** — `buildStaticContextSection()`: doctrine, continuity model, memory guidance, the ADE environment knowledge document and the capability manifest, i.e. `previewSystemPrompt().prompt` whole. ~21 KB, byte-identical on turn 2 and turn 200, and a live provider thread holds it from the first send. It is staged **once per provider thread** — same `providerThreadContinuityKey` the conversation tail uses — and re-staged when that key moves (rotation, handoff, resume onto a new thread, provider/model switch, fresh session) or when the section's own content `key` moves. The content key is the second trigger on purpose: an identity rename or an edited prompt extension changes the prompt under a live thread and must reach it on the next turn, not at the next rotation. Staging is sticky: the flag clears only when the prefix a send actually carried still contains the section heading (`CTO_STATIC_CONTEXT_TITLE`), because the prefix is truncated tail-first and the static block is the first thing a tight budget cuts — a thread must never be left believing it was told its own doctrine.
+  - **Volatile** — `buildReconstructionContext()`: identity line, current working context, memory sections, the live project-state block. Perishable by construction, so it rides every single send.
+  On the synthetic fixture the steady-state turn is 24,269 → 2,651 bytes; turn 1, which has to carry everything, is unchanged at 24,506. Keep the two disjoint. The knowledge document is in the static half and **nowhere else** — `buildReconstructionContext()` deliberately does not emit it, because the two strings are concatenated and a second copy was pure duplication.
+- **Codex gets it the same way everyone else does.** It is tempting to assume the doctrine already rides codex's `developerInstructions` at `thread/start` and skip the thread item there. It does not: `buildCodexDeveloperInstructions` builds the generic coding-agent prompt, and the CTO doctrine and capability manifest exist in exactly one place in the codebase — `ctoStateService`. Dropping the static block for codex would quietly take the CTO's whole role away on that provider, so every provider takes the once-per-thread staging. A test pins this.
+- **`<provider>:none` is not a thread change.** The send path builds the turn prefix *before* it ensures the runtime, so the continuity key reads as `none` while a thread is being opened — and that same send delivers the prefix into the thread it opens. `providerThreadContinuityChanged` therefore treats `none` → real-id on the same provider as continuity. Without that rule every fresh thread paid the whole prefix twice: once on turn 1, again on turn 2 when the thread id arrived.
 - **The conversation tail rides only a thread it has not been said to.** `Recent Conversation Tail` (40 turns for the CTO, 20 elsewhere) is re-orientation for a model that cannot see those turns, not context. `providerThreadContinuityKey` identifies the provider-side thread the next send lands on; the tail is pushed only when that key has changed since it was last delivered — a rotated Cursor agent, a torn-down or reset runtime, a model or provider switch, a fresh resume, or a thread that has not opened yet. A live, intact codex/Claude thread already holds the conversation verbatim and gets nothing. The flag is sticky until a send actually consumes it, because the context is rebuilt several times per turn.
+- **The headless path refreshes too.** `runSessionTurn` — which is how the voice's `ask_cto` turns reach the thread — calls the same `refreshCtoLiveStateForTurn` the interactive send does, so a voice turn sees current lanes, PRs, dirty flags and scheduled work instead of whatever the last typed message left behind. It runs on the way into the dispatch rather than before `prepareSendMessage`, because `runSessionTurn` has to register its turn collector synchronously: a `forceDisposeAll` racing a just-started headless turn can only reject a collector that already exists. The prefix is consumed further downstream, so that is early enough.
 - **Tool results are bounded at the tool.** `listScheduledWork` returns a compact record per job (id, chat, kind, status, cron/next run, prompt truncated to 120 characters), at most 50 of them, plus `count` and `truncated`. A project-wide call with full prompts once came back at 50 KB and was the single result that tipped a live CTO thread into auto-compaction mid-call. `getScheduledWorkState` is still the full picture for one chat.
 
 ### Model switching is first-class
@@ -454,7 +460,7 @@ The first build made the realtime model a pure mouth — `create_response: false
 - **Only the voice minutes bill to the user.** The key is the user's own OpenAI key, `CTO_VOICE_USD_PER_MINUTE` is `$0.05`, and it bills by the second. The cost sentence is stated before the field rather than discovered on an invoice — see [Onboarding and settings › The OpenAI key follows the machine](../onboarding-and-settings/README.md#the-openai-key-follows-the-machine).
 - **Permissions are still ADE's, in code.** A call holds the CTO in confirm-first mode for its whole length (`setCallConfirmMode`), so every writing tool stops and asks out loud. That is a hold, not a sentence in a prompt the model is free to reinterpret — and the model cannot approve a destructive action however clearly it hears "yes".
 
-#### The four tools, and what each is for
+#### The five tools, and what each is for
 
 They live in `CTO_VOICE_REALTIME_TOOLS` in `shared/types/ctoVoice.ts` rather than beside the socket, because their **descriptions** are the only thing deciding when the model talks to the CTO and when it answers for itself — which makes them worth reading and diffing in one place.
 
@@ -464,6 +470,17 @@ They live in `CTO_VOICE_REALTIME_TOOLS` in `shared/types/ctoVoice.ts` rather tha
 | `cancel_work` | none | The user says stop or never mind while work is running. Stops the running request *and* drops anything waiting behind it. |
 | `approve_pending_action` | none | ADE has said out loud that it is waiting for approval and the user clearly agreed. |
 | `deny_pending_action` | none | The same, and they clearly declined. |
+| `end_call` | none | The user says goodbye, asks it to hang up, end the call, or close itself. The model says a short goodbye in the same response. |
+
+#### A call the CTO can end
+
+Without `end_call` the model had no way to end the thing it was inside, and on the call of 2026-09-16 it said so out loud — *"I can't close myself from here"* — to a user who had already ended the call in words. The brief tells it the same thing from the other side: say a short goodbye and end the call in the same response, and never tell the user you cannot hang up.
+
+**The hang-up waits for the goodbye to be heard, not for it to be generated.** `response.done` is the moment the model stopped *writing*; its audio is still in the runtime's output queue and the renderer's playback graph, and ending there cuts off the one sentence of a call the user is guaranteed to be listening to. So the call service keeps a **playback clock** — every output audio chunk extends the later of *now* and the previous deadline by its own duration, which is exactly how the renderer's queue plays it — and hangs up at that deadline plus `CTO_VOICE_END_CALL_AUDIO_TAIL_MS` (450 ms, one missed poll of `CTO_VOICE_AUDIO_POLL_INTERVAL_MS` plus the graph's own latency). The function call is answered with `{ status: "ok" }` and **no** response is asked for: the goodbye is in the same response the call arrived in, and a second one would talk over it. Arming is idempotent — two `end_call`s, or a `response.done` after one that already scheduled, arm one timer.
+
+The teardown is `CtoVoiceCallEndReason` **`assistant_end`**, which is an ordinary ending and not a failure: no error is set, the HUD goes to `ended`, and the row's closing line is the same `Voice call ended · N exchanges` the End button produces.
+
+Measured live on 2026-09-16 against the real API, feeding TTS-synthesised speech through the real session config: *"Okay, goodbye. End the call now."* → transcripts accepted at +6.99 s and +8.64 s → `cto_voice.function_call {"tool":"end_call"}` at +9.14 s → `cto_voice.end_call_scheduled {"waitMs":2334}` → the goodbye *"Okay, I'm hanging up now."* played out → `cto_voice.call_end {"reason":"assistant_end"}` at +11.47 s, with the goodbye in the persisted transcript.
 
 #### A second request, and who decides what it means
 
@@ -517,6 +534,32 @@ actual values and actual labels, and say your sentences as well. Both live
 scenarios above produced it unprompted: *"I'm pulling up the open pull requests
 and drawing a quick view beside the call."*
 
+**And the turn now says what a scene IS.** "End your sentences with a ```scene
+fence" was the whole instruction, and on the call of 2026-09-16 the CTO obeyed
+it exactly: it drew a box out of box-drawing characters and put plain text
+inside the fence, which the scene frame rendered as an unstyled paragraph.
+Nothing had told it the fence was markup. `buildVoiceSceneContract` is the
+`ade-scene` skill distilled to what a one-shot voice turn can act on — the fence
+is real HTML, CSS and JS and never text or ASCII art; first line
+`<!-- @scene title="..." -->`; ADE's own CSS variables (`--bg`, `--surface`,
+`--border`, `--fg`, `--fg-muted`, `--accent`, `--success`, `--warning`,
+`--danger`, `--font-sans`, `--font-mono`); no network, no libraries, no remote
+images, data inline, `ade.ready()` when drawn; a table or a grid of cards with
+real values and labels; readable when it stops moving; never an approve or
+confirm control, because ADE owns permission; under about 8 KB — plus one
+ten-line table to copy. It is attached **only** when a visual was asked for: it
+is several hundred characters the other turns should not pay for, and a test
+pins both halves.
+
+**The brief answers the question it was asked.** Two more failures from the same
+call: *"How are you?"* came back as an identity spiel, and the model volunteered
+that *"the hand-off from the retired thread was thin"* — a remark about its own
+machinery nobody had asked for. So the brief now says to answer at the length
+the question deserves, to say who you are only when you are asked who you are,
+and never to volunteer internal notes: thread state, hand-offs, what it was told
+before the call, or what it does or does not remember. It uses what it knows; it
+does not narrate having it.
+
 #### The context block
 
 `buildCtoVoiceContext` (in `ctoVoiceRuntimeService.ts`, pure and testable) assembles it: who the CTO is and what model it thinks on, the project's name and root and its lane list, **what is happening right now**, **today so far**, then the memory service's own three labelled sections — durable memory, thread state, recent daily log. The order is most- to least-identifying, which is also the order they would be missed in.
@@ -540,7 +583,7 @@ Sent by ADE:
 | --- | --- |
 | `session.update` | On `open`, and again after every completed `ask_cto`. Instructions (persona brief + context block), `tools`, `tool_choice: "auto"`, `output_modalities: ["audio"]`, PCM16 in and out at `CTO_VOICE_SAMPLE_RATE`, the chosen `audio.output.voice`, `audio.input.transcription`, and the turn detection above. The refresh carries `instructions` alone; the rest is already session state. |
 | `input_audio_buffer.append` | Every microphone frame, and a 100 ms buffer of silence while muted. |
-| `conversation.item.create` (`function_call_output`) | One `ask_cto` / `cancel_work` / approval result. |
+| `conversation.item.create` (`function_call_output`) | One `ask_cto` / `cancel_work` / approval / `end_call` result. |
 | `response.create` | Two shapes, and they are not interchangeable — see below. |
 | `response.cancel` | Barge-in, and **only** for a response ADE created itself. Always with the `response_id` from `response.created`: a bare cancel means "the response in the default conversation", which an out-of-band one never is, and the server answers `Cancellation failed: no active response found` while the CTO keeps talking. A cancel that lands before the server has named the response is held and sent the moment it does. |
 | `conversation.item.create` (`system`) | A mid-call capture, and the note that a confirmation is open. Silent — no response is asked for, so nothing is read out. |
@@ -552,7 +595,8 @@ Handled from OpenAI:
 | `session.created` / `session.updated` / `conversation.created` | Whichever lands first starts the call's clock and moves the HUD to `listening`. |
 | `input_audio_buffer.speech_started` | A new utterance opens. If one of ADE's own lines is playing it is cancelled; the work behind it is deliberately left running. |
 | `input_audio_buffer.speech_stopped` | Records the moment, for the latency line below. |
-| `conversation.item.input_audio_transcription.delta` / `.completed` | The caption and the spoken yes/no parser — no longer a CTO turn. |
+| `conversation.item.input_audio_transcription.delta` | The live partial caption (`pendingUserText`), accumulated and shown as it arrives. |
+| `conversation.item.input_audio_transcription.completed` | The caption, the exchange count and the spoken yes/no parser — no longer a CTO turn. Clears the partial. |
 | `conversation.item.input_audio_transcription.failed` | "Sorry — I didn't catch that.", rather than silence. |
 | `response.created` | A response is in flight; its `id` is what every `response.cancel` needs, and whether ADE asked for it is recorded here. |
 | `response.output_audio.delta` (and `response.audio.delta`) | Base64 PCM16 straight to the renderer's audio queue. |
@@ -589,28 +633,40 @@ So one spoken "yes" now reaches this service twice. `approvePending` / `denyPend
 
 A Whisper-family transcriber invents words out of near-silence. On a real call on 2026-09-16 the owner spoke three sentences and the CTO took **six** turns in thirty-eight seconds: `"Haha."`, `"OK,OK,好好好。"` and `"아니."` were written out of a quiet room, and because `.completed` drove a turn unconditionally, each one became a real CTO turn that spoke a real answer. The CTO's answers were correct and the relay was faithful — what was wrong was that nobody had said anything.
 
-Under the hybrid the gate no longer decides whether the CTO is asked anything — the realtime model hears the audio itself and calls `ask_cto` when it needs to. What the gate still decides is what reaches the **call record** and the **spoken yes/no parser**, and both matter: a caption is a claim ADE makes that the user said something, and a hallucinated "yes" that could release a tool parked inside `canUseTool` is the worst thing on this wire. A rejected transcript produces no caption, no exchange count and no confirmation decision.
+**The gate that fixed that is now scoped to one decision, because it was costing more than it saved.** Under the hybrid the realtime model hears the audio itself and answers whatever it heard, so a rejected transcript never stopped a hallucination being answered — it only deleted the user's own words from the HUD, from the exchange count and from the call record. On the call of 2026-09-16 three **real** sentences — *"Who are you?"*, *"Okay, what's going on?"*, *"Okay, close yourself now."* — measured a microphone peak of 0.005 against 0.3–0.86 for their neighbours and were thrown away with `no_speech_energy`. The owner watched the CTO answer questions the screen said had never been asked, repeated themselves, and then saw every caption arrive at once.
 
-Every transcript is judged by `judgeTranscript` in `ctoVoiceCallService.ts`, and is accepted only when **all** of these hold:
+So the two paths are separated:
 
-- the transcript carries at least one letter or digit after trimming (`ctoVoiceTranscriptHasSpeech`, Unicode-aware — the phantoms above were CJK, and an `A-Z` check would have passed every one of them). Otherwise: `empty`;
+- **Captions and the exchange count are unconditional.** `handleUserTranscript` records both for every transcript that carries at least one letter or digit after trimming (`ctoVoiceTranscriptHasSpeech`, Unicode-aware — the phantoms above were CJK, and an `A-Z` check would have passed every one of them). A transcript with nothing in it but punctuation is the one thing still dropped, as `{ scope: "caption", reason: "empty" }`, because there is nothing to write down.
+- **A spoken approval is still judged**, and only there. When `pendingConfirmation` is set, `judgeTranscript` rules on the same transcript before `resolveSpokenConfirmation` is allowed to see it, and a refusal is logged as `cto_voice.transcript_rejected` with `scope: "confirmation"`. The words are still captioned; what the meter withholds is the **decision**. A hallucinated "yes" that could release a tool parked inside `canUseTool` is the worst thing on this wire, and the cost of refusing a real one is a tap.
+
+The judgement itself is unchanged, and a transcript may answer a question only when **all** of these hold:
+
 - ADE's **own** microphone meter peaked at or above `CTO_VOICE_MIN_SPEECH_PEAK_LEVEL` (0.05 of full scale). The renderer hands `pushAudio` the peak absolute sample of each ~85 ms frame, off a capture chain with AGC and noise suppression on: a close-mic sentence peaks above 0.2, suppressed room noise sits under 0.02. Otherwise: `no_speech_energy`;
 - at least `CTO_VOICE_MIN_SPEECH_MS` (240 ms) of **contiguous** voiced audio — the longest unbroken run of above-threshold frames, not the sum of them, measured from the frames' own byte lengths rather than a clock. A sum cannot tell a spoken word from three unrelated clicks a second apart, because the frames only have to add up; a word is energy that stays up. 240 ms is under a spoken "yes" and far over a keyboard click. Otherwise: `too_short`;
 - the segment was not ADE hearing itself: a segment whose every frame arrived while a response was in flight **and** whose peak never reached the threshold is echo, not a person. Otherwise: `echo`. Both halves matter — the same segment *with* a real peak in it is a barge-in, which is the most urgent thing on a call;
-- the burst valve is open. More than `CTO_VOICE_TURN_BURST_LIMIT` (4) accepted transcripts inside `CTO_VOICE_TURN_BURST_WINDOW_MS` (10 s) is one every 2.5 s — faster than the CTO can think and speak one answer, so it is a transcript source running away rather than a conversation. The gate then shuts for everything until `CTO_VOICE_TURN_BURST_COOLDOWN_MS` (8 s) passes with no transcript arriving at all; "until the next accepted transcript" cannot be the release condition, because while the gate is shut there are none. Otherwise: `runaway`.
+- the burst valve is open. More than `CTO_VOICE_TURN_BURST_LIMIT` (4) accepted transcripts inside `CTO_VOICE_TURN_BURST_WINDOW_MS` (10 s) is one every 2.5 s — faster than a conversation, so it is a transcript source running away. The valve then refuses every **decision** until `CTO_VOICE_TURN_BURST_COOLDOWN_MS` (8 s) passes with no transcript arriving at all; "until the next accepted transcript" cannot be the release condition, because while the gate is shut there are none. Otherwise: `runaway`. It never touches the caption path: a call record with too much in it is readable, and one missing the user's own sentences is not.
 
-The session also names the language it is listening for (`language: "en"` on `audio.input.transcription`) and the vocabulary it should expect (`prompt`, `CTO_VOICE_TRANSCRIBE_PROMPT` — *"English conversation about a software project called ADE, lanes, pull requests, tests."*) rather than letting the transcriber guess per utterance. A short or noisy utterance is exactly where that guess goes wrong, and it is how `"OK,OK,好好好。"` and `"아니."` were written at all — and once one reached the CTO, the answer came back in the same language and an English voice read it aloud.
+The renderer's local barge-in is a different number on a different meter and is untouched: `CTO_VOICE_LOCAL_BARGE_IN_LEVEL` (0.2) silences the speaker from the renderer's own frames a whole round trip before the server's VAD reaches the runtime.
+
+The session also names the language it is listening for (`language: "en"` on `audio.input.transcription`) and the vocabulary it should expect (`prompt`, `CTO_VOICE_TRANSCRIBE_PROMPT` — *"English conversation about a software project called ADE, lanes, pull requests, tests."*) rather than letting the transcriber guess per utterance. A short or noisy utterance is exactly where that guess goes wrong, and it is how `"OK,OK,好好好。"` and `"아니."` were written at all.
 
 **Neither field forces English, and both are kept anyway.** Measured against the live API on 2026-09-16, six runs per configuration, feeding TTS-synthesised speech through the real session config: a spoken Serbian *"Здраво"* came back as `"Zdravo."` — romanised, so the named language *is* read — but a Russian *"Привет"* came back as `"Привет."` in Cyrillic in all three runs, and adding the prompt changed nothing in any of the six. So the language is still the cheapest way to remove the per-utterance guess and the prompt is what tells the model this is a call about lanes and PRs rather than a podcast, and what the wire cannot guarantee, the CTO turn's own *"Answer in English"* line does.
 
-A rejected transcript is logged at info as `cto_voice.transcript_rejected` with the reason, the text and the measurements, and **nothing else happens**: no caption, no exchange, no confirmation decision. An accepted one is logged as `cto_voice.transcript_accepted` with the same measurements and the text's **length** rather than the text — an accepted transcript is something the user said, and it does not belong in a log. Both halves are needed: with only rejections recorded, a gate that waved a phantom through looked exactly like a gate with nothing to reject. Tripping and clearing the valve log `cto_voice.transcript_valve_tripped` / `..._cleared`. The thresholds lean deliberately permissive — answering a sentence nobody said is bad, and dropping one they did say is worse.
+Every accepted transcript is logged as `cto_voice.transcript_accepted` with the measurements and the text's **length** rather than the text — an accepted transcript is something the user said, and it does not belong in a log. Every refusal is `cto_voice.transcript_rejected` with its `scope`, its reason, the text and the same measurements. Tripping and clearing the valve log `cto_voice.transcript_valve_tripped` / `..._cleared`.
 
 Three details make the measurement honest rather than approximate:
 
 - **The meter remembers `CTO_VOICE_MIC_WINDOW_MS` (3 s), frame by frame.** It is a bounded ring of `{ at, level, ms, idle }`, trimmed on every write and every read, not a set of running totals. Totals were cleared only by a judgement, so the *first* transcript of a call was judged against every frame since the microphone opened — and fifteen seconds of a quiet room holds enough scattered transients to sum past 240 ms. That is how a phantom `好` passed a gate that was running. Three seconds is longer than any sentence a call must accept and far shorter than the run-up to one.
 - **Every frame is credited its own level.** The desktop batches microphone frames for the pump and sends `levels[]` alongside the chunks, one per frame, so the runtime no longer replays the batch *maximum* onto all of them — one transient used to read as a whole batch of speech. The batch maximum still travels as `level`, which is what a frame with no level of its own falls back to, and what a runtime from an older build reads.
-- **The window is a judgement, not a VAD segment.** Server VAD reports a segment after the fact and with its own prefix padding, so the frames carrying the user's first syllable arrive *before* the server admits the segment opened. The meter therefore resets when a transcript is judged — one transcript, one verdict, one reset — which keeps that pre-roll and still cannot let one utterance's energy vouch for the next one's words.
-- **Length comes out of the bytes, never a clock.** `ctoVoiceFrameDurationMs` reads a frame's duration from its own payload (PCM16 mono at `CTO_VOICE_SAMPLE_RATE` is two bytes a sample). The wall-clock gap between the server's two VAD events says nothing reliable about how long the user's mouth was open. For the same reason the desktop router now flushes a microphone batch with the **loudest** level in it rather than the newest frame's, and the runtime applies that level to every frame in the batch — crediting one frame per ~100 ms batch halved the measured length and put a one-word answer under the minimum. The call service still emits one meter update per distinct level, so the HUD sees no extra traffic.
+- **The window is a judgement, not a VAD segment.** Server VAD reports a segment after the fact and with its own prefix padding, so the frames carrying the user's first syllable arrive *before* the server admits the segment opened. The meter therefore resets on every transcript — one transcript, one reset — which keeps that pre-roll and still cannot let one utterance's energy vouch for the next one's words.
+- **Length comes out of the bytes, never a clock.** `ctoVoiceFrameDurationMs` reads a frame's duration from its own payload (PCM16 mono at `CTO_VOICE_SAMPLE_RATE` is two bytes a sample). The wall-clock gap between the server's two VAD events says nothing reliable about how long the user's mouth was open. For the same reason the desktop router flushes a microphone batch with the **loudest** level in it rather than the newest frame's, and the runtime applies that level to every frame in the batch. The call service still emits one meter update per distinct level, so the HUD sees no extra traffic.
+
+### What the user can see of being heard
+
+**The words appear as they are transcribed.** `CtoVoiceState.pendingUserText` is accumulated from `conversation.item.input_audio_transcription.delta` and cleared the instant the segment completes or fails; the HUD renders it as a dim italic line under the captions. A final transcript can land seconds after the words — and transcripts arrive out of order relative to the segments they belong to, so the mic ring is sometimes matched to the wrong segment — which is why a HUD that showed only finals read, to the person talking, as a call that had not heard them. Where a surface delivers a transcript as one `.completed` with no deltas at all, nothing changes: the field stays null and the captions are exactly as before.
+
+**A caption that was cut off says so.** A barge-in truncates the response mid-word, and the transcript that arrives for it is whatever had been said by then — *"I'm the CTO"* for a sentence that was going somewhere else. The response in flight is marked the moment `input_audio_buffer.speech_started` lands on it, so `CtoVoiceCaption.interrupted` travels with the caption into the HUD (which adds an ellipsis) and into the persisted transcript. The flag is only ever present when it is true; an ordinary caption carries no field at all.
 
 ### Where a call's seconds go
 
@@ -621,7 +677,7 @@ turn writes one info line, `cto_voice.turn_timing`, naming each leg:
 | Field | The wait it names |
 | --- | --- |
 | `speechStoppedToTranscriptMs` | `input_audio_buffer.speech_stopped` to the transcript. Entirely OpenAI's. |
-| `acceptToTurnStartMs` | The accepted transcript to `runBackendTurn` being called — now via the model's `ask_cto`, so this leg includes the model deciding it needs one. Null on a turn the gate rejected the transcript for, which `runAskCto` still measures from its own start. |
+| `acceptToTurnStartMs` | The accepted transcript to `runBackendTurn` being called — now via the model's `ask_cto`, so this leg includes the model deciding it needs one. Null on a turn whose request the model raised with no transcript behind it, which `runAskCto` still measures from its own start. |
 | `turnStartToFirstTextMs` | The turn to the model's first token, reported by the runtime — only that side watches the thread's event stream. |
 | `turnStartToBackendDoneMs` | The whole turn, tools and all. |
 | `firstSpeakToFirstAudioMs` | The result being handed back to the first `response.output_audio.delta` of the response that speaks it. The realtime model's. Null when the model answered for itself and ADE queued nothing. |
@@ -677,7 +733,7 @@ Two facts it was built to settle, from the call on 2026-09-16:
 
 The Work/CTO row's second line is normally the LLM-generated status line a settled turn produces. On a call it was always behind: the owner watched it read *"hey there?"* while the call had moved on through several exchanges, because each regeneration costs a model round trip and a spoken turn takes about a second.
 
-A call therefore writes that line itself, and writes it deterministically. `onExchange` fires on every **accepted** user turn and once more when the call ends, and the runtime writes `ctoVoiceStatusLine()` straight to the session row: `Voice call · 3 exchanges` while it is up, `Voice call ended · 3 exchanges` after. An exchange is one accepted turn, so a rejected transcript never inflates the count — the number is a claim ADE can stand behind. Meanwhile `maybeRefreshIdleStatusLine` stands down for the duration: it asks `isVoiceCallLiveOnSession()` (the confirm-first hold, which exists for exactly the length of a call) and skips generation, so a late round trip cannot overwrite the live line with a question the user has already moved past. Generation resumes on the next settled turn after the call.
+A call therefore writes that line itself, and writes it deterministically. `onExchange` fires on every user turn with words in it and once more when the call ends, and the runtime writes `ctoVoiceStatusLine()` straight to the session row: `Voice call · 3 exchanges` while it is up, `Voice call ended · 3 exchanges` after. An exchange is one transcript carrying at least one letter or digit — silence the transcriber wrote punctuation for is not one. The microphone meter has no vote here any more: it used to *subtract* real sentences from a number the row shows the user. Meanwhile `maybeRefreshIdleStatusLine` stands down for the duration: it asks `isVoiceCallLiveOnSession()` (the confirm-first hold, which exists for exactly the length of a call) and skips generation, so a late round trip cannot overwrite the live line with a question the user has already moved past. Generation resumes on the next settled turn after the call.
 
 The closing line is written from `statusLineSessionId`, not from the call's live session binding: that binding is cleared when the confirm-first hold is released, which happens on the way *out* of teardown — before the final report — so without a second binding the last line had nowhere to go and the row stayed reading as though the call were still up.
 

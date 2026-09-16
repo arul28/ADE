@@ -739,7 +739,7 @@ import {
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
 import { stripAnsi } from "../../utils/ansiStrip";
-import type { createCtoStateService } from "../cto/ctoStateService";
+import { CTO_STATIC_CONTEXT_TITLE, type createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
@@ -3760,6 +3760,25 @@ type ManagedChatSession = {
   conversationTailThreadKey: string | null;
   /** True once a thread change armed the tail and no send has consumed it yet. */
   conversationTailPending: boolean;
+  /**
+   * The provider thread the CTO's static context block was last staged for.
+   * Doctrine, the ADE architecture document and the capability manifest are
+   * ~21 KB that never change between two turns of one thread, so the block is
+   * staged once per thread and re-staged when this key moves — a rotation, a
+   * handoff, a resume onto a new thread, a provider/model switch, a fresh
+   * session.
+   */
+  ctoStaticContextThreadKey: string | null;
+  /**
+   * Content identity of the static block as last staged. Separate from the
+   * thread key because the other way it can go stale is the prompt itself
+   * changing under a live thread — an identity rename, an edited prompt
+   * extension — which must re-stage on the next turn rather than wait for a
+   * rotation that may never come.
+   */
+  ctoStaticContextPromptKey: string | null;
+  /** True once a key change armed the static block and no send has consumed it yet. */
+  ctoStaticContextPending: boolean;
   pendingTranscriptReplay: string | null;
   /** See PersistedChatState.transcriptReplayOrigin. */
   transcriptReplayOrigin: TranscriptReplayOrigin | null;
@@ -12454,6 +12473,9 @@ export function createAgentChatService(args: {
 
   const RECENT_CONVERSATION_TAIL_TITLE = "Recent Conversation Tail";
 
+  /** Thread-ref placeholder used by `providerThreadContinuityKey` before a provider thread exists. */
+  const UNOPENED_PROVIDER_THREAD_REF = "none";
+
   const buildRecentConversationContext = (managed: ManagedChatSession, limit = 20): string => {
     return formatConversationTranscript(collectConversationEntries(managed).slice(-limit));
   };
@@ -12491,7 +12513,33 @@ export function createAgentChatService(args: {
           break;
       }
     }
-    return `${managed.session.provider}:${threadRef?.trim() || "none"}`;
+    return `${managed.session.provider}:${threadRef?.trim() || UNOPENED_PROVIDER_THREAD_REF}`;
+  };
+
+  /**
+   * Did the provider thread actually change between two continuity keys?
+   *
+   * `<provider>:none` is what the key reads as while a send is being prepared
+   * for a thread that has not been opened yet — the send path builds the turn
+   * prefix before it ensures the runtime. That same send then opens the thread
+   * and delivers the staged prefix into it, so the `none` → real-id transition
+   * observed on the NEXT turn is one thread learning its name, not a second
+   * thread that never saw anything. Counting it as a change re-staged the whole
+   * prefix on turn 2 of every fresh thread, which is precisely the cost this
+   * key exists to avoid. A provider change is always a change, `none` or not.
+   */
+  const providerThreadContinuityChanged = (previous: string | null, next: string): boolean => {
+    if (previous === null) return true;
+    if (previous === next) return false;
+    const split = (key: string): { provider: string; ref: string } => {
+      const separator = key.indexOf(":");
+      return separator < 0
+        ? { provider: key, ref: "" }
+        : { provider: key.slice(0, separator), ref: key.slice(separator + 1) };
+    };
+    const before = split(previous);
+    const after = split(next);
+    return !(before.provider === after.provider && before.ref === UNOPENED_PROVIDER_THREAD_REF);
   };
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
@@ -12674,12 +12722,41 @@ export function createAgentChatService(args: {
   const refreshReconstructionContext = (managed: ManagedChatSession): void => {
     const sections: string[] = [];
     const isCto = managed.session.identityKey === "cto";
+    // One key for both once-per-thread decisions below. See
+    // `providerThreadContinuityKey`: it names the provider-side thread the next
+    // send lands on, so a change means the model on the other end has seen none
+    // of what this chat already said to it.
+    const threadKey = providerThreadContinuityKey(managed);
 
     if (isCto && ctoStateService) {
-      sections.push([
-        "CTO Runtime Identity",
-        ctoStateService.previewSystemPrompt().prompt,
-      ].join("\n"));
+      // The CTO prefix is two halves with very different lifetimes.
+      //
+      // STATIC — doctrine, continuity model, memory guidance, the ADE
+      // architecture document and the capability manifest. ~21 KB, byte
+      // identical on turn 2 and turn 200, and a live provider thread holds it
+      // from the first send. Re-sending it every turn is what grew a real CTO
+      // thread from 46k to 237k input tokens in 18 turns and tripped codex
+      // auto-compaction mid-voice-call. It is staged once per provider thread
+      // and re-staged when the thread changes (rotation, handoff, resume onto a
+      // new thread, provider/model switch, fresh session) or when the prompt's
+      // own content changes — the section's `key` covers an identity rename or
+      // an edited prompt extension, which must not wait for a rotation.
+      //
+      // VOLATILE — everything `buildReconstructionContext` returns: identity
+      // line, working context, memory sections, the live project-state block.
+      // Perishable by construction, so it rides every send exactly as before.
+      const staticSection = ctoStateService.buildStaticContextSection();
+      if (
+        providerThreadContinuityChanged(managed.ctoStaticContextThreadKey, threadKey)
+        || managed.ctoStaticContextPromptKey !== staticSection.key
+      ) {
+        managed.ctoStaticContextThreadKey = threadKey;
+        managed.ctoStaticContextPromptKey = staticSection.key;
+        managed.ctoStaticContextPending = true;
+      }
+      if (managed.ctoStaticContextPending) {
+        sections.push([staticSection.title, staticSection.body].join("\n"));
+      }
       sections.push(ctoStateService.buildReconstructionContext(8));
     }
 
@@ -12702,8 +12779,7 @@ export function createAgentChatService(args: {
     // this function, so the key comparison catches them without new plumbing.
     // Sticky until a send actually consumes it, because this function runs
     // several times per turn and a later rebuild must not drop an armed tail.
-    const threadKey = providerThreadContinuityKey(managed);
-    if (threadKey !== managed.conversationTailThreadKey) {
+    if (providerThreadContinuityChanged(managed.conversationTailThreadKey, threadKey)) {
       managed.conversationTailThreadKey = threadKey;
       managed.conversationTailPending = true;
     }
@@ -12880,10 +12956,16 @@ export function createAgentChatService(args: {
 
     if (hadReplay) managed.pendingTranscriptReplay = null;
     if (hadReconstruction) managed.pendingReconstructionContext = null;
-    // Only a tail that survived the budget counts as delivered. If truncation
-    // ate the section the flag stays armed and the next send carries it again.
+    // Only a section that survived the budget counts as delivered. If
+    // truncation ate it the flag stays armed and the next send carries it
+    // again. This matters most for the static block: the prefix is truncated
+    // tail-first, so the static section is the first thing a tight budget cuts,
+    // and a thread must never be left believing it was told its doctrine.
     if (reconstruction.includes(RECENT_CONVERSATION_TAIL_TITLE)) {
       managed.conversationTailPending = false;
+    }
+    if (reconstruction.includes(CTO_STATIC_CONTEXT_TITLE)) {
+      managed.ctoStaticContextPending = false;
     }
     // Consumption has to be durable: `pendingTranscriptReplay` is restored on
     // reconstruct, so clearing it in memory alone would replay the whole
@@ -21070,6 +21152,9 @@ export function createAgentChatService(args: {
       pendingReconstructionContext: null,
       conversationTailThreadKey: null,
       conversationTailPending: false,
+      ctoStaticContextThreadKey: null,
+      ctoStaticContextPromptKey: null,
+      ctoStaticContextPending: false,
       pendingTranscriptReplay: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
@@ -35667,6 +35752,9 @@ export function createAgentChatService(args: {
       pendingReconstructionContext: null,
       conversationTailThreadKey: null,
       conversationTailPending: false,
+      ctoStaticContextThreadKey: null,
+      ctoStaticContextPromptKey: null,
+      ctoStaticContextPending: false,
       pendingTranscriptReplay: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
@@ -36854,6 +36942,9 @@ export function createAgentChatService(args: {
       pendingReconstructionContext: null,
       conversationTailThreadKey: null,
       conversationTailPending: false,
+      ctoStaticContextThreadKey: null,
+      ctoStaticContextPromptKey: null,
+      ctoStaticContextPending: false,
       pendingTranscriptReplay: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
@@ -54011,15 +54102,36 @@ export function createAgentChatService(args: {
 
       sessionTurnCollectors.set(sessionId, collector);
 
-      void executePreparedSendMessage(prepared).catch((error) => {
-        if (collector.timeout) {
-          clearTimeout(collector.timeout);
-        }
-        if (sessionTurnCollectors.get(sessionId) === collector) {
-          sessionTurnCollectors.delete(sessionId);
-        }
-        reject(error instanceof Error ? error : new Error(String(error)));
-      });
+      // The headless path is a real CTO turn, not a side channel: the voice's
+      // `ask_cto` reaches the thread through here, and without this refresh it
+      // answered off whatever the live-state block held when the last
+      // interactive send ran — lanes, PR state, dirty flags and scheduled work
+      // as they were minutes or hours ago. That is worse than no block, because
+      // the doctrine tells the CTO not to re-derive them. It is the same call
+      // the interactive send makes, so the static half is still staged once per
+      // provider thread and only the volatile half is rebuilt; and it is
+      // idempotent, because it REPLACES the pending context rather than
+      // appending to it and the static block stays armed until a send actually
+      // consumes it.
+      //
+      // It runs HERE, on the way into the dispatch, rather than before
+      // `prepareSendMessage`: `runSessionTurn` has to reach this line
+      // synchronously, since a `forceDisposeAll` racing a just-started headless
+      // turn can only reject a collector that is already registered. The prefix
+      // is consumed downstream inside `executePreparedSendMessage`, so this is
+      // early enough. Failures are already swallowed inside the refresh — a
+      // slow PR round-trip must not be able to fail the turn.
+      void refreshCtoLiveStateForTurn(sessionId)
+        .then(() => executePreparedSendMessage(prepared))
+        .catch((error) => {
+          if (collector.timeout) {
+            clearTimeout(collector.timeout);
+          }
+          if (sessionTurnCollectors.get(sessionId) === collector) {
+            sessionTurnCollectors.delete(sessionId);
+          }
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
       });
     } finally {
       if (trimmedVoiceCallId && managed.activeVoiceCallId === trimmedVoiceCallId) {

@@ -129,6 +129,23 @@ export type CtoSystemPromptPreview = {
   sections: CtoSystemPromptPreviewSection[];
 };
 
+/**
+ * The immutable half of the CTO's per-turn context prefix.
+ *
+ * Doctrine, continuity model, memory guidance, the ADE environment knowledge
+ * document and the capability manifest do not change between two turns of the
+ * same conversation, so a provider thread that has already been told them holds
+ * them verbatim. `key` is the content identity of `body`: it changes only when
+ * the prompt itself changes (an identity rename, an edited prompt extension, a
+ * new capability manifest), which is the one case a live thread must be told
+ * again.
+ */
+export type CtoStaticContextSection = {
+  title: string;
+  body: string;
+  key: string;
+};
+
 export type CtoGetOnboardingStateResult = CtoOnboardingState;
 
 export type CtoCompleteOnboardingStepArgs = {

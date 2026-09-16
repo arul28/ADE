@@ -6,6 +6,7 @@ import { buildAdeGitignore } from "../../../shared/adeLayout";
 import { openKvDb } from "../state/kvDb";
 import {
   CTO_LIVE_STATE_MAX_CHARS,
+  CTO_STATIC_CONTEXT_TITLE,
   createCtoStateService,
   renderCtoLiveStateBlock,
   type CtoLiveStateSnapshot,
@@ -369,6 +370,50 @@ describe("ctoStateService", () => {
     expect(reconstruction).not.toContain("ADE Architecture");
     expect(reconstruction).not.toContain("ADE Operational Knowledge");
     expect(reconstruction).toContain("CTO Identity");
+
+    fixture.db.close();
+  });
+
+  /**
+   * The per-turn prefix is split by lifetime, and the split has to be a real
+   * partition: anything that lands in both halves is paid for on every single
+   * turn for nothing, and anything in neither is simply lost.
+   */
+  it("splits the CTO prefix into an immutable half and a volatile half", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    const staticSection = service.buildStaticContextSection();
+    expect(staticSection.title).toBe(CTO_STATIC_CONTEXT_TITLE);
+    expect(staticSection.body).toBe(service.previewSystemPrompt().prompt);
+    // The immutable half is where the doctrine and the architecture document
+    // live, and it is the bulk of the prefix.
+    expect(staticSection.body).toContain("Immutable ADE doctrine");
+    expect(staticSection.body).toContain("ADE Architecture");
+    expect(staticSection.body).toContain("ADE operator tools");
+    expect(staticSection.body.length).toBeGreaterThan(10_000);
+
+    // The volatile half repeats none of it.
+    const volatileSection = service.buildReconstructionContext(8);
+    expect(volatileSection).toContain("CTO Context");
+    expect(volatileSection).not.toContain("Immutable ADE doctrine");
+    expect(volatileSection).not.toContain("ADE Architecture");
+    expect(volatileSection).not.toContain("registered ADE operator tool schemas");
+
+    // Same prompt, same key — that is what lets the chat service stage it once
+    // per provider thread instead of once per turn.
+    expect(service.buildStaticContextSection().key).toBe(staticSection.key);
+
+    // A changed prompt is a changed key, so a live thread is told again rather
+    // than left holding a stale name or an edited extension.
+    service.updateIdentity({ name: "Ada" });
+    const renamed = service.buildStaticContextSection();
+    expect(renamed.key).not.toBe(staticSection.key);
+    expect(renamed.body).toContain("You are Ada.");
 
     fixture.db.close();
   });

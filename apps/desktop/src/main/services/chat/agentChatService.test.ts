@@ -10932,6 +10932,209 @@ describe("createAgentChatService", () => {
       db.close();
     });
 
+    /**
+     * The CTO prefix is two halves with very different lifetimes, and only one
+     * of them is worth re-sending. The immutable half (doctrine, the ADE
+     * architecture document, the capability manifest) is ~21 KB that a live
+     * provider thread already holds; re-staging it every turn grew a real CTO
+     * thread from 46k to 237k input tokens in 18 turns and tripped Codex
+     * auto-compaction mid-voice-call.
+     */
+    function mockClaudeCtoSdk() {
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-cto-prefix", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          session_id: "sdk-cto-prefix",
+          message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      const sdkHandle = {
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cto-prefix",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+      return send;
+    }
+
+    it("stages the CTO's immutable prefix once per provider thread and the volatile half every turn", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      const first = await turn("What is on fire?");
+      expect(first).toContain("CTO Runtime Identity");
+      expect(first).toContain("Immutable ADE doctrine");
+      expect(first).toContain("ADE environment knowledge");
+      expect(first).toContain("ADE Architecture");
+      expect(first).toContain("CTO Context");
+
+      // Turn two talks to the same Claude SDK session, which holds all of the
+      // above verbatim. Only the perishable half rides again.
+      const second = await turn("And now?");
+      expect(second).not.toContain("CTO Runtime Identity");
+      expect(second).not.toContain("Immutable ADE doctrine");
+      expect(second).not.toContain("ADE Architecture");
+      expect(second).toContain("CTO Context");
+      expect(Buffer.byteLength(second)).toBeLessThan(Buffer.byteLength(first) / 2);
+
+      // The other way the block goes stale is the prompt changing under a live
+      // thread. That must re-stage on the very next turn rather than wait for a
+      // rotation that may never come.
+      ctoStateService.updateIdentity({ name: "Ada" });
+      const third = await turn("Who are you?");
+      expect(third).toContain("CTO Runtime Identity");
+      expect(third).toContain("You are Ada.");
+
+      const fourth = await turn("Carry on.");
+      expect(fourth).not.toContain("CTO Runtime Identity");
+      expect(fourth).toContain("CTO Context");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    it("re-stages the CTO's immutable prefix onto a thread that has never seen it", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (sessionId: string, text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      expect(await turn(session.id, "First.")).toContain("CTO Runtime Identity");
+      expect(await turn(session.id, "Second.")).not.toContain("CTO Runtime Identity");
+
+      // A rotated thread is a model that has been told nothing. The
+      // reconstruction context has to be complete again.
+      const fresh = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(fresh.session.id).not.toBe(session.id);
+      const afterRotation = await turn(fresh.session.id, "Still there?");
+      expect(afterRotation).toContain("CTO Runtime Identity");
+      expect(afterRotation).toContain("ADE Architecture");
+      expect(afterRotation).toContain("CTO Context");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * `runSessionTurn` is the headless path, and the CTO voice's `ask_cto`
+     * turns run on it. It used to skip `refreshCtoLiveStateForTurn` entirely,
+     * so a voice turn reached the model with whatever live state the last
+     * interactive send left behind — and with no reconstruction context at all
+     * once that send had consumed it. Stale lanes/PRs/dirty flags are worse
+     * than none here, because the doctrine tells the CTO not to re-derive them.
+     */
+    it("refreshes the CTO's live state on the headless turn path too", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const refreshLiveState = vi.spyOn(ctoStateService, "refreshLiveState");
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      // Turn one goes through the interactive path and stages everything.
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "What is on fire?" });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+
+      // Turn two is headless, on the same intact thread.
+      refreshLiveState.mockClear();
+      send.mockClear();
+      await service.runSessionTurn({ sessionId: session.id, text: "And now?", timeoutMs: 15_000 });
+      const headless = String(send.mock.calls.at(-1)?.[0] ?? "");
+
+      expect(refreshLiveState).toHaveBeenCalled();
+      // The volatile half rides the headless turn exactly as it rides an
+      // interactive one.
+      expect(headless).toContain("CTO Context");
+      expect(headless).toContain("Current working context");
+      // And the thread is intact, so the immutable half does not ride again.
+      expect(headless).not.toContain("CTO Runtime Identity");
+      expect(headless).not.toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The tempting shortcut is "codex already gets the doctrine in its
+     * developer instructions, so skip the thread item entirely". It does not:
+     * `buildCodexDeveloperInstructions` builds the generic coding-agent prompt,
+     * and the CTO doctrine and capability manifest exist in exactly one place —
+     * the static context block. Dropping it for codex would have silently taken
+     * the CTO's whole role away on that provider.
+     */
+    it("does not carry the CTO doctrine in codex developer instructions", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        identityKey: "cto",
+      });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "What is on fire?" });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const threadStart = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      const developerInstructions = String(
+        (threadStart?.params as Record<string, unknown> | undefined)?.developerInstructions ?? "",
+      );
+      expect(developerInstructions.length).toBeGreaterThan(0);
+      expect(developerInstructions).not.toContain("Immutable ADE doctrine");
+      expect(developerInstructions).not.toContain("ADE operator tools");
+
+      const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      expect(JSON.stringify(turnStart?.params ?? {})).toContain("CTO Runtime Identity");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
     // A freshly created CTO thread used to open on a blank screen. It now seeds
     // one real, visible first turn. The flag lives in onboarding state so it
     // survives restarts and cannot fire twice.
