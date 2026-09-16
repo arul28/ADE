@@ -7993,7 +7993,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return {
             kind: "file" as const,
             label: path,
-            insertText: `@file:${path}`,
+            // `@<path>`, NOT `@file:<path>`. This was the only `@file:` token in
+            // the repo: the desktop and iOS composers both insert the bare
+            // path, so the TUI was sending a different spelling of the same
+            // intent, and the shared chip parser — which forbids `:` so the
+            // entity grammar keeps `@chat:` — could never pill it.
+            insertText: `@${path}`,
             detail: isDirectory ? "folder" : "file",
             filePath: path,
             isDirectory,

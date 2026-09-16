@@ -123,7 +123,20 @@
       ]
     },
     {
+      "_why": "An @-prefixed dotted token pills as a file. Accepted cost of the extension arm: a root-level `@README.md` must chip, and in a coding chat a dotted token after `@` is far likelier a filename than a domain. An email is still excluded by the leading boundary.",
       "text": "mail @example.com now",
+      "chips": [{ "kind": "file", "token": "example.com", "label": "example.com" }]
+    },
+    {
+      "text": "read @README.md first",
+      "chips": [{ "kind": "file", "token": "README.md", "label": "README.md" }]
+    },
+    {
+      "text": "ping @someone please",
+      "chips": []
+    },
+    {
+      "text": "ends in a dot @foo. then",
       "chips": []
     },
     {

@@ -123,12 +123,20 @@ describe("parseChips: file and folder tokens", () => {
     expect(parseChips("open @src/a/b/ (there)")[0]!.token).toBe("src/a/b/");
   });
 
-  it("leaves the entity grammar and non-paths alone", () => {
-    // No `/` means it could be a domain or a handle; `:` belongs to the entity
-    // grammar. Both must stay out of this matcher.
-    expect(parseChips("mail @example.com now")).toHaveLength(0);
+  it("pills a root-level file, which has no slash to rely on", () => {
+    // `@README.md` is what a root-level quick-open pick inserts. Requiring a
+    // slash dropped the chip for every file at the repo root.
+    expect(parseChips("read @README.md first")[0]!.token).toBe("README.md");
+    expect(parseChips("see @package.json")[0]!.kind).toBe("file");
+  });
+
+  it("leaves the entity grammar and true non-paths alone", () => {
+    // `:` belongs to the entity grammar, an email is excluded by the leading
+    // boundary, and a bare word with no slash and no extension is not a path.
     expect(parseChips("@bogus:123 and @chat: are not mentions")).toHaveLength(0);
     expect(parseChips("arul@chat/nope is an email-shaped substring")).toHaveLength(0);
+    expect(parseChips("ping @someone please")).toHaveLength(0);
+    expect(parseChips("ends in a dot @foo. then")).toHaveLength(0);
     const entity = parseChips("@chat:9e2315e8ddef");
     expect(entity).toHaveLength(1);
     expect(entity[0]!.kind).toBe("chat");

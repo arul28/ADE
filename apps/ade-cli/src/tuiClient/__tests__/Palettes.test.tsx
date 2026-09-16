@@ -26,7 +26,7 @@ const mentionSuggestions: MentionSuggestion[] = [
     kind: "file",
     label: "apps/ade-cli/src/tuiClient/components/MentionPalette.tsx",
     insertText:
-      "@file:apps/ade-cli/src/tuiClient/components/MentionPalette.tsx",
+      "@apps/ade-cli/src/tuiClient/components/MentionPalette.tsx",
     detail: "file",
     filePath: "apps/ade-cli/src/tuiClient/components/MentionPalette.tsx",
   },

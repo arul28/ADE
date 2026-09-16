@@ -469,7 +469,14 @@ enum WorkChipPathDetector {
   // The leading boundary mirrors `WorkChatMentionDetector`, so an email or a
   // mid-word `arul@chat/nope` is not a path mention either.
   private static let regex = try! NSRegularExpression(
-    pattern: "(?:^|[ \\t\\r\\n(\\[{,])@([^\\s:]*/[^\\s:]*)",
+    pattern: "(?:^|[ \\t\\r\\n(\\[{,])@([^\\s:]*(?:/[^\\s:]*|\\.\\w{1,8}))",
+    options: []
+  )
+  /// A short file extension, which is what lets a ROOT-level `@README.md`
+  /// chip: it has no `/` to qualify it. Capped at 1-8 word characters so prose
+  /// cannot pass.
+  private static let extensionSuffix = try! NSRegularExpression(
+    pattern: "\\.\\w{1,8}$",
     options: []
   )
   /// Trailing sentence punctuation belongs to the prose, not the path.
@@ -493,9 +500,15 @@ enum WorkChipPathDetector {
       ) {
         raw = raw.substring(to: strip.range.location) as NSString
       }
-      // A folder's own trailing slash survives the strip above, and the `/`
-      // requirement is re-checked because the strip can eat one.
-      guard raw.range(of: "/").location != NSNotFound else { return nil }
+      // A folder's own trailing slash survives the strip above. Both arms are
+      // re-checked AFTER the strip, because it can eat the very `/` or
+      // extension that qualified the token: `@foo.` must not become a chip.
+      guard raw.range(of: "/").location != NSNotFound
+        || extensionSuffix.firstMatch(
+          in: raw as String,
+          range: NSRange(location: 0, length: raw.length)
+        ) != nil
+      else { return nil }
       let isDirectory = raw.hasSuffix("/")
       let path = isDirectory ? raw.substring(to: raw.length - 1) : (raw as String)
       return WorkChipPath(

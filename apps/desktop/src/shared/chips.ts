@@ -315,17 +315,25 @@ function smartLinkKindToChipKind(kind: SmartLinkPreview["kind"]): ChipKind {
  *
  * Two deliberate restrictions:
  *
- *   - **The token must contain a `/`.** A bare `@name.ext` is indistinguishable
- *     from a domain or a handle (`@example.com`), and turning one of those into
- *     a file pill that navigates nowhere is worse than leaving a root-level file
- *     as text. Nested paths are the overwhelming majority of quick-open hits.
+ *   - **The token needs a `/` or a short file extension.** A root-level pick
+ *     inserts `@README.md`, so requiring a slash silently dropped the chip for
+ *     every file at the repo root — and `package.json`, `Dockerfile.web` and
+ *     `README.md` are among the most-referenced files there are. The extension
+ *     arm is capped at 1-8 word characters so prose like `@foo.` or a sentence
+ *     fragment cannot qualify.
+ *
+ *     The cost is accepted, not overlooked: a bare `@example.com` does match,
+ *     and renders as a file pill. In a coding chat an `@`-prefixed dotted token
+ *     is far more likely a filename than a domain, an email is already excluded
+ *     by the leading boundary, and the failure mode is a pill that opens
+ *     nothing rather than any loss of the text.
  *   - **No `:` anywhere in the token.** That is what keeps `@chat:abc` and
  *     `@bogus:123` out of this matcher and leaves them to the entity grammar.
  *
  * The leading boundary mirrors `parseChatMentions`, so an email or a mid-word
  * `foo@bar/baz` is not a mention here either.
  */
-const PATH_MENTION_RE = /(^|[ \t\r\n([{,])@([^\s:]*\/[^\s:]*)/g;
+const PATH_MENTION_RE = /(^|[ \t\r\n([{,])@([^\s:]*(?:\/[^\s:]*|\.\w{1,8}))/g;
 
 function parsePathMentions(text: string): ChipMatch[] {
   const out: ChipMatch[] = [];
@@ -337,7 +345,9 @@ function parsePathMentions(text: string): ChipMatch[] {
     // Trailing sentence punctuation belongs to the prose, not the path. A
     // folder's own trailing slash is kept — it is what marks it as a folder.
     raw = raw.replace(/[.,;!?)\]}]+$/, "");
-    if (!raw.includes("/")) continue;
+    // Re-checked AFTER the punctuation strip: `@foo.` would otherwise qualify
+    // on an extension that the strip just removed.
+    if (!raw.includes("/") && !/\.\w{1,8}$/.test(raw)) continue;
     const start = match.index + lead.length;
     const isDirectory = raw.endsWith("/");
     const chip = chipFromPath(isDirectory ? raw.slice(0, -1) : raw, { isDirectory });

@@ -213,12 +213,21 @@ final class WorkChipDetectorTests: XCTestCase {
     XCTAssertEqual(chips("open @src/a/b/ (there)").first?.token, "src/a/b/")
   }
 
-  func testLeavesTheEntityGrammarAndNonPathsAlone() {
-    // No `/` means it could be a domain or a handle; `:` belongs to the entity
-    // grammar. Both must stay out of the path matcher.
-    XCTAssertEqual(chips("mail @example.com now").count, 0)
+  func testPillsARootLevelFileWhichHasNoSlashToRelyOn() {
+    // `@README.md` is what a root-level quick-open pick inserts. Requiring a
+    // slash dropped the chip for every file at the repo root.
+    XCTAssertEqual(chips("read @README.md first").first?.token, "README.md")
+    XCTAssertEqual(chips("see @package.json").first?.kind, .file)
+  }
+
+  func testLeavesTheEntityGrammarAndTrueNonPathsAlone() {
+    // `:` belongs to the entity grammar, an email is excluded by the leading
+    // boundary, and a bare word with neither a slash nor an extension is not a
+    // path. A dotted token IS a path now — see the root-level test above.
     XCTAssertEqual(chips("@bogus:123 and @chat: are not mentions").count, 0)
     XCTAssertEqual(chips("arul@chat/nope is an email-shaped substring").count, 0)
+    XCTAssertEqual(chips("ping @someone please").count, 0)
+    XCTAssertEqual(chips("ends in a dot @foo. then").count, 0)
     let entity = chips("@chat:9e2315e8ddef")
     XCTAssertEqual(entity.count, 1)
     XCTAssertEqual(entity.first?.kind, .chat)

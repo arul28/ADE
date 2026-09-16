@@ -1588,13 +1588,14 @@ function legacyLaunchConfigStorageKey(scope: {
   ].map(encodeURIComponent).join(":");
 }
 
+/** `[primaryTier, migrationTier]` — see `readLatestLastLaunchConfig`. */
 function launchConfigStorageKeys(scope: {
   bindingKey?: string | null;
   projectRoot: string | null | undefined;
   laneId: string | null | undefined;
   surfaceProfile: ChatSurfaceProfile;
   workDraftKind: WorkDraftLaunchKind | WorkDraftStorageKind;
-}): string[] {
+}): string[][] {
   const sharedKind = resolveWorkDraftStorageKind(scope.workDraftKind);
   // Index 0 is the WRITE key and the whole list is the READ order, so the
   // machine-scoped key must come first and the unscoped one survives only as a
@@ -1608,25 +1609,31 @@ function launchConfigStorageKeys(scope: {
       launchConfigStorageKey({ ...scope, workDraftKind: "cli" }),
     );
   }
+  const migration: string[] = [];
   if (scope.bindingKey?.trim()) {
-    keys.push(launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: sharedKind }));
+    migration.push(launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: sharedKind }));
     if (sharedKind === "work-start") {
-      keys.push(
+      migration.push(
         launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: "chat" }),
         launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: "cli" }),
       );
     }
   }
-  // Legacy per-lane keys come last: a machine-wide value always wins, and the
-  // old value is only consulted when nothing machine-wide exists yet.
-  keys.push(legacyLaunchConfigStorageKey({ ...scope, workDraftKind: sharedKind }));
+  // Legacy per-lane keys join the MIGRATION tier: a machine-scoped value always
+  // wins, and an older-shaped value is only consulted when the current scope
+  // has nothing at all. Returning tiers rather than one list is what makes that
+  // precedence real — a flat list is read by recency, and the migration entry
+  // is usually the newer one.
+  migration.push(legacyLaunchConfigStorageKey({ ...scope, workDraftKind: sharedKind }));
   if (sharedKind === "work-start") {
-    keys.push(
+    migration.push(
       legacyLaunchConfigStorageKey({ ...scope, workDraftKind: "chat" }),
       legacyLaunchConfigStorageKey({ ...scope, workDraftKind: "cli" }),
     );
   }
-  return [...new Set(keys)];
+  const primary = [...new Set(keys)];
+  const primarySet = new Set(primary);
+  return [primary, [...new Set(migration)].filter((key) => !primarySet.has(key))];
 }
 
 function composerDraftStorageKey(scope: {
@@ -2587,16 +2594,33 @@ function readLastLaunchConfig(storageKey: string, defaults: NativeControlState):
   return null;
 }
 
-function readLatestLastLaunchConfig(storageKeys: string[], defaults: NativeControlState): LastLaunchConfig | null {
-  let latest: LastLaunchConfig | null = null;
-  for (const storageKey of storageKeys) {
-    const candidate = readLastLaunchConfig(storageKey, defaults);
-    if (!candidate) continue;
-    if (!latest || Date.parse(candidate.updatedAt) > Date.parse(latest.updatedAt)) {
-      latest = candidate;
+/**
+ * The newest config within the HIGHEST-PRECEDENCE tier that has one.
+ *
+ * Tiers, not one flat recency race. Recency is the right tie-break between
+ * PEERS — the `work-start` / `chat` / `cli` spellings of the same machine — but
+ * it is the wrong answer across scopes. The machine-scoped key and the
+ * unscoped migration key are not peers: the migration entry is the
+ * cross-machine value this scoping exists to stop honouring, and it is very
+ * often the NEWER of the two (every pre-fix launch wrote it). Comparing them by
+ * timestamp let it win and quietly restored the leak the key change fixed.
+ */
+function readLatestLastLaunchConfig(
+  storageKeyTiers: readonly string[][],
+  defaults: NativeControlState,
+): LastLaunchConfig | null {
+  for (const tier of storageKeyTiers) {
+    let latest: LastLaunchConfig | null = null;
+    for (const storageKey of tier) {
+      const candidate = readLastLaunchConfig(storageKey, defaults);
+      if (!candidate) continue;
+      if (!latest || Date.parse(candidate.updatedAt) > Date.parse(latest.updatedAt)) {
+        latest = candidate;
+      }
     }
+    if (latest) return latest;
   }
-  return latest;
+  return null;
 }
 
 function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): void {
@@ -3465,14 +3489,17 @@ export function AgentChatPane({
   const legacyWorkDraftLaneId = isWorkDraftComposer ? initialWorkDraftLaneIdRef.current : null;
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
   const lastLaunchConfigStorageKeys = useMemo(() => {
-    const primary = launchConfigStorageKeys({
+    const [primary, migration] = launchConfigStorageKeys({
       bindingKey: projectBinding?.key ?? null,
       projectRoot,
       laneId: draftLaunchConfigLaneScopeId,
       surfaceProfile,
       workDraftKind: workDraftStorageKind,
     });
-    const legacy = legacyWorkDraftLaneId
+    // A work-draft composer also reads the lane it was opened from. Those keys
+    // are a MIGRATION source, never a peer of the current scope, so they join
+    // the lower tier rather than racing the primary one on recency.
+    const [legacyPrimary, legacyMigration] = legacyWorkDraftLaneId
       ? launchConfigStorageKeys({
           bindingKey: projectBinding?.key ?? null,
           projectRoot,
@@ -3480,10 +3507,19 @@ export function AgentChatPane({
           surfaceProfile,
           workDraftKind: workDraftStorageKind,
         })
-      : [];
-    return [...new Set([...primary, ...legacy])];
+      : [[], []];
+    const primaryTier = [...new Set(primary ?? [])];
+    const primarySet = new Set(primaryTier);
+    const migrationTier = [...new Set([
+      ...(migration ?? []),
+      ...(legacyPrimary ?? []),
+      ...(legacyMigration ?? []),
+    ])].filter((key) => !primarySet.has(key));
+    return [primaryTier, migrationTier];
   }, [draftLaunchConfigLaneScopeId, legacyWorkDraftLaneId, projectBinding?.key, projectRoot, surfaceProfile, workDraftStorageKind]);
-  const lastLaunchConfigStorageKey = lastLaunchConfigStorageKeys[0]!;
+  // Writes always go to the machine-scoped key: the first entry of the PRIMARY
+  // tier. The migration tier is read-only by construction.
+  const lastLaunchConfigStorageKey = lastLaunchConfigStorageKeys[0]![0]!;
   const draftLaunchConfigScopeKey = useMemo(
     () => `${projectRoot ?? "project"}:${draftLaunchConfigLaneScopeId ?? "no-lane"}:${surfaceProfile}:${workDraftStorageKind}`,
     [draftLaunchConfigLaneScopeId, projectRoot, surfaceProfile, workDraftStorageKind],
