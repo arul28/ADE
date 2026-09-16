@@ -1362,9 +1362,28 @@ function turnEndRows(
   return rows;
 }
 
-function isTranscriptBlockVisible(block: AggregatedBlock): boolean {
+function filesChangedGroupClaimed(
+  block: Extract<AggregatedBlock, { kind: "files-changed-group" }>,
+  blocks: AggregatedBlock[],
+): boolean {
+  const start = blocks.indexOf(block);
+  if (start < 0) return false;
+  for (let index = start + 1; index < blocks.length; index += 1) {
+    const next = blocks[index];
+    if (!next) continue;
+    if (next.kind === "user-bubble") return false;
+    if (next.kind !== "turn-end") continue;
+    if (!block.turnId || !next.turnId || block.turnId === next.turnId) return true;
+  }
+  return false;
+}
+
+function isTranscriptBlockVisible(block: AggregatedBlock, blocks: AggregatedBlock[]): boolean {
   if (block.kind === "tool-calls-group") return false;
-  if (block.kind === "files-changed-group" && !block.live) return false;
+  if (block.kind === "files-changed-group") {
+    if (block.live) return true;
+    return !filesChangedGroupClaimed(block, blocks);
+  }
   return true;
 }
 
@@ -1377,7 +1396,7 @@ function rowsForBlocks(
 ): RenderedChatRow[] {
   const rows: RenderedChatRow[] = [];
   let prevKind: AggregatedBlock["kind"] | null = null;
-  for (const block of blocks.filter(isTranscriptBlockVisible)) {
+  for (const block of blocks.filter((candidate) => isTranscriptBlockVisible(candidate, blocks))) {
     if (prevKind && shouldInsertSpacer(prevKind, block.kind)) {
       rows.push(spacerRow(`${block.id}:spacer`));
     }
@@ -2131,7 +2150,7 @@ function ChatViewComponent({
   const shimmerTick = useShimmerTick();
   const rowInnerWidth = Math.max(24, width - 4);
   const presentedBlocks = useMemo(
-    () => blocks.filter(isTranscriptBlockVisible),
+    () => blocks.filter((block) => isTranscriptBlockVisible(block, blocks)),
     [blocks],
   );
   const activeToolEntries = useMemo(

@@ -1686,6 +1686,30 @@ describe("ChatView", () => {
     expect(resolveFileChangeDiffAction(blocks, actionId)?.selected.itemId).toBe("f1");
   });
 
+  it("keeps markerless file changes visible after a later user message", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "file_change", path: "src/orphan.ts", diff: "+kept", kind: "modify", itemId: "f1", status: "completed", turnId: "t1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "user_message", text: "next turn" },
+      },
+    ];
+    const blocks = aggregateChatBlocks({ events, notices: [], activeSession: session });
+    const fileGroup = blocks.find((block) => block.kind === "files-changed-group");
+    expect(fileGroup?.kind).toBe("files-changed-group");
+    if (fileGroup?.kind !== "files-changed-group") throw new Error("expected files-changed-group");
+    expect(fileGroup.live).toBe(false);
+    const rows = renderChatSelectableRows({ blocks, width: 120 });
+    expect(rows.some((row) => row.text?.includes("src/orphan.ts"))).toBe(true);
+  });
+
   it("tags a collapsed work-group header with an expandable click-target id", () => {
     const events: AgentChatEventEnvelope[] = [
       {

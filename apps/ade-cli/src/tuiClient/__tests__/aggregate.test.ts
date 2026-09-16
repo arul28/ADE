@@ -297,6 +297,20 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(activityEntries.map((entry) => entry.label)).toEqual(["first done", "second done"]);
   });
 
+  it("folds a tagged start into an untagged result in the same turn", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-1", description: "running", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", { type: "subagent_result", taskId: "agent-1", parentToolUseId: "spawn-1", status: "completed", summary: "child done" } as unknown as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    const activityEntries = blocks
+      .filter((block): block is Extract<AggregatedBlock, { kind: "activity-bundle" }> => block.kind === "activity-bundle")
+      .flatMap((block) => block.entries);
+    expect(activityEntries).toHaveLength(1);
+    expect(activityEntries[0]).toMatchObject({ label: "child done", status: "ok" });
+  });
+
   it("normalizes dotted subagent lifecycle events before activity bundling", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", {
@@ -867,6 +881,40 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(turnEnds).toHaveLength(2);
     expect(turnEnds[0]?.fileEntries).toEqual([]);
     expect(turnEnds[1]?.fileEntries.map((entry) => entry.path)).toEqual(["src/b.ts"]);
+  });
+
+  it("merges same-path file bursts into one turn-end entry", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "+added",
+        itemId: "f1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:01.000Z", { type: "text", text: "still working", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "-gone\n-also",
+        itemId: "f2",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:03.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+    expect(turnEnd.fileEntries).toHaveLength(1);
+    expect(turnEnd.fileEntries[0]).toMatchObject({
+      path: "src/app.ts",
+      additions: 1,
+      deletions: 2,
+    });
   });
 
   it("derives command duration from running and completed command events when provider duration is missing", () => {

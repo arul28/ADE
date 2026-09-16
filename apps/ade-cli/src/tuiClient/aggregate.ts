@@ -632,15 +632,36 @@ function subagentFoldKey(
 ): string | null {
   const identityKey = subagentIdentityKey(event);
   if (!identityKey) return null;
-  const turn = turnIdOf(event) ?? "";
   const parentKey = subagentParentKey(event);
   if (parentKey && isParentSubagentPlaceholder(event, parentKey)) {
     const resolvedKeys = resolvedKeysByParent.get(parentKey);
-    if (!resolvedKeys?.size) return `subagent:${turn}:${identityKey}`;
+    if (!resolvedKeys?.size) return `subagent:${identityKey}`;
     if (resolvedKeys.size > 1) return null;
-    return `subagent:${turn}:${Array.from(resolvedKeys)[0]!}`;
+    return `subagent:${Array.from(resolvedKeys)[0]!}`;
   }
-  return `subagent:${turn}:${identityKey}`;
+  return `subagent:${identityKey}`;
+}
+
+function mergeFileEntriesByPath(entries: FileChangeEntry[]): FileChangeEntry[] {
+  const byPath = new Map<string, FileChangeEntry>();
+  const order: string[] = [];
+  for (const entry of entries) {
+    const existing = byPath.get(entry.path);
+    if (!existing) {
+      order.push(entry.path);
+      byPath.set(entry.path, entry);
+      continue;
+    }
+    byPath.set(entry.path, {
+      ...existing,
+      kind: entry.kind,
+      additions: existing.additions + entry.additions,
+      deletions: existing.deletions + entry.deletions,
+      diff: entry.diff.length > existing.diff.length ? entry.diff : existing.diff,
+      status: existing.status === "running" || entry.status === "running" ? "running" : entry.status,
+    });
+  }
+  return order.map((path) => byPath.get(path)!);
 }
 
 function activityBundleEntryFromEvent(
@@ -757,12 +778,11 @@ function appendRuntimeActivityBlock(
 function removeFoldedActivityEntry(
   blocks: AggregatedBlock[],
   foldKey: string,
-  turnId: string | null,
+  fromIndex: number,
 ): void {
-  for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
+  for (let blockIndex = blocks.length - 1; blockIndex >= fromIndex; blockIndex -= 1) {
     const block = blocks[blockIndex];
     if (!block || block.kind !== "activity-bundle") continue;
-    if ((block.turnId ?? null) !== turnId) continue;
     block.entries = block.entries.filter((entry) => entry.foldKey !== foldKey);
     if (block.entries.length === 0) blocks.splice(blockIndex, 1);
   }
@@ -773,9 +793,10 @@ function appendActivityBundleBlock(
   id: string,
   turnId: string | null,
   entry: ActivityBundleEntry,
+  fromIndex: number,
 ): void {
   if (entry.foldKey && entry.status !== "running") {
-    removeFoldedActivityEntry(blocks, entry.foldKey, turnId);
+    removeFoldedActivityEntry(blocks, entry.foldKey, fromIndex);
   }
   const last = blocks[blocks.length - 1];
   let block: Extract<AggregatedBlock, { kind: "activity-bundle" }>;
@@ -1016,7 +1037,7 @@ export function aggregateChatBlocks(args: {
 
     const activityEntry = activityBundleEntryFromEvent(id, event, resolvedSubagentKeysByParent);
     if (activityEntry) {
-      appendActivityBundleBlock(blocks, id, turnId, activityEntry);
+      appendActivityBundleBlock(blocks, id, turnId, activityEntry, toolActivitySegmentStart);
       continue;
     }
 
@@ -1380,7 +1401,7 @@ export function aggregateChatBlocks(args: {
             && (!turnId || !block.turnId || block.turnId === turnId)
           ))
           .flatMap((block) => block.entries);
-      const uniqueFileEntries = Array.from(new Map(fileEntries.map((fileEntry) => [fileEntry.path, fileEntry])).values());
+      const uniqueFileEntries = mergeFileEntriesByPath(fileEntries);
       const endedAt = safeMs(envelope.timestamp);
       const startedAt = turnStartedAt.get(turnKey);
       const turnEndBlock: Extract<AggregatedBlock, { kind: "turn-end" }> = {
@@ -1408,9 +1429,7 @@ export function aggregateChatBlocks(args: {
           existing.entries = Array.from(new Map(
             [...existing.entries, ...turnEndBlock.entries].map((toolEntry) => [toolEntry.itemId, toolEntry]),
           ).values());
-          existing.fileEntries = Array.from(new Map(
-            [...existing.fileEntries, ...turnEndBlock.fileEntries].map((fileEntry) => [fileEntry.path, fileEntry]),
-          ).values());
+          existing.fileEntries = mergeFileEntriesByPath([...existing.fileEntries, ...turnEndBlock.fileEntries]);
         } else {
           blocks.splice(interruptedTerminusCluster.startBlockIndex);
           blocks.push(turnEndBlock);

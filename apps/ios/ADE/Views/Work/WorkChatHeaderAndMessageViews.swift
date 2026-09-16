@@ -985,7 +985,7 @@ struct WorkTurnEndMarkerView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(ADEColor.textMuted)
-        .frame(minHeight: 28)
+        .frame(minHeight: 44)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
