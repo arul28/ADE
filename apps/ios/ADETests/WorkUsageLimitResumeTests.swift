@@ -683,11 +683,12 @@ final class WorkUsageLimitResumeTests: XCTestCase {
   private func doneEnvelope(
     turnId: String,
     apiErrorStatus: Int?,
-    sequence: Int
+    sequence: Int,
+    timestamp: String? = nil
   ) -> WorkChatEnvelope {
     WorkChatEnvelope(
       sessionId: "chat-1",
-      timestamp: "2026-07-08T00:00:0\(sequence).000Z",
+      timestamp: timestamp ?? "2026-07-08T00:00:0\(sequence).000Z",
       sequence: sequence,
       event: .done(
         status: "failed",
@@ -764,7 +765,12 @@ final class WorkUsageLimitResumeTests: XCTestCase {
           status: .completed
         )
       ),
-      doneEnvelope(turnId: "turn-limit", apiErrorStatus: 429, sequence: 4),
+      doneEnvelope(
+        turnId: "turn-limit",
+        apiErrorStatus: 429,
+        sequence: 4,
+        timestamp: "2026-09-08T19:03:00.000Z"
+      ),
     ]
     let snapshot = buildWorkChatTimelineSnapshot(
       transcript: transcript,
