@@ -13991,23 +13991,19 @@ export function createAgentChatService(args: {
     const inProcessMode = permissions.inProcess?.mode ?? "edit";
 
     const approvalPolicy = (() => {
-      if (chat.defaultApprovalPolicy === "auto") return "never" as const;
       const configuredCodex = permissions.providers?.codex;
       if (configuredCodex === "plan") return "untrusted" as const;
       if (configuredCodex === "full-auto") return "never" as const;
-      if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
-      if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
-      // Codex chat defaults should match the documented "Default permissions"
-      // preset: workspace-write + on-request. Legacy shared CLI edit-mode
-      // fallbacks map to "untrusted", but that represents the explicit Codex
-      // edit preset rather than the default chat preset.
+      // Codex chat defaults match the documented "Default permissions" preset:
+      // workspace-write + on-request. Legacy shared CLI edit-mode fallbacks map
+      // to "untrusted", but that represents the explicit Codex edit preset
+      // rather than the default chat preset.
       if (cliMode === "full-auto") return "never" as const;
       if (cliMode === "read-only") return "on-request" as const;
       return "on-request" as const;
     })();
 
     const sandboxMode = (() => {
-      if (chat.codexSandbox) return chat.codexSandbox;
       if (permissions.providers?.codexSandbox) return permissions.providers.codexSandbox;
       const configuredCodex = permissions.providers?.codex;
       if (configuredCodex === "plan") return "read-only" as const;
@@ -14019,14 +14015,19 @@ export function createAgentChatService(args: {
       return "workspace-write" as const;
     })();
 
-    // `permissions.providers` is the documented per-provider setting, and it
-    // used to be read for Pi alone: every other provider silently ignored it
-    // and fell through to the legacy shared `cli`/`inProcess` knobs. A user who
-    // set a Claude or Codex default in config got no effect at all.
+    // `permissions.providers` is the ONLY per-provider permission source. It is
+    // what the Settings control writes, and it used to be read for Pi alone:
+    // every other provider ignored it and fell through to the legacy shared
+    // `cli`/`inProcess` knobs, so a configured Claude or Codex default had no
+    // effect. The parallel `ai.chat.*` keys this once also consulted had no
+    // writer anywhere in the repo and are being removed; reading one key per
+    // provider is what keeps the written value and the runtime value the same.
+    //
+    // Every branch below ends in a concrete mode. A launch that sends nothing
+    // (automation, CLI, session normalize) depends on this answering.
     const providerPermissions = permissions.providers ?? {};
 
     const claudePermissionMode = (() => {
-      if (chat.claudePermissionMode) return chat.claudePermissionMode;
       const configured = providerPermissions.claude;
       if (configured === "plan") return "plan" as const;
       if (configured === "full-auto") return "bypassPermissions" as const;
@@ -14038,10 +14039,7 @@ export function createAgentChatService(args: {
     })();
 
     const opencodePermissionMode = (() => {
-      if (chat.opencodePermissionMode === "plan" || chat.opencodePermissionMode === "edit" || chat.opencodePermissionMode === "full-auto" || chat.opencodePermissionMode === "config-toml") {
-        return chat.opencodePermissionMode;
-      }
-      const configured = permissions.providers?.opencode;
+      const configured = providerPermissions.opencode;
       if (configured === "plan" || configured === "edit" || configured === "full-auto" || configured === "config-toml") {
         return configured;
       }
@@ -14053,7 +14051,7 @@ export function createAgentChatService(args: {
       return "edit" as const;
     })();
 
-    const piPermissionMode = permissions.providers?.pi
+    const piPermissionMode = providerPermissions.pi
       ?? (inProcessMode === "plan" || inProcessMode === "edit" || inProcessMode === "full-auto" || inProcessMode === "config-toml"
         ? inProcessMode
         : "edit");
