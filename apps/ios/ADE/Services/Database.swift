@@ -2322,6 +2322,11 @@ final class DatabaseService {
     let hasChatSessionLinks = hasTable(named: "pull_request_chat_sessions")
       && tableHasColumn(tableName: "pull_request_chat_sessions", columnName: "pr_id")
       && tableHasColumn(tableName: "pull_request_chat_sessions", columnName: "session_id")
+      // `project_id` is not optional here: the guarded select filters on
+      // `pcs.project_id`, so a table carrying only the other two columns would
+      // pass this check and then fail the WHOLE query with "no such column".
+      // Every column the select names must be proven before it is spliced in.
+      && tableHasColumn(tableName: "pull_request_chat_sessions", columnName: "project_id")
 
     let hasIntegrationWorkflowContext = hasTable(named: "integration_proposals")
       && tableHasColumn(tableName: "integration_proposals", columnName: "linked_pr_id")

@@ -1142,6 +1142,12 @@ extension WorkSessionDestinationView {
     }
 
     let items = (try? await syncService.fetchPullRequestListItems(laneId: trimmed)) ?? []
+    // Lane surfaces and chat surfaces need two different lists, exactly as on
+    // the desktop. The BADGE stays lane-strict (`items`), but a chat can be
+    // linked to a PR that lives on another lane, and `selectChatPrs` only sees
+    // such a row if it is in the list it is handed — a lane-filtered list makes
+    // its cross-lane arm dead code.
+    let projectItems = (try? await syncService.fetchPullRequestListItems()) ?? items
     let remoteSummary: PrSummary?
     if hostReachable && syncService.supportsRemoteAction("prs.getForLane") {
       remoteSummary = try? await syncService.fetchPullRequestForLane(laneId: trimmed)
@@ -1170,7 +1176,7 @@ extension WorkSessionDestinationView {
     // Every PR this chat is linked to, not just the one the badge shows.
     let chatPrs = workChatPullRequests(
       lane: lanes.first(where: { $0.id == trimmed }),
-      pullRequests: items,
+      pullRequests: projectItems,
       sessionId: sessionId
     )
     if laneChatPrs != chatPrs { laneChatPrs = chatPrs }
@@ -1279,9 +1285,12 @@ extension WorkSessionDestinationView {
         try await syncService.refreshPullRequestSnapshots(prId: prId)
         let items = (try? await syncService.fetchPullRequestListItems(laneId: headerMenuLaneId)) ?? []
         laneOpenPr = workChatMappedPullRequest(for: lanePrTag, in: items)
+        // Same split as the initial load: the badge maps against the lane's own
+        // rows, the chat list is selected from the project's.
+        let projectItems = (try? await syncService.fetchPullRequestListItems()) ?? items
         let refreshedChatPrs = workChatPullRequests(
           lane: lanes.first(where: { $0.id == headerMenuLaneId }),
-          pullRequests: items,
+          pullRequests: projectItems,
           sessionId: sessionId
         )
         if laneChatPrs != refreshedChatPrs { laneChatPrs = refreshedChatPrs }
@@ -1291,8 +1300,16 @@ extension WorkSessionDestinationView {
     }
 
     do {
-      prDetailsSnapshot = try await syncService.fetchPullRequestSnapshot(prId: prId)
+      let snapshot = try await syncService.fetchPullRequestSnapshot(prId: prId)
+      // Switching PRs while this await is in flight used to publish the OLD
+      // PR's details under the new PR's header: pick B, then C, and B's
+      // snapshot lands last and wins. The id we fetched must still be the id
+      // on screen. Same shape as the `stillCurrent` guard in
+      // `resolveLaneOpenPr` above.
+      guard (chatDisplayPr?.id ?? chatDisplayPrSummary?.id) == prId else { return }
+      prDetailsSnapshot = snapshot
     } catch {
+      guard (chatDisplayPr?.id ?? chatDisplayPrSummary?.id) == prId else { return }
       prDetailsSnapshot = nil
       prDetailsError = SyncUserFacingError.message(for: error)
     }

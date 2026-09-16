@@ -1073,15 +1073,25 @@ final class WorkComposerSuggestionController: ObservableObject {
         return item.title.lowercased().contains(trimmed) || number.hasPrefix(trimmed)
       }
       .prefix(limit)
-      .map { item in
+      .compactMap { item -> WorkComposerSuggestion? in
         // The token is the PR's github url, exactly as the desktop inserts it,
         // so the sent message draws the same PR pill on every surface.
         let repo = item.repoOwner.isEmpty || item.repoName.isEmpty
           ? nil
           : "\(item.repoOwner)/\(item.repoName)"
-        let url = item.githubUrl.isEmpty
-          ? "https://github.com/\(item.repoOwner)/\(item.repoName)/pull/\(item.githubPrNumber)"
-          : item.githubUrl
+        // Synthesize a url ONLY from a complete repo. With an empty owner or
+        // name this used to build a github.com url with empty path segments
+        // where the owner and repo belong, which no chip parser recognises —
+        // the row looked insertable and produced a dead link. A row we cannot
+        // address is better left out of the menu entirely.
+        let url: String
+        if !item.githubUrl.isEmpty {
+          url = item.githubUrl
+        } else if let repo {
+          url = "https://github.com/\(repo)/pull/\(item.githubPrNumber)"
+        } else {
+          return nil
+        }
         let label = repo.map { "\($0)#\(item.githubPrNumber)" } ?? "#\(item.githubPrNumber)"
         return WorkComposerSuggestion(
           id: "pr:\(item.id)",
