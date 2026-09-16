@@ -196,4 +196,11 @@ describe("SubagentStoppedGroupCard", () => {
     fireEvent.click(screen.getByRole("button", { expanded: true }));
     expect(screen.queryByTitle("Explore sync flow")).toBeNull();
   });
+
+  it("keeps jump-to-start on each folded agent when a scroller is wired", () => {
+    const onJumpToStart = vi.fn();
+    render(<SubagentStoppedGroupCard event={groupEvent("interrupt")} onJumpToStart={onJumpToStart} />);
+    fireEvent.click(screen.getByRole("button", { name: "Explore auth flow jump to start" }));
+    expect(onJumpToStart).toHaveBeenCalledWith("subagent-spawn:a");
+  });
 });

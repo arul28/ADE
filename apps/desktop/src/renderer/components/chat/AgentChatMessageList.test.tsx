@@ -5808,6 +5808,47 @@ describe("usage-limit turn footer", () => {
     } as AgentChatEventEnvelope,
   ]);
 
+  it("still shows the turn work summary on a usage-limit pause", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:00:00.000Z",
+        event: { type: "user_message", text: "Keep shipping the fix.", turnId: "turn-limit" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:02:00.000Z",
+        event: {
+          type: "command",
+          command: "npm test",
+          cwd: "/repo",
+          output: "ok",
+          itemId: "command-1",
+          turnId: "turn-limit",
+          status: "completed",
+          exitCode: 0,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:04:00.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-limit",
+          status: "failed",
+          terminalReason: "api_error",
+          apiErrorStatus: 429,
+          usage: { inputTokens: 12_000, outputTokens: 3_400 },
+        },
+      } as AgentChatEventEnvelope,
+    ];
+    const rendered = renderMessageList(events);
+    expect(rendered.container.textContent).toContain("1 tool");
+    expect(screen.getByText(/^Paused · usage limit/)).toBeTruthy();
+    expect(rendered.container.textContent!.indexOf("1 tool"))
+      .toBeLessThan(rendered.container.textContent!.indexOf("Paused · usage limit"));
+  });
+
   it("replaces the red FAILED line with one quiet paused line on a terminal 429", () => {
     renderMessageList(usageEnvelopes({ terminalReason: "api_error", apiErrorStatus: 429 }));
 
