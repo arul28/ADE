@@ -26,6 +26,8 @@
 export const COMPOSER_CLIPBOARD_MIME = "text/x-ade-composer";
 
 const MAX_CHIPS = 64;
+/** Cap on entries examined, so rejects cannot be used to burn paste-path time. */
+const MAX_RAW_CHIP_ENTRIES = MAX_CHIPS * 8;
 const MAX_LABEL_CHARS = 256;
 const MAX_TEXT_CHARS = 100_000;
 
@@ -73,8 +75,15 @@ export function parseComposerClipboard(raw: string | null | undefined): Composer
   const chips: ComposerClipboardChip[] = [];
   const rawChips = Array.isArray(record.chips) ? record.chips : [];
   const seen = new Set<string>();
+  // Bound the ITERATIONS, not just the accepted chips: every rejected entry
+  // still costs an `includes` scan over the pasted text, and the clipboard is
+  // writable by every app on the machine. Thousands of rejects against a large
+  // text is real work on the paste path.
+  let examined = 0;
   for (const entry of rawChips) {
     if (chips.length >= MAX_CHIPS) break;
+    if (examined >= MAX_RAW_CHIP_ENTRIES) break;
+    examined += 1;
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const chip = entry as Record<string, unknown>;
     const token = typeof chip.token === "string" ? chip.token.trim() : "";

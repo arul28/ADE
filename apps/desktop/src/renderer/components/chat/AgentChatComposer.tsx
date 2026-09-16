@@ -75,6 +75,8 @@ import {
   parseComposerClipboard,
   serializeComposerClipboard,
 } from "../../../shared/composerClipboard";
+import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "../../../shared/chips";
+import { serializeComposerDom } from "./composerChipDom";
 import {
   activeTurnDispatchModes,
   activeTurnInterruptContinues,
@@ -127,8 +129,6 @@ import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import {
   deriveSmartLinkPreview,
   findSmartLinks,
-  smartLinkDisplayLabel,
-  smartLinkProviderGlyph,
   shouldReconcileSmartLinkDraft,
   type SmartLinkPreview,
 } from "../../../shared/smartLinks";
@@ -2993,49 +2993,7 @@ export function AgentChatComposer({
   const serializeRichEditor = useCallback((): string => {
     const editor = richEditorRef.current;
     if (!editor) return draft;
-    const parts: string[] = [];
-    const preservedChipText = new Map<string, string>();
-    const visit = (node: Node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        parts.push(node.textContent ?? "");
-        return;
-      }
-      if (!(node instanceof HTMLElement)) return;
-      if (node.dataset.composerChipText != null) {
-        if (node.dataset.composerChip === "chat-context") {
-          const token = `\u0000ctx${preservedChipText.size}\u0000`;
-          preservedChipText.set(token, node.dataset.composerChipText);
-          parts.push(token);
-        } else {
-          parts.push(node.dataset.composerChipText);
-        }
-        return;
-      }
-      if (
-        node.dataset.iosContextId
-        || node.dataset.appControlContextId
-        || node.dataset.builtInBrowserContextId
-      ) {
-        parts.push(" ");
-        return;
-      }
-      if (node.tagName === "BR") {
-        parts.push("\n");
-        return;
-      }
-      node.childNodes.forEach(visit);
-      if (node.tagName === "DIV" || node.tagName === "P") parts.push("\n");
-    };
-    editor.childNodes.forEach(visit);
-    let serialized = parts
-      .join("")
-      .replace(/\u00a0/g, " ")
-      .replace(/[ \t]{2,}/g, " ")
-      .replace(/[ \t]+\n/g, "\n");
-    for (const [token, value] of preservedChipText) {
-      serialized = serialized.replace(token, value);
-    }
-    return serialized;
+    return serializeComposerDom(editor).text;
   }, [draft]);
 
   const syncRichDraft = useCallback(() => {
@@ -3084,11 +3042,17 @@ export function AgentChatComposer({
   }, [serializeRichEditor]);
 
   const updateSmartLinkChipNode = useCallback((chip: HTMLElement, preview: SmartLinkPreview) => {
+    // Label and glyph come from the shared chip model, not from smartLinks'
+    // own helpers. Without this the composer and the transcript disagree about
+    // the SAME url: the composer drew "ADE · pr/arul28/ade/1237" while the sent
+    // message drew "#1237", because only the transcript had been migrated.
+    const chipModel = chipFromSmartLink(preview);
+    const chipLabel = chipDisplayLabel(chipModel);
     const label = chip.querySelector<HTMLElement>("[data-smart-link-label]");
-    if (label) label.textContent = smartLinkDisplayLabel(preview);
+    if (label) label.textContent = chipLabel;
     chip.dataset.smartLinkTitle = preview.title ?? "";
     chip.title = preview.title ? `${preview.title}\n${preview.url}` : preview.url;
-    chip.setAttribute("aria-label", `Link: ${smartLinkDisplayLabel(preview)}. ${preview.url}`);
+    chip.setAttribute("aria-label", `Link: ${chipLabel}. ${preview.url}`);
 
     const icon = chip.querySelector<HTMLElement>("[data-smart-link-icon]");
     if (!icon) return;
@@ -3113,7 +3077,7 @@ export function AgentChatComposer({
       return;
     }
     icon.className = SMART_LINK_ICON_GLYPH_CLASS;
-    icon.textContent = smartLinkProviderGlyph(preview.provider);
+    icon.textContent = chipGlyph(chipModel.kind);
   }, []);
 
   const createSmartLinkChipNode = useCallback((initial: SmartLinkPreview): HTMLElement => {
@@ -4718,50 +4682,6 @@ export function AgentChatComposer({
     uploadInputRef.current?.click();
   };
 
-  // Serialize an arbitrary subtree (a cloned selection) with the same chip
-  // rules `serializeRichEditor` uses on the whole editor, and collect the label
-  // each chip was displaying. The labels are what let the pills rebuild in a
-  // different chat, where the local label registry knows none of these tokens.
-  const serializeNodeWithChips = useCallback((root: Node): { text: string; labels: Map<string, string> } => {
-    const parts: string[] = [];
-    const labels = new Map<string, string>();
-    const visit = (node: Node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        parts.push(node.textContent ?? "");
-        return;
-      }
-      if (!(node instanceof HTMLElement)) return;
-      const chipText = node.dataset.composerChipText;
-      if (chipText != null) {
-        parts.push(chipText);
-        const label = node.querySelector<HTMLElement>("[data-composer-chip-label]")?.textContent?.trim();
-        if (label && label !== chipText) labels.set(chipText, label);
-        return;
-      }
-      if (
-        node.dataset.iosContextId
-        || node.dataset.appControlContextId
-        || node.dataset.builtInBrowserContextId
-      ) {
-        parts.push(" ");
-        return;
-      }
-      if (node.tagName === "BR") {
-        parts.push("\n");
-        return;
-      }
-      node.childNodes.forEach(visit);
-      if (node.tagName === "DIV" || node.tagName === "P") parts.push("\n");
-    };
-    root.childNodes.forEach(visit);
-    const text = parts
-      .join("")
-      .replace(/\u00a0/g, " ")
-      .replace(/[ \t]{2,}/g, " ")
-      .replace(/[ \t]+\n/g, "\n");
-    return { text, labels };
-  }, []);
-
   /**
    * Write the selection as canonical tokens plus a chip payload. Without this a
    * native copy takes the DOM text, which is the chip LABEL, so a PR chip
@@ -4776,7 +4696,7 @@ export function AgentChatComposer({
     const range = selection.getRangeAt(0);
     if (!editor.contains(range.commonAncestorContainer)) return false;
 
-    const { text, labels } = serializeNodeWithChips(range.cloneContents());
+    const { text, labels } = serializeComposerDom(range.cloneContents());
     if (!text) return false;
 
     clipboard.setData("text/plain", text);
@@ -4790,7 +4710,7 @@ export function AgentChatComposer({
       // tokens on text/plain, which is the half that must never be lost.
     }
     return true;
-  }, [serializeNodeWithChips]);
+  }, []);
 
   const handleCopy = (event: React.ClipboardEvent<HTMLElement>) => {
     if (!useRichComposer) return;
@@ -4944,18 +4864,23 @@ export function AgentChatComposer({
         closeCommandMenu();
         return;
       }
-      // Replace exactly the @query trigger span with the confirmed token.
+      // One token for the selection, whichever composer mode inserts it. The
+      // rich chip, its plain-text fallback, and the textarea path used to
+      // disagree about the trailing slash on a folder.
+      const pathChip = chipFromPath(item.path, { isDirectory });
+      const insertPath = pathChip.token;
+      const insertToken = `@${insertPath}`;
       if (useRichComposer) {
         if (!replaceRichTriggerWith({
           chipKind: "file",
-          chipText: isDirectory ? `@${item.path}/` : `@${item.path}`,
-          triggerLabel: isDirectory ? `${item.path}/` : item.path,
+          chipText: insertToken,
+          triggerLabel: insertPath,
         })) {
-          insertTextIntoRichEditor(`@${item.path} `);
+          insertTextIntoRichEditor(`${insertToken} `);
         }
       } else {
         const trigger = composerTriggerForSelection(commandMenuTrigger, item.path, "file");
-        const next = replaceComposerTriggerSpan(draft, trigger, `@${item.path} `);
+        const next = replaceComposerTriggerSpan(draft, trigger, `${insertToken} `);
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);
       }

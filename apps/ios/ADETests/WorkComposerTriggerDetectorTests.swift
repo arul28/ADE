@@ -368,6 +368,16 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     let artifact = link("ade://artifact/proof12345678")
     XCTAssertEqual(artifact?.kind, .artifact)
 
+    // The desktop parser accepts the number-only PR form and a branch name that
+    // contains slashes (ADE's own lane branches do). Both surfaces must agree.
+    let prNumberOnly = link("ade://pr/1237")
+    XCTAssertEqual(prNumberOnly?.kind, .pullRequest)
+    XCTAssertEqual(prNumberOnly?.compactLabel, "#1237")
+
+    let slashBranch = link("ade://repo/arul28/ade/branch/ade/t3gap-b-composer")
+    XCTAssertEqual(slashBranch?.kind, .branch)
+    XCTAssertEqual(slashBranch?.compactLabel, "ade/t3gap-b-composer")
+
     let issue = link("ade://linear-issue/ade-431")
     XCTAssertEqual(issue?.kind, .linearIssue)
     XCTAssertEqual(issue?.compactLabel, "ADE-431")

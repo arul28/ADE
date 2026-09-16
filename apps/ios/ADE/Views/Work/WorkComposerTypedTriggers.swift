@@ -166,9 +166,12 @@ struct WorkSmartLink: Equatable {
     let segments = adeSegments(host: host, parts: parts)
     guard let head = segments.first?.lowercased() else { return nil }
     switch head {
-    // ade://pr/<owner>/<repo>/<number>
+    // ade://pr/<owner>/<repo>/<number>, and the number-only ade://pr/<number>
+    // form the desktop parser also accepts.
     case "pr":
-      return segments.count == 4 && workSmartLinkIsAsciiNumber(segments[3]) ? .pullRequest : nil
+      if segments.count == 4, workSmartLinkIsAsciiNumber(segments[3]) { return .pullRequest }
+      if segments.count == 2, workSmartLinkIsAsciiNumber(segments[1]) { return .pullRequest }
+      return nil
     case "lane":
       return segments.count == 2 && isUuid(segments[1]) ? .lane : nil
     case "session":
@@ -180,9 +183,11 @@ struct WorkSmartLink: Equatable {
       return segments.count == 2 && isCommitSha(segments[1]) ? .commit : nil
     case "artifact":
       return segments.count == 2 && !segments[1].isEmpty ? .artifact : nil
-    // ade://repo/<owner>/<repo>/branch/<branch>
+    // ade://repo/<owner>/<repo>/branch/<branch>. The branch may contain slashes —
+    // ADE's own lane branches look like `ade/t3gap-…` — so everything after the
+    // `branch` segment is the name, exactly as the desktop parser joins it.
     case "repo":
-      return segments.count == 5 && segments[3].lowercased() == "branch" ? .branch : nil
+      return segments.count >= 5 && segments[3].lowercased() == "branch" ? .branch : nil
     case "linear-issue":
       return segments.count == 2 && isLinearIdentifier(segments[1]) ? .linearIssue : nil
     default:
@@ -194,11 +199,10 @@ struct WorkSmartLink: Equatable {
   /// malformed link never gets a confident-looking label.
   static func adeDeeplinkLabel(host: String?, parts: [String]) -> String? {
     let segments = adeSegments(host: host, parts: parts)
-    guard let kind = adeDeeplinkKind(host: host, parts: parts),
-          let head = segments.first?.lowercased() else { return nil }
+    guard let kind = adeDeeplinkKind(host: host, parts: parts) else { return nil }
     func shortId(_ value: String) -> String { String(value.prefix(8)) }
     switch kind {
-    case .pullRequest: return "#\(segments[3])"
+    case .pullRequest: return segments.count == 2 ? "#\(segments[1])" : "#\(segments[3])"
     case .lane: return "Lane \(shortId(segments[1]))"
     case .chat: return "Chat \(shortId(segments[1]))"
     case .file:
@@ -206,10 +210,9 @@ struct WorkSmartLink: Equatable {
       return path.split(separator: "/").last.map(String.init) ?? path
     case .commit: return String(segments[1].prefix(7))
     case .artifact: return "Artifact \(shortId(segments[1]))"
-    case .branch: return segments[4]
+    case .branch: return segments[4...].joined(separator: "/")
     case .linearIssue: return segments[1].uppercased()
     default:
-      _ = head
       return nil
     }
   }

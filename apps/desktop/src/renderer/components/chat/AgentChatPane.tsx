@@ -125,10 +125,13 @@ import {
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
+import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
+import { resolveDisplayedReasoningEffort } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
   permissionLevelForClaude,
   permissionLevelForCodex,
   permissionLevelForDroid,
+  permissionLevelForCursorMode,
   permissionLevelForOpenCode,
   resolvePermissionLevel,
   type PermissionLadderFamily,
@@ -3581,6 +3584,7 @@ export function AgentChatPane({
     () => projectBinding?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
   );
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
+  const { getReasoningForFamily } = useReasoningByFamily();
   const [fastMode, setFastMode] = useState(false);
   const [cursorCloudServiceTier, setCursorCloudServiceTier] = useState<CursorCloudServiceTier | null>(null);
   /**
@@ -5205,6 +5209,23 @@ export function AgentChatPane({
     }))
     : null;
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
+  /**
+   * What the reasoning control is DISPLAYING, which is what a launch must send.
+   *
+   * The control falls back to the effort last used for the model's family when
+   * nothing explicit is set, but the launch used to read the unset state — so
+   * the trigger said "High" while the request went out on the model default.
+   * Resolving it here, at the owner of the value, keeps the two in step without
+   * a presentational component writing its parent's state on mount.
+   */
+  const effectiveReasoningEffort = useMemo(() => resolveDisplayedReasoningEffort({
+    tiers: reasoningTiers,
+    explicitEffort: reasoningEffort,
+    rememberedForFamily: selectedModelDesc?.family
+      ? getReasoningForFamily(selectedModelDesc.family) ?? null
+      : null,
+    modelDefault: selectedModelDesc?.defaultReasoningEffort ?? null,
+  }), [getReasoningForFamily, reasoningEffort, reasoningTiers, selectedModelDesc]);
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -8122,6 +8143,9 @@ export function AgentChatPane({
       query: trimmed,
       limit: 60,
       allowComposerPrefixFallback: true,
+      // The composer is the only caller that wants folders: it inserts a pointer
+      // chip rather than opening what it receives.
+      includeDirectories: true,
     }, pin);
     return hits.map((hit) => ({
       path: hit.path,
@@ -8672,8 +8696,10 @@ export function AgentChatPane({
       case "opencode": return "opencode";
       case "droid": return "droid";
       case "cursor": return "cursor";
+      // Every ACP provider shares one permission round-trip, grok included.
       case "qwen":
       case "kimi":
+      case "grok":
       case "copilot": return "acp";
       default: return null;
     }
@@ -8703,7 +8729,7 @@ export function AgentChatPane({
         case "opencode": return opencodePermissionMode === initialNativeControls.opencodePermissionMode;
         case "droid": return droidPermissionMode === initialNativeControls.droidPermissionMode;
         case "cursor": return cursorModeId === initialNativeControls.cursorModeId;
-        case "acp": return true;
+        case "acp": return opencodePermissionMode === initialNativeControls.opencodePermissionMode;
       }
     })();
     if (!targetIsUntouched) {
@@ -8717,6 +8743,13 @@ export function AgentChatPane({
         case "codex": return permissionLevelForCodex(codexSandbox, codexApprovalPolicy);
         case "opencode": return permissionLevelForOpenCode(opencodePermissionMode);
         case "droid": return permissionLevelForDroid(droidPermissionMode);
+        // Switching AWAY from Cursor or an ACP provider must carry a level too;
+        // without these the ladder was one-directional for those families.
+        case "cursor": return permissionLevelForCursorMode(cursorModeId);
+        // ACP has no separate control on this surface; it rides the in-process
+        // mode that the OpenCode picker owns, which is what the apply branch
+        // below writes back.
+        case "acp": return permissionLevelForOpenCode(opencodePermissionMode);
         default: return null;
       }
     })();
@@ -8741,6 +8774,9 @@ export function AgentChatPane({
         setCursorModeId(resolved.cursorModeId);
         break;
       case "acp":
+        // ACP providers take their level through the shared in-process mode,
+        // which OpenCode's control already owns on this surface.
+        setOpenCodePermissionMode(resolved.opencodePermissionMode);
         break;
     }
   }, [
@@ -9040,7 +9076,10 @@ export function AgentChatPane({
         throw new Error(constrainedModelSelectionError);
       }
       const launchModelId = options.launchState?.modelId ?? modelId;
-      const launchReasoningEffort = options.launchState?.reasoningEffort ?? reasoningEffort;
+      // `effectiveReasoningEffort`, not the raw state: the control displays the
+      // remembered family effort when nothing explicit is set, and the launch
+      // must carry the value the user can actually see.
+      const launchReasoningEffort = options.launchState?.reasoningEffort ?? effectiveReasoningEffort;
       const launchFastMode = options.launchState?.fastMode ?? fastMode;
       const launchExecutionMode = options.launchState?.executionMode ?? executionMode;
       const baseNativeControls = options.launchState?.nativeControls ?? currentNativeControls;
@@ -9155,7 +9194,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [canRefreshPinnedProject, fastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, orchestratorEnabled, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
+  }, [canRefreshPinnedProject, fastMode, constrainedModelSelectionError, currentNativeControls, effectiveReasoningEffort, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, orchestratorEnabled, patchSessionSummary, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -14019,7 +14058,7 @@ export function AgentChatPane({
                 <button
                   type="button"
                   className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-fg/65 transition-colors hover:bg-white/10 hover:text-fg/85"
-                  onClick={() => navigate(settingsRouteFor("agents.background-jobs"))}
+                  onClick={() => navigate(settingsRouteFor("agents.scheduled-work"))}
                 >
                   Settings
                 </button>

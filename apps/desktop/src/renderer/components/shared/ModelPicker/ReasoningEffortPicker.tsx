@@ -216,18 +216,12 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   const family = descriptor?.family;
   const useCodex56Labels = usesCodexNamedEffortLabels(descriptor?.providerModelId);
 
-  const displayedEffort = useMemo<string | null>(() => {
-    const modelDefault = descriptor?.defaultReasoningEffort;
-    const validModelDefault = modelDefault && tiers.includes(modelDefault) ? modelDefault : null;
-    if (reasoningEffort) {
-      return tiers.includes(reasoningEffort) ? reasoningEffort : validModelDefault;
-    }
-    if (useFamilyDefaults && family) {
-      const remembered = getReasoningForFamily(family);
-      if (remembered) return tiers.includes(remembered) ? remembered : validModelDefault;
-    }
-    return null;
-  }, [descriptor?.defaultReasoningEffort, family, getReasoningForFamily, reasoningEffort, tiers, useFamilyDefaults]);
+  const displayedEffort = useMemo<string | null>(() => resolveDisplayedReasoningEffort({
+    tiers,
+    explicitEffort: reasoningEffort,
+    rememberedForFamily: useFamilyDefaults && family ? getReasoningForFamily(family) ?? null : null,
+    modelDefault: descriptor?.defaultReasoningEffort ?? null,
+  }), [descriptor?.defaultReasoningEffort, family, getReasoningForFamily, reasoningEffort, tiers, useFamilyDefaults]);
 
   const activeIndex = displayedEffort ? tiers.findIndex((tier) => tier === displayedEffort) : -1;
   const previousActiveIndexRef = useRef(activeIndex);
@@ -254,21 +248,6 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     },
     [family, onChange, rememberReasoning, useFamilyDefaults],
   );
-
-  /**
-   * Commit a remembered family effort that the control is already DISPLAYING.
-   *
-   * `displayedEffort` falls back to the effort last used for this family, but
-   * the send path reads `reasoningEffort`, which was still empty. The trigger
-   * therefore read "High" while the run went out on the model's own default —
-   * the control stated one thing and the request carried another. Writing the
-   * value the moment it is shown makes the two agree.
-   */
-  useEffect(() => {
-    if (reasoningEffort) return;
-    if (!displayedEffort) return;
-    onChange(displayedEffort);
-  }, [displayedEffort, onChange, reasoningEffort]);
 
   const handleSelect = useCallback(
     (tier: string) => {
@@ -637,3 +616,33 @@ const ReasoningEffortTrigger = memo(
     },
   ),
 );
+
+/**
+ * The effort this control WOULD display for a model when no explicit value is
+ * set: the remembered effort for that model's family, validated against the
+ * model's own tiers.
+ *
+ * Exported so the owner of the value can resolve it BEFORE sending. The picker
+ * used to display this fallback while the send path read the unset value, so
+ * the trigger said "High" and the request went out on the model default. The
+ * fix belongs here, not in an effect that writes its parent's state on mount —
+ * this control renders at a dozen call sites, several of which persist every
+ * onChange straight to the backend.
+ */
+export function resolveDisplayedReasoningEffort(args: {
+  tiers: readonly string[];
+  explicitEffort: string | null;
+  rememberedForFamily: string | null;
+  modelDefault: string | null;
+}): string | null {
+  const validModelDefault = args.modelDefault && args.tiers.includes(args.modelDefault)
+    ? args.modelDefault
+    : null;
+  if (args.explicitEffort) {
+    return args.tiers.includes(args.explicitEffort) ? args.explicitEffort : validModelDefault;
+  }
+  if (args.rememberedForFamily) {
+    return args.tiers.includes(args.rememberedForFamily) ? args.rememberedForFamily : validModelDefault;
+  }
+  return null;
+}

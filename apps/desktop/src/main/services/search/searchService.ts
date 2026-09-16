@@ -534,7 +534,15 @@ export function createSearchService(deps: SearchServiceDeps) {
    */
   const prTermsByChatSession = new Map<string, string[]>();
 
-  const rebuildPrTermsByChatSession = (summaries: readonly PrSummary[]): void => {
+  /**
+   * Returns the session ids whose PR terms changed, so the caller can re-index
+   * those chat meta docs. Without that, the map is ambient state with an
+   * implicit ordering dependency: a chat indexed before the first PR sweep
+   * never gets its PR terms, and unlinking a PR leaves stale `#123` terms on
+   * the chat doc forever.
+   */
+  const rebuildPrTermsByChatSession = (summaries: readonly PrSummary[]): Set<string> => {
+    const previous = new Map(prTermsByChatSession);
     prTermsByChatSession.clear();
     for (const pr of summaries) {
       const repo = pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : "";
@@ -551,6 +559,16 @@ export function createSearchService(deps: SearchServiceDeps) {
         else prTermsByChatSession.set(sessionId, [...terms]);
       }
     }
+    // Union of old and new: a session that LOST its last PR needs re-indexing
+    // just as much as one that gained a PR.
+    const changed = new Set<string>();
+    for (const [sessionId, terms] of prTermsByChatSession) {
+      if (previous.get(sessionId)?.join("\u0000") !== terms.join("\u0000")) changed.add(sessionId);
+    }
+    for (const sessionId of previous.keys()) {
+      if (!prTermsByChatSession.has(sessionId)) changed.add(sessionId);
+    }
+    return changed;
   };
 
   const upsertSessionMetaDoc = (session: TerminalSessionSummary, kind: "chat" | "terminal", deepLink: string): void => {
@@ -810,10 +828,27 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (source.cursor + consumedBytes < fileSize) enqueue("terminal-session", sessionId, 0);
   };
 
+  /**
+   * Re-write the chat meta docs whose PR terms just changed. The terms are read
+   * by `upsertSessionMetaDoc`, which otherwise runs only when the chat itself
+   * changes — so without this, "find a chat by its PR number" worked only when
+   * the PR happened to be indexed before the chat.
+   */
+  const reindexChatsForChangedPrTerms = async (changedSessionIds: Set<string>): Promise<void> => {
+    if (changedSessionIds.size === 0) return;
+    const sessions = await deps.sessions.list();
+    const affected = sessions.filter((session) => changedSessionIds.has(session.id) && isChatSession(session));
+    if (affected.length === 0) return;
+    for (const session of affected) {
+      const link = sessionDeepLink(session, await envelopeForLane(session.laneId));
+      withTransaction(() => upsertSessionMetaDoc(session, "chat", link));
+    }
+  };
+
   const processPr = async (prId: string): Promise<void> => {
     if (!deps.prs) return;
     const summaries = await deps.prs.listAll();
-    rebuildPrTermsByChatSession(summaries);
+    await reindexChatsForChangedPrTerms(rebuildPrTermsByChatSession(summaries));
     const summary = summaries.find((pr) => pr.id === prId);
     if (!summary) {
       withTransaction(() => deleteDocsWhere("doc_id = ?", [`pr:${prId}`]));
@@ -873,7 +908,7 @@ export function createSearchService(deps: SearchServiceDeps) {
   const processPrSweep = async (): Promise<void> => {
     if (!deps.prs) return;
     const summaries = await deps.prs.listAll();
-    rebuildPrTermsByChatSession(summaries);
+    await reindexChatsForChangedPrTerms(rebuildPrTermsByChatSession(summaries));
     const liveIds = new Set(summaries.map((pr) => `pr:${pr.id}`));
     const indexed = all<{ doc_id: string }>("SELECT doc_id FROM docs WHERE kind = 'pr'");
     withTransaction(() => {

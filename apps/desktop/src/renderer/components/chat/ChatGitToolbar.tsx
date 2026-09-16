@@ -30,7 +30,7 @@ import {
   openLanePr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
-import { selectPrsForChat } from "../../lib/prChatScope";
+import { selectPrsForChat, selectPrsForChatInLane } from "../../lib/prChatScope";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 // ---------------------------------------------------------------------------
@@ -210,16 +210,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       let lanePrs: PrSummary[];
       if (typeof window.ade.prs.listAll === "function") {
         const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
-        // Ownership OR an explicit link to this chat. Filtering on lane id
-        // alone dropped a PR that this chat deliberately linked but another
-        // lane opened, which is exactly the cross-lane reference the pointer
-        // model exists to allow.
-        const ownedPrs = allPrs.filter((pr) => {
-          if (pr.detached) return false;
-          if (pr.laneId === laneId) return true;
-          return Boolean(sessionId && pr.chatSessionIds?.includes(sessionId));
-        });
-        lanePrs = selectPrsForChat(ownedPrs, sessionId);
+        lanePrs = selectPrsForChatInLane(allPrs, laneId, sessionId);
       } else {
         // Older web-preview/test bridges only expose the original single-PR
         // lookup. Keep that compatibility path while the desktop bridge rolls

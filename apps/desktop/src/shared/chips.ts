@@ -34,7 +34,7 @@
 
 import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
-import { findSmartLinks, type SmartLinkPreview } from "./smartLinks";
+import { findSmartLinks, type SmartLinkPreview, type SmartLinkProvider } from "./smartLinks";
 import type { ChatMentionKind } from "./types/chatMentions";
 
 /**
@@ -68,8 +68,12 @@ export type ChipKind =
 export type ChipSource =
   | { origin: "mention"; mentionKind: ChatMentionKind; id: string }
   | { origin: "path"; path: string }
-  | { origin: "deeplink"; url: string; target: DeeplinkTarget }
-  | { origin: "url"; url: string };
+  // `provider` rides along on the two url-shaped variants so a chip rebuilt
+  // from text alone can still draw the brand mark. Without it a renderer can
+  // only ever fall back to the monogram, and the composer and the transcript
+  // end up showing different icons for the same link.
+  | { origin: "deeplink"; url: string; target: DeeplinkTarget; provider: SmartLinkProvider }
+  | { origin: "url"; url: string; provider: SmartLinkProvider };
 
 export type Chip = {
   kind: ChipKind;
@@ -153,16 +157,6 @@ export function chipDisplayLabel(chip: Chip): string {
   return chip.label;
 }
 
-/**
- * Stable identity, for dedupe and for "is this the same chip" comparisons.
- * Two chips pointing at one entity through different grammars are NOT equal:
- * they round-trip to different text, and collapsing them would rewrite the
- * user's draft.
- */
-export function chipKey(chip: Chip): string {
-  return `${chip.kind}:${chip.token}`;
-}
-
 function shortId(value: string): string {
   return value.length > 8 ? value.slice(0, 8) : value;
 }
@@ -182,12 +176,15 @@ function splitPath(path: string): { name: string; dir: string | null } {
 export function chipFromPath(path: string, options: { isDirectory?: boolean } = {}): Chip {
   const isDirectory = options.isDirectory === true;
   const { name, dir } = splitPath(path);
+  // A folder's token carries the trailing slash: it is what the composer
+  // inserts, and the token is the one string that must round-trip.
+  const token = isDirectory ? `${path.replace(/\/+$/, "")}/` : path;
   return {
     kind: isDirectory ? "folder" : "file",
-    token: path,
+    token,
     label: isDirectory ? `${name}/` : name,
     detail: dir,
-    source: { origin: "path", path },
+    source: { origin: "path", path: token },
   };
 }
 
@@ -213,8 +210,12 @@ function defaultMentionLabel(mentionKind: ChatMentionKind, id: string): string {
  * difference between "ADE · pr/arul28/ade/1237" and a PR pill that looks and
  * behaves exactly like the one a github.com URL produces.
  */
-export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chip {
-  const source: ChipSource = { origin: "deeplink", url, target };
+export function chipFromDeeplinkTarget(
+  url: string,
+  target: DeeplinkTarget,
+  provider: SmartLinkProvider = "ade",
+): Chip {
+  const source: ChipSource = { origin: "deeplink", url, target, provider };
   switch (target.kind) {
     case "lane":
       return { kind: "lane", token: url, label: `Lane ${shortId(target.laneId)}`, source };
@@ -257,13 +258,13 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
 
 /** Map one `SmartLinkPreview` onto the shared model, typing ADE links properly. */
 export function chipFromSmartLink(preview: SmartLinkPreview): Chip {
-  const source: ChipSource = { origin: "url", url: preview.url };
+  const source: ChipSource = { origin: "url", url: preview.url, provider: preview.provider };
   const base = { token: preview.url, title: preview.title ?? null, iconDataUrl: preview.iconDataUrl ?? null };
 
   if (preview.kind === "ade_deeplink" || looksLikeAdeDeeplink(preview.url)) {
     const parsed = parseDeeplink(preview.url);
     if (parsed.ok) {
-      const chip = chipFromDeeplinkTarget(preview.url, parsed.target);
+      const chip = chipFromDeeplinkTarget(preview.url, parsed.target, preview.provider);
       return { ...chip, title: base.title, iconDataUrl: base.iconDataUrl };
     }
     // A link this build cannot parse is still a link. Keep it addressable and

@@ -4,7 +4,6 @@ import {
   chipFromMention,
   chipFromPath,
   chipFromSmartLink,
-  chipKey,
   parseChips,
   splitTextIntoChipParts,
 } from "./chips";
@@ -59,6 +58,8 @@ describe("chipFromPath", () => {
     expect(chipFromPath("src/shared/chips.ts").kind).toBe("file");
     expect(chipFromPath("src/shared", { isDirectory: true }).kind).toBe("folder");
     expect(chipFromPath("src/shared", { isDirectory: true }).label).toBe("shared/");
+    // The token carries the slash too — it is what the composer inserts.
+    expect(chipFromPath("src/shared", { isDirectory: true }).token).toBe("src/shared/");
   });
 
   it("keeps the full path as the token so the round trip is lossless", () => {
@@ -100,13 +101,5 @@ describe("splitTextIntoChipParts", () => {
       .map((part) => (part.type === "text" ? part.text : part.chip.token))
       .join("");
     expect(rebuilt).toBe(text);
-  });
-});
-
-describe("chipKey", () => {
-  it("keeps two grammars for one entity distinct, because they round-trip differently", () => {
-    const mention = chipFromMention("lane", "abc");
-    const deeplink = chipFromSmartLink(previewFor("ade://lane/00000000-0000-4000-8000-000000000000"));
-    expect(chipKey(mention)).not.toBe(chipKey(deeplink));
   });
 });

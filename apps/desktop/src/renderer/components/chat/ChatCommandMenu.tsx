@@ -441,7 +441,10 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     );
 
     // ---- Visibility ----
-    const visible = trigger !== null && anchor !== null;
+    // `#` is ordinary prose (`#123`, `#fff`, `# note`). Without a PR search
+    // wired there is nothing to show, so the trigger must not open a popup.
+    const hashUnsupported = trigger?.type === "hash" && !onPrSearch;
+    const visible = trigger !== null && anchor !== null && !hashUnsupported;
 
     // ---- Description lookup for commands ----
     const commandMap = useMemo(() => {
@@ -458,6 +461,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
 
     const query = trigger?.query.trim() ?? "";
     const isAtTrigger = trigger?.type === "at";
+    const isHashTrigger = trigger?.type === "hash";
     const canSearchAt = Boolean(onFileSearch) || Boolean(onMentionSearch);
     const loading = fileLoading || mentionLoading || prLoading;
 
@@ -468,7 +472,12 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     // it can legitimately show nothing now and match once the user types.
     const reportedEmptyQueryRef = useRef<string | null>(null);
     useEffect(() => {
-      if (!trigger || trigger.type !== "at" || !canSearchAt) {
+      // Applies to `@` and `#` alike: a query that settles with no rows is
+      // reported once so the owner can close the menu instead of leaving it
+      // parked over the draft while the user keeps typing a sentence.
+      const dismissable = trigger
+        && ((trigger.type === "at" && canSearchAt) || (trigger.type === "hash" && Boolean(onPrSearch)));
+      if (!trigger || !dismissable) {
         reportedEmptyQueryRef.current = null;
         return;
       }
@@ -476,7 +485,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       if (reportedEmptyQueryRef.current === trigger.query) return;
       reportedEmptyQueryRef.current = trigger.query;
       onNoMatches?.(trigger);
-    }, [trigger, canSearchAt, loading, items.length, onNoMatches]);
+    }, [trigger, canSearchAt, loading, items.length, onNoMatches, onPrSearch]);
 
     // One empty-state message; the branches are mutually exclusive by construction.
     const emptyMessage = !trigger || loading
@@ -492,9 +501,15 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                       ? "No files, chats, lanes, or terminals to browse — type to search"
                       : "No files to browse — type to search")
                   : null)
-              : "Type to search commands")
+              : isHashTrigger
+                ? (items.length === 0 ? "No pull requests to browse — type to search" : null)
+                : "Type to search commands")
           : items.length === 0
-            ? (isAtTrigger ? `No matches for "${query}"` : `No commands match "${query}"`)
+            ? (isAtTrigger
+                ? `No matches for "${query}"`
+                : isHashTrigger
+                  ? `No pull requests match "${query}"`
+                  : `No commands match "${query}"`)
             : null;
     const menuStyle = anchor ? getViewportMenuStyle(anchor) : undefined;
 
@@ -518,6 +533,11 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                     {onMentionSearch ? "Best match · files, chats, lanes, terminals" : "File search"}
                   </span>
                 </>
+              ) : isHashTrigger ? (
+                <>
+                  <MagnifyingGlass size={12} weight="bold" className="text-violet-400/60" />
+                  <span className="text-[10px] font-medium tracking-wide text-fg/46">Pull requests</span>
+                </>
               ) : (
                 <>
                   <Command size={12} weight="bold" className="text-violet-400/60" />
@@ -529,7 +549,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
             {/* Results list */}
             <div ref={listRef} className="max-h-[280px] overflow-y-auto py-1">
               {/* Loading state — only when there is nothing cached to show */}
-              {loading && trigger!.type === "at" && items.length === 0 && (
+              {loading && (trigger!.type === "at" || trigger!.type === "hash") && items.length === 0 && (
                 <div className="flex items-center gap-2 px-3 py-2">
                   <SpinnerGap size={12} weight="bold" className="animate-spin text-violet-400/50" />
                   <span className="text-[11px] text-fg/30">Searching...</span>

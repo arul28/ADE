@@ -594,6 +594,15 @@ export function AskQuestionComposer({
                silently swallowed every newline. Enter still sends, so the
                common one-line answer is unchanged; Shift+Enter adds a line. */
             <textarea
+              // Keyed per question: without it the inline height set while
+              // answering question N carries into question N+1, and a note
+              // restored by navigating back renders at one row until edited.
+              key={`note-${question.id}`}
+              ref={(node) => {
+                if (!node) return;
+                node.style.height = "auto";
+                node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+              }}
               rows={1}
               value={note}
               disabled={responding}

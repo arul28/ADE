@@ -289,12 +289,16 @@ export function selectLanePrs(
   return prs
     .filter((pr) => {
       if (pr.detached) return false;
-      // A PR the user explicitly linked to a chat in this lane is visible even
-      // when its head branch is elsewhere. Branch matching alone is what kept a
-      // lane to one PR: every PR opened from the lane carries the lane branch,
-      // so a deliberately linked second PR was filtered out of every lane
-      // surface. Historical rows with no link still fall back to the branch
-      // rule and stay hidden.
+      // Lane ownership is NOT negotiable here. Callers pass the project-wide PR
+      // list, and `lanePrMatchesCurrentBranch` is the only place lane identity
+      // is checked, so skipping straight past it on a chat link would put every
+      // linked PR on every lane in the project.
+      if (pr.laneId !== lane.id) return false;
+      // Only the BRANCH half is relaxed. Every PR opened from a lane carries the
+      // lane's branch, so branch matching alone capped a lane at one PR and hid
+      // a deliberately linked second one. A PR this lane owns and a chat linked
+      // stays visible even once the lane moves to another branch. Historical
+      // rows with no link still fall back to the branch rule and stay hidden.
       if ((pr.chatSessionIds?.filter(Boolean).length ?? 0) > 0) return true;
       return lanePrMatchesCurrentBranch(lane, pr);
     })

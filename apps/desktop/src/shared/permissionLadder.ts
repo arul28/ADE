@@ -112,9 +112,16 @@ export function permissionLevelForClaude(mode: AgentChatClaudePermissionMode): P
 }
 
 export function permissionLevelForCodex(sandbox: AgentChatCodexSandbox, approvalPolicy: AgentChatCodexApprovalPolicy): PermissionLevel {
-  if (sandbox === "danger-full-access" || approvalPolicy === "never") return "full-auto";
+  // BOTH axes are required for full autonomy. Codex's approval policy and its
+  // sandbox are independent controls, so "never ask" with `workspace-write` is
+  // a user who still wants a sandbox. Treating that as `full-auto` would hand
+  // Claude `bypassPermissions` on a family switch — unsandboxed, in a family
+  // with no sandbox axis at all — which is exactly the rounding up this
+  // module promises never to do.
+  if (sandbox === "danger-full-access" && approvalPolicy === "never") return "full-auto";
   if (sandbox === "read-only" || approvalPolicy === "untrusted") return "plan";
-  return approvalPolicy === "on-failure" ? "auto-edit" : "ask";
+  if (approvalPolicy === "never" || approvalPolicy === "on-failure") return "auto-edit";
+  return "ask";
 }
 
 export function permissionLevelForOpenCode(mode: AgentChatOpenCodePermissionMode): PermissionLevel {
@@ -143,6 +150,15 @@ export function permissionLevelForAcp(mode: AgentChatAcpPermissionMode): Permiss
     case "auto": return "auto-edit";
     case "yolo": return "full-auto";
   }
+}
+
+/** The level a Cursor mode id represents, for carrying a level away from Cursor. */
+export function permissionLevelForCursorMode(modeId: string | null | undefined): PermissionLevel {
+  if (modeId === "ask") return "plan";
+  if (modeId === "full-auto") return "full-auto";
+  // Cursor's `agent` spans ask and auto-edit; the cautious rung is the honest
+  // reading, because rounding up is what this module forbids.
+  return "ask";
 }
 
 /**
@@ -180,18 +196,11 @@ export function resolvePermissionLevel(level: PermissionLevel, family?: Permissi
   const opencode = nearestSupported(OPENCODE_BY_LEVEL, level);
   const cursor = nearestSupported(CURSOR_BY_LEVEL, level);
 
-  // Only the family being switched TO decides whether the user sees a
-  // downgrade; the other tables are filled in for whatever the surface reads.
-  const downgraded = family === "opencode"
-    ? opencode.level !== level
-    : family === "cursor"
-      ? cursor.level !== level
-      : false;
-  const appliedLevel = family === "opencode"
-    ? opencode.level
-    : family === "cursor"
-      ? cursor.level
-      : level;
+  // Only the family being switched TO can be downgraded; the other tables are
+  // filled in for whatever the surface reads.
+  const applied = family === "opencode" ? opencode : family === "cursor" ? cursor : { level };
+  const appliedLevel = applied.level;
+  const downgraded = appliedLevel !== level;
 
   return {
     level: appliedLevel,

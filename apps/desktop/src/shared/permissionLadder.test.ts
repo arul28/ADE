@@ -77,6 +77,25 @@ describe("nearest lower rule", () => {
   });
 });
 
+describe("codex axes are independent", () => {
+  it("does not treat never-ask plus a sandbox as full autonomy", () => {
+    // Both axes are required. Classifying this as full-auto handed Claude
+    // bypassPermissions on a family switch — unsandboxed, in a family that has
+    // no sandbox axis — which is the rounding up the ladder forbids.
+    const level = permissionLevelForCodex("workspace-write", "never");
+    expect(level).toBe("auto-edit");
+    expect(resolvePermissionLevel(level, "claude").claudePermissionMode).toBe("acceptEdits");
+  });
+
+  it("still recognises genuine full autonomy", () => {
+    expect(permissionLevelForCodex("danger-full-access", "never")).toBe("full-auto");
+  });
+
+  it("treats a read-only sandbox as plan even when approval is lax", () => {
+    expect(permissionLevelForCodex("read-only", "never")).toBe("plan");
+  });
+});
+
 describe("droid agi", () => {
   it("reads as full autonomy so a switch away keeps the top level", () => {
     expect(permissionLevelForDroid("agi")).toBe("full-auto");

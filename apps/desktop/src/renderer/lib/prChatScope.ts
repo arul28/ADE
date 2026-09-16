@@ -16,3 +16,25 @@ export function selectPrsForChat(
     return linkedSessionIds.length === 0 || linkedSessionIds.includes(sessionId);
   });
 }
+
+/**
+ * Every PR this chat should show: owned by the lane OR explicitly linked to
+ * this chat session, never detached, then scoped to the session.
+ *
+ * One function because the rule was written three times with three different
+ * answers — the chat toolbar accepted a cross-lane linked PR while the PR pane
+ * still pre-filtered on lane id, so the pane's own multi-PR selector could not
+ * show the very PR the toolbar was showing.
+ */
+export function selectPrsForChatInLane(
+  prs: readonly PrSummary[],
+  laneId: string,
+  sessionId?: string | null,
+): PrSummary[] {
+  const owned = prs.filter((pr) => {
+    if (pr.detached) return false;
+    if (pr.laneId === laneId) return true;
+    return Boolean(sessionId && pr.chatSessionIds?.includes(sessionId));
+  });
+  return selectPrsForChat(owned, sessionId);
+}

@@ -11,6 +11,8 @@
 // still yields canonical tokens, and a chip's `title` shows the token it stands
 // for.
 
+import { useMemo } from "react";
+
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { chipDisplayLabel, chipGlyph, splitTextIntoChipParts, type Chip } from "../../../shared/chips";
 import { navigateToAppTarget, openAdeDeeplink, openLinkFromUi } from "../../lib/openExternal";
@@ -50,7 +52,9 @@ const CHIP_CLASS =
   + " leading-5 text-white/90";
 
 export function ChipText({ text, className }: { text: string; className?: string }) {
-  const parts = splitTextIntoChipParts(text);
+  // Memoized on the text: this renders for every user message in the
+  // transcript, and the parse runs two regex scans plus a URL parse per link.
+  const parts = useMemo(() => splitTextIntoChipParts(text), [text]);
 
   // No chips: keep the exact original node so nothing about plain messages
   // changes — spacing, selection, and copy stay byte-for-byte what they were.

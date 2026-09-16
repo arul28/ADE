@@ -2860,7 +2860,7 @@ export function createPrService({
 
   const upsertRow = (
     summary: Omit<PrSummary, "projectId"> & { projectId?: string },
-    options?: { allowRepoPrAdoption?: boolean },
+
   ): string => {
     const now = nowIso();
     const hasMergeConflicts = Object.prototype.hasOwnProperty.call(summary, "mergeConflicts");
@@ -2877,19 +2877,6 @@ export function createPrService({
     const checksMissingRequiredValue = Array.isArray(summary.checksMissingRequired)
       ? JSON.stringify(summary.checksMissingRequired)
       : null;
-    // By default we only adopt an existing row that is already associated with
-    // this lane. Callers like `linkToLane`/`refreshOne` must not silently
-    // reassign an existing PR row from another lane just because the repo/PR
-    // number match — that was a data-loss bug when the same PR number was
-    // reused across lanes or when users manually linked an in-flight PR.
-    // The duplicate-PR recovery path in `createFromLane` (where GitHub rejects
-    // creation because a PR already exists for the head branch) is the only
-    // legitimate use of the repo/PR-number fallback; it opts in via
-    // `allowRepoPrAdoption: true`.
-    // Identity first. The lane-branch lookup is deliberately live-only (it answers
-    // "what is this lane working on"), so on its own it would miss a detached row and
-    // send us down the insert path with a primary key that already exists.
-    //
     // Identity is the pull request ITSELF — `(repo, number)` — not the lane's
     // current branch. Resolving by `(lane_id, head_branch)` first is what made
     // a second PR opened from the same chat impossible: both PRs carry the
@@ -3471,7 +3458,7 @@ export function createPrService({
         mergedAt: asString(rawPr?.merged_at) || null,
         creationStrategy: "pr_target",
       };
-      const prId = upsertRow(summary, { allowRepoPrAdoption: true });
+      const prId = upsertRow(summary);
       clearAutoLinkIgnore({
         repoOwner: repo.owner,
         repoName: repo.name,
@@ -7497,7 +7484,7 @@ export function createPrService({
     // Allow repo/PR-number fallback here: when the GitHub create call collides
     // with an already-existing PR for this branch, we need to adopt the row
     // that represents that PR (regardless of prior lane attribution).
-    const prId = upsertRow(summary, { allowRepoPrAdoption: true });
+    const prId = upsertRow(summary);
     clearAutoLinkIgnore({
       repoOwner: repo.owner,
       repoName: repo.name,
@@ -7655,31 +7642,37 @@ export function createPrService({
     if (!linksToAnotherLane) removeChatSessionLinksFromOtherLanes(prId, lane.id);
     linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
 
-    await (headMatchesLane
-      ? publishLinearPrCardsForLane({
+    if (headMatchesLane) {
+      await publishLinearPrCardsForLane({
         lane,
         repo,
         prNumber: locator.number,
         githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
         closePrimaryOnMerge: false,
         linkedAt,
-      })
-      : Promise.resolve()
-    ).catch((error) => {
-      logger.warn("prs.linear_pr_cards_publish_failed", {
-        laneId: lane.id,
-        prNumber: locator.number,
-        error: error instanceof Error ? error.message : String(error),
+      }).catch((error) => {
+        logger.warn("prs.linear_pr_cards_publish_failed", {
+          laneId: lane.id,
+          prNumber: locator.number,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    });
+    }
 
-    await attachPrTranscriptGistLinks({
-      lane,
-      repo,
-      prNumber: locator.number,
-      githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
-      currentBody: typeof pr?.body === "string" ? pr.body : patchedBody,
-    }).then((body) => {
+    // Gated exactly like the description patch above, and for a stronger
+    // reason: this publishes THIS lane's chat transcripts as gists and then
+    // PATCHes them into the PR body. Referencing a colleague's PR must never
+    // upload your transcripts to their repository.
+    await (headMatchesLane
+      ? attachPrTranscriptGistLinks({
+        lane,
+        repo,
+        prNumber: locator.number,
+        githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
+        currentBody: typeof pr?.body === "string" ? pr.body : patchedBody,
+      })
+      : Promise.resolve(typeof pr?.body === "string" ? pr.body : patchedBody)
+    ).then((body) => {
       if (pr) pr.body = body;
     }).catch((error) => {
       logger.warn("prs.transcript_gists_attach_failed", {

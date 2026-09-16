@@ -25,7 +25,7 @@ import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
-import { selectPrsForChat } from "../../lib/prChatScope";
+import { selectPrsForChatInLane } from "../../lib/prChatScope";
 import { selectLanePrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
@@ -373,8 +373,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     try {
       if (typeof window.ade.prs.listAll === "function") {
         const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
-        const ownedPrs = allPrs.filter((candidate) => candidate.laneId === laneId && !candidate.detached);
-        const scopedPrs = selectPrsForChat(ownedPrs, sessionId);
+        const scopedPrs = selectPrsForChatInLane(allPrs, laneId, sessionId);
         const visiblePrs = selectLanePrs(laneForPr, scopedPrs);
         setLinkedPrs(visiblePrs);
         const pinnedId = pinnedPrIdRef.current;
