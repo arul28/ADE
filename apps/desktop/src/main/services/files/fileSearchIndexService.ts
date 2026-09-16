@@ -60,11 +60,22 @@ type IndexedFile = {
   mtimeMs: number;
 };
 
+type IndexedDirectory = {
+  path: string;
+  lowerPath: string;
+};
+
 type WorkspaceIndex = {
   workspaceId: string;
   rootPath: string;
   includeIgnored: boolean;
   files: Map<string, IndexedFile>;
+  /**
+   * Directories the walk visited. Kept apart from `files` so nothing that
+   * scans file contents (text search, size limits, mtime) can ever pick a
+   * directory up by accident; only name-matching reads this map.
+   */
+  directories: Map<string, IndexedDirectory>;
   quickOpenCache: Map<string, FilesQuickOpenItem[]>;
   buildingPromise: Promise<void> | null;
   builtAt: string | null;
@@ -441,6 +452,7 @@ export function createFileSearchIndexService() {
       rootPath,
       includeIgnored,
       files: new Map(),
+      directories: new Map(),
       quickOpenCache: new Map(),
       buildingPromise: null,
       builtAt: null
@@ -465,6 +477,13 @@ export function createFileSearchIndexService() {
         index.files.delete(key);
       }
     }
+    // Directories are removed on the same rule. Without this a deleted folder
+    // keeps appearing in the composer's `@` menu until the next full rebuild.
+    for (const key of index.directories.keys()) {
+      if (key === normalized || key.startsWith(descendantsPrefix)) {
+        index.directories.delete(key);
+      }
+    }
   };
 
   const upsertFile = (index: WorkspaceIndex, relPath: string): void => {
@@ -480,7 +499,12 @@ export function createFileSearchIndexService() {
       return;
     }
 
-    if (stat.isDirectory()) return;
+    if (stat.isDirectory()) {
+      // A folder created after the build lands here; record it so it is
+      // suggestable immediately rather than only after the next rebuild.
+      index.directories.set(normalized, { path: normalized, lowerPath: normalized.toLowerCase() });
+      return;
+    }
     if (!stat.isFile()) return;
 
     index.files.set(normalized, {
@@ -535,8 +559,16 @@ export function createFileSearchIndexService() {
     return out;
   };
 
-  const quickOpenCacheKey = (query: string, limit: number, allowComposerPrefixFallback: boolean): string =>
-    `${query.toLowerCase().trim()}\0${limit}\0${allowComposerPrefixFallback ? "composer" : "generic"}`;
+  const quickOpenCacheKey = (
+    query: string,
+    limit: number,
+    allowComposerPrefixFallback: boolean,
+    includeDirectories: boolean,
+  ): string =>
+    // The directory flag is part of the key: without it a generic caller could
+    // be served the composer's cached rows, folders and all.
+    `${query.toLowerCase().trim()}\0${limit}\0${allowComposerPrefixFallback ? "composer" : "generic"}`
+    + `\0${includeDirectories ? "dirs" : "files"}`;
 
   const rememberQuickOpenCache = (index: WorkspaceIndex, cacheKey: string, items: FilesQuickOpenItem[]): void => {
     if (index.quickOpenCache.has(cacheKey)) {
@@ -554,6 +586,7 @@ export function createFileSearchIndexService() {
 
   const buildWorkspace = async (index: WorkspaceIndex, opts: IgnoreOptions): Promise<void> => {
     index.files.clear();
+    index.directories.clear();
     invalidateQuickOpenCache(index);
 
     const stack: string[] = [""];
@@ -583,6 +616,7 @@ export function createFileSearchIndexService() {
         if (await opts.shouldIgnore(relPath, index.includeIgnored)) continue;
 
         if (entry.isDirectory()) {
+          index.directories.set(relPath, { path: relPath, lowerPath: relPath.toLowerCase() });
           stack.push(relPath);
           continue;
         }
@@ -648,6 +682,7 @@ export function createFileSearchIndexService() {
       limit: number;
       includeIgnored: boolean;
       allowComposerPrefixFallback?: boolean;
+      includeDirectories?: boolean;
       shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
       primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
     }): Promise<FilesQuickOpenItem[]> {
@@ -658,7 +693,13 @@ export function createFileSearchIndexService() {
       });
 
       const allowComposerPrefixFallback = Boolean(args.allowComposerPrefixFallback);
-      const cacheKey = quickOpenCacheKey(args.query, args.limit, allowComposerPrefixFallback);
+      const includeDirectories = Boolean(args.includeDirectories);
+      const cacheKey = quickOpenCacheKey(
+        args.query,
+        args.limit,
+        allowComposerPrefixFallback,
+        includeDirectories,
+      );
       const cached = index.quickOpenCache.get(cacheKey);
       if (cached) return cloneQuickOpenItems(cached);
 
@@ -667,6 +708,13 @@ export function createFileSearchIndexService() {
         const score = scorePath(entry.lowerPath, args.query, allowComposerPrefixFallback);
         if (score < 0) continue;
         scored.push({ path: entry.path, score });
+      }
+      if (includeDirectories) {
+        for (const entry of index.directories.values()) {
+          const score = scorePath(entry.lowerPath, args.query, allowComposerPrefixFallback);
+          if (score < 0) continue;
+          scored.push({ path: entry.path, score, isDirectory: true });
+        }
       }
       scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
       const result = scored.slice(0, args.limit);

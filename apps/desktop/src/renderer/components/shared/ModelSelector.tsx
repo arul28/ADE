@@ -10,7 +10,6 @@ type ModelSelectorProps = {
   compact?: boolean;
   availableModelIds?: string[];
   onOpenAiSettings?: () => void;
-  surfaceKey?: string;
   fastModeActive?: boolean;
   onFastModeToggle?: (next: boolean) => void;
   fastModeSupported?: boolean;
@@ -40,7 +39,6 @@ export function ModelSelector({
   compact,
   availableModelIds,
   onOpenAiSettings,
-  surfaceKey = "automations/model",
   fastModeActive,
   onFastModeToggle,
   fastModeSupported,
@@ -74,7 +72,6 @@ export function ModelSelector({
       <ModelPicker
         value={effectiveModelId}
         onChange={handleModelChange}
-        surfaceKey={surfaceKey}
         compact={compact ?? false}
         {...(availableModelIds ? { availableModelIds } : {})}
         {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}

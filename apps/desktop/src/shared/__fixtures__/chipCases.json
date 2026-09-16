@@ -1,0 +1,178 @@
+{
+  "_comment": [
+    "Cross-surface chip cases. The desktop reads this from chips.test.ts and iOS",
+    "reads the same file from disk, relative to its own source path, in",
+    "ADETests/WorkComposerTriggerDetectorTests.testMatchesSharedChipFixture.",
+    "",
+    "It exists because iOS re-implements chips.ts and deeplinks.ts in Swift and",
+    "cannot import the TypeScript. Hand-written twin tests prove today's parity and",
+    "nothing about tomorrow's: two divergences were already found by review rather",
+    "than by a failing test. Adding a row here fails the iOS suite until Swift",
+    "matches, which is the only mechanism that makes silent divergence impossible.",
+    "",
+    "Add a row for every new deeplink shape. `label` is the compact display label.",
+    "",
+    "NOTE: ade://pr/<number> without owner/repo is REJECTED by parseDeeplink and is\ndeliberately absent — it must stay a generic ADE link on every surface."
+  ],
+  "cases": [
+    { "url": "https://github.com/arul28/ade/pull/1237", "kind": "pr", "label": "arul28/ade#1237" },
+    { "url": "ade://pr/arul28/ade/1237", "kind": "pr", "label": "#1237" },
+    { "url": "https://github.com/arul28/ade/issues/88", "kind": "issue", "label": "arul28/ade#88" },
+    { "url": "https://github.com/arul28/ade", "kind": "repo", "label": "arul28/ade" },
+    { "url": "https://github.com/arul28/ade/commit/80a6236e6abcdef", "kind": "commit", "label": "arul28/ade@80a6236" },
+    { "url": "ade://commit/80a6236e6abcdef", "kind": "commit", "label": "80a6236" },
+    { "url": "ade://lane/25f280a4-1b2c-4d3e-8f90-abcdef123456", "kind": "lane", "label": "Lane 25f280a4" },
+    { "url": "ade://session/9e2315e8ddef", "kind": "chat", "label": "Chat 9e2315e8" },
+    { "url": "ade://file/apps/desktop/src/shared/chips.ts", "kind": "file", "label": "chips.ts" },
+    { "url": "ade://file/apps/desktop/src/shared/chips.ts?line=42", "kind": "file", "label": "chips.ts:42" },
+    { "url": "ade://file/apps/desktop/src/shared/chips.ts?line=007", "kind": "file", "label": "chips.ts:7" },
+    { "url": "ade://file/apps/desktop/src/shared/chips.ts?line=abc", "kind": "ade_link", "label": "ADE · file/apps/desktop/src/shared/chips.ts" },
+    { "url": "ade://file/apps/desktop/src/shared/chips.ts?line=0", "kind": "ade_link", "label": "ADE · file/apps/desktop/src/shared/chips.ts" },
+    { "url": "ade://file/apps/desktop/src/shared/chips.ts?line", "kind": "ade_link", "label": "ADE · file/apps/desktop/src/shared/chips.ts" },
+    { "url": "ade://repo/arul28/ade/branch/main", "kind": "branch", "label": "main" },
+    { "url": "ade://repo/arul28/ade/branch/ade/t3gap-b-composer", "kind": "branch", "label": "ade/t3gap-b-composer" },
+    { "url": "ade://artifact/proof12345678", "kind": "artifact", "label": "Artifact proof123" },
+    { "url": "https://linear.app/ade/issue/ADE-431/fix-it", "kind": "linear_issue", "label": "ADE-431" },
+    { "url": "ade://linear-issue/ade-431", "kind": "linear_issue", "label": "ADE-431" },
+    { "url": "ade://lane/25f280a4/session/abc", "kind": "ade_link", "label": "ADE · lane/25f280a4/session/abc" },
+    { "url": "ade://something-a-newer-ade-minted/42", "kind": "ade_link", "label": "ADE · something-a-newer-ade-minted/42" }
+  ],
+  "_mentionsComment": [
+    "Mention-grammar parity rows (`@chat:` / `@lane:` / `@term:`). `text` is a",
+    "whole message body, not a bare token, because the grammar is boundary-",
+    "sensitive: the desktop's regex only matches after start-of-string or one of",
+    "[ \\t\\r\\n ( [ { , ], which is what keeps emails and `foo@chat:bar` out.",
+    "",
+    "`chips` lists every chip the unified one-pass parser must emit, in document",
+    "order, with no overlaps — mentions AND links together. An empty list means",
+    "the text must produce no chips at all."
+  ],
+  "mentions": [
+    {
+      "text": "@chat:9e2315e8ddef",
+      "chips": [{ "kind": "chat", "token": "@chat:9e2315e8ddef", "label": "Chat 9e2315e8" }]
+    },
+    {
+      "text": "see @lane:25f280a4-1b2c-4d3e-8f90-abcdef123456 for the fix",
+      "chips": [
+        {
+          "kind": "lane",
+          "token": "@lane:25f280a4-1b2c-4d3e-8f90-abcdef123456",
+          "label": "Lane 25f280a4"
+        }
+      ]
+    },
+    {
+      "text": "tail (@term:tty-7) while it runs",
+      "chips": [{ "kind": "terminal", "token": "@term:tty-7", "label": "Terminal tty-7" }]
+    },
+    {
+      "text": "short id @chat:ab",
+      "chips": [{ "kind": "chat", "token": "@chat:ab", "label": "Chat ab" }]
+    },
+    {
+      "text": "arul@chat:nope is an email-shaped substring, not a mention",
+      "chips": []
+    },
+    {
+      "text": "@bogus:123 and @chat: are not mentions",
+      "chips": []
+    },
+    {
+      "text": "compare @lane:abc123de with https://github.com/arul28/ade/pull/1237 please",
+      "chips": [
+        { "kind": "lane", "token": "@lane:abc123de", "label": "Lane abc123de" },
+        {
+          "kind": "pr",
+          "token": "https://github.com/arul28/ade/pull/1237",
+          "label": "arul28/ade#1237"
+        }
+      ]
+    },
+    {
+      "text": "ade://session/9e2315e8ddef then @term:t1",
+      "chips": [
+        { "kind": "chat", "token": "ade://session/9e2315e8ddef", "label": "Chat 9e2315e8" },
+        { "kind": "terminal", "token": "@term:t1", "label": "Terminal t1" }
+      ]
+    },
+    {
+      "text": "@chat:one and @chat:one twice keeps both pills",
+      "chips": [
+        { "kind": "chat", "token": "@chat:one", "label": "Chat one" },
+        { "kind": "chat", "token": "@chat:one", "label": "Chat one" }
+      ]
+    },
+    {
+      "text": "see @src/shared/chips.ts ok",
+      "chips": [
+        { "kind": "file", "token": "src/shared/chips.ts", "label": "chips.ts" }
+      ]
+    },
+    {
+      "text": "look in @src/shared/ please",
+      "chips": [
+        { "kind": "folder", "token": "src/shared/", "label": "shared/" }
+      ]
+    },
+    {
+      "text": "edit @src/a/b.ts. then @src/a/ (there)",
+      "chips": [
+        { "kind": "file", "token": "src/a/b.ts", "label": "b.ts" },
+        { "kind": "folder", "token": "src/a/", "label": "a/" }
+      ]
+    },
+    {
+      "_why": "A slash-less token ending in a plainly non-code TLD is prose, not a file. The suffix list is tiny on purpose: .md is Moldova, .py Paraguay, .sh St Helena, .rs Serbia — a full TLD blocklist would refuse a README, which is the case the extension arm exists for.",
+      "text": "mail @example.com now",
+      "chips": []
+    },
+    {
+      "_why": "A slash makes it a path regardless of what it ends in.",
+      "text": "see @docs/example.com please",
+      "chips": [{ "kind": "file", "token": "docs/example.com", "label": "example.com" }]
+    },
+    {
+      "_why": "Extensions that collide with a TLD but are real source files.",
+      "text": "run @build.sh then @main.rs and @app.py",
+      "chips": [
+        { "kind": "file", "token": "build.sh", "label": "build.sh" },
+        { "kind": "file", "token": "main.rs", "label": "main.rs" },
+        { "kind": "file", "token": "app.py", "label": "app.py" }
+      ]
+    },
+    {
+      "text": "read @README.md first",
+      "chips": [{ "kind": "file", "token": "README.md", "label": "README.md" }]
+    },
+    {
+      "text": "ping @someone please",
+      "chips": []
+    },
+    {
+      "text": "ends in a dot @foo. then",
+      "chips": []
+    },
+    {
+      "text": "arul@chat/nope is an email-shaped substring",
+      "chips": []
+    },
+    {
+      "text": "see https://github.com/arul28/ade/pull/7 ok",
+      "chips": [
+        {
+          "kind": "pr",
+          "token": "https://github.com/arul28/ade/pull/7",
+          "label": "arul28/ade#7"
+        }
+      ]
+    },
+    {
+      "text": "@chat:9e2315e8ddef touched @src/shared/chips.ts",
+      "chips": [
+        { "kind": "chat", "token": "@chat:9e2315e8ddef", "label": "Chat 9e2315e8" },
+        { "kind": "file", "token": "src/shared/chips.ts", "label": "chips.ts" }
+      ]
+    }
+  ]
+}

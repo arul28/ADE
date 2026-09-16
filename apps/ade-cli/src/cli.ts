@@ -264,6 +264,7 @@ import {
   takeAdeCodeRemoteArgs,
 } from "./tuiClient/remoteLauncher";
 import { copyToClipboard } from "./lib/clipboard";
+import { pickPrimaryPrRecord, prRecordNumber } from "./lib/primaryPr";
 import {
   clearLastFailure,
   computeStartupBackoffMs,
@@ -2551,6 +2552,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade files mkdir --workspace <lane> src/new
     $ ade files search --workspace <lane> -q <text> Search text in a workspace
     $ ade files quick-open --workspace <lane> -q app
+    $ ade files quick-open --workspace <lane> -q src --include-directories
+                                                    Also offer folders; they print with a trailing slash
 `,
   session: `${ADE_BANNER}
   Session lifecycle
@@ -10227,6 +10230,19 @@ function buildFilesPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "quick-open") {
+    // Every option is consumed BEFORE the positional query is assembled:
+    // `args.join(" ")` sweeps up whatever is left, so a flag still sitting in
+    // `args` becomes part of the query text and the search silently matches
+    // nothing (`files quick-open src --include-directories` searching for
+    // "src --include-directories").
+    const explicitQuery = readValue(args, ["--query", "-q"]);
+    const limit = readIntOption(args, ["--limit"]);
+    const includeIgnored = readFlag(args, ["--include-ignored"]);
+    // Opt-in, exactly like the action contract: quick-open's callers
+    // mostly open what they receive, and a directory is not openable.
+    // Folder rows print with a trailing slash so a caller piping this
+    // output can tell the two apart.
+    const includeDirectories = readFlag(args, ["--include-directories"]);
     return {
       kind: "execute",
       label: "file quick-open",
@@ -10236,9 +10252,10 @@ function buildFilesPlan(args: string[]): CliPlan {
           "file",
           "quickOpen",
           withWorkspace({
-            query: readValue(args, ["--query", "-q"]) ?? args.join(" "),
-            limit: readIntOption(args, ["--limit"]),
-            includeIgnored: readFlag(args, ["--include-ignored"]),
+            query: explicitQuery ?? args.join(" "),
+            limit,
+            includeIgnored,
+            includeDirectories,
           }),
         ),
       ],
@@ -23367,11 +23384,21 @@ function formatFilesSearch(value: unknown): string {
   const matches = firstArray(value, ["matches", "results", "items"]);
   return renderTable(
     ["file", "line", "match"],
-    matches.map((match) => [
-      match.path ?? match.filePath,
-      match.line ?? match.lineNumber,
-      match.preview ?? match.text ?? match.match,
-    ]),
+    matches.map((match) => {
+      const path = match.path ?? match.filePath;
+      return [
+        // `quick-open --include-directories` mixes folders into the same list.
+        // The trailing slash is the whole distinction in a plain-text table,
+        // and it matches the token the composer inserts for a folder chip.
+        match.isDirectory === true && typeof path === "string"
+          // Strip either separator: a Windows row would otherwise render
+          // `C:\repo\src\/` with both.
+          ? `${path.replace(/[\\/]+$/, "")}/`
+          : path,
+        match.line ?? match.lineNumber,
+        match.preview ?? match.text ?? match.match,
+      ];
+    }),
     "ADE file search\n(no matches)",
   );
 }
@@ -26464,15 +26491,22 @@ function createLinkEnvelopeResolver(
       const githubValue = await action(connection, "github", "getRemoteStatus").catch(() => null);
       const repo = isRecord(githubValue) && isRecord(githubValue.repo) ? githubValue.repo : null;
       const prsValue = await action(connection, "pr", "listAll", { laneId: context.laneId }).catch(() => null);
-      const pr = records(prsValue, ["prs", "items", "result"])
-        .find((candidate) => asString(candidate.laneId) === context.laneId) ?? null;
+      // A lane owns N PRs now — identity is (repo, number), not the lane's
+      // branch — so the first matching row is not "the" lane's PR. Stamp the
+      // deeplink envelope with the PR a human would name: open before draft
+      // before terminal history, newest first. Same comparator as the desktop
+      // lane badge, so a link minted here points where the badge points.
+      const pr = pickPrimaryPrRecord(records(prsValue, ["prs", "items", "result"])
+        .filter((candidate) => asString(candidate.laneId) === context.laneId));
 
       const branch = asString(lane?.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
       const laneIssue = isRecord(lane?.linearIssue) ? lane.linearIssue : null;
       const linearIssue = asString(laneIssue?.identifier);
-      const prNumber = typeof pr?.githubPrNumber === "number" && Number.isSafeInteger(pr.githubPrNumber)
-        ? pr.githubPrNumber
-        : null;
+      // `pickPrimaryPrRecord` accepts `githubPrNumber`, `number`, or `prNumber`,
+      // so reading only the first would select a row and then mint a deeplink
+      // without its number. Read it back through the same helper.
+      const prNumberValue = pr ? prRecordNumber(pr) : 0;
+      const prNumber = prNumberValue > 0 ? prNumberValue : null;
       const envelope: DeeplinkEnvelope = {};
       const owner = asString(repo?.owner);
       const name = asString(repo?.name);

@@ -168,7 +168,6 @@ export function PrResolverLaunchControls({
       <ModelPicker
         value={modelId}
         onChange={handleModelChange}
-        surfaceKey="pr-resolver-launch"
         availableModelIds={availableModelIds}
         disabled={disabled}
       />

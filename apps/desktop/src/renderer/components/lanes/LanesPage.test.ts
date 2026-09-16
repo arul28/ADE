@@ -15,6 +15,7 @@ import {
   resolveVisibleLaneIds,
   runLaneDeleteBatchWithConcurrency,
   selectGithubLanePrTag,
+  selectChatPrs,
   selectLanePrs,
   selectLaneTabPrTag,
   selectLanePrTag,
@@ -946,5 +947,82 @@ describe("shouldMountGitActionsPane", () => {
       expandedGitActionsLaneId: null,
       surface: "inline",
     })).toBe(true);
+  });
+});
+
+describe("lane vs chat PR scoping", () => {
+  // The blocker this branch shipped and then had to fix. `lanePrMatchesCurrentBranch`
+  // is the ONLY place lane ownership is enforced, and every caller passes the
+  // project-wide PR list — so an early-return on `chatSessionIds` put one lane's
+  // pull request on every lane's badge, tag, hover list and Work card.
+  it("never shows a PR owned by another lane, even when a chat linked it", () => {
+    const lane = makeLane({ id: "lane-1", branchRef: "ade/mine" });
+    const foreign = makePr({
+      id: "pr-foreign",
+      laneId: "lane-2",
+      headBranch: "ade/theirs",
+      chatSessionIds: ["sess-a"],
+    });
+
+    expect(selectLanePrs(lane, [foreign])).toEqual([]);
+  });
+
+  // The feature the blocker fix must not break: a PR this lane OWNS stays
+  // visible after the lane moves to another branch, which is what lets one
+  // chat hold more than one PR.
+  it("keeps an owned PR whose head branch is no longer the lane's", () => {
+    const lane = makeLane({ id: "lane-1", branchRef: "ade/now" });
+    const owned = makePr({ id: "pr-owned", laneId: "lane-1", headBranch: "ade/before", chatSessionIds: ["sess-a"] });
+
+    expect(selectLanePrs(lane, [owned]).map((pr) => pr.id)).toEqual(["pr-owned"]);
+  });
+
+  // Historical rows with no chat link still fall back to the branch rule.
+  it("hides an owned PR on an old branch when no chat linked it", () => {
+    const lane = makeLane({ id: "lane-1", branchRef: "ade/now" });
+    const stale = makePr({ id: "pr-stale", laneId: "lane-1", headBranch: "ade/before" });
+
+    expect(selectLanePrs(lane, [stale])).toEqual([]);
+  });
+
+  // Chat surfaces take the union, because `linkToLane` deliberately leaves
+  // `lane_id` on the ORIGINAL owning lane. Piping the chat list through the
+  // strict lane selector made the cross-lane link unreachable dead code.
+  it("selectChatPrs adds a session-linked PR that another lane owns", () => {
+    const lane = makeLane({ id: "lane-1", branchRef: "ade/mine" });
+    const owned = makePr({ id: "pr-owned", laneId: "lane-1", headBranch: "origin/ade/mine" });
+    const linkedElsewhere = makePr({
+      id: "pr-foreign",
+      laneId: "lane-2",
+      headBranch: "ade/theirs",
+      chatSessionIds: ["sess-a"],
+    });
+
+    const ids = selectChatPrs(lane, [owned, linkedElsewhere], "sess-a").map((pr) => pr.id);
+    expect(ids).toContain("pr-owned");
+    expect(ids).toContain("pr-foreign");
+  });
+
+  it("selectChatPrs ignores a foreign PR linked to a DIFFERENT chat session", () => {
+    const lane = makeLane({ id: "lane-1", branchRef: "ade/mine" });
+    const other = makePr({ id: "pr-foreign", laneId: "lane-2", chatSessionIds: ["sess-b"] });
+
+    expect(selectChatPrs(lane, [other], "sess-a")).toEqual([]);
+  });
+
+  it("selectChatPrs never lists one PR twice", () => {
+    const lane = makeLane({ id: "lane-1", branchRef: "ade/mine" });
+    const owned = makePr({ id: "pr-owned", laneId: "lane-1", headBranch: "origin/ade/mine", chatSessionIds: ["sess-a"] });
+
+    expect(selectChatPrs(lane, [owned], "sess-a").map((pr) => pr.id)).toEqual(["pr-owned"]);
+  });
+
+  it("selectChatPrs drops detached rows on both arms", () => {
+    const lane = makeLane({ id: "lane-1", branchRef: "ade/mine" });
+    const DETACHED = { at: "2026-09-16T00:00:00.000Z", laneName: null, laneColor: null, chats: 0, artifacts: 0, checkpoints: 0 };
+    const detachedOwned = makePr({ id: "a", laneId: "lane-1", headBranch: "origin/ade/mine", detached: DETACHED });
+    const detachedForeign = makePr({ id: "b", laneId: "lane-2", chatSessionIds: ["sess-a"], detached: DETACHED });
+
+    expect(selectChatPrs(lane, [detachedOwned, detachedForeign], "sess-a")).toEqual([]);
   });
 });

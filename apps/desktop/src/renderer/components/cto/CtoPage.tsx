@@ -506,7 +506,6 @@ function ModelPickCard({
             value=""
             availableModelIds={availableModelIds}
             filter={ctoModelSupportsLiveRedirect}
-            surfaceKey="cto-model-pick"
             disabled={switchingModel}
             onChange={onPick}
             onOpenSignIn={onOpenProviderSettings}

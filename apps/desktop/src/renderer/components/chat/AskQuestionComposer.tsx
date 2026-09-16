@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretDown, CaretUp, Check, ListChecks, PencilSimple, X } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { CaretDown, CaretUp, Check, ListChecks, Paperclip, PencilSimple, X } from "@phosphor-icons/react";
 import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/types";
 import {
   answerState,
@@ -221,11 +221,38 @@ export function AskQuestionComposer({
   responding = false,
   onSubmit,
   onDecline,
+  renderAnswerEditor,
+  answerValue,
+  onAnswerValueChange,
+  onAttachFiles,
+  attachDisabled = false,
+  attachBlockedReason,
 }: {
   request: PendingInputRequest;
   responding?: boolean;
   onSubmit: (answers: Record<string, string | string[]>) => void;
   onDecline: () => void;
+  /**
+   * The composer's own rich editor, handed in as a slot.
+   *
+   * The free-text answer is not a second, poorer text field: it IS the
+   * composer's contentEditable editor — @-mentions, `#` PR menu, smart-link
+   * chips, paste-image, drag-drop — mounted inside this card. Nothing is
+   * duplicated here; the editor stays owned by `AgentChatComposer`, which
+   * renders it into whichever of its two homes is live. When the slot is not
+   * supplied (mobile, tests, any non-composer host) the plain textarea below
+   * is the fallback, so this component still stands alone.
+   *
+   * `answerValue` is that editor's canonically serialized text — the string
+   * that goes out through `respondToInput`, chip tokens and all.
+   */
+  renderAnswerEditor?: (api: { placeholder: string; onSubmitAnswer: () => void }) => ReactNode;
+  answerValue?: string;
+  /** Programmatic writes only (page switches). Typing flows in via `answerValue`. */
+  onAnswerValueChange?: (text: string) => void;
+  onAttachFiles?: () => void;
+  attachDisabled?: boolean;
+  attachBlockedReason?: string | null;
 }) {
   const questions = request.questions;
   const [page, setPage] = useState(0);
@@ -241,14 +268,41 @@ export function AskQuestionComposer({
   const safePage = Math.min(Math.max(page, 0), Math.max(questions.length - 1, 0));
   const question = questions[safePage];
   const picks = useMemo(() => (question ? ownQuestionValue(picksById, question.id) ?? [] : []), [picksById, question]);
-  const note = question ? ownQuestionValue(notesById, question.id) ?? "" : "";
+
+  /*
+   * Rich answers live in the host's editor, not in this component's state.
+   *
+   * A secret answer is deliberately excluded: a masked single-line input is the
+   * whole contract there, and a contentEditable cannot be masked, cannot be
+   * kept out of the DOM text, and would happily tokenize a token into a chip.
+   * `allowsFreeform === false` has no field at all.
+   */
+  const richAnswerAvailable = Boolean(renderAnswerEditor && onAnswerValueChange && answerValue !== undefined);
+  const isRichQuestion = useCallback(
+    (entry: PendingInputQuestion | undefined): boolean => Boolean(
+      richAnswerAvailable && entry && entry.isSecret !== true && entry.allowsFreeform !== false,
+    ),
+    [richAnswerAvailable],
+  );
+  const richAnswerActive = isRichQuestion(question);
+  const note = question
+    ? (richAnswerActive ? answerValue ?? "" : ownQuestionValue(notesById, question.id) ?? "")
+    : "";
+  /* The host owns the current question's text; every read that walks all the
+     questions (progress dots, answered count, the final payload) has to see it
+     there or the card reports itself unanswered while the field holds an
+     answer. */
+  const effectiveNotes = useMemo(
+    () => (question && richAnswerActive ? { ...notesById, [question.id]: answerValue ?? "" } : notesById),
+    [answerValue, notesById, question, richAnswerActive],
+  );
   const isLast = safePage === questions.length - 1;
   const options = useMemo(
     () => optionsForQuestion(request, question, safePage),
     [question, request, safePage],
   );
 
-  const answered = answeredQuestionCount(questions, picksById, notesById);
+  const answered = answeredQuestionCount(questions, picksById, effectiveNotes);
   const canProceed = answerState(picks, note) !== "EMPTY";
   const canSend = questions.length > 1 ? answered === questions.length : canProceed;
 
@@ -271,17 +325,39 @@ export function AskQuestionComposer({
   }, [question]);
 
   const submit = useCallback(() => {
-    onSubmit(buildAnswers(questions, picksById, notesById));
-  }, [notesById, onSubmit, picksById, questions]);
+    onSubmit(buildAnswers(questions, picksById, effectiveNotes));
+  }, [effectiveNotes, onSubmit, picksById, questions]);
+
+  /* Paging is the one place the host-owned answer has to be moved by hand:
+     stash what the shared editor holds under the question being left, then hand
+     it whatever the question being entered had. Without this the single editor
+     would carry one answer across every page of a multi-question request. */
+  const goToPage = useCallback((index: number) => {
+    const target = Math.min(Math.max(index, 0), Math.max(questions.length - 1, 0));
+    setOpenPreview(null);
+    if (target === safePage) return;
+    if (question && richAnswerActive) {
+      setNotes((prev) => ({ ...prev, [question.id]: answerValue ?? "" }));
+    }
+    const next = questions[target];
+    // Hand the shared editor the destination's own answer — and EMPTY it when
+    // the destination has no editor at all. A secret or option-only page does
+    // not render the rich editor, so skipping this left the previous page's
+    // answer sitting in the host draft, where it would resurface as an ordinary
+    // prompt once the card went away.
+    onAnswerValueChange?.(
+      next && isRichQuestion(next) ? ownQuestionValue(notesById, next.id) ?? "" : "",
+    );
+    setPage(target);
+  }, [answerValue, isRichQuestion, notesById, onAnswerValueChange, question, questions, richAnswerActive, safePage]);
 
   const advance = useCallback(() => {
     if (!isLast) {
-      setPage(safePage + 1);
-      setOpenPreview(null);
+      goToPage(safePage + 1);
       return;
     }
     if (canSend) submit();
-  }, [canSend, isLast, safePage, submit]);
+  }, [canSend, goToPage, isLast, safePage, submit]);
 
   /* Whether the list has more below the fold, and how many rows fall fully
      under it. Measured, not guessed, so a short list gets no false affordance —
@@ -323,7 +399,21 @@ export function AskQuestionComposer({
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (responding) return;
     const target = event.target as HTMLElement | null;
-    const inField = target?.tagName?.toLowerCase() === "input" || target?.isContentEditable === true;
+    // `textarea` and `isContentEditable` both count: the free-text answer is a
+    // textarea when this card stands alone and the composer's contentEditable
+    // editor when it is hosted by one. Without covering both, the card steals
+    // the digits of a typed answer as option shortcuts and handles Enter a
+    // second time after the field already did.
+    const tagName = target?.tagName?.toLowerCase();
+    // `closest`, not just `isContentEditable`: the event target inside a rich
+    // editor is routinely a descendant element, and `isContentEditable` is an
+    // inherited computed flag that not every environment implements. The
+    // explicit `="true"` matters — chips are `contenteditable="false"`, and a
+    // bare attribute selector would count a click on one as being in a field.
+    const inField = tagName === "input"
+      || tagName === "textarea"
+      || target?.isContentEditable === true
+      || Boolean(target?.closest?.("[contenteditable='true']"));
     if (event.key === "Escape") {
       event.preventDefault();
       onDecline();
@@ -339,10 +429,7 @@ export function AskQuestionComposer({
     }
     if (!inField && questions.length > 1 && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
       event.preventDefault();
-      setOpenPreview(null);
-      setPage((prev) => (event.key === "ArrowRight"
-        ? Math.min(prev + 1, questions.length - 1)
-        : Math.max(prev - 1, 0)));
+      goToPage(event.key === "ArrowRight" ? safePage + 1 : safePage - 1);
       return;
     }
     // `!inField` is load-bearing, not symmetry with the branches above: the note
@@ -415,7 +502,7 @@ export function AskQuestionComposer({
             {questions.map((entry, index) => {
               const entryAnswered = isQuestionAnswered(
                 ownQuestionValue(picksById, entry.id) ?? [],
-                ownQuestionValue(notesById, entry.id) ?? "",
+                ownQuestionValue(effectiveNotes, entry.id) ?? "",
               );
               return (
                 <button
@@ -426,7 +513,7 @@ export function AskQuestionComposer({
                   aria-label={`Question ${index + 1}: ${entry.header ?? entry.question}`}
                   title={entry.header ?? entry.question}
                   data-testid={`ask-question-dot-${entry.id}`}
-                  onClick={() => { setPage(index); setOpenPreview(null); }}
+                  onClick={() => goToPage(index)}
                   className={cn(
                     "h-[5px] w-[5px] rounded-full transition-transform hover:scale-[1.35]",
                     index === safePage
@@ -560,10 +647,29 @@ export function AskQuestionComposer({
         </div>
 
         {question.allowsFreeform !== false ? (
-          <div className={cn("grid grid-cols-[26px_minmax(0,1fr)] items-center gap-2.5 border-t px-3.5 py-1", HAIRLINE)}>
-            <PencilSimple size={12} weight="regular" className="justify-self-end text-fg/26" />
+          <div className={cn("grid grid-cols-[26px_minmax(0,1fr)_auto] items-start gap-2.5 border-t px-3.5 py-1", HAIRLINE)}>
+            <PencilSimple size={12} weight="regular" className="mt-[11px] justify-self-end text-fg/26" />
+            {richAnswerActive ? (
+            /* The composer's editor, not a copy of it. Everything the main
+               prompt box can do — @-mentions, PR chips, smart links, pasted
+               images, dropped files — works here because it is literally the
+               same editor, re-homed for as long as the question blocks. */
+            <div data-testid={`ask-question-rich-answer-${question.id}`} className="min-w-0 py-1">
+              {renderAnswerEditor!({
+                placeholder: notePlaceholder({
+                  hasOptions: options.length > 0,
+                  picks,
+                  multi: question.multiSelect === true,
+                }),
+                onSubmitAnswer: () => {
+                  if (responding) return;
+                  if (isLast ? canSend : canProceed) advance();
+                },
+              })}
+            </div>
+            ) : question.isSecret ? (
             <input
-              type={question.isSecret ? "password" : "text"}
+              type="password"
               value={note}
               disabled={responding}
               data-testid={`ask-question-note-${question.id}`}
@@ -583,6 +689,63 @@ export function AskQuestionComposer({
               }}
               className="w-full bg-transparent py-2.5 text-[length:calc(var(--chat-font-size)*12.5/14)] text-fg/85 outline-none placeholder:text-fg/26"
             />
+            ) : (
+            /* A textarea, not an input: an answer is regularly a paragraph, a
+               pasted stack trace, or a short list, and a single-line field
+               silently swallowed every newline. Enter still sends, so the
+               common one-line answer is unchanged; Shift+Enter adds a line. */
+            <textarea
+              // Keyed per question: without it the inline height set while
+              // answering question N carries into question N+1, and a note
+              // restored by navigating back renders at one row until edited.
+              key={`note-${question.id}`}
+              ref={(node) => {
+                if (!node) return;
+                node.style.height = "auto";
+                node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+              }}
+              rows={1}
+              value={note}
+              disabled={responding}
+              data-testid={`ask-question-note-${question.id}`}
+              placeholder={notePlaceholder({
+                hasOptions: options.length > 0,
+                picks,
+                multi: question.multiSelect === true,
+              })}
+              onChange={(event) => {
+                setNotes((prev) => ({ ...prev, [question.id]: event.target.value }));
+                const node = event.currentTarget;
+                node.style.height = "auto";
+                node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.shiftKey) return;
+                event.preventDefault();
+                if (isLast ? canSend : canProceed) advance();
+              }}
+              className="w-full resize-none bg-transparent py-2.5 text-[length:calc(var(--chat-font-size)*12.5/14)] leading-[1.5] text-fg/85 outline-none placeholder:text-fg/26"
+            />
+            )}
+            {/* A pending question locks TEXT, not files. Attaching while you
+                answer is the one moment you most want it — the agent just
+                asked which of two screenshots to use — and the files ride the
+                next turn, because no provider adapter carries one inside an
+                answer. The secret field keeps its own bare row: a password
+                prompt has nothing to attach. */}
+            {onAttachFiles && !question.isSecret ? (
+              <button
+                type="button"
+                data-testid="ask-question-attach"
+                disabled={responding || attachDisabled}
+                title={attachBlockedReason ?? "Attach a file — it rides your next message"}
+                aria-label="Attach a file"
+                onClick={onAttachFiles}
+                className="mt-[7px] inline-flex h-6 w-6 items-center justify-center rounded-lg text-fg/26 transition-colors hover:bg-white/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
+              >
+                <Paperclip size={13} weight="bold" />
+              </button>
+            ) : <span />}
           </div>
         ) : null}
       </div>

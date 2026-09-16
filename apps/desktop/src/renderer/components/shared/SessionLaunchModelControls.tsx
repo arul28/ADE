@@ -263,13 +263,11 @@ export type SessionLaunchModelConfig = {
 export function SessionLaunchModelControls({
   config,
   onChange,
-  surfaceKey,
   disabled = false,
   showSessionType = true,
 }: {
   config: SessionLaunchModelConfig;
   onChange: (patch: Partial<SessionLaunchModelConfig>) => void;
-  surfaceKey: string;
   disabled?: boolean;
   showSessionType?: boolean;
 }) {
@@ -292,7 +290,6 @@ export function SessionLaunchModelControls({
           modelId,
           ...(options ? { fastMode: options.fastMode } : {}),
         })}
-        surfaceKey={surfaceKey}
         compact
         triggerClassName={COMPOSER_MODEL_TRIGGER}
         fastMode={config.fastMode}

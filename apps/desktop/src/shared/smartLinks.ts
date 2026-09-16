@@ -1,3 +1,7 @@
+// Detection and classification of link-shaped text ONLY. Display labels and
+// glyphs belong to the shared chip model (`./chips`), which every surface
+// renders from; keeping a second set here is what let the composer and the
+// transcript draw the same url two different ways.
 export type SmartLinkProvider = "github" | "linear" | "ade" | "generic";
 
 export type SmartLinkKind =
@@ -153,18 +157,6 @@ export function findSmartLinks(text: string, limit = 12): SmartLinkMatch[] {
     });
   }
   return matches;
-}
-
-export function smartLinkDisplayLabel(preview: SmartLinkPreview): string {
-  if (preview.provider === "generic" && preview.title?.trim()) return preview.title.trim();
-  return preview.label;
-}
-
-export function smartLinkProviderGlyph(provider: SmartLinkProvider): string {
-  if (provider === "github") return "GH";
-  if (provider === "linear") return "L";
-  if (provider === "ade") return "A";
-  return "↗";
 }
 
 export function shouldReconcileSmartLinkDraft(

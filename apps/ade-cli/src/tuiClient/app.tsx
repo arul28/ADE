@@ -36,6 +36,7 @@ import {
   isComposerTriggerDismissed,
   replaceComposerTriggerSpan,
   type ComposerTokenRange,
+  type ComposerTrigger,
   type ComposerTriggerDismissal,
 } from "../../../desktop/src/shared/composerTriggers";
 import { isChatMentionTokenBody, scoreChatMentionCandidate } from "../../../desktop/src/shared/chatMentions";
@@ -80,6 +81,11 @@ import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/s
 import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
+import {
+  pickPrimaryPrRecord,
+  prRecordNumber,
+  secondaryPrRecordLabels,
+} from "../lib/primaryPr";
 import {
   approveToolUse,
   archiveChatSession,
@@ -2770,7 +2776,7 @@ export function rankMentionSuggestions(
 }
 
 type MentionRemoteCacheEntry = {
-  filesByQuery: Map<string, Array<{ path: string }>>;
+  filesByQuery: Map<string, Array<{ path: string; isDirectory?: boolean }>>;
   commits: Array<Record<string, unknown>> | null;
   prs: Array<Record<string, unknown>> | null;
 };
@@ -3456,6 +3462,39 @@ function resolveRightPaneWidth(columns: number, rightOpen: boolean, drawerOpen: 
     MIN_RIGHT_PANE_WIDTH,
     Math.min(maxWidth, Math.floor(columns * widthFraction), maxRightWidth),
   );
+}
+
+/**
+ * True when the TUI can actually open a menu for this trigger.
+ *
+ * The shared detector also reports the desktop composer's `#` pull-request
+ * trigger, which the TUI has no palette for. Letting one through made the
+ * prompt report a trigger as "open" with nothing on screen, and Esc then spent
+ * itself dismissing that invisible menu instead of doing its usual job. A
+ * markdown heading — `# Title` — never reaches here at all: the space after the
+ * `#` ends the token in the detector.
+ */
+export function composerTriggerServedByTui(trigger: Pick<ComposerTrigger, "type">): boolean {
+  return trigger.type === "at" || trigger.type === "slash";
+}
+
+/**
+ * Mentions that become real file attachments. A FOLDER row is a pointer: it has
+ * no bytes to upload, and attaching it reaches the model as "Attachment
+ * unavailable: <dir>" or a bogus CLI manifest row. Shared by the submit and the
+ * background-launch paths, which are otherwise identical and drifted apart —
+ * the folder guard reached only one of them.
+ */
+function attachableFileMentions(
+  selectedMentions: readonly MentionSuggestion[],
+  text: string,
+): MentionSuggestion[] {
+  return selectedMentions.filter((mention) => (
+    mention.kind === "file"
+    && Boolean(mention.filePath)
+    && mention.isDirectory !== true
+    && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
+  ));
 }
 
 function resolveCenterPaneWidth(columns: number, drawerOpen: boolean, rightPaneWidth: number): number {
@@ -5406,7 +5445,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const liveComposerTrigger = useMemo(() => {
     if (activePane !== "chat") return null;
     const trigger = detectComposerTrigger(prompt, promptCursor);
-    if (!trigger) return null;
+    if (!trigger || !composerTriggerServedByTui(trigger)) return null;
     const confirmedFile = (body: string) => selectedMentions.some(
       (mention) => mention.kind === "file" && mention.insertText === `@${body}`,
     );
@@ -6642,7 +6681,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const files = [...fileMap.values()];
         const laneDiffStats = diffByLaneId[laneId];
 
-        const activePr = prsRes[0] ?? null;
+        const activePr = pickPrimaryPrRecord(prsRes);
         let pr: {
           number: number;
           state: "open" | "closed" | "merged";
@@ -6654,11 +6693,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           checksFailed: number;
         } | null = null;
         if (activePr) {
-          const number = typeof activePr.githubPrNumber === "number"
-            ? activePr.githubPrNumber
-            : typeof activePr.number === "number"
-              ? activePr.number
-              : null;
+          // The selector reads three aliases; re-parsing only two here made a
+          // validly selected PR vanish from the badge.
+          const numberValue = prRecordNumber(activePr);
+          const number = numberValue > 0 ? numberValue : null;
           const url = typeof activePr.githubUrl === "string"
             ? activePr.githubUrl
             : typeof activePr.url === "string"
@@ -7910,11 +7948,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // so "" caches like any typed query.
         const filesPromise = cache.filesByQuery.get(fileQuery)
           ? Promise.resolve(cache.filesByQuery.get(fileQuery)!)
-          : Promise.resolve(conn.action<Array<{ path: string }>>("file", "quickOpen", {
+          : Promise.resolve(conn.action<Array<{ path: string; isDirectory?: boolean }>>("file", "quickOpen", {
             workspaceId: laneId,
             query: fileQuery,
             limit: MENTION_FILE_ROWS,
             allowComposerPrefixFallback: true,
+            // The TUI `@` menu mirrors the desktop composer, folders included.
+            includeDirectories: true,
           }))
             .then((files) => {
               const safeFiles = Array.isArray(files) ? files : [];
@@ -7944,13 +7984,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             })
             .catch(() => []);
         const [files, commits, prs] = await Promise.all([filesPromise, commitsPromise, prsPromise]);
-        remote.push(...files.map((file) => ({
-          kind: "file" as const,
-          label: file.path,
-          insertText: `@file:${file.path}`,
-          detail: "file",
-          filePath: file.path,
-        })));
+        remote.push(...files.map((file) => {
+          // A folder is a POINTER, not an attachment: it has no bytes to
+          // upload, and the desktop composer deliberately inserts a chip and
+          // attaches nothing. The trailing slash matches `chipFromPath`.
+          const isDirectory = file.isDirectory === true;
+          const path = isDirectory ? `${file.path.replace(/\/+$/, "")}/` : file.path;
+          return {
+            kind: "file" as const,
+            label: path,
+            // `@<path>`, NOT `@file:<path>`. This was the only `@file:` token in
+            // the repo: the desktop and iOS composers both insert the bare
+            // path, so the TUI was sending a different spelling of the same
+            // intent, and the shared chip parser — which forbids `:` so the
+            // entity grammar keeps `@chat:` — could never pill it.
+            insertText: `@${path}`,
+            detail: isDirectory ? "folder" : "file",
+            filePath: path,
+            isDirectory,
+          };
+        }));
         remote.push(...commits
           .filter((commit) => {
             const subject = String(commit.subject ?? commit.message ?? "");
@@ -11462,7 +11515,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       const prs = await conn.action<Array<Record<string, unknown>>>("pr", "listAll", laneId ? { laneId } : {});
-      const activePr = prs[0] ?? null;
+      const activePr = pickPrimaryPrRecord(prs);
       const prId = activePr ? String(activePr.id ?? activePr.prId ?? "") : "";
       if (name === "/pr") {
         const ahead = activeLane?.status?.ahead ?? 0;
@@ -11486,8 +11539,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               conn.actionList("pr", "getStatus", [prId]).catch(() => null),
             ])
           : [null, null];
+        // A lane can own more than one PR now, and this pane shows exactly one.
+        // Naming the rest is the difference between "this is the PR" and "this
+        // is the one I am showing you" — without it the pane silently
+        // under-reports a follow-up PR cut from the same chat.
+        // The detached rule lives with the primary picker: `detached` is a
+        // RECORD on the wire (`PrDetachedLane | null`), never the boolean it
+        // reads like, so the local `!== true` test this replaced matched every
+        // row and printed PRs whose lane is gone as current lane work.
+        const otherPrs = secondaryPrRecordLabels(prs, activePr);
         const sections = [
           formatPrSummary(activePr),
+          ...(otherPrs.length > 0 ? ["", `Also on this lane: ${otherPrs.join(" · ")}`] : []),
           ...(status ? ["", formatPrMergeState(status)] : []),
           ...(checks ? ["", formatPrChecks(checks)] : []),
           "",
@@ -13240,12 +13303,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const submittedValue = value;
     const draftImageAttachments = promptImageAttachmentsRef.current;
     const promptAttachments: AgentChatFileRef[] = [
-      ...selectedMentions
-        .filter((mention) => (
-          mention.kind === "file"
-          && mention.filePath
-          && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
-        ))
+      ...attachableFileMentions(selectedMentions, text)
         .map((mention) => ({
           type: isImageFilePath(mention.filePath!) ? ("image" as const) : ("file" as const),
           path: mention.filePath!,
@@ -13455,12 +13513,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const submittedValue = value;
     const draftImageAttachments = promptImageAttachmentsRef.current;
     const promptAttachments: AgentChatFileRef[] = [
-      ...selectedMentions
-        .filter((mention) => (
-          mention.kind === "file"
-          && mention.filePath
-          && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
-        ))
+      ...attachableFileMentions(selectedMentions, text)
         .map((mention) => ({
           type: isImageFilePath(mention.filePath!) ? ("image" as const) : ("file" as const),
           path: mention.filePath!,

@@ -76,7 +76,8 @@ targets for the legacy IPC path.
   before the worktree is removed. ~290 lines.
 - `apps/desktop/src/main/services/files/fileSearchIndexService.ts` —
   the file-**name** index (keyed per workspace and per `includeIgnored`
-  mode, incrementally updated from watcher events) plus the two-tier
+  mode, incrementally updated from watcher events), a parallel directory
+  map behind the opt-in `includeDirectories` flag, plus the two-tier
   content search that backs `searchText`. The index holds no file
   contents; `git grep` is the first tier and a streaming JS scan the
   second. See [Quick open and content search](#quick-open-and-content-search).
@@ -472,6 +473,25 @@ with the watcher:
   an empty list, which is what the composer `@` menu, TUI palette, iOS, and
   web clients rely on for the pre-typing state — all four funnel into this
   one service, so no caller-side empty-query guards should be reintroduced
+
+**Folders are indexed, and opt-in.** Directories live in their own
+`Map<string, IndexedDirectory>`, kept apart from `files` so that nothing which
+scans file contents — text search, size limits, mtime — can ever pick a
+directory up by accident; only name matching reads it. They are recorded during
+the full walk and by `upsertFile` (so a folder created after the build is
+suggestable immediately rather than only after the next rebuild), and removed on
+the same subtree rule as files, or a deleted folder would keep appearing in the
+composer `@` menu until the next rebuild.
+
+`quickOpen` returns them only when the caller passes `includeDirectories: true`,
+and `FilesQuickOpenItem.isDirectory` marks them. Off by default because **most
+callers open what they receive**: the Files panel renders every hit under a
+Files header and hands it to the editor, and ⌘K mints a file deeplink for it.
+Only the composer `@` menu and the `ade code` TUI palette opt in, and both
+insert a pointer chip rather than opening or attaching anything — a folder has
+no bytes to upload, and attaching one reaches the model as
+`Attachment unavailable: <dir>`. The flag is part of the quick-open cache key,
+or a generic caller could be served the composer's cached rows, folders and all.
 
 The index is a **name** index. Entries carry `path` / `lowerPath` / `size` /
 `mtimeMs` and nothing else: retaining decoded lines cost hundreds of megabytes

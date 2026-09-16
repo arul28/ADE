@@ -37,14 +37,12 @@ import {
   refreshProviderForFamily,
   reserveRuntimeCatalogScope,
   DEFAULT_RUNTIME_CATALOG_SCOPE,
-  PERSONAL_CHAT_CATALOG_SCOPE,
   isPersonalChatCatalogScopeKey,
 } from "./runtimeCatalogCache";
 
 export type ModelPickerProps = {
   value: string;
   onChange: (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => void;
-  surfaceKey: string;
   compact?: boolean;
   disabled?: boolean;
   availableModelIds?: string[];
@@ -115,7 +113,6 @@ export type ModelPickerProps = {
 export const ModelPicker = memo(function ModelPicker({
   value,
   onChange,
-  surfaceKey,
   compact = false,
   disabled = false,
   availableModelIds,
@@ -144,11 +141,12 @@ export const ModelPicker = memo(function ModelPicker({
   onOpenRequestHandled,
   catalogScopeKey: catalogScopeKeyOverride,
 }: ModelPickerProps) {
+  // The personal-chat surface passes its own scope key
+  // (`personalChatCatalogScopeKey`), so the third arm that used to infer it
+  // from the removed `surfaceKey` prop had no reachable caller left.
   const catalogScopeKey = catalogScopeKeyOverride
     ?? runtimePin?.key
-    ?? (surfaceKey === PERSONAL_CHAT_CATALOG_SCOPE
-      ? PERSONAL_CHAT_CATALOG_SCOPE
-      : DEFAULT_RUNTIME_CATALOG_SCOPE);
+    ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
   // The scope KEY is the reactive input; the binding object itself is only a
   // routing payload. Reading it through a ref keeps `loadRuntimeCatalog` stable
   // across renders even if a caller hands us a fresh object each time, so an
@@ -469,7 +467,6 @@ export const ModelPicker = memo(function ModelPicker({
             {open ? (
               <ModelPickerContent
                 value={effectiveValue}
-                surfaceKey={surfaceKey}
                 models={modelList}
                 isAvailable={isAvailable}
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}

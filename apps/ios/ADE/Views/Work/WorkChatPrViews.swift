@@ -10,9 +10,18 @@ struct WorkChatPrBadgeModel: Equatable {
   let reviewStatus: String?
   let updatedAt: String
   let stack: GitHubPrStackMembership?
+  /// How many pull requests this chat is linked to in total. `1` for the
+  /// ordinary case; above that the badge carries the count so a second linked
+  /// PR is discoverable without opening the sheet.
+  var linkedCount: Int = 1
 }
 
-func workChatPrBadgeModel(tag: LanePrTag?, pr: PullRequestListItem?, summary: PrSummary? = nil) -> WorkChatPrBadgeModel? {
+func workChatPrBadgeModel(
+  tag: LanePrTag?,
+  pr: PullRequestListItem?,
+  summary: PrSummary? = nil,
+  linkedCount: Int = 1
+) -> WorkChatPrBadgeModel? {
   guard let tag else { return nil }
   return WorkChatPrBadgeModel(
     label: formatLanePrBadgeLabel(tag),
@@ -22,7 +31,8 @@ func workChatPrBadgeModel(tag: LanePrTag?, pr: PullRequestListItem?, summary: Pr
     checksReason: pr?.checksReason ?? summary?.checksReason,
     reviewStatus: pr?.reviewStatus ?? summary?.reviewStatus,
     updatedAt: tag.updatedAt,
-    stack: tag.stack ?? pr?.stack ?? summary?.stack
+    stack: tag.stack ?? pr?.stack ?? summary?.stack,
+    linkedCount: max(1, linkedCount)
   )
 }
 
@@ -69,6 +79,9 @@ struct WorkChatPrActivePopup: View {
     if let stack = badge.stack {
       parts.append("GitHub Stack \(stack.position) of \(stack.size)")
     }
+    if badge.linkedCount > 1 {
+      parts.append("\(badge.linkedCount) linked pull requests")
+    }
     return parts.joined(separator: ", ") + ". Tap for details."
   }
 
@@ -86,6 +99,10 @@ struct WorkChatPrActivePopup: View {
         .font(.system(size: 13, weight: .semibold))
       if let stack = badge.stack {
         GitHubStackPositionBadge(stack: stack, compact: true)
+      }
+      if badge.linkedCount > 1 {
+        Text("\(badge.linkedCount)")
+          .font(.caption2.monospacedDigit().weight(.bold))
       }
       if let ciGlyph {
         switch ciGlyph {
@@ -119,6 +136,14 @@ struct WorkChatPrDetailsSheet: View {
   let onCreate: () -> Void
   let onOpenPrsTab: () -> Void
   let onOpenGitHub: () -> Void
+  /// Every pull request this chat is linked to, primary first. A chat is not
+  /// capped at one PR: a lane can own several, and a PR opened on another lane
+  /// can be linked to this session explicitly.
+  var linkedPrs: [PullRequestListItem] = []
+  /// Which row the sheet is showing. Nil means "whatever the resolver chose",
+  /// which is the first row.
+  var selectedPrId: String? = nil
+  var onSelectPr: (String) -> Void = { _ in }
 
   private var sheetTitle: String {
     guard let tag else { return "Pull request" }
@@ -157,10 +182,13 @@ struct WorkChatPrDetailsSheet: View {
       topBar
 
       ScrollView {
-        if let tag {
-          existingPrContent(tag)
-        } else {
-          emptyPrContent
+        VStack(alignment: .leading, spacing: 12) {
+          prSwitcher
+          if let tag {
+            existingPrContent(tag)
+          } else {
+            emptyPrContent
+          }
         }
       }
       .scrollIndicators(.hidden)
@@ -198,6 +226,57 @@ struct WorkChatPrDetailsSheet: View {
     .padding(.horizontal, 18)
     .padding(.top, 18)
     .padding(.bottom, 8)
+  }
+
+  /// State-coloured row of every linked PR. Hidden at one PR, because a
+  /// switcher with a single option is pure noise.
+  @ViewBuilder
+  private var prSwitcher: some View {
+    if linkedPrs.count > 1 {
+      let activeId = selectedPrId ?? linkedPrs.first?.id
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          ForEach(linkedPrs) { linked in
+            let isActive = linked.id == activeId
+            let tint = lanePullRequestTint(linked.state)
+            Button {
+              onSelectPr(linked.id)
+            } label: {
+              HStack(spacing: 6) {
+                Circle()
+                  .fill(tint)
+                  .frame(width: 7, height: 7)
+                Text("#\(linked.githubPrNumber)")
+                  .font(.caption.monospacedDigit().weight(.semibold))
+                Text(lanePrStateLabel(linked.state))
+                  .font(.caption2)
+                  .foregroundStyle(ADEColor.textSecondary)
+              }
+              .foregroundStyle(ADEColor.textPrimary)
+              .padding(.horizontal, 10)
+              .padding(.vertical, 6)
+              .background(
+                isActive ? tint.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.6),
+                in: Capsule(style: .continuous)
+              )
+              .overlay(
+                Capsule(style: .continuous)
+                  .stroke(isActive ? tint.opacity(0.55) : ADEColor.border.opacity(0.25), lineWidth: 0.8)
+              )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+              "Pull request \(linked.githubPrNumber), \(lanePrStateLabel(linked.state))"
+                + (isActive ? ", showing" : "")
+            )
+            .accessibilityAddTraits(isActive ? [.isSelected] : [])
+          }
+        }
+        .padding(.horizontal, 18)
+      }
+      .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+      .padding(.top, 2)
+    }
   }
 
   private func existingPrContent(_ tag: LanePrTag) -> some View {

@@ -13991,19 +13991,33 @@ export function createAgentChatService(args: {
     const inProcessMode = permissions.inProcess?.mode ?? "edit";
 
     const approvalPolicy = (() => {
+      const configuredCodex = permissions.providers?.codex;
+      if (configuredCodex === "plan") return "untrusted" as const;
+      if (configuredCodex === "full-auto") return "never" as const;
+      // Legacy `ai.chat.*`, read BELOW `providers` and ABOVE the shared
+      // cli/inProcess fallbacks. These keys have no writer left, but
+      // `projectConfigService` still parses and PRESERVES them, so an install
+      // configured by an older ADE can carry one today. Dropping the read does
+      // not neutralize such a value — it makes the resolver fall through to a
+      // MORE permissive default, silently relaxing a restriction the user set.
       if (chat.defaultApprovalPolicy === "auto") return "never" as const;
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
-      // Codex chat defaults should match the documented "Default permissions"
-      // preset: workspace-write + on-request. Legacy shared CLI edit-mode
-      // fallbacks map to "untrusted", but that represents the explicit Codex
-      // edit preset rather than the default chat preset.
+      // Codex chat defaults match the documented "Default permissions" preset:
+      // workspace-write + on-request. Legacy shared CLI edit-mode fallbacks map
+      // to "untrusted", but that represents the explicit Codex edit preset
+      // rather than the default chat preset.
       if (cliMode === "full-auto") return "never" as const;
       if (cliMode === "read-only") return "on-request" as const;
       return "on-request" as const;
     })();
 
     const sandboxMode = (() => {
+      if (permissions.providers?.codexSandbox) return permissions.providers.codexSandbox;
+      const configuredCodex = permissions.providers?.codex;
+      if (configuredCodex === "plan") return "read-only" as const;
+      if (configuredCodex === "full-auto") return "danger-full-access" as const;
+      if (configuredCodex === "edit") return "workspace-write" as const;
       if (chat.codexSandbox) return chat.codexSandbox;
       if (permissions.cli?.sandboxPermissions) return permissions.cli.sandboxPermissions;
       if (cliMode === "full-auto") return "danger-full-access" as const;
@@ -14011,7 +14025,30 @@ export function createAgentChatService(args: {
       return "workspace-write" as const;
     })();
 
+    // `permissions.providers` is the only per-provider permission source that
+    // anything WRITES. It is what the Settings control writes, and it used to
+    // be read for Pi alone: every other provider ignored it and fell through to
+    // the legacy shared `cli`/`inProcess` knobs, so a configured Claude or
+    // Codex default had no effect. Reading one key per provider is what keeps
+    // the written value and the runtime value the same.
+    //
+    // The parallel `ai.chat.*` keys are still read, one tier BELOW `providers`.
+    // They have no writer left, but `projectConfigService` parses and preserves
+    // them, so an install configured by an older ADE can still carry one. Do
+    // not delete those reads as dead code: the value does not disappear with
+    // the read, so an ignored `codexSandbox: "read-only"` falls through to a
+    // more permissive default and silently relaxes a restriction the user set.
+    //
+    // Every branch below ends in a concrete mode. A launch that sends nothing
+    // (automation, CLI, session normalize) depends on this answering.
+    const providerPermissions = permissions.providers ?? {};
+
     const claudePermissionMode = (() => {
+      const configured = providerPermissions.claude;
+      if (configured === "plan") return "plan" as const;
+      if (configured === "full-auto") return "bypassPermissions" as const;
+      if (configured === "edit") return "acceptEdits" as const;
+      if (configured === "default") return "default" as const;
       if (chat.claudePermissionMode) return chat.claudePermissionMode;
       if (cliMode === "read-only") return "plan" as const;
       if (cliMode === "full-auto") return "bypassPermissions" as const;
@@ -14019,7 +14056,12 @@ export function createAgentChatService(args: {
     })();
 
     const opencodePermissionMode = (() => {
-      if (chat.opencodePermissionMode === "plan" || chat.opencodePermissionMode === "edit" || chat.opencodePermissionMode === "full-auto" || chat.opencodePermissionMode === "config-toml") {
+      const configured = providerPermissions.opencode;
+      if (configured === "plan" || configured === "edit" || configured === "full-auto" || configured === "config-toml") {
+        return configured;
+      }
+      if (chat.opencodePermissionMode === "plan" || chat.opencodePermissionMode === "edit"
+        || chat.opencodePermissionMode === "full-auto" || chat.opencodePermissionMode === "config-toml") {
         return chat.opencodePermissionMode;
       }
       if (inProcessMode === "plan" || inProcessMode === "edit" || inProcessMode === "full-auto" || inProcessMode === "config-toml") {
@@ -14030,7 +14072,7 @@ export function createAgentChatService(args: {
       return "edit" as const;
     })();
 
-    const piPermissionMode = permissions.providers?.pi
+    const piPermissionMode = providerPermissions.pi
       ?? (inProcessMode === "plan" || inProcessMode === "edit" || inProcessMode === "full-auto" || inProcessMode === "config-toml"
         ? inProcessMode
         : "edit");

@@ -4472,6 +4472,11 @@ struct FilesQuickOpenItem: Codable, Identifiable, Equatable {
   var id: String { path }
   var path: String
   var score: Double
+  /// True for a directory. Mirrors `FilesQuickOpenItem.isDirectory` on the
+  /// desktop, which only the composer's `@` menu asks for. Optional so an older
+  /// host that never sends the field still decodes — every row is then a file,
+  /// exactly as it was before folders became suggestable.
+  var isDirectory: Bool? = nil
 }
 
 struct FilesSearchTextMatch: Codable, Identifiable, Equatable {
@@ -4812,6 +4817,11 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   var checksReason: String? = nil
   /// See `PrSummary.checksMissingRequired`.
   var checksMissingRequired: [String]? = nil
+  /// Chat sessions explicitly linked to this PR (`pull_request_chat_sessions`).
+  /// Mirrors `PrSummary.chatSessionIds` on the desktop. A PR with links is
+  /// visible to the chats that own them even once its lane moves branch; a PR
+  /// with none is legacy data and falls back to the branch rule.
+  var chatSessionIds: [String]? = nil
 }
 
 struct PrGroupMemberSummary: Codable, Identifiable, Equatable {

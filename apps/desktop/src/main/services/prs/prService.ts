@@ -1684,11 +1684,20 @@ export function createPrService({
     if (!sessionId) return;
 
     try {
-      const pr = db.get<{ id: string; lane_id: string }>(
-        "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
+      // The row only has to EXIST in this project. It deliberately does not
+      // have to belong to `args.laneId`: a chat may reference a pull request
+      // another lane opened ("Link a PR by number or URL"), and `linkToLane`
+      // leaves that row's ownership with the opening lane on purpose. Requiring
+      // equality here made every cross-lane link a silent no-op — the call
+      // reported success, no edge was written, and the PR vanished from the
+      // chat on the next read (`selectPrsForChatInLane` finds a foreign PR only
+      // through this edge). The real protection is the session lookup below,
+      // which still refuses any session that does not belong to `args.laneId`.
+      const pr = db.get<{ id: string }>(
+        "select id from pull_requests where id = ? and project_id = ? limit 1",
         [args.prId, projectId],
       );
-      if (!pr || pr.lane_id !== args.laneId) return;
+      if (!pr) return;
 
       // Chat surfaces use the terminal-session id. The Claude pointer fallback
       // keeps imported/older chats addressable when only their provider session
@@ -2860,7 +2869,6 @@ export function createPrService({
 
   const upsertRow = (
     summary: Omit<PrSummary, "projectId"> & { projectId?: string },
-    options?: { allowRepoPrAdoption?: boolean },
   ): string => {
     const now = nowIso();
     const hasMergeConflicts = Object.prototype.hasOwnProperty.call(summary, "mergeConflicts");
@@ -2877,23 +2885,22 @@ export function createPrService({
     const checksMissingRequiredValue = Array.isArray(summary.checksMissingRequired)
       ? JSON.stringify(summary.checksMissingRequired)
       : null;
-    // By default we only adopt an existing row that is already associated with
-    // this lane. Callers like `linkToLane`/`refreshOne` must not silently
-    // reassign an existing PR row from another lane just because the repo/PR
-    // number match — that was a data-loss bug when the same PR number was
-    // reused across lanes or when users manually linked an in-flight PR.
-    // The duplicate-PR recovery path in `createFromLane` (where GitHub rejects
-    // creation because a PR already exists for the head branch) is the only
-    // legitimate use of the repo/PR-number fallback; it opts in via
-    // `allowRepoPrAdoption: true`.
-    // Identity first. The lane-branch lookup is deliberately live-only (it answers
-    // "what is this lane working on"), so on its own it would miss a detached row and
-    // send us down the insert path with a primary key that already exists.
+    // Identity is the pull request ITSELF — `(repo, number)` — not the lane's
+    // current branch. Resolving by `(lane_id, head_branch)` first is what made
+    // a second PR opened from the same chat impossible: both PRs carry the
+    // lane's branch as their head, so the second one matched the first one's
+    // row and the UPDATE below rewrote its number, url, and title. One row
+    // survived, so one chat edge survived, and "multiple PRs per thread" only
+    // ever looked broken. The edge table itself was always many-to-many.
+    const hasRepoPrIdentity = Boolean(summary.repoOwner && summary.repoName && summary.githubPrNumber);
     const existing = getRowById(summary.id)
-      ?? (options?.allowRepoPrAdoption
-        ? getRowForLaneBranch(summary.laneId, summary.headBranch)
-            ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
-        : getRowForLaneBranch(summary.laneId, summary.headBranch));
+      ?? (hasRepoPrIdentity
+        ? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
+        : null)
+      // The lane-branch lookup remains only for rows with no usable repo/number
+      // yet (a summary mid-creation). With a real PR number in hand it must NOT
+      // run: it would hand back a DIFFERENT pull request that shares the branch.
+      ?? (hasRepoPrIdentity ? null : getRowForLaneBranch(summary.laneId, summary.headBranch));
     if (existing) {
       // A detached row is only reclaimed by a lane that still exists AND still tracks
       // the PR's head branch.
@@ -3392,12 +3399,20 @@ export function createPrService({
     const ignoredAutoLinks = listAutoLinkIgnores(repo);
 
     // Select ONE authoritative PR per lane before upserting. A reused branch can
-    // carry MULTIPLE historical PRs in a state:"all" snapshot; upserting all of
-    // them repeatedly adopts the same lane row (upsertRow identifies by lane +
-    // branch), so the last-processed — potentially oldest — PR would win and flip
-    // an active PR to a stale merged/closed one. Since this backfill now runs on
-    // focus reconcile, that could make merely opening a project mis-mark a PR.
-    // Prefer an open/draft PR; otherwise the newest (highest PR number).
+    // carry MULTIPLE historical PRs in a state:"all" snapshot.
+    //
+    // The original hazard was row collision: `upsertRow` identified a row by
+    // (lane, branch), so every historical PR landed on the SAME row and the
+    // last-processed — potentially oldest — one won, flipping an active PR to a
+    // stale merged/closed state. That can no longer happen: identity is now
+    // (repo, number), so each PR gets its own row.
+    //
+    // The dedupe is still required, for the other half of the reason. Without
+    // it this backfill would attach every historical PR of a reused branch to
+    // the lane, and they all match the lane's current branch — so a lane would
+    // acquire a pile of long-merged PRs on its badge and hover list simply
+    // because the project was opened. Prefer an open/draft PR; otherwise the
+    // newest (highest PR number).
     type BackfillCandidate = {
       rawPr: any;
       prNumber: number;
@@ -3459,7 +3474,7 @@ export function createPrService({
         mergedAt: asString(rawPr?.merged_at) || null,
         creationStrategy: "pr_target",
       };
-      const prId = upsertRow(summary, { allowRepoPrAdoption: true });
+      const prId = upsertRow(summary);
       clearAutoLinkIgnore({
         repoOwner: repo.owner,
         repoName: repo.name,
@@ -4883,6 +4898,22 @@ export function createPrService({
             `Imported lane '${lane.name}' is at ${importedHeadSha || "an unknown commit"}, but PR #${preflight.githubPrNumber} is at ${preflight.headSha}. Fetch the PR branch and try again.`,
           );
         }
+      }
+      // A plain link is now a pointer and never refuses, but creating a whole
+      // new lane to host a PR that already has an owning lane is still wrong:
+      // it leaves a duplicate worktree behind. Check here, inside the try, so
+      // the imported lane is cleaned up by the catch below.
+      const ownedElsewhere = getLiveRowForRepoPr(
+        preflight.repoOwner,
+        preflight.repoName,
+        preflight.githubPrNumber,
+      );
+      if (ownedElsewhere && ownedElsewhere.lane_id !== lane.id) {
+        const ownerLane = (await laneService.list({ includeArchived: true, includeStatus: false }))
+          .find((entry) => entry.id === ownedElsewhere.lane_id);
+        throw new Error(
+          `PR #${preflight.githubPrNumber} is already mapped to lane "${ownerLane?.name ?? ownedElsewhere.lane_id}".`,
+        );
       }
       const pr = await linkToLane({
         laneId: lane.id,
@@ -7469,7 +7500,7 @@ export function createPrService({
     // Allow repo/PR-number fallback here: when the GitHub create call collides
     // with an already-existing PR for this branch, we need to adopt the row
     // that represents that PR (regardless of prior lane attribution).
-    const prId = upsertRow(summary, { allowRepoPrAdoption: true });
+    const prId = upsertRow(summary);
     clearAutoLinkIgnore({
       repoOwner: repo.owner,
       repoName: repo.name,
@@ -7529,9 +7560,13 @@ export function createPrService({
     const headBranch = asString(pr?.head?.ref) || branchNameFromRef(lane.branchRef);
     const baseBranch = asString(pr?.base?.ref) || branchNameFromRef(lane.baseRef);
     const laneBranch = branchNameFromRef(lane.branchRef);
-    if (normalizeBranchName(laneBranch) !== normalizeBranchName(headBranch)) {
-      throw new Error(`Cannot link PR #${locator.number} to lane "${lane.name}" because the PR head branch is "${headBranch}" but the lane branch is "${laneBranch}".`);
-    }
+    // A link is a POINTER, not a claim that the lane is building this branch.
+    // Requiring head === lane branch made a chat unable to reference a second
+    // PR at all: one lane has one branch, so the first PR consumed the only
+    // link the rule allowed. Linking a PR whose head is elsewhere is now
+    // ordinary — reviewing a colleague's PR from your own lane, or tracking a
+    // follow-up PR cut from a different branch.
+    const headMatchesLane = normalizeBranchName(laneBranch) === normalizeBranchName(headBranch);
 
     // Backfill creation_strategy for imported PRs that don't have one stored yet.
     // The wizard defaults to "pr_target" when users create via the UI; mirror
@@ -7539,13 +7574,12 @@ export function createPrService({
     // behavior (follow-up 3) instead of being treated as "unset". The
     // upsertRow path uses COALESCE so we never clobber an existing value.
     const existingRow = getLiveRowForRepoPr(repo.owner, repo.name, locator.number);
-    if (existingRow && existingRow.lane_id !== lane.id) {
-      const existingLane = (await laneService.list({ includeArchived: true, includeStatus: false }))
-        .find((entry) => entry.id === existingRow.lane_id);
-      throw new Error(
-        `Cannot link PR #${locator.number} to lane "${lane.name}" because it is already mapped to lane "${existingLane?.name ?? existingRow.lane_id}".`
-      );
-    }
+    // One PR may be referenced from more than one lane. The row keeps its
+    // original owning lane (the lane that opened it, which is what rebase and
+    // settle logic key on); this link adds a reference, it does not steal the
+    // row. Refusing outright is what stopped a chat from tracking a PR that
+    // another lane had already touched.
+    const linksToAnotherLane = Boolean(existingRow && existingRow.lane_id !== lane.id);
     const creationStrategy: PrCreationStrategy =
       normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
@@ -7562,7 +7596,11 @@ export function createPrService({
       branch: headBranch,
       prNumber: locator.number,
     });
-    if (patchedBody !== currentBody) {
+    // Only stamp ADE/Linear linkage into a PR this lane actually produced.
+    // Linking a PR whose head lives on another branch is now allowed, and
+    // rewriting a colleague's description because you referenced it would be
+    // an unpleasant surprise on their repository.
+    if (headMatchesLane && patchedBody !== currentBody) {
       try {
         await githubService.apiRequest({
           method: "PATCH",
@@ -7580,8 +7618,10 @@ export function createPrService({
     }
 
     const summary: PrSummary = {
-      id: randomUUID(),
-      laneId: lane.id,
+      id: existingRow?.id ?? randomUUID(),
+      // The lane that opened the PR keeps ownership; rebase and settle logic
+      // keys on it. This call adds a reference from `lane`, nothing more.
+      laneId: linksToAnotherLane && existingRow ? existingRow.lane_id : lane.id,
       projectId,
       repoOwner: repo.owner,
       repoName: repo.name,
@@ -7613,31 +7653,42 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
-    removeChatSessionLinksFromOtherLanes(prId, lane.id);
+    // Edges from other lanes survive: one PR can legitimately be referenced by
+    // several chats. Pruning only makes sense when this lane owns the PR.
+    if (!linksToAnotherLane) removeChatSessionLinksFromOtherLanes(prId, lane.id);
     linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
 
-    await publishLinearPrCardsForLane({
-      lane,
-      repo,
-      prNumber: locator.number,
-      githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
-      closePrimaryOnMerge: false,
-      linkedAt,
-    }).catch((error) => {
-      logger.warn("prs.linear_pr_cards_publish_failed", {
-        laneId: lane.id,
+    if (headMatchesLane) {
+      await publishLinearPrCardsForLane({
+        lane,
+        repo,
         prNumber: locator.number,
-        error: error instanceof Error ? error.message : String(error),
+        githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
+        closePrimaryOnMerge: false,
+        linkedAt,
+      }).catch((error) => {
+        logger.warn("prs.linear_pr_cards_publish_failed", {
+          laneId: lane.id,
+          prNumber: locator.number,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    });
+    }
 
-    await attachPrTranscriptGistLinks({
-      lane,
-      repo,
-      prNumber: locator.number,
-      githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
-      currentBody: typeof pr?.body === "string" ? pr.body : patchedBody,
-    }).then((body) => {
+    // Gated exactly like the description patch above, and for a stronger
+    // reason: this publishes THIS lane's chat transcripts as gists and then
+    // PATCHes them into the PR body. Referencing a colleague's PR must never
+    // upload your transcripts to their repository.
+    await (headMatchesLane
+      ? attachPrTranscriptGistLinks({
+        lane,
+        repo,
+        prNumber: locator.number,
+        githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
+        currentBody: typeof pr?.body === "string" ? pr.body : patchedBody,
+      })
+      : Promise.resolve(typeof pr?.body === "string" ? pr.body : patchedBody)
+    ).then((body) => {
       if (pr) pr.body = body;
     }).catch((error) => {
       logger.warn("prs.transcript_gists_attach_failed", {

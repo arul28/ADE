@@ -283,6 +283,185 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertNil(detect("ping foo@bar"))
   }
 
+  // MARK: Hash
+
+  func testHashOpensThePullRequestMenu() {
+    let match = detect("fix #12")
+    XCTAssertEqual(match?.kind, .hash)
+    XCTAssertEqual(match?.query, "12")
+    XCTAssertEqual(match?.range, NSRange(location: 4, length: 3))
+  }
+
+  func testBareHashHasEmptyQuery() {
+    let match = detect("#")
+    XCTAssertEqual(match?.kind, .hash)
+    XCTAssertEqual(match?.query, "")
+  }
+
+  func testHashTakesNoWhitespaceSoAMarkdownHeadingNeverTriggers() {
+    // "# Title" — the space closes the token, so the caret is past it.
+    XCTAssertNil(detect("# Title"))
+  }
+
+  func testHashInsideAWordDoesNotTrigger() {
+    // `owner/repo#12` is already a chip; it must not reopen the menu.
+    XCTAssertNil(detect("arul28/ade#12"))
+  }
+
+  func testDoubleHashDoesNotTrigger() {
+    XCTAssertNil(detect("##"))
+  }
+
+  func testHashWinsWhenItIsClosestToTheCursor() {
+    let match = detect("look at @a #12")
+    XCTAssertEqual(match?.kind, .hash)
+    XCTAssertEqual(match?.query, "12")
+  }
+
+  func testAtStillWinsWhenTheHashIsFurtherFromTheCursor() {
+    let match = detect("#12 then @src/foo.ts")
+    XCTAssertEqual(match?.kind, .at)
+    XCTAssertEqual(match?.query, "src/foo.ts")
+  }
+
+  /// `matchForSelection` narrows only `@` triggers, exactly as the desktop's
+  /// `composerTriggerForSelection` returns early for anything but "at". A `#`
+  /// selection replaces its whole span.
+  func testHashSelectionReplacesTheWholeTriggerSpan() throws {
+    let match = try XCTUnwrap(detect("fix #12"))
+    let suggestion = WorkComposerSuggestion(
+      id: "pr:pr-1",
+      kind: .hash,
+      title: "arul28/ade#1237",
+      subtitle: "A title",
+      insertText: "https://github.com/arul28/ade/pull/1237"
+    )
+    XCTAssertEqual(
+      WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion).range,
+      match.range
+    )
+  }
+
+  // MARK: Pull-request rows
+
+  private func prItem(
+    id: String,
+    number: Int,
+    title: String,
+    state: String = "open",
+    githubUrl: String? = nil,
+    repoOwner: String = "arul28",
+    repoName: String = "ade",
+    detached: PrDetachedLane? = nil
+  ) -> PullRequestListItem {
+    PullRequestListItem(
+      id: id,
+      laneId: "lane-1",
+      laneName: nil,
+      projectId: "project-1",
+      repoOwner: repoOwner,
+      repoName: repoName,
+      githubPrNumber: number,
+      githubUrl: githubUrl ?? "https://github.com/\(repoOwner)/\(repoName)/pull/\(number)",
+      title: title,
+      state: state,
+      baseBranch: "main",
+      headBranch: "feature/a",
+      checksStatus: "none",
+      reviewStatus: "none",
+      additions: 0,
+      deletions: 0,
+      lastSyncedAt: nil,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+      adeKind: "single",
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil,
+      detached: detached
+    )
+  }
+
+  /// The token is the PR's github url, never its label — the same rule the
+  /// rest of the chip model follows, and what makes a sent `#` selection draw
+  /// an identical pill on the desktop, the phone, and the TUI.
+  func testPrSuggestionInsertsTheUrlAndLabelsItRepoHashNumber() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [prItem(id: "pr-1", number: 1237, title: "One chip model")],
+      query: ""
+    )
+    XCTAssertEqual(rows.count, 1)
+    XCTAssertEqual(rows[0].kind, .hash)
+    XCTAssertEqual(rows[0].insertText, "https://github.com/arul28/ade/pull/1237")
+    XCTAssertEqual(rows[0].title, "arul28/ade#1237")
+    XCTAssertEqual(rows[0].subtitle, "One chip model")
+
+    // And the inserted token is what the transcript re-reads as a PR chip.
+    let chip = WorkChipDetector.chips(in: rows[0].insertText as NSString).first
+    XCTAssertEqual(chip?.kind, .pullRequest)
+    XCTAssertEqual(chip?.label, "arul28/ade#1237")
+  }
+
+  func testNumericQueryPrefixMatchesThePrNumber() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [
+        prItem(id: "pr-1", number: 1237, title: "Chips"),
+        prItem(id: "pr-2", number: 12, title: "Something else"),
+        prItem(id: "pr-3", number: 88, title: "Not a match"),
+      ],
+      query: "12"
+    )
+    XCTAssertEqual(rows.map(\.id), ["pr:pr-1", "pr:pr-2"])
+  }
+
+  func testTextQueryMatchesTheTitleCaseInsensitively() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [
+        prItem(id: "pr-1", number: 1, title: "One CHIP model"),
+        prItem(id: "pr-2", number: 2, title: "Unrelated"),
+      ],
+      query: "chip"
+    )
+    XCTAssertEqual(rows.map(\.id), ["pr:pr-1"])
+  }
+
+  /// Detached rows are history, exactly as they are in the chat's PR list.
+  func testDetachedPrsAreNeverOffered() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [
+        prItem(
+          id: "pr-gone",
+          number: 5,
+          title: "Gone",
+          detached: PrDetachedLane(
+            at: "2026-09-01T00:00:00.000Z", laneName: "old", laneColor: nil,
+            chats: 0, artifacts: 0, checkpoints: 0
+          )
+        ),
+      ],
+      query: ""
+    )
+    XCTAssertTrue(rows.isEmpty)
+  }
+
+  func testPrRowsAreBounded() {
+    let many = (1...50).map { prItem(id: "pr-\($0)", number: $0, title: "PR \($0)") }
+    XCTAssertEqual(WorkComposerSuggestionController.prSuggestions(from: many, query: "").count, 20)
+  }
+
+  /// A row whose `github_url` never synced still addresses the right PR.
+  func testMissingGithubUrlIsReconstructed() {
+    let rows = WorkComposerSuggestionController.prSuggestions(
+      from: [prItem(id: "pr-1", number: 7, title: "T", githubUrl: "")],
+      query: ""
+    )
+    XCTAssertEqual(rows.first?.insertText, "https://github.com/arul28/ade/pull/7")
+  }
+
   // MARK: Cursor relativity
 
   func testDetectsAtCursorNotEndOfText() {
@@ -324,6 +503,138 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
   func testOutOfRangeCursorIsNoTrigger() {
     XCTAssertNil(detect("/rev", cursor: 99))
     XCTAssertNil(detect("/rev", cursor: -1))
+  }
+
+  /// An `ade://` link must name what it points at, exactly as its github.com
+  /// equivalent does. Both used to collapse to "ADE · pr/owner/repo/1237",
+  /// which is why an ADE deeplink looked nothing like the same pull request
+  /// pasted as a web URL. Mirrors `chips.test.ts` on the desktop.
+  /// Drives the SAME fixture the desktop suite uses
+  /// (`apps/desktop/src/shared/__fixtures__/chipCases.json`), read from disk
+  /// relative to this file rather than from the test bundle, because the test
+  /// target has no resources phase.
+  ///
+  /// This is the point of the fixture: hand-written twin tests prove today's
+  /// parity and nothing about tomorrow's. Adding a row on the desktop now fails
+  /// HERE until the Swift side matches.
+  func testMatchesSharedChipFixture() throws {
+    struct Case: Decodable { let url: String; let kind: String; let label: String }
+    struct Fixture: Decodable { let cases: [Case] }
+
+    let fixtureURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()   // ADETests
+      .deletingLastPathComponent()   // apps/ios
+      .deletingLastPathComponent()   // apps
+      .appendingPathComponent("desktop/src/shared/__fixtures__/chipCases.json")
+
+    let data = try Data(contentsOf: fixtureURL)
+    let fixture = try JSONDecoder().decode(Fixture.self, from: data)
+    XCTAssertGreaterThan(fixture.cases.count, 10, "fixture looks empty — parity would silently pass")
+
+    for row in fixture.cases {
+      guard let link = WorkSmartLinkDetector.links(in: row.url as NSString).first else {
+        XCTFail("no chip for \(row.url)")
+        continue
+      }
+      XCTAssertEqual(swiftKindName(link.kind), row.kind, "kind mismatch for \(row.url)")
+      XCTAssertEqual(link.compactLabel, row.label, "label mismatch for \(row.url)")
+    }
+  }
+
+  /// Maps the Swift enum onto the fixture's shared kind vocabulary.
+  private func swiftKindName(_ kind: WorkSmartLink.Kind) -> String {
+    switch kind {
+    case .pullRequest: return "pr"
+    case .issue: return "issue"
+    case .repository: return "repo"
+    case .commit: return "commit"
+    case .branch: return "branch"
+    case .actionsRun: return "actions_run"
+    case .linearIssue: return "linear_issue"
+    case .lane: return "lane"
+    case .chat: return "chat"
+    case .terminal: return "terminal"
+    case .file: return "file"
+  case .folder: return "folder"
+    case .artifact: return "artifact"
+    case .webPage: return "web_page"
+    case .adeLink: return "ade_link"
+    }
+  }
+
+  func testAdeDeeplinksResolveToTypedKindsAndLabels() {
+    func link(_ url: String) -> WorkSmartLink? {
+      WorkSmartLinkDetector.links(in: url as NSString).first
+    }
+
+    let pr = link("ade://pr/arul28/ade/1237")
+    XCTAssertEqual(pr?.kind, .pullRequest)
+    XCTAssertEqual(pr?.compactLabel, "#1237")
+
+    let lane = link("ade://lane/25f280a4-1b2c-4d3e-8f90-abcdef123456")
+    XCTAssertEqual(lane?.kind, .lane)
+    XCTAssertEqual(lane?.compactLabel, "Lane 25f280a4")
+
+    let chat = link("ade://session/9e2315e8ddef")
+    XCTAssertEqual(chat?.kind, .chat)
+    XCTAssertEqual(chat?.compactLabel, "Chat 9e2315e8")
+
+    let file = link("ade://file/apps/desktop/src/shared/chips.ts")
+    XCTAssertEqual(file?.kind, .file)
+    XCTAssertEqual(file?.compactLabel, "chips.ts")
+
+    let commit = link("ade://commit/80a6236e6abcdef")
+    XCTAssertEqual(commit?.kind, .commit)
+    XCTAssertEqual(commit?.compactLabel, "80a6236")
+
+    // A lane id that is not a UUID is not a lane link, exactly as the desktop
+    // parser decides. It stays a generic ADE link rather than claiming a type.
+    let notALane = link("ade://lane/25f280a4/session/abc")
+    XCTAssertEqual(notALane?.kind, .adeLink)
+    XCTAssertEqual(notALane?.compactLabel, "ADE · lane/25f280a4/session/abc")
+
+    let branch = link("ade://repo/arul28/ade/branch/main")
+    XCTAssertEqual(branch?.kind, .branch)
+    XCTAssertEqual(branch?.compactLabel, "main")
+
+    let artifact = link("ade://artifact/proof12345678")
+    XCTAssertEqual(artifact?.kind, .artifact)
+
+    // parseDeeplink REJECTS the number-only PR form, so it must stay a generic
+    // ADE link here too. Accepting it made iOS more permissive than the desktop.
+    let prNumberOnly = link("ade://pr/1237")
+    XCTAssertEqual(prNumberOnly?.kind, .adeLink)
+
+    // `?line=` belongs in the label, exactly as chips.ts renders it.
+    let fileWithLine = link("ade://file/apps/desktop/src/shared/chips.ts?line=42")
+    XCTAssertEqual(fileWithLine?.kind, .file)
+    XCTAssertEqual(fileWithLine?.compactLabel, "chips.ts:42")
+
+    let slashBranch = link("ade://repo/arul28/ade/branch/ade/t3gap-b-composer")
+    XCTAssertEqual(slashBranch?.kind, .branch)
+    XCTAssertEqual(slashBranch?.compactLabel, "ade/t3gap-b-composer")
+
+    let issue = link("ade://linear-issue/ade-431")
+    XCTAssertEqual(issue?.kind, .linearIssue)
+    XCTAssertEqual(issue?.compactLabel, "ADE-431")
+  }
+
+  /// A github.com pull request and an ade:// pull request are ONE kind, so both
+  /// draw the same pill. This is the property the shared chip model exists for.
+  func testGithubAndAdePullRequestsShareOneKind() {
+    let fromWeb = WorkSmartLinkDetector.links(in: "https://github.com/arul28/ADE/pull/835" as NSString).first
+    let fromAde = WorkSmartLinkDetector.links(in: "ade://pr/arul28/ade/835" as NSString).first
+    XCTAssertEqual(fromWeb?.kind, .pullRequest)
+    XCTAssertEqual(fromAde?.kind, .pullRequest)
+    XCTAssertEqual(fromWeb?.kind, fromAde?.kind)
+  }
+
+  /// An `ade://` URL a newer ADE minted stays an addressable link rather than
+  /// falling back to raw text.
+  func testUnparseableAdeLinkStaysAddressable() {
+    let unknown = WorkSmartLinkDetector.links(in: "ade://something-new/42" as NSString).first
+    XCTAssertEqual(unknown?.kind, .adeLink)
+    XCTAssertEqual(unknown?.url, "ade://something-new/42")
   }
 
   func testSmartLinkCataloguePreservesURLsAndCompactLabels() throws {

@@ -94,7 +94,6 @@ export function AgentStepEditor({
           <ModelPicker
             value={modelId}
             onChange={setModel}
-            surfaceKey="automations.agent-step"
             hidePermissionRail
             triggerClassName="w-full justify-between"
           />

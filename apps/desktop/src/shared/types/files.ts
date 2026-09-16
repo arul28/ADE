@@ -248,11 +248,26 @@ export type FilesQuickOpenArgs = {
   includeIgnored?: boolean;
   /** Allow the composer-only path-prefix match for trailing prose. */
   allowComposerPrefixFallback?: boolean;
+  /**
+   * Include directories in the results. Off by default because most callers
+   * open what they receive: the Files panel renders every hit under a "Files"
+   * header and hands it to the editor, and ⌘K mints a file deeplink for it.
+   * Only the composer's `@` menu wants folders, and it inserts a pointer chip
+   * rather than opening anything.
+   */
+  includeDirectories?: boolean;
 };
 
 export type FilesQuickOpenItem = {
   path: string;
   score: number;
+  /**
+   * True for a directory. The index used to hold files only, so a composer
+   * `@` menu could never offer a folder even though "work on @src/main" is a
+   * perfectly ordinary instruction. Optional so older payloads still parse as
+   * files.
+   */
+  isDirectory?: boolean;
 };
 
 export type FilesSearchTextArgs = {

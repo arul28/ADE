@@ -3065,9 +3065,15 @@ config service):
   Cheap helper by ADE provider, then this session's model, then
   deterministic. Legacy `ai.chat.autoTitleReasoningEffort` is migrated
   into this tree.
-- `ai.permissions.*` -- per-provider permission defaults
-  (`claudePermissionMode`, Codex approval/sandbox defaults, OpenCode
-  permission).
+- `ai.permissions.providers.*` -- per-provider permission defaults. One
+  `AgentChatPermissionMode` per provider key (`claude`, `codex`, `cursor`,
+  `droid`, `opencode`, `pi`, plus one key per ACP provider), with
+  `codexSandbox` as Codex's second axis. This is what the Settings control
+  writes and the **only** per-provider source `resolveChatConfig` reads, for
+  every provider — it used to be consulted for Pi alone, so a configured
+  Claude or Codex default had no effect on a launch. `ai.permissions.cli` /
+  `ai.permissions.inProcess` remain the legacy shared fallbacks. See
+  [Agent routing](agent-routing.md#one-source-for-a-configured-default).
 - `ai.taskRouting` -- provider/model selection per task type.
 - `ai.customProviders` -- Advanced custom OpenAI-/Anthropic-compatible
   providers (`{ id, name, baseURL, npm, models[] }`) that flow into the

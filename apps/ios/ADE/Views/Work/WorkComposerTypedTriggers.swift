@@ -57,10 +57,209 @@ struct WorkSmartLink: Equatable {
     case .linear:
       return workSmartLinkLinearIdentifier(components) ?? url
     case .ade:
+      // A recognised shape gets its typed label; anything else keeps the
+      // original descriptive form, because "ADE · lane/25f280a4/session/abc"
+      // tells the reader far more than a bare "ADE link".
+      if let typed = WorkSmartLink.adeDeeplinkLabel(
+        host: components.host,
+        parts: parts,
+        lineQueryValue: WorkSmartLink.lineQueryValue(in: components)
+      ) {
+        return typed
+      }
       let target = ([components.host].compactMap { $0 } + parts).joined(separator: "/")
       return target.isEmpty ? "ADE link" : "ADE · \(target)"
     case .web:
       return url
+    }
+  }
+
+  /// What this link points at, mirroring the desktop's shared chip model
+  /// (`apps/desktop/src/shared/chips.ts`). A pull request is one kind whether it
+  /// arrived as a github.com URL or an `ade://pr/...` deeplink, so both draw the
+  /// same pill on every surface.
+  enum Kind: Equatable {
+    case pullRequest
+    case issue
+    case repository
+    case commit
+    case branch
+    case actionsRun
+    case linearIssue
+    case lane
+    case chat
+    case terminal
+    case file
+    /// A directory. A distinct kind on purpose, exactly as on the desktop: the
+    /// glyph and what a tap means both differ from a file's.
+    case folder
+    case artifact
+    case webPage
+    /// An `ade://` URL this build cannot parse — a newer ADE minted it.
+    case adeLink
+
+    /// Single-cell glyphs, matching `CHIP_GLYPH` on the desktop.
+    var glyph: String {
+      switch self {
+      case .pullRequest: return "⇄"
+      case .issue: return "◉"
+      case .repository: return "▣"
+      case .commit: return "◆"
+      case .branch: return "⑂"
+      case .actionsRun: return "⚙"
+      case .linearIssue: return "L"
+      case .lane: return "◫"
+      case .chat: return "💬"
+      case .terminal: return "▶"
+      case .file: return "📄"
+      case .folder: return "📁"
+      case .artifact: return "◈"
+      case .webPage: return "↗"
+      case .adeLink: return "A"
+      }
+    }
+  }
+
+  var kind: Kind {
+    guard let components = URLComponents(string: url) else { return .webPage }
+    let parts = workSmartLinkPathParts(components)
+    switch provider {
+    case .github:
+      let section = parts.indices.contains(2) ? parts[2].lowercased() : ""
+      if parts.count >= 4, section == "pull", workSmartLinkIsAsciiNumber(parts[3]) { return .pullRequest }
+      if parts.count >= 4, section == "issues", workSmartLinkIsAsciiNumber(parts[3]) { return .issue }
+      if parts.count >= 4, section == "commit" { return .commit }
+      if parts.count >= 5, section == "actions", parts[3].lowercased() == "runs" { return .actionsRun }
+      return .repository
+    case .linear:
+      return .linearIssue
+    case .ade:
+      return WorkSmartLink.adeDeeplinkKind(
+        host: components.host,
+        parts: parts,
+        lineQueryValue: WorkSmartLink.lineQueryValue(in: components)
+      ) ?? .adeLink
+    case .web:
+      return .webPage
+    }
+  }
+
+  /// `ade://` links carry a precise target. Rendering every one of them as
+  /// "ADE · pr/owner/repo/1237" threw that away, so an ADE link to a pull
+  /// request looked nothing like the github.com link to the same pull request.
+  private static func adeSegments(host: String?, parts: [String]) -> [String] {
+    ([host].compactMap { $0 } + parts).filter { !$0.isEmpty }
+  }
+
+  /// Shape validation mirroring `parseDeeplink` on the desktop
+  /// (`apps/desktop/src/shared/deeplinks.ts`). Matching on the leading segment
+  /// alone was too loose: `ade://lane/<not-a-uuid>/session/abc` would report
+  /// itself as a plain lane link and drop the rest of the path, while the
+  /// desktop rejects that same URL outright. Both surfaces must agree, or one
+  /// chip means two things.
+  private static func isUuid(_ value: String) -> Bool {
+    UUID(uuidString: value) != nil
+  }
+
+  private static func isCommitSha(_ value: String) -> Bool {
+    let hex = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+    return (7...40).contains(value.count)
+      && value.unicodeScalars.allSatisfy { hex.contains($0) }
+  }
+
+  private static func isLinearIdentifier(_ value: String) -> Bool {
+    let parts = value.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return false }
+    let key = parts[0]
+    guard key.count <= 10, key.first?.isLetter == true,
+          key.allSatisfy({ $0.isLetter || $0.isNumber }) else { return false }
+    return workSmartLinkIsAsciiNumber(String(parts[1]))
+  }
+
+  /// The raw `line` query value, distinguishing "absent" from "present but
+  /// empty". A valueless `?line` flattens to nil in `URLQueryItem`, which would
+  /// read as absent — while the desktop's `searchParams.get("line")` returns ""
+  /// and rejects the whole link. Present-without-a-value therefore maps to "".
+  static func lineQueryValue(in components: URLComponents) -> String? {
+    guard let item = components.queryItems?.first(where: { $0.name == "line" }) else { return nil }
+    return item.value ?? ""
+  }
+
+  /// 1-15 ASCII digits, value >= 1, returned as the parsed number — the exact
+  /// rule `parseNonNegativeIntParam` applies before `buildFileTarget` accepts a
+  /// `?line=`. Returns nil when the desktop would reject the whole link.
+  static func parsedFileLine(_ raw: String?) -> Int? {
+    guard let raw, (1...15).contains(raw.count), workSmartLinkIsAsciiNumber(raw) else { return nil }
+    guard let value = Int(raw), value >= 1 else { return nil }
+    return value
+  }
+
+  static func adeDeeplinkKind(host: String?, parts: [String], lineQueryValue: String? = nil) -> Kind? {
+    let segments = adeSegments(host: host, parts: parts)
+    guard let head = segments.first?.lowercased() else { return nil }
+    switch head {
+    // ade://pr/<owner>/<repo>/<number>. The number-only form is deliberately
+    // NOT accepted: parseDeeplink rejects it as malformed, and a chip that
+    // resolves on one surface and not the other is the bug this mirrors away.
+    case "pr":
+      return segments.count == 4 && workSmartLinkIsAsciiNumber(segments[3]) ? .pullRequest : nil
+    case "lane":
+      return segments.count == 2 && isUuid(segments[1]) ? .lane : nil
+    case "session":
+      return segments.count == 2 && !segments[1].isEmpty ? .chat : nil
+    // A repo-relative path legitimately contains slashes, so this one is
+    // open-ended — but a PRESENT-and-invalid `?line=` makes the desktop reject
+    // the whole link, so it cannot stay a typed file chip here either.
+    case "file":
+      guard segments.count >= 2 else { return nil }
+      if let raw = lineQueryValue, parsedFileLine(raw) == nil { return nil }
+      return .file
+    case "commit":
+      return segments.count == 2 && isCommitSha(segments[1]) ? .commit : nil
+    case "artifact":
+      return segments.count == 2 && !segments[1].isEmpty ? .artifact : nil
+    // ade://repo/<owner>/<repo>/branch/<branch>. The branch may contain slashes —
+    // ADE's own lane branches look like `ade/t3gap-…` — so everything after the
+    // `branch` segment is the name, exactly as the desktop parser joins it.
+    case "repo":
+      return segments.count >= 5 && segments[3].lowercased() == "branch" ? .branch : nil
+    case "linear-issue":
+      return segments.count == 2 && isLinearIdentifier(segments[1]) ? .linearIssue : nil
+    default:
+      return nil
+    }
+  }
+
+  /// Only labels a URL whose shape `adeDeeplinkKind` already accepted, so a
+  /// malformed link never gets a confident-looking label.
+  static func adeDeeplinkLabel(host: String?, parts: [String], lineQueryValue: String? = nil) -> String? {
+    let segments = adeSegments(host: host, parts: parts)
+    guard let kind = adeDeeplinkKind(host: host, parts: parts, lineQueryValue: lineQueryValue) else { return nil }
+    func shortId(_ value: String) -> String { String(value.prefix(8)) }
+    switch kind {
+    case .pullRequest: return "#\(segments[3])"
+    case .lane: return "Lane \(shortId(segments[1]))"
+    case .chat: return "Chat \(shortId(segments[1]))"
+    case .file:
+      let path = segments.dropFirst().joined(separator: "/")
+      let name = path.split(separator: "/").last.map(String.init) ?? path
+      // `?line=` is part of the label on the desktop (`name:42`); dropping it
+      // here made the same link read differently on the two surfaces.
+      // Mirrors parseNonNegativeIntParam + buildFileTarget exactly: 1-15 ASCII
+      // digits, value >= 1, and the LABEL uses the parsed number so `007`
+      // renders as `:7`. An invalid line makes the desktop reject the whole
+      // link, so this must not label one the desktop refuses to type at all —
+      // the kind check consults `parsedFileLine` too.
+      if let line = WorkSmartLink.parsedFileLine(lineQueryValue) {
+        return "\(name):\(line)"
+      }
+      return name
+    case .commit: return String(segments[1].prefix(7))
+    case .artifact: return "Artifact \(shortId(segments[1]))"
+    case .branch: return segments[4...].joined(separator: "/")
+    case .linearIssue: return segments[1].uppercased()
+    default:
+      return nil
     }
   }
 }
@@ -129,15 +328,380 @@ enum WorkSmartLinkDetector {
   }
 }
 
+// MARK: - Chat mentions
+
+/// Swift twin of the `@chat:` / `@lane:` / `@term:` grammar in
+/// `apps/desktop/src/shared/chatMentions.ts`.
+///
+/// A mention is a POINTER, never an attachment: the token is the canonical text
+/// and the label is display only, so the same draft round-trips through the
+/// desktop composer, the `ade code` TUI, and this app without changing meaning.
+struct WorkChatMention: Equatable {
+  enum Kind: Equatable {
+    case chat
+    case lane
+    case terminal
+
+    /// Token prefix per kind. `term` is deliberately short for typing, matching
+    /// `CHAT_MENTION_TOKEN_PREFIX` on the desktop.
+    var tokenPrefix: String {
+      switch self {
+      case .chat: return "chat"
+      case .lane: return "lane"
+      case .terminal: return "term"
+      }
+    }
+
+    static func from(tokenPrefix: String) -> Kind? {
+      switch tokenPrefix {
+      case "chat": return .chat
+      case "lane": return .lane
+      case "term": return .terminal
+      default: return nil
+      }
+    }
+
+    /// The shared chip kind this mention produces. `@lane:<id>` and
+    /// `ade://lane/<id>` are the same pill; only the token differs.
+    var chipKind: WorkSmartLink.Kind {
+      switch self {
+      case .chat: return .chat
+      case .lane: return .lane
+      case .terminal: return .terminal
+      }
+    }
+  }
+
+  let kind: Kind
+  let id: String
+  /// The matched token text, e.g. `@chat:abc123`.
+  let token: String
+  let range: NSRange
+
+  /// `defaultMentionLabel` in `chips.ts`: the first 8 characters of the id, so
+  /// a mention is legible with no network access and no host lookup.
+  var defaultLabel: String {
+    let short = String(id.prefix(8))
+    switch kind {
+    case .chat: return "Chat \(short)"
+    case .lane: return "Lane \(short)"
+    case .terminal: return "Terminal \(short)"
+    }
+  }
+}
+
+enum WorkChatMentionDetector {
+  /// Serialize one mention into its chip/draft token form.
+  static func formatToken(kind: WorkChatMention.Kind, id: String) -> String {
+    "@\(kind.tokenPrefix):\(id)"
+  }
+
+  // Character-for-character the desktop's `MENTION_TOKEN_SOURCE`. Ids are
+  // opaque (uuids, slugs); `:` is excluded so the prefix split is unambiguous,
+  // and the token must sit at a word boundary so emails and `foo@chat:bar`
+  // substrings never match.
+  private static let regex = try! NSRegularExpression(
+    pattern: "(?:^|[\\s(\\[{,])@(chat|lane|term):([A-Za-z0-9._-]+)",
+    options: []
+  )
+
+  /// Every mention token in `text`, in document order.
+  static func mentions(in text: NSString) -> [WorkChatMention] {
+    guard text.length > 0, text.range(of: "@").location != NSNotFound else { return [] }
+    let full = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: full).compactMap { match in
+      guard match.numberOfRanges == 3 else { return nil }
+      let prefix = text.substring(with: match.range(at: 1))
+      guard let kind = WorkChatMention.Kind.from(tokenPrefix: prefix) else { return nil }
+      let id = text.substring(with: match.range(at: 2))
+      let token = "@\(prefix):\(id)"
+      // match[0] may include one leading boundary char; anchor on the `@`.
+      let start = NSMaxRange(match.range) - (token as NSString).length
+      return WorkChatMention(
+        kind: kind,
+        id: id,
+        token: token,
+        range: NSRange(location: start, length: (token as NSString).length)
+      )
+    }
+  }
+}
+
+// MARK: - `@`-prefixed repo paths
+
+/// One `@`-prefixed file or folder path in a message body — the token the
+/// composer inserts for a quick-open pick (`@src/shared/chips.ts`,
+/// `@src/shared/`). The Swift twin of `chipFromPath` in
+/// `apps/desktop/src/shared/chips.ts`.
+struct WorkChipPath: Equatable {
+  /// The path with no leading `@` and no folder trailing slash.
+  let path: String
+  let isDirectory: Bool
+  /// Covers the `@` AND the path text, so a renderer replaces both.
+  let range: NSRange
+
+  /// Canonical serialized form, matching `chipFromPath().token`: a folder keeps
+  /// its trailing slash, because that slash is what marks it a folder.
+  var token: String { isDirectory ? "\(path)/" : path }
+
+  var chipKind: WorkSmartLink.Kind { isDirectory ? .folder : .file }
+
+  /// Basename, with a folder's slash kept. Matches the desktop chip's `label`.
+  var defaultLabel: String {
+    let normalized = path.hasSuffix("/") ? String(path.dropLast()) : path
+    let name = (normalized as NSString).lastPathComponent
+    let base = name.isEmpty ? normalized : name
+    return isDirectory ? "\(base)/" : base
+  }
+}
+
+enum WorkChipPathDetector {
+  // Character-for-character the desktop's `PATH_MENTION_RE`. Two deliberate
+  // restrictions, and both have to hold on BOTH surfaces or the fixture parity
+  // test is the only thing left standing between them:
+  //
+  //   - The token MUST contain a `/`. A bare `@name.ext` is indistinguishable
+  //     from a domain or a handle (`@example.com`), and a file pill that
+  //     navigates nowhere is worse than leaving a root-level file as text.
+  //   - NO `:` anywhere in the token. That is what keeps `@chat:abc` and
+  //     `@bogus:123` out of this matcher and leaves them to the entity grammar.
+  //
+  // The leading boundary mirrors `WorkChatMentionDetector`, so an email or a
+  // mid-word `arul@chat/nope` is not a path mention either.
+  private static let regex = try! NSRegularExpression(
+    pattern: "(?:^|[ \\t\\r\\n(\\[{,])@([^\\s:]*(?:/[^\\s:]*|\\.\\w{1,8}))",
+    options: []
+  )
+  /// Suffixes that mean "web address", never "source file". Kept minimal on
+  /// purpose: TLDs and source extensions collide badly — `.md` is Moldova,
+  /// `.py` Paraguay, `.sh` St Helena, `.pl` Poland, `.rs` Serbia — so a
+  /// "complete" TLD blocklist would refuse a README, which is the very case
+  /// the extension arm exists for. Mirrors `WEB_ONLY_SUFFIXES` in chips.ts.
+  private static let webOnlySuffixes: Set<String> = [
+    "com", "org", "net", "edu", "gov", "info", "xyz", "online", "site",
+  ]
+  /// A short file extension, which is what lets a ROOT-level `@README.md`
+  /// chip: it has no `/` to qualify it. Capped at 1-8 word characters so prose
+  /// cannot pass.
+  private static let extensionSuffix = try! NSRegularExpression(
+    pattern: "\\.\\w{1,8}$",
+    options: []
+  )
+  /// Trailing sentence punctuation belongs to the prose, not the path.
+  private static let trailingPunctuation = try! NSRegularExpression(
+    pattern: "[.,;!?)\\]}]+$",
+    options: []
+  )
+
+  /// Every `@`-path token in `text`, in document order.
+  static func paths(in text: NSString) -> [WorkChipPath] {
+    guard text.length > 0, text.range(of: "@").location != NSNotFound else { return [] }
+    let full = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: full).compactMap { match in
+      guard match.numberOfRanges == 2 else { return nil }
+      let captured = match.range(at: 1)
+      guard captured.location != NSNotFound, captured.location > 0 else { return nil }
+      var raw = text.substring(with: captured) as NSString
+      if let strip = trailingPunctuation.firstMatch(
+        in: raw as String,
+        range: NSRange(location: 0, length: raw.length)
+      ) {
+        raw = raw.substring(to: strip.range.location) as NSString
+      }
+      // A folder's own trailing slash survives the strip above. Both arms are
+      // re-checked AFTER the strip, because it can eat the very `/` or
+      // extension that qualified the token: `@foo.` must not become a chip.
+      if raw.range(of: "/").location == NSNotFound {
+        // Slash-less: it qualifies only on a code-ish extension. A web-only
+        // suffix stays prose, so `@example.com` is not a file pill while
+        // `@README.md` is. A token WITH a slash is a path regardless.
+        guard let match = extensionSuffix.firstMatch(
+          in: raw as String,
+          range: NSRange(location: 0, length: raw.length)
+        ) else { return nil }
+        let suffix = (raw.substring(with: match.range) as String)
+          .dropFirst()
+          .lowercased()
+        guard !WorkChipPathDetector.webOnlySuffixes.contains(suffix) else { return nil }
+      }
+      let isDirectory = raw.hasSuffix("/")
+      let path = isDirectory ? raw.substring(to: raw.length - 1) : (raw as String)
+      return WorkChipPath(
+        path: path,
+        isDirectory: isDirectory,
+        // `@` sits immediately before the capture, and the chip covers both.
+        range: NSRange(location: captured.location - 1, length: raw.length + 1)
+      )
+    }
+  }
+}
+
+// MARK: - Unified chips
+
+/// One pill, whichever grammar produced it — the Swift twin of the `Chip` type
+/// in `apps/desktop/src/shared/chips.ts`.
+///
+/// `token` is the canonical plain text (copy, drafts, and the plain-text
+/// clipboard flavour all write it). `label` is display only.
+struct WorkChip: Equatable {
+  enum Origin: Equatable {
+    case mention(WorkChatMention)
+    case link(WorkSmartLink)
+    case path(WorkChipPath)
+  }
+
+  let kind: WorkSmartLink.Kind
+  let token: String
+  let label: String
+  let range: NSRange
+  let origin: Origin
+
+  var glyph: String { kind.glyph }
+
+  init(mention: WorkChatMention) {
+    kind = mention.kind.chipKind
+    token = mention.token
+    label = mention.defaultLabel
+    range = mention.range
+    origin = .mention(mention)
+  }
+
+  init(link: WorkSmartLink) {
+    kind = link.kind
+    token = link.url
+    label = link.compactLabel
+    range = link.range
+    origin = .link(link)
+  }
+
+  init(path: WorkChipPath) {
+    kind = path.chipKind
+    token = path.token
+    label = path.defaultLabel
+    range = path.range
+    origin = .path(path)
+  }
+
+  /// The plain text this chip serializes back to. Mention and link tokens are
+  /// already the literal source text; a path token deliberately is NOT — it
+  /// omits the `@` the grammar needs, exactly as `chipFromPath().token` does on
+  /// the desktop — so the sigil is restored here rather than silently dropped.
+  var canonicalText: String {
+    if case .path = origin { return "@\(token)" }
+    return token
+  }
+}
+
+/// A message body split into plain runs and chips — what a renderer wants, so
+/// it walks the parts in order and never computes offsets itself.
+enum WorkChipTextPart: Equatable {
+  case text(String)
+  case chip(WorkChip)
+}
+
+/// One scan over the text, every grammar, in document order, no overlaps.
+/// Mirrors `parseChips` / `splitTextIntoChipParts`.
+///
+/// A BARE path is still not a chip — that is ambiguous with ordinary prose — but
+/// an `@`-prefixed one is, because that is the token the composer inserts for a
+/// quick-open pick and it is by far the most common chip in a real message.
+enum WorkChipDetector {
+  static let defaultLimit = 24
+  /// Serialization is not a render, so it is not bounded by what fits on a
+  /// screen — but it is still bounded, so a pathological paste cannot fan out.
+  static let canonicalTextChipLimit = 512
+
+  static func chips(in text: NSString, limit: Int = defaultLimit) -> [WorkChip] {
+    guard text.length > 0, limit > 0 else { return [] }
+
+    var candidates: [WorkChip] = WorkChatMentionDetector.mentions(in: text).map(WorkChip.init(mention:))
+    candidates.append(contentsOf: WorkSmartLinkDetector.links(in: text).prefix(limit).map(WorkChip.init(link:)))
+    // Last, like the desktop: the sort below puts them in document order and
+    // the `consumedTo` loop drops any that overlap a link, so a path that lives
+    // inside a URL cannot double-match.
+    candidates.append(contentsOf: WorkChipPathDetector.paths(in: text).map(WorkChip.init(path:)))
+
+    // Sort by start offset, tie-broken by discovery order so the sort is stable
+    // the way the desktop's `Array.prototype.sort` is. That order is what makes
+    // the entity grammar win a tie with the path grammar, which is the same
+    // precedence the desktop's push order gives it.
+    let ordered = candidates.enumerated()
+      .sorted { lhs, rhs in
+        lhs.element.range.location == rhs.element.range.location
+          ? lhs.offset < rhs.offset
+          : lhs.element.range.location < rhs.element.range.location
+      }
+      .map(\.element)
+
+    var out: [WorkChip] = []
+    var consumedTo = -1
+    for chip in ordered {
+      if chip.range.location < consumedTo { continue }
+      out.append(chip)
+      consumedTo = NSMaxRange(chip.range)
+      if out.count >= limit { break }
+    }
+    return out
+  }
+
+  static func parts(in text: String, limit: Int = defaultLimit) -> [WorkChipTextPart] {
+    let ns = text as NSString
+    let matches = chips(in: ns, limit: limit)
+    guard !matches.isEmpty else { return text.isEmpty ? [] : [.text(text)] }
+
+    var parts: [WorkChipTextPart] = []
+    var cursor = 0
+    for chip in matches {
+      if chip.range.location > cursor {
+        parts.append(.text(ns.substring(with: NSRange(location: cursor, length: chip.range.location - cursor))))
+      }
+      parts.append(.chip(chip))
+      cursor = NSMaxRange(chip.range)
+    }
+    if cursor < ns.length {
+      parts.append(.text(ns.substring(from: cursor)))
+    }
+    return parts
+  }
+
+  /// The canonical plain-text form of a selection: labels never leak into the
+  /// clipboard, so a chip pasted into a terminal, a commit message, or another
+  /// ADE surface is still a meaningful, re-parseable pointer. Mirrors the
+  /// `text/plain` flavour of `apps/desktop/src/shared/composerClipboard.ts`.
+  ///
+  /// Today this is the identity on iOS — the composer and the transcript both
+  /// store raw text and render chips from it, so there is no label-bearing DOM
+  /// to lose. It exists as the one named place that guarantees that, and as the
+  /// hook for any future surface that stores labels instead.
+  static func canonicalPlainText(_ text: String) -> String {
+    let ns = text as NSString
+    let matches = chips(in: ns, limit: canonicalTextChipLimit)
+    guard !matches.isEmpty else { return text }
+    var out = ""
+    var cursor = 0
+    for chip in matches {
+      if chip.range.location > cursor {
+        out += ns.substring(with: NSRange(location: cursor, length: chip.range.location - cursor))
+      }
+      out += chip.canonicalText
+      cursor = NSMaxRange(chip.range)
+    }
+    if cursor < ns.length { out += ns.substring(from: cursor) }
+    return out
+  }
+}
+
 // MARK: - Trigger detection
 
-/// The two typed triggers the composer recognizes, matching the shared
-/// desktop/TUI semantics: `/` opens the slash-command list, `@` opens file
-/// quick-open. Detection runs on the text *before* the cursor so a trigger can
-/// live anywhere in the draft ("fix @src/foo.ts then run /test").
+/// The typed triggers the composer recognizes, matching the shared desktop/TUI
+/// semantics: `/` opens the slash-command list, `@` opens file quick-open, and
+/// `#` opens the pull-request menu. Detection runs on the text *before* the
+/// cursor so a trigger can live anywhere in the draft ("fix @src/foo.ts then
+/// run /test").
 enum WorkComposerTriggerKind: Equatable {
   case slash
   case at
+  case hash
 }
 
 /// A live trigger resolved from the draft: which kind, the query typed after the
@@ -157,11 +721,15 @@ struct WorkComposerTriggerMatch: Equatable {
 /// Mirrors the desktop/TUI regexes exactly:
 ///   slash — `(?:^|\s)/([^\s/]*)$`
 ///   at    — `(?:^|[ \t\r\n])@([^@\r\n]*)$`
+///   hash  — `(?:^|[ \t\r\n])#([^\s#]*)$`
 /// The `@` query may contain spaces for multi-word entity names, but it stops
-/// at a newline or another `@`.
+/// at a newline or another `@`. The `#` query takes no whitespace at all, so a
+/// markdown heading (`# Title`) closes the token on its very next character
+/// and `owner/repo#12` never triggers — that text is already a chip.
 enum WorkComposerTriggerDetector {
   private static let slashRegex = try! NSRegularExpression(pattern: "(?:^|\\s)/([^\\s/]*)$")
   private static let atRegex = try! NSRegularExpression(pattern: "(?:^|[ \\t\\r\\n])@([^@\\r\\n]*)$")
+  private static let hashRegex = try! NSRegularExpression(pattern: "(?:^|[ \\t\\r\\n])#([^\\s#]*)$")
   private static let fileQueryRegex = try! NSRegularExpression(
     pattern: "^(.+?\\.[A-Za-z0-9_-]+)(?:[ \\t]+.*)?$"
   )
@@ -183,19 +751,15 @@ enum WorkComposerTriggerDetector {
       return WorkComposerTriggerMatch(kind: kind, query: query, range: span)
     }
 
-    let slash = consider(slashRegex, .slash)
-    let at = consider(atRegex, .at)
-
-    switch (slash, at) {
-    case let (s?, a?):
-      return s.range.location >= a.range.location ? s : a
-    case let (s?, nil):
-      return s
-    case let (nil, a?):
-      return a
-    default:
-      return nil
-    }
+    // The trigger typed closest to the cursor wins, so the menu always answers
+    // the token the user is still typing. Ties break the same way the desktop
+    // orders its comparisons: hash, then at, then slash.
+    let candidates = [
+      consider(hashRegex, .hash),
+      consider(atRegex, .at),
+      consider(slashRegex, .slash),
+    ].compactMap { $0 }
+    return candidates.max(by: { $0.range.location < $1.range.location })
   }
 
   /// Keep path-like file labels searchable when the user continues ordinary
@@ -329,6 +893,10 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
   let title: String
   let subtitle: String?
   let insertText: String
+  /// Only meaningful for `@` file rows. Changes the row's glyph; it never
+  /// changes what commit does, because an iOS `@` commit splices text and
+  /// stages nothing.
+  var isDirectory: Bool = false
 }
 
 /// Curated per-provider slash commands, ported from the retired
@@ -487,6 +1055,8 @@ final class WorkComposerSuggestionController: ObservableObject {
       suggestions = WorkComposerSlashCatalog.suggestions(provider: provider, query: match.query)
     case .at:
       scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
+    case .hash:
+      schedulePrFetch(query: match.query)
     }
   }
 
@@ -543,23 +1113,30 @@ final class WorkComposerSuggestionController: ObservableObject {
         // or `@build/out.log` means it, so composer suggestions keep reaching
         // into ignored trees even though Files search now defaults to skipping
         // them.
+        // Folders are suggestable too: "work on @src/main" is an ordinary
+        // instruction, and an @ selection on iOS only ever splices a pointer
+        // into the draft — it never stages an attachment — so a directory,
+        // which has no bytes to upload, is safe to offer here.
         let items = try await sync.quickOpen(
           workspaceId: workspaceId,
           query: query,
           limit: 20,
           includeIgnored: true,
-          allowComposerPrefixFallback: true
+          allowComposerPrefixFallback: true,
+          includeDirectories: true
         )
         guard !Task.isCancelled, self.laneGeneration == generation else { return }
         let mapped = items.map { item -> WorkComposerSuggestion in
           let name = (item.path as NSString).lastPathComponent
           let dir = (item.path as NSString).deletingLastPathComponent
+          let isDirectory = item.isDirectory == true
           return WorkComposerSuggestion(
             id: "file:\(item.path)",
             kind: .at,
             title: name.isEmpty ? item.path : name,
-            subtitle: dir.isEmpty ? nil : dir,
-            insertText: "@\(item.path)"
+            subtitle: dir.isEmpty ? (isDirectory ? "Folder" : nil) : dir,
+            insertText: "@\(item.path)",
+            isDirectory: isDirectory
           )
         }
         await MainActor.run {
@@ -583,6 +1160,87 @@ final class WorkComposerSuggestionController: ObservableObject {
     // Only apply while an `@` trigger is still active — a later slash/no trigger
     // may have superseded this fetch.
     guard activeMatch?.kind == .at else { return }
+    isLoading = false
+    suggestions = items
+  }
+
+  /// `#` rows come from the pull requests this project has ALREADY synced, so
+  /// the menu answers from the local database rather than a host round-trip.
+  /// Mirrors the desktop's `searchPullRequests`: detached rows are history and
+  /// never offered, a numeric query prefix-matches the PR number, and anything
+  /// else matches the title or the number.
+  private func schedulePrFetch(query: String) {
+    fetchTask?.cancel()
+    isLoading = true
+    let sync = syncService
+    let generation = laneGeneration
+    fetchTask = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 40_000_000)
+      guard !Task.isCancelled else { return }
+      guard let self, let sync else {
+        await MainActor.run { self?.finishPrs([]) }
+        return
+      }
+      let items = (try? await sync.fetchPullRequestListItems()) ?? []
+      guard !Task.isCancelled, self.laneGeneration == generation else { return }
+      let mapped = Self.prSuggestions(from: items, query: query)
+      await MainActor.run {
+        guard self.laneGeneration == generation else { return }
+        self.finishPrs(mapped)
+      }
+    }
+  }
+
+  /// Pure — and deliberately `nonisolated` — so the ranking and the token are
+  /// testable without a sync service or a main-actor hop.
+  nonisolated static func prSuggestions(
+    from items: [PullRequestListItem],
+    query: String,
+    limit: Int = 20
+  ) -> [WorkComposerSuggestion] {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let isNumeric = !trimmed.isEmpty && trimmed.allSatisfy { $0.isASCII && $0.isNumber }
+    return items
+      .filter { item in
+        guard item.detached == nil else { return false }
+        guard !trimmed.isEmpty else { return true }
+        let number = String(item.githubPrNumber)
+        if isNumeric { return number.hasPrefix(trimmed) }
+        return item.title.lowercased().contains(trimmed) || number.hasPrefix(trimmed)
+      }
+      .prefix(limit)
+      .compactMap { item -> WorkComposerSuggestion? in
+        // The token is the PR's github url, exactly as the desktop inserts it,
+        // so the sent message draws the same PR pill on every surface.
+        let repo = item.repoOwner.isEmpty || item.repoName.isEmpty
+          ? nil
+          : "\(item.repoOwner)/\(item.repoName)"
+        // Synthesize a url ONLY from a complete repo. With an empty owner or
+        // name this used to build a github.com url with empty path segments
+        // where the owner and repo belong, which no chip parser recognises —
+        // the row looked insertable and produced a dead link. A row we cannot
+        // address is better left out of the menu entirely.
+        let url: String
+        if !item.githubUrl.isEmpty {
+          url = item.githubUrl
+        } else if let repo {
+          url = "https://github.com/\(repo)/pull/\(item.githubPrNumber)"
+        } else {
+          return nil
+        }
+        let label = repo.map { "\($0)#\(item.githubPrNumber)" } ?? "#\(item.githubPrNumber)"
+        return WorkComposerSuggestion(
+          id: "pr:\(item.id)",
+          kind: .hash,
+          title: label,
+          subtitle: item.title.isEmpty ? nil : item.title,
+          insertText: url
+        )
+      }
+  }
+
+  private func finishPrs(_ items: [WorkComposerSuggestion]) {
+    guard activeMatch?.kind == .hash else { return }
     isLoading = false
     suggestions = items
   }
@@ -1141,7 +1799,7 @@ struct WorkComposerTextView: UIViewRepresentable {
       case .slash:
         let body = UIFont.preferredFont(forTextStyle: .body)
         font = UIFont.monospacedSystemFont(ofSize: body.pointSize - 1, weight: .semibold)
-      case .at:
+      case .at, .hash:
         font = UIFont.preferredFont(forTextStyle: .body).withWeight(.semibold)
       }
       return [
@@ -1343,8 +2001,13 @@ struct WorkComposerTextView: UIViewRepresentable {
           next.append(chip)
         }
       }
-      let chipRange = NSRange(location: range.location, length: (chipText as NSString).length)
-      next.append((chipRange, chipText))
+      // A `#` selection inserts a pull-request URL. `restyle()` already draws
+      // every smart link and `atomicDeletionRange` already deletes one whole,
+      // so registering a composer chip over the same range would double-own it.
+      if suggestion.kind != .hash {
+        let chipRange = NSRange(location: range.location, length: (chipText as NSString).length)
+        next.append((chipRange, chipText))
+      }
       chips = next
 
       let storage = textView.textStorage
@@ -1502,12 +2165,28 @@ struct WorkComposerSuggestionStrip: View {
     }
   }
 
+  private var headerIcon: String {
+    switch controller.activeMatch?.kind {
+    case .at: return "doc.text"
+    case .hash: return "arrow.triangle.pull"
+    default: return "command"
+    }
+  }
+
+  private var headerTitle: String {
+    switch controller.activeMatch?.kind {
+    case .at: return "Files"
+    case .hash: return "Pull requests"
+    default: return "Commands"
+    }
+  }
+
   private var header: some View {
     HStack(spacing: 6) {
-      Image(systemName: controller.activeMatch?.kind == .at ? "doc.text" : "command")
+      Image(systemName: headerIcon)
         .font(.caption2.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
-      Text(controller.activeMatch?.kind == .at ? "Files" : "Commands")
+      Text(headerTitle)
         .font(.caption2.weight(.bold))
         .tracking(0.6)
         .foregroundStyle(ADEColor.textMuted)
@@ -1523,7 +2202,7 @@ struct WorkComposerSuggestionStrip: View {
   private var loadingRow: some View {
     HStack(spacing: 8) {
       ProgressView().controlSize(.mini)
-      Text("Searching files…")
+      Text(controller.activeMatch?.kind == .hash ? "Searching pull requests…" : "Searching files…")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
       Spacer(minLength: 0)
@@ -1532,12 +2211,23 @@ struct WorkComposerSuggestionStrip: View {
     .padding(.bottom, 10)
   }
 
+  private func rowIcon(for suggestion: WorkComposerSuggestion) -> String {
+    switch suggestion.kind {
+    case .at: return suggestion.isDirectory ? "folder" : "doc"
+    case .hash: return "arrow.triangle.pull"
+    case .slash: return "chevron.right.circle"
+    }
+  }
+
   private func row(_ suggestion: WorkComposerSuggestion) -> some View {
     HStack(spacing: 10) {
-      Image(systemName: suggestion.kind == .at ? "doc" : "chevron.right.circle")
+      Image(systemName: rowIcon(for: suggestion))
         .font(.footnote.weight(.semibold))
         .foregroundStyle(ADEColor.providerChatAccent(for: controller.provider))
         .frame(width: 18)
+        // Decorative: the title and subtitle already say what the row is, and
+        // VoiceOver reading "arrow triangle pull" before every PR is noise.
+        .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 1) {
         Text(suggestion.title)
           .font(suggestion.kind == .slash
@@ -1558,6 +2248,10 @@ struct WorkComposerSuggestionStrip: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
+    // A row with no subtitle (a slash command, a root-level file) is otherwise
+    // barely 33pt tall. The tap target is the whole row, so it holds the 44pt
+    // floor rather than the text's intrinsic height.
+    .frame(minHeight: 44)
     .contentShape(Rectangle())
   }
 }

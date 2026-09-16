@@ -52,7 +52,6 @@ export type ModelListRowProps = {
   onToggleFavorite: (modelId: string) => void;
   onFocus?: () => void;
   onCopyId?: (modelId: string) => void;
-  onSetSurfaceDefault?: (modelId: string) => void;
   onViewDocs?: (modelId: string) => void;
   onSignIn?: () => void;
   inlineReasoningChip?: InlineReasoningChipState;
@@ -102,7 +101,6 @@ export const ModelListRow = memo(function ModelListRow({
   onToggleFavorite,
   onFocus,
   onCopyId,
-  onSetSurfaceDefault,
   onViewDocs,
   onSignIn,
   inlineReasoningChip,
@@ -416,11 +414,6 @@ export const ModelListRow = memo(function ModelListRow({
             onSelect={() => onCopyId?.(model.id)}
             disabled={!onCopyId}
             label="Copy model id"
-          />
-          <ContextMenuItem
-            onSelect={() => onSetSurfaceDefault?.(model.id)}
-            disabled={!onSetSurfaceDefault}
-            label="Set as default for this surface"
           />
           <ContextMenuItem
             onSelect={() => onViewDocs?.(model.id)}

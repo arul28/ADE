@@ -452,13 +452,7 @@ struct WorkChatMessageBubble: View, Equatable {
         if hasText || hasAttachments {
           VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
             if hasText {
-              Text(message.markdown)
-                .font(.body)
-                .foregroundStyle(Color.white)
-                .lineSpacing(5)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+              WorkChipMessageText(text: message.markdown)
             }
             if hasAttachments {
               WorkChatAttachmentTray(
@@ -562,6 +556,121 @@ struct WorkChatMessageBubble: View, Equatable {
       )
       .accessibilityLabel("Written by \(label)")
     }
+  }
+}
+
+// MARK: - Inline chips in a sent message
+
+/// Where a chip tap goes. ADE links resolve in-app; everything else is a real
+/// web address and goes to the system.
+///
+/// A terminal mention returns nil on purpose: no `ade://` shape addresses a
+/// terminal session on ANY surface, so it stays a readable pointer rather than
+/// a tap target that silently does nothing.
+func workChipNavigationURL(_ chip: WorkChip) -> URL? {
+  switch chip.origin {
+  case .link(let link):
+    return URL(string: link.url)
+  case .path:
+    // Same reasoning as a terminal mention: the desktop routes a path chip to
+    // its in-app Files view, and iOS has no counterpart to navigate to from a
+    // chat bubble. A readable pointer beats a tap that silently does nothing.
+    return nil
+  case .mention(let mention):
+    switch mention.kind {
+    case .lane:
+      return URL(string: LaneDeeplinkHelpers.laneLink(laneId: mention.id, form: .ade))
+    case .chat:
+      return URL(string: LaneDeeplinkHelpers.sessionLink(sessionId: mention.id, laneId: nil, form: .ade))
+    case .terminal:
+      return nil
+    }
+  }
+}
+
+/// Glyph + label, the compact form the desktop's `ChipText` draws.
+func workChipInlineLabel(_ chip: WorkChip) -> String {
+  "\(chip.glyph) \(chip.label)"
+}
+
+/// Build the message body with its chips as styled, tappable runs.
+///
+/// A partition of the original string: every character of `text` is either in a
+/// plain run or replaced by exactly one chip's display label, so nothing is
+/// dropped and nothing is invented.
+func workChipAttributedMessage(
+  _ text: String,
+  chipForeground: Color,
+  chipBackground: Color,
+  limit: Int = WorkChipDetector.defaultLimit
+) -> AttributedString {
+  var out = AttributedString()
+  for part in WorkChipDetector.parts(in: text, limit: limit) {
+    switch part {
+    case .text(let run):
+      out.append(AttributedString(run))
+    case .chip(let chip):
+      var pill = AttributedString(workChipInlineLabel(chip))
+      pill.foregroundColor = chipForeground
+      pill.backgroundColor = chipBackground
+      pill.font = .body.weight(.semibold)
+      if let url = workChipNavigationURL(chip) {
+        pill.link = url
+      }
+      out.append(pill)
+    }
+  }
+  return out
+}
+
+/// A sent message body, with `@chat:` / `@lane:` / `@term:` mentions and links
+/// drawn as compact chips.
+///
+/// One `Text` over an `AttributedString` rather than a flow layout of pill
+/// views. A message is prose with chips *inside* it, so soft wrapping, hard
+/// newlines, and drag-selection all have to keep working — and a layout that
+/// makes each word its own subview loses every one of them, plus it turns a
+/// long prompt into hundreds of views on a scrolling transcript.
+///
+/// The raw text is never rewritten. "Copy message" in the bubble's context menu
+/// still copies `message.markdown` verbatim, which is the canonical token form.
+struct WorkChipMessageText: View {
+  let text: String
+  var foreground: Color = .white
+  var chipBackground: Color = Color.white.opacity(0.22)
+
+  /// One cheap scan before any regex runs. The overwhelming majority of
+  /// messages contain no chip at all, and this view is rebuilt for every
+  /// visible bubble on every transcript pass.
+  private var mayContainChip: Bool {
+    text.contains("@") || text.contains("://")
+  }
+
+  var body: some View {
+    Group {
+      if mayContainChip {
+        Text(
+          workChipAttributedMessage(
+            text,
+            chipForeground: foreground,
+            chipBackground: chipBackground
+          )
+        )
+        .environment(\.openURL, OpenURLAction { url in
+          guard url.scheme?.lowercased() == "ade" else { return .systemAction }
+          DeepLinkRouter.shared.handle(url)
+          return .handled
+        })
+      } else {
+        Text(text)
+      }
+    }
+    .font(.body)
+    .foregroundStyle(foreground)
+    .lineSpacing(5)
+    .multilineTextAlignment(.leading)
+    .fixedSize(horizontal: false, vertical: true)
+    .textSelection(.enabled)
   }
 }
 

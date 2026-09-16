@@ -705,6 +705,8 @@ Permission configuration is class-based, not provider-bucketed:
 - **Pi** has no native permission field. The abstract mode becomes a tool allowlist plus a per-call approval list (`piSdkToolPolicyForPermissionMode` in `shared/cliLaunch.ts`), because ADE can hold each Pi tool call behind an approval card. `default` therefore means "ask before anything that changes the workspace" in a Pi chat, not read-only. Tracked Pi CLI terminals, which have no such gate, keep the stricter allowlist-only mapping (`piToolsForPermissionMode`). A built-in ADE cannot rebuild behind the gate is withheld rather than granted ungated.
 - **ADE-owned tools** (repo mutation, context export, proof registration) always enforce ADE's own permission and policy layers regardless of provider mode — preserving the audit boundary.
 - **Sandbox budgets**: `maxBudgetUsd` per-session cap for Claude; per-task daily budgets for narratives, PR descriptions, and terminal summaries.
+- **The permission ladder** (`apps/desktop/src/shared/permissionLadder.ts`) is the cross-family layer above all of this: four ordered levels (`plan` → `ask` → `auto-edit` → `full-auto`) mapped onto every provider's own vocabulary, so switching model family keeps the level instead of landing on that family's default. A family that cannot express a level gets the **nearest lower** one. It is deliberately a separate vocabulary from the abstract `AgentChatPermissionMode` words (`plan | default | edit | full-auto`) that `ade --permission-mode` and persisted sessions speak — in *that* vocabulary `edit` is the cautious editing tier — and **no code path converts between them**. See [Agent Routing](features/chat/agent-routing.md#the-permission-ladder).
+- **A configured default has one home.** `ai.permissions.providers.*` is the only per-provider permission source, for every provider, and is what Settings writes. `resolveChatConfig` reads it per provider; the parallel `ai.chat.*` permission keys have no writer and are not read.
 
 ### 4.3 Tool system
 
@@ -1251,6 +1253,31 @@ Cross-cutting interaction behaviour lives in `apps/desktop/src/renderer/hooks/` 
 - `useAsyncAction.ts` — `run`/`pending` for a user-initiated async action. The re-entrancy guard is a ref set synchronously, so a double-click within one tick cannot double-submit (a `busy` state flag flips a render too late), and a settle after unmount is dropped. It models no success/error phase: callers keep their own error state and fill it from `onError`.
 
 The pre-existing `hooks/usePrefersReducedMotion.ts` remains for controls that need to change *what* renders under reduced motion. For animation itself, the policy is global rather than per-site: `main.tsx` wraps the root in `<MotionConfig reducedMotion="user">`, so every `motion` element honours the OS setting without opting in — transform and layout animations are skipped while opacity still animates, meaning the information still arrives and only the trip is dropped.
+
+### 7.8 Cross-surface shared models
+
+Some UI vocabulary has to be identical on four clients that do not share a
+runtime. `apps/desktop/src/shared/` is the home for it: the desktop main and
+renderer processes import it, the `ade code` TUI imports the TypeScript
+directly out of the desktop tree, the hosted web client ships the same bundle,
+and iOS re-implements it in Swift because it cannot import any of it.
+
+`shared/chips.ts` is the current example. One `Chip`
+(`{ kind, token, label, detail, source }`) unifies three grammars that used to
+produce pills independently — chat mentions (`@chat:` / `@lane:` / `@term:`),
+URL-shaped smart links, and file paths — and routes `ade://` URLs through the
+real `deeplinks.ts` parser instead of one opaque kind. The canonical `token`
+travelling next to the display `label` is what lets a chip survive copy, paste
+into a *different* chat, a send, and a re-render on another device. See
+[Chips](./features/chat/composer-and-ui.md#chips).
+
+Where one surface must re-implement a shared model, the parity is a **test
+fixture**, not a promise. `shared/__fixtures__/chipCases.json` is asserted by
+`shared/chips.test.ts` and, read from disk, by the iOS suite; adding a row fails
+the Swift tests until Swift matches. CI closes the last hole: the `test-ios` job
+in `.github/workflows/ci.yml` normally skips a PR that does not touch
+`apps/ios/**`, so its gate includes the fixture directory too — otherwise a
+desktop-only PR could add a case, merge green, and break main.
 
 Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-surfaces.md), [Files and editor](./features/files-and-editor/README.md), and [Onboarding and settings](./features/onboarding-and-settings/README.md).
 

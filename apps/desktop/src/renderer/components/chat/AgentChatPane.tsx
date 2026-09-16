@@ -124,6 +124,18 @@ import {
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
+import type { ComposerPrSuggestion } from "./ChatCommandMenu";
+import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
+import { resolveDisplayedReasoningEffort } from "../shared/ModelPicker/ReasoningEffortPicker";
+import {
+  permissionLevelForClaude,
+  permissionLevelForCodex,
+  permissionLevelForDroid,
+  permissionLevelForCursorMode,
+  permissionLevelForOpenCode,
+  resolvePermissionLevel,
+  type PermissionLadderFamily,
+} from "../../../shared/permissionLadder";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
@@ -1523,7 +1535,45 @@ function resolveWorkDraftStorageKind(workDraftKind: WorkDraftLaunchKind | WorkDr
   return workDraftKind === "work-start" ? "work-start" : normalizeWorkDraftStorageKind();
 }
 
+/**
+ * What you last launched with, remembered PER MACHINE.
+ *
+ * The key used to include the project root and the lane id, so every new lane
+ * started from a blank slate and the memory felt random: you would set a model
+ * and a permission level, open the next lane, and be back on the defaults. The
+ * user's intent is not "in this lane I prefer Opus" — it is "I prefer Opus".
+ *
+ * Kind still separates the memories, because a chat and a CLI session are
+ * genuinely different choices, and the surface profile stays because a CTO-style
+ * persistent identity deliberately launches with different autonomy.
+ */
 function launchConfigStorageKey(scope: {
+  bindingKey?: string | null;
+  surfaceProfile: ChatSurfaceProfile;
+  workDraftKind: WorkDraftStorageKind;
+}): string {
+  // Partitioned by the project BINDING, for the same reason
+  // `draftLaunchJobsScopeKey` is: launch memory is per MACHINE, but renderer
+  // `localStorage` is one store shared by every local and remote binding. With
+  // no binding in the key, choosing a local-only model and full autonomy on
+  // machine A became what machine B restored — and B can have neither that
+  // model installed nor those permissions wanted.
+  //
+  // An absent binding keeps the historical unscoped spelling, so it doubles as
+  // the migration key rather than needing a separate legacy tier.
+  const parts = [LAST_LAUNCH_CONFIG_KEY_PREFIX];
+  const bindingKey = scope.bindingKey?.trim();
+  if (bindingKey) parts.push(bindingKey);
+  parts.push(scope.surfaceProfile, scope.workDraftKind);
+  return parts.map(encodeURIComponent).join(":");
+}
+
+/**
+ * The pre-2026-09 per-project, per-lane key. Read, never written, so a user who
+ * already had a remembered launch config keeps it the first time they open a
+ * lane that had one.
+ */
+function legacyLaunchConfigStorageKey(scope: {
   projectRoot: string | null | undefined;
   laneId: string | null | undefined;
   surfaceProfile: ChatSurfaceProfile;
@@ -1538,13 +1588,18 @@ function launchConfigStorageKey(scope: {
   ].map(encodeURIComponent).join(":");
 }
 
+/** `[primaryTier, migrationTier]` — see `readLatestLastLaunchConfig`. */
 function launchConfigStorageKeys(scope: {
+  bindingKey?: string | null;
   projectRoot: string | null | undefined;
   laneId: string | null | undefined;
   surfaceProfile: ChatSurfaceProfile;
   workDraftKind: WorkDraftLaunchKind | WorkDraftStorageKind;
-}): string[] {
+}): string[][] {
   const sharedKind = resolveWorkDraftStorageKind(scope.workDraftKind);
+  // Index 0 is the WRITE key and the whole list is the READ order, so the
+  // machine-scoped key must come first and the unscoped one survives only as a
+  // one-way migration read for a user who already had a remembered config.
   const keys = [
     launchConfigStorageKey({ ...scope, workDraftKind: sharedKind }),
   ];
@@ -1554,7 +1609,31 @@ function launchConfigStorageKeys(scope: {
       launchConfigStorageKey({ ...scope, workDraftKind: "cli" }),
     );
   }
-  return [...new Set(keys)];
+  const migration: string[] = [];
+  if (scope.bindingKey?.trim()) {
+    migration.push(launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: sharedKind }));
+    if (sharedKind === "work-start") {
+      migration.push(
+        launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: "chat" }),
+        launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: "cli" }),
+      );
+    }
+  }
+  // Legacy per-lane keys join the MIGRATION tier: a machine-scoped value always
+  // wins, and an older-shaped value is only consulted when the current scope
+  // has nothing at all. Returning tiers rather than one list is what makes that
+  // precedence real — a flat list is read by recency, and the migration entry
+  // is usually the newer one.
+  migration.push(legacyLaunchConfigStorageKey({ ...scope, workDraftKind: sharedKind }));
+  if (sharedKind === "work-start") {
+    migration.push(
+      legacyLaunchConfigStorageKey({ ...scope, workDraftKind: "chat" }),
+      legacyLaunchConfigStorageKey({ ...scope, workDraftKind: "cli" }),
+    );
+  }
+  const primary = [...new Set(keys)];
+  const primarySet = new Set(primary);
+  return [primary, [...new Set(migration)].filter((key) => !primarySet.has(key))];
 }
 
 function composerDraftStorageKey(scope: {
@@ -2515,16 +2594,33 @@ function readLastLaunchConfig(storageKey: string, defaults: NativeControlState):
   return null;
 }
 
-function readLatestLastLaunchConfig(storageKeys: string[], defaults: NativeControlState): LastLaunchConfig | null {
-  let latest: LastLaunchConfig | null = null;
-  for (const storageKey of storageKeys) {
-    const candidate = readLastLaunchConfig(storageKey, defaults);
-    if (!candidate) continue;
-    if (!latest || Date.parse(candidate.updatedAt) > Date.parse(latest.updatedAt)) {
-      latest = candidate;
+/**
+ * The newest config within the HIGHEST-PRECEDENCE tier that has one.
+ *
+ * Tiers, not one flat recency race. Recency is the right tie-break between
+ * PEERS — the `work-start` / `chat` / `cli` spellings of the same machine — but
+ * it is the wrong answer across scopes. The machine-scoped key and the
+ * unscoped migration key are not peers: the migration entry is the
+ * cross-machine value this scoping exists to stop honouring, and it is very
+ * often the NEWER of the two (every pre-fix launch wrote it). Comparing them by
+ * timestamp let it win and quietly restored the leak the key change fixed.
+ */
+function readLatestLastLaunchConfig(
+  storageKeyTiers: readonly string[][],
+  defaults: NativeControlState,
+): LastLaunchConfig | null {
+  for (const tier of storageKeyTiers) {
+    let latest: LastLaunchConfig | null = null;
+    for (const storageKey of tier) {
+      const candidate = readLastLaunchConfig(storageKey, defaults);
+      if (!candidate) continue;
+      if (!latest || Date.parse(candidate.updatedAt) > Date.parse(latest.updatedAt)) {
+        latest = candidate;
+      }
     }
+    if (latest) return latest;
   }
-  return latest;
+  return null;
 }
 
 function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): void {
@@ -3393,23 +3489,37 @@ export function AgentChatPane({
   const legacyWorkDraftLaneId = isWorkDraftComposer ? initialWorkDraftLaneIdRef.current : null;
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
   const lastLaunchConfigStorageKeys = useMemo(() => {
-    const primary = launchConfigStorageKeys({
+    const [primary, migration] = launchConfigStorageKeys({
+      bindingKey: projectBinding?.key ?? null,
       projectRoot,
       laneId: draftLaunchConfigLaneScopeId,
       surfaceProfile,
       workDraftKind: workDraftStorageKind,
     });
-    const legacy = legacyWorkDraftLaneId
+    // A work-draft composer also reads the lane it was opened from. Those keys
+    // are a MIGRATION source, never a peer of the current scope, so they join
+    // the lower tier rather than racing the primary one on recency.
+    const [legacyPrimary, legacyMigration] = legacyWorkDraftLaneId
       ? launchConfigStorageKeys({
+          bindingKey: projectBinding?.key ?? null,
           projectRoot,
           laneId: legacyWorkDraftLaneId,
           surfaceProfile,
           workDraftKind: workDraftStorageKind,
         })
-      : [];
-    return [...new Set([...primary, ...legacy])];
-  }, [draftLaunchConfigLaneScopeId, legacyWorkDraftLaneId, projectRoot, surfaceProfile, workDraftStorageKind]);
-  const lastLaunchConfigStorageKey = lastLaunchConfigStorageKeys[0]!;
+      : [[], []];
+    const primaryTier = [...new Set(primary ?? [])];
+    const primarySet = new Set(primaryTier);
+    const migrationTier = [...new Set([
+      ...(migration ?? []),
+      ...(legacyPrimary ?? []),
+      ...(legacyMigration ?? []),
+    ])].filter((key) => !primarySet.has(key));
+    return [primaryTier, migrationTier];
+  }, [draftLaunchConfigLaneScopeId, legacyWorkDraftLaneId, projectBinding?.key, projectRoot, surfaceProfile, workDraftStorageKind]);
+  // Writes always go to the machine-scoped key: the first entry of the PRIMARY
+  // tier. The migration tier is read-only by construction.
+  const lastLaunchConfigStorageKey = lastLaunchConfigStorageKeys[0]![0]!;
   const draftLaunchConfigScopeKey = useMemo(
     () => `${projectRoot ?? "project"}:${draftLaunchConfigLaneScopeId ?? "no-lane"}:${surfaceProfile}:${workDraftStorageKind}`,
     [draftLaunchConfigLaneScopeId, projectRoot, surfaceProfile, workDraftStorageKind],
@@ -3535,6 +3645,7 @@ export function AgentChatPane({
     () => projectBinding?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
   );
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
+  const { getReasoningForFamily } = useReasoningByFamily();
   const [fastMode, setFastMode] = useState(false);
   const [cursorCloudServiceTier, setCursorCloudServiceTier] = useState<CursorCloudServiceTier | null>(null);
   /**
@@ -5159,6 +5270,23 @@ export function AgentChatPane({
     }))
     : null;
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
+  /**
+   * What the reasoning control is DISPLAYING, which is what a launch must send.
+   *
+   * The control falls back to the effort last used for the model's family when
+   * nothing explicit is set, but the launch used to read the unset state — so
+   * the trigger said "High" while the request went out on the model default.
+   * Resolving it here, at the owner of the value, keeps the two in step without
+   * a presentational component writing its parent's state on mount.
+   */
+  const effectiveReasoningEffort = useMemo(() => resolveDisplayedReasoningEffort({
+    tiers: reasoningTiers,
+    explicitEffort: reasoningEffort,
+    rememberedForFamily: selectedModelDesc?.family
+      ? getReasoningForFamily(selectedModelDesc.family) ?? null
+      : null,
+    modelDefault: selectedModelDesc?.defaultReasoningEffort ?? null,
+  }), [getReasoningForFamily, reasoningEffort, reasoningTiers, selectedModelDesc]);
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -8076,12 +8204,47 @@ export function AgentChatPane({
       query: trimmed,
       limit: 60,
       allowComposerPrefixFallback: true,
+      // The composer is the only caller that wants folders: it inserts a pointer
+      // chip rather than opening what it receives.
+      includeDirectories: true,
     }, pin);
     return hits.map((hit) => ({
       path: hit.path,
-      type: inferAttachmentType(hit.path)
+      // A folder is a pointer, not an attachment: it has no bytes to upload.
+      // The flag rides along so the composer inserts a chip and skips attaching.
+      type: inferAttachmentType(hit.path),
+      ...(hit.isDirectory ? { isDirectory: true as const } : {}),
     }));
   }, [laneId, selectedSessionId, sessionProvider]);
+
+  // `#` pull-request suggestions for the composer. Browse with an empty query,
+  // filter by number when the query is digits, otherwise match the title.
+  const searchPullRequests = useCallback(async (query: string): Promise<ComposerPrSuggestion[]> => {
+    const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
+    if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) return [];
+    try {
+      const all = await window.ade.prs.listAll?.(pin);
+      if (!all?.length) return [];
+      const trimmed = query.trim().toLowerCase();
+      const digits = /^\d+$/.test(trimmed);
+      const matches = all.filter((pr) => {
+        if (pr.detached) return false;
+        if (!trimmed) return true;
+        if (digits) return String(pr.githubPrNumber).startsWith(trimmed);
+        return (pr.title ?? "").toLowerCase().includes(trimmed)
+          || String(pr.githubPrNumber).startsWith(trimmed);
+      });
+      return matches.slice(0, 20).map((pr) => ({
+        number: pr.githubPrNumber,
+        title: pr.title ?? "",
+        state: pr.state,
+        url: pr.githubUrl || `https://github.com/${pr.repoOwner}/${pr.repoName}/pull/${pr.githubPrNumber}`,
+        repo: pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : undefined,
+      }));
+    } catch {
+      return [];
+    }
+  }, [selectedSessionId]);
 
   // Entity @-mention suggestions (chats / lanes / terminals) for the active
   // project. Daemon-routed through the chat action domain; an unbound runtime
@@ -8575,6 +8738,123 @@ export function AgentChatPane({
     setModelId(nextModelId);
   }, [initialModelId, preferencesReady]);
 
+  // Carry the user's autonomy level across a model-family switch.
+  //
+  // Each provider names its permission modes differently, so switching family
+  // used to drop you on that family's default: you could be on the most
+  // permissive Claude mode, pick a Droid model, and silently land on the most
+  // cautious one. The ladder maps the LEVEL, and a family that cannot express
+  // it gets the nearest lower rung — never a higher one.
+  //
+  // Only families the user has not visited in this composer are overwritten.
+  // An exact earlier choice (Droid's `agi`, say) is remembered and restored,
+  // which is why the visited set exists.
+  const activeLadderFamily = useMemo<PermissionLadderFamily | null>(() => {
+    const provider = resolveChatRuntimeProvider(selectedModelDesc);
+    switch (provider) {
+      case "claude": return "claude";
+      case "codex": return "codex";
+      case "opencode": return "opencode";
+      case "droid": return "droid";
+      case "cursor": return "cursor";
+      // Every ACP provider shares one permission round-trip, grok included.
+      case "qwen":
+      case "kimi":
+      case "grok":
+      case "copilot": return "acp";
+      default: return null;
+    }
+  }, [selectedModelDesc]);
+  const previousLadderFamilyRef = useRef<PermissionLadderFamily | null>(null);
+  const visitedLadderFamiliesRef = useRef<Set<PermissionLadderFamily>>(new Set());
+  useEffect(() => {
+    const next = activeLadderFamily;
+    const previous = previousLadderFamilyRef.current;
+    previousLadderFamilyRef.current = next;
+    if (!next) return;
+    if (previous) visitedLadderFamiliesRef.current.add(previous);
+    if (!previous || previous === next) return;
+    if (visitedLadderFamiliesRef.current.has(next)) return;
+
+    // Never overwrite a family that already carries a deliberate choice. The
+    // target's controls differ from this surface's defaults when the user set
+    // them, or when they were restored from the remembered launch config —
+    // switching the model must not discard either. Only a family still sitting
+    // on its untouched default inherits the level.
+    const targetIsUntouched = (() => {
+      switch (next) {
+        case "claude": return claudePermissionMode === initialNativeControls.claudePermissionMode;
+        case "codex":
+          return codexApprovalPolicy === initialNativeControls.codexApprovalPolicy
+            && codexSandbox === initialNativeControls.codexSandbox;
+        case "opencode": return opencodePermissionMode === initialNativeControls.opencodePermissionMode;
+        case "droid": return droidPermissionMode === initialNativeControls.droidPermissionMode;
+        case "cursor": return cursorModeId === initialNativeControls.cursorModeId;
+        case "acp": return opencodePermissionMode === initialNativeControls.opencodePermissionMode;
+      }
+    })();
+    if (!targetIsUntouched) {
+      visitedLadderFamiliesRef.current.add(next);
+      return;
+    }
+
+    const level = (() => {
+      switch (previous) {
+        case "claude": return permissionLevelForClaude(claudePermissionMode);
+        case "codex": return permissionLevelForCodex(codexSandbox, codexApprovalPolicy);
+        case "opencode": return permissionLevelForOpenCode(opencodePermissionMode);
+        case "droid": return permissionLevelForDroid(droidPermissionMode);
+        // Switching AWAY from Cursor or an ACP provider must carry a level too;
+        // without these the ladder was one-directional for those families.
+        case "cursor": return permissionLevelForCursorMode(cursorModeId);
+        // ACP has no separate control on this surface; it rides the in-process
+        // mode that the OpenCode picker owns, which is what the apply branch
+        // below writes back.
+        case "acp": return permissionLevelForOpenCode(opencodePermissionMode);
+        default: return null;
+      }
+    })();
+    if (!level) return;
+
+    // ACP takes its mode from the OpenCode table on this surface, so it must be
+    // RESOLVED as that family too: resolving as "acp" reported an un-stepped
+    // level while applying a stepped one, landing ACP providers a rung above
+    // the user's choice.
+    const resolved = resolvePermissionLevel(level, next === "acp" ? "opencode" : next);
+    switch (next) {
+      case "claude":
+        setClaudePermissionMode(resolved.claudePermissionMode);
+        break;
+      case "codex":
+        setCodexApprovalPolicy(resolved.codexApprovalPolicy);
+        setCodexSandbox(resolved.codexSandbox);
+        break;
+      case "opencode":
+        setOpenCodePermissionMode(resolved.opencodePermissionMode);
+        break;
+      case "droid":
+        setDroidPermissionMode(resolved.droidPermissionMode);
+        break;
+      case "cursor":
+        setCursorModeId(resolved.cursorModeId);
+        break;
+      case "acp":
+        // ACP providers take their level through the shared in-process mode,
+        // which OpenCode's control already owns on this surface.
+        setOpenCodePermissionMode(resolved.opencodePermissionMode);
+        break;
+    }
+  }, [
+    activeLadderFamily,
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    cursorModeId,
+    droidPermissionMode,
+    initialNativeControls,
+    opencodePermissionMode,
+  ]);
+
   const currentNativeControls = useMemo<NativeControlState>(() => ({
     interactionMode,
     claudePermissionMode,
@@ -8753,19 +9033,25 @@ export function AgentChatPane({
       cloneParallelSlotFromComposer({
         native: currentNativeControls,
         modelId,
-        reasoningEffort,
+        // Resolved, not raw: a parallel launch calls agentChat.create directly
+        // and would otherwise spawn on the provider default while the trigger
+        // displayed the remembered family effort.
+        reasoningEffort: effectiveReasoningEffort,
         fastMode,
         executionMode,
       }),
       cloneParallelSlotFromComposer({
         native: currentNativeControls,
         modelId,
-        reasoningEffort,
+        // Resolved, not raw: a parallel launch calls agentChat.create directly
+        // and would otherwise spawn on the provider default while the trigger
+        // displayed the remembered family effort.
+        reasoningEffort: effectiveReasoningEffort,
         fastMode,
         executionMode,
       }),
     ]);
-  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, reasoningEffort, fastMode, executionMode]);
+  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, effectiveReasoningEffort, fastMode, executionMode]);
 
   const buildNativeControlPayload = useCallback((provider: ChatRuntimeProviderKey) => {
     return {
@@ -8861,7 +9147,10 @@ export function AgentChatPane({
         throw new Error(constrainedModelSelectionError);
       }
       const launchModelId = options.launchState?.modelId ?? modelId;
-      const launchReasoningEffort = options.launchState?.reasoningEffort ?? reasoningEffort;
+      // `effectiveReasoningEffort`, not the raw state: the control displays the
+      // remembered family effort when nothing explicit is set, and the launch
+      // must carry the value the user can actually see.
+      const launchReasoningEffort = options.launchState?.reasoningEffort ?? effectiveReasoningEffort;
       const launchFastMode = options.launchState?.fastMode ?? fastMode;
       const launchExecutionMode = options.launchState?.executionMode ?? executionMode;
       const baseNativeControls = options.launchState?.nativeControls ?? currentNativeControls;
@@ -8976,7 +9265,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [canRefreshPinnedProject, fastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, orchestratorEnabled, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
+  }, [canRefreshPinnedProject, fastMode, constrainedModelSelectionError, currentNativeControls, effectiveReasoningEffort, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, orchestratorEnabled, patchSessionSummary, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -9027,7 +9316,10 @@ export function AgentChatPane({
       text,
       draft,
       modelId,
-      reasoningEffort,
+      // Resolved: this snapshot feeds the CLI launch path, which sends the
+      // value straight to the runtime. Raw state there spawned a CLI session on
+      // the provider default while the trigger displayed something else.
+      reasoningEffort: effectiveReasoningEffort,
       fastMode,
       cursorCloudServiceTier,
       executionMode,
@@ -9059,7 +9351,7 @@ export function AgentChatPane({
     iosElementContextItems,
     isWorkCliLaunchDraft,
     modelId,
-    reasoningEffort,
+    effectiveReasoningEffort,
   ]);
 
   const prepareDraftLaunchForSend = useCallback(async (
@@ -11561,8 +11853,11 @@ export function AgentChatPane({
     responseText?: string | null,
     answers?: Record<string, string | string[]>,
   ) => {
-    if (!selectedSessionId || !pendingInput) return;
-    await handleApproval(pendingInput.itemId, decision, responseText, answers);
+    // The boolean matters: the answer composer clears its draft to send it and
+    // restores it when delivery failed, because a failed response leaves the
+    // card open and still asking.
+    if (!selectedSessionId || !pendingInput) return false;
+    return await handleApproval(pendingInput.itemId, decision, responseText, answers);
   }, [handleApproval, pendingInput, selectedSessionId]);
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
@@ -12578,7 +12873,6 @@ export function AgentChatPane({
               <ModelPicker
                 value={handoffModelId}
                 onChange={setHandoffModelId}
-                surfaceKey="chat-handoff"
                 availableModelIds={handoffAvailableModelIds}
                 filter={handoffForkModelFilter}
                 onOpenSignIn={openProviderSignIn}
@@ -12616,7 +12910,6 @@ export function AgentChatPane({
               <ModelPicker
                 value={handoffModelId}
                 onChange={setHandoffModelId}
-                surfaceKey="chat-handoff"
                 availableModelIds={handoffAvailableModelIds}
                 onOpenSignIn={openProviderSignIn}
                 runtimePin={activeComposerRuntimeBinding}
@@ -13512,9 +13805,7 @@ export function AgentChatPane({
               void interrupt(mode);
             }}
             backgroundJobCount={selectedSession?.activeBackgroundTaskCount ?? 0}
-            onApproval={(decision, responseText, answers) => {
-              void approve(decision, responseText, answers);
-            }}
+            onApproval={(decision, responseText, answers) => approve(decision, responseText, answers)}
             onAddAttachment={addAttachment}
             onRegisterDropTarget={registerChatPaneDropTarget}
             onRemoveAttachment={removeAttachment}
@@ -13522,6 +13813,7 @@ export function AgentChatPane({
             onRemoveContextAttachment={removeContextAttachment}
             onSearchAttachments={searchAttachments}
             onSearchMentions={searchMentions}
+            onSearchPullRequests={searchPullRequests}
             onClearEvents={() => {
               if (selectedSessionId) {
                 clearSessionView(selectedSessionId);
@@ -13841,7 +14133,7 @@ export function AgentChatPane({
                 <button
                   type="button"
                   className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-fg/65 transition-colors hover:bg-white/10 hover:text-fg/85"
-                  onClick={() => navigate(settingsRouteFor("agents.background-jobs"))}
+                  onClick={() => navigate(settingsRouteFor("agents.scheduled-work"))}
                 >
                   Settings
                 </button>

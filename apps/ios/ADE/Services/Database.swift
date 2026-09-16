@@ -2316,6 +2316,18 @@ final class DatabaseService {
       && tableHasColumn(tableName: "pr_groups", columnName: "group_type")
       && tableHasColumn(tableName: "pr_groups", columnName: "name")
 
+    // The chat-link table arrived with the multi-PR-per-chat work; a phone
+    // synced against an older host simply has no rows (or no table), and every
+    // PR then falls back to the branch rule exactly as it did before.
+    let hasChatSessionLinks = hasTable(named: "pull_request_chat_sessions")
+      && tableHasColumn(tableName: "pull_request_chat_sessions", columnName: "pr_id")
+      && tableHasColumn(tableName: "pull_request_chat_sessions", columnName: "session_id")
+      // `project_id` is not optional here: the guarded select filters on
+      // `pcs.project_id`, so a table carrying only the other two columns would
+      // pass this check and then fail the WHOLE query with "no such column".
+      // Every column the select names must be proven before it is spliced in.
+      && tableHasColumn(tableName: "pull_request_chat_sessions", columnName: "project_id")
+
     let hasIntegrationWorkflowContext = hasTable(named: "integration_proposals")
       && tableHasColumn(tableName: "integration_proposals", columnName: "linked_pr_id")
       && tableHasColumn(tableName: "integration_proposals", columnName: "workflow_display_state")
@@ -2348,6 +2360,21 @@ final class DatabaseService {
              null as workflow_display_state,
              null as cleanup_state,
              null as linked_group_id
+      """
+
+    // A correlated scalar subquery rather than a join: `pr_group_members` above
+    // already fans a PR out into one row per group member, and joining a second
+    // one-to-many table would multiply those rows again. Order is unspecified
+    // and does not matter — every reader tests membership, never position.
+    let chatSessionSelect = hasChatSessionLinks
+      ? """
+             (select group_concat(pcs.session_id, char(10))
+                from pull_request_chat_sessions pcs
+               where pcs.project_id = pr.project_id
+                 and pcs.pr_id = pr.id),
+      """
+      : """
+             null as chat_session_ids,
       """
 
     let prGroupJoins = hasPrGroupContext
@@ -2393,6 +2420,7 @@ final class DatabaseService {
              stack_snapshot.stack_json,
              pr.checks_reason,
              pr.checks_missing_required,
+    \(chatSessionSelect)
     \(prGroupSelect)
     \(integrationSelect)
         from pull_requests pr
@@ -2436,14 +2464,14 @@ final class DatabaseService {
         lastSyncedAt: stringValue(statement, index: 16),
         createdAt: stringValue(statement, index: 17) ?? "",
         updatedAt: stringValue(statement, index: 18) ?? "",
-        groupId: stringValue(statement, index: 22),
-        groupType: stringValue(statement, index: 23),
-        groupName: stringValue(statement, index: 24),
-        groupPosition: columnIsNull(statement, index: 25) ? nil : Int(sqlite3_column_int64(statement, 25)),
-        groupCount: Int(sqlite3_column_int64(statement, 26)),
-        workflowDisplayState: stringValue(statement, index: 27),
-        cleanupState: stringValue(statement, index: 28),
-        linkedWorkflowGroupId: stringValue(statement, index: 29)
+        groupId: stringValue(statement, index: 23),
+        groupType: stringValue(statement, index: 24),
+        groupName: stringValue(statement, index: 25),
+        groupPosition: columnIsNull(statement, index: 26) ? nil : Int(sqlite3_column_int64(statement, 26)),
+        groupCount: Int(sqlite3_column_int64(statement, 27)),
+        workflowDisplayState: stringValue(statement, index: 28),
+        cleanupState: stringValue(statement, index: 29),
+        linkedWorkflowGroupId: stringValue(statement, index: 30)
       )
 
       let adeKind: String?
@@ -2488,7 +2516,12 @@ final class DatabaseService {
           as: GitHubPrStackMembership.self
         ),
         checksReason: stringValue(statement, index: 20),
-        checksMissingRequired: decodeJson(stringValue(statement, index: 21), as: [String].self)
+        checksMissingRequired: decodeJson(stringValue(statement, index: 21), as: [String].self),
+        chatSessionIds: (stringValue(statement, index: 22)?
+          .split(separator: "\n")
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+          .filter { !$0.isEmpty })
+          .flatMap { $0.isEmpty ? nil : $0 }
       )
     }
   }

@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderResult } from "@testing-library/react";
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import type {
   IosElementContextItem,
   NormalizedLinearIssue,
@@ -139,6 +139,47 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
 
   const view = render(<AgentChatComposer {...props} />);
   return Object.assign(view, props) as RenderResult & ComponentProps<typeof AgentChatComposer>;
+}
+
+/**
+ * A composer whose draft is actually stateful.
+ *
+ * The question card's answer field IS the composer's editor, so its text lives
+ * in `draft`. A `vi.fn()` `onDraftChange` swallows it and every answer reads as
+ * empty; these tests need the round trip.
+ */
+function renderControlledComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
+  const props = buildComposerProps(overrides);
+
+  function Harness() {
+    const [draft, setDraft] = useState(props.draft);
+    return (
+      <AgentChatComposer
+        {...props}
+        draft={draft}
+        onDraftChange={(text) => {
+          props.onDraftChange(text);
+          setDraft(text);
+        }}
+      />
+    );
+  }
+
+  const view = render(<Harness />);
+  return Object.assign(view, props) as RenderResult & ComponentProps<typeof AgentChatComposer>;
+}
+
+/** The composer's contentEditable editor, in its question-card home. */
+function answerEditor(): HTMLElement {
+  const node = document.querySelector<HTMLElement>('[data-composer-answer-editor="true"]');
+  if (!node) throw new Error("no answer editor is mounted");
+  return node;
+}
+
+function typeIntoAnswer(text: string): void {
+  const editor = answerEditor();
+  editor.textContent = text;
+  fireEvent.input(editor);
 }
 
 function installPromptStashBridge(promptStashes: Record<string, unknown>) {
@@ -2324,6 +2365,7 @@ describe("AgentChatComposer", () => {
 
   it("avoids promising option chips when a pending question is freeform only", () => {
     renderComposer({
+      draft: "",
       pendingInput: {
         requestId: "req-1",
         itemId: "item-1",
@@ -2345,12 +2387,15 @@ describe("AgentChatComposer", () => {
     });
 
     // The card IS the composer now. A freeform-only question offers no
-    // ledger rows and the note field is the answer, not a qualifier.
+    // ledger rows and the answer field is the answer, not a qualifier.
     expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
     expect(screen.getByText("ADE asks")).toBeTruthy();
     expect(screen.queryByText("Input needed · ade")).toBeNull();
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
-    expect((screen.getByTestId("ask-question-note-answer") as HTMLInputElement).placeholder).toBe("Your answer");
+    // The answer field is the composer's own rich editor, so its prompt is the
+    // editor's placeholder overlay rather than a `placeholder` attribute.
+    expect(screen.getByTestId("ask-question-rich-answer-answer")).toBeTruthy();
+    expect(screen.getByText("Your answer")).toBeTruthy();
     // The duplicate "answer the card above" banner is gone with the card it
     // pointed at.
     expect(screen.queryByText(/Answer in the inline question card/)).toBeNull();
@@ -2410,6 +2455,10 @@ describe("AgentChatComposer", () => {
 
   it("locks the prompt box while a pending question is waiting", () => {
     const props = renderComposer({
+      // An empty draft: the editor moves into the card carrying whatever it
+      // already held, so a pre-typed message would arrive as a ready answer and
+      // enable Send.
+      draft: "",
       pendingInput: {
         requestId: "req-lock",
         itemId: "item-lock",
@@ -2430,13 +2479,15 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    // The question card replaces the textarea inside the same frame rather
-    // than sitting above a disabled one, and the model / permission / effort
-    // row is hidden until it resolves.
-    expect(document.querySelector("textarea")).toBeNull();
+    // The question card replaces the message prompt inside the same frame
+    // rather than sitting above a disabled one, and the model / permission /
+    // effort row is hidden until it resolves. The composer's own prompt — its
+    // placeholder, its Send, its steer button — is gone; the editor itself has
+    // simply moved into the card.
+    expect(screen.queryByText("Type to vibecode...")).toBeNull();
+    expect(screen.queryByPlaceholderText("Type to vibecode...")).toBeNull();
     expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
     expect(screen.queryByLabelText("Send steer message")).toBeNull();
-    expect(screen.queryByLabelText("Upload file from disk")).toBeNull();
     // The composer's own Send is gone with the footer; the only Send on screen
     // is the card's, and it is disabled until the question is answered.
     expect(screen.getByTestId("ask-question-send")).toHaveProperty("disabled", true);
@@ -2447,6 +2498,160 @@ describe("AgentChatComposer", () => {
 
     fireEvent.click(screen.getByTestId("ask-question-decline"));
     expect(props.onApproval).toHaveBeenCalledWith("decline");
+  });
+
+
+  const ANSWER_QUESTION = {
+    requestId: "req-answer",
+    itemId: "item-answer",
+    source: "claude" as const,
+    kind: "question" as const,
+    title: "Input needed",
+    description: "Which file should I start from?",
+    questions: [{
+      id: "answer",
+      header: "Question 1",
+      question: "Which file should I start from?",
+      allowsFreeform: true,
+      options: [
+        { label: "The composer", value: "composer" },
+        { label: "The card", value: "card" },
+      ],
+    }],
+    allowsFreeform: true,
+    blocking: true,
+    canProceedWithoutAnswer: false,
+    turnId: null,
+  };
+
+  // ── B1: the answer box IS the composer editor ──────────────────────────
+  //
+  // The free-text answer used to be a bare `<textarea>` sitting inside the
+  // card: no mentions, no chips, no paste-image, no drop target, no paperclip —
+  // every affordance the prompt box two pixels away had. These lock in that it
+  // is now the same editor, re-homed.
+
+  it("answers through the composer's own rich editor, not a second text box", () => {
+    renderComposer({ draft: "", pendingInput: ANSWER_QUESTION });
+
+    const editor = answerEditor();
+    expect(editor.getAttribute("role")).toBe("textbox");
+    // Editable: a blocking question locks TEXT SENDING, not the field the user
+    // is being asked to type into.
+    expect(editor.getAttribute("contenteditable")).toBe("true");
+    // No second field: the plain textarea fallback is for hosts that supply no
+    // editor slot, and this host supplies one.
+    expect(screen.queryByTestId("ask-question-note-answer")).toBeNull();
+    expect(screen.getByTestId("ask-question-rich-answer-answer")).toBeTruthy();
+    // ...and the paperclip came with it.
+    expect((screen.getByTestId("ask-question-attach") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("keeps a secret answer a masked single-line input", () => {
+    renderComposer({
+      draft: "",
+      pendingInput: {
+        ...ANSWER_QUESTION,
+        requestId: "req-secret",
+        itemId: "item-secret",
+        questions: [{
+          id: "token",
+          header: "Question 1",
+          question: "Paste your API token",
+          allowsFreeform: true,
+          isSecret: true,
+        }],
+      },
+    });
+
+    const field = screen.getByTestId("ask-question-note-token") as HTMLInputElement;
+    expect(field.tagName).toBe("INPUT");
+    expect(field.type).toBe("password");
+    expect(document.querySelector('[data-composer-answer-editor="true"]')).toBeNull();
+    // Nothing to attach to a password prompt, and no rich editor to attach into.
+    expect(screen.queryByTestId("ask-question-attach")).toBeNull();
+  });
+
+  it("treats digits typed into the answer as text, not option shortcuts", () => {
+    renderControlledComposer({ draft: "", pendingInput: ANSWER_QUESTION });
+
+    fireEvent.keyDown(answerEditor(), { key: "2" });
+
+    for (const option of screen.getAllByRole("radio")) {
+      expect(option.getAttribute("aria-checked")).toBe("false");
+    }
+  });
+
+  it("sends the answer exactly once on Enter, and serializes chips canonically", () => {
+    const props = renderControlledComposer({ draft: "", pendingInput: ANSWER_QUESTION });
+
+    const editor = answerEditor();
+    const chip = document.createElement("span");
+    chip.contentEditable = "false";
+    chip.dataset.composerChip = "file";
+    chip.dataset.composerChipText = "@src/main.ts";
+    const label = document.createElement("span");
+    label.dataset.composerChipLabel = "";
+    label.textContent = "main.ts";
+    chip.appendChild(label);
+    editor.textContent = "start from ";
+    editor.appendChild(chip);
+    fireEvent.input(editor);
+
+    fireEvent.keyDown(editor, { key: "Enter" });
+
+    // Exactly one dispatch for one keystroke. The editor and the card both have
+    // Enter handlers on the same bubble path, and two respondToInput for one
+    // itemId is what providers answer with "that request is no longer active".
+    expect(props.onApproval).toHaveBeenCalledTimes(1);
+    expect(props.onApproval).toHaveBeenCalledWith("accept", null, { answer: "start from @src/main.ts" });
+    // The answer was the draft; it must not survive as a half-sent message.
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("");
+  });
+
+  it("ignores Enter in the answer while the previous response is in flight", () => {
+    const props = renderControlledComposer({
+      draft: "",
+      approvalResponding: true,
+      pendingInput: ANSWER_QUESTION,
+    });
+
+    typeIntoAnswer("an answer");
+    fireEvent.keyDown(answerEditor(), { key: "Enter" });
+
+    expect(props.onApproval).not.toHaveBeenCalled();
+  });
+
+  it("keeps Shift+Enter a newline inside the answer", () => {
+    const props = renderControlledComposer({ draft: "", pendingInput: ANSWER_QUESTION });
+
+    typeIntoAnswer("first line");
+    fireEvent.keyDown(answerEditor(), { key: "Enter", shiftKey: true });
+
+    expect(props.onApproval).not.toHaveBeenCalled();
+  });
+
+  it("accepts a file dropped onto the answer field and stages it for the next turn", async () => {
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-shot.png" });
+    (window as any).ade = { agentChat: { saveTempAttachment } };
+    const props = renderComposer({ draft: "", turnActive: false, pendingInput: ANSWER_QUESTION });
+
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+
+    fireEvent.drop(answerEditor(), {
+      dataTransfer: { files: [file], types: ["Files"], getData: vi.fn(() => "") },
+    });
+
+    // No provider adapter carries a file inside an answer, so the drop stages an
+    // attachment for the next message instead of being refused outright.
+    await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith({
+      path: "/tmp/ade-shot.png",
+      type: "image",
+    }));
   });
 
   it("blocks send when the selected model is unavailable on a constrained surface", () => {
@@ -2480,6 +2685,7 @@ describe("AgentChatComposer", () => {
 
   it("keeps the option hint when a pending question includes selectable options", () => {
     renderComposer({
+      draft: "",
       pendingInput: {
         requestId: "req-2",
         itemId: "item-2",
@@ -2506,12 +2712,12 @@ describe("AgentChatComposer", () => {
 
     expect(screen.getByTestId("ask-question-option-answer-question_flow")).toBeTruthy();
     expect(screen.getByTestId("ask-question-option-answer-plan_updates")).toBeTruthy();
-    expect((screen.getByTestId("ask-question-note-answer") as HTMLInputElement).placeholder)
-      .toBe("Or send your own response instead");
+    expect(screen.getByText("Or send your own response instead")).toBeTruthy();
   });
 
   it("renders each paged question's own options as the user advances", () => {
-    renderComposer({
+    renderControlledComposer({
+      draft: "",
       pendingInput: {
         requestId: "req-2b",
         itemId: "item-2b",
@@ -2546,9 +2752,12 @@ describe("AgentChatComposer", () => {
 
     // Page 1 is freeform-only; page 2 carries the options.
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
-    fireEvent.change(screen.getByTestId("ask-question-note-first"), { target: { value: "the composer" } });
+    typeIntoAnswer("the composer");
     fireEvent.click(screen.getByTestId("ask-question-send"));
     expect(screen.getByTestId("ask-question-option-second-question_flow")).toBeTruthy();
+    // Page 2 starts from an empty field: one editor serving several questions
+    // must not carry page 1's answer forward.
+    expect(answerEditor().textContent).toBe("");
   });
 
   it("uses decline wording for native Codex structured questions", () => {

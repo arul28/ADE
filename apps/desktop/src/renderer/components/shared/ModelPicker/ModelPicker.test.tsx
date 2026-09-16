@@ -106,14 +106,6 @@ vi.mock("./useAuthOnlyFilter", () => ({
   }),
 }));
 
-vi.mock("./usePerSurfaceModelDefaults", () => ({
-  usePerSurfaceModelDefaults: () => ({
-    defaults: {} as Record<string, string>,
-    setDefault: () => {},
-    getDefault: () => null,
-  }),
-}));
-
 vi.mock("./useReasoningByFamily", () => ({
   useReasoningByFamily: () => ({
     byFamily: { ...reasoningByFamilyStore },
@@ -299,7 +291,6 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker
     <ModelPicker
       value={SONNET.id}
       onChange={onChange}
-      surfaceKey="test-surface"
       models={MODELS}
       {...overrides}
     />,
@@ -382,7 +373,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         openRequestKey={undefined}
         onOpenRequestHandled={onOpenRequestHandled}
@@ -640,7 +630,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SLOW_GPT]}
         fastMode={false}
         onFastModeChange={onFastModeChange}
@@ -705,7 +694,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SONNET]}
         fastMode
       />,
@@ -725,7 +713,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={onChange}
-        surfaceKey="test"
         models={[FAST_GPT, SONNET]}
         fastMode={false}
         onFastModeChange={onFastModeChange}
@@ -749,7 +736,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SONNET]}
         fastMode
         onFastModeChange={onFastModeChange}
@@ -773,7 +759,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, FAST_GPT_ALT]}
         fastMode
         onFastModeChange={vi.fn()}
@@ -797,7 +782,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={onChange}
-        surfaceKey="test"
         models={[FAST_GPT, FAST_GPT_ALT]}
         fastMode={false}
         onFastModeChange={onFastModeChange}
@@ -821,7 +805,6 @@ describe("ModelPicker", () => {
     const props = {
       value: FAST_GPT.id,
       onChange,
-      surfaceKey: "test",
       models: [FAST_GPT, FAST_GPT_ALT],
       onFastModeChange,
     };
@@ -852,7 +835,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={onChange}
-        surfaceKey="test"
         models={[FAST_GPT, SLOW_GPT]}
         fastMode
         onFastModeChange={onFastModeChange}
@@ -875,7 +857,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT]}
         fastMode={false}
         onFastModeChange={vi.fn()}
@@ -888,7 +869,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT]}
         fastMode
         onFastModeChange={vi.fn()}
@@ -909,7 +889,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SLOW_GPT]}
         fastModeActive
         onFastModeToggle={onToggle}
@@ -929,7 +908,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SONNET]}
         fastMode
         onFastModeChange={vi.fn()}
@@ -979,7 +957,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={cursorFast.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[cursorFast]}
         fastMode
         onFastModeChange={onToggle}
@@ -999,7 +976,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value=""
         onChange={vi.fn()}
-        surfaceKey="test"
         models={MODELS}
       />,
     );
@@ -1256,7 +1232,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         runtimePin={foreignPin as never}
       />,
@@ -1311,12 +1286,12 @@ describe("ModelPicker", () => {
       runtimeName: "Studio",
     });
     rerender(
-      <ModelPicker value={SONNET.id} onChange={vi.fn()} surfaceKey="test-surface" models={MODELS} runtimePin={pinOf() as never} />,
+      <ModelPicker value={SONNET.id} onChange={vi.fn()} models={MODELS} runtimePin={pinOf() as never} />,
     );
     await waitFor(() => expect(modelCatalog).toHaveBeenCalledTimes(2));
     for (let i = 0; i < 3; i += 1) {
       rerender(
-        <ModelPicker value={SONNET.id} onChange={vi.fn()} surfaceKey="test-surface" models={MODELS} runtimePin={pinOf() as never} />,
+        <ModelPicker value={SONNET.id} onChange={vi.fn()} models={MODELS} runtimePin={pinOf() as never} />,
       );
     }
     await Promise.resolve();
@@ -1494,7 +1469,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         catalogScopeKey="machine-a"
         onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
@@ -1516,7 +1490,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         catalogScopeKey="machine-b"
         onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
@@ -1612,7 +1585,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={MODELS}
         onOpenSignIn={onOpenSignIn}
       />,
@@ -1864,7 +1836,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={MODELS}
         onOpenSignIn={vi.fn()}
       />,
@@ -1880,7 +1851,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={MODELS}
       />,
     );
@@ -2172,7 +2142,6 @@ describe("ModelPicker", () => {
         <ModelPicker
           value={SONNET.id}
           onChange={vi.fn()}
-          surfaceKey="test"
           models={MODELS}
           onOpenSignIn={onOpenSignIn}
         />,
@@ -2193,7 +2162,6 @@ describe("ModelPicker", () => {
         <ModelPicker
           value={SONNET.id}
           onChange={vi.fn()}
-          surfaceKey="test"
           models={MODELS}
           onOpenSignIn={onOpenSignIn}
         />,

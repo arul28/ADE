@@ -174,6 +174,16 @@ Later processed/unprocessed lifecycle snapshots update delivery state but do
 not create another searchable document, so reconnect replay and resolution
 events cannot duplicate one message in search.
 
+A chat's **meta** document also carries the identifiers of every pull request
+linked to it — `#1237`, `owner/repo#1237`, the PR URL, and the PR title — so
+searching a PR number finds the chat working on it, not only the PR document.
+`prTermsByChatSession` is rebuilt from scratch on every PR index and PR sweep
+and returns the set of session ids whose terms changed, which then drives a
+re-index of just those chat meta docs. Rebuilding rather than appending is what
+removes the ordering dependency: a chat indexed before the first PR sweep would
+otherwise never receive its PR terms, and unlinking a PR would leave stale
+`#123` terms on the chat document forever.
+
 ### Deterministic ranking tiers
 
 Ranking is exactly specifiable and stable — the same query over the same corpus
