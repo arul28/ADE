@@ -877,8 +877,8 @@ broker lives in the runtime rather than in-process. Agents create proof through
 `ade proof attach` and the validated `ingest_computer_use_artifacts` tool, which
 is the path that checks owner claims and the caller's import root.
 
-The CTO's voice (`voiceName`) and whether it makes listening noises
-(`voiceBackchannels`) live on the CTO identity, not in machine settings, so they
+The CTO's voice (`voiceName`) and whether it says one short sentence before it
+does real work (`voiceBackchannels`) live on the CTO identity, not in machine settings, so they
 move with the project: read them from `cto_state.getIdentity` and write them
 through `cto_state.updateIdentity` like any other identity field. There is no
 `ade cto` command; `cto_state` and `cto_memory` are reached through `ade actions

@@ -4,6 +4,11 @@ import { WebSocket } from "ws";
 import {
   buildCtoVoiceInstructions,
   buildCtoVoiceSpeakInstructions,
+  CTO_VOICE_REALTIME_TOOLS,
+  CTO_VOICE_TOOL_APPROVE,
+  CTO_VOICE_TOOL_ASK_CTO,
+  CTO_VOICE_TOOL_CANCEL_WORK,
+  CTO_VOICE_TOOL_DENY,
   ctoVoiceEndpointUrl,
   CTO_VOICE_DEFAULT,
   CTO_VOICE_INITIAL_STATE,
@@ -31,40 +36,43 @@ import { buildConfirmation, resolveSpokenConfirmation } from "./ctoVoiceConfirma
 /**
  * The CTO voice call.
  *
- * OpenAI's Realtime API over a WebSocket, with the realtime model reduced to
- * ears and a mouth. The session is configured so that server-side turn
- * detection does NOT create a response (`turn_detection.create_response:
- * false`), which means the model never composes anything from its own
- * knowledge: it transcribes the user, and it speaks — once per
- * `response.create` ADE sends, reading text the CTO thread already wrote.
+ * OpenAI's Realtime API over a WebSocket, run as a hybrid. The realtime model
+ * is the conversational front: server turn detection creates its responses
+ * (`turn_detection.create_response: true`), it answers small talk and anything
+ * in the context block from the session prompt, and it speaks in real time.
+ * Anything that needs the project it asks for by calling `ask_cto`, which runs
+ * a real turn on the CTO's own thread — the user's chosen model, its memory,
+ * all its tools — and comes back as a function result the model then speaks in
+ * context.
  *
- * That is what keeps the CTO's thinking on whatever provider and plan it
- * already runs on while only the voice minutes bill to the user's own API key,
- * and it is also why permissions and confirmations are enforced here in code
- * rather than asked of the model in a prompt.
+ * The CTO's thinking still never moves off the plan it already runs on, and
+ * only the voice minutes bill to the user's own key. What moved is who talks:
+ * relaying every sentence from a CTO turn cost three to five seconds before the
+ * first word, even for "hello", which is not a conversation.
  *
- * Five behaviours are easy to get wrong and are load bearing:
+ * Six behaviours are easy to get wrong and are load bearing:
  *
  * 1. A real microphone never stops. If the client stops sending input audio the
  *    session stalls mid-sentence — measured, not theorised. `pushAudio` keeps
  *    the stream fed and `keepAlive` sends silence when the user is muted.
- * 2. The intent is the TRANSCRIPT. Nothing on the wire carries "what the user
- *    asked" as a field; it arrives as
- *    `conversation.item.input_audio_transcription.completed`, which is why that
- *    event — and not any notion of the model handing work back — is what drives
- *    a CTO turn.
- * 3. One response at a time. A second `response.create` while one is still
- *    generating is an error, so speech is queued and drained on `response.done`.
- * 4. A transcript is not proof of speech. The transcriber invents words out of
- *    near-silence, and each invented sentence used to become a real CTO turn
- *    that spoke a real answer — the CTO appearing to talk to itself. Every
- *    transcript is now judged against ADE's own microphone meter before it can
- *    become an intent; see `judgeTranscript`.
- * 5. Every response ADE asks for is OUT-OF-BAND. `create_response: false` stops
- *    the model answering on its OWN initiative; it does nothing about a response
- *    ADE creates inside the conversation, where the user's audio is sitting in
- *    front of the model and gets answered instead of the instruction. See
- *    `drainSpeech`.
+ * 2. One response at a time. A second `response.create` while one is still
+ *    generating is an error, so every response ADE asks for — its own lines and
+ *    the one that speaks a function result — goes through one queue, drained on
+ *    `response.done`.
+ * 3. ADE's OWN lines are out-of-band; the function result is NOT. A line ADE
+ *    wrote ("Sorry — I didn't catch that") must be read word for word, and
+ *    inside the conversation the user's audio outweighs the instruction and the
+ *    model answers the user instead. A function result is the opposite: the
+ *    model has to see the call it made in order to speak the answer to it.
+ * 4. Only one `ask_cto` runs at a time, and a new one supersedes the old one.
+ *    The CTO thread is a single session; two overlapping turns collide on it.
+ * 5. A transcript is not proof of speech, and the gate that judges one now
+ *    guards CAPTIONS and the spoken yes/no parser rather than whether the CTO is
+ *    asked anything. See `judgeTranscript`.
+ * 6. Barge-in is split. The server truncates its own response
+ *    (`interrupt_response: true`); ADE cancels only a response it created
+ *    itself, because a bare `response.cancel` aimed at a server response would
+ *    race the server's own truncation.
  */
 
 export type CtoVoiceSocket = {
@@ -309,9 +317,27 @@ export function ctoVoiceFrameDurationMs(base64: string): number {
   return (bytes / 2) * (1_000 / CTO_VOICE_SAMPLE_RATE);
 }
 
+/**
+ * How a CTO turn ended, as the call has to tell the model about it.
+ *
+ * The turn's own verdict, never guessed from its text: a failed turn's
+ * `outputText` is the provider's error sentence, and relaying that is how the
+ * CTO once read "Prompt is too long" out loud in its own voice.
+ */
+export type CtoVoiceBackendStatus = "completed" | "interrupted" | "failed";
+
 export type CtoVoiceBackendResult = {
-  /** Read back to the user, word for word, by the realtime model. */
+  /** The answer, for a turn that completed. Empty for every other status. */
   spoken: string;
+  /** Defaults to `completed` for a host that does not report one. */
+  status?: CtoVoiceBackendStatus;
+  /**
+   * One plain sentence for a turn that did not answer.
+   *
+   * A house sentence, never the provider's error text: this is relayed to the
+   * user through the model, and the model will happily read a stack trace.
+   */
+  reason?: string;
   /**
    * Milliseconds from the backend turn starting to its first token of text.
    *
@@ -351,16 +377,26 @@ export type CtoVoiceCallDeps = {
   ctoName: () => string;
   projectName: () => string;
   /**
-   * Kept, and deliberately not read today.
+   * "Say what it's doing": whether the model acknowledges before `ask_cto`.
    *
    * It used to gate one unconditional filler ("Let me check that.") spoken at
-   * the top of every turn, which meant the user heard it before "Hello" too —
-   * the most annoying thing on a call. The filler is gone; the setting stays
-   * because the acknowledgement is moving to the realtime model, which will own
-   * whether it makes a noise while ADE works.
+   * the top of every turn, which meant the user heard it before "Hello" too.
+   * The filler is gone; the setting now goes into the session prompt, where the
+   * model that can actually see the question decides the sentence and is told
+   * to vary it. A fixed phrase before every answer is worse than a beat of
+   * silence.
    */
   backchannelsEnabled: () => boolean;
   voice?: () => CtoVoiceName;
+  /**
+   * Everything the model may answer from without asking the CTO.
+   *
+   * Async because it reads the lane list, and re-read after every completed
+   * `ask_cto`: a call that has just created a lane must not still be told there
+   * are nine. Optional — a call with no context block still works, it just asks
+   * the CTO more often.
+   */
+  context?: () => Promise<string>;
   /**
    * Run the user's intent on the CTO thread. Injected so this service never
    * imports the chat service, and so the turn loop is testable without a model.
@@ -525,7 +561,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   let started = false;
   /** Detaches the approval watcher when the call ends. */
   let releaseApprovalWatch: (() => void) | null = null;
-  let abort: AbortController | null = null;
   let keepAlive: NodeJS.Timeout | null = null;
   let startedAtMs = 0;
   let startedAtIso = "";
@@ -559,6 +594,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    */
   let sessionReady = false;
 
+  /** The context block for this call's first `session.update`. Refreshed later. */
+  let sessionContext = "";
+
   /**
    * True from `response.create` until the response that answered it is over.
    *
@@ -570,8 +608,82 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    */
   let responseActive = false;
 
-  /** Answers waiting for the current response to finish. Spoken in order. */
-  let speakQueue: string[] = [];
+  /**
+   * Responses ADE has asked for and the socket has not got to yet.
+   *
+   * Two kinds, and the difference is the whole of note 3 at the top of this
+   * file. An `ade` entry is a line ADE wrote and needs read word for word, so it
+   * is created OUT-OF-BAND with the text as its instruction. A `model` entry
+   * asks the model to speak for itself with the conversation in front of it,
+   * which is what a function result needs — it cannot relay an answer to a call
+   * it cannot see.
+   */
+  type QueuedResponse = { kind: "ade"; text: string } | { kind: "model" };
+  let responseQueue: QueuedResponse[] = [];
+
+  /**
+   * True when the response in flight is one ADE created out-of-band.
+   *
+   * Barge-in is split now: the server truncates its OWN response, because the
+   * session is configured with `interrupt_response: true`. Cancelling one of
+   * those from here as well races the server's truncation and comes back as an
+   * error. Only a response ADE created is ADE's to cancel.
+   */
+  let activeResponseIsOurs = false;
+  /** Set on the send, read on `response.created`: the two are a round trip apart. */
+  let pendingOurResponse = false;
+
+  /**
+   * The `ask_cto` running right now, and the controller that stops it.
+   *
+   * One at a time, because the CTO thread is one session: a second turn on it
+   * throws. A new `ask_cto` supersedes the running one rather than queueing
+   * behind it — the user has moved on, and the old answer is to a question they
+   * are no longer waiting for.
+   */
+  let askCtoAbort: AbortController | null = null;
+  let askCtoRunning = false;
+
+  /**
+   * Function calls already dispatched, by `call_id`.
+   *
+   * The same call arrives twice: once inside `response.done`'s output list and
+   * once as `response.function_call_arguments.done`. Both are handled — one
+   * socket's vocabulary is not a thing to guess at — so the id is what stops a
+   * request running twice.
+   */
+  const handledFunctionCalls = new Set<string>();
+
+  /**
+   * Calls dispatched before the response that made them was finished.
+   *
+   * `response.function_call_arguments.done` arrives first, which is worth
+   * having on a five-second turn — but the conversation has not written the
+   * call yet, so its result has to wait for `response.done`.
+   */
+  const unsettledFunctionCalls = new Set<string>();
+
+  /**
+   * Function results that cannot be sent yet.
+   *
+   * See `sendFunctionOutput`: a result may only be written once the response
+   * that asked for it is finished, and the fast tools answer before it is.
+   */
+  let pendingFunctionOutputs: Array<{
+    callId: string;
+    output: Record<string, unknown>;
+    speakResult: boolean;
+  }> = [];
+
+  /**
+   * Confirmations already answered, by id.
+   *
+   * A spoken "yes" reaches this service twice now: the transcript parser reads
+   * it, and the model reads the same word and calls `approve_pending_action`.
+   * Whichever lands first wins; the second must be a no-op rather than a second
+   * `approveToolUse` on a gate that is already open.
+   */
+  const resolvedConfirmations = new Set<string>();
 
   /**
    * The id of the response that is generating right now, once the server has
@@ -798,11 +910,11 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   };
 
   /**
-   * Say this, out loud, exactly.
+   * Say this, out loud, exactly. ADE's own words, not the CTO's answer.
    *
    * There is no "say this" event in the Realtime API. What there is is
    * `response.create` with per-response `instructions`, which is the documented
-   * way to steer one response — so the CTO's sentence is handed over as that
+   * way to steer one response — so the sentence is handed over as that
    * response's instruction, fenced, with `output_modalities: ["audio"]`.
    *
    * It goes out OUT-OF-BAND (`conversation: "none"` with an empty `input`), and
@@ -816,14 +928,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * an offer to review a pull request it knows nothing about). Out-of-band the
    * same script read the text word for word 24 times out of 24.
    *
-   * Out-of-band also means nothing ADE says is added to the conversation, which
-   * is what we want: the history this session accumulates is the user's audio
-   * and nothing else, so it can never grow into a second voice with opinions.
-   * The session-level `instructions` still apply — they are session state, not
-   * conversation state.
-   *
-   * The alternative, `conversation.item.create` with an assistant message, puts
-   * the text in the history but produces no audio.
+   * Reserved for the lines that are ADE speaking rather than the CTO answering:
+   * the confirmation question a blocked tool raised, the echo before an
+   * approval runs, and "Sorry — I didn't catch that". A CTO answer takes the
+   * other path — see `speakFunctionResult`.
    *
    * Queued rather than sent when a response is already in flight, because a
    * second one is an error rather than a second sentence.
@@ -834,37 +942,68 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // The post the audio leg is measured from: the queue may hold this behind
     // another response, and that wait is part of what the user is waiting for.
     if (turnTiming && turnTiming.firstSpeakAtMs === null) turnTiming.firstSpeakAtMs = now();
-    speakQueue.push(text);
-    drainSpeech();
+    responseQueue.push({ kind: "ade", text });
+    drainResponses();
   };
 
-  const drainSpeech = () => {
+  /**
+   * Ask the model to speak for itself, with the conversation in front of it.
+   *
+   * The opposite of `speak`, and deliberately so. This is what follows a
+   * `function_call_output`: the model has to SEE the call it made and the
+   * result that came back in order to relay the answer in context, so an
+   * out-of-band response — which is generated with no conversation at all —
+   * would produce a sentence about nothing.
+   */
+  const requestModelResponse = () => {
+    // The post the audio leg is measured from. The queue may hold this behind
+    // a response already in flight, and that wait is part of what the user is
+    // waiting for.
+    if (turnTiming && turnTiming.firstSpeakAtMs === null) turnTiming.firstSpeakAtMs = now();
+    // A second one buys nothing: the model reads everything in the conversation
+    // when it generates, so two queued responses would say the same thing twice.
+    if (responseQueue.some((entry) => entry.kind === "model")) return;
+    responseQueue.push({ kind: "model" });
+    drainResponses();
+  };
+
+  const drainResponses = () => {
     if (responseActive || !socketOpen) return;
-    const next = speakQueue.shift();
+    const next = responseQueue.shift();
     if (next === undefined) return;
     responseActive = true;
-    send({
-      type: "response.create",
-      event_id: randomUUID(),
-      response: {
-        // Out-of-band: generated with no conversation and no input items, so
-        // the only thing in front of the model is the instruction below.
-        conversation: "none",
-        input: [],
-        instructions: buildCtoVoiceSpeakInstructions(next),
-        output_modalities: ["audio"],
-      },
-    });
+    if (next.kind === "ade") {
+      pendingOurResponse = true;
+      send({
+        type: "response.create",
+        event_id: randomUUID(),
+        response: {
+          // Out-of-band: generated with no conversation and no input items, so
+          // the only thing in front of the model is the instruction below.
+          conversation: "none",
+          input: [],
+          instructions: buildCtoVoiceSpeakInstructions(next.text),
+          output_modalities: ["audio"],
+        },
+      });
+      return;
+    }
+    pendingOurResponse = false;
+    // No `response` object at all: the default is the conversation itself, and
+    // the session's own instructions and modalities already apply.
+    send({ type: "response.create", event_id: randomUUID() });
   };
 
-  /** A response ended, however it ended. Let the next sentence through. */
+  /** A response ended, however it ended. Let the next one through. */
   const releaseResponse = () => {
     responseActive = false;
     // The id belongs to the response that just ended, and a cancel waiting for
     // an id that will never arrive would fire at whatever is generated next.
     activeResponseId = null;
+    activeResponseIsOurs = false;
+    pendingOurResponse = false;
     cancelWhenNamed = false;
-    drainSpeech();
+    drainResponses();
   };
 
   /**
@@ -888,13 +1027,22 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   /**
    * Stop the audio the user is talking over.
    *
-   * Only the audio. Whether the WORK behind it should stop too is a separate
-   * question with a different answer, and the caller decides it.
+   * Only the audio, and only OUR audio. The session runs with
+   * `interrupt_response: true`, so a response the SERVER created is truncated by
+   * the server the moment it hears speech — sending our own cancel at it as
+   * well races that truncation and comes back as "no active response". A
+   * response ADE created out-of-band is invisible to that mechanism (it is not
+   * in the conversation), so it is the one thing left for us to cancel.
    */
   const stopSpeaking = () => {
-    speakQueue = [];
+    // Anything ADE queued and has not sent is about a moment that has passed.
+    responseQueue = responseQueue.filter((entry) => entry.kind !== "ade");
     if (!responseActive) return;
-    // Named explicitly: these responses are out-of-band, and a cancel with no
+    // `pendingOurResponse` covers the round trip between asking for a response
+    // and the server naming it — the window the user can talk inside, and the
+    // one a barge-in most often lands in.
+    if (!activeResponseIsOurs && !pendingOurResponse) return;
+    // Named explicitly: our responses are out-of-band, and a cancel with no
     // `response_id` is only understood as "cancel the default conversation's
     // response" — which is never one of ours.
     if (activeResponseId) {
@@ -905,42 +1053,142 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   };
 
   /**
-   * Run one utterance through the CTO thread and speak what comes back.
+   * Hand a function's result back and, when it is worth hearing, let the model
+   * speak about it.
    *
-   * Driven by `conversation.item.input_audio_transcription.completed`, because
-   * the transcript IS the intent: the realtime session is configured not to
-   * answer on its own, so nothing else on the wire ever asks a question.
+   * `speakResult: false` is for the results nobody is waiting on: an `ask_cto`
+   * that was superseded or cancelled still has to answer its call — an
+   * unanswered `function_call` sits in the conversation forever and the model
+   * keeps referring to it — but asking for a response about it would have the
+   * model narrate a question the user has already moved past.
    */
-  async function runCtoTurn() {
-    // An utterance may be answered exactly once. Without this a retried or
-    // duplicated transcription event would ask the CTO the question it just
-    // answered.
-    const intent = utterance.consumed ? "" : utterance.text.trim();
-    utterance.text = "";
-    utterance.consumed = true;
-    if (!intent.length) return;
+  const sendFunctionOutput = (
+    callId: string,
+    output: Record<string, unknown>,
+    speakResult = true,
+  ) => {
+    // Never while the response that MADE this call is still generating. An
+    // output naming a `call_id` the conversation has not finished writing is
+    // refused, and that is exactly the case for a call dispatched off
+    // `response.function_call_arguments.done` — a beat before its own
+    // `response.done`. Any other response being in flight is irrelevant: a
+    // conversation item is appended, not generated.
+    if (unsettledFunctionCalls.has(callId)) {
+      pendingFunctionOutputs.push({ callId, output, speakResult });
+      return;
+    }
+    send({
+      type: "conversation.item.create",
+      event_id: randomUUID(),
+      item: { type: "function_call_output", call_id: callId, output: JSON.stringify(output) },
+    });
+    if (speakResult) requestModelResponse();
+  };
 
-    setPhase("thinking");
+  /** Hand over everything that was waiting for the response to finish. */
+  const flushFunctionOutputs = () => {
+    const waiting = pendingFunctionOutputs;
+    pendingFunctionOutputs = [];
+    for (const entry of waiting) {
+      send({
+        type: "conversation.item.create",
+        event_id: randomUUID(),
+        item: {
+          type: "function_call_output",
+          call_id: entry.callId,
+          output: JSON.stringify(entry.output),
+        },
+      });
+      if (entry.speakResult) requestModelResponse();
+    }
+  };
 
-    // Nothing is spoken here. A filler on the first line of every turn meant
-    // the user heard "Let me check that." before "Hello" too, and a call that
-    // says the same four words before every answer is worse than one that takes
-    // a beat. The acknowledgement belongs to whoever can judge the question.
+  /**
+   * Re-send the context block.
+   *
+   * Cheap (one `session.update`, no audio, no response) and worth it after
+   * every completed `ask_cto`: the facts in that block are exactly the ones a
+   * turn is most likely to have just changed, and a model answering "nine
+   * lanes" straight after creating the tenth is worse than one that asks.
+   */
+  const refreshSessionContext = async () => {
+    if (!deps.context || !socketOpen) return;
+    try {
+      const context = await deps.context();
+      if (!socketOpen) return;
+      send({
+        type: "session.update",
+        event_id: randomUUID(),
+        session: {
+          type: "realtime",
+          instructions: buildCtoVoiceInstructions({
+            ctoName: deps.ctoName(),
+            projectName: deps.projectName(),
+            context,
+            acknowledgeAloud: deps.backchannelsEnabled(),
+          }),
+        },
+      });
+    } catch (error) {
+      // A stale context block is a worse answer, not a broken call.
+      deps.logger?.warn("cto_voice.context_refresh_failed", { error: String(error) });
+    }
+  };
 
-    // Held locally, not read back off `abort`. By the time this turn's await
-    // settles, `abort` names the controller of whatever turn SUPERSEDED it, so
-    // checking the module binding asks the wrong question: the superseded turn
-    // sees "not aborted" and speaks its answer over the one the user is
-    // actually waiting for.
+  /**
+   * Run one request on the CTO thread and hand the answer back to the model.
+   *
+   * This is the seam. Everything the call can actually DO happens on the other
+   * side of it, on the CTO's own session with its own model, memory and tools —
+   * the realtime model only ever asks.
+   */
+  async function runAskCto(callId: string, request: string) {
+    // A question ADE asked out loud is waiting for an answer, and the turn that
+    // raised it is parked inside `canUseTool` on the one CTO session. Starting a
+    // second turn there would collide with it.
+    if (state.pendingConfirmation) {
+      sendFunctionOutput(callId, {
+        status: "busy",
+        answer: "",
+        reason: "ADE is still waiting for the user to approve or decline the pending action.",
+      });
+      return;
+    }
+
+    // Held locally, not read back off the module binding. By the time this
+    // turn's await settles, `askCtoAbort` names the controller of whatever
+    // superseded it, so checking the binding asks the wrong question: the
+    // superseded turn sees "not aborted" and answers over the live one.
     const controller = new AbortController();
-    abort?.abort();
-    abort = controller;
+    askCtoAbort?.abort();
+    askCtoAbort = controller;
+    askCtoRunning = true;
+    // Only when nothing is coming out of the speaker: the model's own
+    // acknowledgement is usually still playing, and `thinking` would take the
+    // HUD off `speaking` while the user can still hear it.
+    if (state.phase !== "speaking") setPhase("thinking");
+
     try {
       const image = pendingImage;
       pendingImage = null;
-      if (turnTiming) turnTiming.turnStartedAtMs = now();
+      // A turn with no accepted transcript behind it still has to be measured.
+      // The gate can reject a transcript the model heard perfectly well — it
+      // judges ADE's own microphone, not the model's ears — and a timing line
+      // that only appears for the happy path cannot say which turns were slow.
+      if (!turnTiming) {
+        turnTiming = {
+          speechStoppedToTranscriptMs: null,
+          acceptedAtMs: now(),
+          turnStartedAtMs: null,
+          backendDoneAtMs: null,
+          firstTextMs: null,
+          firstSpeakAtMs: null,
+          toolCalls: 0,
+        };
+      }
+      turnTiming.turnStartedAtMs = now();
       const result = await deps.runBackendTurn({
-        intent,
+        intent: request,
         callId: state.callId ?? "",
         signal: controller.signal,
         imageBase64: image,
@@ -952,34 +1200,150 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         turnTiming.toolCalls = result.toolCalls ?? 0;
       }
 
-      // Superseded while the backend was working: the answer is to a question
-      // the user has already moved on from, so it is dropped, not spoken.
       if (controller.signal.aborted) {
         flushTurnTiming("superseded", null);
+        sendFunctionOutput(callId, { status: "superseded", answer: "" }, false);
         return;
       }
 
       if (result.sceneSource) emit({ sceneSource: result.sceneSource });
-      // Nothing to say is a real answer here — an interrupted turn deliberately
-      // returns no sentence. Speaking an empty string produces no audio, so the
-      // HUD would sit in `speaking` forever waiting for a voice that never
-      // comes; go straight back to listening instead.
-      if (!result.spoken.trim().length) {
-        flushTurnTiming("silent", null);
-        setPhase("listening");
-        return;
+
+      const status = result.status ?? "completed";
+      if (status === "completed") {
+        const answer = result.spoken.trim();
+        // An answer that will be spoken leaves its timing line open on purpose:
+        // the last leg is the first audio the user hears, which has not happened
+        // yet. An answer with nothing in it never will, so it is written here.
+        if (!answer.length) flushTurnTiming("silent", null);
+        sendFunctionOutput(callId, { status: "ok", answer });
+      } else {
+        flushTurnTiming(status === "interrupted" ? "superseded" : "backend_failed", null);
+        sendFunctionOutput(callId, {
+          status,
+          answer: "",
+          ...(result.reason ? { reason: result.reason } : {}),
+        });
       }
-      speak(result.spoken);
-      setPhase("speaking");
     } catch (error) {
       if (controller.signal.aborted) {
         flushTurnTiming("superseded", null);
+        sendFunctionOutput(callId, { status: "superseded", answer: "" }, false);
         return;
       }
       deps.logger?.warn("cto_voice.backend_failed", { error: String(error) });
       flushTurnTiming("backend_failed", null);
-      speak("That didn't work. I couldn't reach the project state just now.");
-      setPhase("listening");
+      // The error itself never travels: the model would read it out.
+      sendFunctionOutput(callId, {
+        status: "failed",
+        answer: "",
+        reason: "The CTO could not be reached just now. Nothing was changed.",
+      });
+    } finally {
+      if (askCtoAbort === controller) {
+        askCtoAbort = null;
+        askCtoRunning = false;
+        if (state.phase === "thinking") setPhase("listening");
+      }
+      // Last, and only for the turn that is still the current one: a superseded
+      // turn's facts are older than the one that replaced it.
+      if (askCtoAbort === null && !controller.signal.aborted) void refreshSessionContext();
+    }
+  }
+
+  /** Stop the running `ask_cto`, if there is one. Returns whether there was. */
+  function cancelRunningWork(): boolean {
+    if (!askCtoRunning || !askCtoAbort) return false;
+    askCtoAbort.abort();
+    askCtoAbort = null;
+    askCtoRunning = false;
+    if (state.phase === "thinking") setPhase("listening");
+    return true;
+  }
+
+  /**
+   * One function call from the model.
+   *
+   * Dispatched by name through an explicit switch rather than a lookup table,
+   * so a name the model invented cannot reach anything: the default answers the
+   * call and says so, which keeps the conversation consistent instead of
+   * leaving a dangling `function_call` the model talks around.
+   */
+  function handleFunctionCall(name: string, callId: string, argumentsJson: string) {
+    if (!callId || handledFunctionCalls.has(callId)) return;
+    handledFunctionCalls.add(callId);
+    deps.logger?.info("cto_voice.function_call", { callId: state.callId, tool: name });
+
+    if (name === CTO_VOICE_TOOL_ASK_CTO) {
+      let request = "";
+      try {
+        const parsed = JSON.parse(argumentsJson || "{}") as { request?: unknown };
+        request = typeof parsed.request === "string" ? parsed.request.trim() : "";
+      } catch {
+        request = "";
+      }
+      if (!request.length) {
+        sendFunctionOutput(callId, {
+          status: "failed",
+          answer: "",
+          reason: "The request was empty. Ask the user what they want.",
+        });
+        return;
+      }
+      void runAskCto(callId, request);
+      return;
+    }
+
+    if (name === CTO_VOICE_TOOL_CANCEL_WORK) {
+      const stopped = cancelRunningWork();
+      // Nothing to stop asks for no response, and that is measured rather than
+      // tidy: on the live call of 2026-09-16 the model said "Okay, stopping
+      // that now" in the same breath as the call, and the response this output
+      // would have asked for added a second, unwanted sentence — "There's
+      // nothing running to stop right now" — about a race the user cannot see.
+      // A cancel that DID stop something is worth confirming.
+      sendFunctionOutput(
+        callId,
+        stopped ? { status: "cancelled" } : { status: "nothing_running" },
+        stopped,
+      );
+      return;
+    }
+
+    if (name === CTO_VOICE_TOOL_APPROVE || name === CTO_VOICE_TOOL_DENY) {
+      const pending = state.pendingConfirmation;
+      if (!pending) {
+        sendFunctionOutput(callId, { status: "nothing_pending" });
+        return;
+      }
+      // A spoken yes cannot release a destructive action, whoever heard it. The
+      // model is not a second opinion on that rule — it is the same rule.
+      if (pending.destructive) {
+        sendFunctionOutput(callId, {
+          status: "needs_tap",
+          reason: "That one needs the user to tap the card on screen.",
+        });
+        return;
+      }
+      if (name === CTO_VOICE_TOOL_APPROVE) approvePending("voice");
+      else denyPending();
+      sendFunctionOutput(callId, { status: "ok" });
+      return;
+    }
+
+    sendFunctionOutput(callId, { status: "unknown_tool" });
+  }
+
+  /** Every `function_call` item in a finished response. */
+  function handleResponseFunctionCalls(response: Record<string, unknown>) {
+    const output = Array.isArray(response.output) ? response.output : [];
+    for (const entry of output) {
+      const item = (entry ?? {}) as Record<string, unknown>;
+      if (item.type !== "function_call") continue;
+      handleFunctionCall(
+        typeof item.name === "string" ? item.name : "",
+        typeof item.call_id === "string" ? item.call_id : "",
+        typeof item.arguments === "string" ? item.arguments : "",
+      );
     }
   }
 
@@ -1118,9 +1482,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       return;
     }
 
-    // No empty check here: a transcript with no words never reaches this line —
-    // `judgeTranscript` rejects it as "empty" before anything is recorded.
-    void runCtoTurn();
+    // And that is the end of it. A transcript no longer starts anything: under
+    // the hybrid the realtime model hears the audio itself and decides whether
+    // this needs the CTO. What this path still owns is the record of the call
+    // and the spoken answer to a question ADE asked.
   }
 
   function handleEvent(raw: unknown) {
@@ -1152,17 +1517,17 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         || state.phase === "speaking"
         || state.phase === "thinking";
       if (!talkingOver) return;
+      // Only cancels a response ADE created; the server truncates its own.
       stopSpeaking();
-      // A question the CTO asked is not a turn to abandon. That turn is parked
-      // inside `canUseTool` waiting for exactly this reply, so aborting it here
-      // would kill the work the user's "yes" is one word away from releasing —
-      // and dropping `confirming` would take the card off screen with it.
+      // A question the CTO asked keeps its card on screen: the turn behind it is
+      // parked inside `canUseTool` waiting for exactly this reply.
       if (state.pendingConfirmation) return;
-      // Everything else is a real barge-in: the answer in flight is to a
-      // question the user has moved on from, so the turn behind it goes too.
-      abort?.abort();
-      abort = null;
-      emit({ interrupted: true, phase: "listening" });
+      // The WORK is deliberately left running. Talking while the CTO works is
+      // ordinary on a hybrid call — the user asks a follow-up, or thinks out
+      // loud — and killing the turn for it would make the call unusable. Work
+      // stops two ways and only two: `cancel_work`, and a new `ask_cto`
+      // superseding it.
+      emit({ interrupted: true, phase: askCtoRunning ? "thinking" : "listening" });
       return;
     }
 
@@ -1216,6 +1581,11 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
     if (type === "response.created") {
       responseActive = true;
+      // Which side created it, recorded here because this is the only moment
+      // both facts are in hand: the send that asked for it is ours or it is
+      // not, and barge-in has to cancel only the former.
+      activeResponseIsOurs = pendingOurResponse;
+      pendingOurResponse = false;
       const created = (event.response ?? {}) as Record<string, unknown>;
       activeResponseId = typeof created.id === "string" && created.id.length ? created.id : null;
       // The user talked over a response the server had not named yet. Now it
@@ -1244,10 +1614,36 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     }
 
     if (type === "response.done" || type === "response.failed" || type === "response.cancelled") {
+      const response = (event.response ?? {}) as Record<string, unknown>;
+      // The conversation has caught up: every call it was still writing is now
+      // written, so anything that was waiting on one can go. Queued while the
+      // lock is still held, so the release below drains it in one go.
+      unsettledFunctionCalls.clear();
+      flushFunctionOutputs();
+      // A `cancelled` response releases the lock exactly like a completed one —
+      // the whole point of a barge-in is that the next thing can be said.
       releaseResponse();
-      // Only once nothing else is queued: the filler and the answer behind it
-      // are one stretch of speaking, not two.
-      if (!responseActive && state.phase === "speaking") setPhase("listening");
+      // Only once nothing else is queued: an acknowledgement and the answer
+      // behind it are one stretch of speaking, not two.
+      if (!responseActive && state.phase === "speaking") {
+        setPhase(askCtoRunning ? "thinking" : "listening");
+      }
+      // Last: the model's turn is over, and what it asked for is in its output.
+      handleResponseFunctionCalls(response);
+      return;
+    }
+
+    // The other spelling of the same fact, and it arrives BEFORE
+    // `response.done`. Both are handled and both are deduped by `call_id`,
+    // because which one a given surface sends is not a thing to guess at — and
+    // this one is a beat earlier, which on a five-second turn is worth having.
+    if (type === "response.function_call_arguments.done") {
+      if (typeof event.call_id === "string") unsettledFunctionCalls.add(event.call_id);
+      handleFunctionCall(
+        typeof event.name === "string" ? event.name : "",
+        typeof event.call_id === "string" ? event.call_id : "",
+        typeof event.arguments === "string" ? event.arguments : "",
+      );
       return;
     }
 
@@ -1304,15 +1700,33 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     });
     emit({ pendingConfirmation: confirmation, phase: "confirming" });
     // Asked out loud, because the user is on a call: the turn is parked inside
-    // `canUseTool` and the chat card is not where they are looking.
+    // `canUseTool` and the chat card is not where they are looking. ADE's own
+    // words, out-of-band — the question is a permission gate, and a model that
+    // rephrased it would be rewriting what the user is agreeing to.
     speak(confirmation.destructive
       ? `${confirmation.prompt} That one needs a tap — I have put a card on screen.`
       : confirmation.prompt);
+    // And the model is told, silently, that a question is open. Without this it
+    // hears the user say "yes" to nothing it can see and answers "yes to what?"
+    // The transcript parser still resolves the same word; the two race and
+    // whichever wins, `approvePending` only fires once.
+    think(confirmation.destructive
+      ? `ADE has asked the user out loud to approve: ${confirmation.prompt}`
+        + " That action needs a tap on screen, so do not call any approval tool for it"
+        + " and do not offer to approve it yourself. Say nothing about this note."
+      : `ADE has asked the user out loud to approve: ${confirmation.prompt}`
+        + ` If they clearly say yes, call ${CTO_VOICE_TOOL_APPROVE}. If they clearly say no,`
+        + ` call ${CTO_VOICE_TOOL_DENY}. If they say anything else, say nothing about it.`
+        + " Say nothing about this note.");
   }
 
   function approvePending(source: "voice" | "tap") {
     const confirmation = state.pendingConfirmation;
-    if (!confirmation) return;
+    // Two things can answer one question now — the transcript parser and the
+    // model's own `approve_pending_action` — so the id is what makes the second
+    // one a no-op rather than a second decision on an open gate.
+    if (!confirmation || resolvedConfirmations.has(confirmation.id)) return;
+    resolvedConfirmations.add(confirmation.id);
     deps.logger?.info("cto_voice.confirmation_approved", { tool: confirmation.toolName, source });
     // Echo the commitment before acting: it gives the user a beat to say no.
     speak(`Doing that now — ${confirmation.prompt.replace(/\?$/, "")}.`);
@@ -1328,7 +1742,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
   function denyPending() {
     const confirmation = state.pendingConfirmation;
-    if (!confirmation) return;
+    if (!confirmation || resolvedConfirmations.has(confirmation.id)) return;
+    resolvedConfirmations.add(confirmation.id);
     emit({ pendingConfirmation: null, phase: "listening" });
     if (confirmation.approvalItemId) {
       void deps
@@ -1362,10 +1777,12 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     socket = null;
     socketOpen = false;
     pendingInputAudio = [];
-    speakQueue = [];
+    responseQueue = [];
+    pendingFunctionOutputs = [];
     responseActive = false;
-    abort?.abort();
-    abort = null;
+    askCtoAbort?.abort();
+    askCtoAbort = null;
+    askCtoRunning = false;
     if (keepAlive) { clearInterval(keepAlive); keepAlive = null; }
     releaseApprovalWatch?.();
     releaseApprovalWatch = null;
@@ -1442,7 +1859,12 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       pendingInputAudio = [];
       sessionReady = false;
       responseActive = false;
-      speakQueue = [];
+      responseQueue = [];
+      pendingFunctionOutputs = [];
+      askCtoRunning = false;
+      handledFunctionCalls.clear();
+      unsettledFunctionCalls.clear();
+      resolvedConfirmations.clear();
       // A second call on this service starts with an empty microphone record and
       // an open gate: the previous call's burst must not shut this one's.
       resetMic();
@@ -1480,7 +1902,18 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         raiseApproval(approval);
       }) ?? null;
 
-      // The user can hang up while the await above is still running — the HUD
+      // Built before the socket, because the session prompt has to be complete
+      // in the FIRST `session.update`: anything the model says before its
+      // instructions land is said by a stranger. A context that cannot be built
+      // is a call that asks the CTO more often, not a call that fails.
+      try {
+        sessionContext = deps.context ? await deps.context() : "";
+      } catch (error) {
+        sessionContext = "";
+        deps.logger?.warn("cto_voice.context_failed", { error: String(error) });
+      }
+
+      // The user can hang up while the awaits above are still running — the HUD
       // is on screen from `connecting`. Without this the socket below would be
       // opened for a call that is already over, and nothing would close it.
       if (!started) return { ok: false, error: "ended" };
@@ -1492,11 +1925,11 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         // ever clear, once per abandoned call.
         if (!socket) return;
         socketOpen = true;
-        // The one event that decides whether this is a CTO call or a chat with
-        // a stranger. `create_response: false` keeps server turn detection —
-        // so speech is still segmented, committed and transcribed for us — while
-        // refusing the model permission to answer any of it. Every response on
-        // this socket is one ADE asked for.
+        // The one event that decides what kind of call this is. Server turn
+        // detection now DOES create the model's responses: it is the
+        // conversational front, and it answers from the context block in the
+        // instructions. What it may not do is invent a project fact — that is
+        // what `ask_cto` is for, and the instructions say so.
         send({
           type: "session.update",
           event_id: randomUUID(),
@@ -1505,24 +1938,31 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
             instructions: buildCtoVoiceInstructions({
               ctoName: deps.ctoName(),
               projectName: deps.projectName(),
+              context: sessionContext,
+              acknowledgeAloud: deps.backchannelsEnabled(),
             }),
+            // The seam, as four functions. `auto` because the whole design is
+            // the model deciding which side of the line a sentence falls on.
+            tools: CTO_VOICE_REALTIME_TOOLS,
+            tool_choice: "auto",
             output_modalities: ["audio"],
             audio: {
               input: {
                 format: { type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE },
                 turn_detection: {
                   type: "server_vad",
-                  create_response: false,
-                  // ADE cancels the in-flight response itself, on
-                  // `speech_started`, so that the CTO turn behind it is aborted
-                  // in the same beat. Letting the server also cancel would race
-                  // that and answer our `response.cancel` with an error.
-                  interrupt_response: false,
+                  create_response: true,
+                  // The server truncates its own response the moment it hears
+                  // speech, which is a round trip sooner than ADE could. ADE
+                  // still cancels the responses IT created out-of-band, which
+                  // this does not cover: they are not in the conversation.
+                  interrupt_response: true,
                 },
-                // Not on by default, and the transcript IS the intent: without
-                // this the call has nothing to ask the CTO. The language is
-                // named rather than guessed — an unnamed short utterance is how
-                // a call ended up with a phantom "好" in its transcript.
+                // Not on by default. No longer what drives a turn — the model
+                // hears the audio itself — but still what the captions, the
+                // saved transcript and the spoken yes/no parser are made of.
+                // The language is named rather than guessed: an unnamed short
+                // utterance is how a call ended up with a phantom "好" in it.
                 transcription: {
                   model: CTO_VOICE_TRANSCRIBE_MODEL,
                   language: CTO_VOICE_TRANSCRIBE_LANGUAGE,
@@ -1555,7 +1995,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         // Anything queued before the socket opened. `watchApprovals` is attached
         // before the connection is made, so a tool that asks during the
         // handshake has a question waiting here and nothing else would send it.
-        drainSpeech();
+        drainResponses();
       });
       socket.on("message", (payload) => handleEvent(payload));
       socket.on("unexpected-response", (payload) => {

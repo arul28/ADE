@@ -16,6 +16,7 @@ import {
   CTO_VOICE_VOICES,
   CTO_VOICE_ACTIONS,
   CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+  CTO_VOICE_CONTEXT_MAX_CHARS,
   CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW,
   CTO_VOICE_SPOKEN_TURN_FAILED,
   ctoVoiceStatusLine,
@@ -156,6 +157,123 @@ export function splitSpokenSceneAnswer(outputText: string): {
     spoken: split.spoken.length ? split.spoken : CTO_VOICE_SCENE_ONLY_SPOKEN,
     sceneSource: split.sceneSource,
   };
+}
+
+/**
+ * Everything the realtime model may answer from without asking the CTO.
+ *
+ * Pure, and built from plain data rather than from the services, so the two
+ * things that actually matter about it — the ORDER of the sections and the
+ * BOUND on the whole block — can be tested without a project on disk.
+ *
+ * The order is most- to least-identifying: who you are, then what project this
+ * is, then what you remember, then what is happening today. That is also the
+ * order they would be missed in, which matters because the trim below eats the
+ * long sections first.
+ *
+ * The bound is not decoration. This block is re-sent after every completed
+ * `ask_cto`, so an unbounded one is paid for again on every refresh — and a
+ * durable memory file grows without limit.
+ */
+export type CtoVoiceContextInput = {
+  ctoName: string;
+  persona: string;
+  projectName: string;
+  projectRoot: string;
+  /** `provider/model` the CTO thread is running on, or null before the pick. */
+  modelName: string | null;
+  laneNames: string[];
+  lanesTotal: number;
+  /** Durable memory, thread state and the daily log, as the memory service labels them. */
+  memorySections: Array<{ title: string; body: string }>;
+};
+
+/** A section trimmed to the floor still has to say that it was trimmed. */
+const CTO_VOICE_CONTEXT_TRIM_MARKER = "\n…(trimmed)";
+
+/**
+ * The smallest a section is allowed to be trimmed to.
+ *
+ * Below this a section is noise rather than context — half a sentence of
+ * durable memory tells the model less than no memory at all, because it reads
+ * as a complete fact.
+ */
+const CTO_VOICE_CONTEXT_MIN_SECTION_CHARS = 200;
+
+export function buildCtoVoiceContext(
+  input: CtoVoiceContextInput,
+  maxChars = CTO_VOICE_CONTEXT_MAX_CHARS,
+): string {
+  const laneLine = input.lanesTotal === 0
+    ? "- Lanes: none yet"
+    : `- Lanes (${input.lanesTotal}): ${input.laneNames.join(", ")}`;
+  const sections: Array<{ title: string; body: string }> = [
+    {
+      title: "Who you are",
+      body: [
+        `- Name: ${input.ctoName}`,
+        `- Role: CTO of ${input.projectName}`,
+        `- Persona: ${input.persona}`,
+        `- You think on: ${input.modelName ?? "a model the user has not picked yet"}`,
+      ].join("\n"),
+    },
+    {
+      title: "This project",
+      body: [
+        `- Name: ${input.projectName}`,
+        `- Root: ${input.projectRoot}`,
+        laneLine,
+      ].join("\n"),
+    },
+    ...input.memorySections
+      .map((section) => ({ title: section.title, body: section.body.trim() }))
+      .filter((section) => section.body.length > 0),
+  ];
+
+  const render = (): string =>
+    sections.map((section) => `${section.title}\n${section.body}`).join("\n\n");
+
+  // Longest first, and only down to the floor. Trimming evenly would take the
+  // identity apart to save a journal entry; trimming the longest is what makes
+  // a busy project lose the tail of its memory rather than its own name.
+  const atFloor = new Set<number>();
+  let rendered = render();
+  while (rendered.length > maxChars) {
+    let target = -1;
+    for (let index = 0; index < sections.length; index += 1) {
+      if (atFloor.has(index)) continue;
+      if (sections[index]!.body.length <= CTO_VOICE_CONTEXT_MIN_SECTION_CHARS) {
+        atFloor.add(index);
+        continue;
+      }
+      if (target < 0 || sections[index]!.body.length > sections[target]!.body.length) target = index;
+    }
+    if (target < 0) break;
+    const body = sections[target]!.body;
+    const over = rendered.length - maxChars;
+    const keep = Math.max(
+      CTO_VOICE_CONTEXT_MIN_SECTION_CHARS,
+      body.length - over - CTO_VOICE_CONTEXT_TRIM_MARKER.length,
+    );
+    sections[target] = {
+      ...sections[target]!,
+      body: `${body.slice(0, keep).trimEnd()}${CTO_VOICE_CONTEXT_TRIM_MARKER}`,
+    };
+    rendered = render();
+  }
+  // Everything is at the floor and it still does not fit: a project with dozens
+  // of sections. Cut on a line rather than mid-word.
+  if (rendered.length > maxChars) {
+    const kept: string[] = [];
+    let used = 0;
+    for (const line of rendered.split("\n")) {
+      if (used + line.length + 1 > maxChars) break;
+      kept.push(line);
+      used += line.length + 1;
+    }
+    return kept.join("\n");
+  }
+  return rendered;
 }
 
 /** How a call ended, in the closed vocabulary the analytics allowlist holds. */
@@ -472,6 +590,51 @@ export function createCtoVoiceRuntimeService(
           });
         }),
 
+      /**
+       * The context block, rebuilt on demand.
+       *
+       * Every read is cheap except the lane list, which is one await — and it
+       * is the fact most likely to be asked about ("how many lanes do we
+       * have?"), so it is worth the await rather than worth a guess. Every
+       * source is individually guarded: a project whose memory files are
+       * unreadable should get a smaller block, not a call that will not start.
+       */
+      context: async (): Promise<string> => {
+        const identity = ctoStateService.getIdentity();
+        let laneNames: string[] = [];
+        let lanesTotal = 0;
+        try {
+          const lanes = await (host.laneService?.list({
+            includeArchived: false,
+            includeStatus: false,
+          }) ?? Promise.resolve([]));
+          lanesTotal = lanes.length;
+          laneNames = lanes.map((lane) => lane.name || lane.id);
+        } catch (error) {
+          hostLogger?.warn("cto_voice.context_lanes_failed", { error: String(error) });
+        }
+        let memorySections: Array<{ title: string; body: string }> = [];
+        try {
+          // The memory service's own three labelled sections — durable memory,
+          // thread state, recent daily log — rather than a second assembly of
+          // the same files here. One place decides what the CTO remembers.
+          memorySections = ctoMemoryService?.buildMemoryContextSections() ?? [];
+        } catch (error) {
+          hostLogger?.warn("cto_voice.context_memory_failed", { error: String(error) });
+        }
+        const preferred = identity.modelPreferences;
+        return buildCtoVoiceContext({
+          ctoName: identity.name || "CTO",
+          persona: identity.persona || "Persistent project CTO for this ADE workspace.",
+          projectName: path.basename(host.projectRoot.replace(/[\\/]+$/, "")) || "this project",
+          projectRoot: host.projectRoot,
+          modelName: preferred ? `${preferred.provider}/${preferred.model}` : null,
+          laneNames,
+          lanesTotal,
+          memorySections,
+        });
+      },
+
       ctoName: () => ctoStateService.getIdentity().name || "CTO",
       // The project record carries no display name at this layer; the folder
       // name is what the user calls this project everywhere else in ADE.
@@ -554,8 +717,10 @@ export function createCtoVoiceRuntimeService(
           const result = await agentChatService.runSessionTurn({
             sessionId,
             text: [
-              "[voice call] The user is speaking with you right now and will hear your reply.",
-              "Answer in at most three sentences, in plain spoken language, with no markdown, no lists and no code.",
+              "[voice call] The user is on a call. A voice assistant speaking as you will relay"
+              + " your answer out loud, so write for the ear: at most three plain sentences, no"
+              + " markdown, no lists, no code, no formatting of any kind.",
+              "Answer the question itself — the voice assistant adds nothing and looks nothing up.",
               // The transcriber is pinned to English, so a reply in another
               // language would be read aloud by an English voice. Said here as
               // well because the intent text can still arrive with a foreign
@@ -588,14 +753,21 @@ export function createCtoVoiceRuntimeService(
             toolCalls,
           };
           if (result.status === "completed") {
-            return { ...splitSpokenSceneAnswer(result.outputText), ...measured };
+            return {
+              ...splitSpokenSceneAnswer(result.outputText),
+              status: "completed" as const,
+              ...measured,
+            };
           }
           const reason = result.errorMessage ?? result.outputText;
           if (result.status === "interrupted") {
-            // The user stopped this themselves. Saying anything would be ADE
-            // narrating the user's own action back at them.
             hostLogger?.info("cto_voice.turn_interrupted", { callId, sessionId });
-            return { spoken: "", ...measured };
+            return {
+              spoken: "",
+              status: "interrupted" as const,
+              reason: "That was stopped before it finished.",
+              ...measured,
+            };
           }
           const overLimit = isContextOverflowFailureText(reason);
           hostLogger?.warn("cto_voice.turn_failed", {
@@ -605,8 +777,13 @@ export function createCtoVoiceRuntimeService(
             cause: overLimit ? "context_overflow" : "error",
             error: reason,
           });
+          // The provider's own words never travel: `reason` here is a house
+          // sentence, because whatever goes back is read out loud by a model
+          // that will happily relay a stack trace.
           return {
-            spoken: overLimit ? CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW : CTO_VOICE_SPOKEN_TURN_FAILED,
+            spoken: "",
+            status: "failed" as const,
+            reason: overLimit ? CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW : CTO_VOICE_SPOKEN_TURN_FAILED,
             ...measured,
           };
         } finally {

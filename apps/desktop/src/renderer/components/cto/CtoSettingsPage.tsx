@@ -579,10 +579,10 @@ export function CtoSettingsPage({
         </CtoCard>
 
         <CtoCard
-          title="Thinking out loud"
+          title="Say what it's doing"
           description={
             backchannels
-              ? "The CTO may make a short noise while it works."
+              ? "Before the CTO does real work, it says one short sentence about it."
               : "The CTO stays quiet until it has your answer."
           }
           accent={accent}
