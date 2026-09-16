@@ -974,7 +974,6 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
 export function ChatTurnWorkSummary({
   toolEntries,
   fileEntries,
-  hideFiles = false,
   onReviewInFiles,
   onNavigateSuggestion,
   onInsertDraft,
@@ -984,7 +983,6 @@ export function ChatTurnWorkSummary({
 }: {
   toolEntries: ChatWorkLogEntry[];
   fileEntries: ChatWorkLogEntry[];
-  hideFiles?: boolean;
   onReviewInFiles?: () => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onInsertDraft?: (text: string) => void;
@@ -997,8 +995,8 @@ export function ChatTurnWorkSummary({
   const [open, setOpen] = useState(false);
   const tools = useMemo(() => dedupeChatToolActivityEntries(toolEntries), [toolEntries]);
   const files = useMemo(
-    () => (hideFiles ? [] : aggregateFilesFromEntries(fileEntries.filter(isCodeChangeEntry))),
-    [fileEntries, hideFiles],
+    () => aggregateFilesFromEntries(fileEntries.filter(isCodeChangeEntry)),
+    [fileEntries],
   );
   const label = formatTurnWorkSummaryLabel(tools.length, files.length);
   if (!label && !chrome) return null;

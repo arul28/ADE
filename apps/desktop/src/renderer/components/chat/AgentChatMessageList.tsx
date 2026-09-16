@@ -2903,7 +2903,10 @@ function renderEvent(
   /* ── Grouped interrupt-stopped subagents ── */
   if (event.type === "subagent_stopped_group") {
     return (
-      <SubagentStoppedGroupCard event={event} />
+      <SubagentStoppedGroupCard
+        event={event}
+        onJumpToStart={options?.onScrollToRowKey}
+      />
     );
   }
 
@@ -4191,7 +4194,7 @@ function DoneTurnDivider({
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
 }) {
-  const [activityOpen, setActivityOpen] = useState(false);
+  const [usageDetailsOpen, setUsageDetailsOpen] = useState(false);
   // Proof captured during this turn renders inline, at the moment it happened,
   // and starts collapsed so a long capture run never buries the reply.
   const [proofOpen, setProofOpen] = useState(false);
@@ -4218,7 +4221,7 @@ function DoneTurnDivider({
     <span className="inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
       <span>{usageLimitLabel}</span>
       {usageLimitDetails ? (
-        activityOpen
+        usageDetailsOpen
           ? <CaretDown size={9} weight="bold" className="opacity-55" />
           : <CaretRight size={9} weight="bold" className="opacity-55" />
       ) : null}
@@ -4267,9 +4270,9 @@ function DoneTurnDivider({
       {usageLimitDetails ? (
         <button
           type="button"
-          aria-expanded={activityOpen}
-          aria-label={`${activityOpen ? "Hide" : "Show"} details from this turn`}
-          onClick={() => setActivityOpen((open) => !open)}
+          aria-expanded={usageDetailsOpen}
+          aria-label={`${usageDetailsOpen ? "Hide" : "Show"} details from this turn`}
+          onClick={() => setUsageDetailsOpen((open) => !open)}
           className="rounded-md py-0.5 transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
         >
           {content}
@@ -4295,8 +4298,7 @@ function DoneTurnDivider({
     <div className="my-4 min-w-0">
       <ChatTurnWorkSummary
         toolEntries={toolEntries}
-        fileEntries={turnFileEntries ?? EMPTY_WORK_LOG_ENTRIES}
-        hideFiles={hasCheckpointDiffSummary}
+        fileEntries={hasCheckpointDiffSummary ? EMPTY_WORK_LOG_ENTRIES : (turnFileEntries ?? EMPTY_WORK_LOG_ENTRIES)}
         onReviewInFiles={onReviewInFiles}
         onNavigateSuggestion={onNavigateSuggestion}
         onInsertDraft={onInsertDraft}
@@ -4305,7 +4307,7 @@ function DoneTurnDivider({
         chrome={timeUsageRow}
       />
       <AnimatePresence initial={false}>
-        {usageLimitDetails && activityOpen ? (
+        {usageLimitDetails && usageDetailsOpen ? (
           <motion.div
             initial={{ opacity: 0, height: 0, y: -4 }}
             animate={{ opacity: 1, height: "auto", y: 0 }}

@@ -46,9 +46,8 @@ function stripAnsi(value: string): string {
   return value.replace(/\[[0-9;]*m/g, "");
 }
 
-// Tool calls live behind the active/completed status rows, while file changes
-// remain in their chronological transcript cards. Tests that assert detail rows
-// pass `expanded: true` to open every available disclosure.
+// Tool calls and settled file changes fold into the completed turn-end row.
+// Tests that assert detail rows pass `expanded: true` to open every available disclosure.
 function expandAllWorkGroups(
   events: AgentChatEventEnvelope[],
   activeSession: AgentChatSessionSummary | null,

@@ -931,7 +931,9 @@ struct WorkTurnEndMarkerView: View {
   }
 
   private var usageLimitBody: some View {
-    VStack(spacing: 6) {
+    VStack(alignment: .leading, spacing: 6) {
+      workSummaryRow
+        .frame(maxWidth: .infinity, alignment: .leading)
       HStack(spacing: 10) {
         hairline
         Button {

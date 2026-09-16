@@ -308,9 +308,9 @@ final class WorkCardExpansionTests: XCTestCase {
   // MARK: - Finished turns keep their work
 
   /// The shape that reported this: a Claude turn whose whole body was one
-  /// `Read` and one approved shell command. Both fold into one cluster, and the
-  /// transcript has to still draw that cluster once the turn ends — a finished
-  /// turn collapses to one line, it does not disappear.
+  /// `Read` and one approved shell command. Both fold into one cluster, and
+  /// after `done` that cluster is disclosed from the turn-end marker — not as
+  /// a second inline row.
   func testFinishedTurnKeepsItsToolClusterInTheTranscript() {
     let grouped = collapseConsecutiveWorkToolEntries([
       userMessage("msg-1"),
@@ -321,19 +321,19 @@ final class WorkCardExpansionTests: XCTestCase {
     ])
 
     let presented = workPresentedTimelineEntries(grouped)
-    let members = presented.flatMap { entry -> [WorkToolGroupMember] in
+    let inlineMembers = presented.flatMap { entry -> [WorkToolGroupMember] in
       guard case .toolGroup(let group) = entry.payload else { return [] }
       return group.members
     }
+    XCTAssertTrue(inlineMembers.isEmpty, "settled tool clusters leave the inline transcript")
+    XCTAssertTrue(
+      presented.contains { if case .turnEndMarker = $0.payload { return true }; return false },
+      "the finished turn still has a turn-end marker"
+    )
 
-    XCTAssertTrue(
-      members.contains { $0.id == "tool:read-1" },
-      "the finished turn's Read has to keep a row in the transcript"
-    )
-    XCTAssertTrue(
-      members.contains { $0.id == "command:bash-1" },
-      "the finished turn's shell command has to keep a row in the transcript"
-    )
+    let activity = workTurnToolActivityIndex(from: grouped).completedByTurnId["turn-1"]
+    XCTAssertEqual(activity?.members.contains { $0.id == "tool:read-1" }, true)
+    XCTAssertEqual(activity?.members.contains { $0.id == "command:bash-1" }, true)
   }
 
   /// A cluster and a file-change group are the same kind of thing to a reader,
