@@ -6,7 +6,9 @@
  * is handed. It never composes an answer, because the session is configured
  * with server-side turn detection that does NOT create a response
  * (`turn_detection.create_response: false`) — every response on that socket is
- * one ADE asked for, carrying text the CTO thread already wrote.
+ * one ADE asked for, carrying text the CTO thread already wrote, and every one
+ * of those is created out-of-band so the model has no conversation in front of
+ * it to answer.
  *
  * That split is the reason the CTO's thinking can stay on whatever plan it
  * already runs on while only the voice minutes bill to the user's own API key.
@@ -46,6 +48,18 @@ export function ctoVoiceEndpointUrl(model: string = CTO_VOICE_MODEL): string {
  * to ask the CTO: the transcript IS the intent.
  */
 export const CTO_VOICE_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
+
+/**
+ * The language the transcriber is told to hear.
+ *
+ * Without it the model guesses per utterance, and a short or noisy one guesses
+ * wrong: a real call transcribed a phantom "好" and the CTO answered it, then
+ * the voice replied in Chinese. Naming the language removes the guess — an
+ * English speaker's "OK" can no longer become a Korean sentence — and it also
+ * makes the transcript faster and more accurate, because the model is no longer
+ * spending the first words deciding what it is listening to.
+ */
+export const CTO_VOICE_TRANSCRIBE_LANGUAGE = "en";
 
 /** Billed per second; the pill shows the running total from this. */
 export const CTO_VOICE_USD_PER_MINUTE = 0.05;
@@ -125,14 +139,33 @@ export const CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT = 200;
 export const CTO_VOICE_MIN_SPEECH_PEAK_LEVEL = 0.05;
 
 /**
- * How much VOICED audio a segment needs before it can carry a sentence.
+ * How far back the microphone meter remembers.
  *
- * Counted as the duration of the frames that were actually above the peak
- * threshold, not the wall-clock length of the segment, so a long pause bracketed
- * by two clicks cannot qualify. 240 ms is under the length of a spoken "yes"
- * (~350 ms) and far over a keyboard click or a chair creak, which is the
- * distinction being drawn — the shortest real utterance a call must accept is a
- * one-word answer to a confirmation.
+ * The meter is reset by a JUDGEMENT, not by a VAD segment (see `judgeTranscript`),
+ * and the first transcript of a call can land fifteen seconds after the
+ * microphone opened. Without a window, every frame since the call started was
+ * evidence for that first transcript — so three noisy frames scattered across
+ * those fifteen seconds cleared a 240 ms minimum between them, which is how a
+ * phantom "好" passed a gate that was running. Three seconds is longer than any
+ * single sentence a call has to accept, and far shorter than the run-up to one.
+ */
+export const CTO_VOICE_MIC_WINDOW_MS = 3_000;
+
+/**
+ * How much CONTIGUOUS voiced audio a segment needs before it can carry a
+ * sentence.
+ *
+ * Contiguous is the load-bearing word. This was once a sum of every frame above
+ * the peak threshold, and a sum cannot tell a spoken word from three unrelated
+ * clicks in three different seconds — the frames only have to add up. It is now
+ * the longest unbroken run of above-threshold frames inside
+ * {@link CTO_VOICE_MIC_WINDOW_MS}, which is what a word actually looks like:
+ * energy that stays up. Measured from the frames' own byte lengths rather than a
+ * clock, so a long pause bracketed by two clicks cannot qualify.
+ *
+ * 240 ms is under the length of a spoken "yes" (~350 ms) and far over a keyboard
+ * click or a chair creak, which is the distinction being drawn — the shortest
+ * real utterance a call must accept is a one-word answer to a confirmation.
  */
 export const CTO_VOICE_MIN_SPEECH_MS = 240;
 
@@ -754,6 +787,11 @@ export function buildCtoVoiceInstructions(args: {
  * the instruction for that one response — fenced by markers, because an answer
  * that itself contains a question ("Shall I open the PR?") must be READ, not
  * answered.
+ *
+ * The instruction only survives contact with the model when the response is
+ * out-of-band (`conversation: "none"`, `input: []`); inside the conversation the
+ * user's own audio outweighs it and the model answers the user instead. See
+ * `drainSpeech` in `ctoVoiceCallService`.
  *
  * Here rather than in the service because it is the contract between what the
  * CTO thread writes and what the user hears, and it is worth being able to test

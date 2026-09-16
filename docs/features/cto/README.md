@@ -43,7 +43,7 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 - `apps/desktop/src/main/services/chat/codexCtoToolDeferral.ts` — Codex's dynamic-tool wire shape and the two pure functions that build it: `CodexDynamicToolSpec`, `jsonSchemaForExecutableTool()`, `buildCodexDynamicToolSpecs()`, and the CTO defer predicate `codexDeferCtoTool()`. Service-side types are imported `type`-only, so a unit test for the defer rule costs a zod import rather than the Cursor SDK pool, the Droid worker, and the whole chat graph.
 - `apps/desktop/src/main/services/ai/tools/universalTools.ts` — carries `recordDiscovery`, the append-only tool every agent gets (see [Worker discoveries](#worker-discoveries)).
 - `apps/desktop/src/shared/types/cto.ts` — the discriminated `CtoAttentionState` (`idle`, `awaiting-input`, or `unknown`), the shape every attention transport returns. `unknown` means inspection failed and clients must retain their last known badge state. It also splits `CtoModelPreferences` out as its own type, because `CtoIdentity.modelPreferences` is now `CtoModelPreferences | null`.
-- `apps/desktop/src/shared/types/ctoVoice.ts` — the cross-surface voice contract, and the one place the policy is written. It imports nothing, which is what lets the action policy tables and the approval gate read it without dragging `ws`, the API key store and the chat service graph in behind them: `CTO_VOICE_MODEL` (`gpt-realtime-2.1`), `CTO_VOICE_ENDPOINT` (`wss://api.openai.com/v1/realtime`) with `ctoVoiceEndpointUrl()`, `CTO_VOICE_TRANSCRIBE_MODEL` (`gpt-4o-mini-transcribe`), `CTO_VOICE_USD_PER_MINUTE` (0.05), `CTO_VOICE_SAMPLE_RATE` (24,000), `CTO_VOICE_AUDIO_POLL_INTERVAL_MS` (100 ms), `CTO_VOICE_OWNER_IDLE_TIMEOUT_MS` (15 s), `CTO_VOICE_PREOPEN_AUDIO_LIMIT` (50 frames) and `CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT` (200 chunks), the transcript gate's `CTO_VOICE_MIN_SPEECH_PEAK_LEVEL` / `CTO_VOICE_MIN_SPEECH_MS` / `CTO_VOICE_TURN_BURST_LIMIT` / `CTO_VOICE_TURN_BURST_WINDOW_MS` / `CTO_VOICE_TURN_BURST_COOLDOWN_MS` with `CtoVoiceTranscriptRejection` and `ctoVoiceTranscriptHasSpeech()`, `ctoVoiceStatusLine()`, the `CTO_VOICE_ACTIONS` list and its `CtoVoiceAction` type, the `CTO_VOICE_VOICES` list and `CTO_VOICE_DEFAULT` (`marin`), the `CtoVoicePhase` union with `isVoiceCallLive()` / `isVoiceCallVisible()`, `CtoVoiceState` + `CTO_VOICE_INITIAL_STATE`, `CtoVoiceBridge`, `CtoVoiceConfirmation`, `CTO_VOICE_SPOKEN_CONFIRM_WINDOW_MS` (20 s), `CTO_VOICE_DESTRUCTIVE_TOOLS` + `isDestructiveVoiceTool()`, `isDestructiveVoiceCommand()` and `describeVoiceApproval()`, `ctoVoiceMicrophoneUnavailableMessage()`, `CTO_VOICE_CAPTURE_DEFAULT_NOTE`, the `voiceCostUsd` / `formatVoiceElapsed` / `formatVoiceCost` formatters, `buildCtoVoiceInstructions()` — who the realtime model is speaking as and how to deliver a line, and nothing else, because it is never asked a question — and `buildCtoVoiceSpeakInstructions()`, which wraps one answer as the fenced read-aloud instruction of a single `response.create`. Detailed procedure deliberately stays with the backend; the realtime model is ears and a mouth.
+- `apps/desktop/src/shared/types/ctoVoice.ts` — the cross-surface voice contract, and the one place the policy is written. It imports nothing, which is what lets the action policy tables and the approval gate read it without dragging `ws`, the API key store and the chat service graph in behind them: `CTO_VOICE_MODEL` (`gpt-realtime-2.1`), `CTO_VOICE_ENDPOINT` (`wss://api.openai.com/v1/realtime`) with `ctoVoiceEndpointUrl()`, `CTO_VOICE_TRANSCRIBE_MODEL` (`gpt-4o-mini-transcribe`) with `CTO_VOICE_TRANSCRIBE_LANGUAGE` (`en`, named rather than guessed per utterance), `CTO_VOICE_USD_PER_MINUTE` (0.05), `CTO_VOICE_SAMPLE_RATE` (24,000), `CTO_VOICE_AUDIO_POLL_INTERVAL_MS` (100 ms), `CTO_VOICE_OWNER_IDLE_TIMEOUT_MS` (15 s), `CTO_VOICE_PREOPEN_AUDIO_LIMIT` (50 frames) and `CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT` (200 chunks), the transcript gate's `CTO_VOICE_MIC_WINDOW_MS` / `CTO_VOICE_MIN_SPEECH_PEAK_LEVEL` / `CTO_VOICE_MIN_SPEECH_MS` / `CTO_VOICE_TURN_BURST_LIMIT` / `CTO_VOICE_TURN_BURST_WINDOW_MS` / `CTO_VOICE_TURN_BURST_COOLDOWN_MS` with `CtoVoiceTranscriptRejection` and `ctoVoiceTranscriptHasSpeech()`, `ctoVoiceStatusLine()`, the `CTO_VOICE_ACTIONS` list and its `CtoVoiceAction` type, the `CTO_VOICE_VOICES` list and `CTO_VOICE_DEFAULT` (`marin`), the `CtoVoicePhase` union with `isVoiceCallLive()` / `isVoiceCallVisible()`, `CtoVoiceState` + `CTO_VOICE_INITIAL_STATE`, `CtoVoiceBridge`, `CtoVoiceConfirmation`, `CTO_VOICE_SPOKEN_CONFIRM_WINDOW_MS` (20 s), `CTO_VOICE_DESTRUCTIVE_TOOLS` + `isDestructiveVoiceTool()`, `isDestructiveVoiceCommand()` and `describeVoiceApproval()`, `ctoVoiceMicrophoneUnavailableMessage()`, `CTO_VOICE_CAPTURE_DEFAULT_NOTE`, the `voiceCostUsd` / `formatVoiceElapsed` / `formatVoiceCost` formatters, `buildCtoVoiceInstructions()` — who the realtime model is speaking as and how to deliver a line, and nothing else, because it is never asked a question — and `buildCtoVoiceSpeakInstructions()`, which wraps one answer as the fenced read-aloud instruction of a single `response.create`. Detailed procedure deliberately stays with the backend; the realtime model is ears and a mouth.
 - `apps/desktop/src/main/services/cto/ctoVoiceCallService.ts` — `createCtoVoiceCallService(deps)`: the WebSocket, the delegation loop, the keep-alive, the transcript gate (`judgeTranscript`, plus the exported pure `ctoVoiceFrameDurationMs`), and `endCall`'s durable `persistCall` write. Every dependency is injected (`getApiKey`, `runBackendTurn`, `persistCall`, `onExchange`, `now`, `createWebSocket`), so the service never imports the chat service and both the delegation loop and the gate's clock are testable without a model.
 - `apps/desktop/src/main/services/cto/ctoVoiceRuntimeService.ts` — `createCtoVoiceRuntimeService(host)`: the runtime-hosted owner of a call. It builds the call service's deps out of an `AdeRuntime` (chat, CTO identity, durable memory, lanes, and `sessionService` for the row's status line), holds the confirm-first hold and the `ownerToken`, publishes state on the `cto_voice` event category, and keeps the output-audio queue that `pullAudio` drains. Constructed in `apps/ade-cli/src/bootstrap.ts` and exposed as `AdeRuntime.ctoVoiceCallService`. See [The call brain lives in the runtime](#the-call-brain-lives-in-the-runtime-and-the-desktop-is-a-router).
 - `apps/desktop/src/main/services/cto/ctoVoiceWiring.ts` — the desktop router: the nine `CTO_VOICE_ACTIONS` behind one transport interface (`resolveTransport` returns the runtime pool's when a pool exists, the in-process service otherwise, or the sentence explaining why there is neither), the owner window and `isCallOwner` broadcast, the 100 ms audio pump, the per-call `CallSlot`, and the close/reload watchers. It owns no call state of its own.
@@ -451,10 +451,10 @@ Sent by ADE:
 
 | Event | When |
 | --- | --- |
-| `session.update` | Once, on `open`. Instructions, `output_modalities: ["audio"]`, PCM16 in and out at `CTO_VOICE_SAMPLE_RATE`, the chosen `audio.output.voice`, `audio.input.transcription` (`CTO_VOICE_TRANSCRIBE_MODEL`), and the `create_response: false` turn detection above. |
+| `session.update` | Once, on `open`. Instructions, `output_modalities: ["audio"]`, PCM16 in and out at `CTO_VOICE_SAMPLE_RATE`, the chosen `audio.output.voice`, `audio.input.transcription` (`CTO_VOICE_TRANSCRIBE_MODEL` with `language: CTO_VOICE_TRANSCRIBE_LANGUAGE`, `"en"`), and the `create_response: false` turn detection above. |
 | `input_audio_buffer.append` | Every microphone frame, and a 100 ms buffer of silence while muted. |
-| `response.create` | Every time the CTO says something. |
-| `response.cancel` | Barge-in, and only while a response is actually in flight. |
+| `response.create` | Every time the CTO says something. Always out-of-band — `conversation: "none"` with an empty `input` — so the model has no conversation in front of it to answer instead. |
+| `response.cancel` | Barge-in, and only while a response is actually in flight. Always with the `response_id` from `response.created`: a bare cancel means "the response in the default conversation", which ours never is, and the server answers `Cancellation failed: no active response found` while the CTO keeps talking. A barge-in that lands before the server has named the response is held and sent the moment it does. |
 | `conversation.item.create` | A `system` item recording a mid-call capture. Silent — no response is asked for, so nothing is read out. |
 
 Handled from OpenAI:
@@ -466,7 +466,7 @@ Handled from OpenAI:
 | `input_audio_buffer.speech_stopped` | Closes the segment the transcript gate judges. |
 | `conversation.item.input_audio_transcription.delta` / `.completed` | The intent — once it passes the transcript gate. `.completed` is what drives a CTO turn; see [A transcript is not proof of speech](#a-transcript-is-not-proof-of-speech). |
 | `conversation.item.input_audio_transcription.failed` | "Sorry — I didn't catch that.", rather than silence. |
-| `response.created` | A response is in flight. |
+| `response.created` | A response is in flight, and this is where its `id` comes from — the name every `response.cancel` needs. |
 | `response.output_audio.delta` (and `response.audio.delta`) | Base64 PCM16 straight to the renderer's audio queue. |
 | `response.output_audio_transcript.delta` / `.done` | The `speaking` phase, and the assistant caption. |
 | `response.done` / `.failed` / `.cancelled` | Releases the response lock and lets the next queued sentence out. |
@@ -478,17 +478,37 @@ Both spellings of the audio and transcript deltas are handled because the GA sur
 
 The Realtime API has no "say this" event, and `conversation.item.create` with an
 assistant message is **not** it: that puts text in the history and produces no
-audio at all, and the next `response.create` would then have the model answer
-*itself* — the one thing this architecture must never allow.
+audio at all.
 
 What the API does have is per-response `instructions` on `response.create`, which
 is the documented way to steer a single response. So the CTO's sentence rides as
 that response's instruction, fenced by markers and prefixed with "read this word
 for word" (`buildCtoVoiceSpeakInstructions`), with `output_modalities: ["audio"]`.
 The markers are load bearing: an answer that itself ends in a question ("Shall I
-open the PR?") has to be *read*, not answered. The audio response the server
-generates is added to the conversation by the server, so the history still holds
-what was said without ADE writing it twice.
+open the PR?") has to be *read*, not answered.
+
+**Out-of-band, always.** The request carries `conversation: "none"` and an empty
+`input`, so the response is generated with no conversation and no items in front
+of the model — only the instruction. That is not a refinement; it is the whole
+difference between a relay and a chatbot. A response created *inside* the default
+conversation is generated with the user's audio items in front of it, and the
+model weighs "read this text" against a real question it can see and answers the
+question. Measured against the live API on 2026-09-16 with a scripted four-question
+call: in-conversation, only the first exchange read its text back, and 6 of the 8
+requested sentences per run were hijacked into self-answers — identically in
+three runs — which is where the call records' "I'm ChatGPT, your chatty, helpful
+voice buddy" came from. Out-of-band, the same script read the text word for word
+24 times out of 24.
+
+`turn_detection.create_response: false` does not cover this. It stops the model
+answering on its **own** initiative; it says nothing about a response ADE asks
+for. Both are needed.
+
+Out-of-band also means nothing ADE says is written into the conversation, which
+is what we want here: the only history the session accumulates is the user's
+audio, so it can never grow into a second voice with opinions of its own. The
+session-level `instructions` from `buildCtoVoiceInstructions` still apply —
+they are session state, not conversation state.
 
 **One response at a time.** A second `response.create` while one is generating is
 answered with an error rather than with speech, so speech is queued and drained
@@ -503,14 +523,18 @@ So every transcript is now judged before it can become an intent (`judgeTranscri
 
 - the transcript carries at least one letter or digit after trimming (`ctoVoiceTranscriptHasSpeech`, Unicode-aware — the phantoms above were CJK, and an `A-Z` check would have passed every one of them). Otherwise: `empty`;
 - ADE's **own** microphone meter peaked at or above `CTO_VOICE_MIN_SPEECH_PEAK_LEVEL` (0.05 of full scale). The renderer hands `pushAudio` the peak absolute sample of each ~85 ms frame, off a capture chain with AGC and noise suppression on: a close-mic sentence peaks above 0.2, suppressed room noise sits under 0.02. Otherwise: `no_speech_energy`;
-- at least `CTO_VOICE_MIN_SPEECH_MS` (240 ms) of that audio was **voiced** — the summed duration of the frames that were above the threshold, not the wall-clock length of the segment, so a long pause bracketed by two clicks cannot qualify. 240 ms is under a spoken "yes" and far over a keyboard click. Otherwise: `too_short`;
+- at least `CTO_VOICE_MIN_SPEECH_MS` (240 ms) of **contiguous** voiced audio — the longest unbroken run of above-threshold frames, not the sum of them, measured from the frames' own byte lengths rather than a clock. A sum cannot tell a spoken word from three unrelated clicks a second apart, because the frames only have to add up; a word is energy that stays up. 240 ms is under a spoken "yes" and far over a keyboard click. Otherwise: `too_short`;
 - the segment was not ADE hearing itself: a segment whose every frame arrived while a response was in flight **and** whose peak never reached the threshold is echo, not a person. Otherwise: `echo`. Both halves matter — the same segment *with* a real peak in it is a barge-in, which is the most urgent thing on a call;
 - the burst valve is open. More than `CTO_VOICE_TURN_BURST_LIMIT` (4) accepted turns inside `CTO_VOICE_TURN_BURST_WINDOW_MS` (10 s) is one every 2.5 s — faster than the CTO can think and speak one answer, so it is a transcript source running away rather than a conversation. The gate then shuts for everything until `CTO_VOICE_TURN_BURST_COOLDOWN_MS` (8 s) passes with no transcript arriving at all; "until the next accepted transcript" cannot be the release condition, because while the gate is shut there are none. Otherwise: `runaway`.
 
-A rejected transcript is logged at info as `cto_voice.transcript_rejected` with the reason, the text and the measurements, and **nothing else happens**: no turn, no speech, no caption. Tripping and clearing the valve log `cto_voice.transcript_valve_tripped` / `..._cleared`. The thresholds lean deliberately permissive — answering a sentence nobody said is bad, and dropping one they did say is worse.
+The session also names the language it is listening for (`language: "en"` on `audio.input.transcription`) rather than letting the transcriber guess per utterance. A short or noisy utterance is exactly where that guess goes wrong, and it is how `"OK,OK,好好好。"` and `"아니."` were written at all — and once one reached the CTO, the answer came back in the same language and an English voice read it aloud. The voice turn's prompt asks for an English answer for the same reason.
 
-Two details make the measurement honest rather than approximate:
+A rejected transcript is logged at info as `cto_voice.transcript_rejected` with the reason, the text and the measurements, and **nothing else happens**: no turn, no speech, no caption. An accepted one is logged as `cto_voice.transcript_accepted` with the same measurements and the text's **length** rather than the text — an accepted transcript is something the user said, and it does not belong in a log. Both halves are needed: with only rejections recorded, a gate that waved a phantom through looked exactly like a gate with nothing to reject. Tripping and clearing the valve log `cto_voice.transcript_valve_tripped` / `..._cleared`. The thresholds lean deliberately permissive — answering a sentence nobody said is bad, and dropping one they did say is worse.
 
+Three details make the measurement honest rather than approximate:
+
+- **The meter remembers `CTO_VOICE_MIC_WINDOW_MS` (3 s), frame by frame.** It is a bounded ring of `{ at, level, ms, idle }`, trimmed on every write and every read, not a set of running totals. Totals were cleared only by a judgement, so the *first* transcript of a call was judged against every frame since the microphone opened — and fifteen seconds of a quiet room holds enough scattered transients to sum past 240 ms. That is how a phantom `好` passed a gate that was running. Three seconds is longer than any sentence a call must accept and far shorter than the run-up to one.
+- **Every frame is credited its own level.** The desktop batches microphone frames for the pump and sends `levels[]` alongside the chunks, one per frame, so the runtime no longer replays the batch *maximum* onto all of them — one transient used to read as a whole batch of speech. The batch maximum still travels as `level`, which is what a frame with no level of its own falls back to, and what a runtime from an older build reads.
 - **The window is a judgement, not a VAD segment.** Server VAD reports a segment after the fact and with its own prefix padding, so the frames carrying the user's first syllable arrive *before* the server admits the segment opened. The meter therefore resets when a transcript is judged — one transcript, one verdict, one reset — which keeps that pre-roll and still cannot let one utterance's energy vouch for the next one's words.
 - **Length comes out of the bytes, never a clock.** `ctoVoiceFrameDurationMs` reads a frame's duration from its own payload (PCM16 mono at `CTO_VOICE_SAMPLE_RATE` is two bytes a sample). The wall-clock gap between the server's two VAD events says nothing reliable about how long the user's mouth was open. For the same reason the desktop router now flushes a microphone batch with the **loudest** level in it rather than the newest frame's, and the runtime applies that level to every frame in the batch — crediting one frame per ~100 ms batch halved the measured length and put a one-word answer under the minimum. The call service still emits one meter update per distinct level, so the HUD sees no extra traffic.
 

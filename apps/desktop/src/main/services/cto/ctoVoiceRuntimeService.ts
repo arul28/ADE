@@ -206,6 +206,20 @@ function readAudioChunks(args: unknown): string[] {
   return out;
 }
 
+/**
+ * The level each chunk of a batch arrived with.
+ *
+ * Positional: `levels[i]` belongs to `chunks[i]`. Absent from an older desktop
+ * build, and absent is not the same as zero — the caller falls back to the batch
+ * maximum there, which is exactly what every frame used to be credited.
+ */
+function readAudioLevels(args: unknown): Array<number | null> {
+  if (!args || typeof args !== "object") return [];
+  const value = (args as { levels?: unknown }).levels;
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => (typeof entry === "number" && Number.isFinite(entry) ? entry : null));
+}
+
 export function createCtoVoiceRuntimeService(
   host: CtoVoiceRuntimeHost,
   options: CtoVoiceRuntimeOptions = {},
@@ -508,6 +522,11 @@ export function createCtoVoiceRuntimeService(
             text: [
               "[voice call] The user is speaking with you right now and will hear your reply.",
               "Answer in at most three sentences, in plain spoken language, with no markdown, no lists and no code.",
+              // The transcriber is pinned to English, so a reply in another
+              // language would be read aloud by an English voice. Said here as
+              // well because the intent text can still arrive with a foreign
+              // word in it, and the CTO used to answer in kind.
+              "Answer in English.",
               // The one exception, and it is the product's: a call can draw.
               // Everything outside the fence is still spoken aloud, so the
               // picture supplements the sentences rather than replacing them.
@@ -822,26 +841,36 @@ export function createCtoVoiceRuntimeService(
      * desktop side: a reply per frame would be pure overhead on the busiest
      * path in the app.
      */
-    pushAudio(args?: { ownerToken?: string; chunks?: string[]; audio?: string; level?: number }): CtoVoiceActionResult {
+    pushAudio(args?: {
+      ownerToken?: string;
+      chunks?: string[];
+      audio?: string;
+      level?: number;
+      levels?: number[];
+    }): CtoVoiceActionResult {
       const token = readOwnerToken(args);
       if (!touchOwner(token)) return NOT_OWNER;
       const chunks = readAudioChunks(args);
       if (!chunks.length) return { ok: true };
       const level = typeof args?.level === "number" ? args.level : undefined;
+      const levels = readAudioLevels(args);
       // This action must not reject. Ten times a second the desktop pump calls
       // it, and a rejection there reads as "the runtime is gone": the pump ends
       // the call locally, which used to drop the state subscription before the
       // runtime's own failure could be forwarded, leaving the HUD counting time
       // and cost against a call that had already been refused.
       try {
-        for (const chunk of chunks) {
-          // The level rides EVERY frame in the batch, not just the last one.
-          // The transcript gate measures how much voiced audio a segment carried,
-          // and it can only credit a frame it was given a level for — crediting
-          // one frame per ~100 ms batch undercounted real speech by half and put
-          // a one-word answer under the minimum. The call service still emits one
-          // meter update per distinct level, so the HUD sees no more traffic.
-          service?.pushAudio(chunk, level);
+        for (let index = 0; index < chunks.length; index += 1) {
+          // Each frame is credited ITS OWN level. Every frame in the batch needs
+          // one — the transcript gate can only count a frame it was given a
+          // level for, and crediting one frame per ~100 ms batch undercounted
+          // real speech by half — but they must not all be credited the batch
+          // MAXIMUM either, which turned one transient into ten loud frames and
+          // helped a hallucinated transcript clear the gate. `levels` is absent
+          // on an older desktop; there the batch maximum is still the best the
+          // caller knows. The call service emits one meter update per distinct
+          // level, so the HUD sees no more traffic than before.
+          service?.pushAudio(chunks[index]!, levels[index] ?? level);
         }
       } catch (error) {
         host.logger?.warn("cto_voice.push_audio_failed", { error: String(error) });

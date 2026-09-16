@@ -8,8 +8,10 @@ import {
   type CtoVoiceSocket,
 } from "./ctoVoiceCallService";
 import {
+  CTO_VOICE_MIN_SPEECH_MS,
   CTO_VOICE_MODEL,
   CTO_VOICE_SAMPLE_RATE,
+  CTO_VOICE_TRANSCRIBE_LANGUAGE,
   CTO_VOICE_TRANSCRIBE_MODEL,
   CTO_VOICE_TURN_BURST_COOLDOWN_MS,
   ctoVoiceStatusLine,
@@ -143,9 +145,13 @@ describe("createCtoVoiceCallService", () => {
       create_response: false,
       interrupt_response: false,
     });
-    // Without transcription there is no intent to hand the CTO at all.
-    expect(update.session.audio.input.transcription)
-      .toEqual({ model: CTO_VOICE_TRANSCRIBE_MODEL });
+    // Without transcription there is no intent to hand the CTO at all, and
+    // without a language the transcriber guesses per utterance — which is how a
+    // phantom "好" reached the CTO and came back as a reply in Chinese.
+    expect(update.session.audio.input.transcription).toEqual({
+      model: CTO_VOICE_TRANSCRIBE_MODEL,
+      language: CTO_VOICE_TRANSCRIBE_LANGUAGE,
+    });
     expect(update.session.audio.input.format)
       .toEqual({ type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE });
     expect(update.session.audio.output.format)
@@ -228,6 +234,34 @@ describe("createCtoVoiceCallService", () => {
     expect(String(request.response.instructions)).toContain("word for word");
     expect(String(request.response.instructions)).toContain("Shall I open the PR?");
     expect(harness.latest().phase).toBe("speaking");
+  });
+
+  /**
+   * The bug this shape exists for: a response created INSIDE the conversation is
+   * generated with the user's audio in front of it, so the model answers the
+   * user instead of reading what it was handed. Measured against the live API —
+   * in-conversation, everything after the first exchange of a call was hijacked
+   * ("I'm ChatGPT…"); out-of-band, 24 of 24 sentences were read word for word.
+   * `create_response: false` does not cover this: it only stops responses the
+   * model creates on its own.
+   */
+  it("asks for every response out-of-band so the model has nothing to answer", async () => {
+    const harness = createService({
+      backchannelsEnabled: () => false,
+      runBackendTurn: async () => ({ spoken: "Three merged yesterday." }),
+    });
+    await openCall(harness);
+    utter(harness, "how are the PRs");
+    await tick();
+
+    const requests = harness.fake.sent
+      .filter((message) => message.type === "response.create")
+      .map((message) => message.response as Record<string, unknown>);
+    expect(requests.length).toBeGreaterThan(0);
+    for (const response of requests) {
+      expect(response.conversation).toBe("none");
+      expect(response.input).toEqual([]);
+    }
   });
 
   /**
@@ -614,6 +648,55 @@ describe("createCtoVoiceCallService", () => {
     expect(spoken(harness.fake).join("\n")).not.toContain("STALE ANSWER");
   });
 
+  /**
+   * A cancel has to name the response it is cancelling. Every response this
+   * service asks for is out-of-band, and a bare `response.cancel` is understood
+   * as "cancel the response in the DEFAULT conversation" — where ours never is.
+   * Without the id the cancel lands on nothing and the CTO talks over the user.
+   */
+  it("cancels the response by id, because an out-of-band one has no other name", async () => {
+    const harness = createService({ backchannelsEnabled: () => false });
+    await openCall(harness);
+    utter(harness, "what merged yesterday");
+    await tick();
+    harness.fake.receive({ type: "response.created", response: { id: "resp_1" } });
+
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+
+    const cancel = harness.fake.lastOfType("response.cancel") as Record<string, unknown>;
+    expect(cancel).toBeTruthy();
+    expect(cancel.response_id).toBe("resp_1");
+  });
+
+  /**
+   * `response.create` and `response.created` are a round trip apart, and the
+   * user can talk inside it. Dropping the cancel there loses the one thing a
+   * call must always honour, so it waits for the name instead.
+   */
+  it("holds a barge-in that arrived before the response had a name, and sends it when it does", async () => {
+    const harness = createService({ backchannelsEnabled: () => false });
+    await openCall(harness);
+    utter(harness, "what merged yesterday");
+    await tick();
+
+    // The answer has been asked for, and the server has not named it yet.
+    expect(harness.fake.typesSent()).toContain("response.create");
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    expect(harness.fake.typesSent()).not.toContain("response.cancel");
+
+    harness.fake.receive({ type: "response.created", response: { id: "resp_late" } });
+
+    const cancel = harness.fake.lastOfType("response.cancel") as Record<string, unknown>;
+    expect(cancel).toBeTruthy();
+    expect(cancel.response_id).toBe("resp_late");
+    // And only once: the flag is cleared, so the next response is not cancelled
+    // by an interruption the user already made.
+    harness.fake.receive({ type: "response.done", response: { status: "cancelled" } });
+    harness.fake.receive({ type: "response.created", response: { id: "resp_next" } });
+    expect(harness.fake.sent.filter((message) => message.type === "response.cancel"))
+      .toHaveLength(1);
+  });
+
   it("does not cancel a response that is not running", async () => {
     // `response.cancel` with nothing in flight is an error event, and an error
     // event is a banner over a call that is working perfectly.
@@ -946,6 +1029,140 @@ describe("the transcript gate", () => {
     await tick();
 
     expect(intents).toEqual(["what is left"]);
+  });
+
+  /* ── The meter's memory ──────────────────────────────────────────────────
+   *
+   * The gate above was RUNNING on the build that let a phantom "好" through,
+   * and these three tests are why it did not help. The meter was a set of
+   * running totals cleared only by a judgement, so the first transcript of a
+   * call was judged against every frame since the microphone opened — and
+   * `voicedMs` was a SUM, which a quiet room reaches given enough seconds.
+   * ──────────────────────────────────────────────────────────────────────── */
+
+  /** A gate whose clock the test owns, so frames can be placed in time. */
+  function timedCall() {
+    let clock = 1_000_000;
+    const info = vi.fn();
+    const intents: string[] = [];
+    const harness = createService({
+      backchannelsEnabled: () => false,
+      logger: { info, warn: vi.fn() },
+      now: () => clock,
+      runBackendTurn: async ({ intent }: { intent: string }) => {
+        intents.push(intent);
+        return { spoken: "ok" };
+      },
+    } as never);
+    return {
+      harness,
+      info,
+      intents,
+      advance: (ms: number) => { clock += ms; },
+      /** One frame, at the current instant, at the level given. */
+      frame: (level: number) => harness.service.pushAudio(MIC_FRAME, level),
+    };
+  }
+
+  it("does not add up transients scattered across a long quiet stretch", async () => {
+    const call = timedCall();
+    await openCall(call.harness);
+
+    // Fifteen seconds of a room the renderer never stops metering: mostly
+    // silence, with one transient — a key, a chair — about once a second. The
+    // fifteen loud frames sum to 1.2 s of "voiced" audio, which is five times
+    // the minimum, and under the old sum that alone let a hallucination
+    // through. Not one of them is next to another.
+    for (let second = 0; second < 15; second += 1) {
+      for (let i = 0; i < 11; i += 1) {
+        call.frame(ROOM_NOISE_LEVEL);
+        call.advance(85);
+      }
+      call.frame(SPEAKING_LEVEL);
+      call.advance(85);
+    }
+    call.harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "好",
+    });
+    await tick();
+
+    expect(call.intents).toEqual([]);
+    expect(rejections(call.info).map((entry) => entry.reason)).toEqual(["too_short"]);
+  });
+
+  it("accepts energy that stays up for a word's length", async () => {
+    const call = timedCall();
+    await openCall(call.harness);
+
+    // Four frames in a row, ~340 ms: a word. The same four frames with silence
+    // between them are the test above, and the only difference is that these
+    // are contiguous.
+    call.frame(ROOM_NOISE_LEVEL);
+    call.advance(85);
+    for (let i = 0; i < 4; i += 1) {
+      call.frame(SPEAKING_LEVEL);
+      call.advance(85);
+    }
+    call.frame(ROOM_NOISE_LEVEL);
+    call.advance(85);
+    call.harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "ship it",
+    });
+    await tick();
+
+    expect(call.intents).toEqual(["ship it"]);
+  });
+
+  it("forgets a loud moment that has fallen out of the window", async () => {
+    const call = timedCall();
+    await openCall(call.harness);
+
+    // A real sentence, and then ten seconds of nothing. The sentence is over
+    // and it does not get to vouch for whatever the transcriber writes next.
+    for (let i = 0; i < 6; i += 1) {
+      call.frame(SPEAKING_LEVEL);
+      call.advance(85);
+    }
+    call.advance(10_000);
+    call.frame(SPEAKING_LEVEL);
+    call.advance(85);
+    call.harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "아니.",
+    });
+    await tick();
+
+    expect(call.intents).toEqual([]);
+    expect(rejections(call.info).map((entry) => entry.reason)).toEqual(["too_short"]);
+  });
+
+  /**
+   * Only rejections were ever logged, so a gate that waved a phantom through
+   * looked exactly like a gate with nothing to reject. The accepted line is what
+   * makes the difference visible — with the measurements, and with the text's
+   * length rather than the text, because an accepted transcript is something the
+   * user actually said.
+   */
+  it("logs what it accepted, and how loud it was, without logging the words", async () => {
+    const { harness, info, intents } = gatedCall();
+    await openCall(harness);
+
+    utter(harness, "what merged yesterday");
+    await tick();
+
+    expect(intents).toEqual(["what merged yesterday"]);
+    const accepted = info.mock.calls
+      .filter(([event]) => event === "cto_voice.transcript_accepted")
+      .map(([, meta]) => meta as Record<string, unknown>);
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]!.peak).toBe(Number(SPEAKING_LEVEL.toFixed(3)));
+    expect(accepted[0]!.voicedMs as number).toBeGreaterThanOrEqual(CTO_VOICE_MIN_SPEECH_MS);
+    expect(accepted[0]!.frames).toBe(5);
+    expect(accepted[0]!.framesWhileIdle).toBe(5);
+    expect(accepted[0]!.textLength).toBe("what merged yesterday".length);
+    expect(JSON.stringify(accepted[0])).not.toContain("what merged yesterday");
   });
 });
 

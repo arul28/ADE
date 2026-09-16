@@ -312,6 +312,50 @@ describe("createCtoVoiceRuntimeService", () => {
     expect(voice.getState().inputLevel).toBeCloseTo(0.4);
   });
 
+  /**
+   * Each frame is credited its own level. The batch maximum used to be replayed
+   * onto every frame in the batch, so one transient read as a whole batch of
+   * speech — half of why a hallucinated transcript passed the gate.
+   */
+  it("credits each microphone frame the level it arrived with", async () => {
+    const fake = createFakeSocket();
+    const { host } = createVoiceRuntimeHost();
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+
+    await voice.start({ ownerToken: "owner-1" });
+    fake.open();
+    voice.pushAudio({
+      ownerToken: "owner-1",
+      chunks: [MIC_FRAME, MIC_FRAME, MIC_FRAME],
+      level: 0.6,
+      levels: [0.01, 0.6, 0.02],
+    });
+
+    // The meter ends on the LAST frame's level, not the batch maximum: the
+    // state the HUD shows is the state the gate measured.
+    expect(voice.getState().inputLevel).toBeCloseTo(0.02);
+    voice.dispose();
+  });
+
+  it("falls back to the batch level when an older desktop sends no per-frame levels", async () => {
+    const fake = createFakeSocket();
+    const { host } = createVoiceRuntimeHost();
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+
+    await voice.start({ ownerToken: "owner-1" });
+    fake.open();
+    voice.pushAudio({ ownerToken: "owner-1", chunks: [MIC_FRAME, MIC_FRAME], level: 0.4 });
+
+    expect(voice.getState().inputLevel).toBeCloseTo(0.4);
+    voice.dispose();
+  });
+
   it("hands a spoken decision to the chat approval the turn is parked on", async () => {
     const fake = createFakeSocket();
     const approveToolUse = vi.fn(async () => undefined);
@@ -811,6 +855,23 @@ describe("what a call says when the turn did not answer", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]!.voiceCallId).toBe(voice.getState().callId);
     expect(String(seen[0]!.voiceCallId ?? "")).not.toHaveLength(0);
+    voice.dispose();
+  });
+
+  /**
+   * The session transcribes English and the voice reads English. A CTO that
+   * answered in another language would be read aloud by an English voice — which
+   * is what a real call did, replying in Chinese to a hallucinated "好".
+   */
+  it("asks the CTO for an English answer, because that is what the call can speak", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const { voice } = await runOneUtterance(async (args) => {
+      seen.push(args as Record<string, unknown>);
+      return { outputText: "Three merged yesterday.", status: "completed" };
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(String(seen[0]!.text ?? "")).toContain("Answer in English.");
     voice.dispose();
   });
 });

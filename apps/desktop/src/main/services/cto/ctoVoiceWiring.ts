@@ -305,8 +305,18 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
   let call: CallSlot | null = null;
   /** The audio pump: mic out, speaker in, at one shared cadence. */
   let audioPump: NodeJS.Timeout | null = null;
-  /** Mic frames since the last flush, and the loudest level among them. */
+  /**
+   * Mic frames since the last flush, the level each one arrived with, and the
+   * loudest of those.
+   *
+   * Per frame, because the transcript gate judges frames: replaying one batch
+   * maximum onto every frame in the batch credited a single transient to all
+   * ten of them, which is half of how a hallucinated transcript cleared a gate
+   * meant to stop it. The batch maximum still travels, as the fallback a runtime
+   * from an older build reads.
+   */
   let micBatch: string[] = [];
+  let micLevels: Array<number | null> = [];
   let micLevel: number | undefined;
   /** True while a drain is in flight, so a slow round trip cannot stack them. */
   let pullInFlight = false;
@@ -350,6 +360,7 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
       audioPump = null;
     }
     micBatch = [];
+    micLevels = [];
     micLevel = undefined;
     pullInFlight = false;
   };
@@ -513,13 +524,21 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
       if (micBatch.length) {
         const chunks = micBatch;
         const level = micLevel;
+        // One level per chunk, in the same order. A frame the renderer sent no
+        // level for falls back to the batch maximum, which is what every frame
+        // used to get.
+        const levels = level === undefined
+          ? undefined
+          : micLevels.map((value) => value ?? level);
         micBatch = [];
+        micLevels = [];
         micLevel = undefined;
         void slot.transport
           .call("pushAudio", {
             ownerToken: slot.token,
             chunks,
             ...(level !== undefined ? { level } : {}),
+            ...(levels !== undefined ? { levels } : {}),
           })
           .catch((error) => failPump(slot, "pump_push", error));
       }
@@ -711,13 +730,19 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
     const audio = typeof arg?.audio === "string" ? arg.audio : null;
     if (!audio) return;
     micBatch.push(audio);
+    micLevels.push(typeof arg?.level === "number" ? arg.level : null);
     // Bounded, because the renderer keeps capturing between the moment a call
     // ends and the moment its store hears about it. Two seconds of frames is
-    // plenty of slack for a slow flush and still cannot grow without end.
-    if (micBatch.length > MIC_BATCH_LIMIT) micBatch.splice(0, micBatch.length - MIC_BATCH_LIMIT);
-    // The PEAK of the batch, not the newest frame: the batch is one metering
-    // event downstream, and the transcript gate must judge a segment on the
-    // loudest thing in it rather than on whichever frame the flush landed after.
+    // plenty of slack for a slow flush and still cannot grow without end. The
+    // levels are trimmed with the frames they belong to, or the two arrays
+    // would drift apart and every frame would be credited someone else's level.
+    if (micBatch.length > MIC_BATCH_LIMIT) {
+      const drop = micBatch.length - MIC_BATCH_LIMIT;
+      micBatch.splice(0, drop);
+      micLevels.splice(0, drop);
+    }
+    // The PEAK of the batch rides alongside, for a runtime that does not read
+    // `levels` yet, and as the fallback for a frame that arrived without one.
     if (typeof arg?.level === "number") micLevel = Math.max(micLevel ?? 0, arg.level);
   });
 

@@ -8,10 +8,12 @@ import {
   CTO_VOICE_DEFAULT,
   CTO_VOICE_INITIAL_STATE,
   CTO_VOICE_CAPTURE_DEFAULT_NOTE,
+  CTO_VOICE_MIC_WINDOW_MS,
   CTO_VOICE_MIN_SPEECH_MS,
   CTO_VOICE_MIN_SPEECH_PEAK_LEVEL,
   CTO_VOICE_PREOPEN_AUDIO_LIMIT,
   CTO_VOICE_SAMPLE_RATE,
+  CTO_VOICE_TRANSCRIBE_LANGUAGE,
   CTO_VOICE_TRANSCRIBE_MODEL,
   CTO_VOICE_TURN_BURST_COOLDOWN_MS,
   CTO_VOICE_TURN_BURST_LIMIT,
@@ -41,7 +43,7 @@ import { buildConfirmation, resolveSpokenConfirmation } from "./ctoVoiceConfirma
  * and it is also why permissions and confirmations are enforced here in code
  * rather than asked of the model in a prompt.
  *
- * Three behaviours are easy to get wrong and are load bearing:
+ * Five behaviours are easy to get wrong and are load bearing:
  *
  * 1. A real microphone never stops. If the client stops sending input audio the
  *    session stalls mid-sentence — measured, not theorised. `pushAudio` keeps
@@ -58,6 +60,11 @@ import { buildConfirmation, resolveSpokenConfirmation } from "./ctoVoiceConfirma
  *    that spoke a real answer — the CTO appearing to talk to itself. Every
  *    transcript is now judged against ADE's own microphone meter before it can
  *    become an intent; see `judgeTranscript`.
+ * 5. Every response ADE asks for is OUT-OF-BAND. `create_response: false` stops
+ *    the model answering on its OWN initiative; it does nothing about a response
+ *    ADE creates inside the conversation, where the user's audio is sitting in
+ *    front of the model and gets answered instead of the instruction. See
+ *    `drainSpeech`.
  */
 
 export type CtoVoiceSocket = {
@@ -213,6 +220,12 @@ export type CtoVoiceServerErrorReason = {
  * crosses a `response.done` on the wire. Neither is anything the user can act
  * on, and putting "Cancellation failed: no active response" on screen mid-call
  * would be worse than saying nothing.
+ *
+ * It does mean this list can hide a real defect, and once did: a `response.cancel`
+ * with no `response_id` is answered with exactly that message, because it looks
+ * for a response in the default conversation and every response here is
+ * out-of-band. Every barge-in failed, silently, and the CTO talked on. Cancels
+ * are named now (`stopSpeaking`), so the message can only be the race again.
  */
 const CTO_VOICE_BENIGN_SERVER_ERRORS: readonly RegExp[] = [
   /no active response/i,
@@ -541,28 +554,96 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   /** Answers waiting for the current response to finish. Spoken in order. */
   let speakQueue: string[] = [];
 
+  /**
+   * The id of the response that is generating right now, once the server has
+   * named it.
+   *
+   * A bare `response.cancel` only cancels an in-progress response in the DEFAULT
+   * conversation, and every response this service asks for is out-of-band — so
+   * without the id, a barge-in sent the cancel into an empty conversation and
+   * the CTO kept talking over the user. The id arrives on `response.created`.
+   */
+  let activeResponseId: string | null = null;
+
+  /**
+   * A barge-in that arrived before the server named the response.
+   *
+   * `response.create` and `response.created` are a round trip apart, and the
+   * user can talk inside it. Dropping the cancel there would leave the very
+   * interruption a call most needs to honour unheard, so it is remembered and
+   * sent the moment the id lands.
+   */
+  let cancelWhenNamed = false;
+
   const now = deps.now ?? (() => Date.now());
 
   /**
-   * What ADE's OWN microphone heard since the last transcript was judged.
+   * What ADE's OWN microphone heard, frame by frame, in the recent past.
    *
-   * The window is deliberately NOT `speech_started`..`speech_stopped`. Server VAD
-   * reports a segment after the fact and with its own prefix padding, so frames
-   * that belong to the user's first syllable arrive before the server admits the
-   * segment opened; resetting on `speech_started` threw exactly those away and
-   * would have rejected short real answers. Resetting on a JUDGEMENT instead —
-   * one transcript, one verdict, one reset — keeps the pre-roll and still cannot
-   * let one utterance's energy vouch for the next one's words.
+   * A ring rather than a set of running totals, and that is the fix for a real
+   * failure: totals were only ever cleared by a judgement, so the first
+   * transcript of a call was judged against every frame since the microphone
+   * opened. Fifteen seconds of a quiet room contains enough scattered noisy
+   * frames to add up to 240 ms, and a phantom "好" walked through a gate that
+   * was running. Frames older than {@link CTO_VOICE_MIC_WINDOW_MS} are dropped,
+   * so the evidence is always about the recent past — bounded by the window
+   * rather than by the length of the call.
    *
-   * `voicedMs` counts only frames above the peak threshold: a minute of silence
-   * bracketed by two clicks must not read as a minute of speech.
-   *
-   * `framesWhileIdle` is how the echo case is told apart from the user case. A
-   * segment whose every frame arrived while ADE was speaking is the microphone
-   * hearing the CTO, not a person.
+   * The reset window is still deliberately NOT `speech_started`..`speech_stopped`.
+   * Server VAD reports a segment after the fact and with its own prefix padding,
+   * so frames that belong to the user's first syllable arrive before the server
+   * admits the segment opened; resetting on `speech_started` threw exactly those
+   * away and would have rejected short real answers. Resetting on a JUDGEMENT —
+   * one transcript, one verdict, one reset — keeps the pre-roll, and the window
+   * above stops one utterance's silence vouching for the next one's words.
    */
-  let mic = { peak: 0, voicedMs: 0, frames: 0, framesWhileIdle: 0 };
-  const resetMic = () => { mic = { peak: 0, voicedMs: 0, frames: 0, framesWhileIdle: 0 }; };
+  type CtoVoiceMicFrame = {
+    /** When it arrived, on the service's own clock. */
+    at: number;
+    /** 0..1 peak of that frame, as the renderer measured it. */
+    level: number;
+    /** How long it lasts, read off its own bytes. */
+    ms: number;
+    /** True when ADE was not speaking, which is what tells a person from an echo. */
+    idle: boolean;
+  };
+  let micFrames: CtoVoiceMicFrame[] = [];
+  const resetMic = () => { micFrames = []; };
+
+  /** Drop everything that fell out of the window. Called on every write and read. */
+  const trimMic = (at: number) => {
+    const cutoff = at - CTO_VOICE_MIC_WINDOW_MS;
+    let drop = 0;
+    while (drop < micFrames.length && micFrames[drop]!.at <= cutoff) drop += 1;
+    if (drop > 0) micFrames = micFrames.slice(drop);
+  };
+
+  /**
+   * The meter, as the gate reads it.
+   *
+   * `voicedMs` is the longest CONTIGUOUS run of above-threshold frames, not the
+   * sum of them: a sum cannot tell a spoken word from three unrelated clicks a
+   * second apart, because the frames only have to add up. A word is energy that
+   * stays up, so the run is what gets measured.
+   */
+  const readMic = () => {
+    trimMic(now());
+    let peak = 0;
+    let framesWhileIdle = 0;
+    let run = 0;
+    let voicedMs = 0;
+    for (const frame of micFrames) {
+      peak = Math.max(peak, frame.level);
+      if (frame.idle) framesWhileIdle += 1;
+      if (frame.level >= CTO_VOICE_MIN_SPEECH_PEAK_LEVEL) {
+        run += frame.ms;
+        voicedMs = Math.max(voicedMs, run);
+      } else {
+        run = 0;
+      }
+    }
+    return { peak, voicedMs, frames: micFrames.length, framesWhileIdle };
+  };
 
   /**
    * When each accepted turn was accepted, inside the burst window.
@@ -650,11 +731,25 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * way to steer one response — so the CTO's sentence is handed over as that
    * response's instruction, fenced, with `output_modalities: ["audio"]`.
    *
+   * It goes out OUT-OF-BAND (`conversation: "none"` with an empty `input`), and
+   * that is the load-bearing part. A response created inside the default
+   * conversation is generated with the user's audio items in front of it, and
+   * the model treats "read this text" as one more note next to a real question
+   * it can see — so it answers the question instead. Measured against the live
+   * API on 2026-09-16: in-conversation, the first exchange of a call read the
+   * text back correctly and every exchange after it was hijacked (6 of 8
+   * requested sentences per run, identically in three runs — "I'm ChatGPT",
+   * an offer to review a pull request it knows nothing about). Out-of-band the
+   * same script read the text word for word 24 times out of 24.
+   *
+   * Out-of-band also means nothing ADE says is added to the conversation, which
+   * is what we want: the history this session accumulates is the user's audio
+   * and nothing else, so it can never grow into a second voice with opinions.
+   * The session-level `instructions` still apply — they are session state, not
+   * conversation state.
+   *
    * The alternative, `conversation.item.create` with an assistant message, puts
-   * the text in the history but produces no audio: the model would then answer
-   * ITSELF on the next `response.create`, which is the one thing this
-   * architecture must never allow. The audio response this does create is added
-   * to the conversation by the server, so the history still holds what was said.
+   * the text in the history but produces no audio.
    *
    * Queued rather than sent when a response is already in flight, because a
    * second one is an error rather than a second sentence.
@@ -675,6 +770,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       type: "response.create",
       event_id: randomUUID(),
       response: {
+        // Out-of-band: generated with no conversation and no input items, so
+        // the only thing in front of the model is the instruction below.
+        conversation: "none",
+        input: [],
         instructions: buildCtoVoiceSpeakInstructions(next),
         output_modalities: ["audio"],
       },
@@ -684,6 +783,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   /** A response ended, however it ended. Let the next sentence through. */
   const releaseResponse = () => {
     responseActive = false;
+    // The id belongs to the response that just ended, and a cancel waiting for
+    // an id that will never arrive would fire at whatever is generated next.
+    activeResponseId = null;
+    cancelWhenNamed = false;
     drainSpeech();
   };
 
@@ -713,7 +816,15 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    */
   const stopSpeaking = () => {
     speakQueue = [];
-    if (responseActive) send({ type: "response.cancel", event_id: randomUUID() });
+    if (!responseActive) return;
+    // Named explicitly: these responses are out-of-band, and a cancel with no
+    // `response_id` is only understood as "cancel the default conversation's
+    // response" — which is never one of ours.
+    if (activeResponseId) {
+      send({ type: "response.cancel", event_id: randomUUID(), response_id: activeResponseId });
+      return;
+    }
+    cancelWhenNamed = true;
   };
 
   /**
@@ -805,6 +916,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       deps.logger?.info("cto_voice.transcript_valve_cleared", { callId: state.callId });
     }
     if (!ctoVoiceTranscriptHasSpeech(final)) return "empty";
+    const mic = readMic();
     // The CTO being heard by the microphone. Both halves matter: a segment that
     // ran entirely under ADE's own voice AND never rose above the speech floor is
     // echo, while the same segment WITH a real peak in it is a barge-in and the
@@ -820,6 +932,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   function handleUserTranscript(text: string) {
     const final = text.trim();
     const rejection = judgeTranscript(final);
+    // Read once, before anything resets it, so the two log lines below describe
+    // the same evidence the verdict was made on.
+    const mic = readMic();
     lastTranscriptAtMs = now();
     if (rejection) {
       deps.logger?.info("cto_voice.transcript_rejected", {
@@ -839,6 +954,19 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       resetMic();
       return;
     }
+
+    // The other half of the ledger. Only rejections were ever logged, so an
+    // accepted phantom was invisible: the gate looked silent whether it was
+    // working or waved a hallucination through. The text's LENGTH goes in the
+    // log, never the text — an accepted transcript is something the user said.
+    deps.logger?.info("cto_voice.transcript_accepted", {
+      callId: state.callId,
+      peak: Number(mic.peak.toFixed(3)),
+      voicedMs: Math.round(mic.voicedMs),
+      frames: mic.frames,
+      framesWhileIdle: mic.framesWhileIdle,
+      textLength: final.length,
+    });
 
     exchanges += 1;
     acceptedTurnsAtMs = [...acceptedTurnsAtMs, lastTranscriptAtMs]
@@ -963,6 +1091,14 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
     if (type === "response.created") {
       responseActive = true;
+      const created = (event.response ?? {}) as Record<string, unknown>;
+      activeResponseId = typeof created.id === "string" && created.id.length ? created.id : null;
+      // The user talked over a response the server had not named yet. Now it
+      // has a name, so the interruption they already made can be honoured.
+      if (cancelWhenNamed && activeResponseId) {
+        cancelWhenNamed = false;
+        send({ type: "response.cancel", event_id: randomUUID(), response_id: activeResponseId });
+      }
       return;
     }
 
@@ -1256,8 +1392,13 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
                   interrupt_response: false,
                 },
                 // Not on by default, and the transcript IS the intent: without
-                // this the call has nothing to ask the CTO.
-                transcription: { model: CTO_VOICE_TRANSCRIBE_MODEL },
+                // this the call has nothing to ask the CTO. The language is
+                // named rather than guessed — an unnamed short utterance is how
+                // a call ended up with a phantom "好" in its transcript.
+                transcription: {
+                  model: CTO_VOICE_TRANSCRIBE_MODEL,
+                  language: CTO_VOICE_TRANSCRIBE_LANGUAGE,
+                },
               },
               output: {
                 format: { type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE },
@@ -1339,15 +1480,16 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
           const clamped = Math.max(0, Math.min(1, level));
           // Recorded before the emit, because this is the evidence the
           // transcript gate rules on and a throw in `emit` must not lose it.
-          mic.frames += 1;
-          if (!responseActive) mic.framesWhileIdle += 1;
-          mic.peak = Math.max(mic.peak, clamped);
-          if (clamped >= CTO_VOICE_MIN_SPEECH_PEAK_LEVEL) {
-            mic.voicedMs += ctoVoiceFrameDurationMs(base64);
-          }
-          // One emit per distinct level. Every frame of a batch carries the
-          // same level, so this is one state update per batch even though the
-          // meter above counted each frame.
+          const at = now();
+          micFrames.push({
+            at,
+            level: clamped,
+            ms: ctoVoiceFrameDurationMs(base64),
+            idle: !responseActive,
+          });
+          trimMic(at);
+          // One emit per distinct level, so a quiet stretch of a batch is one
+          // state update rather than one per frame.
           if (clamped !== state.inputLevel) emit({ inputLevel: clamped });
         }
       } catch (error) {

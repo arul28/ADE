@@ -81,7 +81,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description:
         "Feed base64 PCM16 microphone chunks at the session sample rate into the live call. Batched by the caller; not an event, because "
         + "audio on the event buffer would evict every real runtime event.",
-      input: "object { ownerToken: string, chunks: string[], level?: number 0..1 }",
+      input: "object { ownerToken: string, chunks: string[], level?: number 0..1, levels?: number[] 0..1, one per chunk }",
     },
     pullAudio: {
       description:

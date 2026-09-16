@@ -606,6 +606,50 @@ describe("a call the router has to end on its own", () => {
     expect(pushes).toHaveLength(1);
     expect(pushes[0]?.chunks).toEqual(["AAAA", "BBBB", "CCCC"]);
     expect(pushes[0]?.level).toBeCloseTo(0.42);
+    // And each frame keeps the level it actually arrived with. The batch
+    // maximum is the fallback, not the truth: replaying 0.42 onto all three
+    // turned one transient into three loud frames, which is half of how a
+    // hallucinated transcript cleared the gate that exists to stop it.
+    expect(pushes[0]?.levels).toEqual([0.03, 0.42, 0.04]);
+  });
+
+  it("falls back to the batch level for a frame that arrived without one", async () => {
+    const em: { fn: ((event: { payload: Record<string, unknown> }) => void) | null } = { fn: null };
+    const pushes: Array<Record<string, unknown>> = [];
+    const pool = {
+      callActionForRoot: vi.fn(async (_root: string, request: { action: string; args?: unknown }) => {
+        if (request.action === "pushAudio") pushes.push((request.args ?? {}) as Record<string, unknown>);
+        return {
+          domain: "cto_voice",
+          action: request.action,
+          result: request.action === "pullAudio" ? { ok: true, chunks: [], dropped: 0 } : { ok: true },
+          statusHints: {},
+        };
+      }),
+      subscribeEventsForRoot: vi.fn(async (_root, _req, onEvent) => {
+        em.fn = onEvent as typeof em.fn;
+        return () => {};
+      }),
+    } as unknown as LocalRuntimeConnectionPool;
+    const ipc = createIpcMain();
+    registerCtoVoiceIpc(ipc.ipcMain, { getCtx: () => runtimeCtx(), getLocalRuntimePool: () => pool });
+
+    vi.useFakeTimers();
+    try {
+      await ipc.invoke(IPC.ctoVoiceStart, undefined, 7);
+      em.fn?.({ payload: { type: "cto_voice_state", state: liveState() } });
+      ipc.emit(IPC.ctoVoicePushAudio, { audio: "AAAA" }, 7);
+      ipc.emit(IPC.ctoVoicePushAudio, { audio: "BBBB", level: 0.5 }, 7);
+      await vi.advanceTimersByTimeAsync(150);
+    } finally {
+      vi.useRealTimers();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pushes).toHaveLength(1);
+    // The unmetered frame gets what every frame used to get, so a renderer that
+    // sends audio without a level is no worse off than before.
+    expect(pushes[0]?.levels).toEqual([0.5, 0.5]);
   });
 
   it("broadcasts a terminal state when the pump cannot reach the runtime", async () => {
