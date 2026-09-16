@@ -52,19 +52,49 @@ function comparableOf(pr: PrRecord): PrimaryPrComparable {
 }
 
 /**
- * The single PR that best represents `prs`. Detached rows are dropped — their
- * `lane_id` keeps pointing at a lane that no longer owns them — and an empty
- * list answers `null`.
+ * The single PR that best represents `prs`, or `null` for an empty list.
+ *
+ * Two defensive rules, both about rows this process cannot fully trust:
+ *
+ *   - **Detached rows are dropped.** `detached` is a RECORD
+ *     (`PrDetachedLane | null`), never the boolean it reads like, so a
+ *     `=== true` test silently matches nothing and lets a row whose lane no
+ *     longer owns it win on recency. Any non-null value means detached.
+ *   - **A row with no readable number ranks LAST, rather than being dropped.**
+ *     Every consumer renders `#N` or stamps `prNumber` onto a deeplink, so such
+ *     a row is useless to all of them — but excluding it outright would answer
+ *     `null` if the runtime ever renamed the field on every row. Ranking it
+ *     last means a usable row always wins, and an unusable one is still better
+ *     than nothing.
  */
 export function pickPrimaryPrRecord(prs: readonly PrRecord[]): PrRecord | null {
   let best: PrRecord | null = null;
   let bestKey: PrimaryPrComparable | null = null;
+  let bestUsable = false;
   for (const pr of prs) {
-    if (pr.detached === true) continue;
+    if (pr.detached != null) continue;
     const key = comparableOf(pr);
-    if (best === null || bestKey === null || comparePrimaryPr(key, bestKey) < 0) {
+    const usable = key.githubPrNumber > 0;
+    if (best === null || bestKey === null) {
       best = pr;
       bestKey = key;
+      bestUsable = usable;
+      continue;
+    }
+    // A readable number outranks every other consideration; only when both
+    // rows agree on that does the shared ordering decide.
+    if (usable !== bestUsable) {
+      if (usable) {
+        best = pr;
+        bestKey = key;
+        bestUsable = true;
+      }
+      continue;
+    }
+    if (comparePrimaryPr(key, bestKey) < 0) {
+      best = pr;
+      bestKey = key;
+      bestUsable = usable;
     }
   }
   return best;

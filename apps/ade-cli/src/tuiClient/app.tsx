@@ -6689,11 +6689,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           checksFailed: number;
         } | null = null;
         if (activePr) {
-          const number = typeof activePr.githubPrNumber === "number"
-            ? activePr.githubPrNumber
-            : typeof activePr.number === "number"
-              ? activePr.number
-              : null;
+          // The selector reads three aliases; re-parsing only two here made a
+          // validly selected PR vanish from the badge.
+          const numberValue = prRecordNumber(activePr);
+          const number = numberValue > 0 ? numberValue : null;
           const url = typeof activePr.githubUrl === "string"
             ? activePr.githubUrl
             : typeof activePr.url === "string"

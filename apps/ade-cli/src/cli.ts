@@ -264,7 +264,7 @@ import {
   takeAdeCodeRemoteArgs,
 } from "./tuiClient/remoteLauncher";
 import { copyToClipboard } from "./lib/clipboard";
-import { pickPrimaryPrRecord } from "./lib/primaryPr";
+import { pickPrimaryPrRecord, prRecordNumber } from "./lib/primaryPr";
 import {
   clearLastFailure,
   computeStartupBackoffMs,
@@ -23382,7 +23382,9 @@ function formatFilesSearch(value: unknown): string {
         // The trailing slash is the whole distinction in a plain-text table,
         // and it matches the token the composer inserts for a folder chip.
         match.isDirectory === true && typeof path === "string"
-          ? `${path.replace(/\/+$/, "")}/`
+          // Strip either separator: a Windows row would otherwise render
+          // `C:\repo\src\/` with both.
+          ? `${path.replace(/[\\/]+$/, "")}/`
           : path,
         match.line ?? match.lineNumber,
         match.preview ?? match.text ?? match.match,
@@ -26491,9 +26493,11 @@ function createLinkEnvelopeResolver(
       const branch = asString(lane?.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
       const laneIssue = isRecord(lane?.linearIssue) ? lane.linearIssue : null;
       const linearIssue = asString(laneIssue?.identifier);
-      const prNumber = typeof pr?.githubPrNumber === "number" && Number.isSafeInteger(pr.githubPrNumber)
-        ? pr.githubPrNumber
-        : null;
+      // `pickPrimaryPrRecord` accepts `githubPrNumber`, `number`, or `prNumber`,
+      // so reading only the first would select a row and then mint a deeplink
+      // without its number. Read it back through the same helper.
+      const prNumberValue = pr ? prRecordNumber(pr) : 0;
+      const prNumber = prNumberValue > 0 ? prNumberValue : null;
       const envelope: DeeplinkEnvelope = {};
       const owner = asString(repo?.owner);
       const name = asString(repo?.name);
