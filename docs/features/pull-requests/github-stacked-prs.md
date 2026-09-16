@@ -175,7 +175,7 @@ later layers update the same episode.
 The GitHub stack inspector is the merge/rebase surface. It tries
 `POST /repos/{owner}/{repo}/stacks/{number}/merge` (API version `2026-03-10`)
 and falls back to bottom-up `merge-async` plus GET polling until `merged_at`
-(3s). Rebase tries the stack rebase endpoint, then cascading
+or the four-minute stack-merge action budget ends. Rebase tries the stack rebase endpoint, then cascading
 `update-branch` with `expected_head_sha`. A 404/403/405 leaves Merge stack and
 Rebase stack visibly disabled with the GitHub reason — the peek only jumps
 here. Windows uses the same GitHub HTTP + SQLite path.

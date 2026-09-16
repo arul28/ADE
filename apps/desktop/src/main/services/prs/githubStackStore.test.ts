@@ -108,6 +108,43 @@ describe("githubStackStore.merge", () => {
     }));
   });
 
+  it("keeps polling merge-async after three seconds until GitHub reports merged", async () => {
+    vi.useFakeTimers();
+    let pullGets = 0;
+    const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
+      if (args.method === "POST" && args.path.endsWith("/stacks/4/merge")) {
+        throw new Error("Resource not accessible by integration");
+      }
+      if (args.method === "PUT" && args.path.endsWith("/pulls/7/merge-async")) {
+        return { data: {}, response: { status: 202 } };
+      }
+      if (args.method === "GET" && args.path.endsWith("/pulls/7")) {
+        pullGets += 1;
+        if (pullGets < 5) {
+          return { data: { merged: false }, response: { status: 200 } };
+        }
+        return {
+          data: { merged: true, merged_at: "2026-01-01T00:01:00.000Z", merge_commit_sha: "def456" },
+          response: { status: 200 },
+        };
+      }
+      if (args.method === "GET" && args.path.endsWith("/stacks/4")) {
+        return { data: githubStackPayload(), response: { status: 200 } };
+      }
+      throw new Error(`unexpected ${args.method} ${args.path}`);
+    });
+    try {
+      const store = createStore(apiRequest as unknown as GithubService["apiRequest"]);
+      const pending = store.merge(repo, 4);
+      await vi.advanceTimersByTimeAsync(8_000);
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      expect(pullGets).toBeGreaterThanOrEqual(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not fall back when the stack API reports a merge conflict", async () => {
     const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
       if (args.method === "POST" && args.path.endsWith("/stacks/4/merge")) {

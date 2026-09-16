@@ -1733,6 +1733,23 @@ export function createPrService({
     }
   };
 
+  const hasChatSessionDismissal = (prId: string, sessionId: string): boolean => {
+    try {
+      const row = db.get<{ id: string }>(
+        `
+          select id
+            from pull_request_chat_session_dismissals
+           where project_id = ? and pr_id = ? and session_id = ?
+           limit 1
+        `,
+        [projectId, prId, sessionId],
+      );
+      return Boolean(row?.id);
+    } catch {
+      return false;
+    }
+  };
+
   const clearChatSessionDismissal = (prId: string, sessionId: string): void => {
     try {
       db.run(
@@ -12370,6 +12387,12 @@ export function createPrService({
       const offer = getStackLinkOffer({ sessionId: args.sessionId, prId: args.prId });
       if (!offer || offer.stackNumber !== args.stackNumber) return { ok: false, linked: 0 };
       const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
+      const canonicalSessionId = resolveCanonicalChatSessionId(offer.sessionId) ?? offer.sessionId;
+      const restoreDismissals = new Set(
+        unclaimed
+          .filter((sibling) => hasChatSessionDismissal(sibling.prId, canonicalSessionId))
+          .map((sibling) => sibling.prId),
+      );
       const linkedIds: string[] = [];
       for (const sibling of unclaimed) {
         const ok = linkPrToChatSession({
@@ -12380,7 +12403,11 @@ export function createPrService({
         });
         if (!ok) {
           for (const prId of linkedIds) {
-            unlinkPrFromChatSession({ prId, sessionId: offer.sessionId, dismiss: false });
+            unlinkPrFromChatSession({
+              prId,
+              sessionId: offer.sessionId,
+              dismiss: restoreDismissals.has(prId),
+            });
           }
           return { ok: false, linked: 0 };
         }

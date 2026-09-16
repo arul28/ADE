@@ -14924,12 +14924,21 @@ final class SyncService: ObservableObject {
     guard supportsRemoteAction("prs.linkChatSession") else {
       throw sessionLifecycleUnsupportedError("prs.linkChatStack")
     }
-    for siblingPrId in siblingPrIds {
-      try await linkPullRequestChatSession(
-        prId: siblingPrId,
-        sessionId: sessionId,
-        allowCrossLane: true
-      )
+    var linked: [String] = []
+    do {
+      for siblingPrId in siblingPrIds {
+        try await linkPullRequestChatSession(
+          prId: siblingPrId,
+          sessionId: sessionId,
+          allowCrossLane: true
+        )
+        linked.append(siblingPrId)
+      }
+    } catch {
+      for prId in linked.reversed() {
+        try? await unlinkPullRequestChatSession(prId: prId, sessionId: sessionId)
+      }
+      throw error
     }
   }
 

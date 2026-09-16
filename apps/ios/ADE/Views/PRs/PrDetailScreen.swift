@@ -49,7 +49,8 @@ struct PrDetailView: View {
   @State private var laneLinkItem: GitHubPrListItem?
   @State private var editorSheet: PrDetailEditorSheet?
   @State private var mergeMethodSheetPresented: Bool = false
-  @State private var githubStackUnavailableReason: String?
+  @State private var githubStackMergeUnavailableReason: String?
+  @State private var githubStackRebaseUnavailableReason: String?
   @State private var githubStackBusy = false
   @State private var githubStackConfirm: String?
   @State private var actionsSheetPresented: Bool = false
@@ -1185,8 +1186,10 @@ struct PrDetailView: View {
         stack: stack,
         prNumber: currentPr.githubPrNumber,
         onOpenGitHub: { openGitHub(urlString: currentPr.githubUrl) },
-        canMutateStack: syncService.supportsRemoteAction("prs.mergeGithubStack"),
-        stackUnavailableReason: githubStackUnavailableReason,
+        canMergeStack: syncService.supportsRemoteAction("prs.mergeGithubStack"),
+        canRebaseStack: syncService.supportsRemoteAction("prs.rebaseGithubStack"),
+        mergeUnavailableReason: githubStackMergeUnavailableReason,
+        rebaseUnavailableReason: githubStackRebaseUnavailableReason,
         stackBusy: githubStackBusy,
         pendingConfirm: githubStackConfirm,
         onMerge: { mutateGithubStack(action: "merge") },
@@ -1803,11 +1806,17 @@ struct PrDetailView: View {
           )
         }
         if result.ok {
-          githubStackUnavailableReason = nil
+          githubStackMergeUnavailableReason = nil
+          githubStackRebaseUnavailableReason = nil
           githubStackConfirm = nil
           await reload(includeLiveSidecars: true)
         } else if result.method == "unavailable" {
-          githubStackUnavailableReason = result.disabledReason ?? result.error
+          let reason = result.disabledReason ?? result.error
+          if action == "rebase" {
+            githubStackRebaseUnavailableReason = reason
+          } else {
+            githubStackMergeUnavailableReason = reason
+          }
         } else {
           errorMessage = result.error ?? result.disabledReason ?? "GitHub could not update this stack."
         }

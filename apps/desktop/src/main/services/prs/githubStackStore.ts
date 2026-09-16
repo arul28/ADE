@@ -62,6 +62,9 @@ function stackKey(owner: string, name: string, stackNumber: number): string {
   return `${owner.toLowerCase()}/${name.toLowerCase()}#${stackNumber}`;
 }
 
+/** Leave headroom under the 4-minute `prs.mergeGithubStack` IPC budget. */
+const STACK_MERGE_POLL_DEADLINE_MS = 3.5 * 60_000;
+
 function stackFromRows(
   row: GitHubPrStackRow,
   entries: GitHubPrStackEntryRow[],
@@ -605,9 +608,9 @@ export function createGithubStackStore(args: {
   const pollMergedPull = async (
     repo: GitHubRepoRef,
     prNumber: number,
+    deadlineMs: number,
   ): Promise<{ merged: boolean; sha: string | null }> => {
-    const started = Date.now();
-    while (Date.now() - started < 3_000) {
+    while (Date.now() < deadlineMs) {
       const { data } = await githubService.apiRequest<Record<string, unknown>>({
         method: "GET",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,
@@ -617,7 +620,9 @@ export function createGithubStackStore(args: {
         const sha = asString(data.merge_commit_sha).trim() || null;
         return { merged: true, sha };
       }
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      const waitMs = Math.min(1_000, deadlineMs - Date.now());
+      if (waitMs <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
     return { merged: false, sha: null };
   };
@@ -635,6 +640,7 @@ export function createGithubStackStore(args: {
     if (openEntries.length === 0) {
       return await replaceFromRemote(repo, stackNumber);
     }
+    const deadlineMs = Date.now() + STACK_MERGE_POLL_DEADLINE_MS;
     for (const entry of openEntries) {
       await githubService.apiRequest<unknown>({
         method: "PUT",
@@ -644,7 +650,7 @@ export function createGithubStackStore(args: {
           sha: entry.headSha || undefined,
         },
       });
-      const polled = await pollMergedPull(repo, entry.githubPrNumber);
+      const polled = await pollMergedPull(repo, entry.githubPrNumber, deadlineMs);
       if (!polled.merged) {
         throw new Error(`GitHub did not finish merging #${entry.githubPrNumber} in stack #${stackNumber}.`);
       }
@@ -726,7 +732,11 @@ export function createGithubStackStore(args: {
             .filter((entry) => !entry.mergedAt)
             .sort((left, right) => left.position - right.position)[0];
           if (bottom) {
-            const polled = await pollMergedPull(repo, bottom.githubPrNumber);
+            const polled = await pollMergedPull(
+              repo,
+              bottom.githubPrNumber,
+              Date.now() + STACK_MERGE_POLL_DEADLINE_MS,
+            );
             if (!polled.merged) {
               return stackMutationFailure(
                 repo,

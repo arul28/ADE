@@ -338,17 +338,24 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       );
       if (!offer || offer.stackNumber !== stackNumber) return { ok: false, linked: 0 };
       const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
-      let linked = 0;
+      const linkedIds: string[] = [];
       for (const sibling of unclaimed) {
         const result = await call<{ ok: boolean }>("prs.linkChatSession", {
           prId: sibling.prId,
           sessionId: offer.sessionId,
           allowCrossLane: true,
         }, { ok: false }, false);
-        if (result.ok) linked += 1;
+        if (!result.ok) {
+          for (const prId of linkedIds.reverse()) {
+            await call("prs.unlinkChatSession", { prId, sessionId: offer.sessionId }, { ok: false }, false);
+          }
+          invalidatePrsReads();
+          return { ok: false, linked: 0 };
+        }
+        linkedIds.push(sibling.prId);
       }
       invalidatePrsReads();
-      return { ok: linked === unclaimed.length, linked };
+      return { ok: true, linked: linkedIds.length };
     },
     listChatSessionsForPr: (args: unknown) => read("prs.listChatSessionsForPr", args, []),
     getStackLinkOffer: (args: unknown) => read("prs.getStackLinkOffer", args, null),

@@ -523,18 +523,24 @@ export async function emitPrCardsForChange(args: {
   }
 
   const linkedIds = new Set(pr.chatSessionIds ?? []);
+  const stackLinkedIds = new Set(linkedIds);
   for (const sibling of stackSiblings) {
-    for (const sessionId of sibling.chatSessionIds ?? []) linkedIds.add(sessionId);
+    for (const sessionId of sibling.chatSessionIds ?? []) stackLinkedIds.add(sessionId);
   }
   const laneIds = new Set<string>([pr.laneId]);
   for (const sibling of stackSiblings) {
     if (sibling.laneId) laneIds.add(sibling.laneId);
   }
-  const listed = linkedIds.size > 0
+  const listedRaw = stackLinkedIds.size > 0
     ? (await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat()
     : await chat.listSessions(pr.laneId, { includeArchived: false });
-  const sessions = selectPrCardSessions(listed, [...linkedIds]);
-  if (sessions.length === 0) return 0;
+  const listed = [...new Map(listedRaw.map((session) => [session.sessionId, session])).values()];
+  const ordinaryListed = linkedIds.size > 0
+    ? listed
+    : await chat.listSessions(pr.laneId, { includeArchived: false });
+  const ordinarySessions = selectPrCardSessions(ordinaryListed, [...linkedIds]);
+  const stackSessions = selectPrCardSessions(listed, [...stackLinkedIds]);
+  if (ordinarySessions.length === 0 && !(stackLanded && stackSessions.length > 0)) return 0;
 
   const cards: AdeCardPayload[] = [];
   if (checksChanged) {
@@ -572,26 +578,28 @@ export async function emitPrCardsForChange(args: {
   if (merged) {
     cards.push(buildPrMergedCard(pr));
   }
-  if (stackLanded && pr.stack) {
-    cards.push(buildPrStackLandCard({
-      pr,
-      stackNumber: pr.stack.number,
-      layers: stackLayers.map((layer) => ({
-        githubPrNumber: layer.githubPrNumber,
-        title: layer.title,
-        state: layer.state,
-      })),
-    }));
-  }
-
-  const results = await Promise.allSettled(
-    sessions.flatMap((session) => cards.map((card) => (
+  const results = await Promise.allSettled([
+    ...ordinarySessions.flatMap((session) => cards.map((card) => (
       chat.emitAdeCard({
         sessionId: session.sessionId,
         card,
       })
     ))),
-  );
+    ...(stackLanded && pr.stack
+      ? stackSessions.map((session) => chat.emitAdeCard({
+        sessionId: session.sessionId,
+        card: buildPrStackLandCard({
+          pr,
+          stackNumber: pr.stack.number,
+          layers: stackLayers.map((layer) => ({
+            githubPrNumber: layer.githubPrNumber,
+            title: layer.title,
+            state: layer.state,
+          })),
+        }),
+      }))
+      : []),
+  ]);
   const failures = results.filter((result) => result.status === "rejected");
   if (failures.length > 0) {
     throw new AggregateError(
@@ -599,5 +607,5 @@ export async function emitPrCardsForChange(args: {
       `Failed to emit ${failures.length} of ${cards.length} PR chat cards.`,
     );
   }
-  return cards.length;
+  return cards.length + (stackLanded && pr.stack ? 1 : 0);
 }

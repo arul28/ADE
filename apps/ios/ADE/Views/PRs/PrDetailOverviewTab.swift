@@ -842,12 +842,16 @@ struct PrOverviewGitHubStackCard: View {
   let stack: GitHubPrStackMembership
   let prNumber: Int
   let onOpenGitHub: () -> Void
-  var canMutateStack = false
-  var stackUnavailableReason: String? = nil
+  var canMergeStack = false
+  var canRebaseStack = false
+  var mergeUnavailableReason: String? = nil
+  var rebaseUnavailableReason: String? = nil
   var stackBusy = false
   var pendingConfirm: String? = nil
   var onMerge: (() -> Void)? = nil
   var onRebase: (() -> Void)? = nil
+
+  private var canMutateStack: Bool { canMergeStack || canRebaseStack }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -893,26 +897,35 @@ struct PrOverviewGitHubStackCard: View {
 
       if canMutateStack {
         HStack(spacing: 8) {
-          Button(action: { onRebase?() }) {
-            Text(stackBusy && pendingConfirm == "rebase" ? "Rebasing..." : pendingConfirm == "rebase" ? "Confirm rebase" : "Rebase stack")
-              .frame(maxWidth: .infinity)
+          if canRebaseStack {
+            Button(action: { onRebase?() }) {
+              Text(stackBusy && pendingConfirm == "rebase" ? "Rebasing..." : pendingConfirm == "rebase" ? "Confirm rebase" : "Rebase stack")
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.glass)
+            .disabled(stackBusy || rebaseUnavailableReason != nil)
           }
-          .buttonStyle(.glass)
-          .disabled(stackBusy || stackUnavailableReason != nil)
-          Button(action: { onMerge?() }) {
-            Text(stackBusy && pendingConfirm == "merge" ? "Merging..." : pendingConfirm == "merge" ? "Confirm merge" : "Merge stack")
-              .frame(maxWidth: .infinity)
+          if canMergeStack {
+            Button(action: { onMerge?() }) {
+              Text(stackBusy && pendingConfirm == "merge" ? "Merging..." : pendingConfirm == "merge" ? "Confirm merge" : "Merge stack")
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.glassProminent)
+            .disabled(stackBusy || mergeUnavailableReason != nil)
           }
-          .buttonStyle(.glassProminent)
-          .disabled(stackBusy || stackUnavailableReason != nil)
         }
         Button(action: onOpenGitHub) {
           Label("Review on GitHub", systemImage: "arrow.up.right.square")
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.glass)
-        if let stackUnavailableReason, !stackUnavailableReason.isEmpty {
-          Text(stackUnavailableReason)
+        if let rebaseUnavailableReason, !rebaseUnavailableReason.isEmpty {
+          Text(rebaseUnavailableReason)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        if let mergeUnavailableReason, !mergeUnavailableReason.isEmpty {
+          Text(mergeUnavailableReason)
             .font(.caption)
             .foregroundStyle(ADEColor.textMuted)
         }
