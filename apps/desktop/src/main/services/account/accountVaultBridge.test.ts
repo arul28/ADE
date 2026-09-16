@@ -119,6 +119,39 @@ describe("accountVaultBridge (main)", () => {
     });
   });
 
+  it("keeps redacted list rows so callers can fetch their values", async () => {
+    const pool = poolReturning({
+      domain: "account_vault",
+      action: "list",
+      result: [
+        {
+          scope: "all",
+          kind: "provider_api_key",
+          key: "openai",
+          updatedAt: "now",
+          readable: true,
+        },
+      ],
+    });
+    const bridge = createAccountVaultBridge({
+      getPool: () => pool,
+      getRootPath: () => "/repo",
+    });
+
+    expect(await bridge.list("all")).toEqual({
+      ok: true,
+      value: [
+        {
+          scope: "all",
+          kind: "provider_api_key",
+          key: "openai",
+          value: null,
+          updatedAt: "now",
+        },
+      ],
+    });
+  });
+
   it("turns a brain failure into an unavailable result carrying its message", async () => {
     const debug = vi.fn();
     const bridge = createAccountVaultBridge({

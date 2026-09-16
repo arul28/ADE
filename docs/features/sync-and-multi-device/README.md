@@ -3738,10 +3738,11 @@ feature is merged or because a deliberately isolated-port host is running.
   per remote IP. Five failures put that IP into a 10-minute cooldown
   during which new pairing requests are rejected without touching the
   PIN store.
-- **Secrets never sync.** `.ade/local.secret.yaml` (provider API keys,
-  ADE CLI configs) is per-machine. Linear tokens stay in the active
-  project's machine-local `.ade/secrets`; GitHub tokens and AI provider
-  tokens stay on the runtime machine.
+- **Only explicitly account-owned credentials sync.** `.ade/local.secret.yaml`
+  and device-only credentials remain per-machine. Account-scoped AI provider
+  keys use the `provider_api_key` vault kind, and Linear OAuth refresh tokens
+  use `linear_refresh_token`; access tokens, GitHub tokens, and vendor CLI
+  refresh credentials stay on the machine that owns them.
 - **Transport**: WebSocket auth via PIN / paired secret / bootstrap
   token on every connection. Tailscale WireGuard encryption applies
   when over tailnet; LAN connections rely on pairing token validation.

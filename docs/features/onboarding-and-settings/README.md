@@ -1744,7 +1744,8 @@ proxy fabricates callable namespaces for missing properties, so
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
 | Keep-awake level | `GlobalState` in `<userData>/ade-state.json` under `keepAwakePreferences` | machine-scoped; anything unreadable normalizes to `never` |
 | GitHub credentials | Keychain via `safeStorage` | tokens encrypted; a store ADE cannot decrypt reports `credentialStoreUnreadable` rather than "not connected" |
-| Linear credentials | Active project's `.ade/secrets` | project-local token/OAuth state, encrypted on disk |
+| AI provider API keys | Machine credential store plus account vault | Account-scoped keys hydrate on a machine when its local store is missing them; `deviceOnly` writes stay local |
+| Linear credentials | Active project's `.ade/secrets` plus account vault | Access-token/OAuth state is local; the OAuth refresh token uses the `linear_refresh_token` account item when available |
 | OpenAI API key (CTO voice) | Machine ADE home — `~/.ade/secrets` (or `$ADE_HOME`) via `resolveMachineAdeLayout` | machine-scoped, never read back to the renderer; an `OPENAI_API_KEY` in the environment is the read-only last tier |
 | Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
 

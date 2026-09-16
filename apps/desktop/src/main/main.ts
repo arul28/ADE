@@ -3019,12 +3019,13 @@ app.whenReady().then(async () => {
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
     const scaffoldedFirstOpen = consumeFirstOpenStabilityMarker(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
+    const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot, {
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
       getAccountVault: () => accountVaultBridge,
+      logger,
     });
-    const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     registerAccountConfigProjectRoot(projectRoot);
     const accountAuthService = getSharedAccountAuthService({
       projectRoots: () => [projectRoot],

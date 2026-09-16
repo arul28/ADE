@@ -504,10 +504,11 @@ describe("apiKeyStore", () => {
     vault.list.mockResolvedValue({
       ok: true,
       value: [
-        { scope: "all", kind: "provider_api_key", key: "anthropic", value: "sk-vault-key", updatedAt: "now" },
+        { scope: "all", kind: "provider_api_key", key: "anthropic", value: null, updatedAt: "now" },
         { scope: "all", kind: "provider_api_key", key: "openai", value: "sk-vault-stale", updatedAt: "now" },
       ],
     } as never);
+    vault.get.mockResolvedValueOnce({ ok: true, value: "sk-vault-key" } as never);
     const store = await loadStoreModule();
     store.initApiKeyStore(tempRoot, {
       credentialStore,
@@ -518,7 +519,7 @@ describe("apiKeyStore", () => {
 
     expect(store.getApiKey("anthropic")).toBe("sk-vault-key");
     expect(store.getApiKey("openai")).toBe("sk-local-key");
-    expect(vault.get).not.toHaveBeenCalled();
+    expect(vault.get).toHaveBeenCalledWith("all", "provider_api_key", "anthropic");
     expect(vault.set).not.toHaveBeenCalled();
   });
 
