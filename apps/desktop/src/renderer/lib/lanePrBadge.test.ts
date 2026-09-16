@@ -8,6 +8,7 @@ import {
   primaryPrStateRank,
   selectPrimaryLanePr,
 } from "./lanePrBadge";
+import { prStateTone, selectPrsForChatInLane } from "./prChatScope";
 
 type TestPr = { id: string; state: PrState; updatedAt?: string | null; githubPrNumber: number };
 
@@ -270,5 +271,54 @@ describe("openLanePr", () => {
       "_blank",
       "noopener,noreferrer",
     );
+  });
+});
+
+describe("prStateTone", () => {
+  // Three copies of this mapping existed and two of them rendered a DRAFT pull
+  // request GREEN — so one PR read amber in the pane header and green in the
+  // pane's own selector and in the command menu.
+  it("gives a draft its own amber tone, never the open green", () => {
+    expect(prStateTone("draft").dot).not.toBe(prStateTone("open").dot);
+    expect(prStateTone("draft").label).toBe("Draft");
+  });
+
+  it("distinguishes every state it is given", () => {
+    const dots = (["open", "draft", "merged", "closed"] as PrState[]).map((state) => prStateTone(state).dot);
+    expect(new Set(dots).size).toBe(4);
+  });
+
+  it("falls back rather than throwing on an unknown state", () => {
+    const tone = prStateTone("something-new" as PrState);
+    expect(tone.dot).toBeTruthy();
+    expect(tone.label).toBe("something-new");
+  });
+});
+
+describe("selectPrsForChatInLane", () => {
+  const row = (id: string, laneId: string, sessions?: string[], detached?: boolean) => ({
+    id, laneId, detached, chatSessionIds: sessions,
+  } as unknown as Parameters<typeof selectPrsForChatInLane>[0][number]);
+
+  it("takes lane-owned rows and rows this chat linked from another lane", () => {
+    const ids = selectPrsForChatInLane(
+      [row("own", "lane-1"), row("linked", "lane-2", ["sess-a"]), row("other", "lane-2", ["sess-b"])],
+      "lane-1",
+      "sess-a",
+    ).map((pr) => pr.id);
+
+    expect(ids).toContain("own");
+    expect(ids).toContain("linked");
+    expect(ids).not.toContain("other");
+  });
+
+  it("drops detached rows whichever arm they arrive on", () => {
+    const ids = selectPrsForChatInLane(
+      [row("own", "lane-1", undefined, true), row("linked", "lane-2", ["sess-a"], true)],
+      "lane-1",
+      "sess-a",
+    ).map((pr) => pr.id);
+
+    expect(ids).toEqual([]);
   });
 });
