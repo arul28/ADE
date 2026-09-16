@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, CaretDown, CaretRight, Check, Gear, Square, Stop, X } from "@phosphor-icons/react";
+import { ArrowDown, CaretDown, CaretRight, Check, Gear, Square, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
@@ -288,11 +288,9 @@ export function SubagentSpawnCard({
 export function SubagentResultCard({
   event,
   onViewTranscript,
-  onJumpToStart,
 }: {
   event: SubagentResultCardRenderEvent;
   onViewTranscript?: () => void;
-  onJumpToStart?: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const isSuccess = event.status === "completed";
@@ -318,30 +316,15 @@ export function SubagentResultCard({
         tone={isSuccess ? "ok" : isStopped ? "idle" : "warn"}
         align="top"
         meta={duration}
-        action={onViewTranscript || onJumpToStart ? (
-          <span className="flex flex-col items-end gap-1">
-            {onViewTranscript ? (
-              <button
-                type="button"
-                onClick={onViewTranscript}
-                className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors hover:text-[color:var(--chat-accent)]"
-                title="View transcript"
-              >
-                View transcript
-              </button>
-            ) : null}
-            {onJumpToStart ? (
-              <button
-                type="button"
-                onClick={onJumpToStart}
-                className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/38 transition-colors hover:text-[color:var(--chat-accent)]"
-                title="Jump to start"
-              >
-                <ArrowUp size={11} weight="bold" aria-hidden />
-                jump to start
-              </button>
-            ) : null}
-          </span>
+        action={onViewTranscript ? (
+          <button
+            type="button"
+            onClick={onViewTranscript}
+            className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors hover:text-[color:var(--chat-accent)]"
+            title="View transcript"
+          >
+            View transcript
+          </button>
         ) : null}
       >
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">

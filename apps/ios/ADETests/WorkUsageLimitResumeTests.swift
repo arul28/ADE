@@ -743,18 +743,28 @@ final class WorkUsageLimitResumeTests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-09-08T19:02:00.000Z",
         sequence: 2,
-        event: .command(
-          command: "npm test",
-          cwd: "/repo",
-          output: "ok",
-          status: .completed,
+        event: .toolCall(
+          tool: "functions.exec_command",
+          argsText: "{\"cmd\":\"npm test\"}",
           itemId: "command-1",
-          exitCode: 0,
-          durationMs: 12,
+          parentItemId: nil,
           turnId: "turn-limit"
         )
       ),
-      doneEnvelope(turnId: "turn-limit", apiErrorStatus: 429, sequence: 3),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-08T19:02:01.000Z",
+        sequence: 3,
+        event: .toolResult(
+          tool: "functions.exec_command",
+          resultText: "ok",
+          itemId: "command-1",
+          parentItemId: nil,
+          turnId: "turn-limit",
+          status: .completed
+        )
+      ),
+      doneEnvelope(turnId: "turn-limit", apiErrorStatus: 429, sequence: 4),
     ]
     let snapshot = buildWorkChatTimelineSnapshot(
       transcript: transcript,

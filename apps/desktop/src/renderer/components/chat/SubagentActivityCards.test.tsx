@@ -171,9 +171,9 @@ describe("SubagentStoppedGroupCard", () => {
       cause,
       count: 3,
       items: [
-        { agentKey: "a", title: "Explore auth flow", jumpToStartRowKey: "subagent-spawn:a" },
-        { agentKey: "b", title: "Explore sync flow", jumpToStartRowKey: "subagent-spawn:b" },
-        { agentKey: "c", title: "Explore the UI", jumpToStartRowKey: "subagent-spawn:c" },
+        { agentKey: "a", title: "Explore auth flow", jumpToStartRowKey: "subagent-result:a" },
+        { agentKey: "b", title: "Explore sync flow", jumpToStartRowKey: "subagent-result:b" },
+        { agentKey: "c", title: "Explore the UI", jumpToStartRowKey: "subagent-result:c" },
       ],
     };
   }
@@ -201,6 +201,6 @@ describe("SubagentStoppedGroupCard", () => {
     const onJumpToStart = vi.fn();
     render(<SubagentStoppedGroupCard event={groupEvent("interrupt")} onJumpToStart={onJumpToStart} />);
     fireEvent.click(screen.getByRole("button", { name: "Explore auth flow jump to start" }));
-    expect(onJumpToStart).toHaveBeenCalledWith("subagent-spawn:a");
+    expect(onJumpToStart).toHaveBeenCalledWith("subagent-result:a");
   });
 });
