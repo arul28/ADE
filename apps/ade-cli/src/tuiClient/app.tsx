@@ -36,6 +36,7 @@ import {
   isComposerTriggerDismissed,
   replaceComposerTriggerSpan,
   type ComposerTokenRange,
+  type ComposerTrigger,
   type ComposerTriggerDismissal,
 } from "../../../desktop/src/shared/composerTriggers";
 import { isChatMentionTokenBody, scoreChatMentionCandidate } from "../../../desktop/src/shared/chatMentions";
@@ -80,6 +81,7 @@ import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/s
 import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
+import { pickPrimaryPrRecord, prRecordNumber, prRecordState } from "../lib/primaryPr";
 import {
   approveToolUse,
   archiveChatSession,
@@ -3459,6 +3461,20 @@ function resolveRightPaneWidth(columns: number, rightOpen: boolean, drawerOpen: 
 }
 
 /**
+ * True when the TUI can actually open a menu for this trigger.
+ *
+ * The shared detector also reports the desktop composer's `#` pull-request
+ * trigger, which the TUI has no palette for. Letting one through made the
+ * prompt report a trigger as "open" with nothing on screen, and Esc then spent
+ * itself dismissing that invisible menu instead of doing its usual job. A
+ * markdown heading — `# Title` — never reaches here at all: the space after the
+ * `#` ends the token in the detector.
+ */
+export function composerTriggerServedByTui(trigger: Pick<ComposerTrigger, "type">): boolean {
+  return trigger.type === "at" || trigger.type === "slash";
+}
+
+/**
  * Mentions that become real file attachments. A FOLDER row is a pointer: it has
  * no bytes to upload, and attaching it reaches the model as "Attachment
  * unavailable: <dir>" or a bogus CLI manifest row. Shared by the submit and the
@@ -5425,7 +5441,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const liveComposerTrigger = useMemo(() => {
     if (activePane !== "chat") return null;
     const trigger = detectComposerTrigger(prompt, promptCursor);
-    if (!trigger) return null;
+    if (!trigger || !composerTriggerServedByTui(trigger)) return null;
     const confirmedFile = (body: string) => selectedMentions.some(
       (mention) => mention.kind === "file" && mention.insertText === `@${body}`,
     );
@@ -6661,7 +6677,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const files = [...fileMap.values()];
         const laneDiffStats = diffByLaneId[laneId];
 
-        const activePr = prsRes[0] ?? null;
+        const activePr = pickPrimaryPrRecord(prsRes);
         let pr: {
           number: number;
           state: "open" | "closed" | "merged";
@@ -11491,7 +11507,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       const prs = await conn.action<Array<Record<string, unknown>>>("pr", "listAll", laneId ? { laneId } : {});
-      const activePr = prs[0] ?? null;
+      const activePr = pickPrimaryPrRecord(prs);
       const prId = activePr ? String(activePr.id ?? activePr.prId ?? "") : "";
       if (name === "/pr") {
         const ahead = activeLane?.status?.ahead ?? 0;
@@ -11515,8 +11531,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               conn.actionList("pr", "getStatus", [prId]).catch(() => null),
             ])
           : [null, null];
+        // A lane can own more than one PR now, and this pane shows exactly one.
+        // Naming the rest is the difference between "this is the PR" and "this
+        // is the one I am showing you" — without it the pane silently
+        // under-reports a follow-up PR cut from the same chat.
+        const otherPrs = prs
+          .filter((pr) => pr.detached !== true && pr !== activePr)
+          .map((pr) => {
+            const number = prRecordNumber(pr);
+            return `#${number || "?"} ${prRecordState(pr.state)}`;
+          });
         const sections = [
           formatPrSummary(activePr),
+          ...(otherPrs.length > 0 ? ["", `Also on this lane: ${otherPrs.join(" · ")}`] : []),
           ...(status ? ["", formatPrMergeState(status)] : []),
           ...(checks ? ["", formatPrChecks(checks)] : []),
           "",

@@ -97,7 +97,9 @@ import {
   uploadClipboardImageAttachmentToRuntime,
   defaultPrTitleForChat,
   defaultPrTitleForLane,
+  composerTriggerServedByTui,
 } from "../app";
+import { detectComposerTrigger } from "../../../../desktop/src/shared/composerTriggers";
 import { formatPromptSmartLinkStrip } from "../promptSmartLinks";
 import { isTerminalSessionResumable } from "../closedCliSessions";
 import {
@@ -2125,6 +2127,20 @@ describe("prompt editing helpers", () => {
     );
     expect(prompt).toContain(githubUrl);
     expect(prompt).toContain(linearUrl);
+  });
+
+  it("leaves the desktop-only # pull-request trigger inert in the TUI", () => {
+    // The TUI has no PR palette, and an "open" trigger with nothing on screen
+    // steals Esc from its real job. `@`/`/` still open their menus.
+    const hash = detectComposerTrigger("fix #12", 7);
+    expect(hash?.type).toBe("hash");
+    expect(composerTriggerServedByTui(hash!)).toBe(false);
+
+    expect(composerTriggerServedByTui(detectComposerTrigger("look at @src", 12)!)).toBe(true);
+    expect(composerTriggerServedByTui(detectComposerTrigger("/rev", 4)!)).toBe(true);
+
+    // A markdown heading never becomes a trigger at all.
+    expect(detectComposerTrigger("# Title", 7)).toBeNull();
   });
 
   it("does not split multi-byte characters when editing or wrapping", () => {
