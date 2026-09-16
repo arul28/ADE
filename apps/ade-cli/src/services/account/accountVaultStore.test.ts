@@ -186,6 +186,68 @@ describe("account vault store", () => {
     expect(relay.putAccountVault).not.toHaveBeenCalled();
   });
 
+  /**
+   * The purge race. `sync()` checks the account only on entry, so a pull that
+   * was already in flight used to resolve AFTER the sign-out purge and persist
+   * the credentials straight back onto a machine the user had just signed out
+   * of — the file recreated, `0600`, holding live keys.
+   */
+  it("does not re-create the cache when a pull resolves after purge", async () => {
+    const store = makeStore();
+    store.set("all", "provider_key", "anthropic", "sk-live-abc");
+    const cachePath = store.cachePathForTests();
+
+    let releasePull = (): void => {};
+    const pullOpened = new Promise<void>((ready) => {
+      relay.getAccountVault.mockImplementationOnce(async () => {
+        const held = new Promise<void>((resolve) => {
+          releasePull = resolve;
+        });
+        ready();
+        await held;
+        return {
+          items: [item("anthropic", "sk-live-from-server", "2026-09-17T00:00:00.000Z")],
+          cursor: "cursor-2",
+          truncated: false,
+        };
+      });
+    });
+
+    const syncing = store.sync();
+    await pullOpened;
+    // The purge lands while the pull is still open, exactly as a sign-out does.
+    store.purge();
+    releasePull();
+    await syncing;
+
+    expect(fs.existsSync(cachePath)).toBe(false);
+    expect(store.get("all", "provider_key", "anthropic")).toBeNull();
+  });
+
+  /**
+   * The brain builds one vault per machine but starts the beat from every
+   * project scope. Tearing one project down must not silence the timer for the
+   * projects still running.
+   */
+  it("keeps the shared sync timer alive until the last holder releases it", () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      const stopFirst = store.startPeriodicSync(1_000);
+      const stopSecond = store.startPeriodicSync(1_000);
+
+      stopFirst();
+      vi.advanceTimersByTime(1_000);
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+
+      stopSecond();
+      vi.advanceTimersByTime(5_000);
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("discards the cache when the signed-in account changes", () => {
     makeStore().set("all", "provider_key", "anthropic", "sk-live-abc");
 

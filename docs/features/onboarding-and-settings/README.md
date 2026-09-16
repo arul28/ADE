@@ -8,8 +8,8 @@ Two related but distinct flows:
   Work immediately; AI runtimes, GitHub, and Linear live in Settings. There is
   no blocking project setup dashboard.
 - **Settings** — long-lived configuration organized by tab. Project
-  configuration persists to `.ade/ade.yaml` (shared) and `.ade/local.yaml`
-  (local) through `projectConfigService`; machine-level desktop preferences
+  configuration persists to `.ade/local.yaml` through `projectConfigService`
+  (the committed `.ade/ade.yaml` is retired); machine-level desktop preferences
   such as automatic update installation persist in the Electron user-data
   `ade-state.json`.
 
@@ -27,7 +27,6 @@ directories. Onboarding writes to both.
 |---|---|---|---|
 | Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
 | Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff/reconciliation state, and machine-local automatic-install preferences. |
-| Project (shared) | `<project>/.ade/ade.yaml` | `projectConfigService` | Version-controlled team config: tests, overlays, automations, lane templates, AI mode, providers, Linear sync. |
 | Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides for ports, env vars, and machine-specific paths. |
 | Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
 
@@ -131,7 +130,7 @@ Main process:
   [agent-tools-cache.md](./agent-tools-cache.md).
 - `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
   pure GitHub Actions workflow parsing and suggested test/automation/provider
-  config generation for `.ade/ade.yaml`.
+  config generation for `.ade/local.yaml`.
 - `apps/desktop/src/main/services/github/githubService.ts`,
   `githubCredentialHealth.ts`, and `githubRateLimit.ts` — GitHub App,
   environment, PAT, and GitHub CLI credential discovery; `/user` and repository
@@ -242,8 +241,7 @@ Shared types and IPC:
 - `apps/desktop/src/shared/ipc.ts` — channels:
   - `ade.onboarding.*` (status, detectDefaults, applySuggestedConfig,
     complete, setDismissed)
-  - `ade.projectConfig.*` (get, validate, save, diffAgainstDisk,
-    confirmTrust, export)
+  - `ade.projectConfig.*` (get, validate, save, diffAgainstDisk, export)
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
     getSnapshot, initializeOrRepair, runIntegrityCheck)
   - `ade.projectSecrets.*` (list, get, set, delete, chooseEnvFile,
@@ -1371,7 +1369,7 @@ banner):
 ## Detail docs
 
 - [configuration-schema.md](./configuration-schema.md) — shape of
-  `.ade/ade.yaml` and `.ade/local.yaml` as consumed by
+  `.ade/local.yaml` (and the retired `.ade/ade.yaml`) as consumed by
   `projectConfigService`; types in `shared/types/config.ts`.
 - [first-run.md](./first-run.md) — first launch lands on Work. There is
   no blocking project-setup dashboard; optional integrations live in Settings.
@@ -1735,7 +1733,6 @@ proxy fabricates callable namespaces for missing properties, so
 
 | What | Location | Notes |
 |---|---|---|
-| Project config (shared) | `.ade/ade.yaml` | committed to git |
 | Project config (local) | `.ade/local.yaml` | gitignored |
 | Onboarding status | `AdeDb` via `STATUS_KEY = "onboarding:status"` | `completedAt`, `dismissedAt`, `freshProject` |
 | Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
@@ -1962,7 +1959,9 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
   port, or a fact about hardware is machine scope, because it means nothing on
   another computer. Everything else is account scope and follows the user.
   `SettingScope` is the four combinations, and the sidebar group IS the scope.
-- **No trust gate.** It went with the repo-committed `.ade/ade.yaml` it guarded;
+- **No trust gate, and no committed config.** `.ade/ade.yaml` is no longer read
+  at all — it is carried over into `local.yaml` once (non-executable keys only)
+  and deleted. The gate went with the file it guarded;
   see [configuration-schema.md](./configuration-schema.md#the-trust-model-is-retired).
   `getExecutableConfig` is gone too — it had become `getEffective` with an extra
   throw.

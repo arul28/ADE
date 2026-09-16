@@ -35,6 +35,7 @@ import {
   SettingsManagerRow,
   SettingsManagerTable,
 } from "./primitives/SettingsManagerPage";
+import { SettingsTextField } from "./primitives";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -142,7 +143,6 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
-  const [tokenFocused, setTokenFocused] = useState(false);
   const [showPatSetup, setShowPatSetup] = useState(false);
   const [transcriptGistsEnabled, setTranscriptGistsEnabled] = useState(false);
   // The App row in the ladder below reports why the App credential is idle, and
@@ -346,29 +346,6 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     color: COLORS.danger,
     borderRadius: 0,
   };
-
-  const inputStyle: CSSProperties = {
-    height: 40,
-    background: COLORS.recessedBg,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: COLORS.border,
-    borderRadius: 8,
-    padding: "0 14px",
-    fontSize: 12,
-    fontFamily: MONO_FONT,
-    color: COLORS.textPrimary,
-    outline: "none",
-    width: "100%",
-    transition: "border-color 150ms ease, box-shadow 150ms ease",
-  };
-
-  const inputFocusedStyle: CSSProperties = tokenFocused
-    ? {
-        borderColor: COLORS.accent,
-        boxShadow: `0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent)`,
-      }
-    : {};
 
   const scopeRowStyle = (present: boolean): CSSProperties => ({
     display: "flex",
@@ -770,14 +747,12 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
 
           <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <span style={LABEL_STYLE}>PERSONAL ACCESS TOKEN</span>
-            <input
+            <SettingsTextField
               type="password"
               value={githubTokenDraft}
-              onChange={(event) => setGithubTokenDraft(event.target.value)}
+              onChange={setGithubTokenDraft}
               placeholder="ghp_... or github_pat_..."
-              style={{ ...inputStyle, ...inputFocusedStyle }}
-              onFocus={() => setTokenFocused(true)}
-              onBlur={() => setTokenFocused(false)}
+              mono
             />
             {githubTokenDraft.trim() ? (
               <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>

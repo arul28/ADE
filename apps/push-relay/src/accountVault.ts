@@ -29,8 +29,13 @@
  * Machines page shows a per-machine sign-in checklist instead.
  */
 import {
+  accountPageResult,
+  buildAccountPageQuery,
+  countAndGuard,
   isRecord,
   json,
+  parseAccountScopeKey,
+  parseSinceParam,
   requiredString,
   type AttentionRelayEnv,
 } from "./attentionShared";
@@ -127,8 +132,10 @@ const MAX_ITEMS_PER_ACCOUNT = 2_000;
 const MAX_ITEMS_PER_WRITE = 100;
 const MAX_ITEMS_PER_READ = 500;
 
-const MAX_SCOPE_KEY_LENGTH = 512;
 const MAX_ITEM_KEY_LENGTH = 200;
+
+/** The tiebreak columns after `updated_at`: the rest of the primary key. */
+const VAULT_KEY_COLUMNS = ["scope_key", "item_kind", "item_key"];
 
 /**
  * The shapes a vault item can take. Closed on purpose: an unknown kind would be
@@ -162,14 +169,6 @@ type ParsedVaultWrite = {
   refreshOwner: string | null;
 };
 
-function parseScopeKey(value: unknown): string | null {
-  const scope = requiredString(value, MAX_SCOPE_KEY_LENGTH);
-  if (!scope) return null;
-  if (scope === "all") return scope;
-  if (scope.startsWith("repo:") && scope.length > "repo:".length) return scope;
-  return null;
-}
-
 function parseItemKey(value: unknown): string | null {
   const key = requiredString(value, MAX_ITEM_KEY_LENGTH);
   if (!key) return null;
@@ -178,7 +177,7 @@ function parseItemKey(value: unknown): string | null {
 
 function parseWriteItem(value: unknown): ParsedVaultWrite | null {
   if (!isRecord(value)) return null;
-  const scope = parseScopeKey(value.scope);
+  const scope = parseAccountScopeKey(value.scope);
   const key = parseItemKey(value.key);
   const kind = requiredString(value.kind, 32);
   if (!scope || !key || !kind || !ITEM_KINDS.has(kind)) return null;
@@ -199,34 +198,27 @@ async function handleRead(
 ): Promise<Response> {
   const key = await vaultKey(env);
   if (!key) return vaultUnavailable();
-  const sinceRaw = url.searchParams.get("since")?.trim() ?? "";
-  const since = sinceRaw && !Number.isNaN(Date.parse(sinceRaw))
-    ? new Date(sinceRaw).toISOString()
-    : null;
+  const cursor = parseSinceParam(url);
   const scopeParam = url.searchParams.get("scope");
-  const scope = scopeParam?.trim() ? parseScopeKey(scopeParam) : null;
+  const scope = scopeParam?.trim() ? parseAccountScopeKey(scopeParam) : null;
   if (scopeParam != null && !scope) {
     return json({ ok: false, error: "invalid scope" }, { status: 400 });
   }
 
-  const conditions = ["user_id = ?"];
-  const bindings: unknown[] = [userId];
-  if (since) {
-    conditions.push("updated_at > ?");
-    bindings.push(since);
-  }
-  if (scope) {
-    conditions.push("scope_key = ?");
-    bindings.push(scope);
-  }
-
+  const query = buildAccountPageQuery({
+    userId,
+    cursor,
+    scope,
+    keyColumns: VAULT_KEY_COLUMNS,
+    limit: MAX_ITEMS_PER_READ,
+  });
   const rows = await env.DB.prepare(`
     select scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner
     from account_vault_items
-    where ${conditions.join(" and ")}
-    order by updated_at asc
+    where ${query.where}
+    order by ${query.orderBy}
     limit ?
-  `).bind(...bindings, MAX_ITEMS_PER_READ + 1).all<{
+  `).bind(...query.bindings).all<{
     scope_key: string;
     item_kind: string;
     item_key: string;
@@ -236,9 +228,13 @@ async function handleRead(
     refresh_owner: string | null;
   }>();
 
-  const page = rows.results.slice(0, MAX_ITEMS_PER_READ);
+  const paged = accountPageResult(rows.results, {
+    limit: MAX_ITEMS_PER_READ,
+    keyColumns: VAULT_KEY_COLUMNS,
+    cursor,
+  });
   const items: AccountVaultRow[] = [];
-  for (const row of page) {
+  for (const row of paged.page) {
     items.push({
       scope: row.scope_key,
       kind: row.item_kind,
@@ -252,8 +248,8 @@ async function handleRead(
   return json({
     ok: true,
     items,
-    truncated: rows.results.length > MAX_ITEMS_PER_READ,
-    cursor: items.length ? items[items.length - 1]!.updatedAt : since,
+    truncated: paged.truncated,
+    cursor: paged.cursor,
   });
 }
 
@@ -289,23 +285,21 @@ async function handleWrite(
   }
   if (!parsed.length) return json({ ok: true, written: 0, updatedAt: null });
 
-  const existing = await env.DB
-    .prepare("select count(*) as count from account_vault_items where user_id = ?")
-    .bind(userId)
-    .first<{ count: number }>();
-  if ((existing?.count ?? 0) + parsed.length > MAX_ITEMS_PER_ACCOUNT + MAX_ITEMS_PER_WRITE) {
+  if (await countAndGuard({
+    env,
+    table: "account_vault_items",
+    userId,
+    adding: parsed.length,
+    ceiling: MAX_ITEMS_PER_ACCOUNT + MAX_ITEMS_PER_WRITE,
+  })) {
     return json({ ok: false, error: "account vault limit reached" }, { status: 507 });
   }
 
   const updatedAt = new Date().toISOString();
-  const sealedByKey = new Map<string, string>();
-  for (const write of parsed) {
-    sealedByKey.set(
-      `${write.scope}\u0000${write.kind}\u0000${write.key}`,
-      await sealValue(key, write.value),
-    );
-  }
-  await env.DB.batch(parsed.map((write) => env.DB.prepare(`
+  // Indexed by position, not by a recomputed composite key: the batch below
+  // walks the same array in the same order, so position is already the join.
+  const sealed = await Promise.all(parsed.map((write) => sealValue(key, write.value)));
+  await env.DB.batch(parsed.map((write, index) => env.DB.prepare(`
     insert into account_vault_items(
       user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner
     )
@@ -320,7 +314,7 @@ async function handleWrite(
     write.scope,
     write.kind,
     write.key,
-    sealedByKey.get(`${write.scope}\u0000${write.kind}\u0000${write.key}`)!,
+    sealed[index]!,
     updatedAt,
     writerDeviceId,
     write.refreshOwner,
@@ -340,7 +334,7 @@ async function handleDelete(
   kindRaw: string,
   keyRaw: string,
 ): Promise<Response> {
-  const scope = parseScopeKey(scopeRaw);
+  const scope = parseAccountScopeKey(scopeRaw);
   const key = parseItemKey(keyRaw);
   const kind = requiredString(kindRaw, 32);
   if (!scope || !key || !kind || !ITEM_KINDS.has(kind)) {

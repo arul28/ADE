@@ -8,7 +8,7 @@ import type {
   BudgetPreset,
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, recessedStyle } from "../lanes/laneDesignTokens";
-import { SettingsCard, SettingsNumber, SettingsSelect } from "./primitives";
+import { SettingsCard, SettingsNumber, SettingsSelect, SettingsTextField } from "./primitives";
 
 /**
  * The spend cap editor. Mounted in settings and in the top-bar usage popup, so
@@ -27,18 +27,6 @@ const SCOPE_OPTIONS: BudgetCapScope[] = ["global", "automation-rule"];
 const TYPE_OPTIONS: BudgetCapType[] = ["weekly-percent", "five-hour-percent"];
 const PROVIDER_OPTIONS: BudgetCapProvider[] = ["any", "claude", "codex"];
 const ACTION_OPTIONS: BudgetCapAction[] = ["block", "warn", "pause"];
-
-const fieldInputStyle: React.CSSProperties = {
-  width: "100%",
-  height: 30,
-  padding: "0 8px",
-  fontFamily: SANS_FONT,
-  fontSize: 12,
-  color: COLORS.textPrimary,
-  background: COLORS.recessedBg,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  borderRadius: 8,
-};
 
 const fieldLabelStyle: React.CSSProperties = {
   fontFamily: SANS_FONT,
@@ -200,19 +188,17 @@ export function BudgetCapEditor({
                 />
               </Field>
               <Field label="Refresh (min)">
-                <input
-                  aria-label="Budget refresh interval in minutes"
+                <SettingsTextField
+                  ariaLabel="Budget refresh interval in minutes"
                   value={draft.refreshIntervalMin}
-                  onChange={(event) => { setDraft((current) => ({ ...current, refreshIntervalMin: event.target.value })); setDirty(true); }}
-                  style={fieldInputStyle}
+                  onChange={(next) => { setDraft((current) => ({ ...current, refreshIntervalMin: next })); setDirty(true); }}
                 />
               </Field>
               <Field label="Alert weekly %">
-                <input
-                  aria-label="Alert at weekly percent"
+                <SettingsTextField
+                  ariaLabel="Alert at weekly percent"
                   value={draft.alertAtWeeklyPercent}
-                  onChange={(event) => { setDraft((current) => ({ ...current, alertAtWeeklyPercent: event.target.value })); setDirty(true); }}
-                  style={fieldInputStyle}
+                  onChange={(next) => { setDraft((current) => ({ ...current, alertAtWeeklyPercent: next })); setDirty(true); }}
                 />
               </Field>
             </div>
@@ -260,11 +246,10 @@ export function BudgetCapEditor({
                       />
                     </Field>
                     <Field label="Scope ID">
-                      <input
-                        aria-label="Cap scope id"
+                      <SettingsTextField
+                        ariaLabel="Cap scope id"
                         value={cap.scopeId ?? ""}
-                        onChange={(event) => updateCap(cap.rowId, { scopeId: event.target.value })}
-                        style={fieldInputStyle}
+                        onChange={(next) => updateCap(cap.rowId, { scopeId: next })}
                       />
                     </Field>
                     <Field label="Cap type">

@@ -13,27 +13,33 @@ Canonical service: `apps/desktop/src/main/services/config/projectConfigService.t
 
 | File | Scope | VCS | Purpose |
 |---|---|---|---|
-| `.ade/ade.yaml` | Shared | committed | Team-wide test, overlay, automation, AI, lane template, proxy, and OAuth settings. |
-| `.ade/local.yaml` | Local | gitignored | Personal overrides: ports, env vars, and machine-specific paths. |
+| `.ade/local.yaml` | Local | gitignored | The only project config file ADE reads: every setting, personal to this machine. |
 
-Both files use the lenient `ProjectConfigFile` shape at parse time.
-They are merged into the strict `EffectiveProjectConfig` at read
-time. `projectConfigService.get()` returns a `ProjectConfigSnapshot`
-with all three (`shared`, `local`, `effective`) plus validation and
-trust metadata.
+`.ade/ade.yaml` is **no longer read**. The committed file was the one channel
+through which a repository could hand your machine an executable `command`, a
+lane `setupScript`, or an agent prompt; the trust gate that used to guard it is
+retired, and ignoring the file is what makes that retirement safe. If a legacy
+`.ade/ade.yaml` is still in a working tree, the first snapshot read carries its
+non-executable keys over into `local.yaml` — `project`, `environments`,
+`github`, `git`, `ai`, `laneCleanup`, `providers`, `linearSync`, `ui`,
+`browser`, with local winning every conflict — drops the executable ones
+(`testSuites`, `laneOverlayPolicies`, `automations`, `laneEnvInit`,
+`laneTemplates`, `defaultLaneTemplate`), logs one `projectConfig.carryOver`
+line with both counts, and then deletes the file from the working tree. Deleting
+it is what makes the carry-over idempotent; an unreadable file is left in place,
+logged as `projectConfig.carryOver.unreadable`, and the project still opens.
 
-`projectConfigService.save({ shared, local })` is also the seam that
-promotes a project from the **local-only ADE scaffold** to the **shared
-scaffold**. Saving with any non-empty shared content
-(`hasSharedConfigContent(shared)` checks for test suites, overlays, automations, environments, github/git/ai
-metadata, lane init, lane templates, lane cleanup, providers, linear
-sync, notifications, or a `project` block) calls
-`ensureSharedAdeProjectScaffold(projectRoot)` so the canonical
-`.ade/.gitignore` and `ade.yaml` exist before the
-write hits disk and `.git/info/exclude` is scrubbed. Saves that only
-change `local` skip the shared write entirely (so a brand-new project
-can stay local-only) and re-run `initializeOrRepairAdeProject` in auto
-mode to keep the local-only `.git/info/exclude .ade/` rule in place.
+`local.yaml` uses the lenient `ProjectConfigFile` shape at parse time and
+resolves into the strict `EffectiveProjectConfig` at read time.
+`projectConfigService.get()` still returns a `ProjectConfigSnapshot` with
+`shared`, `local`, `effective` plus validation and hash metadata — `shared` is
+kept on the shape because dozens of callers round-trip it through `save`, but it
+is always an empty config, and `save` accepts and discards whatever is passed
+for it.
+
+`projectConfigService.save({ shared, local })` writes `local.yaml` only. It no
+longer promotes a project from the local-only ADE scaffold to the shared one,
+because there is no shared config file left to write.
 
 ## Top-level type
 
@@ -103,9 +109,7 @@ travels with the repo.
 
 `browser` is machine-local by intent — which browser your links open in
 is a property of the machine you are sitting at, not of the repository —
-so ADE only ever writes it to `.ade/local.yaml`. Setting it in the
-committed `ade.yaml` still works: the merge is per key with local
-winning. Both fields are coerced, not passed through: a `linkOpenMode`
+so ADE only ever writes it to `.ade/local.yaml`. Both fields are coerced, not passed through: a `linkOpenMode`
 that is neither `in-app` nor `external`, or an `autoOpenDevServer` that
 is not a boolean, is dropped so a hand-edited typo falls back to the
 default instead of silently routing every link to the system browser.
@@ -113,7 +117,7 @@ The Settings › Browser section (`settings/BrowserLinksSection.tsx`)
 writes both fields.
 
 The lenient `Config*` variants allow every field to be optional so
-`ade.yaml` and `local.yaml` can be partial. `projectConfigService`
+`local.yaml` can be partial. `projectConfigService`
 applies defaults, merges, and validates on every read.
 
 ## Tests
@@ -533,7 +537,6 @@ ade.projectConfig.get             → ProjectConfigSnapshot
 ade.projectConfig.validate        → ProjectConfigValidationResult
 ade.projectConfig.save            → void (triggers reload callbacks)
 ade.projectConfig.diffAgainstDisk → ProjectConfigDiff
-ade.projectConfig.confirmTrust    → void
 ```
 
 The `changed` event is emitted after every save (private channel
@@ -541,7 +544,7 @@ name handled inside `registerIpc.ts`).
 
 ## Gotchas
 
-- `.ade/.gitignore`, `ade.yaml`, and the human-authored `templates/`
+- `.ade/.gitignore` and the human-authored `templates/`
   / `skills/` / `workflows/linear/` / `project-icons/` directories are
   the only `.ade/` paths under version control. The shared
   `.ade/.gitignore` is `*` with explicit allowlist entries, so any new
@@ -556,11 +559,9 @@ name handled inside `registerIpc.ts`).
 - Hot-reload of config changes is best-effort. Process env, lane
   overlay policies, and AI mode apply to new launches, not live
   ones.
-- Don't edit `.ade/ade.yaml` while ADE is open unless you plan to
+- Don't edit `.ade/local.yaml` while ADE is open unless you plan to
   click "reload" or let the file watcher pick it up — concurrent
   edits will lose.
-- Trust confirmation is per-project-per-user. Cloning a repo and
-  opening it will require confirming trust on the shared config.
 - Lane overlay policies evaluate top-to-bottom. If two policies match
   the same lane, later entries overwrite earlier ones for scalar
   fields.

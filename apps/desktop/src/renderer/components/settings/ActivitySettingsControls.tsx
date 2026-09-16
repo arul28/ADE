@@ -602,7 +602,6 @@ export function ActivitySettingsControls({
           title="ADE notch"
           description="A small HUD near the menu bar for work that needs you."
           scope="machine"
-          showScopeChip
           disabled={!notchSupported}
           control={
             <SettingsToggle

@@ -1,5 +1,5 @@
-import React, { useId } from "react";
-import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import React, { useId, useState } from "react";
+import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 
 /**
  * The settings control vocabulary. Before this file, ADE shipped four separate
@@ -62,6 +62,94 @@ export function SettingsToggle({
         }}
       />
     </button>
+  );
+}
+
+/**
+ * The settings text field.
+ *
+ * Four of these were hand-rolled — the budget cap editor, lane templates, the
+ * GitHub token box, and secrets — at three different heights (30, 36 and 40),
+ * two different fonts, and two different focus treatments, so a form built from
+ * two sections looked assembled from two products. `mono` is the one real
+ * variation: a path, a command or a token is read character by character and
+ * belongs in the monospace face.
+ */
+export function SettingsTextField({
+  value,
+  onChange,
+  id,
+  type = "text",
+  placeholder,
+  disabled = false,
+  readOnly = false,
+  ariaLabel,
+  /** Paths, commands, tokens — anything read character by character. */
+  mono = false,
+  /** Fills its container instead of sizing to the default width. */
+  fullWidth = true,
+  autoFocus = false,
+  spellCheck,
+  autoComplete,
+  onKeyDown,
+  onBlur,
+  style,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  id?: string;
+  type?: "text" | "password" | "url" | "email";
+  placeholder?: string;
+  disabled?: boolean;
+  readOnly?: boolean;
+  ariaLabel?: string;
+  mono?: boolean;
+  fullWidth?: boolean;
+  autoFocus?: boolean;
+  spellCheck?: boolean;
+  autoComplete?: string;
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>;
+  onBlur?: React.FocusEventHandler<HTMLInputElement>;
+  style?: React.CSSProperties;
+}) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <input
+      id={id}
+      type={type}
+      value={value}
+      placeholder={placeholder}
+      disabled={disabled}
+      readOnly={readOnly}
+      aria-label={ariaLabel}
+      autoFocus={autoFocus}
+      spellCheck={spellCheck}
+      autoComplete={autoComplete}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={onKeyDown}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        setFocused(false);
+        onBlur?.(event);
+      }}
+      style={{
+        height: 32,
+        width: fullWidth ? "100%" : undefined,
+        minWidth: 0,
+        padding: "0 10px",
+        fontFamily: mono ? MONO_FONT : SANS_FONT,
+        fontSize: mono ? 11.5 : 12,
+        color: COLORS.textPrimary,
+        background: COLORS.recessedBg,
+        border: `1px solid ${focused ? COLORS.accent : COLORS.outlineBorder}`,
+        borderRadius: 8,
+        outline: "none",
+        opacity: disabled ? 0.5 : 1,
+        transition: "border-color 150ms ease, box-shadow 150ms ease",
+        boxShadow: focused ? "0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent)" : "none",
+        ...style,
+      }}
+    />
   );
 }
 

@@ -187,6 +187,66 @@ describe("AccountAuthService persisted session notifications", () => {
     await vi.advanceTimersByTimeAsync(25);
     expect(listener).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * The vault is purged from this notification. Without it a machine keeps
+   * every synced credential readable on disk after its user signs out — and the
+   * sign-out often happens in another process (`ade logout`, the desktop app),
+   * so the brain only ever learns about it from the credential file changing.
+   */
+  it("detects a sign-out performed by another process", async () => {
+    vi.useFakeTimers();
+    const store = new MemoryCredentialStore();
+    store.values.set(
+      ACCOUNT_SESSION_CREDENTIAL_KEY,
+      JSON.stringify(storedSession({ expiresAt: "2026-07-14T13:00:00.000Z" })),
+    );
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client" }),
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(service);
+    const listener = vi.fn();
+    service.onSignedOut?.(listener);
+    expect(service.getStatus().signedIn).toBe(true);
+
+    store.values.delete(ACCOUNT_SESSION_CREDENTIAL_KEY);
+    store.notifyExternalChange();
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(service.getStatus().signedIn).toBe(false);
+
+    // Still signed out is not a second sign-out.
+    store.notifyExternalChange();
+    await vi.advanceTimersByTimeAsync(25);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("notifies once on a deliberate local sign-out, not twice via the file watcher", async () => {
+    vi.useFakeTimers();
+    const store = new MemoryCredentialStore();
+    store.values.set(
+      ACCOUNT_SESSION_CREDENTIAL_KEY,
+      JSON.stringify(storedSession({ expiresAt: "2026-07-14T13:00:00.000Z" })),
+    );
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client" }),
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(service);
+    const listener = vi.fn();
+    service.onSignedOut?.(listener);
+
+    service.signOut();
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("AccountAuthService packaged development-session policy", () => {

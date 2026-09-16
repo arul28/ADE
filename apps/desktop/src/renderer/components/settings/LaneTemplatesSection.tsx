@@ -7,7 +7,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
-import { SettingsDisclosure, SettingsToggle } from "./primitives";
+import { SettingsDisclosure, SettingsTextField, SettingsToggle } from "./primitives";
 import {
   SettingsManagerEmpty,
   SettingsManagerPage,
@@ -661,20 +661,18 @@ function TemplateEditor({
         <div style={{ display: "flex", gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={subLabelStyle}>Name</div>
-            <input
-              style={inputStyle}
+            <SettingsTextField
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(next) => setName(next)}
               placeholder="e.g. Web app"
               autoFocus
             />
           </div>
           <div style={{ flex: 2 }}>
             <div style={subLabelStyle}>Description (optional)</div>
-            <input
-              style={inputStyle}
+            <SettingsTextField
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(next) => setDescription(next)}
               placeholder="What this template sets up..."
             />
           </div>
@@ -687,18 +685,20 @@ function TemplateEditor({
         >
           {copyPaths.map((cp, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={cp.source}
-                onChange={(e) => setCopyPaths(updateAt(copyPaths, i, { source: e.target.value }))}
+                onChange={(next) => setCopyPaths(updateAt(copyPaths, i, { source: next }))}
                 placeholder=".claude"
+                mono
+                style={{ flex: 1 }}
               />
               <span style={{ color: COLORS.textDim, fontSize: 11 }}>{"→"}</span>
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={cp.dest ?? ""}
-                onChange={(e) => setCopyPaths(updateAt(copyPaths, i, { dest: e.target.value || undefined }))}
+                onChange={(next) => setCopyPaths(updateAt(copyPaths, i, { dest: next || undefined }))}
                 placeholder="same path if left empty"
+                mono
+                style={{ flex: 1 }}
               />
               <button style={removeBtn} onClick={() => setCopyPaths(removeAt(copyPaths, i))}>{"×"}</button>
             </div>
@@ -723,18 +723,20 @@ function TemplateEditor({
         >
           {envFiles.map((ef, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={ef.source}
-                onChange={(e) => setEnvFiles(updateAt(envFiles, i, { source: e.target.value }))}
+                onChange={(next) => setEnvFiles(updateAt(envFiles, i, { source: next }))}
                 placeholder=".env.template"
+                mono
+                style={{ flex: 1 }}
               />
               <span style={{ color: COLORS.textDim, fontSize: 11 }}>{"→"}</span>
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={ef.dest}
-                onChange={(e) => setEnvFiles(updateAt(envFiles, i, { dest: e.target.value }))}
+                onChange={(next) => setEnvFiles(updateAt(envFiles, i, { dest: next }))}
                 placeholder=".env"
+                mono
+                style={{ flex: 1 }}
               />
               <button style={removeBtn} onClick={() => setEnvFiles(removeAt(envFiles, i))}>{"×"}</button>
             </div>
@@ -754,17 +756,19 @@ function TemplateEditor({
         >
           {dependencies.map((dep, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <input
-                style={{ ...monoInputStyle, flex: 2 }}
+              <SettingsTextField
                 value={dep.command.join(" ")}
-                onChange={(e) => setDependencies(updateAt(dependencies, i, { command: e.target.value.split(/\s+/).filter(Boolean) }))}
+                onChange={(next) => setDependencies(updateAt(dependencies, i, { command: next.split(/\s+/).filter(Boolean) }))}
                 placeholder="npm install"
+                mono
+                style={{ flex: 2 }}
               />
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={dep.cwd ?? ""}
-                onChange={(e) => setDependencies(updateAt(dependencies, i, { cwd: e.target.value || undefined }))}
+                onChange={(next) => setDependencies(updateAt(dependencies, i, { cwd: next || undefined }))}
                 placeholder="folder (optional)"
+                mono
+                style={{ flex: 1 }}
               />
               <button style={removeBtn} onClick={() => setDependencies(removeAt(dependencies, i))}>{"×"}</button>
             </div>
@@ -841,11 +845,11 @@ function SetupScriptFields({
 
         <div>
           <div style={subLabelStyle}>Or run a script file</div>
-          <input
-            style={monoInputStyle}
+          <SettingsTextField
             value={scriptPath}
-            onChange={(e) => onChange({ scriptPath: e.target.value })}
+            onChange={(next) => onChange({ scriptPath: next })}
             placeholder="scripts/setup-lane.sh"
+            mono
           />
           <div style={hintStyle}>
             Runs after the commands above. Path is relative to your project folder. The file has to
@@ -894,11 +898,11 @@ function SetupScriptFields({
               />
               <div style={{ marginTop: 8 }}>
                 <div style={subLabelStyle}>Script file</div>
-                <input
-                  style={monoInputStyle}
+                <SettingsTextField
                   value={unixScriptPath}
-                  onChange={(e) => onChange({ unixScriptPath: e.target.value })}
+                  onChange={(next) => onChange({ unixScriptPath: next })}
                   placeholder="scripts/setup-lane.sh"
+                  mono
                 />
               </div>
             </div>
@@ -913,11 +917,11 @@ function SetupScriptFields({
               />
               <div style={{ marginTop: 8 }}>
                 <div style={subLabelStyle}>Script file</div>
-                <input
-                  style={monoInputStyle}
+                <SettingsTextField
                   value={windowsScriptPath}
-                  onChange={(e) => onChange({ windowsScriptPath: e.target.value })}
+                  onChange={(next) => onChange({ windowsScriptPath: next })}
                   placeholder="scripts\setup-lane.ps1"
+                  mono
                 />
               </div>
             </div>
@@ -948,20 +952,20 @@ function AdvancedFields({
         <div style={{ display: "flex", gap: 12 }}>
           <div style={{ flex: 2 }}>
             <div style={subLabelStyle}>Compose file</div>
-            <input
-              style={monoInputStyle}
+            <SettingsTextField
               value={dockerCompose}
-              onChange={(e) => onChange({ dockerCompose: e.target.value })}
+              onChange={(next) => onChange({ dockerCompose: next })}
               placeholder="docker-compose.yml"
+              mono
             />
           </div>
           <div style={{ flex: 1 }}>
             <div style={subLabelStyle}>Services</div>
-            <input
-              style={monoInputStyle}
+            <SettingsTextField
               value={dockerServices}
-              onChange={(e) => onChange({ dockerServices: e.target.value })}
+              onChange={(next) => onChange({ dockerServices: next })}
               placeholder="all services if empty"
+              mono
             />
           </div>
         </div>
@@ -973,18 +977,20 @@ function AdvancedFields({
       >
         {mountPoints.map((mp, i) => (
           <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-            <input
-              style={{ ...monoInputStyle, flex: 1 }}
+            <SettingsTextField
               value={mp.source}
-              onChange={(e) => onChange({ mountPoints: updateAt(mountPoints, i, { source: e.target.value }) })}
+              onChange={(next) => onChange({ mountPoints: updateAt(mountPoints, i, { source: next }) })}
               placeholder="agent-profiles/default.json"
+              mono
+              style={{ flex: 1 }}
             />
             <span style={{ color: COLORS.textDim, fontSize: 11 }}>{"→"}</span>
-            <input
-              style={{ ...monoInputStyle, flex: 1 }}
+            <SettingsTextField
               value={mp.dest}
-              onChange={(e) => onChange({ mountPoints: updateAt(mountPoints, i, { dest: e.target.value }) })}
+              onChange={(next) => onChange({ mountPoints: updateAt(mountPoints, i, { dest: next }) })}
               placeholder=".ade/profile.json"
+              mono
+              style={{ flex: 1 }}
             />
             <button style={removeBtn} onClick={() => onChange({ mountPoints: removeAt(mountPoints, i) })}>{"×"}</button>
           </div>
@@ -1008,18 +1014,20 @@ function AdvancedFields({
       >
         {envVars.map((v, i) => (
           <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-            <input
-              style={{ ...monoInputStyle, flex: 1 }}
+            <SettingsTextField
               value={v.key}
-              onChange={(e) => onChange({ envVars: updateAt(envVars, i, { key: e.target.value }) })}
+              onChange={(next) => onChange({ envVars: updateAt(envVars, i, { key: next }) })}
               placeholder="KEY"
+              mono
+              style={{ flex: 1 }}
             />
             <span style={{ color: COLORS.textDim, fontSize: 11 }}>=</span>
-            <input
-              style={{ ...monoInputStyle, flex: 2 }}
+            <SettingsTextField
               value={v.value}
-              onChange={(e) => onChange({ envVars: updateAt(envVars, i, { value: e.target.value }) })}
+              onChange={(next) => onChange({ envVars: updateAt(envVars, i, { value: next }) })}
               placeholder="value"
+              mono
+              style={{ flex: 2 }}
             />
             <button style={removeBtn} onClick={() => onChange({ envVars: removeAt(envVars, i) })}>{"×"}</button>
           </div>

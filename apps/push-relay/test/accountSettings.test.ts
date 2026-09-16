@@ -3,7 +3,12 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
-import { handleAccountSettingsRoute } from "../src/accountSettings";
+import {
+  accountSettingsTestInternals,
+  handleAccountSettingsRoute,
+} from "../src/accountSettings";
+
+const { MAX_SETTINGS_PER_READ } = accountSettingsTestInternals;
 import type { AttentionRelayEnv } from "../src/attentionShared";
 
 // Vitest 0.34 resolves bare specifiers through Vite, which cannot see
@@ -241,6 +246,51 @@ describe("account settings store", () => {
   it("reports truncation explicitly rather than leaving the client to guess", async () => {
     const read = await call("GET", "/attention/account/settings");
     expect(read.body).toMatchObject({ ok: true, truncated: false });
+  });
+
+  // The page boundary bug: ordering by `updated_at` alone is not a total order,
+  // so a page that ended mid-millisecond left every remaining row of that
+  // millisecond behind a `updated_at > stamp` cursor forever. One batch write
+  // stamps every row identically, so this is the ordinary case, not a rare one.
+  it("walks every row exactly once when a whole page shares one updated_at", async () => {
+    const stamp = "2031-05-05T05:05:05.000Z";
+    const total = MAX_SETTINGS_PER_READ + 5;
+    const insert = raw.prepare(`
+      insert into account_settings(
+        user_id, scope_key, setting_key, value_json, updated_at, changed_at, writer_device_id
+      ) values (?, 'all', ?, '1', ?, null, 'device-1')
+    `);
+    for (let index = 0; index < total; index += 1) {
+      insert.run(...([USER, `bulk.${String(index).padStart(5, "0")}`, stamp] as never[]));
+    }
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page += 1) {
+      const suffix: string = cursor ? `?since=${cursor}` : "";
+      const read = await call("GET", `/attention/account/settings${suffix}`);
+      for (const setting of read.body.settings as Array<Record<string, unknown>>) {
+        seen.push(setting.key as string);
+      }
+      cursor = read.body.cursor as string | null;
+      if (!read.body.truncated) break;
+    }
+
+    expect(seen).toHaveLength(total);
+    expect(new Set(seen).size).toBe(total);
+  });
+
+  // A client mid-upgrade still holds a bare ISO stamp. It has to keep working,
+  // or the first pull after deploy silently returns the whole account.
+  it("still accepts a legacy bare-timestamp cursor", async () => {
+    await put([{ scope: "all", key: "appearance.theme", value: "dark" }]);
+    const legacy = new Date().toISOString();
+    raw.exec("update account_settings set updated_at = '2000-01-01T00:00:00.000Z'");
+    const read = await call(
+      "GET",
+      `/attention/account/settings?since=${encodeURIComponent(legacy)}`,
+    );
+    expect(read.body.settings).toHaveLength(0);
   });
 
   it("does not answer routes that are not its own", async () => {

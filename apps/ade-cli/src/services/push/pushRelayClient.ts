@@ -311,6 +311,63 @@ export function createPushRelayClient(args: {
     return response.body ?? {};
   };
 
+  /**
+   * The preamble every account settings/vault call repeats.
+   *
+   * All six owe the same three things: a token and a signed-in account to ask
+   * with, the same `since`/`scope` query builder, and the same ladder of
+   * statuses that mean "I could not ask" rather than "here is the answer". They
+   * are not the same answer to the caller: "nothing changed" lets it advance
+   * its cursor, while "I could not ask" must leave the cursor and the cache
+   * exactly where they were — so `asked: false` is never collapsed into an
+   * empty page.
+   *
+   * The status policy is passed in per call rather than inferred. The vault
+   * fails closed on 503 (the relay has no encryption key: an operator problem,
+   * so it reads as "ask again later"); settings have nothing to encrypt and no
+   * 503 to interpret, and making them share one ladder would be a behaviour
+   * change disguised as a cleanup.
+   */
+  const accountRequest = async (
+    action: string,
+    method: string,
+    pathSuffix: string,
+    options?: {
+      body?: unknown;
+      /** Appended as a query string; blank and absent values are dropped. */
+      query?: Record<string, string | null | undefined>;
+      /** Statuses that mean "could not ask". Always includes 401. */
+      couldNotAsk?: readonly number[];
+      /** Statuses handed back to the caller instead of throwing. */
+      allowStatuses?: readonly number[];
+    },
+  ): Promise<{ asked: false } | { asked: true; status: number; body: Record<string, unknown> }> => {
+    if (!args.getAccountAccessToken) return { asked: false };
+    const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+    if (!expectedAccountUserId) return { asked: false };
+    let suffix = pathSuffix;
+    if (options?.query) {
+      const query = new URLSearchParams();
+      for (const [name, value] of Object.entries(options.query)) {
+        const trimmed = value?.trim();
+        if (trimmed) query.set(name, trimmed);
+      }
+      if (query.toString()) suffix += `?${query.toString()}`;
+    }
+    const response = await request(method, suffix, {
+      ...(options?.body === undefined ? {} : { body: options.body }),
+      accountAuthorized: true,
+      expectedAccountUserId,
+    });
+    if (response.status === 401) return { asked: false };
+    if (options?.couldNotAsk?.includes(response.status)) return { asked: false };
+    if (options?.allowStatuses?.includes(response.status)) {
+      return { asked: true, status: response.status, body: response.body ?? {} };
+    }
+    return { asked: true, status: response.status, body: requireOk(action, response) };
+  };
+
+
   const requireAttentionSnapshot = (
     response: RelayResponse,
   ): AttentionSnapshot => {
@@ -686,20 +743,11 @@ export function createPushRelayClient(args: {
       since?: string | null;
       scope?: string | null;
     }): Promise<AccountSettingsPage | null> {
-      if (!args.getAccountAccessToken) return null;
-      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
-      if (!expectedAccountUserId) return null;
-      const query = new URLSearchParams();
-      if (options?.since?.trim()) query.set("since", options.since.trim());
-      if (options?.scope?.trim()) query.set("scope", options.scope.trim());
-      const suffix = query.toString() ? `?${query.toString()}` : "";
-      const response = await request("GET", `/attention/account/settings${suffix}`, {
-        accountAuthorized: true,
-        expectedAccountUserId,
+      const result = await accountRequest("getAccountSettings", "GET", "/attention/account/settings", {
+        query: { since: options?.since, scope: options?.scope },
       });
-      if (response.status === 401) return null;
-      requireOk("getAccountSettings", response);
-      const body = response.body ?? {};
+      if (!result.asked) return null;
+      const body = result.body;
       return {
         settings: Array.isArray(body.settings) ? body.settings as AccountSettingRecord[] : [],
         cursor: typeof body.cursor === "string" ? body.cursor : null,
@@ -716,65 +764,48 @@ export function createPushRelayClient(args: {
       deviceId: string | null,
     ): Promise<{ updatedAt: string | null } | null> {
       if (!args.getAccountAccessToken) return null;
-      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
-      if (!expectedAccountUserId) return null;
+      if (!(args.getAccountUserId?.() ?? undefined)) return null;
       if (!settings.length) return { updatedAt: null };
-      const response = await request("PUT", "/attention/account/settings", {
+      const result = await accountRequest("putAccountSettings", "PUT", "/attention/account/settings", {
         body: { settings, ...(deviceId ? { deviceId } : {}) },
-        accountAuthorized: true,
-        expectedAccountUserId,
       });
-      if (response.status === 401) return null;
-      requireOk("putAccountSettings", response);
-      const body = response.body ?? {};
-      return { updatedAt: typeof body.updatedAt === "string" ? body.updatedAt : null };
+      if (!result.asked) return null;
+      return {
+        updatedAt: typeof result.body.updatedAt === "string" ? result.body.updatedAt : null,
+      };
     },
 
     /** The way out. A reset that cannot reach the account is not a reset. */
     async deleteAccountSetting(scope: string, key: string): Promise<boolean | null> {
-      if (!args.getAccountAccessToken) return null;
-      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
-      if (!expectedAccountUserId) return null;
-      const response = await request(
+      const result = await accountRequest(
+        "deleteAccountSetting",
         "DELETE",
         `/attention/account/settings/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`,
-        { accountAuthorized: true, expectedAccountUserId },
+        { allowStatuses: [404] },
       );
-      if (response.status === 401) return null;
+      if (!result.asked) return null;
       // Already gone is the desired end state, not a failure.
-      if (response.status === 404) return false;
-      requireOk("deleteAccountSetting", response);
-      return response.body?.deleted === true;
+      if (result.status === 404) return false;
+      return result.body.deleted === true;
     },
 
     /**
      * Read vault items changed after `since`.
      *
-     * `null` means this machine had no account token to ask with, which is not
-     * the same answer as an empty page and must not advance a cursor.
+     * `null` means this machine had no account token to ask with — or that the
+     * relay has no encryption key and failed closed — which is not the same
+     * answer as an empty page and must not advance a cursor.
      */
     async getAccountVault(options?: {
       since?: string | null;
       scope?: string | null;
     }): Promise<AccountVaultPage | null> {
-      if (!args.getAccountAccessToken) return null;
-      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
-      if (!expectedAccountUserId) return null;
-      const query = new URLSearchParams();
-      if (options?.since?.trim()) query.set("since", options.since.trim());
-      if (options?.scope?.trim()) query.set("scope", options.scope.trim());
-      const suffix = query.toString() ? `?${query.toString()}` : "";
-      const response = await request("GET", `/attention/account/vault${suffix}`, {
-        accountAuthorized: true,
-        expectedAccountUserId,
+      const result = await accountRequest("getAccountVault", "GET", "/attention/account/vault", {
+        query: { since: options?.since, scope: options?.scope },
+        couldNotAsk: [503],
       });
-      if (response.status === 401) return null;
-      // The vault fails closed when the relay has no encryption key. That is an
-      // operator problem, not a credential problem, so it reads as "ask again
-      // later" rather than as an empty vault.
-      if (response.status === 503) return null;
-      requireOk("getAccountVault", response);
-      const body = response.body ?? {};
+      if (!result.asked) return null;
+      const body = result.body;
       return {
         items: Array.isArray(body.items) ? body.items as AccountVaultItem[] : [],
         cursor: typeof body.cursor === "string" ? body.cursor : null,
@@ -787,18 +818,16 @@ export function createPushRelayClient(args: {
       deviceId: string | null,
     ): Promise<{ updatedAt: string | null } | null> {
       if (!args.getAccountAccessToken) return null;
-      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
-      if (!expectedAccountUserId) return null;
+      if (!(args.getAccountUserId?.() ?? undefined)) return null;
       if (!items.length) return { updatedAt: null };
-      const response = await request("PUT", "/attention/account/vault", {
+      const result = await accountRequest("putAccountVault", "PUT", "/attention/account/vault", {
         body: { items, ...(deviceId ? { deviceId } : {}) },
-        accountAuthorized: true,
-        expectedAccountUserId,
+        couldNotAsk: [503],
       });
-      if (response.status === 401 || response.status === 503) return null;
-      requireOk("putAccountVault", response);
-      const body = response.body ?? {};
-      return { updatedAt: typeof body.updatedAt === "string" ? body.updatedAt : null };
+      if (!result.asked) return null;
+      return {
+        updatedAt: typeof result.body.updatedAt === "string" ? result.body.updatedAt : null,
+      };
     },
 
     /** Revoking has to work from any machine, including one you no longer have. */
@@ -807,18 +836,15 @@ export function createPushRelayClient(args: {
       kind: string,
       key: string,
     ): Promise<boolean | null> {
-      if (!args.getAccountAccessToken) return null;
-      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
-      if (!expectedAccountUserId) return null;
-      const response = await request(
+      const result = await accountRequest(
+        "deleteAccountVaultItem",
         "DELETE",
         `/attention/account/vault/${encodeURIComponent(scope)}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`,
-        { accountAuthorized: true, expectedAccountUserId },
+        { couldNotAsk: [503], allowStatuses: [404] },
       );
-      if (response.status === 401 || response.status === 503) return null;
-      if (response.status === 404) return false;
-      requireOk("deleteAccountVaultItem", response);
-      return response.body?.deleted === true;
+      if (!result.asked) return null;
+      if (result.status === 404) return false;
+      return result.body.deleted === true;
     },
 
     async health(): Promise<PushRelayHealth> {

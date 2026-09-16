@@ -25,7 +25,6 @@ import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { DictationSection } from "../settings/DictationSection";
 import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
 import { KeepAwakeSection } from "../settings/KeepAwakeSection";
-import { CaptureGestureSection } from "../settings/CaptureGestureSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
@@ -137,16 +136,29 @@ function WebNoMachineNotice() {
   );
 }
 
+/**
+ * A `location.hash` as the manifest wants it: no leading `#`, percent-decoding
+ * applied, and a malformed escape treated as literal text rather than thrown.
+ *
+ * Three call sites decoded the hash themselves — provider deeplinks, tab
+ * resolution, and the scroll effect — which meant three chances for one of them
+ * to forget the try/catch and take the settings page down on a URL a user can
+ * type by hand.
+ */
+function decodeSettingsHash(hash: string): string {
+  const raw = hash.replace(/^#/, "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 /** `#ai-provider-<id>` — the deeplink form of one provider's page. */
 const PROVIDER_ANCHOR_PREFIX = "ai-provider-";
 
 function providerIdFromHash(hash: string): string | null {
-  let raw = hash.replace(/^#/, "");
-  try {
-    raw = decodeURIComponent(raw);
-  } catch {
-    // A malformed hash should never break the settings page.
-  }
+  const raw = decodeSettingsHash(hash);
   if (!raw.startsWith(PROVIDER_ANCHOR_PREFIX)) return null;
   return raw.slice(PROVIDER_ANCHOR_PREFIX.length) || null;
 }
@@ -201,132 +213,119 @@ function AgentsTabContent() {
 }
 
 /**
- * Sections, each declaring which manifest settings it holds. On the desktop
- * `WebSettingsSection` is a passthrough and this renders exactly as it always
- * has; in the browser it drops the sections the manifest marks unreachable and
- * heads the rest with their scope.
+ * One rendered section of a tab, and the manifest settings it holds.
+ *
+ * `"tab"` means "every entry on this tab", which is what a section that IS the
+ * whole tab wants; naming them again would be a second list to keep in sync.
  */
-function TabContent({ tab }: { tab: SettingsTabId }) {
-  switch (tab) {
-    case "general":
-      return (
+type TabSection = {
+  entryIds: readonly string[] | "tab";
+  render: () => React.ReactNode;
+};
+
+/**
+ * What each tab renders, as data rather than as an eleven-arm switch.
+ *
+ * Every arm was the same shape — a `WebSettingsSection` wrapping one or two
+ * section components — so the switch was a table written out longhand, and the
+ * `entryIds` list beside each section is the part that actually matters: on the
+ * desktop `WebSettingsSection` is a passthrough, and in the browser it uses
+ * those ids to drop sections the manifest marks unreachable and head the rest
+ * with their scope.
+ *
+ * `agents` is absent because it is a sub-view router, not a list of sections;
+ * `TabContent` handles it directly.
+ */
+const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
+  general: [
+    {
+      entryIds: ["general.about", "general.auto-updates"],
+      // About has no section file of its own, so the page supplies its anchor.
+      render: () => (
+        <div id="about" data-settings-anchor="about">
+          <AboutSection />
+        </div>
+      ),
+    },
+    { entryIds: ["general.project"], render: () => <ProjectSection /> },
+    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection /> },
+    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection /> },
+    { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection /> },
+    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection /> },
+    { entryIds: ["general.diagnostics-sharing"], render: () => <DiagnosticsSharingSection /> },
+  ],
+  appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
+  chat: [
+    {
+      entryIds: "tab",
+      render: () => (
         <>
-          <WebSettingsSection entryIds={["general.about", "general.auto-updates"]}>
-            <div id="about" data-settings-anchor="about">
-              <AboutSection />
-            </div>
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.project"]}>
-            <ProjectSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.ade-cli"]}>
-            <AdeCliSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.keep-awake"]}>
-            <KeepAwakeSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.capture-gesture"]}>
-            <CaptureGestureSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.link-open-mode"]}>
-            <BrowserLinksSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.analytics"]}>
-            <ProductAnalyticsSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.diagnostics-sharing"]}>
-            <DiagnosticsSharingSection />
-          </WebSettingsSection>
-        </>
-      );
-    case "appearance":
-      return (
-        <WebSettingsSection entryIds={settingsEntryIdsForTab("appearance")}>
-          <AppearanceSection />
-        </WebSettingsSection>
-      );
-    case "chat":
-      return (
-        <WebSettingsSection entryIds={settingsEntryIdsForTab("chat")}>
           <ChatSection />
           {/* Voice input is chat dictation, so it lives with chat. */}
           <DictationSection />
-        </WebSettingsSection>
-      );
-    case "agents":
-      return <AgentsTabContent />;
-    case "lanes-git":
-      return (
-        <>
-          <WebSettingsSection
-            entryIds={[
-              "lanes-git.new-lane-base",
-              "lanes-git.auto-rebase",
-              "lanes-git.rebase-suggestions",
-              "lanes-git.rebase-min-behind",
-            ]}
-          >
-            <LaneBehaviorSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["lanes-git.lane-templates"]}>
-            <LaneTemplatesSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["lanes-git.pr-chat-transcripts"]}>
-            <PrChatTranscriptsSection />
-          </WebSettingsSection>
         </>
-      );
-    case "integrations":
-      return (
+      ),
+    },
+  ],
+  "lanes-git": [
+    {
+      entryIds: [
+        "lanes-git.new-lane-base",
+        "lanes-git.auto-rebase",
+        "lanes-git.rebase-suggestions",
+        "lanes-git.rebase-min-behind",
+      ],
+      render: () => <LaneBehaviorSection />,
+    },
+    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection /> },
+    { entryIds: ["lanes-git.pr-chat-transcripts"], render: () => <PrChatTranscriptsSection /> },
+  ],
+  integrations: [
+    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection /> },
+    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection /> },
+  ],
+  notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
+  activity: [{ entryIds: "tab", render: () => <ActivitySection /> }],
+  secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
+  storage: [
+    {
+      entryIds: ["storage.usage", "storage.lane-rules", "storage.diagnostics"],
+      render: () => <StorageSection />,
+    },
+    { entryIds: ["storage.session-lifecycle"], render: () => <SessionLifecycleSection /> },
+  ],
+  stats: [
+    {
+      entryIds: ["stats.usage", "agents.budget"],
+      render: () => (
         <>
-          <WebSettingsSection entryIds={["integrations.github"]}>
-            <GitHubIntegrationSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["integrations.linear"]}>
-            <LinearIntegrationSection />
-          </WebSettingsSection>
-        </>
-      );
-    case "notifications":
-      return (
-        <WebSettingsSection entryIds={settingsEntryIdsForTab("notifications")}>
-          <NotificationsSection />
-        </WebSettingsSection>
-      );
-    case "activity":
-      return (
-        <WebSettingsSection entryIds={settingsEntryIdsForTab("activity")}>
-          <ActivitySection />
-        </WebSettingsSection>
-      );
-    case "secrets":
-      return (
-        <WebSettingsSection entryIds={["secrets.secrets"]}>
-          <SecretsSection />
-        </WebSettingsSection>
-      );
-    case "storage":
-      return (
-        <>
-          <WebSettingsSection entryIds={["storage.usage", "storage.lane-rules", "storage.diagnostics"]}>
-            <StorageSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["storage.session-lifecycle"]}>
-            <SessionLifecycleSection />
-          </WebSettingsSection>
-        </>
-      );
-    case "stats":
-      return (
-        <WebSettingsSection entryIds={["stats.usage", "agents.budget"]}>
           <AdeUsageSection />
           {/* The spend cap lives where spend lives. */}
           <BudgetCapSettings />
-        </WebSettingsSection>
-      );
-    default:
-      return null;
-  }
+        </>
+      ),
+    },
+  ],
+};
+
+function TabContent({ tab }: { tab: SettingsTabId }) {
+  // Providers is the one tab that is not a list of sections: it routes between
+  // the grid and one provider's page off `?provider=`.
+  if (tab === "agents") return <AgentsTabContent />;
+  const sections = TAB_SECTIONS[tab];
+  if (!sections) return null;
+  return (
+    <>
+      {sections.map((section) => {
+        const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds;
+        return (
+          <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
+            {section.render()}
+          </WebSettingsSection>
+        );
+      })}
+    </>
+  );
 }
 
 /** Matches for the current query that live on other tabs. */
@@ -448,13 +447,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   // used to dump people on General.
   const hashEntryTab = useMemo(() => {
     if (!location.hash) return null;
-    let raw = location.hash.slice(1);
-    try {
-      raw = decodeURIComponent(raw);
-    } catch {
-      // A malformed hash should never break tab resolution.
-    }
-    return resolveSettingsHash(raw)?.tab ?? null;
+    return resolveSettingsHash(decodeSettingsHash(location.hash))?.tab ?? null;
   }, [location.hash]);
   const requestedTab = hashEntryTab ?? resolveSettingsTab(tabParam);
   const resolvedTab = requestedTab && tabs.some((tab) => tab.id === requestedTab)
@@ -525,13 +518,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   // the manifest means a hash whose anchor has since moved still lands.
   useEffect(() => {
     if (!active || !location.hash) return;
-    let raw = location.hash.slice(1);
-    try {
-      raw = decodeURIComponent(raw);
-    } catch {
-      // A malformed hash should never break the settings page.
-    }
-    const entry = resolveSettingsHash(raw);
+    const entry = resolveSettingsHash(decodeSettingsHash(location.hash));
     if (!entry || entry.tab !== section) return;
     let flashTimer: ReturnType<typeof setTimeout> | null = null;
     const frame = window.requestAnimationFrame(() => {

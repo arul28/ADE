@@ -3,7 +3,9 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
-import { handleAccountVaultRoute } from "../src/accountVault";
+import { accountVaultTestInternals, handleAccountVaultRoute } from "../src/accountVault";
+
+const { MAX_ITEMS_PER_READ } = accountVaultTestInternals;
 import type { AttentionRelayEnv } from "../src/attentionShared";
 
 // Vitest 0.34 resolves bare specifiers through Vite, which cannot see
@@ -270,6 +272,48 @@ describe("account vault", () => {
     await put([sealed()]);
     expect((await call("GET", "/attention/account/vault")).body.items)
       .toMatchObject([{ refreshOwner: null }]);
+  });
+
+  // Same page-boundary bug as settings, one column wider: the vault's tiebreak
+  // has to include `item_kind` because the primary key does.
+  it("walks every item exactly once when a whole page shares one updated_at", async () => {
+    const stamp = "2031-05-05T05:05:05.000Z";
+    const total = MAX_ITEMS_PER_READ + 5;
+    const insert = raw.prepare(`
+      insert into account_vault_items(
+        user_id, scope_key, item_kind, item_key, ciphertext, updated_at,
+        writer_device_id, refresh_owner
+      ) values (?, 'all', 'secret', ?, 'v1.unreadable.unreadable', ?, 'device-1', null)
+    `);
+    for (let index = 0; index < total; index += 1) {
+      insert.run(...([USER, `bulk.${String(index).padStart(5, "0")}`, stamp] as never[]));
+    }
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page += 1) {
+      const suffix: string = cursor ? `?since=${cursor}` : "";
+      const read = await call("GET", `/attention/account/vault${suffix}`);
+      for (const item of read.body.items as Array<Record<string, unknown>>) {
+        seen.push(item.key as string);
+      }
+      cursor = read.body.cursor as string | null;
+      if (!read.body.truncated) break;
+    }
+
+    expect(seen).toHaveLength(total);
+    expect(new Set(seen).size).toBe(total);
+  });
+
+  it("still accepts a legacy bare-timestamp cursor", async () => {
+    await put([sealed()]);
+    const legacy = new Date().toISOString();
+    raw.exec("update account_vault_items set updated_at = '2000-01-01T00:00:00.000Z'");
+    const read = await call(
+      "GET",
+      `/attention/account/vault?since=${encodeURIComponent(legacy)}`,
+    );
+    expect(read.body.items).toHaveLength(0);
   });
 
   it("does not answer routes that are not its own", async () => {

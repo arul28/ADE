@@ -12,50 +12,19 @@
  * once. `settingsManifest.test.ts` asserts the anchors and aliases stay live.
  */
 
+import { SCOPE_COPY, type SettingScope, type SettingWebScope } from "../../../shared/types/settingsScope";
 import { isWebClientMode } from "../../lib/webClientMode";
 
 /**
- * Where a setting lands when the renderer is the hosted web client.
+ * The scope vocabulary lives in `shared/types/settingsScope.ts`, not here.
  *
- * A browser has no Electron shell and reaches its machine only through the
- * actions the sync host registers, so a setting either travels to that machine,
- * syncs through the ADE account, never leaves the browser tab — or has nowhere
- * to go at all. `hidden` is that last case, and it is why Secrets, providers,
- * GitHub credentials, dictation, the CLI installer, auto-updates, storage,
- * session lifecycle, and lane templates stay off the web nav: their reads land
- * but their writes would resolve against a missing descriptor and vanish.
- *
- * `SettingScope` answers "who does this affect"; this answers "does it work at
- * all from a browser, and what do we tell the user about where it went".
+ * `shared/accountSettingsScope.ts` decides which key a setting files under in
+ * the account store and needs `SettingScope` to do it; a shared module that
+ * imports a renderer component file is an inversion the main process
+ * eventually trips over. The manifest re-exports both types so every existing
+ * `from "./settingsManifest"` import keeps working.
  */
-export type SettingWebScope = "machine" | "account" | "browser" | "hidden";
-
-/**
- * Where a setting is persisted, and therefore who it affects.
- *
- * Two axes, not one. **Who** owns it — your account, or this computer — and
- * **how much** it covers — everything you do, or one repository. The sidebar
- * group IS the scope, so these four values are also the four groups.
- *
- * The placement rule is mechanical, which is what makes it checkable: if a
- * value holds a path, a port, or a fact about hardware, it is machine scope,
- * because it is meaningless on another computer. Everything else is account
- * scope and follows the user.
- *
- * This replaces `team | machine | app`. "team" is gone with the committed
- * `.ade/ade.yaml` it named, and "app" — a value that lived only in one
- * install's localStorage — was never a scope anyone wanted; it was the reason
- * a second machine felt like a stranger.
- */
-export type SettingScope =
-  /** The account, everywhere. Preferences, theme, keybindings, providers. */
-  | "account"
-  /** The account, but only inside one repository. Tests, automations, links. */
-  | "account-repo"
-  /** This computer, everywhere on it. Paths, ports, updates, storage. */
-  | "machine"
-  /** This computer, and only inside one repository. Worktrees, local ports. */
-  | "machine-repo";
+export type { SettingScope, SettingWebScope } from "../../../shared/types/settingsScope";
 
 export const SETTINGS_TAB_IDS = [
   "general",
@@ -151,18 +120,15 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
  * The group name alone says where a setting lives but not what that costs or
  * buys, and "This computer" is exactly the label a user reads as a warning when
  * it is meant as a fact.
+ *
+ * The wording is not written here. It is the same `SCOPE_COPY` the scope chip
+ * shows, looked up through the group's own scope — three hand-written copies of
+ * this sentence had already drifted into disagreeing about what "repo" means.
  */
 export function groupScopeHint(group: SettingsGroupId): string {
-  switch (group) {
-    case "account":
-      return "Saved to your ADE account. Every computer you sign in on.";
-    case "preferences":
-      return "Saved to your ADE account. Every computer you sign in on.";
-    case "repo":
-      return "Saved to your ADE account, for this repository only.";
-    case "machine":
-      return "Saved on this computer. Holds paths, ports, and hardware facts, so it does not travel.";
-  }
+  const scope = SETTINGS_GROUPS.find((entry) => entry.id === group)?.scope ?? "account";
+  const copy = SCOPE_COPY[scope];
+  return `Stored in: ${copy.storedIn}. Affects: ${copy.affects}`;
 }
 
 /**
@@ -187,13 +153,6 @@ export type SettingEntry = {
   scope: SettingScope;
   /** How the setting behaves in the hosted web client. */
   web: SettingWebScope;
-  /**
-   * Force the scope chip on. Scope is only worth the visual weight when it
-   * would surprise — team-committed YAML, or anything that writes to a
-   * different machine than the one you're looking at. Machine/app-scoped
-   * settings inside an obviously local group leave it off.
-   */
-  showScopeChip?: boolean;
   /** Group heading the card sits under, within its tab. */
   group: string;
 };
@@ -211,7 +170,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "project",
     scope: "machine-repo",
     web: "hidden",
-    showScopeChip: true,
     group: "Project",
   },
   {
@@ -429,7 +387,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "ai-providers",
     scope: "account",
     web: "hidden",
-    showScopeChip: true,
     group: "Connections",
   },
   // One entry per provider, so ⌘K, settings search, and deeplinks land on the
@@ -576,7 +533,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "budget-cap",
     scope: "account",
     web: "hidden",
-    showScopeChip: true,
     group: "Budget",
   },
   {
@@ -639,7 +595,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "lane-templates",
     scope: "account",
     web: "hidden",
-    showScopeChip: true,
     group: "Templates",
   },
   {
@@ -650,7 +605,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "pr-chat-transcripts",
     scope: "account-repo",
     web: "machine",
-    showScopeChip: true,
     group: "Pull requests",
   },
 
@@ -663,7 +617,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "github-connection",
     scope: "account-repo",
     web: "hidden",
-    showScopeChip: true,
     group: "GitHub",
   },
   {
@@ -674,7 +627,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "linear-connection",
     scope: "account-repo",
     web: "hidden",
-    showScopeChip: true,
     group: "Linear",
   },
   // ── Notifications ───────────────────────────────────────────────────────
@@ -771,7 +723,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "activity-notch",
     scope: "account",
     web: "hidden",
-    showScopeChip: true,
     group: "Notch & menu bar",
   },
   {
@@ -846,7 +797,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "activity-machines",
     scope: "account",
     web: "account",
-    showScopeChip: true,
     group: "Machines",
   },
 
@@ -859,7 +809,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "secrets",
     scope: "account-repo",
     web: "hidden",
-    showScopeChip: true,
     group: "Secrets",
   },
 
@@ -882,7 +831,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "lane-storage-rules",
     scope: "account-repo",
     web: "hidden",
-    showScopeChip: true,
     group: "Disk",
   },
   {
@@ -1137,7 +1085,7 @@ export function resolveSettingsHash(hash: string | null | undefined): SettingEnt
  * makes that class of defect unrepresentable rather than merely fixed.
  */
 export function settingsScopeForAnchor(anchor: string): SettingScope | null {
-  return SETTINGS_ENTRIES.find((entry) => entry.anchor === anchor)?.scope ?? null;
+  return ENTRIES_BY_ANCHOR.get(anchor)?.scope ?? null;
 }
 
 export function settingsEntryPath(entry: SettingEntry): string {

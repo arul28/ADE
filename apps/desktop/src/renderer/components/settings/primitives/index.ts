@@ -23,6 +23,7 @@ export {
   SettingsNumber,
   SettingsSelect,
   SettingsSlider,
+  SettingsTextField,
   type SegmentedOption,
 } from "./SettingsControls";
 

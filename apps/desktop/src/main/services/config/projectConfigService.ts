@@ -74,7 +74,7 @@ import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { isRecord, resolvePathWithinRoot } from "../shared/utils";
-import { ensureSharedAdeProjectScaffold, initializeOrRepairAdeProject } from "../projects/adeProjectService";
+import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
 
 const VERSION = 1;
 const EMPTY_CONTENT_HASH = createHash("sha256").update("").digest("hex");
@@ -2305,26 +2305,6 @@ function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function hasSharedConfigContent(config: ProjectConfigFile): boolean {
-  return Boolean(
-    config.project
-    || (config.testSuites?.length ?? 0) > 0
-    || (config.laneOverlayPolicies?.length ?? 0) > 0
-    || (config.automations?.length ?? 0) > 0
-    || (config.environments?.length ?? 0) > 0
-    || config.github
-    || config.git
-    || config.ai
-    || config.laneEnvInit
-    || (config.laneTemplates?.length ?? 0) > 0
-    || config.defaultLaneTemplate
-    || config.laneCleanup
-    || (config.providers && Object.keys(config.providers).length > 0)
-    || config.linearSync
-    || config.ui
-  );
-}
-
 function createDefId(projectId: string, key: string): string {
   return `${projectId}:${key}`;
 }
@@ -3132,6 +3112,54 @@ function validateEffectiveConfig(
   };
 }
 
+/**
+ * The keys a legacy committed `.ade/ade.yaml` may hand to local config.
+ *
+ * Every one of these is inert data: labels, colors, intervals, model ids,
+ * display modes. None of them can start a process or an agent session.
+ */
+const CARRY_OVER_IMPORTABLE_KEYS = [
+  "project",
+  "environments",
+  "github",
+  "git",
+  "ai",
+  "laneCleanup",
+  "providers",
+  "linearSync",
+  "ui",
+  "browser",
+] as const satisfies readonly (keyof ProjectConfigFile)[];
+
+/**
+ * The keys a legacy committed `.ade/ade.yaml` may NOT hand to local config.
+ *
+ * Each one reaches an executor: `testSuites` carry a `command`, `laneTemplates`
+ * and `laneEnvInit` carry `setupScript` / `dependencies` / `copyPaths`,
+ * `laneOverlayPolicies` can override `envInit` per lane, and `automations`
+ * launch agent sessions with an attacker-authored prompt. A clone must never
+ * be able to smuggle any of them onto your machine, so they are dropped rather
+ * than imported. `defaultLaneTemplate` goes with `laneTemplates`: it only names
+ * one.
+ */
+const CARRY_OVER_EXECUTABLE_KEYS = [
+  "testSuites",
+  "laneOverlayPolicies",
+  "automations",
+  "laneEnvInit",
+  "laneTemplates",
+  "defaultLaneTemplate",
+] as const satisfies readonly (keyof ProjectConfigFile)[];
+
+function hasConfigKeyValue(config: ProjectConfigFile, key: keyof ProjectConfigFile): boolean {
+  const value = config[key];
+  if (value == null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (isRecord(value)) return Object.keys(value).length > 0;
+  return true;
+}
+
 function invalidConfigError(validation: ProjectConfigValidationResult): Error {
   const first = validation.issues[0];
   const msg = first ? `${first.path}: ${first.message}` : "Unknown config validation failure";
@@ -3246,16 +3274,100 @@ export function createProjectConfigService({
     };
   };
 
+  /**
+   * The empty `shared` layer.
+   *
+   * `.ade/ade.yaml` is no longer configuration input. It was the one channel
+   * through which a repository could hand your machine a `command`, a
+   * `setupScript` or an agent prompt, and the trust gate that used to guard it
+   * is gone; ignoring the file is what makes that removal safe. The `shared`
+   * key stays on the snapshot — dozens of callers round-trip it through
+   * `save` — but it is always this empty object.
+   */
+  const emptySharedConfig = (): ProjectConfigFile => ({
+    version: VERSION,
+    testSuites: [],
+    laneOverlayPolicies: [],
+    automations: [],
+  });
+
+  /**
+   * One-time migration off the committed file.
+   *
+   * If a legacy `.ade/ade.yaml` is still on disk, its non-executable keys move
+   * into `local.yaml` (local always wins on conflict — it is the scope the user
+   * actually edited), its executable keys are dropped, and the file is removed
+   * from the working tree. Deleting the file is what makes this idempotent.
+   */
+  const carryOverLegacySharedConfig = (): void => {
+    if (!fs.existsSync(sharedPath)) return;
+
+    let legacy: ProjectConfigFile;
+    let local: ProjectConfigFile;
+    try {
+      legacy = readConfigFile(sharedPath).config;
+      local = readConfigFile(localPath).config;
+    } catch (error) {
+      // Unreadable or malformed: leave the file alone and carry on with an
+      // empty shared layer. A broken legacy file must not break project load.
+      logger.warn("projectConfig.carryOver.unreadable", {
+        sharedPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    const importedKeys: string[] = [];
+    const skippedExecutableKeys: string[] = [];
+    const merged: ProjectConfigFile = { ...local, version: VERSION };
+
+    for (const key of CARRY_OVER_EXECUTABLE_KEYS) {
+      if (hasConfigKeyValue(legacy, key)) skippedExecutableKeys.push(key);
+    }
+    for (const key of CARRY_OVER_IMPORTABLE_KEYS) {
+      if (!hasConfigKeyValue(legacy, key)) continue;
+      if (hasConfigKeyValue(local, key)) continue;
+      (merged as Record<string, unknown>)[key] = legacy[key];
+      importedKeys.push(key);
+    }
+
+    if (importedKeys.length > 0) {
+      writeFileAtomicSync(localPath, toCanonicalYaml(merged));
+    }
+
+    let removed = true;
+    try {
+      fs.rmSync(sharedPath, { force: true });
+    } catch (error) {
+      removed = false;
+      logger.warn("projectConfig.carryOver.removeFailed", {
+        sharedPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    logger.info("projectConfig.carryOver", {
+      sharedPath,
+      localPath,
+      importedKeys,
+      importedCount: importedKeys.length,
+      skippedExecutableKeys,
+      skippedCount: skippedExecutableKeys.length,
+      removed,
+    });
+  };
+
   const readSnapshotFromDisk = (): ProjectConfigSnapshot => {
     fs.mkdirSync(adeDir, { recursive: true });
 
-    const sharedFile = readConfigFile(sharedPath);
+    carryOverLegacySharedConfig();
+
     const localFile = readConfigFile(localPath);
 
-    const sharedHash = hashContent(sharedFile.raw);
+    const sharedHash = hashContent("");
     const localHash = hashContent(localFile.raw);
 
-    return buildSnapshotFromFiles(sharedFile.config, localFile.config, { sharedHash, localHash }, { persistSnapshots: true });
+    return buildSnapshotFromFiles(emptySharedConfig(), localFile.config, { sharedHash, localHash }, { persistSnapshots: true });
   };
 
   const validateCandidate = (shared: ProjectConfigFile, local: ProjectConfigFile): ProjectConfigValidationResult => {
@@ -3266,52 +3378,25 @@ export function createProjectConfigService({
   };
 
   const saveCandidate = (candidate: ProjectConfigCandidate): ProjectConfigSnapshot => {
-    const shared = normalizeConfigFilePaths(coerceConfigFile(candidate.shared), projectRoot);
+    // `candidate.shared` is accepted and ignored. Callers round-trip the
+    // snapshot's (always empty) shared layer; nothing is ever written back to
+    // `.ade/ade.yaml`, which this service no longer reads.
+    const shared = emptySharedConfig();
     const local = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
     const validation = validateCandidate(shared, local);
     if (!validation.ok) {
       throw invalidConfigError(validation);
     }
 
-    const sharedYaml = toCanonicalYaml(shared);
     const localYaml = toCanonicalYaml(local);
-    const shouldWriteShared = fs.existsSync(sharedPath) || hasSharedConfigContent(shared);
 
-    // Did this save actually EDIT the shared scope, or is it carrying the
-    // loaded shared snapshot back through untouched?
-    //
-    // Most callers are local-scope writers — `laneTemplateService.saveTemplate`,
-    // `deleteTemplate`, `setDefaultTemplateId`, `setPrTranscriptGists` — and
-    // they all round-trip `snapshot.shared` because `save` takes both scopes.
-    // Trusting on every save therefore let editing one lane template silently
-    // approve an unreviewed, repo-committed `.ade/ade.yaml`, which is exactly
-    // the attacker-supplied file the setup-script trust gate exists to stop.
-    // Compared canonically (parse then re-serialize both sides) so a
-    // formatting-only rewrite of an untrusted file is not mistaken for an edit.
-    const sharedOnDisk = readConfigFile(sharedPath);
-    const sharedOnDiskYaml = toCanonicalYaml(
-      normalizeConfigFilePaths(coerceConfigFile(sharedOnDisk.config), projectRoot),
-    );
-    const sharedScopeEdited = sharedYaml !== sharedOnDiskYaml;
-
-    if (shouldWriteShared) {
-      ensureSharedAdeProjectScaffold(projectRoot, { logger });
-    } else {
-      initializeOrRepairAdeProject(projectRoot, { logger });
-    }
-    fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
-    if (shouldWriteShared) {
-      writeFileAtomicSync(sharedPath, sharedYaml);
-    }
+    initializeOrRepairAdeProject(projectRoot, { logger });
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
     writeFileAtomicSync(localPath, localYaml);
 
-    const sharedHash = hashContent(shouldWriteShared ? sharedYaml : "");
-
     logger.info("projectConfig.save", {
-      sharedPath,
       localPath,
-      sharedHash,
-      sharedScopeEdited,
+      localHash: hashContent(localYaml),
     });
 
     const snapshot = readSnapshotFromDisk();

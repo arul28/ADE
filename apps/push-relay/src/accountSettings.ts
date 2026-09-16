@@ -15,8 +15,13 @@
  * versus this repo — rides in `scope_key`.
  */
 import {
+  accountPageResult,
+  buildAccountPageQuery,
+  countAndGuard,
   isRecord,
   json,
+  parseAccountScopeKey,
+  parseSinceParam,
   requiredString,
   type AttentionRelayEnv,
 } from "./attentionShared";
@@ -41,8 +46,10 @@ const MAX_SETTINGS_PER_WRITE = 200;
 /** Bounds a `GET` page. Pulls ride a 30-second heartbeat, so they stay small. */
 const MAX_SETTINGS_PER_READ = 1_000;
 
-const MAX_SCOPE_KEY_LENGTH = 512;
 const MAX_SETTING_KEY_LENGTH = 200;
+
+/** The tiebreak columns after `updated_at`: the rest of the primary key. */
+const SETTING_KEY_COLUMNS = ["scope_key", "setting_key"];
 
 export type AccountSettingRow = {
   scope: string;
@@ -60,20 +67,6 @@ type ParsedWrite = {
   changedAt: string | null;
 };
 
-/**
- * `scope_key` is an opaque string to this Worker, but not an arbitrary one: it
- * is either "everything" or a normalized repository identity. Validating the
- * shape here stops a client inventing a third axis the rest of ADE cannot read,
- * and keeps the column joinable later.
- */
-function parseScopeKey(value: unknown): string | null {
-  const scope = requiredString(value, MAX_SCOPE_KEY_LENGTH);
-  if (!scope) return null;
-  if (scope === "all") return scope;
-  if (scope.startsWith("repo:") && scope.length > "repo:".length) return scope;
-  return null;
-}
-
 function parseSettingKey(value: unknown): string | null {
   const key = requiredString(value, MAX_SETTING_KEY_LENGTH);
   if (!key) return null;
@@ -85,7 +78,7 @@ function parseSettingKey(value: unknown): string | null {
 
 function parseWriteItem(value: unknown): ParsedWrite | null {
   if (!isRecord(value)) return null;
-  const scope = parseScopeKey(value.scope);
+  const scope = parseAccountScopeKey(value.scope);
   const key = parseSettingKey(value.key);
   if (!scope || !key) return null;
   // `undefined` is not a value — a caller that means "remove this" uses DELETE,
@@ -138,38 +131,28 @@ async function handleRead(
   userId: string,
   url: URL,
 ): Promise<Response> {
-  const sinceRaw = url.searchParams.get("since")?.trim() ?? "";
-  const since = sinceRaw && !Number.isNaN(Date.parse(sinceRaw))
-    ? new Date(sinceRaw).toISOString()
-    : null;
+  const cursor = parseSinceParam(url);
   const scope = url.searchParams.get("scope")?.trim()
-    ? parseScopeKey(url.searchParams.get("scope"))
+    ? parseAccountScopeKey(url.searchParams.get("scope"))
     : null;
   if (url.searchParams.has("scope") && !scope) {
     return json({ ok: false, error: "invalid scope" }, { status: 400 });
   }
 
-  const conditions = ["user_id = ?"];
-  const bindings: unknown[] = [userId];
-  if (since) {
-    // Strictly greater than: a client passes back the newest `updatedAt` it
-    // holds, and re-sending that row every beat would make an idle account pay
-    // for a pull forever.
-    conditions.push("updated_at > ?");
-    bindings.push(since);
-  }
-  if (scope) {
-    conditions.push("scope_key = ?");
-    bindings.push(scope);
-  }
-
+  const query = buildAccountPageQuery({
+    userId,
+    cursor,
+    scope,
+    keyColumns: SETTING_KEY_COLUMNS,
+    limit: MAX_SETTINGS_PER_READ,
+  });
   const rows = await env.DB.prepare(`
     select scope_key, setting_key, value_json, updated_at, changed_at, writer_device_id
     from account_settings
-    where ${conditions.join(" and ")}
-    order by updated_at asc
+    where ${query.where}
+    order by ${query.orderBy}
     limit ?
-  `).bind(...bindings, MAX_SETTINGS_PER_READ + 1).all<{
+  `).bind(...query.bindings).all<{
     scope_key: string;
     setting_key: string;
     value_json: string;
@@ -178,18 +161,16 @@ async function handleRead(
     writer_device_id: string | null;
   }>();
 
-  const page = rows.results.slice(0, MAX_SETTINGS_PER_READ);
-  const truncated = rows.results.length > MAX_SETTINGS_PER_READ;
-  const settings = page.map(rowToSetting);
+  const paged = accountPageResult(rows.results, {
+    limit: MAX_SETTINGS_PER_READ,
+    keyColumns: SETTING_KEY_COLUMNS,
+    cursor,
+  });
   return json({
     ok: true,
-    settings,
-    // Explicit rather than inferred from the page being full: a client that
-    // guesses will either loop forever on an exactly-full page or stop early on
-    // the next one. The cursor is the last row's stamp, so resuming is a plain
-    // `since`.
-    truncated,
-    cursor: settings.length ? settings[settings.length - 1]!.updatedAt : since,
+    settings: paged.page.map(rowToSetting),
+    truncated: paged.truncated,
+    cursor: paged.cursor,
   });
 }
 
@@ -226,13 +207,13 @@ async function handleWrite(
   }
   if (!parsed.length) return json({ ok: true, written: 0, updatedAt: null });
 
-  // Counted before the write, and only for keys that would be new. An account
-  // at the ceiling can still change what it already has.
-  const existing = await env.DB
-    .prepare("select count(*) as count from account_settings where user_id = ?")
-    .bind(userId)
-    .first<{ count: number }>();
-  if ((existing?.count ?? 0) + parsed.length > MAX_SETTINGS_PER_ACCOUNT + MAX_SETTINGS_PER_WRITE) {
+  if (await countAndGuard({
+    env,
+    table: "account_settings",
+    userId,
+    adding: parsed.length,
+    ceiling: MAX_SETTINGS_PER_ACCOUNT + MAX_SETTINGS_PER_WRITE,
+  })) {
     return json(
       { ok: false, error: "account settings limit reached" },
       { status: 507 },
@@ -277,7 +258,7 @@ async function handleDelete(
   scopeRaw: string,
   keyRaw: string,
 ): Promise<Response> {
-  const scope = parseScopeKey(scopeRaw);
+  const scope = parseAccountScopeKey(scopeRaw);
   const key = parseSettingKey(keyRaw);
   if (!scope || !key) {
     return json({ ok: false, error: "invalid setting" }, { status: 400 });
@@ -330,7 +311,7 @@ export const accountSettingsTestInternals = Object.freeze({
   MAX_SETTINGS_PER_READ,
   MAX_SETTINGS_PER_WRITE,
   MAX_SETTING_VALUE_BYTES,
-  parseScopeKey,
+  parseScopeKey: parseAccountScopeKey,
   parseSettingKey,
   parseWriteItem,
 });

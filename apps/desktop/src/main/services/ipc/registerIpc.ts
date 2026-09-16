@@ -814,6 +814,11 @@ import {
   createBrainAccountActionCaller,
   createBrainRefreshBroker,
 } from "../account/accountBridge";
+import {
+  createAccountSettingsSyncService,
+  type AccountSettingRow,
+  type AccountSettingsResult,
+} from "../account/accountSettingsSync";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
@@ -11008,6 +11013,52 @@ export function registerIpc({
       }
     }
   });
+
+  /**
+   * The account settings store, borrowed from any booted project scope.
+   *
+   * The store is keyed by the machine's ADE directory, not by a repository, so
+   * every booted scope answers with the same rows — the same reason machine
+   * usage reads borrow a scope. With no pool or no booted scope the service
+   * answers "unavailable" and the renderer keeps its local copy.
+   */
+  const accountSettingsSyncService = createAccountSettingsSyncService({
+    getPool: () => localRuntimeConnectionPool,
+    getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []),
+    logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+  });
+
+  ipcMain.handle(
+    IPC.accountSettingsList,
+    async (
+      _event,
+      args?: { scope?: string | null },
+    ): Promise<AccountSettingsResult<AccountSettingRow[]>> =>
+      await accountSettingsSyncService.list(args?.scope ?? null),
+  );
+
+  ipcMain.handle(
+    IPC.accountSettingsGet,
+    async (
+      _event,
+      args: { scope: string; key: string },
+    ): Promise<AccountSettingsResult<unknown>> =>
+      await accountSettingsSyncService.get(args.scope, args.key),
+  );
+
+  ipcMain.handle(
+    IPC.accountSettingsSet,
+    async (
+      _event,
+      args: { scope: string; key: string; value: unknown },
+    ): Promise<AccountSettingsResult<null>> =>
+      await accountSettingsSyncService.set(args.scope, args.key, args.value),
+  );
+
+  ipcMain.handle(
+    IPC.accountSettingsSync,
+    async (): Promise<AccountSettingsResult<null>> => await accountSettingsSyncService.sync(),
+  );
 
   ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.status();

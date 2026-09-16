@@ -296,6 +296,12 @@ export type AccountAuthService = {
   /** Notification emitted after a local or externally persisted sign-in. */
   onSignedIn(listener: () => void): () => void;
   /**
+   * Notification emitted after a deliberate sign-out, local or observed via the
+   * shared credential file changing under this process. Optional so existing
+   * test doubles and remote proxies stay valid.
+   */
+  onSignedOut?(listener: () => void): () => void;
+  /**
    * Take the single-use pairing grant the directory minted when this machine
    * last completed a `/device/*` sign-in, or `null` when there is none.
    *
@@ -1062,6 +1068,7 @@ export function createAccountAuthService(args: {
   /** Whether the last read observed a persisted record marked needs-re-auth. */
   let storedSessionRejected = false;
   const signedInListeners = new Set<() => void>();
+  const signedOutListeners = new Set<() => void>();
   const mutationPid = typeof args.pid === "number" && Number.isSafeInteger(args.pid)
     ? args.pid
     : process.pid;
@@ -1465,6 +1472,27 @@ export function createAccountAuthService(args: {
         listener();
       } catch {
         // Account persistence has already succeeded. Observers are best-effort.
+      }
+    }
+  };
+
+  /**
+   * Emitted when the account LEAVES this machine deliberately — this process
+   * signing out, or another process (`ade logout`, the desktop app) clearing
+   * the shared credential under the brain.
+   *
+   * Deliberately NOT emitted for an expired or rejected token. Observers use
+   * this to destroy account-held state, and the vault's rule is that a
+   * credential leaves on a sign-out, not on a token that needs refreshing —
+   * wiping a user's synced API keys because a refresh grant lapsed would be
+   * data loss dressed up as hygiene.
+   */
+  const notifySignedOut = (): void => {
+    for (const listener of signedOutListeners) {
+      try {
+        listener();
+      } catch {
+        // Sign-out has already happened. Observers are best-effort.
       }
     }
   };
@@ -2763,6 +2791,10 @@ export function createAccountAuthService(args: {
     pendingSessions.clear();
     pendingDeviceSessions.clear();
     logger.info("account.signed_out");
+    // Ahead of the credential watcher, and it records the transition so the
+    // watcher's own debounce does not fire a second, duplicate notification.
+    lastObservedSignedIn = false;
+    notifySignedOut();
     return getStatus();
   };
 
@@ -2774,6 +2806,9 @@ export function createAccountAuthService(args: {
       credentialChangeTimer = null;
       const signedIn = getStatus().signedIn;
       if (signedIn && lastObservedSignedIn === false) notifySignedIn();
+      // The other half: someone ran `ade logout` (or signed out in the desktop
+      // app) and this brain only learns about it from the file changing.
+      if (!signedIn && lastObservedSignedIn === true) notifySignedOut();
       lastObservedSignedIn = signedIn;
     }, 25);
     credentialChangeTimer.unref?.();
@@ -2790,6 +2825,7 @@ export function createAccountAuthService(args: {
     credentialChangeTimer = null;
     unsubscribeCredentialChanges();
     signedInListeners.clear();
+    signedOutListeners.clear();
   };
 
   return {
@@ -2808,6 +2844,10 @@ export function createAccountAuthService(args: {
     onSignedIn: (listener: () => void) => {
       signedInListeners.add(listener);
       return () => signedInListeners.delete(listener);
+    },
+    onSignedOut: (listener: () => void) => {
+      signedOutListeners.add(listener);
+      return () => signedOutListeners.delete(listener);
     },
     consumePairingGrant,
     dispose,

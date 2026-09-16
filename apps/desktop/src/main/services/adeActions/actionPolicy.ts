@@ -98,7 +98,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   storage: { only: ["cleanup", "runMaintenanceNow"] },
   search: { only: ["rebuildIndex"] },
   project_secret: { only: ["exportEnv"] },
-  account_vault: { only: ["get"] },
+  account_vault: { only: ["get", "set", "remove"] },
   /*
    * Fail-closed, and that is the whole point. `cto_memory` reads and rewrites the
    * durable memory injected into every CTO session, so it is operator state, not

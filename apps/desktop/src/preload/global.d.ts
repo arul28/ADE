@@ -388,6 +388,8 @@ import type {
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
   AdeAccountSessionRepairResult,
+  AccountSettingRow,
+  AccountSettingsResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -3390,6 +3392,21 @@ declare global {
          * background service. Optional because older preloads lack it.
          */
         repairSession?: () => Promise<AdeAccountSessionRepairResult>;
+      };
+      /**
+       * The account settings store (the `account_settings` action domain),
+       * which is what makes "stored in your ADE account" true for the
+       * account-scoped preferences in Settings.
+       *
+       * Optional because the hosted web client and older preloads do not
+       * expose it; callers treat its absence exactly like an unavailable
+       * result and keep the machine-local copy.
+       */
+      accountSettings?: {
+        list: (args?: { scope?: string | null }) => Promise<AccountSettingsResult<AccountSettingRow[]>>;
+        get: (args: { scope: string; key: string }) => Promise<AccountSettingsResult<unknown>>;
+        set: (args: { scope: string; key: string; value: unknown }) => Promise<AccountSettingsResult<null>>;
+        sync: () => Promise<AccountSettingsResult<null>>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

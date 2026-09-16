@@ -2012,83 +2012,83 @@ export async function createAdeRuntime(args: {
       syncRuntimeOptions?.activityRosterProvider ?? null,
     );
 
-    // The account settings store. Shares this Worker and this machine identity
-    // with the push publisher above, and is keyed by the machine ADE directory
-    // for the same reason: the account is a property of the machine, not of
-    // whichever repository happens to be open, so every project scope in this
-    // brain must reach one store over one cache file.
-    const accountSettingsAdeDir = resolveMachineAdeLayout().adeDir;
-    accountSettingsStore = getSharedAccountSettingsStore(
-      accountSettingsAdeDir,
-      () => {
-        const settingsRegistrationStore = createPushRegistrationStore({
-          filePath: pushRelayFilePath,
-          logger,
-        });
-        return createAccountSettingsStore({
-          adeDir: accountSettingsAdeDir,
-          relay: createPushRelayClient({
-            store: settingsRegistrationStore,
-            logger,
-            getAccountAccessToken,
-            getAccountUserId: () => {
-              const status = accountAuthService.getStatus();
-              return status.signedIn ? status.userId?.trim() || null : null;
-            },
-          }),
-          getAccountUserId: () => {
-            const status = accountAuthService.getStatus();
-            return status.signedIn ? status.userId?.trim() || null : null;
-          },
-          getDeviceId: () => {
-            try {
-              return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-            } catch {
-              return null;
-            }
-          },
-          logger,
-        });
-      },
-    );
-    teardown.push(accountSettingsStore.startPeriodicSync());
+    // The account settings store and the vault. Both share this Worker and this
+    // machine identity with the push publisher above, and both are keyed by the
+    // machine ADE directory for the same reason: the account is a property of
+    // the machine, not of whichever repository happens to be open, so every
+    // project scope in this brain must reach one store over one cache file.
+    //
+    // Built only when sync is on, which is what the declaration above promises:
+    // a `--no-sync` brain (manual runtimes, tests) must never reach the account
+    // Worker, and having no store at all is a stronger guarantee of that than a
+    // store with its uploads disabled. The runtime fields stay null, and the
+    // registry degrades through `toService(null)` exactly as it already does
+    // for every other optional service.
+    if (syncRuntimeOptions?.enabled === true) {
+      const accountStoreAdeDir = resolveMachineAdeLayout().adeDir;
+      // Hoisted: six copies of this getter and three of the device-id read used
+      // to sit inline in the store and relay literals below, which is three
+      // chances for one of them to drift away from the others.
+      const accountStoreUserId = (): string | null => {
+        const status = accountAuthService.getStatus();
+        return status.signedIn ? status.userId?.trim() || null : null;
+      };
+      const accountStoreDeviceId = (): string | null => {
+        try {
+          return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+        } catch {
+          return null;
+        }
+      };
+      // One relay client for both stores: it is a stateless wrapper over the
+      // same registration file and the same token getter, so a second one buys
+      // nothing but another copy to keep in step.
+      const accountStoreRelay = createPushRelayClient({
+        store: createPushRegistrationStore({ filePath: pushRelayFilePath, logger }),
+        logger,
+        getAccountAccessToken,
+        getAccountUserId: accountStoreUserId,
+      });
 
-    // The vault rides the same Worker, the same machine identity, and the same
-    // beat. Kept a separate store rather than a second table on the settings
-    // one, so a credential can never be returned by a settings read and the two
-    // have different permissions, different disk posture, and different
-    // sign-out behaviour.
-    accountVaultStore = getSharedAccountVaultStore(accountSettingsAdeDir, () => {
-      const vaultRegistrationStore = createPushRegistrationStore({
-        filePath: pushRelayFilePath,
-        logger,
-      });
-      return createAccountVaultStore({
-        adeDir: accountSettingsAdeDir,
-        relay: createPushRelayClient({
-          store: vaultRegistrationStore,
+      accountSettingsStore = getSharedAccountSettingsStore(
+        accountStoreAdeDir,
+        () =>
+          createAccountSettingsStore({
+            adeDir: accountStoreAdeDir,
+            relay: accountStoreRelay,
+            getAccountUserId: accountStoreUserId,
+            getDeviceId: accountStoreDeviceId,
+            logger,
+          }),
+      );
+      teardown.push(accountSettingsStore.startPeriodicSync());
+
+      // The vault rides the same Worker, the same machine identity, and the
+      // same beat. Kept a separate store rather than a second table on the
+      // settings one, so a credential can never be returned by a settings read
+      // and the two have different permissions, different disk posture, and
+      // different sign-out behaviour.
+      accountVaultStore = getSharedAccountVaultStore(accountStoreAdeDir, () =>
+        createAccountVaultStore({
+          adeDir: accountStoreAdeDir,
+          relay: accountStoreRelay,
+          getAccountUserId: accountStoreUserId,
+          getDeviceId: accountStoreDeviceId,
           logger,
-          getAccountAccessToken,
-          getAccountUserId: () => {
-            const status = accountAuthService.getStatus();
-            return status.signedIn ? status.userId?.trim() || null : null;
-          },
-        }),
-        getAccountUserId: () => {
-          const status = accountAuthService.getStatus();
-          return status.signedIn ? status.userId?.trim() || null : null;
-        },
-        getDeviceId: () => {
-          try {
-            return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-          } catch {
-            return null;
-          }
-        },
-        logger,
+        }));
+      teardown.push(accountVaultStore.startPeriodicSync());
+
+      // Settings survive a sign-out; the vault does not. Nothing else calls
+      // this, so without the subscription a signed-out machine keeps every
+      // synced credential readable on disk — including when the sign-out
+      // happened in another process (`ade logout`) and this brain only hears
+      // about it through the credential file changing.
+      const vaultToPurge = accountVaultStore;
+      const unsubscribeAccountSignedOut = accountAuthService.onSignedOut?.(() => {
+        vaultToPurge.purge();
       });
-    });
-    teardown.push(accountVaultStore.startPeriodicSync());
+      if (unsubscribeAccountSignedOut) teardown.push(unsubscribeAccountSignedOut);
+    }
     const detachPushSources = publishPushEvents
       ? pushPublisherService.attachSources(projectId, {
         // The lightweight no-agent headless chat stub intentionally exposes

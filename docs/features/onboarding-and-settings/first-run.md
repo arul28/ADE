@@ -91,7 +91,7 @@ shared YAML via `projectConfigService.save`.
   Lanes tab, not on Work paint.
 - Workflow command parsing keeps only single-line steps; multi-line `run: |`
   blocks are skipped. Teams with complex CI flows should curate imported
-  commands manually in `ade.yaml`.
+  commands manually in `local.yaml`.
 - `applySuggestedConfig` does a shallow merge at the top level. Calling it twice
   on the same project will not duplicate entries but can leave stale fields in
   place.

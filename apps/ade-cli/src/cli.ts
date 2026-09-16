@@ -26922,6 +26922,44 @@ async function runCli(
   ) {
     cleanupLegacyBundledAdeSkillsForCli();
   }
+
+  // Exactly one process per machine may exchange the rotating refresh token,
+  // and that process is the brain. Every other `ade` invocation asks the brain
+  // for a token through this broker instead of running the exchange itself,
+  // which is what removes the `invalid_grant` race by construction.
+  //
+  // Deliberately NOT installed for `serve`/`runtime`/`brain`: those plans host
+  // (or manage) the brain itself, and a brain pointed at its own socket for
+  // refreshes would deadlock rather than refresh. `--headless` is skipped for
+  // the same reason — it runs an in-process runtime that owns its credentials.
+  // Installed here, before any command touches getSharedAccountAuthService.
+  if (
+    plan.kind !== "serve" &&
+    plan.kind !== "runtime" &&
+    plan.kind !== "brain" &&
+    !parsed.options.headless
+  ) {
+    const {
+      installCliRefreshBroker,
+      connectMachineBrainForRefresh,
+      probeMachineBrainSocket,
+      resolveMachineBrainSocketPath,
+    } = await import(
+      "./services/account/cliRefreshBroker"
+    );
+    const brokerSocketPath = parsed.options.socketPath ?? null;
+    await installCliRefreshBroker({
+      isBrainReachable: async () => probeMachineBrainSocket({
+        socketPath: await resolveMachineBrainSocketPath(brokerSocketPath),
+      }),
+      connect: () => connectMachineBrainForRefresh({
+        clientName: "ade-cli-refresh-broker",
+        version: VERSION,
+        protocolVersion: PROTOCOL_VERSION,
+        socketPath: parsed.options.socketPath ?? null,
+      }),
+    });
+  }
   const originalConsole = {
     log: console.log,
     info: console.info,

@@ -264,9 +264,18 @@ function readMachineKey(secretsDir: string): string | null {
  * The process-wide refresh broker, or `null` when this process is the brain.
  *
  * Exactly one process on a machine may exchange the rotating refresh token.
- * The brain is that process. Every other one — desktop main, the CLI, the TUI —
- * installs a broker here and asks the brain instead, which is what removes the
- * `invalid_grant` race by construction rather than by timing.
+ * The brain is that process. Every other one installs a broker here and asks
+ * the brain instead, which is what removes the `invalid_grant` race by
+ * construction rather than by timing. Today's installers:
+ *   - desktop main, via `createBrainRefreshBroker` (accountBridge.ts), wired in
+ *     `registerIpc.ts`;
+ *   - every `ade …` command, via `installCliRefreshBroker` in `runCli`
+ *     (cliRefreshBroker.ts) — except the `serve`/`runtime`/`brain` plans and
+ *     `--headless`, which host the runtime rather than defer to it;
+ *   - the `ade code` TUI, via the same installer in `tuiClient/cli.tsx`.
+ * When no brain is listening, the installer leaves this null on purpose: a
+ * machine with no brain has no second refresher to race, so it keeps its local
+ * exchange.
  *
  * Deliberately module-level and late-bound: `getSharedAccountAuthService`
  * caches one service per secrets directory, so whoever asks first fixes that

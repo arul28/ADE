@@ -71,6 +71,7 @@ import {
   type PromptStashEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
+import type { AccountSettingRow } from "../shared/types/accountSettings";
 import type {
   IosSimulatorDeviceSettings,
   IosSimulatorElementActionKind,
@@ -3253,6 +3254,36 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           name: "Studio",
         }),
         onPairMachineProgress: () => () => {},
+      };
+    })(),
+    // The account settings store, backed by an in-memory map so the preview
+    // exercises the real hydrate/write-through path without a brain. Rows are
+    // per-reload: the mock is a stand-in for another machine, not a cache.
+    accountSettings: (() => {
+      const rows = new Map<string, AccountSettingRow>();
+      const rowKey = (scope: string, key: string) => `${scope}\u0000${key}`;
+      return {
+        list: async (args?: { scope?: string | null }) => ({
+          ok: true as const,
+          value: [...rows.values()].filter((row) => !args?.scope || row.scope === args.scope),
+        }),
+        get: async (args: { scope: string; key: string }) => ({
+          ok: true as const,
+          value: rows.get(rowKey(args.scope, args.key))?.value,
+        }),
+        set: async (args: { scope: string; key: string; value: unknown }) => {
+          const at = new Date().toISOString();
+          rows.set(rowKey(args.scope, args.key), {
+            scope: args.scope,
+            key: args.key,
+            value: args.value,
+            updatedAt: at,
+            changedAt: at,
+            writerDeviceId: "browser-mock",
+          });
+          return { ok: true as const, value: null };
+        },
+        sync: async () => ({ ok: true as const, value: null }),
       };
     })(),
     app: {

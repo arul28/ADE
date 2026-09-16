@@ -186,3 +186,214 @@ export function preferenceNumber(
   if (typeof account[key] === "number" && Number.isFinite(account[key])) return account[key];
   return fallback;
 }
+
+/**
+ * The account-scoped stores (`accountSettings.ts`, `accountVault.ts`) share a
+ * shape: one row per (scope, key…) per account, ordered by `updated_at`, read a
+ * page at a time with a resumable cursor, and guarded by a per-account ceiling.
+ * The pieces below are that shape, held in one place so the two modules cannot
+ * drift apart — the cursor in particular is easy to get subtly, silently wrong.
+ */
+
+export const ACCOUNT_SCOPE_KEY_MAX_LENGTH = 512;
+
+/**
+ * `scope_key` is opaque to this Worker, but not arbitrary: it is either
+ * "everything" or a normalized repository identity. Validating the shape stops
+ * a client inventing a third axis the rest of ADE cannot read, and keeps the
+ * column joinable later.
+ */
+export function parseAccountScopeKey(value: unknown): string | null {
+  const scope = requiredString(value, ACCOUNT_SCOPE_KEY_MAX_LENGTH);
+  if (!scope) return null;
+  if (scope === "all") return scope;
+  if (scope.startsWith("repo:") && scope.length > "repo:".length) return scope;
+  return null;
+}
+
+/**
+ * Where a page resumes from. `keys` are the tiebreak columns' values for the
+ * last row of the previous page, in the same order the query sorts them.
+ *
+ * `keys: null` is a legacy cursor — a bare ISO stamp minted before the tiebreak
+ * existed. It resumes as a plain `updated_at > stamp`, which is what it always
+ * meant. Accepted for one release so an in-flight client is not stranded.
+ */
+export type AccountPageCursor = { updatedAt: string; keys: string[] | null };
+
+function toBase64Url(text: string): string {
+  let binary = "";
+  const bytes = new TextEncoder().encode(text);
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(value: string): string | null {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+  try {
+    const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Opaque on purpose: a client that parses a cursor is a client that breaks the
+ * next time the tiebreak changes. Base64url so it survives a bare `?since=`
+ * with no escaping, which is how every caller writes it.
+ */
+export function encodeAccountCursor(cursor: AccountPageCursor): string {
+  return toBase64Url(JSON.stringify({ v: 1, t: cursor.updatedAt, k: cursor.keys ?? [] }));
+}
+
+export function decodeAccountCursor(raw: string | null | undefined): AccountPageCursor | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  const decoded = fromBase64Url(value);
+  if (decoded) {
+    try {
+      const parsed: unknown = JSON.parse(decoded);
+      if (
+        isRecord(parsed) && parsed.v === 1 && typeof parsed.t === "string"
+        && !Number.isNaN(Date.parse(parsed.t)) && Array.isArray(parsed.k)
+        && parsed.k.every((entry) => typeof entry === "string")
+      ) {
+        return { updatedAt: new Date(parsed.t).toISOString(), keys: parsed.k as string[] };
+      }
+    } catch {
+      // Not a composite cursor. Fall through to the legacy stamp reading.
+    }
+  }
+  if (Number.isNaN(Date.parse(value))) return null;
+  return { updatedAt: new Date(value).toISOString(), keys: null };
+}
+
+/** Reads `?since=` as either a composite cursor or a legacy bare ISO stamp. */
+export function parseSinceParam(url: URL): AccountPageCursor | null {
+  return decodeAccountCursor(url.searchParams.get("since"));
+}
+
+/**
+ * Strictly-after in lexicographic order over `columns`, expanded rather than
+ * written as an SQL row value so the statement does not depend on how the
+ * engine handles `(a, b) > (?, ?)`.
+ */
+function lexicographicallyAfter(
+  columns: string[],
+  values: string[],
+): { sql: string; bindings: string[] } {
+  const clauses: string[] = [];
+  const bindings: string[] = [];
+  for (let index = 0; index < columns.length; index += 1) {
+    const terms: string[] = [];
+    for (let prior = 0; prior < index; prior += 1) {
+      terms.push(`${columns[prior]} = ?`);
+      bindings.push(values[prior]!);
+    }
+    terms.push(`${columns[index]} > ?`);
+    bindings.push(values[index]!);
+    clauses.push(`(${terms.join(" and ")})`);
+  }
+  return { sql: `(${clauses.join(" or ")})`, bindings };
+}
+
+/**
+ * The `where`/`order by`/bindings for one page of an account-scoped store.
+ *
+ * `keyColumns` are the tiebreak columns after `updated_at`. They must be the
+ * table's remaining primary-key columns: ordering by `updated_at` alone is not
+ * a total order, and rows that share a stamp across a page boundary are then
+ * skipped forever — the page ends mid-stamp and the next page asks for
+ * `updated_at > stamp`, which excludes the rest of them.
+ */
+export function buildAccountPageQuery(options: {
+  userId: string;
+  cursor: AccountPageCursor | null;
+  scope: string | null;
+  keyColumns: string[];
+  limit: number;
+}): { where: string; orderBy: string; bindings: unknown[] } {
+  const { userId, cursor, scope, keyColumns, limit } = options;
+  const conditions = ["user_id = ?"];
+  const bindings: unknown[] = [userId];
+  if (cursor) {
+    if (cursor.keys && cursor.keys.length === keyColumns.length) {
+      const after = lexicographicallyAfter(["updated_at", ...keyColumns], [
+        cursor.updatedAt,
+        ...cursor.keys,
+      ]);
+      conditions.push(after.sql);
+      bindings.push(...after.bindings);
+    } else {
+      // Strictly greater than: a client passes back the newest stamp it holds,
+      // and re-sending that row every beat would make an idle account pay for a
+      // pull forever.
+      conditions.push("updated_at > ?");
+      bindings.push(cursor.updatedAt);
+    }
+  }
+  if (scope) {
+    conditions.push("scope_key = ?");
+    bindings.push(scope);
+  }
+  bindings.push(limit + 1);
+  return {
+    where: conditions.join(" and "),
+    orderBy: ["updated_at", ...keyColumns].join(" asc, ") + " asc",
+    bindings,
+  };
+}
+
+/**
+ * Splits the `limit + 1` rows the page query asked for into the page itself,
+ * the explicit `truncated` flag, and the cursor to resume from.
+ *
+ * `truncated` is explicit rather than inferred from the page being full: a
+ * client that guesses will either loop forever on an exactly-full page or stop
+ * early on the next one.
+ */
+export function accountPageResult<T extends Record<string, unknown>>(
+  results: T[],
+  options: {
+    limit: number;
+    keyColumns: string[];
+    cursor: AccountPageCursor | null;
+  },
+): { page: T[]; truncated: boolean; cursor: string | null } {
+  const page = results.slice(0, options.limit);
+  const last = page[page.length - 1];
+  const next: AccountPageCursor | null = last
+    ? {
+      updatedAt: String(last.updated_at),
+      keys: options.keyColumns.map((column) => String(last[column] ?? "")),
+    }
+    : options.cursor;
+  return {
+    page,
+    truncated: results.length > options.limit,
+    cursor: next ? encodeAccountCursor(next) : null,
+  };
+}
+
+/**
+ * The per-account ceiling, counted before the write and only against what the
+ * batch would add. An account at the ceiling can still change what it already
+ * has, because the count cannot tell an update from an insert and refusing both
+ * would strand a user at their own limit.
+ */
+export async function countAndGuard(options: {
+  env: AttentionRelayEnv;
+  table: string;
+  userId: string;
+  adding: number;
+  ceiling: number;
+}): Promise<boolean> {
+  const existing = await options.env.DB
+    .prepare(`select count(*) as count from ${options.table} where user_id = ?`)
+    .bind(options.userId)
+    .first<{ count: number }>();
+  return (existing?.count ?? 0) + options.adding > options.ceiling;
+}

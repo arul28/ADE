@@ -1,5 +1,5 @@
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
-import type { SettingScope } from "../renderer/components/settings/settingsManifest";
+import type { SettingScope } from "./types/settingsScope";
 
 /**
  * Turns ADE's four-value setting scope into the key the account store files a
