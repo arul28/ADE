@@ -30,7 +30,8 @@ type FleetServiceDeps = {
   listCursorCloudAgents: (args?: {
     includeArchived?: boolean;
     limit?: number;
-  }) => Promise<{ items: CursorCloudAgentSummary[] }>;
+    cursor?: string | null;
+  }) => Promise<{ items: CursorCloudAgentSummary[]; nextCursor?: string }>;
   listCursorCloudRuns: (args: {
     agentId: string;
     limit?: number;
@@ -51,6 +52,7 @@ type FleetServiceDeps = {
 
 const ENRICH_CONCURRENCY = 4;
 const ORIGIN_CACHE_TTL_MS = 60_000;
+const FLEET_CACHE_TTL_MS = 2_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -123,6 +125,7 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
   const { projectRoot, logger } = deps;
 
   let originCache: { key: string; at: number } | null = null;
+  let fleetCache: { key: string; at: number; result: CursorCloudFleetResult } | null = null;
 
   const originMatchKey = async (): Promise<string> => {
     if (originCache && Date.now() - originCache.at < ORIGIN_CACHE_TTL_MS) {
@@ -180,26 +183,40 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
       laneById.set(lane.id, lane);
     }
 
-    // One page is the fleet for an honest project view. Callers can raise
-    // `limit`; unbounded pagination would silently turn a refresh into a
-    // long API crawl.
-    const listed = await deps.listCursorCloudAgents({
-      includeArchived: true,
-      limit: args.limit,
-    });
+    // Cursor caps each page at 100. Consume every cursor page so a project
+    // with a long-lived fleet does not silently lose older agents.
+    const pageSize = Math.min(Math.max(Math.floor(args.limit || 100), 1), 100);
+    const listedItems: CursorCloudAgentSummary[] = [];
+    const seenCursors = new Set<string>();
+    let pageCursor: string | null = null;
+    do {
+      const page = await deps.listCursorCloudAgents({
+        includeArchived: true,
+        limit: pageSize,
+        ...(pageCursor ? { cursor: pageCursor } : {}),
+      });
+      listedItems.push(...page.items);
+      const nextCursor = page.nextCursor?.trim() ?? "";
+      if (!nextCursor || seenCursors.has(nextCursor)) break;
+      seenCursors.add(nextCursor);
+      pageCursor = nextCursor;
+    } while (true);
 
+    const listed = { items: listedItems };
+
+    // Cursor's fleet is account-wide. Keep project/session ownership as
+    // metadata for lane actions, but do not hide agents launched from another
+    // repository or directly on cursor.com.
     const scoped = listed.items
-      .map((agent): { agent: CursorCloudAgentSummary; matchedBy: CursorCloudFleetEntry["matchedBy"] } | null => {
+      .map((agent): { agent: CursorCloudAgentSummary; matchedBy: CursorCloudFleetEntry["matchedBy"] } => {
         const link = linkByAgentId.get(agent.agentId) ?? null;
         const repoHit = Boolean(originKey)
           && (agent.repos ?? []).some((repo) => repoMatchKey(repo) === originKey);
-        if (!link && !repoHit) return null;
         return {
           agent,
-          matchedBy: link && repoHit ? "both" : link ? "session" : "repo",
+          matchedBy: link && repoHit ? "both" : link ? "session" : repoHit ? "repo" : "account",
         };
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+      });
 
     const activeOnly = scoped.filter(({ agent }) => {
       const lower = agent.status?.toLowerCase();
@@ -210,12 +227,12 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
     // lazily when the renderer expands them, keeping one refresh to a
     // handful of bounded calls instead of one per row.
     const runsByAgentId = new Map<string, Record<string, unknown>>();
-    let cursor = 0;
+    let workIndex = 0;
     const workers = Math.min(ENRICH_CONCURRENCY, Math.max(activeOnly.length, 1));
     await Promise.all(
       Array.from({ length: workers }, async () => {
-        while (cursor < activeOnly.length) {
-          const current = activeOnly[cursor++];
+        while (workIndex < activeOnly.length) {
+          const current = activeOnly[workIndex++];
           try {
             const result = await deps.listCursorCloudRuns({
               agentId: current.agent.agentId,
@@ -282,11 +299,23 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
     includeArchived?: boolean;
     limit?: number;
   }): Promise<CursorCloudFleetResult> => {
+    const includeArchived = args?.includeArchived !== false;
+    const limit = Math.min(Math.max(args?.limit ?? 100, 1), 100);
+    const cacheKey = `${includeArchived ? "archived" : "active"}:${limit}`;
+    if (fleetCache && fleetCache.key === cacheKey && Date.now() - fleetCache.at < FLEET_CACHE_TTL_MS) {
+      return fleetCache.result;
+    }
     const built = await buildEntries({
-      includeArchived: args?.includeArchived !== false,
-      limit: Math.min(Math.max(args?.limit ?? 100, 1), 200),
+      includeArchived,
+      limit,
     });
-    return { ...built, fetchedAt: new Date().toISOString() };
+    const result = { ...built, fetchedAt: new Date().toISOString() };
+    fleetCache = { key: cacheKey, at: Date.now(), result };
+    return result;
+  };
+
+  const invalidateCache = (): void => {
+    fleetCache = null;
   };
 
   /**
@@ -355,9 +384,21 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
    * "could not be found" just because the account has many agents.
    */
   const findAgentById = async (id: string): Promise<CursorCloudAgentSummary | null> => {
-    const listed = await deps.listCursorCloudAgents({ includeArchived: true, limit: 200 });
-    const found = listed.items.find((entry) => entry.agentId === id);
-    if (found) return found;
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
+    do {
+      const listed = await deps.listCursorCloudAgents({
+        includeArchived: true,
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      const found = listed.items.find((entry) => entry.agentId === id);
+      if (found) return found;
+      const nextCursor = listed.nextCursor?.trim() ?? "";
+      if (!nextCursor || seenCursors.has(nextCursor)) break;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    } while (true);
     if (!deps.getCursorCloudAgent) return null;
     try {
       return await deps.getCursorCloudAgent(id);
@@ -565,6 +606,7 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
 
   return {
     getFleet,
+    invalidateCache,
     pullIntoLane,
     resolveLaneForAgent,
     stopAgentRun,

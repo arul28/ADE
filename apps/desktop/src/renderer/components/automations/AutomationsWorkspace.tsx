@@ -124,6 +124,7 @@ export function AutomationsWorkspace({
   const manualRunPendingRef = useRef(false);
   const [running, setRunning] = useState(false);
   const [configTrustRequired, setConfigTrustRequired] = useState(false);
+  const [cursorCloudConnected, setCursorCloudConnected] = useState(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
   const savedSnapshotRef = useRef<string | null>(null);
 
@@ -152,23 +153,26 @@ export function AutomationsWorkspace({
     setLoading(true);
     setError(null);
     try {
-      const [nextRules, nextSuites, nextLanes, nextIngress, snapshot] = await Promise.all([
+      const [nextRules, nextSuites, nextLanes, nextIngress, snapshot, aiStatus] = await Promise.all([
         window.ade.automations.list(),
         window.ade.tests.listSuites(),
         window.ade.lanes.list({ includeArchived: false, includeStatus: false }),
         window.ade.automations.getIngressStatus(),
         window.ade.projectConfig.get(),
+        window.ade.ai.getStatus(),
       ]);
       setRules(nextRules);
       setSuites(nextSuites);
       setLanes(nextLanes);
       setIngressStatus(nextIngress);
       setConfigTrustRequired(Boolean(snapshot.trust.requiresSharedTrust));
+      setCursorCloudConnected(aiStatus?.providerConnections?.cursor?.authAvailable === true);
       setSelectedRuleId((current) => {
         if (current && nextRules.some((r) => r.id === current)) return current;
         return nextRules[0]?.id ?? null;
       });
     } catch (err) {
+      setCursorCloudConnected(false);
       setError(extractError(err));
     } finally {
       setLoading(false);
@@ -452,6 +456,7 @@ export function AutomationsWorkspace({
               onSimulate={() => void simulateDraft()}
               onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
               onIngressChanged={() => void refresh()}
+              cursorCloudConnected={cursorCloudConnected}
               saving={saving}
               simulating={simulating}
               running={running}

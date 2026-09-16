@@ -562,11 +562,12 @@ apps/ios/
 │   │   │                            #   (full-screen sheet mirroring the Linear
 │   │   │                            #   pane's presentation) +
 │   │   │                            # CursorCloudPaneToolbarButton (Work top-bar
-│   │   │                            #   button beside the Linear one; shown while a
-│   │   │                            #   project is open — the pane itself resolves
-│   │   │                            #   connection state so a missing key renders an
-│   │   │                            #   honest connect prompt instead of hiding the
-│   │   │                            #   surface) + CursorCloudPaneStore (fleet load /
+│   │   │                            #   button beside the Linear one; shown only
+│   │   │                            #   with an active project, a confirmed Cursor
+│   │   │                            #   connection, and the advertised fleet
+│   │   │                            #   command — the same fail-closed entry-point
+│   │   │                            #   rule as Linear) + CursorCloudPaneStore
+│   │   │                            #   (fleet load /
 │   │   │                            #   status-lane-archived filters / active,
 │   │   │                            #   per-lane, and unlinked repo·branch grouping
 │   │   │                            #   over ai.cursorCloudFleet),
@@ -578,9 +579,10 @@ apps/ios/
 │   │   │                            # CursorCloudModels (Swift mirrors of the fleet
 │   │   │                            #   DTOs). Every action executes host-side like
 │   │   │                            #   Linear; no Cursor credentials live on device.
-│   │   │                            #   Gated on an active project plus the host
-│   │   │                            #   advertising the optional ai.cursorCloud*
-│   │   │                            #   commands, so an older brain omits the pane.
+│   │   │                            #   The sheet can still render a connect
+│   │   │                            #   prompt if credentials disappear after it
+│   │   │                            #   was opened; older brains omit the entry
+│   │   │                            #   because the optional commands are absent.
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen
 │   │   │                            #   (PrDetailView — Overview emitted as
 │   │   │                            #   sibling List rows, not a monolith),

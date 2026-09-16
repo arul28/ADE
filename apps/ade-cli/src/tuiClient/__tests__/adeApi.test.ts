@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, clearSessionWokeMarker, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, interruptChat, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, mergeLaneStatusSnapshots, messageChatSession, recoverCodexTurn, recoverTurn, requestSessionAttention, resolveUnprocessedMessage, restoreCancelledQueue, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionSettleOverride, setSessionStatusNote, settleSession, signalTerminal, snoozeSession, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession, wakeSession } from "../adeApi";
+import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, clearSessionWokeMarker, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getCursorCloudFleet, getMainTranscript, interruptChat, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, mergeLaneStatusSnapshots, messageChatSession, recoverCodexTurn, recoverTurn, requestSessionAttention, resolveUnprocessedMessage, restoreCancelledQueue, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionSettleOverride, setSessionStatusNote, settleSession, signalTerminal, snoozeSession, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession, wakeSession } from "../adeApi";
 import type { ChatTerminalSession, TerminalSessionSummary } from "../../../../desktop/src/shared/types/sessions";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { AdeCodeConnection } from "../types";
@@ -445,6 +445,25 @@ describe("chat session archive helpers", () => {
       { domain: "chat", action: "unarchiveSession", args: { sessionId: "chat-2" } },
       { domain: "chat", action: "deleteSession", args: { sessionId: "chat-3" } },
     ]);
+  });
+});
+
+describe("Cursor Cloud fleet helper", () => {
+  it("routes the TUI fleet pane through the runtime action and hides archived agents by default", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> | undefined }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return { items: [], relayState: "ready", lastEventAt: null, fetchedAt: "now" };
+      },
+    } as unknown as AdeCodeConnection;
+
+    const result = await getCursorCloudFleet(connection);
+
+    expect(calls).toEqual([
+      { domain: "ai", action: "getCursorCloudFleet", args: { includeArchived: false } },
+    ]);
+    expect(result).toEqual({ items: [], relayState: "ready", lastEventAt: null, fetchedAt: "now" });
   });
 });
 

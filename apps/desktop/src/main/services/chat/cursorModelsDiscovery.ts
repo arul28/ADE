@@ -61,7 +61,7 @@ const TTL_MS = 120_000;
 // minutes after the last active probe.
 const POSITIVE_TTL_MS = 6 * 60 * 60_000;
 const SDK_MODEL_LIST_TIMEOUT_MS = 5_000;
-const CURSOR_MODELS_API_URL = "https://api.cursor.com/v0/models";
+const CURSOR_MODELS_API_URL = "https://api.cursor.com/v1/models";
 const CURSOR_AGENT_AUTH_BLOCKER =
   "Cursor rejected the configured API key for agent/model access. Re-enter a Cursor API key from the Cursor dashboard API page.";
 
@@ -77,6 +77,15 @@ class CursorModelDiscoveryError extends Error {
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function cursorModelDisplayName(id: string): string {
+  return id
+    .replace(/^cursor\//i, "")
+    .replace(/[._:/-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase())
+    .replace(/\s+/g, " ")
+    .trim() || id;
 }
 
 /**
@@ -103,7 +112,7 @@ export function parseCursorCliModelsStdout(stdout: string): CursorCliModelRow[] 
     }
     if (/^[\w.-]+$/.test(line) && !seen.has(line)) {
       seen.add(line);
-      out.push({ id: line });
+      out.push({ id: line, displayName: cursorModelDisplayName(line) });
     }
   }
   return out;
@@ -270,7 +279,8 @@ function foldCursorCliVariantRows(rows: CursorCliModelRow[]): CursorCliModelRow[
     if (!base) {
       base = {
         id: parsed.baseId,
-        displayName: stripCursorCliVariantDisplayTokens(row.displayName, parsed) ?? parsed.baseId,
+        displayName: stripCursorCliVariantDisplayTokens(row.displayName, parsed)
+          ?? cursorModelDisplayName(parsed.baseId),
       };
       syntheticByBase.set(baseKey, base);
     }
@@ -497,7 +507,16 @@ function deriveCursorRuntimeTiers(row: Pick<CursorCliModelRow, "parameters" | "v
   const serviceTierParameterIds = new Set(
     (row.parameters ?? []).filter(isServiceTierParameterLike).map((entry) => entry.id),
   );
-
+  for (const variant of row.variants ?? []) {
+    for (const param of variant.params) {
+      if (
+        isServiceTierParameterLike({ id: param.id, displayName: variant.displayName })
+        || normalizeCursorServiceTierValue(param.value) != null
+      ) {
+        serviceTierParameterIds.add(param.id);
+      }
+    }
+  }
   for (const parameter of row.parameters ?? []) {
     if (reasoningParameterIds.has(parameter.id)) {
       for (const value of parameter.values) {
@@ -517,7 +536,11 @@ function deriveCursorRuntimeTiers(row: Pick<CursorCliModelRow, "parameters" | "v
       if (reasoningParameterIds.has(param.id) || /\b(reason|thinking|effort)\b/i.test(label)) {
         addUnique(reasoningTiers, normalizeCursorReasoningValue(param.value) ?? normalizeCursorReasoningValue(label));
       }
-      if (serviceTierParameterIds.has(param.id) || /\bfast\b/i.test(label)) {
+      if (
+        serviceTierParameterIds.has(param.id)
+        || normalizeCursorServiceTierValue(param.value) != null
+        || /\b(fast|standard|default|regular|base|normal|slow)\b/i.test(label)
+      ) {
         addUnique(serviceTiers, normalizeCursorServiceTierValue(param.value) ?? normalizeCursorServiceTierValue(label));
       }
     }
@@ -600,7 +623,13 @@ function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
     const id = String(model?.id ?? "").trim();
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    const displayName = typeof model.displayName === "string" ? model.displayName.trim() : "";
+    const displayName = typeof model.displayName === "string"
+      ? model.displayName.trim()
+      : typeof (model as { title?: unknown }).title === "string"
+        ? (model as unknown as { title: string }).title.trim()
+        : typeof (model as { name?: unknown }).name === "string"
+          ? (model as unknown as { name: string }).name.trim()
+          : "";
     const description = typeof model.description === "string" && model.description.trim().length
       ? model.description.trim()
       : undefined;
@@ -610,7 +639,7 @@ function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
     const tiers = deriveCursorRuntimeTiers({ parameters, variants });
     rows.push({
       id,
-      ...(displayName ? { displayName } : {}),
+      displayName: displayName || cursorModelDisplayName(id),
       ...(description ? { description } : {}),
       ...(aliases ? { aliases } : {}),
       ...(parameters ? { parameters } : {}),
@@ -630,7 +659,7 @@ function normalizeCursorModelRows(models: unknown[], options?: { foldCliVariants
       const id = model.trim();
       if (id && !seen.has(id)) {
         seen.add(id);
-        rows.push({ id });
+        rows.push({ id, displayName: cursorModelDisplayName(id) });
       }
       continue;
     }
@@ -645,9 +674,11 @@ function normalizeCursorModelRows(models: unknown[], options?: { foldCliVariants
     seen.add(id);
     const displayName = typeof record.displayName === "string"
       ? record.displayName.trim()
-      : typeof record.name === "string"
-        ? record.name.trim()
-        : "";
+      : typeof record.title === "string"
+        ? record.title.trim()
+        : typeof record.name === "string"
+          ? record.name.trim()
+          : "";
     const description = typeof record.description === "string" && record.description.trim().length
       ? record.description.trim()
       : undefined;
@@ -657,7 +688,7 @@ function normalizeCursorModelRows(models: unknown[], options?: { foldCliVariants
     const tiers = deriveCursorRuntimeTiers({ parameters, variants });
     rows.push({
       id,
-      ...(displayName ? { displayName } : {}),
+      displayName: displayName || cursorModelDisplayName(id),
       ...(description ? { description } : {}),
       ...(aliases ? { aliases } : {}),
       ...(parameters ? { parameters } : {}),
@@ -787,8 +818,11 @@ async function fetchCursorModelsFromOfficialApi(apiKey: string | undefined): Pro
       `Cursor model API returned HTTP ${response.status}.`,
     );
   }
-  const payload = await response.json() as { models?: unknown };
-  return Array.isArray(payload.models) ? normalizeCursorModelRows(payload.models) : [];
+  const payload = await response.json() as { items?: unknown; models?: unknown };
+  // The SDK's v1 endpoint returns `{ items }`; retain the older `{ models }`
+  // shape as a compatibility fallback for hosted proxies that still expose it.
+  const rows = Array.isArray(payload.items) ? payload.items : payload.models;
+  return Array.isArray(rows) ? normalizeCursorModelRows(rows) : [];
 }
 
 function warmCursorModelsFromSdk(apiKey?: string | null): void {
@@ -1057,8 +1091,8 @@ export type CursorSdkModelSelectionResult =
 
 const CURSOR_SDK_UNMET_CONTROL_LABELS: Record<CursorSdkModelSelectionUnmetControl, string> = {
   reasoning: "reasoning effort",
-  fast: "fast mode",
-  standard: "standard speed",
+  fast: "fast tier",
+  standard: "standard tier",
 };
 
 /**
@@ -1086,6 +1120,7 @@ export type CursorSdkModelSelectionInput = {
   modelSdkId: string;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  serviceTier?: "fast" | "standard" | null;
 };
 
 /**
@@ -1108,8 +1143,11 @@ function resolveCursorSdkModelSelectionFromRows(
   );
   if (!row) return { status: "unknown-model" };
   const reasoning = normalizeCursorMetadataText(args.reasoningEffort);
-  const wantsFast = args.fastMode === true;
-  const wantsStandard = args.fastMode === false;
+  const requestedTier = args.serviceTier ?? (
+    args.fastMode === true ? "fast" : args.fastMode === false ? "standard" : null
+  );
+  const wantsFast = requestedTier === "fast";
+  const wantsStandard = requestedTier === "standard";
   const out = new Map<string, string>();
   const reasoningParameterIds = new Set(
     (row.parameters ?? []).filter(isReasoningParameterLike).map((entry) => entry.id),
@@ -1117,6 +1155,19 @@ function resolveCursorSdkModelSelectionFromRows(
   const serviceTierParameterIds = new Set(
     (row.parameters ?? []).filter(isServiceTierParameterLike).map((entry) => entry.id),
   );
+  // The cloud catalog can publish only variants (without the parent
+  // `parameters` definition). Infer the control from the variant's parameter
+  // id/value as well, so explicit tier selection still resolves correctly.
+  for (const variant of row.variants ?? []) {
+    for (const param of variant.params) {
+      if (
+        isServiceTierParameterLike({ id: param.id, displayName: variant.displayName })
+        || normalizeCursorServiceTierValue(param.value) != null
+      ) {
+        serviceTierParameterIds.add(param.id);
+      }
+    }
+  }
   const applyParams = (
     params: readonly CursorModelParameterValue[],
     options: { preserveExistingReasoning?: boolean } = {},
@@ -1224,6 +1275,9 @@ function resolveCursorSdkModelSelectionFromRows(
     );
     if (!matched) unmet.push("standard");
   }
+  if (args.serviceTier && serviceTierParameterIds.size === 0) {
+    unmet.push(args.serviceTier);
+  }
   if (unmet.length) return { status: "partial", params, unmet };
   // An explicitly-known model with no parameterized controls is still a valid
   // selection. The empty array lets callers distinguish it from a model that
@@ -1311,7 +1365,9 @@ export async function verifyExplicitCursorModelSelection(
   apiKey: string | null | undefined,
   args: CursorSdkModelSelectionInput,
 ): Promise<CursorModelParameterValue[] | null> {
-  const hasExplicitSelection = Boolean(args.reasoningEffort?.trim()) || args.fastMode != null;
+  const hasExplicitSelection = Boolean(args.reasoningEffort?.trim())
+    || args.fastMode != null
+    || args.serviceTier != null;
   if (!hasExplicitSelection) return null;
   const selection = await resolveCursorSdkModelSelection(apiKey, args);
   if (selection.status !== "ok") {

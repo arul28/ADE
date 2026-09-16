@@ -5507,6 +5507,7 @@ export function registerIpc({
         ...(arg.modelId ? { modelId: arg.modelId } : {}),
         ...(arg.reasoningEffort !== undefined ? { reasoningEffort: arg.reasoningEffort } : {}),
         ...(arg.fastMode !== undefined ? { fastMode: arg.fastMode } : {}),
+        ...(arg.serviceTier !== undefined ? { serviceTier: arg.serviceTier } : {}),
       });
     },
   );

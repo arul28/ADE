@@ -57,6 +57,7 @@ import {
   type OpenProjectBinding,
   type TerminalSessionDetail,
 } from "../../../shared/types";
+import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import {
   isUnsupportedAgentChatRecoveryActionError,
   providerForkReplaysTranscript,
@@ -1449,6 +1450,7 @@ type LastLaunchConfig = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  cursorCloudServiceTier: CursorCloudServiceTier | null;
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
   updatedAt: string;
@@ -1461,6 +1463,7 @@ type ComposerDraftStorageSnapshot = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  cursorCloudServiceTier: CursorCloudServiceTier | null;
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
   attachments: AgentChatFileRef[];
@@ -2360,12 +2363,19 @@ function readStoredFastMode(value: Record<string, unknown>): boolean {
   return value.fastMode === true || value.codexFastMode === true;
 }
 
+function readStoredCursorCloudServiceTier(value: Record<string, unknown>): CursorCloudServiceTier | null {
+  return value.cursorCloudServiceTier === "fast" || value.cursorCloudServiceTier === "standard"
+    ? value.cursorCloudServiceTier
+    : null;
+}
+
 type LaunchConfigSessionSource = Pick<
   AgentChatSessionSummary,
   | "model"
   | "modelId"
   | "reasoningEffort"
   | "fastMode"
+  | "cursorCloudServiceTier"
   | "executionMode"
   | "permissionMode"
   | "interactionMode"
@@ -2450,6 +2460,7 @@ function buildLastLaunchConfig(
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
     fastMode: source.fastMode === true,
+    cursorCloudServiceTier: source.cursorCloudServiceTier ?? null,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
     controls: nativeControlsFromLaunchSource(source, defaults),
     updatedAt,
@@ -2474,6 +2485,7 @@ function normalizeStoredLaunchConfig(
       ? value.reasoningEffort.trim()
       : null,
     fastMode: readStoredFastMode(value),
+    cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
     updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim().length
@@ -2695,6 +2707,7 @@ function normalizeStoredComposerDraft(
     modelId,
     reasoningEffort: nonEmptyString(value.reasoningEffort),
     fastMode: readStoredFastMode(value),
+    cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls: nativeControlsFromLaunchSource(
       isRecord(value.controls) ? value.controls : {},
@@ -3516,6 +3529,7 @@ export function AgentChatPane({
   );
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
+  const [cursorCloudServiceTier, setCursorCloudServiceTier] = useState<CursorCloudServiceTier | null>(null);
   /**
    * Synchronous mirror of `fastMode`.
    *
@@ -5478,6 +5492,7 @@ export function AgentChatPane({
     );
     setReasoningEffort(reconciledControls.reasoningEffort);
     setFastModeState(reconciledControls.fastMode);
+    setCursorCloudServiceTier(config.cursorCloudServiceTier ?? null);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
     setClaudePermissionMode(config.controls.claudePermissionMode);
@@ -5515,6 +5530,7 @@ export function AgentChatPane({
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
       setFastModeState(false);
+      setCursorCloudServiceTier(null);
       return;
     }
     if (
@@ -5540,6 +5556,7 @@ export function AgentChatPane({
     }
     setReasoningEffort(session.reasoningEffort ?? null);
     setFastModeState(session.fastMode === true);
+    setCursorCloudServiceTier(session.cursorCloudServiceTier ?? null);
     setExecutionMode(session.executionMode ?? "focused");
     setInteractionMode(session.interactionMode ?? initialNativeControls.interactionMode);
     setClaudePermissionMode(session.claudePermissionMode ?? initialNativeControls.claudePermissionMode);
@@ -5684,12 +5701,18 @@ export function AgentChatPane({
     }
     return null;
   }, [draftCursorModelSelectionError, effectiveAvailableModelIds, modelId, modelSelectionConstrained]);
-  const cursorCloudApiAvailable = providerConnections?.cursor?.runtimeAvailable === true
-    || aiStatus?.availableProviders?.cursor === true;
+  // Match Linear's entry-point gate: a verified Cursor connection is the only
+  // signal that may expose cloud controls. Runtime discovery alone can be true
+  // for an installed CLI with no Cursor API key.
+  const cursorCloudApiAvailable = providerConnections?.cursor?.authAvailable === true;
   const cursorCloudPanelAvailable = Boolean(laneId)
     && cursorCloudApiAvailable;
-  const cursorCloudAvailable = cursorCloudPanelAvailable
-    && (selectedSession?.provider === "cursor" || (typeof modelId === "string" && modelId.startsWith("cursor/")));
+  // Match Linear's entry-point gate: once Cursor is connected, the composer can
+  // offer the cloud machine even when the draft still has another provider's
+  // model selected. The eligibility hook switches to the first Cursor Cloud
+  // model when the user chooses that machine, so requiring a Cursor model here
+  // made the entry point impossible to discover from a fresh default draft.
+  const cursorCloudAvailable = cursorCloudPanelAvailable;
   // Launch-to-cloud is only allowed for a fresh chat: no events yet AND not already promoted to a
   // cloud agent.
   const cursorCloudCanLaunch = cursorCloudAvailable
@@ -5755,9 +5778,9 @@ export function AgentChatPane({
     refetchCursorCloudRepos();
     if (laneGitRemoteStatus === "error") refetchLaneGitRemote();
   }, [laneGitRemoteStatus, refetchCursorCloudRepos, refetchLaneGitRemote]);
-  // Cloud mode drops the moment the chat stops being launchable — a non-cursor model, a chat that
-  // has started, or a lost Cursor connection all land here. That is also how "pick a non-cursor
-  // model" turns the toggle off: `cursorCloudAvailable` requires a cursor model.
+  // Cloud mode drops the moment the chat stops being launchable — a chat that
+  // has started or a lost Cursor connection. A model switch is handled by the
+  // cloud eligibility hook instead of hiding the entry point.
   useEffect(() => {
     if (!cursorCloudCanLaunch && cursorCloudMode) setCursorCloudMode(false);
   }, [cursorCloudCanLaunch, cursorCloudMode, setCursorCloudMode]);
@@ -5765,6 +5788,7 @@ export function AgentChatPane({
     setModelId(nextModelId);
     setReasoningEffort(null);
     setFastModeState(false);
+    setCursorCloudServiceTier(null);
     // Mark the draft as touched, exactly like every other draft-state writer.
     // Without it, a re-hydration of the saved launch config undoes the switch
     // and the auto-switch fires again.
@@ -8624,6 +8648,7 @@ export function AgentChatPane({
           modelId: saved.modelId,
           reasoningEffort: saved.reasoningEffort,
           fastMode: saved.fastMode,
+          cursorCloudServiceTier: saved.cursorCloudServiceTier,
           executionMode: saved.executionMode,
           controls: saved.controls,
           updatedAt: saved.updatedAt,
@@ -8665,6 +8690,7 @@ export function AgentChatPane({
       modelId,
       reasoningEffort,
       fastMode,
+      cursorCloudServiceTier,
       executionMode,
       controls: {
         ...currentNativeControls,
@@ -8698,6 +8724,7 @@ export function AgentChatPane({
     appControlContextItems,
     attachments,
     builtInBrowserContextItems,
+    cursorCloudServiceTier,
     fastMode,
     companionStateKey,
     composerDraftStorageKeyValue,
@@ -8995,6 +9022,7 @@ export function AgentChatPane({
       modelId,
       reasoningEffort,
       fastMode,
+      cursorCloudServiceTier,
       executionMode,
       interactionMode,
       nativeControls: {
@@ -9014,6 +9042,7 @@ export function AgentChatPane({
     appControlContextItems,
     attachments,
     builtInBrowserContextItems,
+    cursorCloudServiceTier,
     fastMode,
     contextAttachments,
     currentNativeControls,
@@ -9079,6 +9108,7 @@ export function AgentChatPane({
         modelId: snapshot.modelId,
         reasoningEffort: snapshot.reasoningEffort,
         fastMode: snapshot.fastMode,
+        cursorCloudServiceTier: snapshot.cursorCloudServiceTier,
         executionMode: snapshot.executionMode,
         controls: snapshot.nativeControls,
         updatedAt: new Date().toISOString(),
@@ -10086,7 +10116,9 @@ export function AgentChatPane({
         startingRef,
         modelId: cloudModelId || null,
         reasoningEffort: snapshot.reasoningEffort,
-        fastMode: snapshot.fastMode,
+        ...(snapshot.cursorCloudServiceTier
+          ? { serviceTier: snapshot.cursorCloudServiceTier }
+          : {}),
         autoCreatePR: prFields.autoCreatePR,
         // Lane selection already decided the branch, so the agent always commits to it rather
         // than branching again underneath us. `prUrl` also implies the PR head branch.
@@ -10111,7 +10143,9 @@ export function AgentChatPane({
           sessionId,
           ...(cloudModelId ? { modelId: cloudModelId } : {}),
           reasoningEffort: snapshot.reasoningEffort,
-          fastMode: snapshot.fastMode,
+          ...(snapshot.cursorCloudServiceTier
+            ? { serviceTier: snapshot.cursorCloudServiceTier }
+            : {}),
         });
       } catch {
         opened = { sessionId };
@@ -10127,6 +10161,7 @@ export function AgentChatPane({
         lastActivityAt: new Date().toISOString(),
         cursorRuntime: "cloud" as const,
         cursorCloudAgentId: created.agent.agentId,
+        cursorCloudServiceTier: snapshot.cursorCloudServiceTier,
       };
       cursorCloudIdempotencyByDraftRef.current.delete(draftKey);
       setCursorCloudMode(false);
@@ -11763,6 +11798,42 @@ export function AgentChatPane({
     sessionMutationKind,
   ]);
 
+  const handleCursorCloudServiceTierChange = useCallback((tier: CursorCloudServiceTier | null) => {
+    if (!cursorCloudMode && selectedSession?.cursorRuntime !== "cloud") return;
+    setCursorCloudServiceTier(tier);
+    setFastModeState(tier === "fast");
+    if (!selectedSessionId) {
+      draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+      return;
+    }
+    if (isPersistentIdentitySurface && sessionMutationKind) return;
+    patchSessionSummary(selectedSessionId, { cursorCloudServiceTier: tier, fastMode: tier === "fast" });
+    void window.ade.agentChat.updateSession({
+      sessionId: selectedSessionId,
+      cursorCloudServiceTier: tier,
+      fastMode: tier === "fast",
+    }, chatRuntimePinRef.current).then((updatedSession) => {
+      patchSessionSummary(selectedSessionId, {
+        cursorCloudServiceTier: updatedSession.cursorCloudServiceTier ?? null,
+        fastMode: updatedSession.fastMode === true,
+      });
+      void refreshSessions().catch(() => {});
+    }).catch((err) => {
+      setError(err instanceof Error ? err.message : String(err));
+      void refreshSessions().catch(() => {});
+    });
+  }, [
+    cursorCloudMode,
+    draftLaunchConfigScopeKey,
+    isPersistentIdentitySurface,
+    patchSessionSummary,
+    refreshSessions,
+    selectedSession?.cursorRuntime,
+    selectedSessionId,
+    sessionMutationKind,
+    setFastModeState,
+  ]);
+
   const handleExecutionModeChange = useCallback((nextExecutionMode: AgentChatExecutionMode) => {
     if (!selectedSessionId) {
       draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
@@ -13211,8 +13282,9 @@ export function AgentChatPane({
     : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
-  const composerAvailableModelIds = cursorCloudMode ? cursorCloudModelIds : effectiveAvailableModelIds;
-  const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudMode;
+  const cursorCloudSessionActive = cursorCloudMode || cursorRuntime === "cloud";
+  const composerAvailableModelIds = cursorCloudSessionActive ? cursorCloudModelIds : effectiveAvailableModelIds;
+  const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive;
 
   const composerElement = (
       <AgentChatComposer
@@ -13232,14 +13304,16 @@ export function AgentChatPane({
             // it (or picking a non-cursor model another way) restores the full list.
             availableModelIds={composerAvailableModelIds}
             constrainModelSelection={composerConstrainModelSelection}
-            modelUnavailableMessage={cursorCloudMode ? undefined : constrainedModelSelectionError ?? undefined}
+            modelUnavailableMessage={cursorCloudSessionActive ? undefined : constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
             }}
-            allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudMode}
+            allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudSessionActive}
             reasoningEffort={reasoningEffort}
             fastMode={fastMode}
+            cursorCloudServiceTier={cursorCloudServiceTier}
+            onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
             usageViewModel={selectedUsageViewModel}
             compactionPulse={contextCompactionPulse}
             onCompactContext={compactContext}
@@ -13366,6 +13440,10 @@ export function AgentChatPane({
               }
               const previousFastMode = fastModeRef.current;
               const snapshot = buildModelSelectionSnapshot(nextModelId);
+              // A model change invalidates the previous cloud service-tier
+              // selection, even when the new model happens to advertise the
+              // same tier. The user must opt into it again.
+              const nextCursorCloudTier: CursorCloudServiceTier | null = null;
               if (!selectedSessionId) {
                 draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
                 // The draft owns its thinking level and fast flag, so a model
@@ -13377,12 +13455,16 @@ export function AgentChatPane({
                 // change.
                 const reconciledControls = reconcileDraftModelControls(snapshot.nextDesc, {
                   reasoningEffort,
-                  fastMode: options ? options.fastMode : previousFastMode,
+                  fastMode: cursorCloudMode ? false : options ? options.fastMode : previousFastMode,
                 });
                 setReasoningEffort(reconciledControls.reasoningEffort);
-                setFastModeState(reconciledControls.fastMode);
+                setFastModeState(cursorCloudMode ? false : reconciledControls.fastMode);
+                setCursorCloudServiceTier(nextCursorCloudTier);
               } else if (options) {
-                setFastModeState(options.fastMode);
+                setFastModeState(cursorCloudMode ? false : options.fastMode);
+                setCursorCloudServiceTier(nextCursorCloudTier);
+              } else {
+                setCursorCloudServiceTier(nextCursorCloudTier);
               }
               if (!selectedSessionId || turnActive) {
                 applyModelSelectionSnapshot(snapshot);
@@ -13461,6 +13543,7 @@ export function AgentChatPane({
                 modelId,
                 reasoningEffort,
                 fastMode,
+                cursorCloudServiceTier,
                 executionMode,
                 controls: {
                   ...currentNativeControls,
@@ -13558,7 +13641,7 @@ export function AgentChatPane({
             cursorCloudCanLaunch={cursorCloudCanLaunch}
             cursorCloudModelReady={cursorCloudModelReady}
             cursorCloudHasEligibleModels={cursorCloudModelIds.length > 0}
-            cursorCloudModeActive={cursorCloudMode}
+            cursorCloudModeActive={cursorCloudSessionActive}
             cursorCloudPanelAvailable={cursorCloudPanelAvailable}
             cursorCloudPaneOpen={cursorCloudPaneOpen}
             onToggleCursorCloudPanel={() => {

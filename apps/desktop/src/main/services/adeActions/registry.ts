@@ -109,6 +109,7 @@ import type {
   AiSettingsStatus,
   CtoAttentionState,
   CtoRunProjectScanResult,
+  CursorCloudServiceTier,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -2071,11 +2072,19 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         agentId: requireNonEmptyString(args?.agentId, "agentId"),
         runId: requireNonEmptyString(args?.runId, "runId"),
       }),
-    cursorCloudFollowUp: (args?: { agentId?: string; prompt?: string; modelId?: string | null }) =>
+    cursorCloudFollowUp: (args?: {
+      agentId?: string;
+      prompt?: string;
+      idempotencyKey?: string | null;
+      modelId?: string | null;
+      serviceTier?: CursorCloudServiceTier | null;
+    }) =>
       requireService(runtime.agentChatService, "Agent chat service not available.").cursorCloudFollowUp({
         agentId: requireNonEmptyString(args?.agentId, "agentId"),
         prompt: requireNonEmptyString(args?.prompt, "prompt"),
+        ...(args?.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
         ...(args?.modelId !== undefined ? { modelId: args.modelId } : {}),
+        ...(args?.serviceTier !== undefined ? { serviceTier: args.serviceTier } : {}),
       }),
     openCursorCloudChat: (args?: {
       cloudAgentId?: string;
@@ -2084,6 +2093,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       modelId?: string;
       reasoningEffort?: string | null;
       fastMode?: boolean | null;
+      serviceTier?: CursorCloudServiceTier | null;
     }) =>
       requireService(runtime.agentChatService, "Agent chat service not available.").openCursorCloudChat({
         cloudAgentId: requireNonEmptyString(args?.cloudAgentId, "cloudAgentId"),
@@ -2092,6 +2102,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         ...(args?.modelId ? { modelId: args.modelId } : {}),
         ...(args?.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
         ...(args?.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
+        ...(args?.serviceTier !== undefined ? { serviceTier: args.serviceTier } : {}),
       }),
     watchCursorCloudMirror: (args?: { sessionId?: string; watching?: boolean }) => {
       if (typeof args?.watching !== "boolean") {

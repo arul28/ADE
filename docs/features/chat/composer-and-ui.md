@@ -1940,15 +1940,27 @@ These modules are pure and unit-testable:
 
 The chat composer also exposes a Cursor Cloud agents side panel from its
 overflow menu whenever the lane has a connected Cursor account. The panel
-lists active and recent agents, opens an existing agent as an ADE chat, and
-keeps archive, cancel, delete, and refresh actions on the same Cursor-owned
-agent record. Cursor supplies the agent name: ADE mirrors that name and does
-not offer an ADE rename action. New cloud launches pass the selected model's
+follows every Cursor page, lists all cloud agents, keeps archived
+rows behind a reveal toggle (including an archived-only fleet), opens an
+existing agent as an ADE chat, and keeps archive, cancel, delete, and refresh
+actions on the same Cursor-owned agent record. Cursor supplies the agent name:
+ADE mirrors that name and does not offer an ADE rename action. New cloud launches pass the selected model's
 reasoning and service-tier parameters explicitly, so Cursor cannot silently
 replace the chosen variant with its default.
 A control the selected model does not define at all (Composer models carry no
 reasoning parameter, for example) is simply not sent; the launch fails closed
 only when the model has the control and cannot represent the chosen value.
+
+On a fresh draft, the existing machine picker adds a **Cursor Cloud** row only
+when Cursor is connected. Selecting it switches the draft to the first eligible
+Cursor Cloud model; the normal model, lane, permission, and provider pickers
+remain the source of truth. The selected lane supplies the repository remote and
+branch, and Enter uses the same launch path as the send button. **Advanced**
+contains the creation-time Open a PR / existing-PR choice and project-secret
+attachments; the secrets control is hidden when there is nothing attachable.
+Cloud service tier is tri-state (unset, Fast, Standard), starts unset, is shown
+only for models whose catalog row advertises it, and is cleared when the model
+changes; unset is omitted from the Cursor request.
 
 Cloud readiness is honest about the lane's git remote. The remote is read
 through `useLaneGitRemote` with a loading, ready, and error state, retried on
@@ -1975,15 +1987,15 @@ produces output, so while the ADE title is still a default the mirror re-reads
 the name on the tick that yields the first visible turn or a terminal run,
 capped at three extra reads, with no polling of its own.
 
-The top bar carries a Cursor quick-view button (`CursorCloudQuickViewButton`,
-mounted by `TopBar` beside the Linear quick-view) that opens
-`CursorCloudFleetModal` — a **project-scoped** account surface listing every
-Cursor Cloud agent that belongs to the open project. An agent qualifies when an
-ADE chat session links to it or when its repos include the project's origin;
-shared `cursorCloudRepoMatch.ts` normalizes SSH, HTTPS, and `.git`-suffixed
-remotes so those spellings of one repository compare equal. Each entry records
-why it matched (`matchedBy: session / repo / both`), so agents launched on
-cursor.com outside ADE still appear — unlinked — instead of being invisible.
+The top bar and left sidebar carry connection-gated Cursor quick-view buttons
+(`CursorCloudQuickViewButton`, mounted beside the Linear quick-view and as a
+sidebar row). Each opens `CursorCloudFleetModal`, an account-wide fleet surface
+listing every Cursor Cloud agent across all Cursor pages. Entries report their
+ADE ownership (`matchedBy: session / repo / both / account`) when a session or
+repository matches the current project; agents launched on cursor.com or from
+another repository remain visible instead of being invisible. Shared
+`cursorCloudRepoMatch.ts` still normalizes SSH, HTTPS, and `.git`-suffixed
+remotes for ownership and pull safety.
 
 Grouping is state-first: **Active runs** first, then finished/error rows grouped
 under their owning ADE lane (the lane header carries its Linear identifier when

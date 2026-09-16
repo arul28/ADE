@@ -658,6 +658,47 @@ describe("ModelPicker", () => {
     ).toBeNull();
   });
 
+  it("cycles Cursor Cloud service tier through unset, fast, standard, and unset", async () => {
+    const user = userEvent.setup();
+    const onServiceTierChange = vi.fn();
+    const tiered: ModelDescriptor = {
+      ...FAST_GPT,
+      id: "cursor/composer-2.6",
+      shortId: "composer-2.6",
+      displayName: "Composer 2.6",
+      providerRoute: "cursor-sdk",
+      providerModelId: "composer-2.6",
+      serviceTiers: ["fast", "standard"],
+    };
+    const props = {
+      value: tiered.id,
+      onChange: vi.fn(),
+      surfaceKey: "cursor-cloud-tier-test",
+      models: [tiered],
+      serviceTierMode: true,
+      onServiceTierChange,
+    } as const;
+    const { rerender } = render(<ModelPicker {...props} serviceTier={null} />);
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    await findModelRow(tiered.id);
+    const tierButton = () => document.querySelector<HTMLButtonElement>(
+      `[data-model-id="${tiered.id}"] [data-model-picker-service-tier="true"]`,
+    )!;
+
+    expect(tierButton().textContent).toContain("Tier");
+    await user.click(tierButton());
+    expect(onServiceTierChange).toHaveBeenLastCalledWith("fast");
+
+    rerender(<ModelPicker {...props} serviceTier="fast" />);
+    await user.click(tierButton());
+    expect(onServiceTierChange).toHaveBeenLastCalledWith("standard");
+
+    rerender(<ModelPicker {...props} serviceTier="standard" />);
+    await user.click(tierButton());
+    expect(onServiceTierChange).toHaveBeenLastCalledWith(null);
+  });
+
   it("omits the fast affordance entirely when onFastModeChange is not supplied", async () => {
     const user = userEvent.setup();
     render(

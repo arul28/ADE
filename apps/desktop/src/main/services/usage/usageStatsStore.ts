@@ -147,8 +147,33 @@ const MEANINGFUL_ACTIONS = new Set([
   "automations.triggerManually",
 ]);
 
+// Cursor Cloud is exposed through both the desktop IPC fallback
+// (`ai.cursorCloud.*`) and the shared action/sync boundary (`ai.*`). Keep its
+// product facts on the existing coarse ADE taxonomy instead of allowing
+// provider-specific action names to leak through the analytics boundary.
+const CURSOR_CLOUD_USAGE_ACTIONS: Readonly<Record<string, string>> = {
+  "ai.cursorCloud.createRun": "chat.launch",
+  "ai.cursorCloud.followUp": "chat.send",
+  "ai.cursorCloud.archiveAgent": "chat.archive",
+  "ai.cursorCloud.unarchiveAgent": "chat.unarchive",
+  "ai.cursorCloud.deleteAgent": "chat.delete",
+  "ai.cursorCloud.cancelRun": "work.stopRuntime",
+  "ai.cursorCloud.stopRun": "work.stopRuntime",
+  "ai.cursorCloud.pullIntoLane": "lanes.attach",
+  "ai.createCursorCloudRun": "chat.launch",
+  "ai.cursorCloudFollowUp": "chat.send",
+  "ai.archiveCursorCloudAgent": "chat.archive",
+  "ai.unarchiveCursorCloudAgent": "chat.unarchive",
+  "ai.deleteCursorCloudAgent": "chat.delete",
+  "ai.cancelCursorCloudRun": "work.stopRuntime",
+  "ai.cursorCloudStopRun": "work.stopRuntime",
+  "ai.cursorCloudPullIntoLane": "lanes.attach",
+};
+
 export function usageActionFromIpcChannel(channel: string): string {
   const action = channel.replace(/^ade\./, "");
+  const cursorCloudAction = CURSOR_CLOUD_USAGE_ACTIONS[action];
+  if (cursorCloudAction) return cursorCloudAction;
   if (action.startsWith("agentChat.")) {
     const chatAction = action.slice("agentChat.".length);
     const aliases: Record<string, string> = {
@@ -171,6 +196,8 @@ export function usageActionFromIpcChannel(channel: string): string {
 }
 
 export function usageActionFromRpcDomain(domain: string, action: string): string {
+  const cursorCloudAction = CURSOR_CLOUD_USAGE_ACTIONS[`${domain}.${action}`];
+  if (cursorCloudAction) return cursorCloudAction;
   if (domain === "lane") return `lanes.${action}`;
   if (domain === "pr") {
     const aliases: Record<string, string> = {

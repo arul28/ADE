@@ -3642,6 +3642,10 @@ describe("web-reachable settings and lane-risk commands", () => {
     expect(getFleet).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: false }));
     expect(fleet).toEqual(expect.objectContaining({ relayState: "ready" }));
 
+    const runtimeActionFleet = await service.execute(makePayload("ai.getCursorCloudFleet", { includeArchived: false }));
+    expect(runtimeActionFleet).toEqual(expect.objectContaining({ relayState: "ready" }));
+    expect(getFleet).toHaveBeenLastCalledWith(expect.objectContaining({ includeArchived: false }));
+
     await expect(service.execute(makePayload("ai.cursorCloudResolveLane", { agentId: "bc-1" })))
       .resolves.toEqual({ laneId: "lane-1", laneName: "L", created: false });
     expect(resolveLaneForAgent).toHaveBeenCalledWith("bc-1");

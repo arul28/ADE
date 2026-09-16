@@ -137,6 +137,23 @@ enum WorkCursorAvailabilityMode {
   case cli
 }
 
+/// Convert ADE's provider-prefixed Cursor model id to the native id accepted
+/// by the Cursor SDK. The prefix is part of ADE's shared catalog contract; it
+/// is not part of Cursor's `Agent.create` model id.
+func workCursorCloudSDKModelId(for rawModelId: String) -> String? {
+  let trimmed = rawModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return nil }
+  // "Auto" is an ADE picker fallback, not a Cursor API model id. Omitting
+  // the selection lets Cursor choose its service-side default safely.
+  if trimmed.caseInsensitiveCompare("auto") == .orderedSame { return nil }
+  let prefix = "cursor/"
+  if trimmed.lowercased().hasPrefix(prefix) {
+    let native = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+    return native.isEmpty ? nil : native
+  }
+  return trimmed
+}
+
 func workModelSupportsCursorAvailabilityMode(
   _ model: WorkModelOption,
   mode: WorkCursorAvailabilityMode
@@ -583,6 +600,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         displayName: "Cursor",
         models: [
           WorkModelOption(id: "auto", displayName: "Auto", tier: .balanced, tagline: "Cursor picks per turn", provider: "cursor"),
+          WorkModelOption(id: "cursor/grok-4.6", displayName: "Grok 4.6", tier: .balanced, tagline: "Grok via Cursor Cloud", provider: "cursor"),
         ]
       )
     ]

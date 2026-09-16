@@ -424,6 +424,7 @@ import type {
   CtoCapabilityMode,
   LaneLinearIssue,
   SessionLinearIssueLink,
+  CursorCloudServiceTier,
 } from "../../../shared/types";
 import {
   applyClaudePlanModeTransition as applyClaudePlanModeTransitionShared,
@@ -1321,6 +1322,13 @@ type PersistedUnprocessedMessageResolutionReceipt = {
   replacementMessageId?: string;
 };
 
+type PersistedCursorCloudPendingRequest = {
+  turnId: string;
+  operation: "create" | "followup";
+  idempotencyKey: string;
+  fingerprint: string;
+};
+
 type PersistedChatState = {
   version: 1 | 2;
   sessionId: string;
@@ -1332,6 +1340,9 @@ type PersistedChatState = {
   sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  cursorCloudServiceTier?: CursorCloudServiceTier | null;
+  /** Retained until Cursor accepts a cloud create/follow-up, including across restarts. */
+  cursorCloudPendingRequest?: PersistedCursorCloudPendingRequest | null;
   /** Explicit `false` is the per-chat opt-out; absent means on. */
   autoContinueAtUsageLimit?: boolean;
   /** Deprecated mirror of `usageLimitResume.fireAt`; see the shared contract. */
@@ -1677,6 +1688,26 @@ type PersistedPendingSteer = {
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
 };
+
+function normalizeCursorCloudServiceTier(value: unknown): CursorCloudServiceTier | null | undefined {
+  if (value === null) return null;
+  if (value === "fast" || value === "standard") return value;
+  return undefined;
+}
+
+function normalizeCursorCloudPendingRequest(value: unknown): PersistedCursorCloudPendingRequest | null | undefined {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const turnId = typeof record.turnId === "string" ? record.turnId.trim() : "";
+  const operation = record.operation === "create" || record.operation === "followup"
+    ? record.operation
+    : null;
+  const idempotencyKey = typeof record.idempotencyKey === "string" ? record.idempotencyKey.trim() : "";
+  const fingerprint = typeof record.fingerprint === "string" ? record.fingerprint.trim() : "";
+  if (!turnId || !operation || !idempotencyKey || !fingerprint) return undefined;
+  return { turnId, operation, idempotencyKey, fingerprint };
+}
 
 type PendingRpc = {
   method: string;
@@ -3662,6 +3693,8 @@ type ManagedChatSession = {
    * agent rotation, which by definition produces an agent with no stale run.
    */
   cursorSdkForceExpireNextSend?: boolean;
+  /** A cloud request key is durable until the remote send is acknowledged. */
+  cursorCloudPendingRequest?: PersistedCursorCloudPendingRequest | null;
   /**
    * In-memory mirror of the durable pending-rotation intent; see
    * `PersistedChatState.cursorSdkPendingRotationPreviousAgentId`.
@@ -14646,6 +14679,16 @@ export function createAgentChatService(args: {
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.fastMode === true ? { fastMode: true } : {}),
+      ...(managed.session.cursorCloudServiceTier !== undefined
+        ? { cursorCloudServiceTier: managed.session.cursorCloudServiceTier }
+        : prevPersisted?.cursorCloudServiceTier !== undefined
+          ? { cursorCloudServiceTier: prevPersisted.cursorCloudServiceTier }
+          : {}),
+      ...(managed.cursorCloudPendingRequest !== undefined
+        ? { cursorCloudPendingRequest: managed.cursorCloudPendingRequest }
+        : prevPersisted?.cursorCloudPendingRequest !== undefined
+          ? { cursorCloudPendingRequest: prevPersisted.cursorCloudPendingRequest }
+          : {}),
       ...(managed.session.autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
       ...(managed.usageLimitParkedUntil ? { usageLimitParkedUntil: managed.usageLimitParkedUntil } : {}),
       ...(managed.usageLimitResume ? { usageLimitResume: managed.usageLimitResume } : {}),
@@ -14988,6 +15031,8 @@ export function createAgentChatService(args: {
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       const fastMode = readLegacyFastMode(record as Record<string, unknown>);
+      const cursorCloudServiceTier = normalizeCursorCloudServiceTier(record.cursorCloudServiceTier);
+      const cursorCloudPendingRequest = normalizeCursorCloudPendingRequest(record.cursorCloudPendingRequest);
       const autoContinueAtUsageLimit = record.autoContinueAtUsageLimit === false ? false : undefined;
       const usageLimitParkedUntil = typeof record.usageLimitParkedUntil === "string"
         && record.usageLimitParkedUntil.trim().length
@@ -15224,6 +15269,8 @@ export function createAgentChatService(args: {
         ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(fastMode ? { fastMode: true } : {}),
+        ...(cursorCloudServiceTier !== undefined ? { cursorCloudServiceTier } : {}),
+        ...(cursorCloudPendingRequest !== undefined ? { cursorCloudPendingRequest } : {}),
         ...(autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
         ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
         ...(usageLimitResume ? { usageLimitResume } : {}),
@@ -20283,6 +20330,9 @@ export function createAgentChatService(args: {
         ...(rowGoal ? { goal: rowGoal } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         fastMode: persisted?.fastMode === true,
+        ...(persisted?.cursorCloudServiceTier !== undefined
+          ? { cursorCloudServiceTier: persisted.cursorCloudServiceTier }
+          : {}),
         ...(persisted?.autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
         executionMode: persisted?.executionMode ?? null,
           interactionMode: persisted?.interactionMode ?? null,
@@ -20365,6 +20415,9 @@ export function createAgentChatService(args: {
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
       ...(persisted?.cursorSdkForceExpireNextSend === true ? { cursorSdkForceExpireNextSend: true } : {}),
+      ...(persisted?.cursorCloudPendingRequest !== undefined
+        ? { cursorCloudPendingRequest: persisted.cursorCloudPendingRequest }
+        : {}),
       ...(persisted?.cursorSdkPendingRotationPreviousAgentId
         ? { cursorSdkPendingRotationPreviousAgentId: persisted.cursorSdkPendingRotationPreviousAgentId }
         : {}),
@@ -35495,6 +35548,7 @@ export function createAgentChatService(args: {
     sessionProfile,
     reasoningEffort,
     fastMode: requestedFastModeArg,
+    cursorCloudServiceTier: requestedCursorCloudServiceTier,
     codexFastMode: requestedLegacyFastModeArg,
     interactionMode: requestedInteractionMode,
     claudePermissionMode: requestedClaudePermissionMode,
@@ -35718,6 +35772,9 @@ export function createAgentChatService(args: {
     // raw preference on the session even when the selected runtime cannot use
     // a fast service tier; runtime request builders decide whether to send it.
     const initialFastMode = requestedFastMode === true;
+    const initialCursorCloudServiceTier = effectiveProvider === "cursor"
+      ? normalizeCursorCloudServiceTier(requestedCursorCloudServiceTier)
+      : undefined;
     const normalizedCursorModeId = typeof requestedCursorModeId === "string"
       ? (requestedCursorModeId.trim() || null)
       : requestedCursorModeId === null
@@ -35959,6 +36016,9 @@ export function createAgentChatService(args: {
         sessionProfile: sessionProfile ?? "workflow",
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
           ...(initialFastMode ? { fastMode: true } : {}),
+          ...(initialCursorCloudServiceTier !== undefined
+            ? { cursorCloudServiceTier: initialCursorCloudServiceTier }
+            : {}),
           ...nativePermissionFields,
           ...(isOrchestrationInteractionMode(effectiveInteractionMode)
             ? { interactionMode: effectiveInteractionMode }
@@ -39371,13 +39431,17 @@ export function createAgentChatService(args: {
   ].join(":");
 
   const resolveCursorSdkModelParamsForSession = (
-    session: Pick<AgentChatSession, "reasoningEffort" | "fastMode">,
+    session: Pick<AgentChatSession, "reasoningEffort" | "fastMode" | "cursorCloudServiceTier">,
     modelSdkId: string,
   ): Array<{ id: string; value: string }> | undefined =>
     resolveCursorSdkModelSelectionParams({
       modelSdkId,
       reasoningEffort: session.reasoningEffort,
-      fastMode: session.fastMode === true,
+      // `false` is the legacy boolean representation of "not fast". It is
+      // not an explicit standard-tier request, so leave Cursor's service tier
+      // unset unless the caller selected Fast.
+      fastMode: session.fastMode === true ? true : null,
+      serviceTier: session.cursorCloudServiceTier ?? null,
     });
 
   /**
@@ -39389,14 +39453,15 @@ export function createAgentChatService(args: {
    * an existing agent is unaffected, because its variant is already fixed.
    */
   const requireCursorCloudCreateModelParams = async (
-    session: Pick<AgentChatSession, "reasoningEffort" | "fastMode">,
+    session: Pick<AgentChatSession, "reasoningEffort" | "fastMode" | "cursorCloudServiceTier">,
     modelSdkId: string,
     apiKey: string,
   ): Promise<Array<{ id: string; value: string }> | undefined> => (
     await verifyExplicitCursorModelSelection(apiKey, {
       modelSdkId,
       reasoningEffort: session.reasoningEffort,
-      fastMode: session.fastMode ?? null,
+      fastMode: session.fastMode === true ? true : null,
+      serviceTier: session.cursorCloudServiceTier ?? null,
     })
   ) ?? resolveCursorSdkModelParamsForSession(session, modelSdkId);
 
@@ -39412,6 +39477,27 @@ export function createAgentChatService(args: {
     turnId: string,
     operation: "create" | "followup",
   ): string => `ade:${managed.session.id}:${turnId}:cursor-cloud:${operation}`;
+
+  const cursorCloudRequestFingerprint = (
+    managed: ManagedChatSession,
+    operation: "create" | "followup",
+    promptText: string,
+    overrides?: AgentChatCloudOverrides,
+  ): string => createHash("sha256").update(stableStringify({
+    operation,
+    promptText,
+    modelId: managed.session.modelId ?? managed.session.model,
+    serviceTier: managed.session.cursorCloudServiceTier ?? null,
+    repoUrl: overrides?.repoUrl ?? null,
+    startingRef: overrides?.startingRef ?? null,
+    prUrl: overrides?.prUrl ?? null,
+    autoCreatePR: overrides?.autoCreatePR ?? null,
+    workOnCurrentBranch: overrides?.workOnCurrentBranch ?? null,
+    skipReviewerRequest: overrides?.skipReviewerRequest ?? null,
+    linearIssueId: overrides?.linearIssueId ?? null,
+    secretNames: overrides?.secretNames ? [...overrides.secretNames].sort() : null,
+    rememberSecretNames: overrides?.rememberSecretNames ?? null,
+  }), "utf8").digest("hex").slice(0, 32);
 
   const cursorLocalIdempotencyKey = (
     managed: ManagedChatSession,
@@ -41797,9 +41883,11 @@ export function createAgentChatService(args: {
       optimisticCursorTurnStart?: boolean;
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
+      /** Caller-supplied stable key for direct cloud actions; normal sends derive it below. */
+      idempotencyKey?: string | null;
       cloudOverrides?: AgentChatCloudOverrides;
     },
-  ): Promise<void> => {
+  ): Promise<{ runId: string; status: string }> => {
     const runtime = await ensureCursorSdkRuntime(managed);
     const validation = validateSessionReadyForTurn(managed);
     if (!validation.ready) throw new Error(validation.reason);
@@ -41843,6 +41931,33 @@ export function createAgentChatService(args: {
     }
 
     const isFollowUp = Boolean(managed.session.cursorCloudAgentId);
+    const cloudOperation: "create" | "followup" = isFollowUp ? "followup" : "create";
+    const cloudRequestFingerprint = cursorCloudRequestFingerprint(
+      managed,
+      cloudOperation,
+      args.promptText,
+      args.cloudOverrides,
+    );
+    const pendingRequest = managed.cursorCloudPendingRequest;
+    const retainedPendingRequest = pendingRequest
+      && pendingRequest.operation === cloudOperation
+      && pendingRequest.fingerprint === cloudRequestFingerprint
+      ? pendingRequest
+      : null;
+    const cloudIdempotencyKey = args.idempotencyKey?.trim()
+      || retainedPendingRequest?.idempotencyKey
+      || cursorCloudIdempotencyKey(managed, turnId, cloudOperation);
+    const cloudRequestTurnId = retainedPendingRequest?.turnId ?? turnId;
+    managed.cursorCloudPendingRequest = {
+      turnId: cloudRequestTurnId,
+      operation: cloudOperation,
+      idempotencyKey: cloudIdempotencyKey,
+      fingerprint: cloudRequestFingerprint,
+    };
+    // Persist before the network call. If the host dies after Cursor accepts
+    // the run but before ADE receives the response, the next send reuses this
+    // exact key instead of creating a duplicate run.
+    persistChatState(managed);
     let cloudComposed = args.promptText;
     if (!isFollowUp) {
       const injected = isPersonalSession(managed.session)
@@ -41870,6 +41985,8 @@ export function createAgentChatService(args: {
 
     let runStartedAgentId: string | null = managed.session.cursorCloudAgentId ?? null;
     let runStartedRunId: string | null = null;
+    let turnStatus = "running";
+    let completedRunId: string | null = null;
     try {
       let result: unknown;
       const sdkMode = cursorSdkModeForPolicy(runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session));
@@ -41893,7 +42010,7 @@ export function createAgentChatService(args: {
           agentId: managed.session.cursorCloudAgentId,
           promptText,
           ...(images.length ? { images } : {}),
-          idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "followup"),
+          idempotencyKey: cloudIdempotencyKey,
           mode: sdkMode,
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
           ...(modelParams?.length ? { modelParams } : {}),
@@ -41936,7 +42053,7 @@ export function createAgentChatService(args: {
           promptText,
           ...(images.length ? { images } : {}),
           repoUrl,
-          idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "create"),
+          idempotencyKey: cloudIdempotencyKey,
           mode: sdkMode,
           sessionId: launch.sessionId,
           laneId: launch.laneId,
@@ -41962,6 +42079,13 @@ export function createAgentChatService(args: {
           payload,
         );
       }
+      // Cursor accepted the request. Keep the key only through this commit
+      // point; processing the returned run is local bookkeeping and must not
+      // cause a retry to replay a completed remote send.
+      if (managed.cursorCloudPendingRequest?.idempotencyKey === cloudIdempotencyKey) {
+        managed.cursorCloudPendingRequest = null;
+        persistChatState(managed);
+      }
       if (runtime.pendingDispatchAck?.turnId === turnId) {
         const pendingDispatchAck = runtime.pendingDispatchAck;
         runtime.pendingDispatchAck = undefined;
@@ -41973,6 +42097,7 @@ export function createAgentChatService(args: {
         ? startedRecord.agentId
         : runStartedAgentId;
       runStartedRunId = typeof startedRecord.runId === "string" ? startedRecord.runId : null;
+      completedRunId = runStartedRunId;
       const innerResult = "result" in startedRecord ? startedRecord.result : startedRecord;
       const resultRecord = asRecord(innerResult) ?? asRecord(startedRecord) ?? null;
       const resultStatus = typeof resultRecord?.status === "string" ? resultRecord.status : "";
@@ -42007,16 +42132,19 @@ export function createAgentChatService(args: {
       }
 
       if (runtime.interrupted || resultStatus === "cancelled") {
+        turnStatus = "interrupted";
         markSessionIdleWithFreshCache(managed);
         cancelQueuedSteers(managed, runtime, "interrupted");
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         emitChatEvent(managed, { ...doneEventTagged, status: "interrupted" });
       } else if (resultStatus === "error" || doneEvent.status === "failed") {
+        turnStatus = "failed";
         markSessionIdleWithFreshCache(managed);
         cancelQueuedSteers(managed, runtime, "failed");
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, doneEventTagged);
       } else {
+        turnStatus = "completed";
         markSessionIdleWithFreshCache(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
         emitChatEvent(managed, doneEventTagged);
@@ -42033,6 +42161,7 @@ export function createAgentChatService(args: {
       appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
+      turnStatus = runtime.interrupted ? "interrupted" : "failed";
       const failedBeforeDispatch = runtime.pendingDispatchAck?.turnId === turnId;
       if (failedBeforeDispatch) runtime.pendingDispatchAck = undefined;
       markSessionIdleWithFreshCache(managed);
@@ -42080,6 +42209,7 @@ export function createAgentChatService(args: {
         setSessionIdle(managed);
       }
     }
+    return { runId: completedRunId ?? "", status: turnStatus };
   };
 
   const cancelCursorCloudRun = async (args: {
@@ -42124,7 +42254,9 @@ export function createAgentChatService(args: {
   const cursorCloudFollowUp = async (args: {
     agentId: string;
     prompt: string;
+    idempotencyKey?: string | null;
     modelId?: string | null;
+    serviceTier?: CursorCloudServiceTier | null;
   }): Promise<{ runId: string; status: string }> => {
     const trimmedAgent = args.agentId.trim();
     const trimmedPrompt = args.prompt.trim();
@@ -42145,15 +42277,19 @@ export function createAgentChatService(args: {
     const apiKey = getCursorSdkApiKey();
     if (!apiKey) throw new Error("Cursor Cloud follow-up requires a Cursor API key.");
 
-    await runCursorCloudTurn(matched, {
+    if (args.serviceTier !== undefined) {
+      matched.session.cursorCloudServiceTier = normalizeCursorCloudServiceTier(args.serviceTier);
+      persistChatState(matched);
+    }
+
+    return runCursorCloudTurn(matched, {
       promptText: trimmedPrompt,
       displayText: trimmedPrompt,
       attachments: [],
       contextAttachments: [],
       resolvedAttachments: [],
+      ...(args.idempotencyKey?.trim() ? { idempotencyKey: args.idempotencyKey.trim() } : {}),
     });
-    const last = matched.runtime?.kind === "cursor" ? matched.runtime.activeCloudRunId : null;
-    return { runId: last ?? "", status: "running" };
   };
 
   const handleCursorCloudStatusChange = async (
@@ -42849,6 +42985,7 @@ export function createAgentChatService(args: {
     modelId?: string | null;
     reasoningEffort?: string | null;
     fastMode?: boolean | null;
+    serviceTier?: CursorCloudServiceTier | null;
   }): Promise<{ sessionId: string; session: AgentChatSession }> => {
     const trimmedAgent = args.cloudAgentId.trim();
     const trimmedLane = args.laneId.trim();
@@ -42898,6 +43035,7 @@ export function createAgentChatService(args: {
         modelId: `cursor/${sdkId}`,
         ...(args.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
         ...(args.fastMode !== undefined && args.fastMode !== null ? { fastMode: args.fastMode } : {}),
+        ...(args.serviceTier !== undefined ? { cursorCloudServiceTier: args.serviceTier } : {}),
         ...(requestedId ? { sessionId: requestedId } : {}),
       });
       managed = managedSessions.get(created.id) ?? null;
@@ -42906,6 +43044,9 @@ export function createAgentChatService(args: {
 
     managed.session.cursorCloudAgentId = trimmedAgent;
     managed.session.cursorRuntime = "cloud";
+    if (args.serviceTier !== undefined) {
+      managed.session.cursorCloudServiceTier = normalizeCursorCloudServiceTier(args.serviceTier);
+    }
     persistChatState(managed);
 
     // New launches return the ADE session immediately so the renderer can
@@ -47318,6 +47459,9 @@ export function createAgentChatService(args: {
       ...(liveSession?.cursorPromotedTurnId || persisted?.cursorPromotedTurnId
         ? { cursorPromotedTurnId: liveSession?.cursorPromotedTurnId ?? persisted?.cursorPromotedTurnId }
         : {}),
+      ...(liveSession?.cursorCloudServiceTier !== undefined || persisted?.cursorCloudServiceTier !== undefined
+        ? { cursorCloudServiceTier: liveSession?.cursorCloudServiceTier ?? persisted?.cursorCloudServiceTier }
+        : {}),
       ...(liveSession?.permissionMode || persisted?.permissionMode
         ? { permissionMode: liveSession?.permissionMode ?? persisted?.permissionMode }
         : {}),
@@ -50324,6 +50468,7 @@ export function createAgentChatService(args: {
     modelId,
     reasoningEffort,
     fastMode: requestedFastModeArg,
+    cursorCloudServiceTier: requestedCursorCloudServiceTier,
     codexFastMode: requestedLegacyFastModeArg,
     interactionMode,
     claudePermissionMode,
@@ -50509,6 +50654,9 @@ export function createAgentChatService(args: {
       }
       if (modelChanged) {
         managed.runtimeTitleAdopted = false;
+        // Service tiers are model-specific. A model switch is a hard reset of
+        // the cloud speed choice; the next request must opt in again.
+        delete managed.session.cursorCloudServiceTier;
       }
 
       const currentTitle = sessionService.get(sessionId)?.title ?? null;
@@ -50755,6 +50903,9 @@ export function createAgentChatService(args: {
       } else {
         delete managed.session.fastMode;
       }
+    }
+    if (requestedCursorCloudServiceTier !== undefined) {
+      managed.session.cursorCloudServiceTier = normalizeCursorCloudServiceTier(requestedCursorCloudServiceTier);
     }
     if (requestedAutoContinueAtUsageLimit !== undefined) {
       if (requestedAutoContinueAtUsageLimit === false) {

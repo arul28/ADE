@@ -2259,7 +2259,7 @@ export function TopBar({
       if (menuLayout) {
         return (
           <div className="flex flex-col gap-0.5">
-            <CursorCloudQuickViewButton />
+            <CursorCloudQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
             <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
             <HeaderUsageControl
               variant="menu-row"

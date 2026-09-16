@@ -14,11 +14,13 @@ import {
   MODEL_REGISTRY,
   formatPiProviderLabel,
   modelSupportsFastMode,
+  modelSupportsServiceTier,
   resolveCliProviderForModel,
   type AuthType,
   type ModelDescriptor,
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
+import type { CursorCloudServiceTier } from "../../../../shared/types/config";
 import {
   MODEL_PICKER_PROVIDER_ORDER,
   type ProviderGroupKey,
@@ -169,7 +171,7 @@ export type ModelPickerContentProps = {
   models: readonly ModelDescriptor[];
   isAvailable: (modelId: string) => boolean;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
-  onSelect: (modelId: string, options?: { fastMode: boolean }) => void;
+  onSelect: (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => void;
   onRequestClose: () => void;
   onProviderRailSelect?: (family: ProviderFamily) => void;
   /**
@@ -200,6 +202,9 @@ export type ModelPickerContentProps = {
    */
   fastMode?: boolean;
   onFastModeChange?: (next: boolean) => void;
+  serviceTierMode?: boolean;
+  serviceTier?: CursorCloudServiceTier | null;
+  onServiceTierChange?: (modelId: string, next: CursorCloudServiceTier | null) => void;
   /** Prompt-box / chat machine for OpenCode-installed and auth probes. */
   runtimePin?: OpenProjectBinding | null;
 };
@@ -223,6 +228,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   registryFilter,
   fastMode = false,
   onFastModeChange,
+  serviceTierMode = false,
+  serviceTier = null,
+  onServiceTierChange,
   runtimePin = null,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
@@ -695,6 +703,26 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     [expandedModels, isAvailableForUse, onFastModeChange, onOpenSignIn, onSelect, recordUsage, value],
   );
 
+  const handleServiceTierChange = useCallback(
+    (modelId: string, next: CursorCloudServiceTier | null) => {
+      const model = expandedModels.find((entry) => entry.id === modelId);
+      if (!model) return;
+      if (next === "fast" && !modelSupportsServiceTier(model, "fast")) return;
+      if (next === "standard" && !modelSupportsServiceTier(model, "standard")) return;
+      if (!isAvailableForUse(model)) {
+        onOpenSignIn?.(pickerFamilyForModel(model), model.authTypes);
+        return;
+      }
+      recordUsage(modelId);
+      if (modelId === value) {
+        onServiceTierChange?.(modelId, next);
+      } else {
+        onSelect(modelId, { fastMode: next === "fast", serviceTier: next });
+      }
+    },
+    [expandedModels, isAvailableForUse, onOpenSignIn, onSelect, onServiceTierChange, recordUsage, value],
+  );
+
   const handleSetSurfaceDefault = useCallback(
     (modelId: string) => {
       setSurfaceDefault(surfaceKey, modelId);
@@ -965,8 +993,13 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         onFocus={() => setFocusedIndex(virtualRow.index)}
                         onCopyId={handleCopyId}
                         onSetSurfaceDefault={handleSetSurfaceDefault}
-                        fastModeOn={fastMode && isActive}
-                        {...(onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
+                        fastModeOn={!serviceTierMode && fastMode && isActive}
+                        {...(!serviceTierMode && onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
+                        {...(serviceTierMode ? {
+                          serviceTierMode: true,
+                          serviceTier: isActive ? serviceTier : null,
+                          onServiceTierChange: handleServiceTierChange,
+                        } : {})}
                         {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
                       />
                     </div>

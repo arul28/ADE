@@ -12,9 +12,12 @@ import { Cursor } from "@lobehub/icons";
 
 import type {
   CursorAgentUsage,
+  CursorCloudArtifactSummary,
   CursorCloudFleetEntry,
   CursorCloudFleetEvent,
+  CursorCloudFleetRunStatus,
   CursorCloudFleetResult,
+  CursorCloudRunSummary,
 } from "../../../shared/types";
 import { isCursorCloudFleetEntryActive } from "../../../shared/cursorCloudFleetStatus";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -28,6 +31,50 @@ import { FleetRow, SectionHeader } from "./CursorCloudFleetRow";
 const CURSOR_VIOLET = "#A78BFA";
 
 type FleetFilter = "all" | "active" | "finished" | "failed";
+
+type FleetEntryDetail = Pick<CursorCloudFleetEntry, "runStatus" | "latestRunId" | "branch" | "prUrl" | "modelId">;
+
+function normalizeFleetRunStatus(value: unknown): CursorCloudFleetRunStatus | undefined {
+  const status = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return status === "creating"
+    || status === "running"
+    || status === "finished"
+    || status === "error"
+    || status === "cancelled"
+    || status === "expired"
+    ? status
+    : undefined;
+}
+
+function readFleetRunDetail(run: CursorCloudRunSummary, entry: CursorCloudFleetEntry): FleetEntryDetail {
+  const git = run.git && typeof run.git === "object" && !Array.isArray(run.git)
+    ? run.git as Record<string, unknown>
+    : {};
+  const branches = Array.isArray(git.branches) ? git.branches : [];
+  const projectRepos = new Set((entry.agent.repos ?? []).map(repoMatchKey).filter(Boolean));
+  const pushedBranches = branches.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const record = value as Record<string, unknown>;
+    const branch = typeof record.branch === "string" ? record.branch.trim() : "";
+    if (!branch) return [];
+    const repoUrl = typeof record.repoUrl === "string" ? record.repoUrl : null;
+    const prUrl = typeof record.prUrl === "string" ? record.prUrl.trim() || null : null;
+    return [{ repoKey: repoUrl ? repoMatchKey(repoUrl) : null, branch, prUrl }];
+  });
+  const primary = pushedBranches.find((branch) => branch.repoKey && projectRepos.has(branch.repoKey))
+    ?? pushedBranches.find((branch) => !branch.repoKey)
+    ?? pushedBranches[0]
+    ?? null;
+  const flatBranch = typeof git.branch === "string" ? git.branch.trim() : "";
+  const flatPrUrl = typeof git.prUrl === "string" ? git.prUrl.trim() || null : null;
+  return {
+    runStatus: normalizeFleetRunStatus(run.status),
+    latestRunId: run.runId.trim() || null,
+    branch: primary?.branch ?? (flatBranch || null),
+    prUrl: primary?.prUrl ?? flatPrUrl,
+    modelId: typeof run.modelId === "string" ? run.modelId.trim() || null : null,
+  };
+}
 
 function filterMatches(entry: CursorCloudFleetEntry, filter: FleetFilter): boolean {
   const status = entry.runStatus ?? entry.agent.status;
@@ -65,6 +112,11 @@ export function CursorCloudFleetModal({
   const [rowError, setRowError] = useState<{ agentId: string; message: string } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [usageByAgentId, setUsageByAgentId] = useState<Record<string, CursorAgentUsage>>({});
+  const [artifactsByAgentId, setArtifactsByAgentId] = useState<Record<string, CursorCloudArtifactSummary[]>>({});
+  // Finished/error rows are intentionally cheap in the fleet fetch. Cache the
+  // first expanded row detail here so switching between rows stays instant
+  // without turning every list refresh into N run requests.
+  const [detailByAgentId, setDetailByAgentId] = useState<Record<string, FleetEntryDetail | null>>({});
   const [pulledNotice, setPulledNotice] = useState<string | null>(null);
   const requestGeneration = useRef(0);
 
@@ -76,7 +128,9 @@ export function CursorCloudFleetModal({
     else setLoading(true);
     setError(null);
     try {
-      const next = await window.ade.ai.cursorCloudFleet({ includeArchived: true, limit: 200 });
+      // Cursor caps this endpoint at 100 per page; the host follows the
+      // returned cursor to include the rest of the fleet.
+      const next = await window.ade.ai.cursorCloudFleet({ includeArchived: true, limit: 100 });
       if (generation !== requestGeneration.current) return;
       setResult(next);
       setKeyMissing(false);
@@ -191,14 +245,44 @@ export function CursorCloudFleetModal({
   const expandEntry = useCallback(async (agentId: string) => {
     setExpandedId((current) => (current === agentId ? null : agentId));
     setConfirmDeleteId(null);
-    if (usageByAgentId[agentId]) return;
-    try {
-      const usage = await window.ade.ai.cursorCloudGetUsage({ agentId });
-      setUsageByAgentId((current) => ({ ...current, [agentId]: usage }));
-    } catch {
-      // Cost is optional decoration; absence renders as no chip.
+    const reads: Array<Promise<void>> = [];
+    if (detailByAgentId[agentId] === undefined) {
+      const currentEntry = entries.find((entry) => entry.agent.agentId === agentId);
+      if (currentEntry) {
+        reads.push(window.ade.ai.cursorCloudListRuns({ agentId, limit: 1 }).then((runs) => {
+          const detail = runs.items[0] ? readFleetRunDetail(runs.items[0], currentEntry) : null;
+          setDetailByAgentId((current) => ({ ...current, [agentId]: detail }));
+          if (!detail) return;
+          setResult((current) => current
+            ? {
+                ...current,
+                items: current.items.map((item) => item.agent.agentId === agentId
+                  ? { ...item, ...detail }
+                  : item),
+              }
+            : current);
+        }).catch(() => {
+          // A detail read is best-effort; the cached fleet row remains usable.
+          setDetailByAgentId((current) => ({ ...current, [agentId]: null }));
+        }));
+      }
     }
-  }, [usageByAgentId]);
+    if (!usageByAgentId[agentId]) {
+      reads.push(window.ade.ai.cursorCloudGetUsage({ agentId }).then((usage) => {
+        setUsageByAgentId((current) => ({ ...current, [agentId]: usage }));
+      }).catch(() => {
+        // Cost is optional decoration; absence renders as no chip.
+      }));
+    }
+    if (!artifactsByAgentId[agentId]) {
+      reads.push(window.ade.ai.cursorCloudListArtifacts(agentId).then((artifacts) => {
+        setArtifactsByAgentId((current) => ({ ...current, [agentId]: artifacts }));
+      }).catch(() => {
+        // Artifacts are optional decoration; the chat still contains the diff.
+      }));
+    }
+    await Promise.all(reads);
+  }, [artifactsByAgentId, detailByAgentId, entries, usageByAgentId]);
 
   const openInAde = useCallback(async (entry: CursorCloudFleetEntry) => {
     const agentId = entry.agent.agentId;
@@ -295,6 +379,7 @@ export function CursorCloudFleetModal({
     () => entries.filter((entry) => entry.agent.archived).length,
     [entries],
   );
+  const noVisibleAgentsBecauseArchived = entries.length > 0 && visibleEntries.length === 0 && archivedCount > 0;
 
   const relayBanner = (() => {
     if (!result || loading) return null;
@@ -345,7 +430,7 @@ export function CursorCloudFleetModal({
             <div className="min-w-0 leading-tight">
               <div className="truncate text-[12.5px] font-medium text-fg/92">Cursor Cloud</div>
               <div className="truncate text-[10.5px] text-fg/45">
-                {projectName ? `${projectName} · ` : ""}fleet
+                {projectName ? `${projectName} · ` : ""}account fleet
               </div>
             </div>
           </div>
@@ -444,11 +529,25 @@ export function CursorCloudFleetModal({
               >
                 <CloudArrowUp size={20} weight="fill" />
               </span>
-              <div className="text-[13px] font-medium text-fg/80">No cloud agents for this project</div>
+              <div className="text-[13px] font-medium text-fg/80">No cloud agents</div>
               <div className="max-w-[380px] text-[11.5px] leading-relaxed text-fg/45">
-                Agents you launch from any chat composer with a Cursor model — and anything on cursor.com
-                for this repo — will show up here.
+                Agents you launch from any chat composer with a Cursor model — and anything on cursor.com —
+                will show up here.
               </div>
+            </div>
+          ) : noVisibleAgentsBecauseArchived ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
+              <div className="text-[13px] font-medium text-fg/80">All matching agents are archived</div>
+              <div className="max-w-[380px] text-[11.5px] leading-relaxed text-fg/45">
+                Reveal archived agents to inspect or unarchive them.
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowArchived(true)}
+                className="rounded-md border border-violet-300/25 bg-violet-500/[0.10] px-3 py-1.5 text-[11.5px] font-medium text-violet-100/90 hover:bg-violet-500/[0.18]"
+              >
+                Show archived ({archivedCount})
+              </button>
             </div>
           ) : (
             <div className="space-y-4 px-4 py-3.5">
@@ -464,6 +563,7 @@ export function CursorCloudFleetModal({
                         busy={busyAgentId === entry.agent.agentId}
                         confirmingDelete={confirmDeleteId === entry.agent.agentId}
                         usage={usageByAgentId[entry.agent.agentId]}
+                        artifacts={artifactsByAgentId[entry.agent.agentId]}
                         rowError={rowError?.agentId === entry.agent.agentId ? rowError.message : null}
                         onToggle={() => void expandEntry(entry.agent.agentId)}
                         onOpen={() => void openInAde(entry)}
@@ -490,6 +590,7 @@ export function CursorCloudFleetModal({
                         busy={busyAgentId === entry.agent.agentId}
                         confirmingDelete={confirmDeleteId === entry.agent.agentId}
                         usage={usageByAgentId[entry.agent.agentId]}
+                        artifacts={artifactsByAgentId[entry.agent.agentId]}
                         rowError={rowError?.agentId === entry.agent.agentId ? rowError.message : null}
                         onToggle={() => void expandEntry(entry.agent.agentId)}
                         onOpen={() => void openInAde(entry)}
@@ -526,6 +627,7 @@ export function CursorCloudFleetModal({
                               busy={busyAgentId === entry.agent.agentId}
                               confirmingDelete={confirmDeleteId === entry.agent.agentId}
                               usage={usageByAgentId[entry.agent.agentId]}
+                              artifacts={artifactsByAgentId[entry.agent.agentId]}
                               rowError={rowError?.agentId === entry.agent.agentId ? rowError.message : null}
                               onToggle={() => void expandEntry(entry.agent.agentId)}
                               onOpen={() => void openInAde(entry)}

@@ -11,12 +11,20 @@ import {
 } from "../../lib/workSidebarBrowserResize";
 import { CursorCloudFleetModal } from "./CursorCloudFleetModal";
 
-const INITIAL_VISIBILITY_CHECK_DELAY_MS = 4_000;
-const VISIBILITY_CONNECTED_CACHE_TTL_MS = 120_000;
-const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 5_000;
+// Keep the entry point on the same visibility cadence as Linear. Both
+// integrations are connection-gated and should appear/disappear together
+// while a provider key is being verified or a remote runtime reconnects.
+const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
+const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
+const REMOTE_VISIBILITY_RETRY_INTERVAL_MS = 15_000;
+const VISIBILITY_CONNECTED_CACHE_TTL_MS = 60_000;
+const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 1_500;
 const CURSOR_BADGE_VIOLET = "#8B5CF6";
+const HEADER_STATUS_MENU_ROW_CLASS =
+  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
 
 type VisibilityCacheEntry = {
+  reader: unknown;
   value: boolean;
   checkedAtMs: number;
   inFlight: Promise<boolean> | null;
@@ -30,29 +38,28 @@ const visibilityCacheByProject = new Map<string, VisibilityCacheEntry>();
  * pays an extra `ai.getStatus` in its startup window.
  */
 function readCursorVisibilityCached(
-  projectRoot: string | null | undefined,
-  force = false,
+  args: {
+    projectRoot: string | null | undefined;
+    reader: (() => Promise<AiSettingsStatus>) | undefined;
+    force?: boolean;
+  },
 ): Promise<boolean> {
-  if (!projectRoot) return Promise.resolve(false);
+  const { projectRoot, reader, force = false } = args;
+  if (!projectRoot || !reader) return Promise.resolve(false);
   const now = Date.now();
-  const entry = visibilityCacheByProject.get(projectRoot)
-    ?? { value: false, checkedAtMs: 0, inFlight: null };
+  const existing = visibilityCacheByProject.get(projectRoot);
+  const entry = existing && existing.reader === reader
+    ? existing
+    : { reader, value: false, checkedAtMs: 0, inFlight: null };
   visibilityCacheByProject.set(projectRoot, entry);
   if (entry.inFlight) return entry.inFlight;
   const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
   if (!force && now - entry.checkedAtMs < ttl) return Promise.resolve(entry.value);
 
   entry.inFlight = Promise.resolve()
-    .then(async (): Promise<AiSettingsStatus | false> => {
-      // Hosted web / browser-preview shells expose ai.getStatus but not the
-      // fleet surface; treat a missing member as a disconnected Cursor.
-      if (typeof window.ade.ai.cursorCloudFleet !== "function") return false;
-      return window.ade.ai.getStatus();
-    })
+    .then(() => reader())
     .then((status) => {
-      const nextValue = status !== false
-        && (status.providerConnections?.cursor?.authAvailable === true
-          || status.availableProviders.cursor === true);
+      const nextValue = status.providerConnections?.cursor?.authAvailable === true;
       entry.value = nextValue;
       entry.checkedAtMs = Date.now();
       return nextValue;
@@ -68,7 +75,13 @@ function readCursorVisibilityCached(
   return entry.inFlight;
 }
 
-export function CursorCloudQuickViewButton() {
+export function CursorCloudQuickViewButton({
+  variant = "icon",
+  onMenuActivate,
+}: {
+  variant?: "icon" | "menu-row" | "sidebar-row";
+  onMenuActivate?: () => void;
+} = {}) {
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const activeProjectRoot =
@@ -81,17 +94,30 @@ export function CursorCloudQuickViewButton() {
   const openRef = useRef(open);
   openRef.current = open;
 
+  const readCursorStatus = useCallback(() => window.ade.ai.getStatus(), []);
+
   const loadVisibility = useCallback(
-    (force = false) => readCursorVisibilityCached(activeProjectRoot, force),
-    [activeProjectRoot],
+    (force = false) => readCursorVisibilityCached({
+      projectRoot: activeProjectRoot,
+      reader: typeof window !== "undefined" && typeof window.ade?.ai?.getStatus === "function"
+        ? readCursorStatus
+        : undefined,
+      force,
+    }),
+    [activeProjectRoot, readCursorStatus],
   );
+
+  const shouldAutoCheckVisibility = Boolean(activeProjectRoot);
+  const visibilityRetryIntervalMs = projectBinding?.kind === "remote"
+    ? REMOTE_VISIBILITY_RETRY_INTERVAL_MS
+    : VISIBILITY_RETRY_INTERVAL_MS;
 
   // Delayed, cached, bridge-triggered — never in the Work startup IPC window.
   useEffect(() => {
     setVisible(false);
     setOpen(false);
     setUnreadFinished(0);
-    if (!activeProjectRoot) return undefined;
+    if (!shouldAutoCheckVisibility) return undefined;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void loadVisibility().then((next) => {
@@ -102,10 +128,10 @@ export function CursorCloudQuickViewButton() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeProjectRoot, loadVisibility]);
+  }, [activeProjectRoot, loadVisibility, shouldAutoCheckVisibility]);
 
   useEffect(() => {
-    if (!activeProjectRoot || visible) return undefined;
+    if (!shouldAutoCheckVisibility || visible) return undefined;
     let cancelled = false;
     let timer: number | null = null;
     // Queue the same delayed re-check on bridge-ready rather than firing an
@@ -129,12 +155,45 @@ export function CursorCloudQuickViewButton() {
       if (timer != null) window.clearTimeout(timer);
       window.removeEventListener("ade:runtime-bridge-ready", queue);
     };
-  }, [activeProjectRoot, visible, loadVisibility]);
+  }, [activeProjectRoot, visible, loadVisibility, shouldAutoCheckVisibility]);
+
+  useEffect(() => {
+    if (!shouldAutoCheckVisibility || !activeProjectRoot) return undefined;
+    let cancelled = false;
+    const refresh = () => {
+      void loadVisibility(true).then((next) => {
+        if (!cancelled) setVisible(next);
+      });
+    };
+    window.addEventListener("focus", refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refresh);
+    };
+  }, [activeProjectRoot, loadVisibility, shouldAutoCheckVisibility]);
+
+  useEffect(() => {
+    if (!shouldAutoCheckVisibility || visible || !activeProjectRoot) return undefined;
+    let cancelled = false;
+    const interval = window.setInterval(() => {
+      void loadVisibility().then((next) => {
+        if (!cancelled && next) {
+          setVisible(true);
+          window.clearInterval(interval);
+        }
+      });
+    }, visibilityRetryIntervalMs);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeProjectRoot, loadVisibility, shouldAutoCheckVisibility, visibilityRetryIntervalMs, visible]);
 
   // Relay-driven finish badge. No polling: the same event that wakes the
   // fleet rows lights the pill when the modal is closed.
   useEffect(() => {
     if (!visible) return undefined;
+    if (typeof window.ade?.ai?.onCursorCloudFleetEvent !== "function") return undefined;
     const unsubscribe = window.ade.ai.onCursorCloudFleetEvent((event: CursorCloudFleetEvent) => {
       if (!event?.agentId || openRef.current) return;
       if (String(event.status ?? "").toLowerCase() !== "finished") return;
@@ -159,23 +218,41 @@ export function CursorCloudQuickViewButton() {
 
   if (!visible) return null;
 
+  const handleToggle = () => {
+    setOpen((current) => !current);
+    onMenuActivate?.();
+  };
+
   return (
     <>
       <button
         type="button"
+        role={variant === "menu-row" ? "menuitem" : undefined}
         aria-label="Cursor Cloud fleet"
         aria-haspopup="dialog"
         aria-expanded={open}
         title="Cursor Cloud agents"
         data-cursor-cloud-button="true"
-        className="relative inline-flex h-[20px] w-[20px] items-center justify-center rounded-md transition-[background-color,color,box-shadow] duration-150 hover:bg-white/[0.08]"
+        data-state={open ? "open" : undefined}
+        className={variant === "menu-row"
+          ? HEADER_STATUS_MENU_ROW_CLASS
+          : variant === "sidebar-row"
+            ? `ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100${open ? " bg-white/[0.08]" : ""}`
+            : "ade-shell-control relative inline-flex h-[20px] w-[20px] items-center justify-center transition-[background-color,color,border-color,box-shadow] duration-150"}
         style={{
           WebkitAppRegion: "no-drag",
-          color: open ? "#C4B5FD" : "rgba(255,255,255,0.55)",
+          color: open ? "#C4B5FD" : undefined,
         } as React.CSSProperties}
-        onClick={() => setOpen((current) => !current)}
+        onClick={handleToggle}
       >
-        <Cursor.Avatar size={13} />
+        {variant === "sidebar-row" ? (
+          <span className="ade-shell-sidebar-icon-slot flex shrink-0 items-center justify-center">
+            <Cursor.Avatar size={20} />
+          </span>
+        ) : (
+          <Cursor.Avatar size={variant === "menu-row" ? 12 : 13} />
+        )}
+        {variant !== "icon" ? <span className="ade-tab-label min-w-0 flex-1 truncate">Cursor Cloud</span> : null}
         {unreadFinished > 0 ? (
           <span
             className="absolute -right-1 -top-1 grid h-[13px] min-w-[13px] place-items-center rounded-full px-[3px] font-mono text-[8px] font-bold leading-none text-white"

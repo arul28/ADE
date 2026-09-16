@@ -4,7 +4,7 @@ import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
-import { SessionCard } from "./SessionCard";
+import { SessionCard, shouldShowCursorCloudRowBadge } from "./SessionCard";
 import {
   SESSION_HOVER_CARD_DELAY_MS,
   resetSessionHoverCardGroupForTests,
@@ -184,6 +184,14 @@ describe("SessionCard agent browser presence", () => {
     // Main expires the entry and publishes the new (empty) set.
     act(() => setAgentBrowserPresenceForTest([]));
     expect(container.querySelector('[data-testid="agent-browser-presence"]')).toBeNull();
+  });
+});
+
+describe("Cursor Cloud row badge visibility", () => {
+  it("only exposes the agent badge while Cursor is connected", () => {
+    expect(shouldShowCursorCloudRowBadge(false, "https://cursor.com/agents?id=agent-1")).toBe(false);
+    expect(shouldShowCursorCloudRowBadge(true, "https://cursor.com/agents?id=agent-1")).toBe(true);
+    expect(shouldShowCursorCloudRowBadge(true, null)).toBe(false);
   });
 });
 
@@ -2403,10 +2411,15 @@ describe("SessionCard hover detail card", () => {
 });
 
 describe("SessionCard Cursor Cloud link", () => {
-  it("puts a cloud glyph left of the provider logo and opens cursor.com without selecting the row", () => {
+  it("puts a cloud glyph left of the provider logo and opens cursor.com without selecting the row when connected", async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined);
-    (window as unknown as { ade: { app: { openExternal: typeof openExternal } } }).ade = {
+    (window as unknown as { ade: unknown }).ade = {
       app: { openExternal },
+      ai: {
+        getStatus: vi.fn().mockResolvedValue({
+          providerConnections: { cursor: { authAvailable: true } },
+        }),
+      },
     };
     const onSelect = vi.fn();
     const { container } = render(
@@ -2422,7 +2435,7 @@ describe("SessionCard Cursor Cloud link", () => {
       />,
     );
 
-    const link = screen.getByTestId("session-cursor-cloud-link");
+    const link = await waitFor(() => screen.getByTestId("session-cursor-cloud-link"));
     const logo = screen.getByTestId("tool-logo");
     expect(link.nextElementSibling).toBe(logo);
 

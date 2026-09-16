@@ -127,6 +127,7 @@ export function RuleBuilder({
   onSimulate,
   onRunNow,
   onIngressChanged,
+  cursorCloudConnected = false,
   saving,
   simulating = false,
   running = false,
@@ -146,6 +147,7 @@ export function RuleBuilder({
   onSimulate?: () => void;
   onRunNow?: () => void;
   onIngressChanged?: () => void;
+  cursorCloudConnected?: boolean;
   saving: boolean;
   simulating?: boolean;
   running?: boolean;
@@ -302,6 +304,7 @@ export function RuleBuilder({
               ingressStatus={ingressStatus}
               onChange={setTrigger}
               onIngressChanged={onIngressChanged}
+              cursorCloudConnected={cursorCloudConnected}
             />
           </Section>
 

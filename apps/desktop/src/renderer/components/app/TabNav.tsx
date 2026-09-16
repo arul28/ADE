@@ -33,6 +33,7 @@ import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import type { GitHubStatus } from "../../../shared/types";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { readStoredProjectSettingsRoute } from "./projectRouteStorage";
+import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
 
 type TabNavItem = {
   to: string;
@@ -368,6 +369,11 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
             </div>
           </>
         ) : null}
+
+        {/* The fleet entry owns the same delayed, cached auth gate as the
+            top-bar control, so a disconnected Cursor integration leaves no
+            dead sidebar affordance. */}
+        <CursorCloudQuickViewButton variant="sidebar-row" />
 
         {/* Spacer pushes settings to bottom */}
         <div className="mt-auto" />

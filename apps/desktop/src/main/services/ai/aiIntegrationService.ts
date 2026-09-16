@@ -520,19 +520,39 @@ function normalizeCursorCloudAgent(raw: unknown): CursorCloudAgentSummary {
   const target = isRecord(record.target) ? record.target : {};
   const agentId = readString(record.agentId) ?? readString(record.id) ?? "";
   const repos = Array.isArray(record.repos)
-    ? record.repos.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+    ? record.repos.flatMap((entry) => {
+        if (typeof entry === "string") return [entry.trim()];
+        if (isRecord(entry)) return [readString(entry.url) ?? ""];
+        return [];
+      }).filter(Boolean)
     : [];
-  const status = readString(record.status)?.toLowerCase();
+  const rawStatus = readString(record.status)?.toLowerCase();
+  // The public Cursor API uses ACTIVE/IDLE/ARCHIVED while older SDK releases
+  // expose ADE's running/finished/error names. Keep one shared shape for every
+  // client, and let the latest run refine the coarse list status.
+  const status = rawStatus === "active"
+    ? "running"
+    : rawStatus === "idle"
+      ? "finished"
+      : rawStatus === "archived"
+        ? "finished"
+        : rawStatus;
+  const archived = typeof record.archived === "boolean"
+    ? record.archived
+    : rawStatus === "archived";
   return {
     agentId,
-    name: readString(record.name) ?? "Cursor cloud agent",
-    summary: readString(record.summary) ?? "",
+    name: readString(record.name) ?? (agentId ? `Cursor agent ${agentId.slice(0, 8)}` : "Cursor cloud agent"),
+    summary: readString(record.summary) ?? readString(record.name) ?? "",
     ...(status === "running" || status === "finished" || status === "error" ? { status } : {}),
-    archived: typeof record.archived === "boolean" ? record.archived : undefined,
-    lastModified: readNumber(record.lastModified),
+    ...(archived ? { archived: true } : { archived: false }),
+    lastModified: readNumber(record.lastModified) ?? readNumber(record.updatedAt),
     createdAt: readNumber(record.createdAt),
     repos,
-    webUrl: readString(record.webUrl) ?? readString(target.url) ?? (agentId ? `https://cursor.com/agents?id=${encodeURIComponent(agentId)}` : null),
+    webUrl: readString(record.webUrl)
+      ?? readString(record.url)
+      ?? readString(target.url)
+      ?? (agentId ? `https://cursor.com/agents?id=${encodeURIComponent(agentId)}` : null),
   };
 }
 
@@ -1248,11 +1268,16 @@ export function createAiIntegrationService(args: {
   }): Promise<CursorCloudListAgentsResult> => {
     const apiKey = await requireCursorCloudApiKey();
     const { Agent } = await loadCursorSdk();
+    const requestedLimit = typeof args?.limit === "number" && Number.isFinite(args.limit)
+      ? Math.floor(args.limit)
+      : 100;
     const result = await Agent.list({
       runtime: "cloud",
       apiKey,
       includeArchived: args?.includeArchived,
-      limit: args?.limit,
+      // Cursor rejects values over 100 even though older SDK typings do not
+      // advertise the server-side cap.
+      limit: Math.min(Math.max(requestedLimit, 1), 100),
       cursor: args?.cursor?.trim() || undefined,
     });
     return {
@@ -1270,10 +1295,14 @@ export function createAiIntegrationService(args: {
     if (!agentId) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
     const { Agent } = await loadCursorSdk();
+    const requestedLimit = typeof args.limit === "number" && Number.isFinite(args.limit)
+      ? Math.floor(args.limit)
+      : 100;
     const result = await Agent.listRuns(agentId, {
       runtime: "cloud",
       apiKey,
-      limit: args.limit,
+      // Cursor caps every collection page at 100.
+      limit: Math.min(Math.max(requestedLimit, 1), 100),
       cursor: args.cursor?.trim() || undefined,
     });
     return {
@@ -1293,7 +1322,9 @@ export function createAiIntegrationService(args: {
     const apiKey = await requireCursorCloudApiKey();
     const { Agent } = await loadCursorSdk();
     const modelId = args.modelId?.trim() || "";
-    const choseExplicitControl = Boolean(args.reasoningEffort?.trim()) || args.fastMode != null;
+    const choseExplicitControl = Boolean(args.reasoningEffort?.trim())
+      || args.fastMode != null
+      || args.serviceTier != null;
     if (!modelId && choseExplicitControl) {
       throw new Error(
         "Cursor Cloud cannot apply reasoning or speed settings without a selected model. Pick a model and try again.",
@@ -1307,6 +1338,7 @@ export function createAiIntegrationService(args: {
           modelSdkId: modelId,
           reasoningEffort: args.reasoningEffort,
           fastMode: args.fastMode,
+          serviceTier: args.serviceTier,
         })) ?? undefined
       : undefined;
     const launch = resolveCursorCloudCreateCloudExtras({

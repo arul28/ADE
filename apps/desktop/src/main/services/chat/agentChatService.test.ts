@@ -35701,7 +35701,7 @@ describe("createAgentChatService", () => {
       )).toBe(true);
     });
 
-    it("passes standard Cursor SDK params when fast mode is off", async () => {
+    it("passes standard Cursor SDK params when the standard tier is selected", async () => {
       process.env.CURSOR_API_KEY = "crsr_test";
       cursorModelsListMock.mockResolvedValue([
         {
@@ -35726,7 +35726,7 @@ describe("createAgentChatService", () => {
         provider: "cursor",
         model: "composer-2.5",
         modelId: "cursor/composer-2.5",
-        fastMode: false,
+        cursorCloudServiceTier: "standard",
       });
 
       await service.sendMessage({
@@ -49487,6 +49487,41 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       expect(followup?.payload.agentId).toBe("cloud-agent-1");
       expect(String(followup?.payload.idempotencyKey ?? "")).toContain(":cursor-cloud:followup");
       expect(followup?.payload.mode).toBe("agent");
+    });
+
+    it("returns the accepted run identity for a direct cloud follow-up after cleanup", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start the cloud thread.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      const result = await service.cursorCloudFollowUp({
+        agentId: "cloud-agent-1",
+        prompt: "Continue the cloud thread.",
+      });
+
+      expect(result).toEqual({ runId: "cloud-run-2", status: "completed" });
+      expect(mockState.cursorSdkCloudRequests.filter((request) => request.type === "cloud.followup")).toHaveLength(1);
     });
 
     it("surfaces Cursor SDK agent busy conflicts as busy cloud errors", async () => {

@@ -7,7 +7,7 @@ import {
   Trash,
 } from "@phosphor-icons/react";
 
-import type { CursorAgentUsage, CursorCloudFleetEntry } from "../../../shared/types";
+import type { CursorAgentUsage, CursorCloudArtifactSummary, CursorCloudFleetEntry } from "../../../shared/types";
 import {
   cursorCloudFleetDisplayStatus,
   isCursorCloudFleetEntryActive,
@@ -90,6 +90,7 @@ export function FleetRow({
   busy,
   confirmingDelete,
   usage,
+  artifacts,
   rowError,
   onToggle,
   onOpen,
@@ -104,6 +105,7 @@ export function FleetRow({
   busy: boolean;
   confirmingDelete: boolean;
   usage: CursorAgentUsage | undefined;
+  artifacts: CursorCloudArtifactSummary[] | undefined;
   rowError: string | null;
   onToggle: () => void;
   onOpen: () => void;
@@ -113,6 +115,7 @@ export function FleetRow({
   onRequestDelete: () => void;
   onConfirmDelete: () => void;
 }) {
+  const [liveUrlCopied, setLiveUrlCopied] = useState(false);
   const { agent } = entry;
   const status = cursorCloudFleetDisplayStatus(entry);
   const active = isCursorCloudFleetEntryActive(entry);
@@ -268,6 +271,40 @@ export function FleetRow({
               </button>
             ) : null}
           </div>
+          {agent.webUrl ? (
+            <div className="flex flex-wrap items-center gap-2 text-[10.5px]">
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(agent.webUrl!).then(() => {
+                    setLiveUrlCopied(true);
+                    window.setTimeout(() => setLiveUrlCopied(false), 1500);
+                  }).catch(() => undefined);
+                }}
+                className="rounded border border-white/[0.08] px-1.5 py-0.5 text-fg/55 hover:text-fg/85"
+              >
+                {liveUrlCopied ? "Copied live URL" : "Copy live URL"}
+              </button>
+              <button
+                type="button"
+                onClick={() => openExternalUrl(agent.webUrl!)}
+                className="inline-flex items-center gap-1 text-violet-200/70 hover:text-violet-100"
+              >
+                <ArrowSquareOut size={9} weight="bold" /> Open live updates
+              </button>
+            </div>
+          ) : null}
+          {artifacts ? (
+            <div className="space-y-1 pt-0.5 text-[10.5px] text-fg/50">
+              <div className="font-sans text-[10px] font-semibold uppercase tracking-[0.08em] text-fg/40">Artifacts / diff</div>
+              {artifacts.length > 0 ? artifacts.map((artifact) => (
+                <div key={artifact.path} className="flex items-center justify-between gap-3 font-mono">
+                  <span className="min-w-0 truncate">{artifact.path}</span>
+                  {artifact.sizeBytes != null ? <span className="shrink-0 text-fg/35">{formatArtifactSize(artifact.sizeBytes)}</span> : null}
+                </div>
+              )) : <div className="text-fg/35">No artifacts reported.</div>}
+            </div>
+          ) : null}
           {usage?.totalTokens != null ? (
             <div className="font-mono text-[10px] text-fg/40">
               tokens {usage.totalTokens.toLocaleString()}
@@ -278,6 +315,12 @@ export function FleetRow({
       ) : null}
     </div>
   );
+}
+
+function formatArtifactSize(sizeBytes: number): string {
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function RowMenu({

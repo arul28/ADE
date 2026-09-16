@@ -13,6 +13,7 @@ import type {
   RebaseEventPayload,
   SyncStatusEventPayload,
   TerminalSessionChangedEvent,
+  CursorCloudFleetEvent,
 } from "../../../shared/types";
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
@@ -38,6 +39,7 @@ export type AdapterEvents = {
   sessionsChanged: TerminalSessionChangedEvent;
   chatsInvalidated: InvalidationEvent;
   agentChatEvent: SyncChatEventPayload;
+  cursorCloudFleetEvent: CursorCloudFleetEvent;
   ptyData: PtyDataEvent;
   ptyExit: PtyExitEvent;
   prsInvalidated: InvalidationEvent;

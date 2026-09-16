@@ -76,6 +76,8 @@ final class CursorCloudPaneStore: ObservableObject {
   @Published private(set) var relayLive = false
   @Published private(set) var keyMissing = false
 
+  var archivedCount: Int { entries.filter(\.agent.isArchived).count }
+
   private let syncService: SyncService
 
   init(syncService: SyncService) {

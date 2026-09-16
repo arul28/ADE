@@ -68,6 +68,36 @@ function repoLabel(url: string): string {
   return trimmed;
 }
 
+export function cursorCloudModelLabel(modelId: string): string {
+  const known = getModelById(modelId)?.displayName?.trim();
+  if (known) return known;
+  const withoutPrefix = modelId.replace(/^cursor\//i, "");
+  return withoutPrefix
+    .replace(/[._:/-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase())
+    .replace(/\s+/g, " ")
+    .trim() || modelId;
+}
+
+export async function listAllCursorCloudAgents(includeArchived: boolean): Promise<CursorCloudAgentSummary[]> {
+  const items: CursorCloudAgentSummary[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const page = await window.ade.ai.cursorCloudListAgents({
+      includeArchived,
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    });
+    items.push(...page.items);
+    const nextCursor = page.nextCursor?.trim() || "";
+    if (!nextCursor || seenCursors.has(nextCursor)) break;
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  } while (true);
+  return items;
+}
+
 export type ChatCursorCloudPanelHandle = {
   launchWithPrompt: (promptText: string) => Promise<{ agentId: string } | null>;
   hasRequiredFields: () => boolean;
@@ -129,7 +159,7 @@ export const ChatCursorCloudPanel = forwardRef<ChatCursorCloudPanelHandle, ChatC
         return {
           id,
           value,
-          label: getModelById(id)?.displayName ?? value,
+          label: cursorCloudModelLabel(id),
         };
       })
       .filter((entry): entry is { id: string; value: string; label: string } => Boolean(entry));
@@ -142,13 +172,13 @@ export const ChatCursorCloudPanel = forwardRef<ChatCursorCloudPanelHandle, ChatC
     try {
       const [nextRepos, nextAgents] = await Promise.all([
         reposLoadedRef.current ? Promise.resolve(repos) : window.ade.ai.cursorCloudListRepositories(),
-        window.ade.ai.cursorCloudListAgents({ includeArchived, limit: 16 }),
+        listAllCursorCloudAgents(includeArchived),
       ]);
       if (!reposLoadedRef.current) {
         setRepos(nextRepos);
         reposLoadedRef.current = true;
       }
-      setAgents(nextAgents.items);
+      setAgents(nextAgents);
       setRepoUrl((current) => {
         if (current) return current;
         if (defaultRepoUrl) return defaultRepoUrl;
@@ -163,7 +193,7 @@ export const ChatCursorCloudPanel = forwardRef<ChatCursorCloudPanelHandle, ChatC
       });
       setModelId((current) => current || modelOptions[0]?.value || "");
 
-      const runningAgents = nextAgents.items.filter((agent) => isActiveStatus(agent.status));
+      const runningAgents = nextAgents.filter((agent) => isActiveStatus(agent.status));
       if (runningAgents.length) {
         const runsList = await Promise.all(runningAgents.map(async (agent) => {
           try {

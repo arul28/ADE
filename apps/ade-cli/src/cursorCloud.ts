@@ -147,10 +147,34 @@ function defaultSub(group: CursorCloudCommand["group"]): string {
 }
 
 function nextPositional(args: Args): string | null {
-  const idx = args.findIndex((arg) => arg !== "--" && !arg.startsWith("-"));
-  if (idx < 0) return null;
-  const [value] = args.splice(idx, 1);
-  return value ?? null;
+  // A group can omit its subcommand (`agents --limit 100` means `agents list`),
+  // so option values must not be mistaken for the missing subcommand. Keep this
+  // small carrier list in sync with the options consumed by the group handlers.
+  const valueFlags = new Set([
+    "--api-key", "--apiKey", "--key",
+    "--limit", "--cursor", "--page",
+    "--repo", "--repo-url", "--url",
+    "--prompt", "--message", "-m",
+    "--branch", "--starting-ref", "--ref",
+    "--model", "--model-id", "--pr-url", "--pr",
+    "--name", "--agent-name",
+    "--agent", "--agent-id", "--id",
+    "--run", "--run-id",
+    "--path", "--remote", "--remote-path",
+    "--out", "--output", "--dest",
+  ]);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg || arg === "--") continue;
+    if (arg.startsWith("-")) {
+      const flag = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
+      if (!arg.includes("=") && valueFlags.has(flag)) index += 1;
+      continue;
+    }
+    const [value] = args.splice(index, 1);
+    return value ?? null;
+  }
+  return null;
 }
 
 function readValue(args: Args, names: string[]): string | null {
@@ -233,6 +257,68 @@ function readCursorModelId(value: unknown): string {
   return "";
 }
 
+function cursorCloudModelDisplayName(value: unknown): string {
+  if (isRecord(value)) {
+    for (const key of ["displayName", "title", "name"]) {
+      if (typeof value[key] === "string" && value[key].trim()) return value[key].trim();
+    }
+  }
+  const id = readCursorModelId(value);
+  if (!id) return "Cursor model";
+  return id
+    .replace(/^cursor\//i, "")
+    .replace(/[_./-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+type CursorCloudPage<T> = {
+  items?: T[];
+  nextCursor?: string | null;
+};
+
+/** Cursor caps list endpoints at 100. Return the complete page chain without
+ * ever forwarding a larger limit, while preserving a caller's total limit. */
+async function listCursorCloudPages<T>(
+  fetchPage: (args: { limit: number; cursor?: string }) => Promise<CursorCloudPage<T>>,
+  requestedLimit?: number,
+  initialCursor?: string,
+): Promise<{ items: T[]; nextCursor?: string }> {
+  const totalLimit = requestedLimit == null ? Number.POSITIVE_INFINITY : Math.min(requestedLimit, 100_000);
+  const items: T[] = [];
+  let cursor = initialCursor;
+  let nextCursor: string | undefined;
+  const seenCursors = new Set<string>();
+  while (items.length < totalLimit) {
+    const remaining = totalLimit === Number.POSITIVE_INFINITY
+      ? 100
+      : Math.min(100, totalLimit - items.length);
+    if (remaining <= 0) break;
+    const page = await fetchPage({
+      limit: remaining,
+      ...(cursor ? { cursor } : {}),
+    });
+    const pageItems = Array.isArray(page.items) ? page.items : [];
+    items.push(...pageItems.slice(0, Math.max(0, totalLimit - items.length)));
+    const candidate = typeof page.nextCursor === "string" && page.nextCursor.trim()
+      ? page.nextCursor.trim()
+      : undefined;
+    if (!candidate || seenCursors.has(candidate) || pageItems.length === 0) {
+      nextCursor = undefined;
+      break;
+    }
+    seenCursors.add(candidate);
+    cursor = candidate;
+    nextCursor = candidate;
+  }
+  return nextCursor ? { items, nextCursor } : { items };
+}
+
 /** Top-level entry point. Dispatches to the right group/sub handler. */
 export async function runCursorCloud(args: Args, outputMode: CursorOutputMode): Promise<CursorCloudExecutionResult> {
   const cleaned = [...args];
@@ -261,13 +347,17 @@ async function runAgentsGroup(sub: string, rest: Args, opts: CursorCloudOptions)
     const includeArchived = readFlag(rest, ["--archived", "--include-archived"]);
     const limit = readIntOption(rest, ["--limit"]);
     const cursor = trimWhitespace(readValue(rest, ["--cursor", "--page"]));
-    const result = await Agent.list({
-      runtime: "cloud",
-      apiKey: opts.apiKey,
-      includeArchived: includeArchived || undefined,
+    const result = await listCursorCloudPages(
+      (page) => Agent.list({
+        runtime: "cloud",
+        apiKey: opts.apiKey,
+        includeArchived: includeArchived || undefined,
+        limit: page.limit,
+        ...(page.cursor ? { cursor: page.cursor } : {}),
+      }),
       limit,
       cursor,
-    });
+    );
     if (opts.output === "text") return success(formatAgentTable(result), opts);
     return success(result, opts);
   }
@@ -367,7 +457,16 @@ async function runRunsGroup(sub: string, rest: Args, opts: CursorCloudOptions): 
     const agentId = requireValue(readValue(rest, ["--agent", "--agent-id"]), "--agent");
     const limit = readIntOption(rest, ["--limit"]);
     const cursor = trimWhitespace(readValue(rest, ["--cursor", "--page"]));
-    const result = await Agent.listRuns(agentId, { runtime: "cloud", apiKey: opts.apiKey, limit, cursor });
+    const result = await listCursorCloudPages(
+      (page) => Agent.listRuns(agentId, {
+        runtime: "cloud",
+        apiKey: opts.apiKey,
+        limit: page.limit,
+        ...(page.cursor ? { cursor: page.cursor } : {}),
+      }),
+      limit,
+      cursor,
+    );
     if (opts.output === "text") return success(formatRunTable(result), opts);
     return success(result, opts);
   }
@@ -472,7 +571,7 @@ async function runModelsGroup(sub: string, rest: Args, opts: CursorCloudOptions)
       if (!items.length) lines.push("  (none)");
       else for (const m of items) {
         const id = readCursorModelId(m);
-        const display = isRecord(m) && typeof m.displayName === "string" ? m.displayName : id;
+        const display = cursorCloudModelDisplayName(m);
         lines.push(`  ${display}${id && display !== id ? ` (${id})` : ""}`);
       }
       return success(lines.join("\n"), opts);

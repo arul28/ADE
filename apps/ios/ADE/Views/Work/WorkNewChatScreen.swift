@@ -655,6 +655,15 @@ struct WorkNewChatScreen: View {
   /// advertised fast model and wrongly hide the toggle.
   @State private var selectedModelOption: WorkModelOption?
   @State private var sessionMode: WorkNewSessionMode = .chat
+  @State private var cursorCloudMode: Bool = false
+  @State private var cursorCloudServiceTier: String?
+  @State private var cursorCloudRepositories: [CursorCloudRepository] = []
+  @State private var cursorCloudRepositoryUrl: String?
+  @State private var cursorCloudBaseBranch: String = ""
+  @State private var cursorCloudAutoCreatePR: Bool = false
+  @State private var cursorCloudSecretNames: [String] = []
+  @State private var cursorCloudSelectedSecretNames: Set<String> = []
+  @State private var cursorCloudRememberSecretNames: Bool = false
   @State private var shellLaunchBusy: Bool = false
   @State private var queuedShellLaneIds = Set<String>()
   @State private var usageRefreshRevision = 0
@@ -770,6 +779,24 @@ struct WorkNewChatScreen: View {
       return true
     }
     return workComposerSupportsFastMode(modelId: modelId, provider: provider)
+  }
+
+  private var cursorCloudLaunchAvailable: Bool {
+    sessionMode == .chat
+      && syncService.cursorCloudConnected
+      && syncService.canInvokeRemoteAction("ai.createCursorCloudRun")
+      && syncService.canInvokeRemoteAction("ai.openCursorCloudChat")
+  }
+
+  private var activeProjectSummary: MobileProjectSummary? {
+    guard let activeProjectId else { return nil }
+    return syncService.projects.first(where: { $0.id == activeProjectId })
+  }
+
+  private var cursorCloudTierChoices: [String] {
+    guard let option = selectedModelOption,
+          workModelIdsEquivalent(option.id, modelId) else { return [] }
+    return ["fast", "standard"].filter { option.supportsServiceTier($0) }
   }
 
   var body: some View {
@@ -895,6 +922,18 @@ struct WorkNewChatScreen: View {
         runtimeMode = workDefaultRuntimeMode(provider: provider)
       }
     }
+    .onChange(of: sessionMode) { _, mode in
+      if mode != .chat {
+        cursorCloudMode = false
+        cursorCloudServiceTier = nil
+        cursorCloudSecretNames = []
+        cursorCloudSelectedSecretNames = []
+      }
+    }
+    .onChange(of: selectedLaneId) { _, newLaneId in
+      guard cursorCloudMode else { return }
+      Task { await refreshCursorCloudSecrets(for: newLaneId) }
+    }
     .onChange(of: composerSelection) { _, newValue in
       // Persist the full selection without deriving one setting from another.
       WorkComposerPreferences.save(newValue)
@@ -909,11 +948,14 @@ struct WorkNewChatScreen: View {
         lanes: lanes,
         isBusy: false,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
+          let changedModel = !workModelIdsEquivalent(option.id, modelId)
           selectedModelOption = option
           modelId = option.id
           provider = sessionMode == .chat
             ? workNormalizedChatProvider(runtimeProvider)
             : workResolveCliProvider(for: option.id, provider: runtimeProvider)
+          if changedModel { cursorCloudServiceTier = nil }
+          if cursorCloudMode && provider != "cursor" { cursorCloudMode = false }
           let nextReasoning = pickedReasoning ?? ""
           if nextReasoning != reasoningEffort { reasoningEffort = nextReasoning }
           if pickedFastMode != codexFastMode { codexFastMode = pickedFastMode }
@@ -983,37 +1025,188 @@ struct WorkNewChatScreen: View {
   // Sits just above the composer, like the context chips in a chat.
   @ViewBuilder
   private var sessionActionChips: some View {
-    if let lane = selectedConcreteLane {
+    if cursorCloudLaunchAvailable || selectedConcreteLane != nil {
       let chipsDisabled = busy || shellLaunchBusy
-      let shellQueued = queuedShellLaneIds.contains(lane.id)
+      let lane = selectedConcreteLane
+      let shellQueued = lane.map { queuedShellLaneIds.contains($0.id) } ?? false
       let shellDisabled = chipsDisabled || shellQueued
       HStack(spacing: 8) {
         Spacer(minLength: 0)
-        Button {
-          Task { await launchShell(in: lane) }
-        } label: {
-          shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
+        if cursorCloudLaunchAvailable {
+          Button {
+            Task { await toggleCursorCloudMode() }
+          } label: {
+            cursorCloudAffordance(enabled: cursorCloudMode, disabled: chipsDisabled)
+          }
+          .buttonStyle(.plain)
+          .disabled(chipsDisabled)
         }
-        .buttonStyle(.plain)
-        .disabled(shellDisabled)
+        if let lane {
+          Button {
+            Task { await launchShell(in: lane) }
+          } label: {
+            shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
+          }
+          .buttonStyle(.plain)
+          .disabled(shellDisabled)
 
-        NavigationLink {
-          WorkImportSessionScreen(
-            lane: lane,
-            lanes: lanes,
-            onCliImported: onCliStarted,
-            onChatImported: onChatImported
-          )
-          .environmentObject(syncService)
-        } label: {
-          importSessionAffordance(disabled: chipsDisabled)
+          NavigationLink {
+            WorkImportSessionScreen(
+              lane: lane,
+              lanes: lanes,
+              onCliImported: onCliStarted,
+              onChatImported: onChatImported
+            )
+            .environmentObject(syncService)
+          } label: {
+            importSessionAffordance(disabled: chipsDisabled)
+          }
+          .buttonStyle(.plain)
+          .disabled(chipsDisabled)
         }
-        .buttonStyle(.plain)
-        .disabled(chipsDisabled)
         Spacer(minLength: 0)
       }
       .padding(.top, 2)
+      if cursorCloudMode {
+        cursorCloudOptions
+      }
     }
+  }
+
+  @ViewBuilder
+  private var cursorCloudOptions: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        Image(systemName: "cloud.fill")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+        if cursorCloudRepositories.isEmpty {
+          Text("Loading Cursor repositories…")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        } else {
+          Menu {
+            ForEach(cursorCloudRepositories) { repository in
+              Button {
+                cursorCloudRepositoryUrl = repository.url
+              } label: {
+                Text(cursorCloudRepositoryLabel(repository.url))
+              }
+            }
+          } label: {
+            HStack(spacing: 4) {
+              Text(cursorCloudRepositoryLabel(cursorCloudRepositoryUrl ?? "Choose repository"))
+                .lineLimit(1)
+              Image(systemName: "chevron.up.chevron.down")
+                .font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(ADEColor.textPrimary)
+          }
+        }
+        Spacer(minLength: 0)
+        if !cursorCloudTierChoices.isEmpty {
+          Menu {
+            Button {
+              cursorCloudServiceTier = nil
+            } label: {
+              Label("Automatic", systemImage: cursorCloudServiceTier == nil ? "checkmark" : "")
+            }
+            ForEach(cursorCloudTierChoices, id: \.self) { tier in
+              Button {
+                cursorCloudServiceTier = tier
+              } label: {
+                Label(tier.capitalized, systemImage: cursorCloudServiceTier == tier ? "checkmark" : "")
+              }
+            }
+          } label: {
+            Text(cursorCloudServiceTier?.capitalized ?? "Automatic")
+              .font(.caption.weight(.medium))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+        }
+      }
+      HStack(spacing: 8) {
+        Image(systemName: "arrow.triangle.branch")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+        TextField("Base branch", text: $cursorCloudBaseBranch)
+          .textFieldStyle(.plain)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textPrimary)
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
+      .background(ADEColor.surfaceBackground.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6) }
+
+      Toggle(isOn: $cursorCloudAutoCreatePR) {
+        Label("Open a PR when finished", systemImage: "arrow.triangle.pull")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .tint(ADEColor.accent)
+
+      if !cursorCloudSecretNames.isEmpty {
+        Menu {
+          ForEach(cursorCloudSecretNames, id: \.self) { name in
+            Button {
+              if cursorCloudSelectedSecretNames.contains(name) {
+                cursorCloudSelectedSecretNames.remove(name)
+              } else {
+                cursorCloudSelectedSecretNames.insert(name)
+              }
+            } label: {
+              Label(name, systemImage: cursorCloudSelectedSecretNames.contains(name) ? "checkmark" : "")
+            }
+          }
+          if !cursorCloudSelectedSecretNames.isEmpty {
+            Divider()
+            Toggle("Remember for this lane", isOn: $cursorCloudRememberSecretNames)
+          }
+        } label: {
+          HStack(spacing: 7) {
+            Image(systemName: "key.fill")
+              .font(.caption.weight(.semibold))
+            Text(cursorCloudSelectedSecretNames.isEmpty
+              ? "Attach project secrets"
+              : "Secrets: \(cursorCloudSelectedSecretNames.count)")
+              .font(.caption)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.up.chevron.down")
+              .font(.caption2.weight(.semibold))
+          }
+          .foregroundStyle(ADEColor.textSecondary)
+        }
+      }
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .background(ADEColor.surfaceBackground.opacity(0.42), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+  }
+
+  private func cursorCloudRepositoryLabel(_ url: String) -> String {
+    let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Choose repository" }
+    let value = trimmed.hasSuffix(".git") ? String(trimmed.dropLast(4)) : trimmed
+    let parts = value.split(separator: "/")
+    return parts.count >= 2 ? "\(parts[parts.count - 2])/\(parts[parts.count - 1])" : value
+  }
+
+  private func cursorCloudAffordance(enabled: Bool, disabled: Bool) -> some View {
+    HStack(spacing: 6) {
+      Image(systemName: "cloud.fill")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
+      Text(enabled ? "Cursor Cloud" : "Cursor Cloud")
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
+    }
+    .padding(.horizontal, 14)
+    .frame(height: 34)
+    .background(ADEColor.surfaceBackground.opacity(disabled ? 0.36 : 0.7), in: Capsule(style: .continuous))
+    .overlay { Capsule(style: .continuous).stroke(enabled ? ADEColor.accent.opacity(0.7) : ADEColor.glassBorder, lineWidth: 0.6) }
+    .opacity(disabled ? 0.5 : 1)
+    .accessibilityLabel(enabled ? "Cursor Cloud enabled" : "Launch with Cursor Cloud")
   }
 
   private func shellSessionAffordance(isBusy: Bool, isQueued: Bool, disabled: Bool) -> some View {
@@ -1099,6 +1292,73 @@ struct WorkNewChatScreen: View {
   }
 
   @MainActor
+  private func toggleCursorCloudMode() async {
+    guard cursorCloudLaunchAvailable else { return }
+    cursorCloudMode.toggle()
+    guard cursorCloudMode else { return }
+
+    provider = "cursor"
+    if modelId != "auto" && !modelId.lowercased().hasPrefix("cursor/") {
+      modelId = "auto"
+      selectedModelOption = nil
+    }
+    cursorCloudServiceTier = nil
+    cursorCloudAutoCreatePR = false
+    cursorCloudSecretNames = []
+    cursorCloudSelectedSecretNames = []
+    cursorCloudRememberSecretNames = false
+    if cursorCloudBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      cursorCloudBaseBranch = activeProjectSummary?.defaultBaseRef
+        ?? selectedConcreteLane?.baseRef
+        ?? "main"
+    }
+
+    do {
+      cursorCloudRepositories = try await syncService.fetchCursorCloudRepositories()
+      if cursorCloudRepositoryUrl == nil {
+        let projectKey = [activeProjectSummary?.repoOwner, activeProjectSummary?.repoName]
+          .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+          .joined(separator: "/")
+        cursorCloudRepositoryUrl = cursorCloudRepositories.first(where: {
+          cursorCloudRepositoryLabel($0.url).lowercased() == projectKey
+        })?.url ?? cursorCloudRepositories.first?.url
+      }
+      await refreshCursorCloudSecrets(for: selectedLaneId)
+    } catch {
+      cursorCloudRepositories = []
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func refreshCursorCloudSecrets(for laneId: String?) async {
+    guard cursorCloudMode,
+          let laneId,
+          !laneId.isEmpty,
+          laneId != workAutoCreateLaneSentinelId,
+          syncService.canInvokeRemoteAction("ai.getCursorCloudLaneSecretNames") else {
+      cursorCloudSecretNames = []
+      cursorCloudSelectedSecretNames = []
+      cursorCloudRememberSecretNames = false
+      return
+    }
+    do {
+      let names = try await syncService.fetchCursorCloudLaneSecretNames(laneId: laneId)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+      cursorCloudSecretNames = names
+      cursorCloudSelectedSecretNames.formIntersection(Set(names))
+      if cursorCloudSelectedSecretNames.isEmpty {
+        cursorCloudRememberSecretNames = false
+      }
+    } catch {
+      cursorCloudSecretNames = []
+      cursorCloudSelectedSecretNames = []
+      cursorCloudRememberSecretNames = false
+    }
+  }
+
+  @MainActor
   private func launchShell(in lane: LaneSummary) async {
     guard !busy && !shellLaunchBusy else { return }
     shellLaunchBusy = true
@@ -1161,6 +1421,20 @@ struct WorkNewChatScreen: View {
     let opener = workChatOutgoingText(openingMessage, attachmentCount: readyAttachments.count)
     guard !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
+    if cursorCloudMode {
+      guard cursorCloudLaunchAvailable else {
+        errorMessage = "Cursor Cloud is not connected on the paired machine."
+        return false
+      }
+      guard provider == "cursor" else {
+        errorMessage = "Choose a Cursor model before launching a cloud agent."
+        return false
+      }
+      guard readyAttachments.isEmpty else {
+        errorMessage = "Cursor Cloud launches do not support image attachments yet."
+        return false
+      }
+    }
     let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
     guard workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) else {
       errorMessage = sessionMode == .cli
@@ -1220,9 +1494,14 @@ struct WorkNewChatScreen: View {
         busy = false
         return false
       }
-    } else {
-      targetLaneId = selectedLaneId
-      targetLaneForScope = lanes.first { $0.id == selectedLaneId }
+      } else {
+        targetLaneId = selectedLaneId
+        targetLaneForScope = lanes.first { $0.id == selectedLaneId }
+      }
+    if cursorCloudMode {
+      // A newly-created lane can have a different project-secret projection
+      // than the lane selected when the cloud form opened.
+      await refreshCursorCloudSecrets(for: targetLaneId)
     }
     let targetScope = targetLaneForScope
       .map { workShellProjectScope(for: $0, projects: syncService.projects) }
@@ -1236,6 +1515,51 @@ struct WorkNewChatScreen: View {
     var namingAttachmentRefs: [AgentChatFileRef] = []
 
     do {
+      if cursorCloudMode {
+        let project = activeProjectSummary
+        let fallbackRepo = [project?.repoOwner, project?.repoName]
+          .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+          .filter { !$0.isEmpty }
+          .joined(separator: "/")
+        let repoUrl: String
+        if let selectedRepoUrl = cursorCloudRepositoryUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !selectedRepoUrl.isEmpty {
+          repoUrl = selectedRepoUrl
+        } else if !fallbackRepo.isEmpty {
+          repoUrl = "https://github.com/\(fallbackRepo)"
+        } else {
+          throw NSError(domain: "ADE", code: 41, userInfo: [NSLocalizedDescriptionKey: "Choose a repository for this Cursor Cloud launch."])
+        }
+        let baseBranch = cursorCloudBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let created = try await syncService.createCursorCloudRun(
+          promptText: rawText,
+          repoUrl: repoUrl,
+          startingRef: baseBranch.isEmpty ? nil : baseBranch,
+          modelId: workCursorCloudSDKModelId(for: modelId),
+          serviceTier: cursorCloudServiceTier,
+          laneId: targetLaneId,
+          projectId: activeProjectId,
+          autoCreatePR: cursorCloudAutoCreatePR,
+          secretNames: cursorCloudSelectedSecretNames.sorted(),
+          rememberSecretNames: cursorCloudRememberSecretNames
+        )
+        let opened = try await syncService.openCursorCloudChat(
+          agentId: created.agent.agentId,
+          laneId: targetLaneId,
+          modelId: workCursorCloudSDKModelId(for: modelId),
+          serviceTier: cursorCloudServiceTier
+        )
+        let summaries = try await syncService.listChatSessions(laneId: targetLaneId)
+        guard let summary = summaries.first(where: { $0.sessionId == opened.sessionId }) else {
+          throw NSError(domain: "ADE", code: 42, userInfo: [NSLocalizedDescriptionKey: "Cursor Cloud started, but ADE could not open its chat yet. Refresh the lane and try again."])
+        }
+        await onStarted(summary, opener, false, nil, [])
+        if let createdLaneId, let autoCreatedFallbackName {
+          startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName, temporaryBranch: autoCreatedTemporaryBranch, attachments: [])
+        }
+        busy = false
+        return true
+      }
       let attachmentRefs = try await workChatSaveInputAttachments(
         readyAttachments,
         syncService: syncService,

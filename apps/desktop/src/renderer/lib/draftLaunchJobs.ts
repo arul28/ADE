@@ -14,6 +14,7 @@ import type {
   BuiltInBrowserContextItem,
   IosElementContextItem,
 } from "../../shared/types";
+import type { CursorCloudServiceTier } from "../../shared/types/config";
 
 // Active jobs are never capped; this only limits retained terminal rows.
 export const MAX_DRAFT_LAUNCH_TERMINAL_JOBS = 8;
@@ -71,6 +72,7 @@ export type DraftLaunchSnapshot = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  cursorCloudServiceTier: CursorCloudServiceTier | null;
   executionMode: AgentChatExecutionMode;
   interactionMode: AgentChatInteractionMode;
   nativeControls: NativeControlState;

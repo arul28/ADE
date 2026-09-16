@@ -279,7 +279,7 @@ describe("commands", () => {
     expect(paletteCommands("/clo")).toContainEqual(expect.objectContaining({
       name: "/cloud",
       source: "ade",
-      description: "List Cursor Cloud agents for this project",
+      description: "List Cursor Cloud agents for this account",
     }));
   });
 

@@ -38,6 +38,7 @@ function installAdeMocks(overrides?: {
       cursorCloudFleet: overrides?.fleet ?? vi.fn().mockResolvedValue(fleetResult([])),
       cursorCloudListRuns: vi.fn().mockResolvedValue({ items: [] }),
       cursorCloudGetUsage: vi.fn().mockResolvedValue({ agentId: "x", cost: null }),
+      cursorCloudListArtifacts: vi.fn().mockResolvedValue([]),
       cursorCloudCancelRun: vi.fn().mockResolvedValue(undefined),
       cursorCloudOpenChat: vi.fn().mockResolvedValue({ sessionId: "s1" }),
       cursorCloudResolveLane: vi.fn().mockResolvedValue({ laneId: "lane-1", laneName: "Lane 1", created: false }),
@@ -88,7 +89,7 @@ describe("CursorCloudFleetModal", () => {
   it("renders the empty fleet as its own state", async () => {
     render(<CursorCloudFleetModal projectRoot="/p" projectName="ADE" onClose={vi.fn()} />);
     await waitFor(() => {
-      expect(screen.getByText(/no cloud agents for this project/i)).toBeTruthy();
+      expect(screen.getByText(/no cloud agents/i)).toBeTruthy();
     });
     expect(screen.queryByText(/retry/i)).toBeNull();
   });
@@ -116,6 +117,47 @@ describe("CursorCloudFleetModal", () => {
     expect(screen.getByText(/unlinked/i)).toBeTruthy();
     expect(screen.getByText("Linked agent")).toBeTruthy();
     expect(screen.getByText("Stray")).toBeTruthy();
+  });
+
+  it("hydrates finished-row status, branch, model, and PR on first expansion", async () => {
+    const listRuns = vi.fn().mockResolvedValue({
+      items: [{
+        runId: "run-finished",
+        status: "FINISHED",
+        modelId: "claude-4-sonnet",
+        git: {
+          branches: [{
+            repoUrl: "https://github.com/acme/ade.git",
+            branch: "cursor/fix-login",
+            prUrl: "https://github.com/acme/ade/pull/42",
+          }],
+        },
+      }],
+    });
+    installAdeMocks({
+      fleet: vi.fn().mockResolvedValue(fleetResult([
+        entry({
+          agentId: "a-finished",
+          agent: {
+            agentId: "a-finished", name: "Finished agent", summary: "A finished run", repos: ["https://github.com/acme/ade"],
+            status: "finished",
+          },
+        }),
+      ])),
+    });
+    (globalThis.window.ade as any).ai.cursorCloudListRuns = listRuns;
+
+    render(<CursorCloudFleetModal projectRoot="/p" projectName="ADE" onClose={vi.fn()} />);
+    const row = await screen.findByText("Finished agent");
+    fireEvent.click(row);
+
+    await waitFor(() => {
+      expect(listRuns).toHaveBeenCalledWith({ agentId: "a-finished", limit: 1 });
+      expect(screen.getByText("cursor/fix-login")).toBeTruthy();
+      expect(screen.getByTitle("Open pull request")).toBeTruthy();
+      expect(screen.getByText(/run run-finished/)).toBeTruthy();
+      expect(screen.getByText("claude-4-sonnet")).toBeTruthy();
+    });
   });
 
   it("stops an active run through the dedicated stop endpoint", async () => {
@@ -148,6 +190,23 @@ describe("CursorCloudFleetModal", () => {
     expect(screen.queryByText("Old one")).toBeNull();
     fireEvent.click(screen.getByText(/show archived \(1\)/i));
     expect(screen.getByText("Old one")).toBeTruthy();
+  });
+
+  it("draws an archived-only fleet as rows after revealing archived agents", async () => {
+    installAdeMocks({
+      fleet: vi.fn().mockResolvedValue(fleetResult([
+        entry({ agentId: "a-archived", agent: {
+          agentId: "a-archived", name: "Only archived", summary: "old", repos: [], archived: true,
+        } }),
+      ])),
+    });
+    render(<CursorCloudFleetModal projectRoot="/p" projectName="ADE" onClose={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByText(/all matching agents are archived/i)).toBeTruthy();
+    });
+    fireEvent.click(screen.getByText(/show archived \(1\)/i));
+    expect(screen.getByText("Only archived")).toBeTruthy();
+    expect(screen.queryByText(/no cloud agents/i)).toBeNull();
   });
 
   it("opens unlinked agents by resolving their lane first", async () => {

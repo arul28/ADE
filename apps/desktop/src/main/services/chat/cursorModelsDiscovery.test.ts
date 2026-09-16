@@ -84,6 +84,33 @@ describe("parseCursorCliModelsStdout", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("uses Cursor titles and spells fallback ids as words, including the canonical Cursor Grok id", async () => {
+    cursorModelsListMock.mockResolvedValue([
+      { id: "grok-4.6", title: "Grok 4.6" },
+      { id: "claude-4-sonnet-thinking" },
+    ]);
+
+    const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+
+    expect(descriptors.find((descriptor) => descriptor.id === "cursor/grok-4.6")?.displayName)
+      .toBe("Grok 4.6");
+    expect(descriptors.some((descriptor) => descriptor.id === "xai/grok-4-6")).toBe(false);
+    expect(descriptors.find((descriptor) => descriptor.id === "cursor/claude-4-sonnet-thinking")?.displayName)
+      .toBe("Claude 4 Sonnet Thinking");
+  });
+
+  it("leaves an unrequested tier unset and refuses a tier the model cannot express", async () => {
+    cursorModelsListMock.mockResolvedValue([{ id: "plain-model", displayName: "Plain Model" }]);
+
+    await expect(resolveCursorSdkModelSelection("crsr_test", {
+      modelSdkId: "plain-model",
+    })).resolves.toEqual({ status: "ok", params: [] });
+    await expect(verifyExplicitCursorModelSelection("crsr_test", {
+      modelSdkId: "plain-model",
+      serviceTier: "fast",
+    })).rejects.toThrow(/fast tier/i);
+  });
+
   it("warms exact Cursor SDK models only in cached-or-fallback mode", async () => {
     let resolveModels!: (rows: Array<{ id: string; displayName?: string }>) => void;
     cursorModelsListMock.mockReturnValue(new Promise<Array<{ id: string; displayName?: string }>>((resolve) => {
@@ -496,6 +523,29 @@ describe("parseCursorCliModelsStdout", () => {
     })).toEqual([{ id: "speed", value: "fast" }]);
   });
 
+  it("discovers and resolves service tiers from compact variant-only rows", async () => {
+    cursorModelsListMock.mockResolvedValue([{
+      id: "composer-2.6",
+      displayName: "Composer 2.6",
+      variants: [
+        { displayName: "Standard", params: [{ id: "service_tier", value: "standard" }] },
+        { displayName: "Fast", params: [{ id: "service_tier", value: "fast" }] },
+      ],
+    }]);
+
+    const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+
+    expect(descriptors[0]?.serviceTiers).toEqual(["standard", "fast"]);
+    expect(resolveCursorSdkModelSelectionFromCache({
+      modelSdkId: "composer-2.6",
+      serviceTier: "standard",
+    })).toEqual({ status: "ok", params: [{ id: "service_tier", value: "standard" }] });
+    expect(resolveCursorSdkModelSelectionFromCache({
+      modelSdkId: "composer-2.6",
+      serviceTier: "fast",
+    })).toEqual({ status: "ok", params: [{ id: "service_tier", value: "fast" }] });
+  });
+
   it("keeps a known model with no parameterized controls valid", async () => {
     cursorModelsListMock.mockResolvedValue([
       { id: "grok-4.6", displayName: "Grok 4.6" },
@@ -709,7 +759,7 @@ describe("parseCursorCliModelsStdout", () => {
     await expect(verifyExplicitCursorModelSelection("crsr_test", {
       modelSdkId: "composer-2",
       fastMode: false,
-    })).rejects.toThrow("could not verify the selected model settings (standard speed)");
+    })).rejects.toThrow("could not verify the selected model settings (standard tier)");
   });
 
   it("treats blank reasoning effort as no explicit control", async () => {
@@ -750,7 +800,7 @@ describe("parseCursorCliModelsStdout", () => {
       params: [],
       unmet: ["fast"],
     })).toBe(
-      "Cursor Cloud could not verify the selected model settings (fast mode). Refresh Cursor models and try again.",
+      "Cursor Cloud could not verify the selected model settings (fast tier). Refresh Cursor models and try again.",
     );
   });
 
@@ -859,7 +909,11 @@ describe("parseCursorCliModelsStdout", () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
-        models: ["claude-4-sonnet-thinking", "o3", "claude-4-opus-thinking"],
+        items: [
+          { id: "claude-4-sonnet-thinking", title: "Claude 4 Sonnet Thinking" },
+          { id: "o3", title: "O3" },
+          { id: "claude-4-opus-thinking", title: "Claude 4 Opus Thinking" },
+        ],
       }),
     }));
     vi.stubGlobal("fetch", fetchMock);
@@ -872,7 +926,7 @@ describe("parseCursorCliModelsStdout", () => {
       "cursor/o3",
     ]);
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.cursor.com/v0/models",
+      "https://api.cursor.com/v1/models",
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: "Bearer crsr_test",

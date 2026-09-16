@@ -6,6 +6,22 @@ import {
   type CtoAttentionState,
   type CtoOnboardingState,
   type CtoSnapshot,
+  type CursorAgentUsage,
+  type CursorCloudAgentSummary,
+  type CursorCloudArtifactDownload,
+  type CursorCloudArtifactSummary,
+  type CursorCloudCreateRunRequest,
+  type CursorCloudCreateRunResult,
+  type CursorCloudFleetEvent,
+  type CursorCloudFleetResult,
+  type CursorCloudFollowUpRequest,
+  type CursorCloudFollowUpResult,
+  type CursorCloudListAgentsResult,
+  type CursorCloudListRunsResult,
+  type CursorCloudPullIntoLaneResult,
+  type CursorCloudRepository,
+  type CursorCloudStreamRunRequest,
+  type CursorCloudStreamRunResult,
   type PersonalChatStreamEventsResult,
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
@@ -419,6 +435,88 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   infra.addDispose(stopOAuthDrain);
 
+  // The desktop receives Cursor's fleet event directly from the ingress
+  // service. Hosted clients only have the sync command channel, so keep the
+  // same event contract with a small, subscriber-scoped poll. It is dormant
+  // until a fleet pane is mounted and emits only when the fleet changes.
+  const cursorCloudFleetListeners = new Set<(event: CursorCloudFleetEvent) => void>();
+  let cursorCloudFleetPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let cursorCloudFleetPollInFlight = false;
+  let cursorCloudFleetSnapshot = new Map<string, string>();
+  const CURSOR_CLOUD_FLEET_POLL_MS = 2_000;
+  const pollCursorCloudFleet = async (): Promise<void> => {
+    if (cursorCloudFleetPollInFlight || cursorCloudFleetListeners.size === 0) return;
+    cursorCloudFleetPollInFlight = true;
+    try {
+      const result = await call<CursorCloudFleetResult>(
+        "ai.cursorCloudFleet",
+        { includeArchived: true, limit: 100 },
+        { items: [], relayState: "unconfigured", lastEventAt: null, fetchedAt: new Date(0).toISOString() },
+      );
+      const next = new Map(result.items.map((entry) => [
+        entry.agent.agentId,
+        JSON.stringify({
+          status: entry.runStatus ?? entry.agent.status ?? null,
+          summary: entry.agent.summary,
+          branch: entry.branch,
+          prUrl: entry.prUrl,
+          archived: entry.agent.archived === true,
+        }),
+      ]));
+      const changed = [...next.entries()].find(([agentId, value]) => cursorCloudFleetSnapshot.get(agentId) !== value);
+      if (cursorCloudFleetSnapshot.size > 0 && changed) {
+        const entry = result.items.find((candidate) => candidate.agent.agentId === changed[0]);
+        if (entry) {
+          const parsed = JSON.parse(changed[1]) as {
+            status?: string | null;
+            summary?: string;
+            branch?: string | null;
+            prUrl?: string | null;
+          };
+          const event: CursorCloudFleetEvent = {
+            agentId: entry.agent.agentId,
+            status: parsed.status ?? "unknown",
+            summary: parsed.summary ?? entry.agent.summary,
+            branchName: parsed.branch ?? entry.branch,
+            prUrl: parsed.prUrl ?? entry.prUrl,
+            eventId: `web-fleet-${Date.now()}-${entry.agent.agentId}`,
+            createdAt: new Date().toISOString(),
+          };
+          events.emit("cursorCloudFleetEvent", event);
+        }
+      }
+      cursorCloudFleetSnapshot = next;
+    } catch {
+      // The fleet pane owns the visible error state; event polling is only a
+      // freshness hint and must never create an unhandled rejection.
+    } finally {
+      cursorCloudFleetPollInFlight = false;
+      if (cursorCloudFleetListeners.size > 0) {
+        cursorCloudFleetPollTimer = setTimeout(() => {
+          cursorCloudFleetPollTimer = null;
+          void pollCursorCloudFleet();
+        }, CURSOR_CLOUD_FLEET_POLL_MS);
+      }
+    }
+  };
+  const stopCursorCloudFleetPolling = (): void => {
+    if (cursorCloudFleetPollTimer != null) clearTimeout(cursorCloudFleetPollTimer);
+    cursorCloudFleetPollTimer = null;
+    cursorCloudFleetListeners.clear();
+    cursorCloudFleetSnapshot = new Map();
+  };
+  infra.addDispose(stopCursorCloudFleetPolling);
+  const onCursorCloudFleetEvent = (listener: (event: CursorCloudFleetEvent) => void): (() => void) => {
+    cursorCloudFleetListeners.add(listener);
+    const unsubscribe = events.on("cursorCloudFleetEvent", listener);
+    if (cursorCloudFleetListeners.size === 1) void pollCursorCloudFleet();
+    return () => {
+      unsubscribe();
+      cursorCloudFleetListeners.delete(listener);
+      if (cursorCloudFleetListeners.size === 0) stopCursorCloudFleetPolling();
+    };
+  };
+
   const ai: Record<string, unknown> = {
     // Pinned in the Electron contract: the AI status describes the machine that
     // answered it, so a pin naming another machine cannot be served from this
@@ -552,10 +650,58 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     cursorAuthCancel: () => call<void>("ai.cursorAuthCancel", undefined, undefined, false),
     onCursorAuthStatus: (cb: (status: CursorSdkAuthEvent) => void) =>
       events.on("cursorAuthStatus" as never, cb as never),
+    cursorCloudListRepositories: () =>
+      call<CursorCloudRepository[]>("ai.listCursorCloudRepositories", {}, [], true),
+    cursorCloudListAgents: (args?: { includeArchived?: boolean; limit?: number; cursor?: string | null }) =>
+      call<CursorCloudListAgentsResult>(
+        "ai.listCursorCloudAgents",
+        args ?? {},
+        { items: [] },
+      ),
+    cursorCloudListRuns: (args: { agentId: string; limit?: number; cursor?: string | null }) =>
+      call<CursorCloudListRunsResult>("ai.listCursorCloudRuns", args, { items: [] }),
+    cursorCloudCreateRun: (args: CursorCloudCreateRunRequest) =>
+      call<CursorCloudCreateRunResult>(
+        "ai.createCursorCloudRun",
+        args,
+        unavailableOnHost("Cursor Cloud launches are unavailable while the host is offline."),
+        false,
+      ),
+    cursorCloudGetLaneSecretNames: (laneId: string) =>
+      call<string[]>("ai.getCursorCloudLaneSecretNames", { laneId }, []),
+    cursorCloudArchiveAgent: (agentId: string) =>
+      call<void>("ai.archiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud archive is unavailable while the host is offline."), false),
+    cursorCloudUnarchiveAgent: (agentId: string) =>
+      call<void>("ai.unarchiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud unarchive is unavailable while the host is offline."), false),
+    cursorCloudDeleteAgent: (agentId: string) =>
+      call<void>("ai.deleteCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud delete is unavailable while the host is offline."), false),
+    cursorCloudGetAgent: (agentId: string) =>
+      call<CursorCloudAgentSummary | null>("ai.getCursorCloudAgent", { agentId }, null),
+    cursorCloudGetUsage: (args: { agentId: string; runId?: string | null }) =>
+      call<CursorAgentUsage>("ai.getCursorAgentUsage", args, { agentId: args.agentId, runId: args.runId ?? null, inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: null, reasoningTokens: null, cost: null }),
+    cursorCloudStreamRun: (args: CursorCloudStreamRunRequest) =>
+      call<CursorCloudStreamRunResult>("ai.cursorCloudStreamRun", args, unavailableOnHost("Cursor Cloud streaming is unavailable while the host is offline."), false),
+    cursorCloudCancelRun: (args: { agentId: string; runId: string }) =>
+      call<void>("ai.cancelCursorCloudRun", args, unavailableOnHost("Cursor Cloud cancellation is unavailable while the host is offline."), false),
+    cursorCloudFollowUp: (args: CursorCloudFollowUpRequest) =>
+      call<CursorCloudFollowUpResult>("ai.cursorCloudFollowUp", args, unavailableOnHost("Cursor Cloud follow-up is unavailable while the host is offline."), false),
+    cursorCloudListArtifacts: (agentId: string) =>
+      call<CursorCloudArtifactSummary[]>("ai.listCursorCloudArtifacts", { agentId }, []),
+    cursorCloudDownloadArtifact: (args: { agentId: string; path: string }) =>
+      call<CursorCloudArtifactDownload>("ai.downloadCursorCloudArtifact", args, unavailableOnHost("Cursor Cloud artifacts are unavailable while the host is offline."), false),
     cursorCloudOpenChat: (args: unknown) =>
       call("ai.openCursorCloudChat", args, unavailableOnHost("Opening a Cursor Cloud chat is unavailable in the web client while offline"), false),
     cursorCloudWatchMirror: (args: unknown) =>
       call("ai.watchCursorCloudMirror", args, undefined, false),
+    cursorCloudFleet: (args?: { includeArchived?: boolean; limit?: number }) =>
+      call<CursorCloudFleetResult>("ai.cursorCloudFleet", args ?? {}, { items: [], relayState: "unconfigured", lastEventAt: null, fetchedAt: new Date(0).toISOString() }),
+    cursorCloudPullIntoLane: (agentId: string) =>
+      call<CursorCloudPullIntoLaneResult>("ai.cursorCloudPullIntoLane", { agentId }, unavailableOnHost("Pulling a Cursor Cloud branch requires the host desktop."), false),
+    cursorCloudResolveLane: (agentId: string) =>
+      call<{ laneId: string; laneName: string; created: boolean }>("ai.cursorCloudResolveLane", { agentId }, unavailableOnHost("Resolving a Cursor Cloud lane requires the host desktop."), false),
+    cursorCloudStopRun: (agentId: string) =>
+      call<{ stopped: boolean }>("ai.cursorCloudStopRun", { agentId }, unavailableOnHost("Stopping a Cursor Cloud run is unavailable while the host is offline."), false),
+    onCursorCloudFleetEvent,
   };
 
   const projectConfig: Record<string, unknown> = {

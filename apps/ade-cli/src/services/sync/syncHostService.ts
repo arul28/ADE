@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   recordUsageInteraction,
+  usageActionFromRpcDomain,
   usageClientSurfaceFromPeer,
 } from "../../../../desktop/src/main/services/usage/usageStatsStore";
 import {
@@ -6571,11 +6572,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const commandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
           ? payload.args as Record<string, unknown>
           : {};
+        const separator = payload.action.indexOf(".");
+        const actionDomain = separator > 0 ? payload.action.slice(0, separator) : payload.action;
+        const actionName = separator > 0 ? payload.action.slice(separator + 1) : "";
+        const usageAction = actionName
+          ? usageActionFromRpcDomain(actionDomain, actionName)
+          : payload.action;
         recordUsageInteraction(args.db, {
           projectId: hostProjectId,
           client: surface,
-          action: payload.action,
-          feature: payload.action.split(".", 1)[0] ?? "other",
+          action: usageAction,
+          feature: usageAction.split(".", 1)[0] ?? "other",
           sessionId: toOptionalString(commandArgs.sessionId),
           analyticsEligible:
             peer.productAnalyticsEnabled

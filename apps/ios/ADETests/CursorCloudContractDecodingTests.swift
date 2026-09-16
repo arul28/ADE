@@ -2,6 +2,27 @@ import XCTest
 @testable import ADE
 
 final class CursorCloudContractDecodingTests: XCTestCase {
+  func testCursorCloudVisibilityRequiresTheCursorAuthConnection() throws {
+    let connected = try JSONDecoder().decode(
+      CursorCloudConnectionStatus.self,
+      from: Data(#"{"providerConnections":{"cursor":{"authAvailable":true}}}"#.utf8)
+    )
+    XCTAssertTrue(connected.connected)
+
+    let disconnected = try JSONDecoder().decode(
+      CursorCloudConnectionStatus.self,
+      from: Data(#"{"providerConnections":{"cursor":{"authAvailable":false},"linear":{"authAvailable":true}}}"#.utf8)
+    )
+    XCTAssertFalse(disconnected.connected)
+  }
+
+  func testCursorCloudUsesTheNativeSdkIdForPrefixedCatalogModels() {
+    XCTAssertEqual(workCursorCloudSDKModelId(for: "cursor/grok-4.6"), "grok-4.6")
+    XCTAssertEqual(workCursorCloudSDKModelId(for: "  cursor/claude-4-sonnet-thinking  "), "claude-4-sonnet-thinking")
+    XCTAssertNil(workCursorCloudSDKModelId(for: "auto"))
+    XCTAssertNil(workCursorCloudSDKModelId(for: "cursor/"))
+  }
+
   func testFleetResultDecodesEpochMsAndIsoTimestampsWithNullsAndUnknownFields() throws {
     // Mirrors desktop CursorCloudFleetResult: agent timestamps arrive as
     // epoch-ms numbers (typed) or ISO strings, `| null` fields may be absent,
@@ -93,5 +114,35 @@ final class CursorCloudContractDecodingTests: XCTestCase {
     XCTAssertEqual(try XCTUnwrap(isoPlain.date), expectedPlain)
 
     XCTAssertThrowsError(try decoder.decode(CursorCloudTimestamp.self, from: Data("[1]".utf8)))
+  }
+
+  func testCursorCloudRunDetailDecodesLatestBranchAndPullRequest() throws {
+    let data = Data(#"""
+    {
+      "items": [
+        {
+          "runId": "run-7",
+          "agentId": "agent-7",
+          "status": "FINISHED",
+          "modelId": "grok-4.6",
+          "git": {
+            "branches": [
+              { "repoUrl": "github.com/arul/ade", "branch": "ade/fix-cloud", "prUrl": "https://github.com/arul/ade/pull/7" }
+            ]
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+    """#.utf8)
+
+    let result = try JSONDecoder().decode(CursorCloudRunListResult.self, from: data)
+    let run = try XCTUnwrap(result.items.first)
+
+    XCTAssertEqual(run.runId, "run-7")
+    XCTAssertEqual(run.status, "FINISHED")
+    XCTAssertEqual(run.modelId, "grok-4.6")
+    XCTAssertEqual(run.primaryBranch, "ade/fix-cloud")
+    XCTAssertEqual(run.primaryPrUrl, "https://github.com/arul/ade/pull/7")
   }
 }

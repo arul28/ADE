@@ -5714,6 +5714,15 @@ describe("ADE database usage aggregation", () => {
     expect(isMeaningfulUsageAction("chat.cancelScheduledWork")).toBe(true);
     expect(usageActionFromIpcChannel("ade.agentChat.promptStashes.create")).toBe("chat.createPromptStash");
     expect(isMeaningfulUsageAction("chat.createPromptStash")).toBe(true);
+    // Cursor Cloud uses the existing coarse taxonomy on every transport. This
+    // prevents provider-specific action names from becoming analytics values
+    // while still counting launches and successful user mutations.
+    expect(usageActionFromIpcChannel("ade.ai.cursorCloud.createRun")).toBe("chat.launch");
+    expect(usageActionFromIpcChannel("ade.ai.cursorCloud.followUp")).toBe("chat.send");
+    expect(usageActionFromRpcDomain("ai", "createCursorCloudRun")).toBe("chat.launch");
+    expect(usageActionFromRpcDomain("ai", "cursorCloudFollowUp")).toBe("chat.send");
+    expect(usageActionFromRpcDomain("ai", "cursorCloudPullIntoLane")).toBe("lanes.attach");
+    expect(isMeaningfulUsageAction(usageActionFromRpcDomain("ai", "cursorCloudStopRun"))).toBe(true);
     expect(usageActionFromIpcChannel("ade.pty.create")).toBe("work.startCliSession");
     expect(usageActionFromRpcDomain("lane", "create")).toBe("lanes.create");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane", "archiveAndReclaim"))).toBe(true);

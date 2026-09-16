@@ -780,6 +780,13 @@ struct WorkRootScreen: View {
         onFiltersOpened: restoreWorkViewStateAfterDeeplink,
         persist: persistWorkViewState
       ))
+      // Keep both integration entry points honest when the active project or
+      // paired host changes. Cursor is stricter than Linear here: its toolbar
+      // button is rendered only after this host-owned credential probe passes.
+      .task(id: "\(syncService.activeProjectId ?? ""):\(syncService.activeProjectHostIdentity ?? ""):\(syncService.isAttached)") {
+        await syncService.refreshLinearConnection()
+        await syncService.refreshCursorCloudConnection()
+      }
       .task(id: workProjectionReloadKey) {
         guard let revision = workProjectionReloadKey else { return }
         guard lastWorkProjectionReloadRevision != revision || sessions.isEmpty else { return }
