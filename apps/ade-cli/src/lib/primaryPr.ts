@@ -99,3 +99,21 @@ export function pickPrimaryPrRecord(prs: readonly PrRecord[]): PrRecord | null {
   }
   return best;
 }
+
+/**
+ * The OTHER PRs a surface with room for one should name: every row except the
+ * primary, rendered as `#N state`.
+ *
+ * Lives here, next to `pickPrimaryPrRecord`, because it has to apply the very
+ * same detached rule — `detached` is a record, so the `!== true` test this
+ * replaced kept every detached row and printed PRs whose lane is gone as
+ * current lane work.
+ */
+export function secondaryPrRecordLabels(
+  prs: readonly PrRecord[],
+  primary: PrRecord | null,
+): string[] {
+  return prs
+    .filter((pr) => pr.detached == null && pr !== primary)
+    .map((pr) => `#${prRecordNumber(pr) || "?"} ${prRecordState(pr.state)}`);
+}

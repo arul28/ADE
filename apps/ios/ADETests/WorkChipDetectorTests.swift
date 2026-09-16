@@ -16,6 +16,7 @@ func workChipFixtureKindName(_ kind: WorkSmartLink.Kind) -> String {
   case .chat: return "chat"
   case .terminal: return "terminal"
   case .file: return "file"
+  case .folder: return "folder"
   case .artifact: return "artifact"
   case .webPage: return "web_page"
   case .adeLink: return "ade_link"
@@ -172,6 +173,61 @@ final class WorkChipDetectorTests: XCTestCase {
     XCTAssertEqual(plain, text)
     XCTAssertFalse(plain.contains("Lane 25f280a4"))
     XCTAssertFalse(plain.contains("#1237"))
+  }
+
+  // MARK: `@`-prefixed paths
+
+  func testPillsTheFileTokenTheComposerInserts() {
+    // The composer inserts `@<path>` for a quick-open pick, so these are the
+    // most common chips in any message. The detector knew only the entity
+    // grammar, so every file pill died on send.
+    let found = chips("see @src/shared/chips.ts ok")
+    XCTAssertEqual(found.count, 1)
+    XCTAssertEqual(found.first?.kind, .file)
+    XCTAssertEqual(found.first?.token, "src/shared/chips.ts")
+    XCTAssertEqual(found.first?.label, "chips.ts")
+  }
+
+  func testKeepsAFolderAFolderTrailingSlashAndAll() {
+    let found = chips("look in @src/shared/ please")
+    XCTAssertEqual(found.count, 1)
+    XCTAssertEqual(found.first?.kind, .folder)
+    XCTAssertEqual(found.first?.token, "src/shared/")
+    XCTAssertEqual(found.first?.label, "shared/")
+  }
+
+  func testPathChipSpansTheSigilSoTheProseSurvives() {
+    let text = "see @src/a/b.ts ok"
+    let rebuilt = WorkChipDetector.parts(in: text).map { part -> String in
+      switch part {
+      case .text(let run): return run
+      case .chip(let chip): return chip.canonicalText
+      }
+    }.joined()
+    XCTAssertEqual(rebuilt, text)
+    XCTAssertEqual(WorkChipDetector.canonicalPlainText(text), text)
+  }
+
+  func testDropsTrailingSentencePunctuationButNeverAFoldersSlash() {
+    XCTAssertEqual(chips("edit @src/a/b.ts.").first?.token, "src/a/b.ts")
+    XCTAssertEqual(chips("open @src/a/b/ (there)").first?.token, "src/a/b/")
+  }
+
+  func testLeavesTheEntityGrammarAndNonPathsAlone() {
+    // No `/` means it could be a domain or a handle; `:` belongs to the entity
+    // grammar. Both must stay out of the path matcher.
+    XCTAssertEqual(chips("mail @example.com now").count, 0)
+    XCTAssertEqual(chips("@bogus:123 and @chat: are not mentions").count, 0)
+    XCTAssertEqual(chips("arul@chat/nope is an email-shaped substring").count, 0)
+    let entity = chips("@chat:9e2315e8ddef")
+    XCTAssertEqual(entity.count, 1)
+    XCTAssertEqual(entity.first?.kind, .chat)
+  }
+
+  func testDoesNotDoubleMatchAPathInsideAUrl() {
+    let found = chips("see https://github.com/arul28/ade/pull/7 ok")
+    XCTAssertEqual(found.count, 1)
+    XCTAssertEqual(found.first?.kind, .pullRequest)
   }
 
   // MARK: Cross-surface fixture

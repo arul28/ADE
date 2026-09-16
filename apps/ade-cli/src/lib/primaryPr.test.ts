@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { pickPrimaryPrRecord, prRecordNumber, prRecordState } from "./primaryPr";
+import {
+  pickPrimaryPrRecord,
+  prRecordNumber,
+  prRecordState,
+  secondaryPrRecordLabels,
+} from "./primaryPr";
 
 describe("pickPrimaryPrRecord", () => {
   it("prefers open work over a lane's merged history", () => {
@@ -28,7 +33,14 @@ describe("pickPrimaryPrRecord", () => {
   });
 
   it("skips detached rows and answers null when nothing is left", () => {
-    const detached = { githubPrNumber: 7, state: "open", detached: true };
+    // A real `PrDetachedLane`, not `true`. A boolean stand-in passes under the
+    // `!= null` guard while never exercising the shape the wire actually
+    // sends — which is how the `=== true` bug survived review twice.
+    const detached = {
+      githubPrNumber: 7,
+      state: "open",
+      detached: { at: "2026-09-16T00:00:00.000Z", laneName: null, laneColor: null, chats: 0, artifacts: 0, checkpoints: 0 },
+    };
     const live = { githubPrNumber: 1, state: "merged" };
     expect(pickPrimaryPrRecord([detached, live])).toBe(live);
     expect(pickPrimaryPrRecord([detached])).toBeNull();
@@ -81,5 +93,51 @@ describe("defensive reads of untrusted wire rows", () => {
     expect(prRecordNumber({ number: 4 })).toBe(4);
     expect(prRecordNumber({ prNumber: 5 })).toBe(5);
     expect(prRecordNumber({ githubPrNumber: 3 })).toBe(3);
+  });
+});
+
+describe("secondaryPrRecordLabels", () => {
+  const DETACHED_RECORD = {
+    at: "2026-09-16T00:00:00.000Z",
+    laneName: "old-lane",
+    laneColor: null,
+    chats: 0,
+    artifacts: 0,
+    checkpoints: 0,
+  };
+
+  it("drops a detached RECORD, which a boolean test kept", () => {
+    // The `/pr` pane's "Also on this lane" line used `detached !== true`.
+    // `detached` is `PrDetachedLane | null`, so that test was true for EVERY
+    // row and a PR whose lane is gone printed as current lane work.
+    const primary = { githubPrNumber: 9, state: "open" };
+    const detached = { githubPrNumber: 7, state: "merged", detached: DETACHED_RECORD };
+    const alsoLive = { githubPrNumber: 8, state: "draft" };
+    expect(secondaryPrRecordLabels([primary, detached, alsoLive], primary)).toEqual([
+      "#8 draft",
+    ]);
+  });
+
+  it("excludes the primary row and keeps every other live row in order", () => {
+    const primary = { githubPrNumber: 4, state: "open" };
+    const follow = { githubPrNumber: 5, state: "open" };
+    const merged = { githubPrNumber: 3, state: "merged" };
+    expect(secondaryPrRecordLabels([merged, primary, follow], primary)).toEqual([
+      "#3 merged",
+      "#5 open",
+    ]);
+  });
+
+  it("prints ? for a row with no readable number and open for an unknown state", () => {
+    const primary = { githubPrNumber: 4, state: "open" };
+    const odd = { githubPrNumber: "12", state: "queued" };
+    expect(secondaryPrRecordLabels([primary, odd], primary)).toEqual(["#? open"]);
+  });
+
+  it("answers an empty list when there is no primary and nothing live", () => {
+    expect(secondaryPrRecordLabels([], null)).toEqual([]);
+    expect(
+      secondaryPrRecordLabels([{ githubPrNumber: 2, state: "open", detached: DETACHED_RECORD }], null),
+    ).toEqual([]);
   });
 });

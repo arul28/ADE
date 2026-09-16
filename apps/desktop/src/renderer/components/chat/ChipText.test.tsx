@@ -129,6 +129,20 @@ describe("ChipText", () => {
     expect(container.querySelector("span")).toBeNull();
   });
 
+  it("draws a file path as a clickable pill and a folder as a plain label", () => {
+    // The composer inserts `@<path>` for a quick-open pick, so these are the
+    // most common chips in a message. A FILE opens; a FOLDER must not look
+    // clickable, because the navigation target is `kind: "file"` and there is
+    // no folder destination to send it to.
+    const { unmount } = render(<ChipText text="see @src/shared/chips.ts ok" />);
+    expect(screen.getByRole("button").textContent).toContain("chips.ts");
+    unmount();
+
+    render(<ChipText text="look in @src/shared/ please" />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText("shared/")).toBeTruthy();
+  });
+
   it("shows a lane hover card on focus and hides it on Escape", async () => {
     renderInChatScope(laneChipText(), {
       lanes: [{ id: LANE_ID, name: "Composer chips", branchRef: "ade/composer-chips" } as LaneSummary],

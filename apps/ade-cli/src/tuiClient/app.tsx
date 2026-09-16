@@ -81,7 +81,11 @@ import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/s
 import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
-import { pickPrimaryPrRecord, prRecordNumber, prRecordState } from "../lib/primaryPr";
+import {
+  pickPrimaryPrRecord,
+  prRecordNumber,
+  secondaryPrRecordLabels,
+} from "../lib/primaryPr";
 import {
   approveToolUse,
   archiveChatSession,
@@ -11534,12 +11538,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // Naming the rest is the difference between "this is the PR" and "this
         // is the one I am showing you" — without it the pane silently
         // under-reports a follow-up PR cut from the same chat.
-        const otherPrs = prs
-          .filter((pr) => pr.detached !== true && pr !== activePr)
-          .map((pr) => {
-            const number = prRecordNumber(pr);
-            return `#${number || "?"} ${prRecordState(pr.state)}`;
-          });
+        // The detached rule lives with the primary picker: `detached` is a
+        // RECORD on the wire (`PrDetachedLane | null`), never the boolean it
+        // reads like, so the local `!== true` test this replaced matched every
+        // row and printed PRs whose lane is gone as current lane work.
+        const otherPrs = secondaryPrRecordLabels(prs, activePr);
         const sections = [
           formatPrSummary(activePr),
           ...(otherPrs.length > 0 ? ["", `Also on this lane: ${otherPrs.join(" · ")}`] : []),

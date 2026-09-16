@@ -7453,6 +7453,49 @@ describe("ADE CLI", () => {
     );
   });
 
+  it("keeps quick-open flags out of the positional query", () => {
+    // Option readers SPLICE the token out of `args`, and `query` falls back to
+    // whatever is left (`args.join(" ")`). Assembling the query before the
+    // flags were consumed sent "src --include-directories" to `file.quickOpen`,
+    // so the folder search matched nothing.
+    const quickOpenArgs = (argv: string[]) =>
+      (expectExecutePlan(buildCliPlan(argv)).steps[0] as {
+        params: { arguments: { action: string; args: Record<string, unknown> } };
+      }).params.arguments;
+
+    expect(quickOpenArgs(["files", "quick-open", "src", "--include-directories"])).toMatchObject({
+      action: "quickOpen",
+      args: { query: "src", includeDirectories: true },
+    });
+
+    expect(
+      quickOpenArgs([
+        "files",
+        "quick-open",
+        "app",
+        "--include-ignored",
+        "--limit",
+        "5",
+        "--include-directories",
+      ]),
+    ).toMatchObject({
+      action: "quickOpen",
+      args: { query: "app", limit: 5, includeIgnored: true, includeDirectories: true },
+    });
+
+    expect(
+      quickOpenArgs(["files", "quick-open", "--query", "readme", "--include-directories"]),
+    ).toMatchObject({
+      action: "quickOpen",
+      args: { query: "readme", includeDirectories: true },
+    });
+
+    expect(quickOpenArgs(["files", "quick-open", "src/lib"])).toMatchObject({
+      action: "quickOpen",
+      args: { query: "src/lib", includeDirectories: false },
+    });
+  });
+
   it("unwraps typed ADE action results while preserving actions run envelopes", () => {
     const connection = {
       mode: "headless" as const,

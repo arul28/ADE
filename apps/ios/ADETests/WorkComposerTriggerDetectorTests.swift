@@ -555,6 +555,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     case .chat: return "chat"
     case .terminal: return "terminal"
     case .file: return "file"
+  case .folder: return "folder"
     case .artifact: return "artifact"
     case .webPage: return "web_page"
     case .adeLink: return "ade_link"

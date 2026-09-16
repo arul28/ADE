@@ -10230,6 +10230,19 @@ function buildFilesPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "quick-open") {
+    // Every option is consumed BEFORE the positional query is assembled:
+    // `args.join(" ")` sweeps up whatever is left, so a flag still sitting in
+    // `args` becomes part of the query text and the search silently matches
+    // nothing (`files quick-open src --include-directories` searching for
+    // "src --include-directories").
+    const explicitQuery = readValue(args, ["--query", "-q"]);
+    const limit = readIntOption(args, ["--limit"]);
+    const includeIgnored = readFlag(args, ["--include-ignored"]);
+    // Opt-in, exactly like the action contract: quick-open's callers
+    // mostly open what they receive, and a directory is not openable.
+    // Folder rows print with a trailing slash so a caller piping this
+    // output can tell the two apart.
+    const includeDirectories = readFlag(args, ["--include-directories"]);
     return {
       kind: "execute",
       label: "file quick-open",
@@ -10239,14 +10252,10 @@ function buildFilesPlan(args: string[]): CliPlan {
           "file",
           "quickOpen",
           withWorkspace({
-            query: readValue(args, ["--query", "-q"]) ?? args.join(" "),
-            limit: readIntOption(args, ["--limit"]),
-            includeIgnored: readFlag(args, ["--include-ignored"]),
-            // Opt-in, exactly like the action contract: quick-open's callers
-            // mostly open what they receive, and a directory is not openable.
-            // Folder rows print with a trailing slash so a caller piping this
-            // output can tell the two apart.
-            includeDirectories: readFlag(args, ["--include-directories"]),
+            query: explicitQuery ?? args.join(" "),
+            limit,
+            includeIgnored,
+            includeDirectories,
           }),
         ),
       ],

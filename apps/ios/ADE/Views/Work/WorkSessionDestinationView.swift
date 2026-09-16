@@ -889,6 +889,12 @@ struct WorkSessionDestinationView: View {
   @State var prDetailsSnapshot: PullRequestSnapshot?
   @State var prDetailsRefreshing = false
   @State var prDetailsError: String?
+  /// Generation of the newest PR-details refresh. `refreshChatPrDetails(force:)`
+  /// deliberately bypasses the `prDetailsRefreshing` guard, so two refreshes can
+  /// overlap when the user switches PRs quickly; every refresh-state write is
+  /// gated on still owning this token, which keeps a slower earlier request from
+  /// publishing its error or clearing the spinner for the one still in flight.
+  @State var prDetailsRequestToken = 0
   @State var prLinkCopied = false
   @State var sessionActionRenamePresented = false
   @State var sessionActionRenameText = ""
@@ -1448,7 +1454,11 @@ struct WorkSessionDestinationView: View {
             presentCreateLanePr()
           },
           onOpenPrsTab: {
-            if lanePrTag == nil {
+            // The DISPLAYED PR decides, not the lane's resolved one: a PR this
+            // chat linked from another lane shows in the switcher while
+            // `lanePrTag` stays nil, and branching on the lane tag sent the
+            // user to the creation flow instead of to the PR they picked.
+            if chatDisplayPrTag == nil {
               openPrCreationInPrsTab()
             } else {
               openLaneOpenPr()

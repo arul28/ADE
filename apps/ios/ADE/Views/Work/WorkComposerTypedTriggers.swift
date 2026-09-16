@@ -90,6 +90,9 @@ struct WorkSmartLink: Equatable {
     case chat
     case terminal
     case file
+    /// A directory. A distinct kind on purpose, exactly as on the desktop: the
+    /// glyph and what a tap means both differ from a file's.
+    case folder
     case artifact
     case webPage
     /// An `ade://` URL this build cannot parse — a newer ADE minted it.
@@ -109,6 +112,7 @@ struct WorkSmartLink: Equatable {
       case .chat: return "💬"
       case .terminal: return "▶"
       case .file: return "📄"
+      case .folder: return "📁"
       case .artifact: return "◈"
       case .webPage: return "↗"
       case .adeLink: return "A"
@@ -423,6 +427,87 @@ enum WorkChatMentionDetector {
   }
 }
 
+// MARK: - `@`-prefixed repo paths
+
+/// One `@`-prefixed file or folder path in a message body — the token the
+/// composer inserts for a quick-open pick (`@src/shared/chips.ts`,
+/// `@src/shared/`). The Swift twin of `chipFromPath` in
+/// `apps/desktop/src/shared/chips.ts`.
+struct WorkChipPath: Equatable {
+  /// The path with no leading `@` and no folder trailing slash.
+  let path: String
+  let isDirectory: Bool
+  /// Covers the `@` AND the path text, so a renderer replaces both.
+  let range: NSRange
+
+  /// Canonical serialized form, matching `chipFromPath().token`: a folder keeps
+  /// its trailing slash, because that slash is what marks it a folder.
+  var token: String { isDirectory ? "\(path)/" : path }
+
+  var chipKind: WorkSmartLink.Kind { isDirectory ? .folder : .file }
+
+  /// Basename, with a folder's slash kept. Matches the desktop chip's `label`.
+  var defaultLabel: String {
+    let normalized = path.hasSuffix("/") ? String(path.dropLast()) : path
+    let name = (normalized as NSString).lastPathComponent
+    let base = name.isEmpty ? normalized : name
+    return isDirectory ? "\(base)/" : base
+  }
+}
+
+enum WorkChipPathDetector {
+  // Character-for-character the desktop's `PATH_MENTION_RE`. Two deliberate
+  // restrictions, and both have to hold on BOTH surfaces or the fixture parity
+  // test is the only thing left standing between them:
+  //
+  //   - The token MUST contain a `/`. A bare `@name.ext` is indistinguishable
+  //     from a domain or a handle (`@example.com`), and a file pill that
+  //     navigates nowhere is worse than leaving a root-level file as text.
+  //   - NO `:` anywhere in the token. That is what keeps `@chat:abc` and
+  //     `@bogus:123` out of this matcher and leaves them to the entity grammar.
+  //
+  // The leading boundary mirrors `WorkChatMentionDetector`, so an email or a
+  // mid-word `arul@chat/nope` is not a path mention either.
+  private static let regex = try! NSRegularExpression(
+    pattern: "(?:^|[ \\t\\r\\n(\\[{,])@([^\\s:]*/[^\\s:]*)",
+    options: []
+  )
+  /// Trailing sentence punctuation belongs to the prose, not the path.
+  private static let trailingPunctuation = try! NSRegularExpression(
+    pattern: "[.,;!?)\\]}]+$",
+    options: []
+  )
+
+  /// Every `@`-path token in `text`, in document order.
+  static func paths(in text: NSString) -> [WorkChipPath] {
+    guard text.length > 0, text.range(of: "@").location != NSNotFound else { return [] }
+    let full = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: full).compactMap { match in
+      guard match.numberOfRanges == 2 else { return nil }
+      let captured = match.range(at: 1)
+      guard captured.location != NSNotFound, captured.location > 0 else { return nil }
+      var raw = text.substring(with: captured) as NSString
+      if let strip = trailingPunctuation.firstMatch(
+        in: raw as String,
+        range: NSRange(location: 0, length: raw.length)
+      ) {
+        raw = raw.substring(to: strip.range.location) as NSString
+      }
+      // A folder's own trailing slash survives the strip above, and the `/`
+      // requirement is re-checked because the strip can eat one.
+      guard raw.range(of: "/").location != NSNotFound else { return nil }
+      let isDirectory = raw.hasSuffix("/")
+      let path = isDirectory ? raw.substring(to: raw.length - 1) : (raw as String)
+      return WorkChipPath(
+        path: path,
+        isDirectory: isDirectory,
+        // `@` sits immediately before the capture, and the chip covers both.
+        range: NSRange(location: captured.location - 1, length: raw.length + 1)
+      )
+    }
+  }
+}
+
 // MARK: - Unified chips
 
 /// One pill, whichever grammar produced it — the Swift twin of the `Chip` type
@@ -434,6 +519,7 @@ struct WorkChip: Equatable {
   enum Origin: Equatable {
     case mention(WorkChatMention)
     case link(WorkSmartLink)
+    case path(WorkChipPath)
   }
 
   let kind: WorkSmartLink.Kind
@@ -459,6 +545,23 @@ struct WorkChip: Equatable {
     range = link.range
     origin = .link(link)
   }
+
+  init(path: WorkChipPath) {
+    kind = path.chipKind
+    token = path.token
+    label = path.defaultLabel
+    range = path.range
+    origin = .path(path)
+  }
+
+  /// The plain text this chip serializes back to. Mention and link tokens are
+  /// already the literal source text; a path token deliberately is NOT — it
+  /// omits the `@` the grammar needs, exactly as `chipFromPath().token` does on
+  /// the desktop — so the sigil is restored here rather than silently dropped.
+  var canonicalText: String {
+    if case .path = origin { return "@\(token)" }
+    return token
+  }
 }
 
 /// A message body split into plain runs and chips — what a renderer wants, so
@@ -471,8 +574,9 @@ enum WorkChipTextPart: Equatable {
 /// One scan over the text, every grammar, in document order, no overlaps.
 /// Mirrors `parseChips` / `splitTextIntoChipParts`.
 ///
-/// File-path chips are deliberately NOT detected: a bare path is ambiguous with
-/// ordinary prose, so paths become chips only when the composer inserts them.
+/// A BARE path is still not a chip — that is ambiguous with ordinary prose — but
+/// an `@`-prefixed one is, because that is the token the composer inserts for a
+/// quick-open pick and it is by far the most common chip in a real message.
 enum WorkChipDetector {
   static let defaultLimit = 24
   /// Serialization is not a render, so it is not bounded by what fits on a
@@ -484,11 +588,15 @@ enum WorkChipDetector {
 
     var candidates: [WorkChip] = WorkChatMentionDetector.mentions(in: text).map(WorkChip.init(mention:))
     candidates.append(contentsOf: WorkSmartLinkDetector.links(in: text).prefix(limit).map(WorkChip.init(link:)))
+    // Last, like the desktop: the sort below puts them in document order and
+    // the `consumedTo` loop drops any that overlap a link, so a path that lives
+    // inside a URL cannot double-match.
+    candidates.append(contentsOf: WorkChipPathDetector.paths(in: text).map(WorkChip.init(path:)))
 
     // Sort by start offset, tie-broken by discovery order so the sort is stable
-    // the way the desktop's `Array.prototype.sort` is. Mentions start with `@`
-    // and links with a scheme, so a tie is not reachable today — but a stable
-    // order is what keeps the two surfaces identical if that ever changes.
+    // the way the desktop's `Array.prototype.sort` is. That order is what makes
+    // the entity grammar win a tie with the path grammar, which is the same
+    // precedence the desktop's push order gives it.
     let ordered = candidates.enumerated()
       .sorted { lhs, rhs in
         lhs.element.range.location == rhs.element.range.location
@@ -547,7 +655,7 @@ enum WorkChipDetector {
       if chip.range.location > cursor {
         out += ns.substring(with: NSRange(location: cursor, length: chip.range.location - cursor))
       }
-      out += chip.token
+      out += chip.canonicalText
       cursor = NSMaxRange(chip.range)
     }
     if cursor < ns.length { out += ns.substring(from: cursor) }

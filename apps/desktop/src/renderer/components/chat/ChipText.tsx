@@ -43,6 +43,11 @@ function openChip(chip: Chip): void {
     return;
   }
   if (source.origin === "path") {
+    // A FOLDER is not openable: the navigation target is `kind: "file"`, and
+    // handing it `src/shared/` asks the editor for a file that does not exist.
+    // `isActionable` already refuses the click; this is the second half of that
+    // contract so no future caller can route one here by accident.
+    if (chip.kind === "folder") return;
     navigateToAppTarget({ kind: "file", path: source.path, line: null, laneId: null });
     return;
   }
@@ -57,6 +62,11 @@ function openChip(chip: Chip): void {
 }
 
 function isActionable(chip: Chip): boolean {
+  // A folder chip is a label, like a terminal mention: there is no folder
+  // destination to open, and a pill that looks clickable and does nothing is
+  // worse than one that plainly is not. iOS reaches the same answer for the
+  // same reason (`workChipNavigationURL` returns nil for a path).
+  if (chip.kind === "folder") return false;
   return chip.source.origin !== "mention" || chip.source.mentionKind !== "terminal";
 }
 

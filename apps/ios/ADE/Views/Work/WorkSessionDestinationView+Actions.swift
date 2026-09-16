@@ -1268,11 +1268,20 @@ extension WorkSessionDestinationView {
   @MainActor
   func refreshChatPrDetails(force: Bool = false) async {
     guard force || !prDetailsRefreshing else { return }
+    // `force` skips the in-flight guard on purpose, so B→C selection overlaps
+    // two refreshes. Claim a generation and gate EVERY later state write on
+    // still owning it: without this, B's error or B's `prDetailsRefreshing =
+    // false` landed on top of C's still-loading state.
+    prDetailsRequestToken += 1
+    let token = prDetailsRequestToken
     prDetailsRefreshing = true
     prDetailsError = nil
-    defer { prDetailsRefreshing = false }
+    defer {
+      if prDetailsRequestToken == token { prDetailsRefreshing = false }
+    }
 
     await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: force, clearBeforeLoad: false)
+    guard prDetailsRequestToken == token else { return }
 
     guard let prId = chatDisplayPr?.id ?? chatDisplayPrSummary?.id else {
       prDetailsSnapshot = nil
@@ -1284,7 +1293,6 @@ extension WorkSessionDestinationView {
       do {
         try await syncService.refreshPullRequestSnapshots(prId: prId)
         let items = (try? await syncService.fetchPullRequestListItems(laneId: headerMenuLaneId)) ?? []
-        laneOpenPr = workChatMappedPullRequest(for: lanePrTag, in: items)
         // Same split as the initial load: the badge maps against the lane's own
         // rows, the chat list is selected from the project's.
         let projectItems = (try? await syncService.fetchPullRequestListItems()) ?? items
@@ -1293,8 +1301,11 @@ extension WorkSessionDestinationView {
           pullRequests: projectItems,
           sessionId: sessionId
         )
+        guard prDetailsRequestToken == token else { return }
+        laneOpenPr = workChatMappedPullRequest(for: lanePrTag, in: items)
         if laneChatPrs != refreshedChatPrs { laneChatPrs = refreshedChatPrs }
       } catch {
+        guard prDetailsRequestToken == token else { return }
         prDetailsError = SyncUserFacingError.message(for: error)
       }
     }
@@ -1306,10 +1317,12 @@ extension WorkSessionDestinationView {
       // snapshot lands last and wins. The id we fetched must still be the id
       // on screen. Same shape as the `stillCurrent` guard in
       // `resolveLaneOpenPr` above.
-      guard (chatDisplayPr?.id ?? chatDisplayPrSummary?.id) == prId else { return }
+      guard prDetailsRequestToken == token,
+            (chatDisplayPr?.id ?? chatDisplayPrSummary?.id) == prId else { return }
       prDetailsSnapshot = snapshot
     } catch {
-      guard (chatDisplayPr?.id ?? chatDisplayPrSummary?.id) == prId else { return }
+      guard prDetailsRequestToken == token,
+            (chatDisplayPr?.id ?? chatDisplayPrSummary?.id) == prId else { return }
       prDetailsSnapshot = nil
       prDetailsError = SyncUserFacingError.message(for: error)
     }
