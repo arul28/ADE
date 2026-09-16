@@ -632,14 +632,15 @@ function subagentFoldKey(
 ): string | null {
   const identityKey = subagentIdentityKey(event);
   if (!identityKey) return null;
+  const turn = turnIdOf(event) ?? "";
   const parentKey = subagentParentKey(event);
   if (parentKey && isParentSubagentPlaceholder(event, parentKey)) {
     const resolvedKeys = resolvedKeysByParent.get(parentKey);
-    if (!resolvedKeys?.size) return `subagent:${identityKey}`;
+    if (!resolvedKeys?.size) return `subagent:${turn}:${identityKey}`;
     if (resolvedKeys.size > 1) return null;
-    return `subagent:${Array.from(resolvedKeys)[0]!}`;
+    return `subagent:${turn}:${Array.from(resolvedKeys)[0]!}`;
   }
-  return `subagent:${identityKey}`;
+  return `subagent:${turn}:${identityKey}`;
 }
 
 function activityBundleEntryFromEvent(
@@ -753,10 +754,15 @@ function appendRuntimeActivityBlock(
   if (block.entries.length > 8) block.entries.splice(0, block.entries.length - 8);
 }
 
-function removeFoldedActivityEntry(blocks: AggregatedBlock[], foldKey: string): void {
+function removeFoldedActivityEntry(
+  blocks: AggregatedBlock[],
+  foldKey: string,
+  turnId: string | null,
+): void {
   for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
     const block = blocks[blockIndex];
     if (!block || block.kind !== "activity-bundle") continue;
+    if ((block.turnId ?? null) !== turnId) continue;
     block.entries = block.entries.filter((entry) => entry.foldKey !== foldKey);
     if (block.entries.length === 0) blocks.splice(blockIndex, 1);
   }
@@ -769,7 +775,7 @@ function appendActivityBundleBlock(
   entry: ActivityBundleEntry,
 ): void {
   if (entry.foldKey && entry.status !== "running") {
-    removeFoldedActivityEntry(blocks, entry.foldKey);
+    removeFoldedActivityEntry(blocks, entry.foldKey, turnId);
   }
   const last = blocks[blocks.length - 1];
   let block: Extract<AggregatedBlock, { kind: "activity-bundle" }>;

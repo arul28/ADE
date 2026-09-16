@@ -280,6 +280,23 @@ describe("aggregateChatBlocks typed groups", () => {
     });
   });
 
+  it("keeps a prior turn's settled subagent when a later turn reuses the same taskId", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-1", description: "first", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", { type: "subagent_result", taskId: "agent-1", parentToolUseId: "spawn-1", status: "completed", summary: "first done", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:02.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+      env("2026-01-01T12:00:03.000Z", { type: "user_message", text: "again", turnId: "turn-2" }),
+      env("2026-01-01T12:00:04.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-2", description: "second", turnId: "turn-2" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:05.000Z", { type: "subagent_result", taskId: "agent-1", parentToolUseId: "spawn-2", status: "completed", summary: "second done", turnId: "turn-2" } as unknown as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    const activityEntries = blocks
+      .filter((block): block is Extract<AggregatedBlock, { kind: "activity-bundle" }> => block.kind === "activity-bundle")
+      .flatMap((block) => block.entries);
+    expect(activityEntries.map((entry) => entry.label)).toEqual(["first done", "second done"]);
+  });
+
   it("normalizes dotted subagent lifecycle events before activity bundling", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", {
