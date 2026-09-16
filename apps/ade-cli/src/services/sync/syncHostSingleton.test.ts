@@ -81,6 +81,7 @@ describe("sync host singleton", () => {
     const conflict = detectSyncHostSingletonConflict({
       lockPath,
       pidAlive: (pid) => pid === lockOwner.pid,
+      processMatchesOwner: () => true,
       scanListeners: () => [],
       platform: "darwin",
     });
