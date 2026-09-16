@@ -48,7 +48,6 @@ const titleBarIconButton =
 const paneAction =
   "inline-flex w-full items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-left text-[12px] font-medium text-fg/65 transition-colors hover:border-white/[0.10] hover:bg-white/[0.04] hover:text-fg/85";
 
-const stateTone = prStateTone;
 
 /** Human relative age for a sync timestamp. Computed at render (no ticking). */
 function relTime(iso: string | null): string {
@@ -181,7 +180,7 @@ function PrDetails({
   onOpenGitHub: () => void;
   onCopy: () => void;
 }) {
-  const tone = stateTone(pr.state);
+  const tone = prStateTone(pr.state);
   const live = liveDot(pr, relay);
   // The live status wins over the stored summary when we have it, and its
   // reason must travel with the status it explains.

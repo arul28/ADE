@@ -330,6 +330,57 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
   /// equivalent does. Both used to collapse to "ADE · pr/owner/repo/1237",
   /// which is why an ADE deeplink looked nothing like the same pull request
   /// pasted as a web URL. Mirrors `chips.test.ts` on the desktop.
+  /// Drives the SAME fixture the desktop suite uses
+  /// (`apps/desktop/src/shared/__fixtures__/chipCases.json`), read from disk
+  /// relative to this file rather than from the test bundle, because the test
+  /// target has no resources phase.
+  ///
+  /// This is the point of the fixture: hand-written twin tests prove today's
+  /// parity and nothing about tomorrow's. Adding a row on the desktop now fails
+  /// HERE until the Swift side matches.
+  func testMatchesSharedChipFixture() throws {
+    struct Case: Decodable { let url: String; let kind: String; let label: String }
+    struct Fixture: Decodable { let cases: [Case] }
+
+    let fixtureURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()   // ADETests
+      .deletingLastPathComponent()   // apps/ios
+      .deletingLastPathComponent()   // apps
+      .appendingPathComponent("desktop/src/shared/__fixtures__/chipCases.json")
+
+    let data = try Data(contentsOf: fixtureURL)
+    let fixture = try JSONDecoder().decode(Fixture.self, from: data)
+    XCTAssertGreaterThan(fixture.cases.count, 10, "fixture looks empty — parity would silently pass")
+
+    for row in fixture.cases {
+      guard let link = WorkSmartLinkDetector.links(in: row.url as NSString).first else {
+        XCTFail("no chip for \(row.url)")
+        continue
+      }
+      XCTAssertEqual(swiftKindName(link.kind), row.kind, "kind mismatch for \(row.url)")
+      XCTAssertEqual(link.compactLabel, row.label, "label mismatch for \(row.url)")
+    }
+  }
+
+  /// Maps the Swift enum onto the fixture's shared kind vocabulary.
+  private func swiftKindName(_ kind: WorkSmartLink.Kind) -> String {
+    switch kind {
+    case .pullRequest: return "pr"
+    case .issue: return "issue"
+    case .repository: return "repo"
+    case .commit: return "commit"
+    case .branch: return "branch"
+    case .actionsRun: return "actions_run"
+    case .linearIssue: return "linear_issue"
+    case .lane: return "lane"
+    case .chat: return "chat"
+    case .file: return "file"
+    case .artifact: return "artifact"
+    case .webPage: return "web_page"
+    case .adeLink: return "ade_link"
+    }
+  }
+
   func testAdeDeeplinksResolveToTypedKindsAndLabels() {
     func link(_ url: String) -> WorkSmartLink? {
       WorkSmartLinkDetector.links(in: url as NSString).first

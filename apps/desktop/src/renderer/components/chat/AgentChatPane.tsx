@@ -8990,7 +8990,7 @@ export function AgentChatPane({
         executionMode,
       }),
     ]);
-  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, reasoningEffort, fastMode, executionMode]);
+  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, effectiveReasoningEffort, fastMode, executionMode]);
 
   const buildNativeControlPayload = useCallback((provider: ChatRuntimeProviderKey) => {
     return {
@@ -9290,7 +9290,7 @@ export function AgentChatPane({
     iosElementContextItems,
     isWorkCliLaunchDraft,
     modelId,
-    reasoningEffort,
+    effectiveReasoningEffort,
   ]);
 
   const prepareDraftLaunchForSend = useCallback(async (

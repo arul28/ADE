@@ -513,6 +513,8 @@ export type MentionSuggestion = {
   detail?: string;
   filePath?: string;
   attachment?: boolean;
+  /** True when this row is a folder: a pointer, never an attachment. */
+  isDirectory?: boolean;
 };
 
 export type PendingApproval = {

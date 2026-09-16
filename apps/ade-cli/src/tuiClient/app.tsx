@@ -2770,7 +2770,7 @@ export function rankMentionSuggestions(
 }
 
 type MentionRemoteCacheEntry = {
-  filesByQuery: Map<string, Array<{ path: string }>>;
+  filesByQuery: Map<string, Array<{ path: string; isDirectory?: boolean }>>;
   commits: Array<Record<string, unknown>> | null;
   prs: Array<Record<string, unknown>> | null;
 };
@@ -7946,13 +7946,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             })
             .catch(() => []);
         const [files, commits, prs] = await Promise.all([filesPromise, commitsPromise, prsPromise]);
-        remote.push(...files.map((file) => ({
-          kind: "file" as const,
-          label: file.path,
-          insertText: `@file:${file.path}`,
-          detail: "file",
-          filePath: file.path,
-        })));
+        remote.push(...files.map((file) => {
+          // A folder is a POINTER, not an attachment: it has no bytes to
+          // upload, and the desktop composer deliberately inserts a chip and
+          // attaches nothing. The trailing slash matches `chipFromPath`.
+          const isDirectory = file.isDirectory === true;
+          const path = isDirectory ? `${file.path.replace(/\/+$/, "")}/` : file.path;
+          return {
+            kind: "file" as const,
+            label: path,
+            insertText: `@file:${path}`,
+            detail: isDirectory ? "folder" : "file",
+            filePath: path,
+            isDirectory,
+          };
+        }));
         remote.push(...commits
           .filter((commit) => {
             const subject = String(commit.subject ?? commit.message ?? "");
@@ -13246,6 +13254,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         .filter((mention) => (
           mention.kind === "file"
           && mention.filePath
+          // A folder row is a pointer; attaching it produces an "Attachment
+          // unavailable" line in the prompt, or a bogus CLI manifest row.
+          && mention.isDirectory !== true
           && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
         ))
         .map((mention) => ({

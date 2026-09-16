@@ -213,7 +213,12 @@ struct WorkSmartLink: Equatable {
       let name = path.split(separator: "/").last.map(String.init) ?? path
       // `?line=` is part of the label on the desktop (`name:42`); dropping it
       // here made the same link read differently on the two surfaces.
-      if let line = lineQueryValue, !line.isEmpty { return "\(name):\(line)" }
+      // The desktop rejects a non-numeric or zero line outright, which drops the
+      // whole link to a generic ADE chip. Accepting "abc" here would label a
+      // link the desktop refuses to type at all.
+      if let line = lineQueryValue, workSmartLinkIsAsciiNumber(line), line != "0" {
+        return "\(name):\(line)"
+      }
       return name
     case .commit: return String(segments[1].prefix(7))
     case .artifact: return "Artifact \(shortId(segments[1]))"

@@ -1,7 +1,8 @@
 {
   "_comment": [
     "Cross-surface chip cases. The desktop reads this from chips.test.ts and iOS",
-    "reads the same file from its test bundle (ADETests/WorkComposerTriggerDetectorTests).",
+    "reads the same file from disk, relative to its own source path, in",
+    "ADETests/WorkComposerTriggerDetectorTests.testMatchesSharedChipFixture.",
     "",
     "It exists because iOS re-implements chips.ts and deeplinks.ts in Swift and",
     "cannot import the TypeScript. Hand-written twin tests prove today's parity and",

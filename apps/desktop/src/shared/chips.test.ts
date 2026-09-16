@@ -107,9 +107,14 @@ describe("splitTextIntoChipParts", () => {
 });
 
 describe("cross-surface fixture", () => {
-  // The same file is loaded by the iOS suite. A new deeplink shape added here
-  // fails Swift until it matches, which is what stops the two implementations
-  // drifting apart between reviews.
+  // The iOS suite reads this same file from disk
+  // (ADETests/WorkComposerTriggerDetectorTests.testMatchesSharedChipFixture),
+  // so a new deeplink shape added here fails Swift until it matches. That is
+  // what stops the two implementations drifting apart between reviews.
+  it("has rows, so an emptied fixture cannot pass silently", () => {
+    expect(chipCases.cases.length).toBeGreaterThan(10);
+  });
+
   it.each(chipCases.cases)("$url -> $kind / $label", ({ url, kind, label }) => {
     const preview = deriveSmartLinkPreview(url);
     expect(preview, `no preview for ${url}`).toBeTruthy();

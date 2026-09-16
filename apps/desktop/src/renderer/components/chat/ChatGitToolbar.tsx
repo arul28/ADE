@@ -27,7 +27,6 @@ import {
   pickPrimaryPr,
   lanePrAggregateAttention,
   lanePrAttentionColor,
-  lanePrsForLane,
   openLanePr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
