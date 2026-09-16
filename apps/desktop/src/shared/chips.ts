@@ -322,11 +322,13 @@ function smartLinkKindToChipKind(kind: SmartLinkPreview["kind"]): ChipKind {
  *     arm is capped at 1-8 word characters so prose like `@foo.` or a sentence
  *     fragment cannot qualify.
  *
- *     The cost is accepted, not overlooked: a bare `@example.com` does match,
- *     and renders as a file pill. In a coding chat an `@`-prefixed dotted token
- *     is far more likely a filename than a domain, an email is already excluded
- *     by the leading boundary, and the failure mode is a pill that opens
- *     nothing rather than any loss of the text.
+ *     A slash-less token whose extension is a plainly non-code TLD
+ *     (`WEB_ONLY_SUFFIXES`) is refused, so `@example.com` stays prose while
+ *     `@README.md` chips. That list is deliberately TINY, because TLDs and
+ *     source extensions collide badly: `.md` is Moldova, `.py` Paraguay, `.sh`
+ *     St Helena, `.pl` Poland, `.rs` Serbia, `.ai` Anguilla. A "complete" TLD
+ *     blocklist would refuse a README, which is the case this arm exists for.
+ *     Only suffixes no language uses for source belong here.
  *   - **No `:` anywhere in the token.** That is what keeps `@chat:abc` and
  *     `@bogus:123` out of this matcher and leaves them to the entity grammar.
  *
@@ -334,6 +336,15 @@ function smartLinkKindToChipKind(kind: SmartLinkPreview["kind"]): ChipKind {
  * `foo@bar/baz` is not a mention here either.
  */
 const PATH_MENTION_RE = /(^|[ \t\r\n([{,])@([^\s:]*(?:\/[^\s:]*|\.\w{1,8}))/g;
+
+/**
+ * Suffixes that mean "web address", never "source file". Kept minimal on
+ * purpose — see the collision list in the doc comment above. A token WITH a
+ * `/` is a path regardless, so `@docs/example.com` is unaffected.
+ */
+const WEB_ONLY_SUFFIXES = new Set([
+  "com", "org", "net", "edu", "gov", "info", "xyz", "online", "site",
+]);
 
 function parsePathMentions(text: string): ChipMatch[] {
   const out: ChipMatch[] = [];
@@ -347,7 +358,10 @@ function parsePathMentions(text: string): ChipMatch[] {
     raw = raw.replace(/[.,;!?)\]}]+$/, "");
     // Re-checked AFTER the punctuation strip: `@foo.` would otherwise qualify
     // on an extension that the strip just removed.
-    if (!raw.includes("/") && !/\.\w{1,8}$/.test(raw)) continue;
+    if (!raw.includes("/")) {
+      const suffix = /\.(\w{1,8})$/.exec(raw)?.[1]?.toLowerCase();
+      if (!suffix || WEB_ONLY_SUFFIXES.has(suffix)) continue;
+    }
     const start = match.index + lead.length;
     const isDirectory = raw.endsWith("/");
     const chip = chipFromPath(isDirectory ? raw.slice(0, -1) : raw, { isDirectory });

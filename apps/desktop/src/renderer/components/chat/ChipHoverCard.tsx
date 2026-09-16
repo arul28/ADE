@@ -172,12 +172,22 @@ export async function loadChipCardData(
   // would query the project tab's machine for a row it does not have.
   const prs = await listPrsCoalesced({ pin: sources.pin, projectRoot: sources.rootPath })
     .catch(() => [] as Awaited<ReturnType<typeof listPrsCoalesced>>);
-  const match = prs.find((pr) => {
-    if (pr.githubPrNumber !== target.number) return false;
-    if (!target.owner || !target.repo) return true;
-    return pr.repoOwner?.toLowerCase() === target.owner.toLowerCase()
-      && pr.repoName?.toLowerCase() === target.repo.toLowerCase();
-  });
+  const numbered = prs.filter((pr) => pr.githubPrNumber === target.number);
+  const { owner, repo } = target;
+  // Repository coordinates decide it whenever the chip carries them. When it
+  // does not — a bare "#42" typed into the composer — the number alone is not
+  // an identity: two repos in the project can each have a #42, and taking the
+  // first row would put a confident WRONG title and state on the card. So a
+  // number-only target resolves only when every candidate row is the same pull
+  // request. (Rows are per lane — `pull_requests` is keyed by id with a lane
+  // column — so one PR linked to two lanes is several rows and must still
+  // resolve; it is distinct REPOSITORIES that make the number ambiguous.)
+  const match = owner && repo
+    ? numbered.find((pr) => pr.repoOwner?.toLowerCase() === owner.toLowerCase()
+      && pr.repoName?.toLowerCase() === repo.toLowerCase())
+    : new Set(numbered.map((pr) => `${pr.repoOwner ?? ""}/${pr.repoName ?? ""}`.toLowerCase())).size === 1
+      ? numbered[0]
+      : undefined;
   if (!match) return null;
   return {
     kind: "pr",

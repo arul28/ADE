@@ -130,6 +130,20 @@ describe("parseChips: file and folder tokens", () => {
     expect(parseChips("see @package.json")[0]!.kind).toBe("file");
   });
 
+  it("refuses a web-only suffix but keeps extensions that collide with a TLD", () => {
+    // The suffix list has to stay tiny: `.md` is Moldova, `.py` Paraguay,
+    // `.sh` St Helena, `.rs` Serbia. A "complete" TLD blocklist would refuse a
+    // README, which is the case the extension arm exists for.
+    expect(parseChips("mail @example.com now")).toHaveLength(0);
+    expect(parseChips("visit @foo.org ok")).toHaveLength(0);
+    expect(parseChips("run @build.sh then")[0]!.token).toBe("build.sh");
+    expect(parseChips("open @main.rs now")[0]!.token).toBe("main.rs");
+    expect(parseChips("edit @app.py here")[0]!.token).toBe("app.py");
+    expect(parseChips("read @README.md first")[0]!.token).toBe("README.md");
+    // A slash makes it a path whatever it ends in.
+    expect(parseChips("see @docs/example.com please")[0]!.token).toBe("docs/example.com");
+  });
+
   it("leaves the entity grammar and true non-paths alone", () => {
     // `:` belongs to the entity grammar, an email is excluded by the leading
     // boundary, and a bare word with no slash and no extension is not a path.

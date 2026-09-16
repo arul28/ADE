@@ -29,7 +29,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 
 import type { Chip } from "../../../shared/chips";
-import { selectActiveProjectStateKey, useAppStoreApi } from "../../state/appStore";
+import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 
 export type ChipPreview = {
   /** Enriched page/issue title, or null when the fetch added nothing. */
@@ -177,8 +177,12 @@ export function useChipPreview(url: string | null): ChipPreview | null {
   // The CONTEXTUAL store, not the root one: a chat pane renders inside its
   // project's own store, and `useAppStore.getState()` would read the root's
   // (empty) project instead — scoping every preview to the same wrong bucket.
-  const storeApi = useAppStoreApi();
-  const scope = selectActiveProjectStateKey(storeApi.getState()) ?? "";
+  // `useAppStore(selector)` reads that contextual store AND subscribes to it;
+  // a one-shot `getState()` would not. A project switch keeps the chat pane
+  // mounted, so a memoized transcript can carry a chip across it — and without
+  // the subscription the chip's key would stay pinned to the old project and
+  // keep showing its title and favicon.
+  const scope = useAppStore(selectActiveProjectStateKey) ?? "";
   const key = url ? chipPreviewKey(url, scope) : null;
   const preview = useSyncExternalStore(
     subscribe,

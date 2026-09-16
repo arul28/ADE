@@ -46,8 +46,15 @@ export type ComposerClipboardPayload = {
   chips: ComposerClipboardChip[];
 };
 
-export function serializeComposerClipboard(payload: ComposerClipboardPayload): string {
-  return JSON.stringify(payload);
+/**
+ * Serialize a payload for `text/x-ade-composer`.
+ *
+ * `null` means "this selection has no custom flavour to offer" and serializes
+ * to the empty string, which `parseComposerClipboard` already treats as absent
+ * — so the receiving composer falls through to the complete `text/plain`.
+ */
+export function serializeComposerClipboard(payload: ComposerClipboardPayload | null): string {
+  return payload ? JSON.stringify(payload) : "";
 }
 
 /**
@@ -98,11 +105,22 @@ export function parseComposerClipboard(raw: string | null | undefined): Composer
   return { version: 1, text: record.text, chips };
 }
 
-/** Build a payload from the plain text plus whatever labels the source knows. */
+/**
+ * Build a payload from the plain text plus whatever labels the source knows,
+ * or `null` when this selection must not carry a custom flavour at all.
+ *
+ * The size cap is the reason for that null. `MAX_TEXT_CHARS` bounds the work
+ * the paste path can be made to do, and the paste path PREFERS this payload
+ * over `text/plain` — so a payload holding a truncated copy of the selection
+ * would silently drop the tail of an ordinary large copy-paste. Emitting
+ * nothing is the only lossless answer: the plain-text flavour is complete, and
+ * a selection that large is dominated by prose, not by pills.
+ */
 export function buildComposerClipboardPayload(
   text: string,
   labelForToken: ReadonlyMap<string, string>,
-): ComposerClipboardPayload {
+): ComposerClipboardPayload | null {
+  if (text.length > MAX_TEXT_CHARS) return null;
   const chips: ComposerClipboardChip[] = [];
   for (const [token, label] of labelForToken) {
     if (chips.length >= MAX_CHIPS) break;
@@ -110,5 +128,5 @@ export function buildComposerClipboardPayload(
     if (!token || !trimmedLabel || !text.includes(token)) continue;
     chips.push({ token, label: trimmedLabel.slice(0, MAX_LABEL_CHARS) });
   }
-  return { version: 1, text: text.slice(0, MAX_TEXT_CHARS), chips };
+  return { version: 1, text, chips };
 }

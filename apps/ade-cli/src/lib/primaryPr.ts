@@ -65,36 +65,22 @@ function comparableOf(pr: PrRecord): PrimaryPrComparable {
  *     a row is useless to all of them — but excluding it outright would answer
  *     `null` if the runtime ever renamed the field on every row. Ranking it
  *     last means a usable row always wins, and an unusable one is still better
- *     than nothing.
+ *     than nothing. That ordering is enforced by the SHARED comparator, so the
+ *     desktop badge applies it too.
  */
 export function pickPrimaryPrRecord(prs: readonly PrRecord[]): PrRecord | null {
   let best: PrRecord | null = null;
   let bestKey: PrimaryPrComparable | null = null;
-  let bestUsable = false;
   for (const pr of prs) {
     if (pr.detached != null) continue;
     const key = comparableOf(pr);
-    const usable = key.githubPrNumber > 0;
-    if (best === null || bestKey === null) {
+    // The readable-number rule used to be re-implemented here. It now lives in
+    // the shared `comparePrimaryPr`, so the desktop badge and this picker
+    // cannot disagree about it — which is the point of importing the rule
+    // rather than restating it.
+    if (best === null || bestKey === null || comparePrimaryPr(key, bestKey) < 0) {
       best = pr;
       bestKey = key;
-      bestUsable = usable;
-      continue;
-    }
-    // A readable number outranks every other consideration; only when both
-    // rows agree on that does the shared ordering decide.
-    if (usable !== bestUsable) {
-      if (usable) {
-        best = pr;
-        bestKey = key;
-        bestUsable = true;
-      }
-      continue;
-    }
-    if (comparePrimaryPr(key, bestKey) < 0) {
-      best = pr;
-      bestKey = key;
-      bestUsable = usable;
     }
   }
   return best;

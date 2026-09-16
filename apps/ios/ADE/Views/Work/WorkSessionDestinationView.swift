@@ -894,6 +894,8 @@ struct WorkSessionDestinationView: View {
   /// overlap when the user switches PRs quickly; every refresh-state write is
   /// gated on still owning this token, which keeps a slower earlier request from
   /// publishing its error or clearing the spinner for the one still in flight.
+  /// The refresh hands the same token to `resolveLaneOpenPr`, so a superseded
+  /// request cannot republish its older PR list or clear the newer pick either.
   @State var prDetailsRequestToken = 0
   @State var prLinkCopied = false
   @State var sessionActionRenamePresented = false

@@ -49,6 +49,19 @@ export type PrimaryPrComparable = {
  * enriched cannot displace a real one.
  */
 export function comparePrimaryPr(a: PrimaryPrComparable, b: PrimaryPrComparable): number {
+  // A READABLE NUMBER outranks everything else. Every surface renders `#N` or
+  // stamps that number onto a deeplink, so a row without one serves none of
+  // them. `github_pr_number` has no positive-value constraint and `listAll`
+  // returns whatever the row holds, so a 0 can appear and — ranked only by
+  // state and recency — win.
+  //
+  // This rule lives HERE rather than in one caller because that is the whole
+  // reason this module exists: the CLI picker had it and the desktop picker did
+  // not, so the lane badge and a CLI-minted deeplink could name different PRs,
+  // which is exactly the drift the shared module was extracted to prevent.
+  const aUsable = a.githubPrNumber > 0;
+  const bUsable = b.githubPrNumber > 0;
+  if (aUsable !== bUsable) return aUsable ? -1 : 1;
   const byRank = primaryPrStateRank(a.state) - primaryPrStateRank(b.state);
   if (byRank !== 0) return byRank;
   const aUpdated = Date.parse(a.updatedAt ?? "");

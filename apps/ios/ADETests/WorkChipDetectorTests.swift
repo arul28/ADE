@@ -220,6 +220,20 @@ final class WorkChipDetectorTests: XCTestCase {
     XCTAssertEqual(chips("see @package.json").first?.kind, .file)
   }
 
+  func testRefusesAWebOnlySuffixButKeepsTldCollidingExtensions() {
+    // The suffix list has to stay tiny: `.md` is Moldova, `.py` Paraguay,
+    // `.sh` St Helena, `.rs` Serbia. A "complete" TLD blocklist would refuse a
+    // README, which is the case the extension arm exists for.
+    XCTAssertEqual(chips("mail @example.com now").count, 0)
+    XCTAssertEqual(chips("visit @foo.org ok").count, 0)
+    XCTAssertEqual(chips("run @build.sh then").first?.token, "build.sh")
+    XCTAssertEqual(chips("open @main.rs now").first?.token, "main.rs")
+    XCTAssertEqual(chips("edit @app.py here").first?.token, "app.py")
+    XCTAssertEqual(chips("read @README.md first").first?.token, "README.md")
+    // A slash makes it a path whatever it ends in.
+    XCTAssertEqual(chips("see @docs/example.com please").first?.token, "docs/example.com")
+  }
+
   func testLeavesTheEntityGrammarAndTrueNonPathsAlone() {
     // `:` belongs to the entity grammar, an email is excluded by the leading
     // boundary, and a bare word with neither a slash nor an extension is not a

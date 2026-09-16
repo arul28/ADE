@@ -1101,11 +1101,18 @@ extension WorkSessionDestinationView {
   /// frame and rebuilds the open liquid-glass menu mid-interaction. Final
   /// assignments are equality-guarded for the same reason. No-ops entirely when
   /// this destination resolves no lane PR (`WorkChatLanePrPolicy`).
+  ///
+  /// Pass `ownershipToken` when the caller owns a `prDetailsRequestToken`
+  /// generation: the lane check below cannot tell two overlapping SAME-lane
+  /// resolves apart, so without it a superseded resolve can resume last and
+  /// republish its older PR list — and then clear the user's newer pick,
+  /// because that older list does not contain it.
   @MainActor
   func resolveLaneOpenPr(
     for laneId: String,
     forceGithubRefresh: Bool = false,
-    clearBeforeLoad: Bool = true
+    clearBeforeLoad: Bool = true,
+    ownershipToken: Int? = nil
   ) async {
     // Chats that own no lane PR (CTO) must not touch the PR projection at all:
     // their lane id is synthetic, so a lookup would resolve the project's
@@ -1167,7 +1174,12 @@ extension WorkSessionDestinationView {
     )
 
     let stillCurrent = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
-    guard !Task.isCancelled, stillCurrent else { return }
+    // Every write below this line happens after the awaits above, which suspend
+    // the main actor and let a newer refresh for the SAME lane run to
+    // completion first. Cancellation and the lane check both pass for that
+    // older task, so it needs its own claim to be told apart.
+    let ownsWrites = ownershipToken == nil || ownershipToken == prDetailsRequestToken
+    guard !Task.isCancelled, stillCurrent, ownsWrites else { return }
     lastResolvedPrLaneId = trimmed
     if lanePrSummary != resolution.summary { lanePrSummary = resolution.summary }
     if lanePrTag != resolution.tag { lanePrTag = resolution.tag }
@@ -1280,7 +1292,12 @@ extension WorkSessionDestinationView {
       if prDetailsRequestToken == token { prDetailsRefreshing = false }
     }
 
-    await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: force, clearBeforeLoad: false)
+    await resolveLaneOpenPr(
+      for: headerMenuLaneId,
+      forceGithubRefresh: force,
+      clearBeforeLoad: false,
+      ownershipToken: token
+    )
     guard prDetailsRequestToken == token else { return }
 
     guard let prId = chatDisplayPr?.id ?? chatDisplayPrSummary?.id else {

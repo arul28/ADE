@@ -534,16 +534,9 @@ export function createSearchService(deps: SearchServiceDeps) {
    */
   const prTermsByChatSession = new Map<string, string[]>();
 
-  /**
-   * Returns the session ids whose PR terms changed, so the caller can re-index
-   * those chat meta docs. Without that, the map is ambient state with an
-   * implicit ordering dependency: a chat indexed before the first PR sweep
-   * never gets its PR terms, and unlinking a PR leaves stale `#123` terms on
-   * the chat doc forever.
-   */
-  const rebuildPrTermsByChatSession = (summaries: readonly PrSummary[]): Set<string> => {
-    const previous = new Map(prTermsByChatSession);
-    prTermsByChatSession.clear();
+  /** Derive the next map from the PR set. Pure: publishes nothing. */
+  const computePrTermsByChatSession = (summaries: readonly PrSummary[]): Map<string, string[]> => {
+    const next = new Map<string, string[]>();
     for (const pr of summaries) {
       const repo = pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : "";
       const terms = [
@@ -554,21 +547,37 @@ export function createSearchService(deps: SearchServiceDeps) {
       ].filter(Boolean);
       for (const sessionId of pr.chatSessionIds ?? []) {
         if (!sessionId) continue;
-        const existing = prTermsByChatSession.get(sessionId);
+        const existing = next.get(sessionId);
         if (existing) existing.push(...terms);
-        else prTermsByChatSession.set(sessionId, [...terms]);
+        else next.set(sessionId, [...terms]);
       }
     }
+    return next;
+  };
+
+  /**
+   * The session ids whose PR terms would change if `next` were published, so
+   * the caller can re-index those chat meta docs. Without that, the map is
+   * ambient state with an implicit ordering dependency: a chat indexed before
+   * the first PR sweep never gets its PR terms, and unlinking a PR leaves
+   * stale `#123` terms on the chat doc forever.
+   */
+  const changedPrTermSessions = (next: ReadonlyMap<string, string[]>): Set<string> => {
     // Union of old and new: a session that LOST its last PR needs re-indexing
     // just as much as one that gained a PR.
     const changed = new Set<string>();
-    for (const [sessionId, terms] of prTermsByChatSession) {
-      if (previous.get(sessionId)?.join("\u0000") !== terms.join("\u0000")) changed.add(sessionId);
+    for (const [sessionId, terms] of next) {
+      if (prTermsByChatSession.get(sessionId)?.join("\u0000") !== terms.join("\u0000")) changed.add(sessionId);
     }
-    for (const sessionId of previous.keys()) {
-      if (!prTermsByChatSession.has(sessionId)) changed.add(sessionId);
+    for (const sessionId of prTermsByChatSession.keys()) {
+      if (!next.has(sessionId)) changed.add(sessionId);
     }
     return changed;
+  };
+
+  const publishPrTermsByChatSession = (next: ReadonlyMap<string, string[]>): void => {
+    prTermsByChatSession.clear();
+    for (const [sessionId, terms] of next) prTermsByChatSession.set(sessionId, terms);
   };
 
   const upsertSessionMetaDoc = (session: TerminalSessionSummary, kind: "chat" | "terminal", deepLink: string): void => {
@@ -845,10 +854,40 @@ export function createSearchService(deps: SearchServiceDeps) {
     }
   };
 
+  /**
+   * Publish a new PR-term map and rewrite the chat meta docs it changes.
+   *
+   * The map has to be live BEFORE the rewrite, because `upsertSessionMetaDoc`
+   * reads it — so the commit cannot simply follow the writes. Instead the old
+   * map is restored when the rewrite throws, which is what keeps the failure
+   * RETRYABLE: the next PR event recomputes the same changed set and tries
+   * again. Leaving the new map published would make every retry a no-op,
+   * because `changedPrTermSessions` would compare the new map against itself
+   * and find nothing — stranding those chat docs with stale or missing PR
+   * terms for the life of the process.
+   */
+  const syncPrTermsByChatSession = async (summaries: readonly PrSummary[]): Promise<void> => {
+    const next = computePrTermsByChatSession(summaries);
+    const changed = changedPrTermSessions(next);
+    if (changed.size === 0) {
+      // No document depends on the difference, so there is nothing to undo.
+      publishPrTermsByChatSession(next);
+      return;
+    }
+    const previous = new Map(prTermsByChatSession);
+    publishPrTermsByChatSession(next);
+    try {
+      await reindexChatsForChangedPrTerms(changed);
+    } catch (error) {
+      publishPrTermsByChatSession(previous);
+      throw error;
+    }
+  };
+
   const processPr = async (prId: string): Promise<void> => {
     if (!deps.prs) return;
     const summaries = await deps.prs.listAll();
-    await reindexChatsForChangedPrTerms(rebuildPrTermsByChatSession(summaries));
+    await syncPrTermsByChatSession(summaries);
     const summary = summaries.find((pr) => pr.id === prId);
     if (!summary) {
       withTransaction(() => deleteDocsWhere("doc_id = ?", [`pr:${prId}`]));
@@ -908,7 +947,7 @@ export function createSearchService(deps: SearchServiceDeps) {
   const processPrSweep = async (): Promise<void> => {
     if (!deps.prs) return;
     const summaries = await deps.prs.listAll();
-    await reindexChatsForChangedPrTerms(rebuildPrTermsByChatSession(summaries));
+    await syncPrTermsByChatSession(summaries);
     const liveIds = new Set(summaries.map((pr) => `pr:${pr.id}`));
     const indexed = all<{ doc_id: string }>("SELECT doc_id FROM docs WHERE kind = 'pr'");
     withTransaction(() => {

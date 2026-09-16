@@ -123,9 +123,23 @@
       ]
     },
     {
-      "_why": "An @-prefixed dotted token pills as a file. Accepted cost of the extension arm: a root-level `@README.md` must chip, and in a coding chat a dotted token after `@` is far likelier a filename than a domain. An email is still excluded by the leading boundary.",
+      "_why": "A slash-less token ending in a plainly non-code TLD is prose, not a file. The suffix list is tiny on purpose: .md is Moldova, .py Paraguay, .sh St Helena, .rs Serbia — a full TLD blocklist would refuse a README, which is the case the extension arm exists for.",
       "text": "mail @example.com now",
-      "chips": [{ "kind": "file", "token": "example.com", "label": "example.com" }]
+      "chips": []
+    },
+    {
+      "_why": "A slash makes it a path regardless of what it ends in.",
+      "text": "see @docs/example.com please",
+      "chips": [{ "kind": "file", "token": "docs/example.com", "label": "example.com" }]
+    },
+    {
+      "_why": "Extensions that collide with a TLD but are real source files.",
+      "text": "run @build.sh then @main.rs and @app.py",
+      "chips": [
+        { "kind": "file", "token": "build.sh", "label": "build.sh" },
+        { "kind": "file", "token": "main.rs", "label": "main.rs" },
+        { "kind": "file", "token": "app.py", "label": "app.py" }
+      ]
     },
     {
       "text": "read @README.md first",

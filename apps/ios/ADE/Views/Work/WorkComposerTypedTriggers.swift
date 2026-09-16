@@ -472,6 +472,14 @@ enum WorkChipPathDetector {
     pattern: "(?:^|[ \\t\\r\\n(\\[{,])@([^\\s:]*(?:/[^\\s:]*|\\.\\w{1,8}))",
     options: []
   )
+  /// Suffixes that mean "web address", never "source file". Kept minimal on
+  /// purpose: TLDs and source extensions collide badly — `.md` is Moldova,
+  /// `.py` Paraguay, `.sh` St Helena, `.pl` Poland, `.rs` Serbia — so a
+  /// "complete" TLD blocklist would refuse a README, which is the very case
+  /// the extension arm exists for. Mirrors `WEB_ONLY_SUFFIXES` in chips.ts.
+  private static let webOnlySuffixes: Set<String> = [
+    "com", "org", "net", "edu", "gov", "info", "xyz", "online", "site",
+  ]
   /// A short file extension, which is what lets a ROOT-level `@README.md`
   /// chip: it has no `/` to qualify it. Capped at 1-8 word characters so prose
   /// cannot pass.
@@ -503,12 +511,19 @@ enum WorkChipPathDetector {
       // A folder's own trailing slash survives the strip above. Both arms are
       // re-checked AFTER the strip, because it can eat the very `/` or
       // extension that qualified the token: `@foo.` must not become a chip.
-      guard raw.range(of: "/").location != NSNotFound
-        || extensionSuffix.firstMatch(
+      if raw.range(of: "/").location == NSNotFound {
+        // Slash-less: it qualifies only on a code-ish extension. A web-only
+        // suffix stays prose, so `@example.com` is not a file pill while
+        // `@README.md` is. A token WITH a slash is a path regardless.
+        guard let match = extensionSuffix.firstMatch(
           in: raw as String,
           range: NSRange(location: 0, length: raw.length)
-        ) != nil
-      else { return nil }
+        ) else { return nil }
+        let suffix = (raw.substring(with: match.range) as String)
+          .dropFirst()
+          .lowercased()
+        guard !WorkChipPathDetector.webOnlySuffixes.contains(suffix) else { return nil }
+      }
       let isDirectory = raw.hasSuffix("/")
       let path = isDirectory ? raw.substring(to: raw.length - 1) : (raw as String)
       return WorkChipPath(
