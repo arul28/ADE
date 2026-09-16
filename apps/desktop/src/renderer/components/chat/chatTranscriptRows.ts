@@ -31,6 +31,7 @@ import {
   isHostSleepNoticeEvent,
   type HostSleepNoticeShape,
 } from "../../../shared/hostSleepNotice";
+import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
 
 export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search" | "hook";
@@ -91,6 +92,7 @@ type HiddenTranscriptEvent =
   | Extract<AgentChatEvent, { type: "reasoning" }>
   | Extract<AgentChatEvent, { type: "pending_input_resolved" }>
   | Extract<AgentChatEvent, { type: "tokens" }>
+  | Extract<AgentChatEvent, { type: "api_retry" }>
   | Extract<AgentChatEvent, { type: "codex_moderation_metadata" }>
   // Token usage drives the chat-column-bottom token footer; inline transcript
   // rows would be duplicate noise.
@@ -1714,6 +1716,10 @@ export function appendCollapsedChatTranscriptEvent(
 ): void {
   const { event } = envelope;
 
+  // `api_retry` is a live provider-health signal, not durable transcript
+  // content. Its compact replacement is emitted on the activity stream.
+  if (event.type === "api_retry") return;
+
   if (event.type === "user_message") {
     const steerId = event.steerId?.trim();
     const pendingResolution = steerId
@@ -2037,6 +2043,10 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "system_notice") {
+    // Automatic retries are live provider health, not conversation content.
+    // Hide this legacy durable shape during replay so old transcripts upgrade
+    // to the same calm presentation as new events.
+    if (isLegacyProviderRetryNotice(event)) return;
     if (event.noticeKind === "info" && event.message.trim().toLowerCase() === "session ready") {
       return;
     }

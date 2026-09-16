@@ -10,6 +10,7 @@ import {
 import { readChatErrorPresentation } from "../../../desktop/src/shared/chatErrorPresentation";
 import { approvalRequestKind, isQuestionKind } from "../../../desktop/src/shared/pendingInputAnswers";
 import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
+import { isLegacyProviderRetryNotice } from "../../../desktop/src/shared/providerRetryPresentation";
 import { renderAdeCardBody } from "./adeCardFormat";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
@@ -1301,6 +1302,10 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "system_notice") {
+      // Provider retries are live working state. Older persisted transcripts
+      // used a notice for each attempt; hide those rows during replay so the
+      // pinned working indicator can present one compact replacement.
+      if (isLegacyProviderRetryNotice(event)) continue;
       const noticeKind = (event as { noticeKind?: string }).noticeKind;
       const severity = (event as { severity?: string }).severity;
       let message = singleLine((event as { message?: unknown }).message, 160);

@@ -9,6 +9,12 @@ import type {
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
 import { normalizeSubagentLifecycleEvent } from "../../../desktop/src/shared/chatSubagents";
+import {
+  formatLegacyProviderRetryActivityDetail,
+  formatProviderRetryActivityDetail,
+  isLegacyProviderRetryNotice,
+  isProviderRetryActivityDetail,
+} from "../../../desktop/src/shared/providerRetryPresentation";
 import { readRecord, summarizeInlineText } from "../../../desktop/src/renderer/components/chat/chatTranscriptRows";
 import { replaceInternalToolNames } from "../../../desktop/src/renderer/components/chat/toolPresentation";
 import type { LocalNotice } from "./types";
@@ -99,6 +105,72 @@ export type AggregatedBlock =
 
 function turnIdOf(event: AgentChatEvent): string | null {
   return (event as { turnId?: string }).turnId ?? null;
+}
+
+/**
+ * The TUI receives the same live-only activity stream as desktop and iOS, but
+ * its ordinary `working` activity is intentionally suppressed from the
+ * runtime block. Keep the provider retry copy available for the pinned
+ * working row without resurrecting a transcript card.
+ */
+export function deriveActiveProviderRetryActivityDetail(
+  events: AgentChatEventEnvelope[],
+): string | null {
+  const completedTurnIds = new Set<string>();
+  let activeTurnId: string | null = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!.event;
+    if (event.type === "done" && event.turnId.trim()) {
+      completedTurnIds.add(event.turnId.trim());
+      continue;
+    }
+    const turnId = turnIdOf(event)?.trim() ?? "";
+    if (!turnId || completedTurnIds.has(turnId)) continue;
+    activeTurnId = turnId;
+    break;
+  }
+  if (!activeTurnId) return null;
+
+  let legacyRetryDetail: string | null = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!.event;
+    const eventTurnId = turnIdOf(event)?.trim() ?? "";
+    if (eventTurnId && eventTurnId !== activeTurnId) continue;
+    if (event.type === "activity" && isProviderRetryActivityDetail(event.detail)) {
+      return event.detail.trim();
+    }
+    if (event.type === "system_notice" && isLegacyProviderRetryNotice(event)) {
+      legacyRetryDetail ??= formatLegacyProviderRetryActivityDetail(event);
+      continue;
+    }
+    if (event.type === "api_retry") {
+      return formatProviderRetryActivityDetail({
+        provider: "claude",
+        attempt: event.attempt,
+        maxAttempts: event.maxRetries,
+        retryDelayMs: event.retryDelayMs,
+        cause: event.errorStatus === 429
+          ? "rate_limit"
+          : event.errorStatus === 529
+            ? "overloaded"
+            : "unknown",
+      });
+    }
+    if (
+      event.type === "text"
+      || event.type === "reasoning"
+      || event.type === "tool_call"
+      || event.type === "tool_result"
+      || event.type === "activity"
+      || event.type === "done"
+      || event.type === "error"
+      || event.type === "user_message"
+      || (event.type === "status" && event.turnStatus !== "started")
+    ) {
+      return null;
+    }
+  }
+  return legacyRetryDetail;
 }
 
 type AssistantTextEvent = Extract<AgentChatEvent, { type: "text" }>;

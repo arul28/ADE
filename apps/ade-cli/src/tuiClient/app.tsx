@@ -5761,13 +5761,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     || liveAgentCount > 0;
   const showChatWorkingIndicator = modelState.provider !== "claude" && activeSession?.provider !== "claude";
   const selectableChatRows = useMemo(() => renderChatSelectableRows({
+    events: displayEvents,
     blocks: displayBlocks,
     expandedLineIds,
     width: chatWrapWidth,
     streaming: displayStreaming,
     interrupted: displayInterrupted,
     showWorkingIndicator: showChatWorkingIndicator,
-  }), [chatWrapWidth, displayBlocks, displayInterrupted, displayStreaming, expandedLineIds, showChatWorkingIndicator]);
+  }), [chatWrapWidth, displayBlocks, displayEvents, displayInterrupted, displayStreaming, expandedLineIds, showChatWorkingIndicator]);
   const chatScrollMaxOffset = useMemo(() => {
     if (!hasConversationContent(displayBlocks) && !displayStreaming && !displayInterrupted) return 0;
     return chatScrollMaxOffsetFromSelectableRows({

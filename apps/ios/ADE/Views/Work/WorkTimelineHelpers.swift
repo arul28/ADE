@@ -3370,6 +3370,10 @@ private func eventCard(
       )
     case .systemNotice(let kind, let message, let detail, _, _):
       guard kind != "queue_recovery" else { return nil }
+      // Automatic provider retries/reconnects are live working state. Older
+      // hosts persisted one notice per attempt; keep replay from rebuilding
+      // the same wall of cards that desktop and TUI intentionally suppress.
+      guard !isLegacyProviderRetryNotice(kind: kind, message: message, detail: detail) else { return nil }
       // ── Provider handoff ──
       // Its own card kind so the timeline can draw the desktop divider
       // (hairline · from logo · HANDOFF · arrow · to logo · hairline) instead
@@ -3685,6 +3689,31 @@ func isLowSignalWorkSystemNotice(kind: String, message: String, detail: String?)
   return normalizedDetail.isEmpty
     && (normalizedKind.isEmpty || normalizedKind == "info")
     && (normalizedMessage == "session ready" || normalizedMessage == "ready")
+}
+
+/// Whether a system notice is the pre-inline-retry representation. Retry
+/// metadata is provider-shaped and belongs in the live working indicator; this
+/// deliberately recognizes only the legacy shapes ADE itself emitted, rather
+/// than hiding arbitrary provider warnings that happen to mention retries.
+func isLegacyProviderRetryNotice(kind: String, message: String, detail _: String?) -> Bool {
+  let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+  if normalizedMessage.hasPrefix("claude api retry") {
+    return true
+  }
+  if normalizedKind == "provider_health"
+      && (normalizedMessage.hasPrefix("codex hit a provider error and is retrying automatically")
+        || normalizedMessage.hasPrefix("opencode hit a provider error and is retrying automatically")) {
+    return true
+  }
+  if normalizedKind == "warning"
+      && (normalizedMessage.contains("websocket") || normalizedMessage.contains("web socket"))
+      && (normalizedMessage.contains("https") || normalizedMessage.contains("transport"))
+      && (normalizedMessage.contains("fallback") || normalizedMessage.contains("falling back") || normalizedMessage.contains("timed out") || normalizedMessage.contains("timeout")) {
+    return true
+  }
+  return false
 }
 
 func isLowSignalWorkStatus(turnStatus: String, message: String?) -> Bool {

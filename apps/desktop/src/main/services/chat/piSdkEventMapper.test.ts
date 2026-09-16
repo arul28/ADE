@@ -3,6 +3,7 @@ import {
   PI_APPROVAL_ALLOW,
   PI_APPROVAL_ALLOW_SESSION,
   PI_UI_ANSWER_ID,
+  mapPiSdkEventToChatEvents,
   piExtensionLoadNotice,
   piUiNoticeToChatEvents,
   piUiRequestToPendingInput,
@@ -99,6 +100,23 @@ describe("piUiNoticeToChatEvents", () => {
 
   it("drops an empty message rather than emitting a blank row", () => {
     expect(piUiNoticeToChatEvents({ origin: "tool", level: "info", message: "   " })).toEqual([]);
+  });
+});
+
+describe("mapPiSdkEventToChatEvents", () => {
+  it("normalizes Pi auto retries into compact activity copy", () => {
+    expect(mapPiSdkEventToChatEvents({
+      type: "auto_retry_start",
+      errorMessage: "request timed out",
+      attempt: 2,
+      maxAttempts: 5,
+      retryDelayMs: 4_000,
+    }, "turn-1")).toEqual([{
+      type: "activity",
+      activity: "working",
+      detail: "Reconnecting to Pi · attempt 2 of 5 · retrying in 4s",
+      turnId: "turn-1",
+    }]);
   });
 });
 

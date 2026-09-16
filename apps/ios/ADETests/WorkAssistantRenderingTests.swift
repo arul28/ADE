@@ -520,4 +520,60 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
     XCTAssertEqual(workBoardColumnLabel("waiting"), "Waiting")
     XCTAssertEqual(workBoardColumnLabel("blocked"), "blocked")
   }
+
+  func testLegacyProviderRetryNoticesStayOutOfMobileTimeline() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-16T00:00:01.000Z",
+        sequence: 1,
+        event: .systemNotice(
+          kind: "provider_health",
+          message: "Claude API retry 2/10: unknown",
+          detail: "Retrying in 4s.",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-16T00:00:02.000Z",
+        sequence: 2,
+        event: .systemNotice(
+          kind: "warning",
+          message: "Falling back from WebSockets to HTTPS transport, request timed out",
+          detail: nil,
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-16T00:00:03.000Z",
+        sequence: 3,
+        event: .systemNotice(
+          kind: "provider_health",
+          message: "OpenCode hit a provider error and is retrying automatically (attempt 2).",
+          detail: "The provider retried the request before continuing.",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertFalse(snapshot.eventCards.contains { card in
+      card.body?.contains("retry") == true || card.body?.contains("WebSockets") == true
+    })
+    XCTAssertFalse(snapshot.timeline.contains { entry in
+      guard case .eventCard(let card) = entry.payload else { return false }
+      return card.body?.contains("retry") == true || card.body?.contains("WebSockets") == true
+    })
+  }
 }

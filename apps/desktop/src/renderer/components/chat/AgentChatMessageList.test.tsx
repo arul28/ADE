@@ -1637,6 +1637,41 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByRole("button")).toHaveLength(2);
   });
 
+  it("keeps provider retries in one inline working status", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      },
+      ...[2, 3, 4].map((attempt, index) => ({
+        sessionId: "session-1",
+        timestamp: `2026-03-17T10:00:0${index + 1}.000Z`,
+        event: {
+          type: "system_notice" as const,
+          noticeKind: "warning" as const,
+          message: `Claude API retry ${attempt}/10: unknown`,
+          detail: "retrying in 4s",
+          turnId: "turn-1",
+        },
+      })),
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:04.000Z",
+        event: {
+          type: "activity",
+          activity: "working",
+          detail: "Reconnecting to Claude · attempt 6 of 10 · retrying in 8s",
+          turnId: "turn-1",
+        },
+      },
+    ], { showStreamingIndicator: true });
+
+    expect(rendered.container.textContent).toContain("Reconnecting to Claude · attempt 6 of 10 · retrying in 8s");
+    expect(rendered.container.textContent).not.toContain("Claude API retry");
+    expect(rendered.container.textContent).not.toContain("provider health");
+  });
+
   it("renders unauthenticated agent CLI errors as a re-login card", () => {
     renderMessageList([
       {

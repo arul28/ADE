@@ -13083,13 +13083,9 @@ describe("createAgentChatService", () => {
         .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }> =>
           event.type === "system_notice",
         );
-      expect(notices.some((event) => {
-        const detail = typeof event.detail === "string" ? event.detail : "";
-        return event.noticeKind === "rate_limit"
-          && event.message === "Claude API retry 1/3: overloaded"
-          && detail.includes("HTTP 529")
-          && detail.includes("retrying in 2s");
-      })).toBe(true);
+      expect(events.some((envelope) => envelope.event.type === "activity"
+        && envelope.event.activity === "working"
+        && envelope.event.detail === "Retrying Claude · attempt 1 of 3 · retrying in 2s")).toBe(true);
       expect(notices.some((event) =>
         event.noticeKind === "warning"
         && event.message === "Prompt blocked by hook",
@@ -20937,12 +20933,22 @@ describe("createAgentChatService", () => {
       expect(retryPrompt).toContain("Continue where you left off");
       expect(retryPrompt).not.toContain("Refactor the composer.");
       // The reply visibly stopped, so this one case says something — quietly.
-      const notices = events.filter((event) => event.event.type === "system_notice");
-      expect(notices).toHaveLength(1);
-      expect(notices[0]?.event).toMatchObject({
-        noticeKind: "info",
-        message: "Reconnected to Cursor and continued.",
-      });
+      // Recovery is live state and disappears from the durable transcript.
+      const retryActivities = events.filter((event) =>
+        event.event.type === "activity"
+        && event.event.detail === "Reconnecting to Cursor",
+      );
+      expect(retryActivities).toHaveLength(1);
+      expect((await service.getChatEventHistory(session.id)).events).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: expect.objectContaining({
+              type: "system_notice",
+              message: "Reconnected to Cursor and continued.",
+            }),
+          }),
+        ]),
+      );
       expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
     });
 
@@ -28155,8 +28161,9 @@ describe("createAgentChatService", () => {
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({
           event: expect.objectContaining({
-            type: "system_notice",
-            noticeKind: "provider_health",
+            type: "activity",
+            activity: "working",
+            detail: "Retrying Codex",
             turnId: "turn-retry",
           }),
         }),
@@ -34003,7 +34010,7 @@ describe("createAgentChatService", () => {
       await turn.finish();
     });
 
-    it("surfaces OpenCode provider retries as a system notice instead of a silent spinner", async () => {
+    it("surfaces OpenCode provider retries as replaceable activity instead of transcript spam", async () => {
       // OpenCode retries a failing provider with exponential backoff and
       // publishes nothing but `session.status`. Without this handler the chat
       // showed a spinner for minutes and looked wedged.
@@ -34020,10 +34027,8 @@ describe("createAgentChatService", () => {
           },
         },
         // The real sequence: OpenCode reports `busy` between two retry attempts.
-        // Resetting the throttle here — as the first version did — meant it never
-        // engaged and every attempt posted its own notice.
         { type: "session.status", properties: { sessionID, status: { type: "busy" } } },
-        // Same message, next attempt, no time elapsed: throttled away.
+        // The second attempt replaces the same inline status in the renderer.
         {
           type: "session.status",
           properties: {
@@ -34035,15 +34040,15 @@ describe("createAgentChatService", () => {
       );
       await turn.waitForDone();
 
-      const notices = turn.events
+      const retryActivities = turn.events
         .map((event) => event.event)
-        .filter((event) => event.type === "system_notice" && event.noticeKind === "provider_health") as Array<{
-          message: string;
-          detail?: unknown;
+        .filter((event) => event.type === "activity" && event.activity === "working") as Array<{
+          detail?: string;
         }>;
-      expect(notices).toHaveLength(1);
-      expect(notices[0]!.message).toContain("retrying");
-      expect(String(notices[0]!.detail)).toContain(providerMessage);
+      expect(retryActivities).toHaveLength(2);
+      expect(retryActivities[0]!.detail).toMatch(/^Retrying OpenCode · attempt 1 · retrying in /);
+      expect(retryActivities[1]!.detail).toMatch(/^Retrying OpenCode · attempt 2 · retrying in /);
+      expect(turn.events.some((event) => event.event.type === "system_notice" && event.event.noticeKind === "provider_health")).toBe(false);
 
       await turn.finish();
     });
@@ -51727,9 +51732,12 @@ describe("host sleep narration", () => {
       parked.releaseBeforeResult();
       await turn;
 
-      expect(noticesOf(onEvent).some((event: any) =>
-        event.message === "Claude API retry 1/10: overloaded" && event.status === "overloaded",
-      )).toBe(true);
+      expect(onEvent.mock.calls.some((call) => {
+        const event = (call[0] as any)?.event;
+        return event?.type === "activity"
+          && event.activity === "working"
+          && event.detail === "Retrying Claude · attempt 1 of 10 · retrying in 2s";
+      })).toBe(true);
       expect(onEvent.mock.calls.filter((call) => (call[0] as any)?.event?.type === "api_retry"))
         .toHaveLength(1);
     } finally {

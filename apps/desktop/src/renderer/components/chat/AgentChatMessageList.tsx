@@ -91,6 +91,13 @@ import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import {
+  classifyProviderRetryCause,
+  formatLegacyProviderRetryActivityDetail,
+  formatProviderRetryActivityDetail,
+  isLegacyProviderRetryNotice,
+  isProviderRetryActivityDetail,
+} from "../../../shared/providerRetryPresentation";
 import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import { isClaudeContextCategoryKind } from "../../../shared/claudeContextUsage";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
@@ -3223,7 +3230,7 @@ function renderEvent(
     );
   }
 
-  /* ── Conversation reset / API retry: surfaced elsewhere, no inline row. ── */
+  /* ── Conversation reset / retry activity: surfaced elsewhere, no inline row. ── */
   if (event.type === "conversation_reset" || event.type === "api_retry") {
     return null;
   }
@@ -3392,6 +3399,11 @@ function renderEvent(
         />
       );
     }
+    // Older ADE versions persisted every provider retry as a notice. Keep
+    // replay quiet and let the active-turn indicator derive one replacement
+    // status from the same event stream.
+    if (isLegacyProviderRetryNotice(event)) return null;
+
     const inferredSeverity = event.severity
       ?? (
         event.noticeKind === "rate_limit"
@@ -4548,33 +4560,56 @@ function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: str
   return null;
 }
 
-// The latest `api_retry` for the live turn, but only while it is the newest
-// signal — an assistant/stream/activity event after it means the retry
-// resolved, so the verb clears. Drives a better working-indicator verb than the
-// generic "taking longer than usual".
-function deriveActiveApiRetry(
+// The latest provider retry for the live turn, but only while it is the newest
+// signal — assistant output, tool work, or another working activity means the
+// retry resolved, so the inline status clears. This also understands the old
+// persisted notice shape during replay.
+function deriveActiveProviderRetryActivity(
   events: AgentChatEventEnvelope[],
   activeTurnId: string | null,
-): { attempt: number; maxRetries: number; retryDelayMs: number } | null {
+): string | null {
   if (!activeTurnId) return null;
+  let legacyRetryDetail: string | null = null;
   for (let i = events.length - 1; i >= 0; i--) {
     const evt = events[i]!.event;
+    const eventTurnId = getEventTurnId(evt);
+    if (eventTurnId && eventTurnId !== activeTurnId) continue;
+    if (evt.type === "activity" && isProviderRetryActivityDetail(evt.detail)) {
+      return evt.detail.trim();
+    }
     if (evt.type === "api_retry") {
-      if (evt.turnId && evt.turnId !== activeTurnId) continue;
-      return { attempt: evt.attempt, maxRetries: evt.maxRetries, retryDelayMs: evt.retryDelayMs };
+      const cause = evt.errorStatus === 429
+        ? "rate_limit"
+        : evt.errorStatus === 529
+          ? "overloaded"
+          : classifyProviderRetryCause("", evt.errorStatus);
+      return formatProviderRetryActivityDetail({
+        provider: "claude",
+        attempt: evt.attempt,
+        maxAttempts: evt.maxRetries,
+        retryDelayMs: evt.retryDelayMs,
+        cause,
+      });
+    }
+    if (evt.type === "system_notice" && isLegacyProviderRetryNotice(evt)) {
+      legacyRetryDetail ??= formatLegacyProviderRetryActivityDetail(evt);
+      continue;
     }
     if (
       evt.type === "text"
       || evt.type === "reasoning"
-      || evt.type === "activity"
       || evt.type === "tool_call"
       || evt.type === "tool_result"
+      || evt.type === "activity"
       || evt.type === "done"
+      || evt.type === "error"
+      || evt.type === "user_message"
+      || (evt.type === "status" && evt.turnStatus !== "started")
     ) {
       return null;
     }
   }
-  return null;
+  return legacyRetryDetail;
 }
 
 function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
@@ -5788,8 +5823,8 @@ function AgentChatMessageListMain({
 
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
-  const activeApiRetry = useMemo(
-    () => (showStreamingIndicator ? deriveActiveApiRetry(events, activeTurnId) : null),
+  const activeProviderRetryActivity = useMemo(
+    () => (showStreamingIndicator ? deriveActiveProviderRetryActivity(events, activeTurnId) : null),
     [events, showStreamingIndicator, activeTurnId],
   );
   // A stop receipt auto-collapses once its queued messages have run — best-effort:
@@ -6939,7 +6974,7 @@ function AgentChatMessageListMain({
         pacedTextReveal={envelope.key === pacedTextRowKey}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -6964,8 +6999,8 @@ function AgentChatMessageListMain({
     >
       <WorkingIndicator
         activity={
-          activeApiRetry
-            ? `retrying (attempt ${activeApiRetry.attempt}/${activeApiRetry.maxRetries} · waiting ${Math.max(0, Math.round(activeApiRetry.retryDelayMs / 1000))}s)`
+          activeProviderRetryActivity
+            ? activeProviderRetryActivity
             : resolveWorkingIndicatorLabel(
               latestActivity?.activity ?? null,
               transcriptToolActivity.activeFileEntries,
