@@ -13,10 +13,11 @@ runtime route via `callProjectRuntimeActionOr(...)` and falls back to
 the legacy in-process IPC handler when no runtime is bound. The IPC
 channel names below are the renderer-facing API; the runtime serves
 each one through its corresponding action domain
-(`lane`, `conflicts`, `pr`, `operation`, `process`, `session`,
+(`lane`, `git`, `conflicts`, `pr`, `operation`, `process`, `session`,
 `graph_state`).
 
-Source: `apps/desktop/src/renderer/components/graph/WorkspaceGraphPage.tsx`.
+Sources: `apps/desktop/src/renderer/components/graph/WorkspaceGraphPage.tsx`
+and `useGraphSyncStatuses.ts`.
 
 ## Data feeds
 
@@ -24,11 +25,11 @@ Source: `apps/desktop/src/renderer/components/graph/WorkspaceGraphPage.tsx`.
 |--------|-------|--------------------------------|
 | Lane list | Node positions, node data (`lane`) | `appStore.lanes`, `appStore.refreshLanes()` (→ `lane` action) |
 | Conflict status + risk matrix | Node `status`, edge `riskLevel`, matrix | `ade.conflicts.getBatchAssessment` (→ `conflicts` action) |
-| Sync status | Node `remoteSync` badge | `ade.git.getLaneUpstreamSync` (batched) |
+| Sync status | Node `remoteSync` badge | `ade.git.getSyncStatuses({ laneIds })` (batched; changed lanes only after lane refresh) |
 | Auto-rebase status | Node `autoRebaseStatus` badge | `ade.lanes.listAutoRebaseStatuses` (→ `lane` action) |
 | Sessions | Active session counts, activity score, last-activity timestamps | `renderer/lib/sessionListCache.ts` (cached list + runtime event stream) |
 | Operations | Activity score (git commits) | `ade.history.listOperations` (→ `operation` action) |
-| PRs | Node `pr` overlay, PR edges | `ade.prs.listWithConflicts` (→ `pr` action) |
+| PRs | Node `pr` overlay, PR edges, PR dialog sidecars | `ade.prs.listWithConflicts` + `ade.prs.getDetailBundle` (→ `pr` action) |
 | Integration proposals | Proposal nodes | `ade.prs.listProposals` (→ `pr` action) |
 | Environment mappings | Environment coloring per lane | `ade.project.listEnvironmentMappings` |
 
@@ -41,7 +42,10 @@ When the user opens the `/graph` route:
 2. **+800 ms** — schedule activity refresh (sessions + operations).
 3. **+1.5 s** — risk batch refresh (`refreshRiskBatch` →
    `ade.conflicts.getBatchAssessment`).
-4. **+2.5 s** — lane sync statuses (`refreshLaneSyncStatuses`).
+4. **After the lane list settles** — sync statuses
+   (`refreshLaneSyncStatuses` → `ade.git.getSyncStatuses`) in one
+   request for the lanes whose branch/base/worktree/availability or
+   archive data changed.
 5. **+3.5 s** — auto-rebase statuses (`refreshAutoRebaseStatuses`).
 6. **+4.0 s** — PR list (`refreshPrs` →
    `ade.prs.listWithConflicts`).
@@ -60,15 +64,16 @@ Every refresh has three refs:
 
 ```ts
 const syncRefreshInFlightRef = React.useRef(false);
-const syncRefreshQueuedRef = React.useRef(false);
+const syncRefreshQueuedRef = React.useRef<"all" | Set<string> | null>(null);
 // same pattern for autoRebase, activity, PR
 ```
 
 Behavior when a refresh is requested while one is already running:
 
-- Set the queued flag and return.
-- The in-flight refresh's `finally` block checks the queued flag
-  and schedules exactly one follow-up.
+- Add changed lane IDs to the queued set (or mark the queue as `"all"`) and
+  return.
+- The in-flight refresh's `finally` block consumes the queue and
+  schedules exactly one follow-up with the narrowest requested scope.
 
 Prevents refresh storms when multiple events arrive in bursts
 (common on lane updates and PR webhook deliveries).
@@ -140,7 +145,8 @@ runtimes) and schedules refreshes accordingly:
   `scheduleRefreshPrs()`.
 - Lane events — when `onLaneChanged` fires (reparent, create,
   archive) → `refreshLanes()` via app store → which triggers a
-  graph re-render.
+  graph re-render and a batched sync read only for changed lane
+  branch/base/worktree/availability/archive inputs.
 - Conflict events (`prediction-progress`, `prediction-complete`,
   `prediction-updated`) — update local `batch` / `batchProgress`
   state without a full re-fetch.
@@ -257,6 +263,15 @@ rewrites on next save.
 | Change filters | No refresh; local dimmed/highlight recalculation |
 | PR update event | `scheduleRefreshPrs()` |
 
+Any lane refresh that changes a lane's branch, base, worktree,
+availability, or archive state sends only those lane IDs to
+`ade.git.getSyncStatuses`. The preload bridge and hosted adapter fall
+back to the existing per-lane sync read or four PR sidecar reads when
+an older runtime does not advertise the batch action. The PR dialog
+sends its status, checks, reviews, and comments through one
+`ade.prs.getDetailBundle` read; the service preserves successful
+sidecars when an individual read fails.
+
 ## What does NOT trigger refresh
 
 Intentional omissions:
@@ -289,6 +304,10 @@ Intentional omissions:
   and PR data blocks topology paint on slow projects. Later than
   that and the user perceives "PR overlays never load." Keep
   this window.
+- **Graph fan-out stays at the runtime boundary.** Keep sync-status
+  refreshes lane-id keyed and batched, and keep PR dialog sidecars in
+  `getDetailBundle`; do not restore per-lane or per-sidecar renderer
+  calls.
 - **Graph preferences use `GraphPersistedState.lastViewMode`
   only.** Anything richer (presets, shared views) is intentionally
   out of scope for the current iteration.

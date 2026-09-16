@@ -32,11 +32,14 @@ import type {
   GitStashSummary,
   GitSyncArgs,
   GitSyncMode,
+  GitSyncStatusesArgs,
+  GitSyncStatuses,
   GitUpstreamSyncStatus,
   LaneLinearIssue,
   LaneType,
   OperationRecord,
 } from "../../../shared/types";
+import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../../../shared/gitSyncStatuses";
 import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
@@ -676,7 +679,7 @@ export function createGitOperationsService({
     return normalized;
   }
 
-  return {
+  const service = {
     async stageFile(args: GitFileActionArgs): Promise<GitActionResult> {
       const filePath = ensureRelativeRepoPath(args.path);
       const { action } = await runLaneOperation({
@@ -1166,6 +1169,11 @@ export function createGitOperationsService({
           recommendedAction
         };
       });
+    },
+
+    async getSyncStatuses(args: GitSyncStatusesArgs): Promise<GitSyncStatuses> {
+      const laneIds = normalizeSyncStatusLaneIds(args);
+      return settleLaneSyncStatuses(laneIds, async (laneId) => service.getSyncStatus({ laneId }));
     },
 
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {
@@ -1802,4 +1810,6 @@ export function createGitOperationsService({
       return action;
     }
   };
+
+  return service;
 }

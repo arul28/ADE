@@ -101,6 +101,13 @@ export type GitUpstreamSyncStatus = {
   recommendedAction: GitRecommendedAction;
 };
 
+export type GitSyncStatusesArgs = {
+  laneIds: string[];
+};
+
+/** Sync status keyed by the lane id requested by the caller. */
+export type GitSyncStatuses = Record<string, GitUpstreamSyncStatus | null>;
+
 export type GitConflictKind = "merge" | "rebase" | null;
 
 export type GitConflictState = {

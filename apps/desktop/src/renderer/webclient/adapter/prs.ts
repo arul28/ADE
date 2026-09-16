@@ -2,9 +2,11 @@ import type {
   PrMergeContext,
   PrMobileGithubDetailSnapshot,
   PrMobileSnapshot,
+  PrDetailBundle,
   PrSummary,
   PrWithConflicts,
 } from "../../../shared/types";
+import { EMPTY_PR_DETAIL_BUNDLE, settlePrDetailBundle } from "../../../shared/prDetailBundle";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
@@ -60,6 +62,18 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
 
   function read<T>(action: string, args: unknown, fallback: T): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, cacheTtlMs: READ_CACHE_TTL_MS });
+  }
+
+  async function getDetailBundle(prId: string): Promise<PrDetailBundle> {
+    if (commands.hasAction("prs.getDetailBundle")) {
+      return await read<PrDetailBundle>("prs.getDetailBundle", { prId }, EMPTY_PR_DETAIL_BUNDLE);
+    }
+    return settlePrDetailBundle({
+      status: () => read<PrDetailBundle["status"]>("prs.getStatus", { prId }, null),
+      checks: () => read<PrDetailBundle["checks"]>("prs.getChecks", { prId }, []),
+      reviews: () => read<PrDetailBundle["reviews"]>("prs.getReviews", { prId }, []),
+      comments: () => read<PrDetailBundle["comments"]>("prs.getComments", { prId }, []),
+    });
   }
 
   // ---- Batched GitHub detail ----
@@ -297,6 +311,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       return events.on("prsEvent", listener as never);
     },
     getDetail: (prId: string) => read("prs.getDetail", { prId }, null),
+    getDetailBundle,
     getFiles: (prId: string) => read("prs.getFiles", { prId }, []),
     getCommits: (prId: string) => read("prs.getCommits", { prId }, []),
     getActionRuns: (prId: string) => read("prs.getActionRuns", { prId }, []),

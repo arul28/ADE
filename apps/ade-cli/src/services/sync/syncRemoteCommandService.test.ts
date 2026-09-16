@@ -256,11 +256,13 @@ describe("createSyncRemoteCommandService", () => {
       "github.listRepoIssues",
       "github.getIssue",
       "ai.getStatus",
+      "git.getSyncStatuses",
       "prs.list",
       "prs.listOpenForRepo",
       "prs.getForLane",
       "prs.refresh",
       "prs.getDetail",
+      "prs.getDetailBundle",
       "prs.getAiSummary",
       "prs.getIntegrationResolutionState",
       "prs.listProposals",
@@ -296,6 +298,41 @@ describe("createSyncRemoteCommandService", () => {
       "prs.listIntegrationWorkflows",
       "prs.getMobileSnapshot",
     ]));
+  });
+
+  it("routes Graph fan-out reads through batched sync and detail commands", async () => {
+    const statuses = {
+      "lane-1": { hasUpstream: true, upstreamState: "tracking" },
+      "lane-2": null,
+    };
+    const detail = {
+      status: { prId: "pr-1", isMergeable: true },
+      checks: [{ id: "check-1" }],
+      reviews: [{ id: "review-1" }],
+      comments: [{ id: "comment-1" }],
+    };
+    const getSyncStatuses = vi.fn().mockResolvedValue(statuses);
+    const getDetailBundle = vi.fn().mockResolvedValue(detail);
+    const { service } = createService({
+      gitService: { getSyncStatuses },
+      prService: { getDetailBundle },
+    });
+
+    await expect(service.execute(makePayload("git.getSyncStatuses", {
+      laneIds: [" lane-1 ", "", "lane-2"],
+    }))).resolves.toEqual(statuses);
+    await expect(service.execute(makePayload("prs.getDetailBundle", {
+      prId: " pr-1 ",
+    }))).resolves.toEqual(detail);
+
+    expect(getSyncStatuses).toHaveBeenCalledWith({ laneIds: ["lane-1", "lane-2"] });
+    expect(getDetailBundle).toHaveBeenCalledWith("pr-1");
+
+    getSyncStatuses.mockResolvedValue({});
+    await expect(service.execute(makePayload("git.getSyncStatuses", {
+      laneIds: [],
+    }))).resolves.toEqual({});
+    expect(getSyncStatuses).toHaveBeenLastCalledWith({ laneIds: [] });
   });
 
   it("caps ai.getStatus probes at 30 seconds", async () => {

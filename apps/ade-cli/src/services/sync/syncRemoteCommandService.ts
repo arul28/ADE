@@ -5532,6 +5532,10 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").redoLastHeadChange(parseConflictLaneArgs(payload, "git.redoLastHeadChange")));
   register("git.getSyncStatus", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getSyncStatus(parseConflictLaneArgs(payload, "git.getSyncStatus")));
+  register("git.getSyncStatuses", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").getSyncStatuses({
+      laneIds: asStringArray(payload.laneIds),
+    }));
   register("git.getOriginRemote", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getOriginRemote(parseConflictLaneArgs(payload, "git.getOriginRemote")));
   register("git.getOpenPrForBranch", { viewerAllowed: true }, async (payload) =>
@@ -5806,6 +5810,8 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     return await args.dispatchDeeplinkUrl(url);
   });
   register("prs.getDetail", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")));
+  register("prs.getDetailBundle", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.getDetailBundle(requirePrId(payload, "prs.getDetailBundle")));
   register("prs.postReviewComment", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.postReviewComment(parsePostPrReviewCommentArgs(payload)));
   register("prs.getAiSummary", { viewerAllowed: true, observesAbort: true }, async (payload) =>

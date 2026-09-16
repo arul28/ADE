@@ -36,18 +36,16 @@ import type {
   GraphStatusFilter,
   GraphViewMode,
   GitSyncMode,
-  GitUpstreamSyncStatus,
   AutoRebaseLaneStatus,
   LaneIcon,
   LaneSummary,
   MergeMethod,
   MergeSimulationResult,
-  PrCheck,
-  PrComment,
-  PrReview,
   PrWithConflicts,
-  IntegrationProposal
+  IntegrationProposal,
+  PrDetailBundle,
 } from "../../../shared/types";
+import { EMPTY_PR_DETAIL_BUNDLE } from "../../../shared/prDetailBundle";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useLaneListInvalidation } from "../../hooks/useLaneListInvalidation";
 import {
@@ -103,6 +101,7 @@ import {
   collectDescendants,
   prChecksLabel
 } from "./graphHelpers";
+import { mergeGeneratedPrDraft } from "./graphPrDraft";
 import {
   buildDefaultFilter,
   coalesceGraphFilters,
@@ -115,6 +114,7 @@ import {
 } from "./graphLayout";
 import { GraphLaneNode } from "./graphNodes/LaneNode";
 import { GraphProposalNode } from "./graphNodes/ProposalNode";
+import { useGraphSyncStatuses } from "./useGraphSyncStatuses";
 import { RiskEdge } from "./graphEdges/RiskEdge";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { PrDetailPane } from "../prs/detail/PrDetailPane";
@@ -184,10 +184,18 @@ function GraphInner({ active = true }: { active?: boolean }) {
   useLaneListInvalidation({ active: active && Boolean(projectRoot), refreshLanes: refreshGraphLanes, freshnessKey: lanes });
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
   const [prs, setPrs] = React.useState<PrWithConflicts[]>(() => readGraphPrCache(projectRoot));
-  const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
+  const lanesRef = React.useRef(lanes);
+  const prDraftRequestIdRef = React.useRef(0);
+  React.useEffect(() => {
+    lanesRef.current = lanes;
+  }, [lanes]);
+  const { refreshLaneSyncStatuses, syncByLaneId } = useGraphSyncStatuses({
+    active,
+    lanes,
+    lanesRef,
+    projectRoot,
+  });
   const [autoRebaseByLaneId, setAutoRebaseByLaneId] = React.useState<Record<string, AutoRebaseLaneStatus | null>>({});
-  const syncRefreshInFlightRef = React.useRef(false);
-  const syncRefreshQueuedRef = React.useRef(false);
   const autoRebaseRefreshInFlightRef = React.useRef(false);
   const autoRebaseRefreshQueuedRef = React.useRef(false);
   const activityRefreshInFlightRef = React.useRef(false);
@@ -196,15 +204,10 @@ function GraphInner({ active = true }: { active?: boolean }) {
   const activityRefreshTimerRef = React.useRef<number | null>(null);
   const prRefreshTimerRef = React.useRef<number | null>(null);
   const graphConfirm = useConfirmDialog();
-  const lanesRef = React.useRef(lanes);
   const nodesRef = React.useRef<Array<Node<GraphNodeData>>>([]);
   const handledFocusLaneRef = React.useRef<string | null>(null);
   const handledFocusProposalRef = React.useRef<string | null>(null);
   const projectRootRef = React.useRef(projectRoot);
-
-  React.useEffect(() => {
-    lanesRef.current = lanes;
-  }, [lanes]);
 
   // Inline per-lane agent rosters for the graph cards.
   const allLaneIds = React.useMemo(() => lanes.map((lane) => lane.id), [lanes]);
@@ -260,46 +263,6 @@ function GraphInner({ active = true }: { active?: boolean }) {
       void refreshPrs().catch((err) => console.warn("[Graph] debounced listWithConflicts failed:", err));
     }, delayMs);
   }, [refreshPrs]);
-
-  const refreshLaneSyncStatuses = React.useCallback(async () => {
-    if (syncRefreshInFlightRef.current) {
-      syncRefreshQueuedRef.current = true;
-      return;
-    }
-    syncRefreshInFlightRef.current = true;
-    try {
-      const laneList = lanesRef.current;
-      if (laneList.length === 0) {
-        setSyncByLaneId({});
-        return;
-      }
-      const next: Record<string, GitUpstreamSyncStatus | null> = {};
-      const chunkSize = 4;
-      for (let i = 0; i < laneList.length; i += chunkSize) {
-        const chunk = laneList.slice(i, i + chunkSize);
-        const results = await Promise.all(
-          chunk.map(async (lane) => {
-            try {
-              const status = await window.ade.git.getSyncStatus({ laneId: lane.id });
-              return [lane.id, status] as const;
-            } catch {
-              return [lane.id, null] as const;
-            }
-          })
-        );
-        for (const [laneId, status] of results) {
-          next[laneId] = status;
-        }
-      }
-      setSyncByLaneId(next);
-    } finally {
-      syncRefreshInFlightRef.current = false;
-      if (syncRefreshQueuedRef.current) {
-        syncRefreshQueuedRef.current = false;
-        void refreshLaneSyncStatuses();
-      }
-    }
-  }, []);
 
   const refreshAutoRebaseStatuses = React.useCallback(async () => {
     if (autoRebaseRefreshInFlightRef.current) {
@@ -852,7 +815,6 @@ function GraphInner({ active = true }: { active?: boolean }) {
     let cancelled = false;
     let riskTimer: number | null = null;
     let activityTimer: number | null = null;
-    let syncTimer: number | null = null;
     let autoRebaseTimer: number | null = null;
     const hasCachedTopology = lanesRef.current.length > 0;
     setLoadingTopology(!hasCachedTopology);
@@ -887,10 +849,6 @@ function GraphInner({ active = true }: { active?: boolean }) {
       if (cancelled) return;
       scheduleRefreshActivity(250, { includeOperations: true });
     }, 800);
-    syncTimer = window.setTimeout(() => {
-      if (cancelled) return;
-      void refreshLaneSyncStatuses();
-    }, 2_500);
     autoRebaseTimer = window.setTimeout(() => {
       if (cancelled) return;
       void refreshAutoRebaseStatuses();
@@ -900,10 +858,9 @@ function GraphInner({ active = true }: { active?: boolean }) {
       cancelled = true;
       if (riskTimer != null) window.clearTimeout(riskTimer);
       if (activityTimer != null) window.clearTimeout(activityTimer);
-      if (syncTimer != null) window.clearTimeout(syncTimer);
       if (autoRebaseTimer != null) window.clearTimeout(autoRebaseTimer);
     };
-  }, [active, projectRoot, refreshAutoRebaseStatuses, refreshGraphLanes, refreshLaneSyncStatuses, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
+  }, [active, projectRoot, refreshAutoRebaseStatuses, refreshGraphLanes, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
 
   React.useEffect(() => {
     if (!active) return;
@@ -1914,6 +1871,18 @@ function GraphInner({ active = true }: { active?: boolean }) {
     [getDropIntegratePlan, laneById, lanes, overlapFilesByPair]
   );
 
+  const applyPrDetailBundle = React.useCallback((
+    match: (prev: PrDialogState) => boolean,
+    bundle: PrDetailBundle,
+    extra?: Partial<PrDialogState>,
+  ) => {
+    setPrDialog((prev) =>
+      prev && match(prev)
+        ? { ...prev, loadingDetails: false, ...bundle, ...extra }
+        : prev
+    );
+  }, []);
+
   const openPrDialogForLane = React.useCallback(
     (laneId: string, baseLaneId: string) => {
       const lane = laneById.get(laneId);
@@ -1922,13 +1891,15 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
       const existing = prByLaneId.get(laneId) ?? null;
       const baseBranch = baseLane.branchRef;
+      const baselineTitle = existing?.title ?? lane.name ?? "";
+      const baselineBody = "";
 
       setPrDialog({
         laneId,
         baseLaneId,
         baseBranch,
-        title: existing?.title ?? lane.name ?? "",
-        body: "",
+        title: baselineTitle,
+        body: baselineBody,
         draft: existing?.state === "draft",
         creating: false,
         existingPr: existing,
@@ -1942,27 +1913,37 @@ function GraphInner({ active = true }: { active?: boolean }) {
         error: null
       });
 
-      if (!existing) return;
+      if (!existing) {
+        const requestId = ++prDraftRequestIdRef.current;
+        void window.ade.prs
+          .draftDescription({ laneId })
+          .then((draft) => {
+            if (prDraftRequestIdRef.current !== requestId) return;
+            setPrDialog((prev) => mergeGeneratedPrDraft(
+              prev,
+              laneId,
+              draft,
+              { title: baselineTitle, body: baselineBody },
+            ));
+          })
+          .catch((error) => {
+            if (prDraftRequestIdRef.current !== requestId) return;
+            const message = error instanceof Error ? error.message : String(error);
+            setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, error: message } : prev));
+          });
+        return;
+      }
 
-      void Promise.all([
-        window.ade.prs.getStatus(existing.id),
-        window.ade.prs.getChecks(existing.id),
-        window.ade.prs.getReviews(existing.id),
-        window.ade.prs.getComments(existing.id)
-      ])
-        .then(([status, checks, reviews, comments]) => {
-          setPrDialog((prev) =>
-            prev && prev.laneId === laneId
-              ? { ...prev, loadingDetails: false, status, checks, reviews, comments }
-              : prev
-          );
+      void window.ade.prs.getDetailBundle(existing.id)
+        .then((bundle) => {
+          applyPrDetailBundle((prev) => prev.laneId === laneId, bundle);
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
-          setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, loadingDetails: false, error: message } : prev));
+          applyPrDetailBundle((prev) => prev.laneId === laneId, EMPTY_PR_DETAIL_BUNDLE, { error: message });
         });
     },
-    [laneById, prByLaneId]
+    [applyPrDetailBundle, laneById, prByLaneId]
   );
 
   const runGraphPrReview = React.useCallback(
@@ -2098,18 +2079,15 @@ function GraphInner({ active = true }: { active?: boolean }) {
       setPrDialog(null);
       return;
     }
-    const [status, checks, reviews, comments] = await Promise.all([
-      window.ade.prs.getStatus(refreshed.id).catch(() => null),
-      window.ade.prs.getChecks(refreshed.id).catch(() => [] as PrCheck[]),
-      window.ade.prs.getReviews(refreshed.id).catch(() => [] as PrReview[]),
-      window.ade.prs.getComments(refreshed.id).catch(() => [] as PrComment[])
-    ]);
-    setPrDialog((prev) => (
-      prev && prev.existingPr?.id === refreshed.id
-        ? { ...prev, existingPr: refreshed, status, checks, reviews, comments, loadingDetails: false }
-        : prev
-    ));
-  }, [prDialog, refreshPrs]);
+    const bundle = await window.ade.prs
+      .getDetailBundle(refreshed.id)
+      .catch(() => EMPTY_PR_DETAIL_BUNDLE);
+    applyPrDetailBundle(
+      (prev) => prev.existingPr?.id === refreshed.id,
+      bundle,
+      { existingPr: refreshed },
+    );
+  }, [applyPrDetailBundle, prDialog, refreshPrs]);
 
   const onNodeDragStop = React.useCallback(
     (_event: React.MouseEvent, node: Node<GraphNodeData>) => {
@@ -3930,25 +3908,13 @@ function GraphInner({ active = true }: { active?: boolean }) {
                           writeGraphPrCache(projectRootRef.current, refreshed);
                           setPrs(refreshed);
                           const createdPr = refreshed.find((entry) => entry.id === created.id) ?? null;
-                          const [status, checks, reviews, comments] = await Promise.all([
-                            window.ade.prs.getStatus(created.id).catch(() => null),
-                            window.ade.prs.getChecks(created.id).catch(() => [] as PrCheck[]),
-                            window.ade.prs.getReviews(created.id).catch(() => [] as PrReview[]),
-                            window.ade.prs.getComments(created.id).catch(() => [] as PrComment[])
-                          ]);
-                          setPrDialog((prev) =>
-                            prev && prev.laneId === laneId
-                              ? {
-                                  ...prev,
-                                  creating: false,
-                                  existingPr: createdPr,
-                                  loadingDetails: false,
-                                  status,
-                                  checks,
-                                  reviews,
-                                  comments
-                                }
-                              : prev
+                          const bundle = await window.ade.prs
+                            .getDetailBundle(created.id)
+                            .catch(() => EMPTY_PR_DETAIL_BUNDLE);
+                          applyPrDetailBundle(
+                            (prev) => prev.laneId === laneId,
+                            bundle,
+                            { creating: false, existingPr: createdPr },
                           );
                         })
                         .catch((error) => {

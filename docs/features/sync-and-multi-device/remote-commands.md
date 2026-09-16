@@ -527,7 +527,9 @@ without an active project.
   different branch
 - `stashPush`, `stashList`, `stashApply`, `stashPop`, `stashDrop`,
   `stashClear`
-- `fetch`, `pull`, `sync`, `push`, `getSyncStatus`
+- `fetch`, `pull`, `sync`, `push`, `getSyncStatus`, `getSyncStatuses`
+  — `getSyncStatuses` returns the existing sync-status shape keyed by
+  requested lane id for the Graph's batched refresh path
 - `undoLastHeadChange`, `redoLastHeadChange` — paired recovery
   actions that re-read HEAD before acting and refuse when the lane
   has moved since the operation they target
@@ -587,7 +589,9 @@ a boolean.
 - `runCreate`
 
 **PRs** (`prs.*`)
-- `list`, `listOpenForRepo`, `refresh`, `getDetail`, `getStatus`
+- `list`, `listOpenForRepo`, `refresh`, `getDetail`, `getDetailBundle`, `getStatus`
+  — `getDetailBundle` groups the Graph's status, checks, reviews, and
+  comments reads while preserving successful sidecars on partial failure
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
 - `postReviewComment`, `getAiSummary`, `regenerateAiSummary`, `delete`,
   `cleanupBranch`

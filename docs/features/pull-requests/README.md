@@ -30,7 +30,7 @@ tab reads on the remote runtime through `callPrReadRuntimeActionOr`
 (`domain: "pr"`). Local-bound windows call the in-process PR IPC
 handlers directly for high-volume reads such as `listWithConflicts`,
 `getDetail`, `getStatus`, `getChecks`, `getReviews`, `getComments`,
-`getFiles`, `getCommits`, `getDeployments`, and
+`getDetailBundle`, `getFiles`, `getCommits`, `getDeployments`, `getAiSummary`, and
 `getGitHubSnapshot`, so opening the PR tab does not wait on local
 daemon startup. Mutations and long-running workflows still use the
 project runtime route where that route owns the behavior.
@@ -455,6 +455,7 @@ See [Which machine answers a PR read](#which-machine-answers-a-pr-read).
 - `ade.prs.updateBranch` — bring a behind PR head up to date with its base (`strategy: "merge"` uses GitHub's update-branch API; `strategy: "rebase"` runs ADE's local lane rebase + force-with-lease push and reports `hasConflicts` when it can't auto-apply)
 - `ade.prs.getStatusByGithub` — live `PrStatus` (incl. the GraphQL merge box) for an unmapped GitHub-tab PR addressed by `owner/repo#num` coords, without a `pull_requests` row
 - `ade.prs.getMergeContext`, `ade.prs.getMergeContexts`, `ade.prs.listSnapshots`, `ade.prs.getStatus`, `ade.prs.getChecks`, `ade.prs.getReviews`, `ade.prs.getComments`, `ade.prs.getFiles`, `ade.prs.getCommits`
+- `ade.prs.getDetailBundle` — the Graph's one-read bundle of status, checks, reviews, and comments. The service returns the existing response shapes and preserves successful sidecars when one read fails.
 - `ade.prs.reconcileNow` — force one catch-up reconcile of the whole project's PR state (`reconcileOnFocus({ force: true })`); used by the post-auth auto-heal. `ade.prs.syncLanePr` — best-effort per-lane sync (the manual ⟳ on the PR chip) that heals a merged/closed lane PR or maps a merged-but-unmapped PR on the lane branch. Both route to the daemon `pr` domain (`reconcileOnFocus` / `syncLanePr`) for runtime-bound windows and to the in-process PR service for local-bound windows. See [Keeping PR status fresh](#keeping-pr-status-fresh).
 - `ade.prs.cleanupBranch` — delete a merged/closed PR's local and/or remote branch without touching the lane. Works with or without a `pull_requests` row; refuses fork PRs, PRs outside this project's repository, and any primary-lane branch. See [Standalone PR branch cleanup](#standalone-pr-branch-cleanup)
 - `ade.prs.updateDescription`, `ade.prs.updateTitle`, `ade.prs.updateBody`, `ade.prs.setLabels`, `ade.prs.requestReviewers`, `ade.prs.submitReview`, `ade.prs.close`, `ade.prs.reopen`

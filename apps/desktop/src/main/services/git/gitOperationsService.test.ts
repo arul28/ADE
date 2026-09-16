@@ -260,6 +260,29 @@ describe("gitOperationsService.getSyncStatus", () => {
       recommendedAction: "push",
     });
   });
+
+  it("batches Graph sync reads into one lane-id keyed result", async () => {
+    const { service } = createTestGitOperationsService();
+    const getSyncStatus = vi.spyOn(service, "getSyncStatus").mockImplementation(async ({ laneId }) => ({
+      hasUpstream: true,
+      upstreamState: "tracking",
+      upstreamRef: `origin/${laneId}`,
+      ahead: 0,
+      behind: 0,
+      diverged: false,
+      recommendedAction: "none",
+    }));
+
+    await expect(service.getSyncStatuses({
+      laneIds: [" lane-1 ", "", "lane-2", "lane-1"],
+    })).resolves.toEqual({
+      "lane-1": expect.objectContaining({ upstreamRef: "origin/lane-1" }),
+      "lane-2": expect.objectContaining({ upstreamRef: "origin/lane-2" }),
+    });
+    expect(getSyncStatus).toHaveBeenCalledTimes(2);
+    expect(getSyncStatus).toHaveBeenNthCalledWith(1, { laneId: "lane-1" });
+    expect(getSyncStatus).toHaveBeenNthCalledWith(2, { laneId: "lane-2" });
+  });
 });
 
 describe("gitOperationsService.pull", () => {

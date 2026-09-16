@@ -39,6 +39,7 @@ Core renderer files (`apps/desktop/src/renderer/components/graph/`):
 | File | Responsibility |
 |------|---------------|
 | `WorkspaceGraphPage.tsx` | Top-level page (4.4k lines). Owns state, staged loading, refresh scheduling, interaction handlers |
+| `useGraphSyncStatuses.ts` | Lane-id keyed sync-status reader. Fingerprints project and lane branch/base/worktree/availability/archive inputs, batches changed lanes, preserves the keyed response shape, and coalesces targeted and full refreshes |
 | `graphTypes.ts` | Node/edge data shapes, graph PR overlay, dialog state types |
 | `graphHelpers.ts` | View-mode metadata, icon/color palettes, proposal helpers, risk-edge coloring, `laneSummaryConflictsWith` |
 | `graphLayout.ts` | Auto-layout per view mode, filter defaults, session/preferences persistence, legacy migration |
@@ -278,13 +279,13 @@ so the extra spoke would just add clutter.
 
 ## Refresh cadence
 
-`WorkspaceGraphPage` owns several refresh paths with different
-intervals and in-flight guards:
+`WorkspaceGraphPage` and `useGraphSyncStatuses` own several refresh
+paths with different intervals and in-flight guards:
 
 | What | Who | Cadence |
 |------|-----|---------|
 | Lane list (`useAppStore.refreshLanes`) | `refreshLanes` | On focus, on explicit action |
-| Sync status (`getLaneUpstreamSync`) | `refreshLaneSyncStatuses` | Every 60 s |
+| Sync status (`getSyncStatuses`) | `useGraphSyncStatuses` | Every 60 s; lane-list changes target only changed lanes |
 | Auto-rebase status | `refreshAutoRebaseStatuses` | Every 60 s |
 | Risk matrix batch | `refreshRiskBatch` | Staged after first paint; on explicit action |
 | Activity (recent sessions) | `refreshActivity` | Debounced, coalesced with in-flight guard; bounded limits |
@@ -294,14 +295,16 @@ In-flight guards:
 
 ```ts
 const syncRefreshInFlightRef = React.useRef(false);
-const syncRefreshQueuedRef = React.useRef(false);
+const syncRefreshQueuedRef = React.useRef<"all" | Set<string> | null>(null);
 // …repeat for autoRebase, activity, PR
 ```
 
 When a refresh is requested mid-flight, the queue flag is set so
-exactly one follow-up runs after the current one completes. This
-prevents refresh storms when several events arrive in quick
-succession.
+exactly one follow-up runs after the current one completes. Targeted
+lane-list refreshes fingerprint branch, base, worktree, availability,
+and archive inputs; periodic and focus refreshes can still request a
+full current-lane snapshot. This prevents refresh storms when several
+events arrive in quick succession.
 
 ## Activity scoring
 

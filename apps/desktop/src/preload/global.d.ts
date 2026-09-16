@@ -362,6 +362,8 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -454,6 +456,7 @@ import type {
   CleanupPrBranchResult,
   PrConflictAnalysis,
   PrDetail,
+  PrDetailBundle,
   PrEventPayload,
   PrFile,
   PrMergeContext,
@@ -3074,6 +3077,10 @@ declare global {
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<GitUpstreamSyncStatus>;
+        getSyncStatuses: (
+          args: GitSyncStatusesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitSyncStatuses>;
         getOriginRemote: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
@@ -3424,6 +3431,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => () => void;
         getDetail: (prId: string) => Promise<PrDetail>;
+        getDetailBundle: (prId: string) => Promise<PrDetailBundle>;
         getFiles: (prId: string) => Promise<PrFile[]>;
         getCommits: (prId: string) => Promise<PrCommit[]>;
         getActionRuns: (prId: string) => Promise<PrActionRun[]>;
