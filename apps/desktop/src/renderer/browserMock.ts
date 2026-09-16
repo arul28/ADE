@@ -65,6 +65,7 @@ import {
   type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
+  type GitSyncStatusesArgs,
   MAX_PROMPT_STASHES,
   type PromptStashCreateArgs,
   type PromptStashEntry,
@@ -6040,7 +6041,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         diverged: false,
         recommendedAction: "none",
       }),
-      getSyncStatuses: async (args: any) => Object.fromEntries(
+      getSyncStatuses: async (args: GitSyncStatusesArgs) => Object.fromEntries(
         (Array.isArray(args?.laneIds) ? args.laneIds : []).map((laneId: string) => [laneId, {
           hasUpstream: true,
           upstreamState: "tracking",

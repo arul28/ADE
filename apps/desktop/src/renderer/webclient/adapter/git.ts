@@ -125,9 +125,9 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
     stashList: (args: unknown, pin?: Pin) => guarded("git.stashList", args, pin, []),
     stashClear: (args: unknown, pin?: Pin) => guarded("git.stashClear", args, pin, gitActionFallback, false),
     getSyncStatus: (args: unknown, pin?: Pin) => guarded("git.getSyncStatus", args, pin, null),
-    getSyncStatuses: (args: unknown, pin?: Pin) => {
+    getSyncStatuses: (args: GitSyncStatusesArgs, pin?: Pin) => {
       assertWebRuntimePinRoutable("git.getSyncStatuses", pin, infra);
-      return getSyncStatuses(args as GitSyncStatusesArgs);
+      return getSyncStatuses(args);
     },
     getOriginRemote: (args: unknown, pin?: Pin) =>
       guarded("git.getOriginRemote", args, pin, { remoteUrl: null, branch: null }),

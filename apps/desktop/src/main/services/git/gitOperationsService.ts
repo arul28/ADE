@@ -1181,7 +1181,7 @@ export function createGitOperationsService({
       const entries = await Promise.all(
         laneIds.map(async (laneId) => {
           try {
-            return [laneId, await this.getSyncStatus({ laneId })] as const;
+            return [laneId, await service.getSyncStatus({ laneId })] as const;
           } catch {
             // Match the Graph's previous per-lane best-effort behavior: one
             // missing worktree must not blank the other lanes' statuses.

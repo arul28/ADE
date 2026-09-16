@@ -5,6 +5,7 @@ import {
   type SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
 import { IPC } from "../shared/ipc";
+import { stripElectronErrorWrapper } from "../shared/codedError";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
@@ -1962,7 +1963,8 @@ function callPinnedOrBoundRuntimeActionOr<T>(
 
 function isUnsupportedRuntimeActionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /not callable|not exposed|not available|unknown action|unsupported action/i.test(message);
+  const normalizedMessage = stripElectronErrorWrapper(message);
+  return /^Action ['"][^'"]+['"] is (?:not callable|not exposed through ADE actions)\.?$/i.test(normalizedMessage);
 }
 
 function normalizeGraphSyncLaneIds(args: GitSyncStatusesArgs): string[] {

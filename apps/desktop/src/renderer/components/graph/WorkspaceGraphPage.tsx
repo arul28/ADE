@@ -112,7 +112,6 @@ import {
 import { GraphLaneNode } from "./graphNodes/LaneNode";
 import { GraphProposalNode } from "./graphNodes/ProposalNode";
 import { useGraphSyncStatuses } from "./useGraphSyncStatuses";
-import { ConflictPanel as GraphConflictPanel } from "./graphDialogs/ConflictPanel";
 import { RiskEdge } from "./graphEdges/RiskEdge";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { PrDetailPane } from "../prs/detail/PrDetailPane";
@@ -857,7 +856,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
       if (activityTimer != null) window.clearTimeout(activityTimer);
       if (autoRebaseTimer != null) window.clearTimeout(autoRebaseTimer);
     };
-  }, [active, projectRoot, refreshAutoRebaseStatuses, refreshGraphLanes, refreshLaneSyncStatuses, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
+  }, [active, projectRoot, refreshAutoRebaseStatuses, refreshGraphLanes, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
 
   React.useEffect(() => {
     if (!active) return;
