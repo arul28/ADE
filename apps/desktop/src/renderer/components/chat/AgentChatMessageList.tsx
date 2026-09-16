@@ -55,7 +55,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage } from "../../../shared/types/chat";
+import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -3305,6 +3305,16 @@ function renderEvent(
           <span className="min-w-0 truncate">The user took over "{childTitle}" — reports stop here.</span>
           {childSessionId ? <CaretRight size={10} className="shrink-0 text-slate-300/55" /> : null}
         </button>
+      );
+    }
+    if (event.noticeKind === "info" && event.status === "spawn_parent_gone") {
+      return (
+        <div
+          className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70"
+        >
+          <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
+          <span className="min-w-0">{spawnParentGoneNoticeMessage()}</span>
+        </div>
       );
     }
     if (event.noticeKind === "info" && event.status === "spawn_completed") {

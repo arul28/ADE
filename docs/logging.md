@@ -104,8 +104,9 @@ outcome rather than the intent and a retried attempt never reads as a second
 wake. Write it for every completion, including the quiet ones: a
 parent that was never woken is otherwise indistinguishable in the logs from a
 child that never finished, which is how the original mis-attribution went
-unnoticed. A final delivery failure keeps its own
-`agent_chat.spawn_completion_delivery_failed` line. Explicit take over / promote
+unnoticed. A missing parent is `agent_chat.spawn_completion_parent_gone`, not a
+delivery failure. A final delivery failure against a still-reachable parent
+keeps `agent_chat.spawn_completion_delivery_failed`. Explicit take over / promote
 writes `agent_chat.spawn_kind_changed` with `sessionId`, `parentSessionId`,
 `previousSpawnKind`, `spawnKind`, and `source` (`takeover`, `promote`, or
 `parent_dispatch`). None of these spawn-coordination lines is a PostHog event.

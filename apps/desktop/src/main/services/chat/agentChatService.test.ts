@@ -15297,14 +15297,14 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("retries a failed completion delivery and makes the failure visible in the child", async () => {
+    it("notes a deleted parent once in the child and stops retrying", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let releaseTurn!: () => void;
       let markTurnStarted!: () => void;
       const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
       const turnStarted = new Promise<void>((resolve) => { markTurnStarted = resolve; });
       const stream = vi.fn(() => (async function* () {
-        yield { type: "system", subtype: "init", session_id: "sdk-spawn-delivery-failure", slash_commands: [] };
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-parent-gone", slash_commands: [] };
         markTurnStarted();
         await turnGate;
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
@@ -15313,7 +15313,7 @@ describe("createAgentChatService", () => {
         send: vi.fn().mockResolvedValue(undefined),
         stream,
         close: vi.fn(),
-        sessionId: "sdk-spawn-delivery-failure",
+        sessionId: "sdk-spawn-parent-gone",
         setPermissionMode: vi.fn().mockResolvedValue(undefined),
       } as any);
 
@@ -15343,21 +15343,39 @@ describe("createAgentChatService", () => {
       await turn;
 
       await vi.waitFor(() => {
-        expect(events.some((event) =>
+        expect(events.filter((event) =>
           event.sessionId === child.id
           && event.event.type === "system_notice"
-          && event.event.status === "spawn_completion_delivery_failed"
-        )).toBe(true);
+          && event.event.status === "spawn_parent_gone"
+        )).toHaveLength(1);
       }, { timeout: 2_500 });
-      const deliveryWarnings = logger.warn.mock.calls.filter(
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.status === "spawn_completion_delivery_failed"
+      )).toBe(false);
+      expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("peer");
+      expect(logger.warn.mock.calls.filter(
         ([message]) => message === "agent_chat.spawn_completion_delivery_failed",
-      );
-      expect(deliveryWarnings).toHaveLength(3);
-      expect(deliveryWarnings[2]?.[1]).toEqual(expect.objectContaining({
-        childSessionId: child.id,
-        parentSessionId: parent.id,
-        attempt: 3,
-      }));
+      )).toHaveLength(0);
+      expect(logger.info.mock.calls.some(
+        ([message]) => message === "agent_chat.spawn_completion_parent_gone",
+      )).toBe(true);
+
+      const parentGoneCount = () => events.filter((event) =>
+        event.sessionId === child.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_parent_gone"
+      ).length;
+      await service.sendMessage({ sessionId: child.id, text: "Another turn." });
+      await vi.waitFor(() => {
+      expect(events.filter((event) =>
+        event.sessionId === child.id && event.event.type === "done"
+      ).length).toBeGreaterThanOrEqual(2);
+      });
+      expect(parentGoneCount()).toBe(1);
+      expect(logger.info.mock.calls.filter(
+        ([message]) => message === "agent_chat.spawn_completion_parent_gone",
+      )).toHaveLength(1);
     });
 
     it("rejects the legacy silent spawn type for new child chats", async () => {
