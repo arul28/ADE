@@ -1156,6 +1156,16 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
 
   const getLiveStateSnapshot = (): CtoLiveStateSnapshot | null => liveStateCache;
 
+  /**
+   * The per-turn CTO context.
+   *
+   * Deliberately does NOT carry `buildCtoEnvironmentKnowledge()`. The only
+   * caller (`refreshReconstructionContext` in the agent chat service) prepends
+   * `previewSystemPrompt().prompt`, whose `knowledge` section is that same ~10 KB
+   * document verbatim — emitting it here too doubled it in every single user
+   * turn. Anything that needs the knowledge block standalone should read the
+   * prompt preview's `knowledge` section rather than reintroduce the copy.
+   */
   const buildReconstructionContext = (recentLimit = 8): string => {
     const snapshot = getSnapshot(recentLimit);
     const sections: string[] = [];
@@ -1163,9 +1173,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     sections.push("The CTO state below is already reconstructed by ADE for this session. Do not burn turns trying to rediscover it by shelling into relative .ade/cto paths.");
     sections.push("- Runtime identity and operating doctrine keep you in the CTO role.");
     sections.push(`- Current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH} carries recent sessions through session resumes.`);
-    sections.push("");
-    sections.push("ADE Operational Knowledge");
-    sections.push(buildCtoEnvironmentKnowledge());
     sections.push("");
     sections.push("CTO Identity");
     sections.push(`- Name: ${snapshot.identity.name}`);

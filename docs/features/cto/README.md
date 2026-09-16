@@ -8,7 +8,7 @@ The whole surface is built around one contract: the CTO is a daily chat you can 
 
 ### Main services (`apps/desktop/src/main/services/cto/`)
 
-- `ctoStateService.ts` — identity (name, persona, model preferences), session logs, onboarding state, and the system-prompt preview. Owns the immutable doctrine, continuity model, memory-system guidance, environment knowledge, and capability manifest constants. `buildReconstructionContext()` assembles the memory-enriched context injected on session start, compaction, and model switch; `previewSystemPrompt()` returns the same layered prompt the settings UI renders verbatim. It also owns the live state block: `refreshLiveState()` / `getLiveStateSnapshot()`, the `CtoLiveStateSnapshot` shape, the exported pure renderer `renderCtoLiveStateBlock()`, and `CTO_LIVE_STATE_MAX_CHARS`. Its `getLiveStateSources` constructor argument is a thunk returning `CtoLiveStateSources` (a `Pick` of `CtoOperatorToolDeps`) because the state service is constructed at boot, long before the chat, PR, and automation services exist. `normalizeModelPreferences` is what makes `modelPreferences` nullable — see [Only providers that can redirect a live turn](#only-providers-that-can-redirect-a-live-turn).
+- `ctoStateService.ts` — identity (name, persona, model preferences), session logs, onboarding state, and the system-prompt preview. Owns the immutable doctrine, continuity model, memory-system guidance, environment knowledge, and capability manifest constants. `buildReconstructionContext()` assembles the memory-enriched context injected on session start, compaction, and model switch (deliberately without the environment-knowledge document, which the system prompt it is concatenated to already carries); `previewSystemPrompt()` returns the same layered prompt the settings UI renders verbatim. It also owns the live state block: `refreshLiveState()` / `getLiveStateSnapshot()`, the `CtoLiveStateSnapshot` shape, the exported pure renderer `renderCtoLiveStateBlock()`, and `CTO_LIVE_STATE_MAX_CHARS`. Its `getLiveStateSources` constructor argument is a thunk returning `CtoLiveStateSources` (a `Pick` of `CtoOperatorToolDeps`) because the state service is constructed at boot, long before the chat, PR, and automation services exist. `normalizeModelPreferences` is what makes `modelPreferences` nullable — see [Only providers that can redirect a live turn](#only-providers-that-can-redirect-a-live-turn).
 - `ctoMemoryService.ts` — the smart-memory file store under `.ade/cto/`. Reads/writes `MEMORY.md` and `thread-state.md` (atomic writes), appends per-turn lines to `daily/<YYYY-MM-DD>.md`, exposes `searchMemory(query, { limit?, tags? })` (bounded, file-based, tag hits before text hits), `getSnapshot()`, and `buildMemoryContextSections()` (the capped copies used for injection). It also owns the fact-tag vocabulary (`CTO_MEMORY_TAG_KEYS`, `CtoMemoryTags`, `formatMemoryTagSuffix()`, `parseMemoryTags()`), the per-lane read `listFactsForLane()` and its injectable wrapper `buildLaneMemoryContextSection()`, and the worker discovery queue (`recordDiscovery()`, `readNewDiscoveries()`). No new database or vector dependency.
 - `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool operating rules injected into the prompt, plus the `# Tool packs` section rendered from `CTO_TOOL_PACK_NAMES` / `CTO_TOOL_PACK_SCOPES`. Registered tool schemas are the authoritative capability reference; the prompt does not repeat their descriptions. The retained operating rules are what keep CTO-launched work off the primary lane. Also owns `CTO_INTRO_PROMPT` and `CTO_INTRO_ONBOARDING_STEP` — the opening turn and the once-only marker described in [The opening turn](#the-opening-turn) — and the nightly gardener constants `CTO_MEMORY_GARDENER_ONBOARDING_STEP`, `CTO_MEMORY_GARDENER_TITLE`, `CTO_MEMORY_GARDENER_CRON`, `CTO_MEMORY_GARDENER_PROMPT`.
 - `linearClient.ts` — Linear GraphQL client (shared by desktop and the headless ADE CLI). Reads: `fetchIssueById`, `listProjects`, `searchIssues`, `getQuickView`, `fetchIssueComments`, `listLabels`, `listUsers`. Writes: `updateIssueState`, `updateIssueAssignee`, `createComment`, `addIssueLabel` / `removeIssueLabel`.
@@ -179,6 +179,14 @@ The guarantee is that a deterministic flush always runs before anything can be l
 - **Pre-compaction flush.** On the runtime's `compacting` / compaction-boundary signal, `maybeRefreshIdentityContinuitySummary(managed, "compaction")` runs `flushIdentityContinuityDeterministic` first (writes the tail-based snapshot to the session and to `thread-state.md`), then kicks off a best-effort LLM summary that overwrites `thread-state.md` when it returns. `refreshReconstructionContext` re-injects afterward.
 - **Pre-model/provider-switch flush.** The model-switch path calls the same flush before `teardownRuntime`, so nothing in the old provider window is lost, then rebinds. Both the synchronous switch and the deferred (cursor-busy) switch take this path.
 - **Injection** happens by staging `pendingReconstructionContext` and delivering it on the next turn after session start, compaction, and model/provider switch.
+
+#### What the per-turn prefix does and does not repeat
+
+The prefix is the one thing that rides every CTO turn, so anything duplicated inside it is paid for again on every single send — and on a long thread that is what walks the provider window into auto-compaction.
+
+- **The environment knowledge document appears once.** `refreshReconstructionContext` prepends `previewSystemPrompt().prompt`, whose `knowledge` section already carries the ~10 KB ADE architecture document. `buildReconstructionContext()` therefore does **not** emit it: the two strings are concatenated, so a second copy was pure duplication. Read the preview's `knowledge` section if something needs the document standalone.
+- **The conversation tail rides only a thread it has not been said to.** `Recent Conversation Tail` (40 turns for the CTO, 20 elsewhere) is re-orientation for a model that cannot see those turns, not context. `providerThreadContinuityKey` identifies the provider-side thread the next send lands on; the tail is pushed only when that key has changed since it was last delivered — a rotated Cursor agent, a torn-down or reset runtime, a model or provider switch, a fresh resume, or a thread that has not opened yet. A live, intact codex/Claude thread already holds the conversation verbatim and gets nothing. The flag is sticky until a send actually consumes it, because the context is rebuilt several times per turn.
+- **Tool results are bounded at the tool.** `listScheduledWork` returns a compact record per job (id, chat, kind, status, cron/next run, prompt truncated to 120 characters), at most 50 of them, plus `count` and `truncated`. A project-wide call with full prompts once came back at 50 KB and was the single result that tipped a live CTO thread into auto-compaction mid-call. `getScheduledWorkState` is still the full picture for one chat.
 
 ### Model switching is first-class
 
@@ -452,18 +460,73 @@ They live in `CTO_VOICE_REALTIME_TOOLS` in `shared/types/ctoVoice.ts` rather tha
 
 | Tool | Args | When |
 | --- | --- | --- |
-| `ask_cto` | `{ request }` | Anything needing the project's code, files, git, lanes, PRs, tests, terminals, a command, a change, or any fact not in the context block. The user's request in their own words, plus any clarification. |
-| `cancel_work` | none | The user says stop or never mind while work is running. |
+| `ask_cto` | `{ request, mode }` | Anything needing the project's code, files, git, lanes, PRs, tests, terminals, a command, a change, or any fact not in the context block. The user's request in their own words, plus any clarification — including, when they asked to *see* something, that they asked for a picture. `mode` says what a second request means: see below. |
+| `cancel_work` | none | The user says stop or never mind while work is running. Stops the running request *and* drops anything waiting behind it. |
 | `approve_pending_action` | none | ADE has said out loud that it is waiting for approval and the user clearly agreed. |
 | `deny_pending_action` | none | The same, and they clearly declined. |
 
-Only **one** `ask_cto` runs at a time, because the CTO thread is one session and a second turn on it throws. A new one supersedes the running one exactly as a barge-in used to: the old controller is aborted, the superseded turn answers its own call with `{ status: "superseded" }` so the conversation is not left holding a dangling `function_call`, and nobody is asked to speak about it.
+#### A second request, and who decides what it means
+
+Only **one** `ask_cto` runs at a time, because the CTO thread is one session and a second turn on it throws. What happens to the second one is decided by the **model**, on the tool's required `mode` argument — because the only thing that can tell *"no wait, I meant the merged ones"* from *"also, run the tests"* is whoever heard both sentences. A rule on ADE's side would have to guess, and the guess that shipped first — every new request supersedes the running one — is what lost both requests on the call of 2026-09-16.
+
+- **`replace`** — the new request corrects, changes or takes back the running one. The running turn is aborted and the new one runs instead.
+- **`queue`** — the new request is an additional job. It runs when the current one finishes.
+- A request whose `mode` is missing or unrecognised is treated as **`queue`**: the worst a wrong queue does is answer a few seconds late, where a wrong replace throws a turn's work away.
+- When nothing is running, `mode` changes nothing.
+
+The tool's description tells the model to say **which one it is doing** in the same one-sentence acknowledgement — *"I'll switch to that"* against *"I'll do that right after"* — so the user never has to wonder whether their first request survived their second. Measured on the live API on 2026-09-16 with a scripted two-utterance call: a correction one second into a four-second turn came back as `mode: "replace"` and *"I'll switch to that and pull up the merged pull requests instead"*; an unrelated follow-up came back as `mode: "queue"` and *"I'll do that right after, and queue it behind the pull request view."*
+
+**Two may wait.** A third is refused with `{ status: "busy" }` and a reason the model reads out, because a user who has stacked three jobs by voice has stopped listening to the answers. `cancel_work` stops the running request and drops the queue; every dropped request still answers its own `function_call` — an unanswered one sits in the conversation forever — but none of them asks for a response, because narrating a queue the user has just cancelled is noise.
+
+**Every request runs through one serial drain loop**, and that is the fix rather than a tidiness. A replaced turn is aborted and the next one starts only once its `runBackendTurn` has **returned**. Awaiting the interrupt promise is not enough: `agentChatService.interrupt` resolves when the interrupt is *asked for*, not when the turn it stops is over. On the call of 2026-09-16 the second request's `runSessionTurn` was attempted first, threw `Session already has an active background turn`, and the abort landed three milliseconds later — both requests lost, and the user heard that the CTO could not be reached. A replaced turn answers its own call with `{ status: "superseded" }` and nobody is asked to speak about it.
 
 A result comes back as `conversation.item.create` with a `function_call_output` — `{ status, answer }`, plus a short `reason` when a turn was interrupted or failed. **The provider's error text never travels**: it would be read out loud. `reason` is a house sentence (`CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW`, `CTO_VOICE_SPOKEN_TURN_FAILED`), which is the same guarantee the old relay had, moved one layer out.
 
+#### One voice, and it can draw
+
+`buildCtoVoiceInstructions` is the brief, and it is the only place the user's
+illusion can be broken from. On the call of 2026-09-16 it was broken three times
+in one call: *"I'll hand it to the system that can actually do that work."* The
+user is talking to the CTO, full stop — the CTO does not have colleagues, and it
+does not narrate its own machinery.
+
+So the brief is written in the first person and names none of it: not tools, not
+functions, not another part of ADE, and nothing being passed, handed or relayed
+anywhere. `"the system"`, `"backend"`, `"CTO thread"`, `"hand off"` and
+`"ask_cto"` do not appear in the returned string at all, in either
+acknowledgement mode, and a test asserts their absence rather than trusting a
+reading of it. The tool *descriptions* still name the tools, because that is the
+model reading its own instrument panel; the brief is what the model sounds like.
+
+Acknowledgements are short, varied and first person — *"Sure, counting the
+lanes."*, *"On it."* — and the `acknowledgeAloud` branch is still exactly the
+"Say what it's doing" setting: off, the model calls silently and speaks only
+once it has the answer.
+
+**And it knows it can show things.** The brief tells the model that a visual, a
+chart, a diagram, a picture, a timeline or a plain *"show me"* is something it
+should pass along and say out loud that it is drawing — *"one picture appears
+beside the call"* — and never something it can only describe. On the live call
+the CTO's answer could already carry a ```scene fence that the HUD renders
+beside the conversation; what was missing was anyone telling either end that
+"show me" meant draw. The other end is `runBackendTurn`, where
+`voiceRequestAsksForVisual` scans the request the model wrote and swaps the
+turn's permissive line — *"when a picture says it better than words, you may add
+one fence"* — for an instruction: *the user asked to SEE this, so draw it*, with
+actual values and actual labels, and say your sentences as well. Both live
+scenarios above produced it unprompted: *"I'm pulling up the open pull requests
+and drawing a quick view beside the call."*
+
 #### The context block
 
-`buildCtoVoiceContext` (in `ctoVoiceRuntimeService.ts`, pure and testable) assembles it: who the CTO is and what model it thinks on, the project's name and root and its lane list, then the memory service's own three labelled sections — durable memory, thread state, recent daily log. The order is most- to least-identifying, which is also the order they would be missed in.
+`buildCtoVoiceContext` (in `ctoVoiceRuntimeService.ts`, pure and testable) assembles it: who the CTO is and what model it thinks on, the project's name and root and its lane list, **what is happening right now**, **today so far**, then the memory service's own three labelled sections — durable memory, thread state, recent daily log. The order is most- to least-identifying, which is also the order they would be missed in.
+
+The two middle sections are why small talk stopped being generic. *"How's it going?"* is a question about the last few hours, and a block holding an identity and a lane list has nothing to answer it with but a pleasantry.
+
+- **What is happening right now** is the CTO's own live-state snapshot (`ctoStateService.refreshLiveState()`), reduced by `describeVoiceActiveWork` to approvals waiting, work in flight, open PRs and scheduled work — four rows of each and a count of the rest. Not `renderCtoLiveStateBlock`: that block is built for a thinking model with a 6,000-character budget of its own and spells out lane ids, session ids and check states, and the ids are things the CTO looks up rather than things a voice says out loud. A project with nothing running says so in a line, because an absent section reads to the model as an unknown it has to go and ask about.
+- **Today so far** is today's daily log, **newest first** (`readVoiceTodayLog`), bounded to twelve entries with the file's own date header dropped. The memory service's "Recent daily log" spans two days and is oldest-first so a truncation keeps the tail; today, newest first, is a different question and worth the duplication because it is the one the user asks out loud.
+
+Both are individually guarded: a snapshot that cannot be captured or a log that cannot be read leaves its section out rather than failing the call. The trim below still applies to them like any other section.
 
 It is bounded to `CTO_VOICE_CONTEXT_MAX_CHARS` (6,000 — the same budget the CTO's live-state block runs on) and the bound is not decoration: the block is **re-sent after every completed `ask_cto`**, so an unbounded one is paid for again on every refresh, and a durable memory file grows without limit. Trimming takes the **longest** section first and only down to a 200-character floor; trimming evenly would take the identity apart to save a journal entry, and a model that has forgotten its own name is worse than one with less memory.
 
@@ -514,13 +577,13 @@ What is left on that path is the handful of lines that are **ADE speaking rather
 
 `interrupt_response: true` means the **server** truncates its own response the moment it hears speech, a round trip sooner than ADE could. Sending our own cancel at it as well races that truncation and comes back as `no active response`. So `stopSpeaking` fires only for a response ADE created — which the server's mechanism cannot see, because an out-of-band response is not in the conversation. The renderer still flushes its own playback graph locally and the runtime still clears the output queue on `interrupted`, because audio already pulled into the graph keeps talking over the user for a whole round trip otherwise.
 
-**The work is left running.** Talking while the CTO works is ordinary on a hybrid call — a follow-up, or thinking out loud — and killing the turn for it would make the call unusable. Work stops two ways and only two: `cancel_work`, and a new `ask_cto` superseding it.
+**The work is left running.** Talking while the CTO works is ordinary on a hybrid call — a follow-up, or thinking out loud — and killing the turn for it would make the call unusable. Work stops two ways and only two: `cancel_work`, and an `ask_cto` the model sent with `mode: "replace"`.
 
 #### Confirmations, heard twice
 
 When a CTO tool needs approval the flow is unchanged in substance: ADE speaks the question out-of-band, and `resolveSpokenConfirmation` still resolves a clear spoken yes or no from the transcript. What is added is a silent `system` item telling the model that ADE is waiting for approval of *this* summary, and that it should call `approve_pending_action` / `deny_pending_action` on a clear answer and say nothing about it otherwise. Without that note the model hears the user say "yes" to nothing it can see and asks "yes to what?".
 
-So one spoken "yes" now reaches this service twice. `approvePending` / `denyPending` are keyed on the confirmation's id, so whichever arrives first decides and the second is a no-op rather than a second `approveToolUse` on a gate that is already open. A destructive action still needs a tap, and the model is refused it by the same rule the parser is (`{ status: "needs_tap" }`). While a confirmation is pending, a new `ask_cto` is refused with `{ status: "busy" }` — the turn that raised the question is parked inside `canUseTool` on the one CTO session, and a second turn there would collide with it.
+So one spoken "yes" now reaches this service twice. `approvePending` / `denyPending` are keyed on the confirmation's id, so whichever arrives first decides and the second is a no-op rather than a second `approveToolUse` on a gate that is already open. A destructive action still needs a tap, and the model is refused it by the same rule the parser is (`{ status: "needs_tap" }`). While a confirmation is pending, a new `ask_cto` is refused with `{ status: "busy" }` whatever its `mode` — the turn that raised the question is parked inside `canUseTool` on the one CTO session, and a second turn there would collide with it.
 
 ### A transcript is not proof of speech
 
@@ -536,7 +599,9 @@ Every transcript is judged by `judgeTranscript` in `ctoVoiceCallService.ts`, and
 - the segment was not ADE hearing itself: a segment whose every frame arrived while a response was in flight **and** whose peak never reached the threshold is echo, not a person. Otherwise: `echo`. Both halves matter — the same segment *with* a real peak in it is a barge-in, which is the most urgent thing on a call;
 - the burst valve is open. More than `CTO_VOICE_TURN_BURST_LIMIT` (4) accepted transcripts inside `CTO_VOICE_TURN_BURST_WINDOW_MS` (10 s) is one every 2.5 s — faster than the CTO can think and speak one answer, so it is a transcript source running away rather than a conversation. The gate then shuts for everything until `CTO_VOICE_TURN_BURST_COOLDOWN_MS` (8 s) passes with no transcript arriving at all; "until the next accepted transcript" cannot be the release condition, because while the gate is shut there are none. Otherwise: `runaway`.
 
-The session also names the language it is listening for (`language: "en"` on `audio.input.transcription`) rather than letting the transcriber guess per utterance. A short or noisy utterance is exactly where that guess goes wrong, and it is how `"OK,OK,好好好。"` and `"아니."` were written at all — and once one reached the CTO, the answer came back in the same language and an English voice read it aloud. The voice turn's prompt asks for an English answer for the same reason.
+The session also names the language it is listening for (`language: "en"` on `audio.input.transcription`) and the vocabulary it should expect (`prompt`, `CTO_VOICE_TRANSCRIBE_PROMPT` — *"English conversation about a software project called ADE, lanes, pull requests, tests."*) rather than letting the transcriber guess per utterance. A short or noisy utterance is exactly where that guess goes wrong, and it is how `"OK,OK,好好好。"` and `"아니."` were written at all — and once one reached the CTO, the answer came back in the same language and an English voice read it aloud.
+
+**Neither field forces English, and both are kept anyway.** Measured against the live API on 2026-09-16, six runs per configuration, feeding TTS-synthesised speech through the real session config: a spoken Serbian *"Здраво"* came back as `"Zdravo."` — romanised, so the named language *is* read — but a Russian *"Привет"* came back as `"Привет."` in Cyrillic in all three runs, and adding the prompt changed nothing in any of the six. So the language is still the cheapest way to remove the per-utterance guess and the prompt is what tells the model this is a call about lanes and PRs rather than a podcast, and what the wire cannot guarantee, the CTO turn's own *"Answer in English"* line does.
 
 A rejected transcript is logged at info as `cto_voice.transcript_rejected` with the reason, the text and the measurements, and **nothing else happens**: no caption, no exchange, no confirmation decision. An accepted one is logged as `cto_voice.transcript_accepted` with the same measurements and the text's **length** rather than the text — an accepted transcript is something the user said, and it does not belong in a log. Both halves are needed: with only rejections recorded, a gate that waved a phantom through looked exactly like a gate with nothing to reject. Tripping and clearing the valve log `cto_voice.transcript_valve_tripped` / `..._cleared`. The thresholds lean deliberately permissive — answering a sentence nobody said is bad, and dropping one they did say is worse.
 
@@ -566,12 +631,32 @@ turn writes one info line, `cto_voice.turn_timing`, naming each leg:
 A turn that the model answers **itself** — small talk, or a fact from the context block — has an accepted transcript and no `ask_cto`, so its line carries `acceptToTurnStartMs: null` and a `totalMs` that is the whole of what the user waited. That is the number the hybrid exists to move.
 
 The line is held, not written at the end of the turn, because the last leg
-arrives after the turn is over. It is flushed at whichever comes first: the
-first audio (`outcome: "spoken"`), a turn that answers with nothing
-(`"silent"`), a superseded one (`"superseded"`), a failure
-(`"backend_failed"`), the next turn (`"abandoned"`) or the hang-up
-(`"call_ended"`). Every leg is nullable for the same reason: a line that only
-appears for the happy path cannot tell you which turns were slow.
+arrives after the turn is over. Each turn **owns its own record** from the
+moment the model's request is dispatched — taken from the accepted transcript's
+slot right there, so a queued request's wait counts as part of what the user
+waited — and closes it itself:
+
+| `outcome` | When |
+| --- | --- |
+| `spoken` | The first audio of the answer, which is also the only leg the user can hear. |
+| `silent` | The turn answered with nothing, so there will never be audio. |
+| `superseded` | The turn was aborted — a `mode: "replace"` request, or the thread reporting `interrupted`. |
+| `cancelled` | `cancel_work` dropped it while it was still waiting in the queue. |
+| `refused` | It never ran: a confirmation was open, or three were already stacked. |
+| `backend_failed` | The turn failed, or `runBackendTurn` threw. |
+| `unheard` | Its answer was still waiting to be spoken when the next answer arrived. |
+| `abandoned` | An accepted transcript that never reached a turn at all, replaced by the next one. |
+| `call_ended` | The hang-up landed in the middle of it. |
+
+Every leg is nullable for the same reason: a line that only appears for the
+happy path cannot tell you which turns were slow.
+
+**`abandoned` means nothing ran, not that the user talked.** A running turn's
+record is never closed by the next accepted transcript, because talking over
+work that carries on is the ordinary thing to do on a hybrid call. On the call
+of 2026-09-16 a request the CTO was still working on twenty-five seconds later
+was logged as `abandoned` at the moment the user said something else, which made
+the log claim work had been thrown away that was in fact still running.
 
 Two facts it was built to settle, from the call on 2026-09-16:
 

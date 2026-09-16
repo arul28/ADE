@@ -3751,6 +3751,15 @@ type ManagedChatSession = {
   deleted: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
+  /**
+   * The provider thread the conversation tail was last armed for. See
+   * `providerThreadContinuityKey`: when this stops matching the live key the
+   * model is looking at a thread that never saw those turns, which is the only
+   * time the tail is worth its ~10 KB.
+   */
+  conversationTailThreadKey: string | null;
+  /** True once a thread change armed the tail and no send has consumed it yet. */
+  conversationTailPending: boolean;
   pendingTranscriptReplay: string | null;
   /** See PersistedChatState.transcriptReplayOrigin. */
   transcriptReplayOrigin: TranscriptReplayOrigin | null;
@@ -12443,8 +12452,46 @@ export function createAgentChatService(args: {
     return combined;
   };
 
+  const RECENT_CONVERSATION_TAIL_TITLE = "Recent Conversation Tail";
+
   const buildRecentConversationContext = (managed: ManagedChatSession, limit = 20): string => {
     return formatConversationTranscript(collectConversationEntries(managed).slice(-limit));
+  };
+
+  /**
+   * Identity of the provider-side thread this chat is currently talking to.
+   *
+   * A stable key means the model still holds the conversation verbatim in its
+   * own context; a changed key means it is a different thread (rotated agent,
+   * torn-down runtime, provider reset, model switch, fresh resume) that has
+   * never seen the earlier turns. `none` is used while no thread exists yet,
+   * which reads as "changed" against any real id and re-arms the tail exactly
+   * once when the thread opens.
+   */
+  const providerThreadContinuityKey = (managed: ManagedChatSession): string => {
+    const runtime = managed.runtime;
+    let threadRef: string | null = managed.session.threadId?.trim() || null;
+    if (!threadRef && runtime) {
+      switch (runtime.kind) {
+        case "claude":
+        case "droid":
+          threadRef = runtime.sdkSessionId;
+          break;
+        case "cursor":
+          threadRef = runtime.sdkAgentId;
+          break;
+        case "opencode":
+          threadRef = runtime.handle.sessionId;
+          break;
+        case "acp":
+          threadRef = runtime.session.sessionId;
+          break;
+        default:
+          threadRef = null;
+          break;
+      }
+    }
+    return `${managed.session.provider}:${threadRef?.trim() || "none"}`;
   };
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
@@ -12643,11 +12690,30 @@ export function createAgentChatService(args: {
       ].join("\n"));
     }
 
+    // The conversation tail is re-orientation, not context: a live provider
+    // thread already holds those turns verbatim, so replaying them on every
+    // send bought nothing and cost ~10 KB (CTO) of input tokens per turn —
+    // enough on a long CTO thread to walk the window into auto-compaction.
+    //
+    // The rule: push the tail only when the provider thread the next send will
+    // land on is NOT the one those turns happened on — a rotated agent, a torn
+    // down or reset runtime, a model/provider switch, a fresh resume, or a
+    // thread that has not opened yet. Every one of those paths already calls
+    // this function, so the key comparison catches them without new plumbing.
+    // Sticky until a send actually consumes it, because this function runs
+    // several times per turn and a later rebuild must not drop an armed tail.
+    const threadKey = providerThreadContinuityKey(managed);
+    if (threadKey !== managed.conversationTailThreadKey) {
+      managed.conversationTailThreadKey = threadKey;
+      managed.conversationTailPending = true;
+    }
     // The CTO thread carries a deeper tail (40 vs the generic 20) since it is a
     // long-living, memory-backed thread that survives model/provider switches.
-    const recentConversation = buildRecentConversationContext(managed, isCto ? 40 : 20);
+    const recentConversation = managed.conversationTailPending
+      ? buildRecentConversationContext(managed, isCto ? 40 : 20)
+      : "";
     if (recentConversation.length) {
-      sections.push(["Recent Conversation Tail", recentConversation].join("\n"));
+      sections.push([RECENT_CONVERSATION_TAIL_TITLE, recentConversation].join("\n"));
     }
 
     // The one memory section that is NOT CTO-gated. Every project chat gets the
@@ -12814,6 +12880,11 @@ export function createAgentChatService(args: {
 
     if (hadReplay) managed.pendingTranscriptReplay = null;
     if (hadReconstruction) managed.pendingReconstructionContext = null;
+    // Only a tail that survived the budget counts as delivered. If truncation
+    // ate the section the flag stays armed and the next send carries it again.
+    if (reconstruction.includes(RECENT_CONVERSATION_TAIL_TITLE)) {
+      managed.conversationTailPending = false;
+    }
     // Consumption has to be durable: `pendingTranscriptReplay` is restored on
     // reconstruct, so clearing it in memory alone would replay the whole
     // transcript a second time after a restart.
@@ -20997,6 +21068,8 @@ export function createAgentChatService(args: {
       deleted: false,
       ctoSessionStartedAt: row.status === "running" ? row.startedAt : null,
       pendingReconstructionContext: null,
+      conversationTailThreadKey: null,
+      conversationTailPending: false,
       pendingTranscriptReplay: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
@@ -35592,6 +35665,8 @@ export function createAgentChatService(args: {
       bufferedReasoning: null,
       ctoSessionStartedAt: null,
       pendingReconstructionContext: null,
+      conversationTailThreadKey: null,
+      conversationTailPending: false,
       pendingTranscriptReplay: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
@@ -36777,6 +36852,8 @@ export function createAgentChatService(args: {
       deleted: false,
       ctoSessionStartedAt: identityKey === "cto" ? startedAt : null,
       pendingReconstructionContext: null,
+      conversationTailThreadKey: null,
+      conversationTailPending: false,
       pendingTranscriptReplay: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,

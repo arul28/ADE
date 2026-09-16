@@ -11344,6 +11344,18 @@ describe("createAgentChatService", () => {
       expect(send).toHaveBeenCalledWith(expect.stringContaining("User: Can you keep the lane warm?"));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Yes, I will keep the lane session alive."));
       expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Continuity Summary"));
+
+      // The tail is re-orientation for a thread that never saw those turns. The
+      // SDK session is unchanged now, so it holds the conversation verbatim and
+      // replaying the tail again is pure duplicated input tokens.
+      send.mockClear();
+      await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "And now?",
+        timeoutMs: 15_000,
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Recent Conversation Tail"));
     });
 
     it("recreates Claude sessions fresh when a resumed SDK session rejects bypassPermissions", async () => {

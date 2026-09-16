@@ -2839,6 +2839,35 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   // ── Scheduled work ─────────────────────────────────────────────────────────
 
+  /**
+   * A project-wide `listScheduledWork` used to hand the model every field of
+   * every job, full prompts included — one real call came back at 50 KB and was
+   * the single result that tipped a live CTO thread into auto-compaction. The
+   * model needs to know what is armed and where, not to re-read prompts it
+   * wrote; `getScheduledWorkState` is still there for one chat's full picture.
+   */
+  const MAX_SCHEDULED_WORK_ITEMS = 50;
+  const SCHEDULED_WORK_PROMPT_PREVIEW_CHARS = 120;
+
+  const truncatePreview = (value: string, max: number): string => {
+    const collapsed = value.replace(/\s+/g, " ").trim();
+    return collapsed.length > max ? `${collapsed.slice(0, max - 1).trimEnd()}…` : collapsed;
+  };
+
+  const toCompactScheduledWorkRecord = (item: any) => ({
+    id: item?.id,
+    sessionId: item?.sessionId,
+    kind: item?.kind,
+    status: item?.status,
+    ...(item?.cron ? { cron: item.cron } : {}),
+    ...(item?.nextRunAt ? { nextRunAt: item.nextRunAt } : {}),
+    ...(item?.lastRunAt ? { lastRunAt: item.lastRunAt } : {}),
+    ...(item?.late ? { late: true } : {}),
+    ...(typeof item?.prompt === "string" && item.prompt.trim()
+      ? { prompt: truncatePreview(item.prompt, SCHEDULED_WORK_PROMPT_PREVIEW_CHARS) }
+      : {}),
+  });
+
   tools.scheduleWork = scheduling({
     description:
       "Schedule durable work on a chat: a one-shot wakeup (delaySeconds or runAt) or a recurring five-field cron in the "
@@ -2868,7 +2897,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.listScheduledWork = scheduling({
-    description: "List ADE-managed wakeups, cron jobs, and loops — for one chat, or across the project.",
+    description:
+      "List ADE-managed wakeups, cron jobs, and loops — for one chat, or across the project. "
+      + `Returns a compact record per job (prompts truncated to ${SCHEDULED_WORK_PROMPT_PREVIEW_CHARS} characters) `
+      + `and at most ${MAX_SCHEDULED_WORK_ITEMS} of them; read 'count' for the real total and 'truncated' to know `
+      + "the list was cut. Narrow with sessionId, or call getScheduledWorkState for one chat's full picture.",
     inputSchema: z.object({
       sessionId: z.string().optional(),
       includeTerminal: z.boolean().optional().default(false),
@@ -2876,10 +2909,24 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     execute: async ({ sessionId, includeTerminal }) => {
       const scheduledWork = deps.scheduledWorkService;
       if (!scheduledWork) return unavailable("Scheduled work");
-      return attempt(() => scheduledWork.list({
-        ...(sessionId?.trim() ? { sessionId: sessionId.trim() } : {}),
-        includeTerminal,
-      }));
+      try {
+        const items = await scheduledWork.list({
+          ...(sessionId?.trim() ? { sessionId: sessionId.trim() } : {}),
+          includeTerminal,
+        });
+        const all = Array.isArray(items) ? items : [];
+        const kept = all.slice(0, MAX_SCHEDULED_WORK_ITEMS);
+        return {
+          success: true as const,
+          count: all.length,
+          truncated: all.length > kept.length,
+          // `result` stays the item array so the shape the CTO already knows
+          // (and the destructive-tool tests assert) keeps working.
+          result: kept.map(toCompactScheduledWorkRecord),
+        };
+      } catch (error) {
+        return { success: false as const, error: getErrorMessage(error) };
+      }
     },
   });
 

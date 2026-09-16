@@ -361,6 +361,15 @@ describe("ctoStateService", () => {
     expect(preview.prompt).toContain("ADE environment knowledge");
     expect(preview.prompt).toContain("ADE operator tools");
 
+    // The knowledge document lives in the system prompt and NOWHERE else. The
+    // per-turn reconstruction context used to repeat it verbatim, and since the
+    // chat service concatenates the two, every CTO user turn carried ~10 KB of
+    // the same architecture doc twice.
+    const reconstruction = service.buildReconstructionContext(8);
+    expect(reconstruction).not.toContain("ADE Architecture");
+    expect(reconstruction).not.toContain("ADE Operational Knowledge");
+    expect(reconstruction).toContain("CTO Identity");
+
     fixture.db.close();
   });
 
