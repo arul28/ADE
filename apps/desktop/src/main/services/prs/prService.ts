@@ -1869,7 +1869,11 @@ export function createPrService({
     }
   };
 
-  const unlinkPrFromChatSession = (args: { prId: string; sessionId: string }): boolean => {
+  const unlinkPrFromChatSession = (args: {
+    prId: string;
+    sessionId: string;
+    dismiss?: boolean;
+  }): boolean => {
     const sessionId = resolveCanonicalChatSessionId(args.sessionId);
     if (!sessionId) return false;
     try {
@@ -1878,7 +1882,7 @@ export function createPrService({
           where project_id = ? and pr_id = ? and session_id = ?`,
         [projectId, args.prId, sessionId],
       );
-      writeChatSessionDismissal(args.prId, sessionId);
+      if (args.dismiss !== false) writeChatSessionDismissal(args.prId, sessionId);
       return true;
     } catch (error) {
       logger.warn("prs.chat_session_unlink_failed", {
@@ -12376,7 +12380,7 @@ export function createPrService({
         });
         if (!ok) {
           for (const prId of linkedIds) {
-            unlinkPrFromChatSession({ prId, sessionId: offer.sessionId });
+            unlinkPrFromChatSession({ prId, sessionId: offer.sessionId, dismiss: false });
           }
           return { ok: false, linked: 0 };
         }
