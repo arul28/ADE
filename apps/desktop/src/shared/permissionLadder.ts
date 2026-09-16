@@ -20,6 +20,17 @@
 //   - The user's exact per-family choice is remembered separately, so returning
 //     to Droid restores `agi` even though the ladder itself only knows
 //     "full-auto". The ladder decides what an UNVISITED family starts on.
+//
+// DELIBERATELY SEPARATE from ADE's generic `AgentChatPermissionMode` words
+// (`plan | default | edit | full-auto`), which `ade --permission-mode` and the
+// CLI launch path speak and which `droidPermissionModeFromLegacyPermissionMode`
+// in types/chat.ts translates. In that vocabulary `edit` is the CAUTIOUS
+// editing tier (Droid `auto-low`) by the owner's original intent. The two
+// tables therefore look inverted on the middle rungs, and that is fine: the
+// ladder reads and writes each family's CONCRETE mode on a model switch, the
+// legacy converter maps a generic CLI word to a tier at launch, and no code
+// path converts between them. Do not "reconcile" them — doing so would shift
+// `ade --permission-mode edit` and every persisted session carrying it.
 
 import type {
   AgentChatAcpPermissionMode,
