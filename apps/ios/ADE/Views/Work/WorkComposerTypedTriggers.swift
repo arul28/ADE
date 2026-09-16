@@ -63,7 +63,7 @@ struct WorkSmartLink: Equatable {
       if let typed = WorkSmartLink.adeDeeplinkLabel(
         host: components.host,
         parts: parts,
-        lineQueryValue: components.queryItems?.first(where: { $0.name == "line" })?.value
+        lineQueryValue: WorkSmartLink.lineQueryValue(in: components)
       ) {
         return typed
       }
@@ -131,7 +131,7 @@ struct WorkSmartLink: Equatable {
       return WorkSmartLink.adeDeeplinkKind(
         host: components.host,
         parts: parts,
-        lineQueryValue: components.queryItems?.first(where: { $0.name == "line" })?.value
+        lineQueryValue: WorkSmartLink.lineQueryValue(in: components)
       ) ?? .adeLink
     case .web:
       return .webPage
@@ -168,6 +168,15 @@ struct WorkSmartLink: Equatable {
     guard key.count <= 10, key.first?.isLetter == true,
           key.allSatisfy({ $0.isLetter || $0.isNumber }) else { return false }
     return workSmartLinkIsAsciiNumber(String(parts[1]))
+  }
+
+  /// The raw `line` query value, distinguishing "absent" from "present but
+  /// empty". A valueless `?line` flattens to nil in `URLQueryItem`, which would
+  /// read as absent — while the desktop's `searchParams.get("line")` returns ""
+  /// and rejects the whole link. Present-without-a-value therefore maps to "".
+  static func lineQueryValue(in components: URLComponents) -> String? {
+    guard let item = components.queryItems?.first(where: { $0.name == "line" }) else { return nil }
+    return item.value ?? ""
   }
 
   /// 1-15 ASCII digits, value >= 1, returned as the parsed number — the exact
@@ -234,7 +243,7 @@ struct WorkSmartLink: Equatable {
       // digits, value >= 1, and the LABEL uses the parsed number so `007`
       // renders as `:7`. An invalid line makes the desktop reject the whole
       // link, so this must not label one the desktop refuses to type at all —
-      // see `isValidFileLineQuery`, which the kind check consults too.
+      // the kind check consults `parsedFileLine` too.
       if let line = WorkSmartLink.parsedFileLine(lineQueryValue) {
         return "\(name):\(line)"
       }

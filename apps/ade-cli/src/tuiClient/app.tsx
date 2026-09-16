@@ -3458,7 +3458,6 @@ function resolveRightPaneWidth(columns: number, rightOpen: boolean, drawerOpen: 
   );
 }
 
-
 /**
  * Mentions that become real file attachments. A FOLDER row is a pointer: it has
  * no bytes to upload, and attaching it reaches the model as "Attachment

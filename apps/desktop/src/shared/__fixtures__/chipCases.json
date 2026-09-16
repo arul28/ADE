@@ -28,6 +28,7 @@
     { "url": "ade://file/apps/desktop/src/shared/chips.ts?line=007", "kind": "file", "label": "chips.ts:7" },
     { "url": "ade://file/apps/desktop/src/shared/chips.ts?line=abc", "kind": "ade_link", "label": "ADE · file/apps/desktop/src/shared/chips.ts" },
     { "url": "ade://file/apps/desktop/src/shared/chips.ts?line=0", "kind": "ade_link", "label": "ADE · file/apps/desktop/src/shared/chips.ts" },
+    { "url": "ade://file/apps/desktop/src/shared/chips.ts?line", "kind": "ade_link", "label": "ADE · file/apps/desktop/src/shared/chips.ts" },
     { "url": "ade://repo/arul28/ade/branch/main", "kind": "branch", "label": "main" },
     { "url": "ade://repo/arul28/ade/branch/ade/t3gap-b-composer", "kind": "branch", "label": "ade/t3gap-b-composer" },
     { "url": "ade://artifact/proof12345678", "kind": "artifact", "label": "Artifact proof123" },
