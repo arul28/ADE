@@ -3370,6 +3370,10 @@ private func eventCard(
       )
     case .systemNotice(let kind, let message, let detail, _, _):
       guard kind != "queue_recovery" else { return nil }
+      // Automatic provider retries/reconnects are live working state. Older
+      // hosts persisted one notice per attempt; keep replay from rebuilding
+      // the same wall of cards that desktop and TUI intentionally suppress.
+      guard !isLegacyProviderRetryNotice(kind: kind, message: message, detail: detail) else { return nil }
       // ── Provider handoff ──
       // Its own card kind so the timeline can draw the desktop divider
       // (hairline · from logo · HANDOFF · arrow · to logo · hairline) instead
@@ -3685,6 +3689,62 @@ func isLowSignalWorkSystemNotice(kind: String, message: String, detail: String?)
   return normalizedDetail.isEmpty
     && (normalizedKind.isEmpty || normalizedKind == "info")
     && (normalizedMessage == "session ready" || normalizedMessage == "ready")
+}
+
+/// Whether a system notice is the pre-inline-retry representation. Retry
+/// metadata is provider-shaped and belongs in the live working indicator; this
+/// deliberately recognizes only the legacy shapes ADE itself emitted, rather
+/// than hiding arbitrary provider warnings that happen to mention retries.
+private let legacyAuthFailurePattern = try? NSRegularExpression(
+  pattern: "authentication|authenticate|auth(?:[_\\s-]+(?:failed|failure|error|required))|invalid\\s+(?:api\\s+)?key|invalid\\s+credentials|unauthori[sz]ed|\\b401\\b"
+)
+
+func containsLegacyAuthFailureSignal(_ text: String) -> Bool {
+  if let regex = legacyAuthFailurePattern {
+    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+    return regex.firstMatch(in: text, options: [], range: range) != nil
+  }
+  return text.contains("authentication")
+    || text.contains("authenticate")
+    || text.contains("auth failed")
+    || text.contains("auth_failed")
+    || text.contains("auth-failed")
+    || text.contains("auth failure")
+    || text.contains("auth_error")
+    || text.contains("auth error")
+    || text.contains("auth required")
+    || text.contains("invalid api key")
+    || text.contains("invalid key")
+    || text.contains("invalid credentials")
+    || text.contains("unauthorized")
+    || text.contains("unauthorised")
+    || text.contains("401")
+}
+
+func isLegacyProviderRetryNotice(kind: String, message: String, detail: String?) -> Bool {
+  let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  let authFailureText = "\(normalizedMessage) \(normalizedDetail)"
+  if normalizedKind == "auth" || containsLegacyAuthFailureSignal(authFailureText) {
+    return false
+  }
+
+  if normalizedMessage.hasPrefix("claude api retry") {
+    return true
+  }
+  if normalizedKind == "provider_health"
+      && (normalizedMessage.hasPrefix("codex hit a provider error and is retrying automatically")
+        || normalizedMessage.hasPrefix("opencode hit a provider error and is retrying automatically")) {
+    return true
+  }
+  if normalizedKind == "warning"
+      && (normalizedMessage.contains("websocket") || normalizedMessage.contains("web socket"))
+      && (normalizedMessage.contains("https") || normalizedMessage.contains("transport"))
+      && (normalizedMessage.contains("fallback") || normalizedMessage.contains("falling back") || normalizedMessage.contains("timed out") || normalizedMessage.contains("timeout")) {
+    return true
+  }
+  return false
 }
 
 func isLowSignalWorkStatus(turnStatus: String, message: String?) -> Bool {

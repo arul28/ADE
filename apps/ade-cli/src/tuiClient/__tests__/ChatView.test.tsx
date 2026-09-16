@@ -463,6 +463,52 @@ describe("ChatView", () => {
     expect(expanded).toContain("npm test");
   });
 
+  it("shows provider retry detail inline for Claude without a transcript card", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "retry this", turnId: "turn-active" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "status", turnStatus: "started", turnId: "turn-active" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:02.100Z",
+        sequence: 3,
+        event: {
+          type: "system_notice",
+          noticeKind: "provider_health",
+          message: "Codex hit a provider error and is retrying automatically.",
+          detail: "Retrying in 4s.",
+          turnId: "turn-active",
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:03.000Z",
+        sequence: 4,
+        event: {
+          type: "activity",
+          activity: "working",
+          providerRetry: true,
+          detail: "Reconnecting to Claude · attempt 2 of 10 · retrying in 4s",
+          turnId: "turn-active",
+        },
+      },
+    ], { streaming: true, width: 100, provider: "claude" });
+
+    expect(frame).toContain("Reconnecting to Claude · attempt 2 of 10 · retrying in 4s");
+    expect(frame).not.toContain("Codex hit a provider error");
+    expect(frame).not.toContain("provider_health");
+    expect(frame).not.toContain("model working");
+  });
+
   it("shows interrupted state where the working indicator normally appears", () => {
     const frame = renderEvents([
       {

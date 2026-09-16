@@ -1097,6 +1097,8 @@ export type AgentChatEvent =
       type: "activity";
       activity: "thinking" | "working" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling" | "web_searching" | "spawning_agent";
       detail?: string;
+      /** True only for the host-generated, live-only provider retry status. */
+      providerRetry?: true;
       turnId?: string;
       runtime?: AgentChatRuntime;
     }

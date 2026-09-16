@@ -1637,6 +1637,132 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByRole("button")).toHaveLength(2);
   });
 
+  it("keeps provider retries in one inline working status", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      },
+      ...[2, 3, 4].map((attempt, index) => ({
+        sessionId: "session-1",
+        timestamp: `2026-03-17T10:00:0${index + 1}.000Z`,
+        event: {
+          type: "system_notice" as const,
+          noticeKind: "warning" as const,
+          message: `Claude API retry ${attempt}/10: unknown`,
+          detail: "retrying in 4s",
+          turnId: "turn-1",
+        },
+      })),
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:04.000Z",
+        event: {
+          type: "activity",
+          activity: "working",
+          providerRetry: true,
+          detail: "Reconnecting to Claude · attempt 6 of 10 · retrying in 8s",
+          turnId: "turn-1",
+        },
+      },
+    ], { showStreamingIndicator: true });
+
+    expect(rendered.container.textContent).toContain("Reconnecting to Claude · attempt 6 of 10 · retrying in 8s");
+    expect(rendered.container.textContent).not.toContain("Claude API retry");
+    expect(rendered.container.textContent).not.toContain("provider health");
+  });
+
+  it("keeps a replayed legacy retry label when older output precedes the notice", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Started working.", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "warning",
+          message: "Claude API retry 2/10: unknown",
+          turnId: "turn-1",
+        },
+      },
+    ], { showStreamingIndicator: true });
+
+    expect(rendered.container.textContent).toContain("Retrying Claude · attempt 2 of 10");
+    expect(rendered.container.textContent).not.toContain("Claude API retry");
+  });
+
+  it("keeps an active retry after a same-turn inline steer", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "activity",
+          activity: "working",
+          providerRetry: true,
+          detail: "Retrying Claude · attempt 2 of 10",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "user_message",
+          text: "also check tests",
+          deliveryState: "inline",
+          turnId: "turn-1",
+        },
+      },
+    ], { showStreamingIndicator: true });
+
+    expect(rendered.container.textContent).toContain("Retrying Claude · attempt 2 of 10");
+  });
+
+  it("does not replay an untagged retry from a completed prior turn", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "api_retry",
+          attempt: 1,
+          maxRetries: 3,
+          retryDelayMs: 2_000,
+          errorStatus: null,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-2" },
+      },
+    ], { showStreamingIndicator: true });
+
+    expect(rendered.container.textContent).not.toContain("Retrying Claude");
+    expect(rendered.container.textContent).not.toContain("Reconnecting to Claude");
+  });
+
   it("renders unauthenticated agent CLI errors as a re-login card", () => {
     renderMessageList([
       {

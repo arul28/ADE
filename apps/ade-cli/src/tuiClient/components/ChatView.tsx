@@ -14,6 +14,7 @@ import {
 } from "../format";
 import {
   aggregateChatBlocks,
+  deriveActiveProviderRetryActivityDetail,
   type ActivityBundleEntry,
   type AggregatedBlock,
   type FileChangeEntry,
@@ -1153,27 +1154,32 @@ function activeTurnRows(
   entries: ToolCallEntry[] = [],
   spinFrame = "◐",
   expandedGroupIds: Set<string> = EMPTY_EXPANDED_GROUP_IDS,
+  workingDetail: string | null = null,
 ): RenderedChatRow[] {
-  if (!showWorkingIndicator && entries.length === 0) return [];
+  const showWorking = showWorkingIndicator || Boolean(workingDetail);
+  if (!showWorking && entries.length === 0) return [];
   const expandKey = workGroupExpandKey("active-turn-activity");
   const expanded = expandedGroupIds.has(expandKey);
   const suffix = entries.length > 0
     ? `  ${expanded ? "▾" : "▸"} ${entries.length} ${entries.length === 1 ? "action" : "actions"}`
     : "";
-  const baseRuns = showWorkingIndicator
-    ? workingShimmerRuns(shimmerPos)
+  const workingLabel = workingDetail ? `✦ ${workingDetail}` : WORKING_LABEL;
+  const baseRuns = showWorking
+    ? workingDetail
+      ? [{ text: workingLabel, color: theme.color.violet, bold: true }]
+      : workingShimmerRuns(shimmerPos)
     : [];
-  const baseText = showWorkingIndicator ? `${WORKING_LABEL}${dots}` : "";
+  const baseText = showWorking ? `${workingLabel}${dots}` : "";
   const rows: RenderedChatRow[] = [{
     id: "model-working",
     tone: "work",
     runs: [
       ...baseRuns,
-      ...(showWorkingIndicator ? [{ text: dots, color: theme.color.violet }] : []),
+      ...(showWorking ? [{ text: dots, color: theme.color.violet }] : []),
       ...(suffix ? [{ text: suffix, color: theme.color.t4 }] : []),
     ],
     text: `${baseText}${suffix}`,
-    bold: showWorkingIndicator,
+    bold: showWorking,
     rail: null,
     expandableGroupId: entries.length > 0 ? expandKey : undefined,
   }];
@@ -1627,6 +1633,7 @@ function selectableRowsForBlocks({
   spinFrame = "◐",
   dotPulse = "",
   showWorkingIndicator = true,
+  workingDetail = null,
   expandedGroupIds = EMPTY_EXPANDED_GROUP_IDS,
 }: {
   blocks: AggregatedBlock[];
@@ -1637,6 +1644,7 @@ function selectableRowsForBlocks({
   spinFrame?: string;
   dotPulse?: string;
   showWorkingIndicator?: boolean;
+  workingDetail?: string | null;
   expandedGroupIds?: Set<string>;
 }): RenderedChatRow[] {
   const innerWidth = Math.max(24, width - 4);
@@ -1651,6 +1659,7 @@ function selectableRowsForBlocks({
         turnActivityEntries(blocks, true),
         spinFrame,
         expandedGroupIds,
+        workingDetail,
       ),
     ];
   }
@@ -1659,18 +1668,22 @@ function selectableRowsForBlocks({
 }
 
 export function renderChatSelectableRows({
+  events = [],
   blocks,
   width = DEFAULT_VIEW_WIDTH,
   streaming = false,
   interrupted = false,
   showWorkingIndicator = true,
+  workingDetail = null,
   expandedLineIds,
 }: {
+  events?: AgentChatEventEnvelope[];
   blocks: AggregatedBlock[];
   width?: number;
   streaming?: boolean;
   interrupted?: boolean;
   showWorkingIndicator?: boolean;
+  workingDetail?: string | null;
   expandedLineIds?: Set<string>;
 }): RenderedChatRow[] {
   return selectableRowsForBlocks({
@@ -1679,6 +1692,7 @@ export function renderChatSelectableRows({
     streaming,
     interrupted,
     showWorkingIndicator,
+    workingDetail: workingDetail ?? (streaming ? deriveActiveProviderRetryActivityDetail(events) : null),
     expandedGroupIds: expandedLineIds,
   });
 }
@@ -1728,6 +1742,7 @@ function visibleRowsForBlocks({
   spinFrame = "◐",
   dotPulse = "",
   showWorkingIndicator = true,
+  workingDetail = null,
   expandedGroupIds = EMPTY_EXPANDED_GROUP_IDS,
 }: {
   blocks: AggregatedBlock[];
@@ -1741,6 +1756,7 @@ function visibleRowsForBlocks({
   spinFrame?: string;
   dotPulse?: string;
   showWorkingIndicator?: boolean;
+  workingDetail?: string | null;
   expandedGroupIds?: Set<string>;
 }): RenderedChatRow[] {
   return sliceRows(
@@ -1753,6 +1769,7 @@ function visibleRowsForBlocks({
       spinFrame,
       dotPulse,
       showWorkingIndicator,
+      workingDetail,
       expandedGroupIds,
     }),
     maxRows,
@@ -1773,6 +1790,7 @@ export function renderChatVisibleRowTexts({
   streaming = false,
   interrupted = false,
   showWorkingIndicator = true,
+  workingDetail = null,
 }: {
   events: AgentChatEventEnvelope[];
   notices: LocalNotice[];
@@ -1785,6 +1803,7 @@ export function renderChatVisibleRowTexts({
   streaming?: boolean;
   interrupted?: boolean;
   showWorkingIndicator?: boolean;
+  workingDetail?: string | null;
 }): string[] {
   const blocks = aggregateChatBlocks({
     events,
@@ -1801,6 +1820,7 @@ export function renderChatVisibleRowTexts({
     streaming,
     interrupted,
     showWorkingIndicator,
+    workingDetail: workingDetail ?? (streaming ? deriveActiveProviderRetryActivityDetail(events) : null),
     expandedGroupIds: expandedLineIds,
   }).map(renderedRowText);
 }
@@ -1818,6 +1838,7 @@ export function renderChatVisibleSelectionRows({
   streaming = false,
   interrupted = false,
   showWorkingIndicator = true,
+  workingDetail = null,
 }: {
   events: AgentChatEventEnvelope[];
   blocks?: AggregatedBlock[];
@@ -1831,6 +1852,7 @@ export function renderChatVisibleSelectionRows({
   streaming?: boolean;
   interrupted?: boolean;
   showWorkingIndicator?: boolean;
+  workingDetail?: string | null;
 }): ChatVisibleSelectionRow[] {
   const blocks = providedBlocks ?? aggregateChatBlocks({
     events,
@@ -1847,6 +1869,7 @@ export function renderChatVisibleSelectionRows({
     streaming,
     interrupted,
     showWorkingIndicator,
+    workingDetail: workingDetail ?? (streaming ? deriveActiveProviderRetryActivityDetail(events) : null),
     expandedGroupIds: expandedLineIds,
   }).map((row) => ({
     sourceRow: typeof row.sourceRowIndex === "number" ? row.sourceRowIndex : null,
@@ -1866,6 +1889,7 @@ export function renderChatSelectableRowTexts({
   streaming = false,
   interrupted = false,
   showWorkingIndicator = true,
+  workingDetail = null,
 }: {
   events: AgentChatEventEnvelope[];
   blocks?: AggregatedBlock[];
@@ -1876,6 +1900,7 @@ export function renderChatSelectableRowTexts({
   streaming?: boolean;
   interrupted?: boolean;
   showWorkingIndicator?: boolean;
+  workingDetail?: string | null;
 }): string[] {
   const blocks = providedBlocks ?? aggregateChatBlocks({
     events,
@@ -1889,6 +1914,7 @@ export function renderChatSelectableRowTexts({
     streaming,
     interrupted,
     showWorkingIndicator,
+    workingDetail: workingDetail ?? (streaming ? deriveActiveProviderRetryActivityDetail(events) : null),
     expandedGroupIds: expandedLineIds,
   }).map(renderedRowText);
 }
@@ -1958,6 +1984,7 @@ export function computeChatScrollMaxOffset({
   streaming = false,
   interrupted = false,
   showWorkingIndicator = true,
+  workingDetail = null,
   width = DEFAULT_VIEW_WIDTH,
 }: {
   events: AgentChatEventEnvelope[];
@@ -1969,6 +1996,7 @@ export function computeChatScrollMaxOffset({
   streaming?: boolean;
   interrupted?: boolean;
   showWorkingIndicator?: boolean;
+  workingDetail?: string | null;
   width?: number;
 }): number {
   const blocks = providedBlocks ?? aggregateChatBlocks({
@@ -1979,6 +2007,7 @@ export function computeChatScrollMaxOffset({
   });
   if (!hasConversationContent(blocks) && !streaming && !interrupted) return 0;
   const innerWidth = Math.max(24, width - 4);
+  const resolvedWorkingDetail = workingDetail ?? (streaming ? deriveActiveProviderRetryActivityDetail(events) : null);
   let statusRows = 0;
   if (streaming) {
     statusRows = activeTurnRows(
@@ -1988,6 +2017,7 @@ export function computeChatScrollMaxOffset({
       turnActivityEntries(blocks, true),
       "◐",
       expandedLineIds,
+      resolvedWorkingDetail,
     ).length;
   }
   else if (interrupted) statusRows = modelInterruptedRows().length;
@@ -2064,7 +2094,6 @@ function ChatViewComponent({
   const spinFrame = useSpinFrame();
   const dotPulse = useDotPulse();
   const shimmerTick = useShimmerTick();
-  const showWorkingIndicator = provider !== "claude" && activeSession?.provider !== "claude";
   const rowInnerWidth = Math.max(24, width - 4);
   const presentedBlocks = useMemo(
     () => blocks.filter(isTranscriptBlockVisible),
@@ -2074,6 +2103,12 @@ function ChatViewComponent({
     () => turnActivityEntries(blocks, true),
     [blocks],
   );
+  const activeProviderRetryActivityDetail = useMemo(
+    () => (streaming ? deriveActiveProviderRetryActivityDetail(events) : null),
+    [events, streaming],
+  );
+  const showWorkingIndicator = (provider !== "claude" && activeSession?.provider !== "claude")
+    || Boolean(activeProviderRetryActivityDetail);
   // Split the transcript at the first live (animating) block. Everything before
   // it is frame-independent, so we memoize those rows on [blocks, width] and the
   // 100ms spinner tick no longer rebuilds the whole transcript — only the few
@@ -2127,13 +2162,14 @@ function ChatViewComponent({
           activeToolEntries,
           spinFrame,
           expandedLineIds,
+          activeProviderRetryActivityDetail,
         ),
       ];
     } else if (interrupted) {
       withSuffix = [...baseRows, ...modelInterruptedRows()];
     }
     return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory);
-  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory, expandedLineIds, activeToolEntries]);
+  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, activeProviderRetryActivityDetail, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory, expandedLineIds, activeToolEntries]);
   const isEmpty = !hasConversationContent(blocks) && !streaming && !interrupted;
   let content: React.ReactNode;
   if (isEmpty && tileMode) {

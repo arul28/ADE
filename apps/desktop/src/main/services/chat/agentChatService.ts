@@ -455,6 +455,11 @@ import {
   type AgentChatResourceLink,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import {
+  classifyProviderRetryCause,
+  formatProviderRetryActivityDetail,
+  isProviderRetryActivityEvent,
+} from "../../../shared/providerRetryPresentation";
 import { buildClaudeToolApprovalOptions, claudeToolNeedsDefaultToNo } from "../../../shared/claudePermissionDialog";
 import {
   collectClaudeTerminalSlashCommandNames,
@@ -3962,10 +3967,6 @@ const OPEN_CODE_ERROR_MESSAGES_BY_NAME: Record<string, string | undefined> = {
 const MAX_OPEN_CODE_ERROR_BODY_CHARS = 500;
 
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
-/** Shown while OpenCode backs off and retries a failing provider request. */
-const PROVIDER_RETRY_ACTIVITY_DETAIL = "Waiting for the provider";
-/** Minimum gap between two provider-retry notices in the same turn. */
-const PROVIDER_RETRY_NOTICE_MIN_INTERVAL_MS = 10_000;
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
@@ -13667,7 +13668,13 @@ export function createAgentChatService(args: {
         runtime.activeCompactionId = randomUUID();
       }
       const turnId = runtime.activeTurnId ?? undefined;
-      for (const mapped of mapPiSdkEventToChatEvents(event, turnId, runtime.activeCompactionId)) emitChatEvent(managed, mapped);
+      for (const mapped of mapPiSdkEventToChatEvents(event, turnId, runtime.activeCompactionId)) {
+        // Provider retries are ephemeral status, not transcript content. Pi's
+        // ordinary activity remains durable for the work-log grouping rules.
+        const isRetryActivity = isProviderRetryActivityEvent(mapped);
+        if (isRetryActivity) emitLiveOnlyChatEvent(managed, mapped);
+        else emitChatEvent(managed, mapped);
+      }
       if (eventRecord?.type === "compaction_end") runtime.activeCompactionId = null;
       if (eventRecord?.type === "session_info_changed") adoptRuntimeSessionTitle(managed, eventRecord, "pi_session_info");
       if (eventRecord?.type === "message_end") settlePiSessionLease();
@@ -16346,6 +16353,13 @@ export function createAgentChatService(args: {
 
   const emitLiveOnlyChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     managed.lastActivityTimestamp = Date.now();
+    // Retry/reconnect activity bypasses emitChatEvent so it stays live-only.
+    // Flush any 100ms text/reasoning buffer first, otherwise that older
+    // fragment publishes after the retry and clients treat it as recovery.
+    if (event.type === "api_retry" || isProviderRetryActivityEvent(event)) {
+      flushBufferedReasoning(managed);
+      flushBufferedText(managed, "interleave");
+    }
     emitTransientChatEnvelope(managed.session.id, event);
   };
 
@@ -16673,13 +16687,36 @@ export function createAgentChatService(args: {
   const emitClaudeApiRetry = (
     managed: ManagedChatSession,
     record: Record<string, unknown>,
+    turnId?: string,
   ): void => {
-    emitChatEvent(managed, {
+    const errorStatus = numberOrNull(record.error_status);
+    const error = compactString(record.error) ?? "transient_error";
+    const attempt = numberOrNull(record.attempt) ?? 0;
+    const maxRetries = numberOrNull(record.max_retries) ?? 0;
+    const retryDelayMs = numberOrNull(record.retry_delay_ms) ?? 0;
+    // Keep the structured Claude event for clients that know its richer
+    // metadata, but make both it and the display activity live-only. A retry
+    // that succeeds should leave no transcript row behind.
+    emitLiveOnlyChatEvent(managed, {
       type: "api_retry",
-      attempt: numberOrNull(record.attempt) ?? 0,
-      maxRetries: numberOrNull(record.max_retries) ?? 0,
-      retryDelayMs: numberOrNull(record.retry_delay_ms) ?? 0,
-      errorStatus: numberOrNull(record.error_status),
+      attempt,
+      maxRetries,
+      retryDelayMs,
+      errorStatus,
+      ...(turnId ? { turnId } : {}),
+    });
+    emitLiveOnlyChatEvent(managed, {
+      type: "activity",
+      activity: "working",
+      providerRetry: true,
+      detail: formatProviderRetryActivityDetail({
+        provider: "claude",
+        attempt,
+        maxAttempts: maxRetries,
+        retryDelayMs,
+        cause: classifyProviderRetryCause(error, errorStatus),
+      }),
+      ...(turnId ? { turnId } : {}),
     });
   };
 
@@ -22265,15 +22302,7 @@ export function createAgentChatService(args: {
       // retry — the sleep chip already says why — instead of counting an
       // attempt against a socket that cannot answer until the lid opens.
       if (holdRetryForHostSuspend(managed, error, numberOrNull(record.error_status))) return;
-      emitClaudeApiRetry(managed, record);
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: error === "rate_limit" || error === "overloaded" ? "rate_limit" : "warning",
-        severity: error === "rate_limit" || error === "overloaded" ? "warning" : "info",
-        status: error,
-        message: `Claude API retry ${record.attempt ?? "?"}/${record.max_retries ?? "?"}: ${error.replace(/_/g, " ")}`,
-        ...(state.turnId ? { turnId: state.turnId } : {}),
-      });
+      emitClaudeApiRetry(managed, record, state.turnId ?? undefined);
       return;
     }
 
@@ -23689,21 +23718,7 @@ export function createAgentChatService(args: {
           ) {
             failClaudeTurnUnauthenticated();
           }
-          const retryDelayMs = typeof retryMsg.retry_delay_ms === "number" ? retryMsg.retry_delay_ms : null;
-          const retryDelay = retryDelayMs != null ? Math.max(0, Math.round(retryDelayMs / 1000)) : null;
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: error === "rate_limit" || error === "overloaded" ? "rate_limit" : "warning",
-            severity: error === "rate_limit" || error === "overloaded" ? "warning" : "info",
-            status: error,
-            message: `Claude API retry ${retryMsg.attempt ?? "?"}/${retryMsg.max_retries ?? "?"}: ${error.replace(/_/g, " ")}`,
-            detail: [
-              typeof retryMsg.error_status === "number" ? `HTTP ${retryMsg.error_status}` : null,
-              retryDelay != null ? `retrying in ${retryDelay}s` : null,
-            ].filter((entry): entry is string => Boolean(entry)).join(" | ") || undefined,
-            turnId,
-          });
-          emitClaudeApiRetry(managed, retryMsg);
+          emitClaudeApiRetry(managed, retryMsg, turnId);
           continue;
         }
 
@@ -26787,20 +26802,6 @@ export function createAgentChatService(args: {
       const rendersAsAssistantOutput = (messageID: string): boolean =>
         openCodeMessageRoleById.get(messageID) === "assistant"
         && !openCodeSummaryMessageIds.has(messageID);
-      // Throttle state for provider-retry notices. Turn-local: it has no meaning
-      // outside this loop and nothing else reads it.
-      //
-      // Three primitives rather than one nullable record, deliberately. The
-      // record form is read and then reassigned inside this loop, and the
-      // reassignment is reachable only through a value derived from the read —
-      // which makes TypeScript's control-flow analysis circular. It answers by
-      // pinning the read to its initializer (TS7022, or a `never` on the
-      // non-null branch). Non-nullable primitives make that pessimism harmless:
-      // every comparison below still typechecks whichever way the analysis goes.
-      let hasEmittedRetryNotice = false;
-      let retryNoticeAttempt = 0;
-      let retryNoticeMessage = "";
-      let retryNoticeAtMs = 0;
       // A ContextOverflowError is usually recoverable — OpenCode compacts and
       // carries on. It is NOT always: with `compaction.auto` off it idles without
       // compacting, and the compaction turn can overflow again and stop. Either
@@ -27106,17 +27107,11 @@ export function createAgentChatService(args: {
         // A failing provider is otherwise invisible: OpenCode retries with
         // exponential backoff and publishes nothing else, so the chat shows a
         // spinner for minutes and the user assumes it is wedged. `session.status`
-        // retry events are the only signal, so surface them as a notice.
+        // retry events are the only signal, so surface one replaceable activity
+        // status rather than a durable notice for every attempt.
         if (event.type === "session.status") {
           const status = event.properties.status;
-          if (status.type !== "retry") {
-            // Reset on idle ONLY. OpenCode publishes `busy` between every two
-            // retry attempts (retry(1) → busy → retry(2) → …), so clearing the
-            // throttle on `busy` cleared it before every single retry and the
-            // throttle never engaged.
-            if (status.type === "idle") hasEmittedRetryNotice = false;
-            continue;
-          }
+          if (status.type !== "retry") continue;
           // The SDK declares these required, but this is the wire: a field that
           // arrives missing or mistyped must not become "Retrying in NaNs."
           const { attempt: wireAttempt, message: wireMessage, next: wireNext, action } = status;
@@ -27124,43 +27119,25 @@ export function createAgentChatService(args: {
           const providerMessage = typeof wireMessage === "string" ? wireMessage.trim() : "";
           const nextAtMs = typeof wireNext === "number" ? wireNext : null;
           const nowMs = Date.now();
-          // Emit the first retry, then only on a changed provider message or on a
-          // new attempt that is at least the throttle interval after the last
-          // notice. Backoff doubles from 2s, so a busy provider would otherwise
-          // post a notice every couple of seconds.
-          const shouldEmit = !hasEmittedRetryNotice
-            || providerMessage !== retryNoticeMessage
-            || (
-              attempt !== retryNoticeAttempt
-              && nowMs - retryNoticeAtMs >= PROVIDER_RETRY_NOTICE_MIN_INTERVAL_MS
-            );
-          if (!shouldEmit) continue;
-          hasEmittedRetryNotice = true;
-          retryNoticeAttempt = attempt;
-          retryNoticeMessage = providerMessage;
-          retryNoticeAtMs = nowMs;
           const retryInSeconds = nextAtMs === null
             ? null
             : Math.max(0, Math.round((nextAtMs - nowMs) / 1000));
-          const detail = [
+          const classificationText = [
             providerMessage.length ? providerMessage : "The provider request failed.",
-            retryInSeconds === null ? null : `Retrying in ${retryInSeconds}s.`,
-            action?.title?.trim() || null,
-            action?.message?.trim() || null,
-            action?.link?.trim() || null,
+            typeof action?.title === "string" ? action.title.trim() : null,
+            typeof action?.message === "string" ? action.message.trim() : null,
+            typeof action?.link === "string" ? action.link.trim() : null,
           ].filter((line): line is string => Boolean(line)).join(" ");
-          emitChatEvent(managed, {
+          emitLiveOnlyChatEvent(managed, {
             type: "activity",
             activity: "working",
-            detail: PROVIDER_RETRY_ACTIVITY_DETAIL,
-            turnId,
-          });
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "provider_health",
-            severity: "warning",
-            message: `OpenCode hit a provider error and is retrying automatically (attempt ${attempt}).`,
-            detail,
+            providerRetry: true,
+            detail: formatProviderRetryActivityDetail({
+              provider: "opencode",
+              attempt,
+              retryDelayMs: retryInSeconds === null ? null : retryInSeconds * 1_000,
+              cause: classifyProviderRetryCause(classificationText),
+            }),
             turnId,
           });
           continue;
@@ -32341,12 +32318,19 @@ export function createAgentChatService(args: {
       } | null) ?? null;
       const turnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? undefined;
       if (params.willRetry === true) {
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "provider_health",
-          severity: "warning",
-          message: "Codex hit a provider error and is retrying automatically.",
-          detail: String(error?.message ?? "The provider request failed."),
+        const providerError = String(error?.message ?? "The provider request failed.");
+        const classificationText = `${providerError} ${String(error?.codexErrorInfo ?? "")}`;
+        emitLiveOnlyChatEvent(managed, {
+          type: "activity",
+          activity: "working",
+          providerRetry: true,
+          detail: formatProviderRetryActivityDetail({
+            provider: "codex",
+            attempt: numberOrNull(params.attempt ?? params.retryAttempt ?? params.retry_attempt),
+            maxAttempts: numberOrNull(params.maxRetries ?? params.max_retries),
+            retryDelayMs: numberOrNull(params.retryDelayMs ?? params.retry_delay_ms ?? params.retryAfterMs ?? params.retry_after_ms),
+            cause: classifyProviderRetryCause(classificationText),
+          }),
           ...(turnId ? { turnId } : {}),
         });
         return;
@@ -41358,20 +41342,28 @@ export function createAgentChatService(args: {
         resumedMidTurn,
       });
       if (resumedMidTurn) {
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: "Reconnected to Cursor and continued.",
+        emitLiveOnlyChatEvent(managed, {
+          type: "activity",
+          activity: "working",
+          providerRetry: true,
+          detail: formatProviderRetryActivityDetail({
+            provider: "cursor",
+            cause: "transport",
+            phase: "reconnecting",
+          }),
           turnId,
         });
       }
     } else {
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
-        message: first.reason === "silent_run"
-          ? "Cursor stopped responding. ADE opened a fresh Cursor thread and is resending your message."
-          : "Cursor's connection dropped. ADE opened a fresh Cursor thread and is resending your message.",
+      emitLiveOnlyChatEvent(managed, {
+        type: "activity",
+        activity: "working",
+        providerRetry: true,
+        detail: formatProviderRetryActivityDetail({
+          provider: "cursor",
+          cause: first.reason === "silent_run" ? "timeout" : "transport",
+          phase: "reconnecting",
+        }),
         turnId,
       });
     }

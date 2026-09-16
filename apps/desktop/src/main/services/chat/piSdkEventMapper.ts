@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { AgentChatApprovalDecision, AgentChatEvent, PendingInputRequest } from "../../../shared/types/chat";
+import {
+  classifyProviderRetryCause,
+  formatProviderRetryActivityDetail,
+} from "../../../shared/providerRetryPresentation";
 import type { PiSdkExtensionInfo, PiSdkUiNoticePayload, PiSdkUiRequestPayload, PiSdkUiResponsePayload } from "./piSdkProtocol";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -69,10 +73,31 @@ export function mapPiSdkEventToChatEvents(
     }];
   }
   if (type === "auto_retry_start") {
+    const errorMessage = typeof record.errorMessage === "string" ? record.errorMessage : "Pi is retrying the provider request.";
+    const attempt = typeof record.attempt === "number"
+      ? record.attempt
+      : typeof record.retryAttempt === "number" ? record.retryAttempt : null;
+    const maxAttempts = typeof record.maxAttempts === "number"
+      ? record.maxAttempts
+      : typeof record.maxRetries === "number"
+        ? record.maxRetries
+        : typeof record.max_retries === "number" ? record.max_retries : null;
+    const retryDelayMs = typeof record.retryDelayMs === "number"
+      ? record.retryDelayMs
+      : typeof record.retry_delay_ms === "number"
+        ? record.retry_delay_ms
+        : typeof record.delayMs === "number" ? record.delayMs : null;
     return [{
       type: "activity",
       activity: "working",
-      detail: typeof record.errorMessage === "string" ? record.errorMessage : "Pi is retrying the provider request.",
+      providerRetry: true,
+      detail: formatProviderRetryActivityDetail({
+        provider: "pi",
+        attempt,
+        maxAttempts,
+        retryDelayMs,
+        cause: classifyProviderRetryCause(errorMessage),
+      }),
       ...(turnId ? { turnId } : {}),
     }];
   }

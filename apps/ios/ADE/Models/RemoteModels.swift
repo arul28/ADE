@@ -2165,7 +2165,7 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   case error
   case config
   /// Paused half of the host-sleep chip. Synthesized locally — see
-  /// `hostSleepNoticeKind(from:)`.
+  /// `normalizedSystemNoticeKind(from:)`.
   case hostAsleep = "host_asleep"
   /// Resumed half of the same chip.
   case hostAwake = "host_awake"
@@ -2186,7 +2186,7 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   }
 }
 
-/// Which half of the host-sleep chip a `system_notice` is, if it is one.
+/// Which status-derived kind a `system_notice` should carry, if it has one.
 ///
 /// A Mac that suspends mid-turn emits two notices — `status: "host_asleep"`
 /// then `"host_awake"` — both with `noticeKind: "info"` and a shared
@@ -2194,23 +2194,24 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
 /// The host's contract is "one sleep, one artifact": desktop folds the pair
 /// onto a single transcript row.
 ///
-/// iOS never carried `status` on a notice, so both halves arrived as plain
-/// info notices and rendered as two cards, contradicting that contract.
-/// Promoting the status into the notice KIND is what fixes it without growing
-/// every `.systemNotice` pattern match in the app: `kind` is the field iOS
-/// already carries end to end, from wire decode through `WorkEventMapping` to
-/// the timeline. The same normalization is applied on the replay path
+/// iOS never carried `status` on a notice, so status-backed lifecycle and
+/// terminal states arrived as plain declared kinds. Promoting supported
+/// statuses into the notice KIND keeps the information without growing every
+/// `.systemNotice` pattern match in the app: `kind` is the field iOS already
+/// carries end to end, from wire decode through `WorkEventMapping` to the
+/// timeline. The same normalization is applied on the replay path
 /// (`WorkTranscriptParser`), so a chat opened from history folds identically.
 ///
 /// Any other status — `subagent_spawned`, whatever the host adds next — is
 /// left alone and keeps its declared kind.
-func hostSleepNoticeKind(from status: String?) -> AgentChatNoticeKind? {
+func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
   guard let trimmed = status?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
     return nil
   }
   switch trimmed {
   case AgentChatNoticeKind.hostAsleep.rawValue: return .hostAsleep
   case AgentChatNoticeKind.hostAwake.rawValue: return .hostAwake
+  case "authentication_failed": return .auth
   default: return nil
   }
 }
@@ -3765,7 +3766,7 @@ extension AgentChatEvent {
         let declaredKind = try container.decode(AgentChatNoticeKind.self, forKey: .noticeKind)
         let noticeStatus = try container.decodeIfPresent(String.self, forKey: .status)
         self = .systemNotice(
-          noticeKind: hostSleepNoticeKind(from: noticeStatus) ?? declaredKind,
+          noticeKind: normalizedSystemNoticeKind(from: noticeStatus) ?? declaredKind,
           message: try container.decode(String.self, forKey: .message),
           detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
           turnId: eventTurnId,

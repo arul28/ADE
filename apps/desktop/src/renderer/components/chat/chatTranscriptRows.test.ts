@@ -1454,6 +1454,69 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows).toHaveLength(0);
   });
 
+  it("removes legacy retry notices while retaining non-retry provider health", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "warning",
+          message: "Claude API retry 2/10: unknown",
+          detail: "retrying in 4s",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "provider_health",
+          message: "Codex hit a provider error and is retrying automatically.",
+          detail: "Temporary upstream failure.",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "provider_health",
+          message: "Context limit reached — OpenCode will try to compact the conversation.",
+          detail: "Context window exceeded.",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event).toMatchObject({
+      type: "system_notice",
+      message: "Context limit reached — OpenCode will try to compact the conversation.",
+    });
+  });
+
+  it("keeps a legacy Claude authentication failure visible during replay", () => {
+    const event = {
+      type: "system_notice" as const,
+      noticeKind: "warning" as const,
+      status: "authentication_failed",
+      message: "Claude API retry 2/10: authentication failed",
+      detail: "HTTP 401",
+      turnId: "turn-1",
+    };
+    const rows = collapseChatTranscriptEvents([{
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event,
+    }]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event).toMatchObject(event);
+  });
+
   it("keeps Codex goal lifecycle events visible", () => {
     const rows = collapseChatTranscriptEvents([
       {

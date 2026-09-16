@@ -1279,6 +1279,31 @@ describe("renderChatLines", () => {
     expect(lines[0]?.header).toBeUndefined();
   });
 
+  it("keeps a legacy Claude authentication failure visible during replay", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [{
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "system_notice",
+          noticeKind: "warning",
+          status: "authentication_failed",
+          message: "Claude API retry 2/10: authentication failed",
+          detail: "HTTP 401",
+        },
+      }],
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toEqual(expect.objectContaining({
+      tone: "notice",
+      body: "Claude API retry 2/10: authentication failed",
+    }));
+  });
+
   it("deduplicates consecutive identical notice rows", () => {
     const lines = renderChatLines({
       activeSession: null,
