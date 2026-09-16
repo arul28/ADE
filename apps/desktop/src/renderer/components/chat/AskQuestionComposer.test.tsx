@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/types";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 
@@ -551,5 +552,149 @@ describe("AskQuestionComposer decline", () => {
     fireEvent.click(screen.getByTestId("ask-question-decline"));
     fireEvent.click(screen.getByTestId("ask-question-decline-x"));
     expect(onDecline).toHaveBeenCalledTimes(2);
+  });
+});
+
+/*
+ * B1: the free-text answer is the host composer's own editor, handed in as a
+ * slot. These drive the contract from this side — the slot is rendered, its
+ * text is the answer, it survives paging, and the two cases that must NOT get
+ * it (a secret, and a host that supplies none) keep their plain fields.
+ */
+describe("AskQuestionComposer rich answer slot", () => {
+  const renderWithSlot = (
+    request: PendingInputRequest,
+    options: { onSubmit?: (answers: Record<string, string | string[]>) => void; onAttachFiles?: () => void; attachDisabled?: boolean } = {},
+  ) => {
+    const onSubmit = options.onSubmit ?? vi.fn();
+    const onDecline = vi.fn();
+    const renders: string[] = [];
+
+    function Harness() {
+      const [value, setValue] = useState("");
+      return (
+        <AskQuestionComposer
+          request={request}
+          onSubmit={onSubmit}
+          onDecline={onDecline}
+          answerValue={value}
+          /* Mirrors the host: a programmatic write moves the value AND the
+             editor's DOM, because a contentEditable is not a controlled input. */
+          onAnswerValueChange={(text) => {
+            setValue(text);
+            const node = document.querySelector<HTMLElement>('[data-testid="slot-editor"]');
+            if (node) node.textContent = text;
+          }}
+          onAttachFiles={options.onAttachFiles}
+          attachDisabled={options.attachDisabled}
+          renderAnswerEditor={(api) => {
+            renders.push(api.placeholder);
+            return (
+              <div
+                data-testid="slot-editor"
+                role="textbox"
+                contentEditable
+                suppressContentEditableWarning
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || event.shiftKey) return;
+                  event.preventDefault();
+                  api.onSubmitAnswer();
+                }}
+                onInput={(event) => setValue(event.currentTarget.textContent ?? "")}
+              />
+            );
+          }}
+        />
+      );
+    }
+
+    render(<Harness />);
+    const type = (text: string) => {
+      const editor = screen.getByTestId("slot-editor");
+      editor.textContent = text;
+      fireEvent.input(editor);
+    };
+    return { onSubmit, onDecline, renders, type };
+  };
+
+  it("renders the supplied editor instead of the textarea and sends its text", () => {
+    const { onSubmit, type, renders } = renderWithSlot(buildRequest([planQuestion()]));
+
+    expect(screen.queryByTestId("ask-question-note-plan_choice")).toBeNull();
+    expect(screen.getByTestId("ask-question-rich-answer-plan_choice")).toBeTruthy();
+    // The host paints the placeholder itself, so the card has to hand it over.
+    expect(renders[0]).toBe("Or send your own response instead");
+
+    type("do it the third way");
+    fireEvent.keyDown(screen.getByTestId("slot-editor"), { key: "Enter" });
+
+    expect(onSubmit).toHaveBeenCalledWith({ plan_choice: "do it the third way" });
+  });
+
+  it("keeps the plain textarea when the host supplies no editor", () => {
+    renderComposer(buildRequest([planQuestion()]));
+    expect((screen.getByTestId("ask-question-note-plan_choice") as HTMLElement).tagName).toBe("TEXTAREA");
+    expect(screen.queryByTestId("ask-question-rich-answer-plan_choice")).toBeNull();
+  });
+
+  it("keeps a secret answer masked even when an editor slot exists", () => {
+    renderWithSlot(buildRequest([planQuestion({ id: "token", isSecret: true, options: undefined })]));
+
+    const field = screen.getByTestId("ask-question-note-token") as HTMLInputElement;
+    expect(field.tagName).toBe("INPUT");
+    expect(field.type).toBe("password");
+    expect(screen.queryByTestId("slot-editor")).toBeNull();
+  });
+
+  it("gives each page of a multi-question request its own answer", () => {
+    const { onSubmit, type } = renderWithSlot(buildRequest([
+      planQuestion({ id: "first", header: "Q1", question: "First?", options: undefined }),
+      planQuestion({ id: "second", header: "Q2", question: "Second?", options: undefined }),
+    ]));
+
+    type("answer one");
+    fireEvent.click(screen.getByTestId("ask-question-send"));
+    // One editor, two questions: page two must start empty, not holding page
+    // one's text.
+    expect(screen.getByTestId("slot-editor").textContent).toBe("");
+    type("answer two");
+    fireEvent.click(screen.getByTestId("ask-question-send"));
+
+    expect(onSubmit).toHaveBeenCalledWith({ first: "answer one", second: "answer two" });
+  });
+
+  it("restores a stashed answer when the user pages back", () => {
+    const { type } = renderWithSlot(buildRequest([
+      planQuestion({ id: "first", header: "Q1", question: "First?", options: undefined }),
+      planQuestion({ id: "second", header: "Q2", question: "Second?", options: undefined }),
+    ]));
+
+    type("answer one");
+    fireEvent.click(screen.getByTestId("ask-question-dot-second"));
+    expect(screen.getByTestId("slot-editor").textContent).toBe("");
+    fireEvent.click(screen.getByTestId("ask-question-dot-first"));
+    expect(screen.getByTestId("slot-editor").textContent).toBe("answer one");
+  });
+
+  it("does not hijack digits typed into the supplied editor", () => {
+    renderWithSlot(buildRequest([planQuestion()]));
+
+    fireEvent.keyDown(screen.getByTestId("slot-editor"), { key: "1" });
+
+    for (const option of screen.getAllByRole("radio")) {
+      expect(option.getAttribute("aria-checked")).toBe("false");
+    }
+  });
+
+  it("offers the paperclip beside the editor and honours the blocked reason", () => {
+    const onAttachFiles = vi.fn();
+    renderWithSlot(buildRequest([planQuestion()]), { onAttachFiles });
+
+    fireEvent.click(screen.getByTestId("ask-question-attach"));
+    expect(onAttachFiles).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    renderWithSlot(buildRequest([planQuestion()]), { onAttachFiles, attachDisabled: true });
+    expect((screen.getByTestId("ask-question-attach") as HTMLButtonElement).disabled).toBe(true);
   });
 });

@@ -2222,6 +2222,11 @@ export function AgentChatComposer({
   const richEditorRef = useRef<HTMLDivElement | null>(null);
   const richSelectionRef = useRef<Range | null>(null);
   const richInitializedRef = useRef(false);
+  // Which DOM node the editor was last seeded into. The editor has two homes —
+  // the prompt box and the question card — and moving between them is a real
+  // unmount/remount: the new node starts empty while the draft still holds the
+  // text, so seeding has to be re-armed whenever the node identity changes.
+  const richEditorNodeRef = useRef<HTMLDivElement | null>(null);
   // Plain textarea chips are painted by an overlay, while the serialized
   // draft intentionally stores only the opaque mention pointer. Keep the
   // selected row's title separately so the visible chip stays user-facing.
@@ -2358,12 +2363,34 @@ export function AgentChatComposer({
     promptHistoryIndexRef.current = nextIndex;
   }, [clearPromptHistory, promptHistory]);
 
+  /**
+   * A question gate takes the composer over completely: the card replaces the
+   * prompt box inside the same frame, and the model / permission / effort row
+   * is hidden until it resolves.
+   *
+   * Computed up here, ahead of `composerInputLocked`, because it is the one
+   * blocking request that does NOT lock the input. The answer field IS this
+   * composer's editor, re-homed inside the card — locking it would lock the
+   * thing the user is being asked to type into. Every other blocking request
+   * (approvals, elicitations) still hard-locks. The send path stays closed
+   * regardless: `submitComposerDraft` returns on `pendingInput.blocking`, and
+   * the footer that owns Send is not rendered while a question is up.
+   */
+  const askQuestionActive = Boolean(
+    pendingInput
+    && isAskQuestionRequest(pendingInput)
+    && pendingInput.questions.length > 0,
+  );
+  // Answer mode is rich mode, always: the whole point is that the answer gets
+  // chips, mentions and smart links, and the plain textarea has none of them.
   const useRichComposer = smartLinkEditorEnabled
+    || askQuestionActive
     || iosElementContextItems.length > 0
     || appControlContextItems.length > 0
     || builtInBrowserContextItems.length > 0;
   const externalInputLockMessage = normalizeComposerLabelText(inputLockMessage ?? "");
-  const composerInputLocked = Boolean(pendingInput?.blocking) || Boolean(externalInputLockMessage);
+  const composerInputLocked = (Boolean(pendingInput?.blocking) && !askQuestionActive)
+    || Boolean(externalInputLockMessage);
   const composerInputLockMessage = externalInputLockMessage || getComposerInputLockMessage(pendingInput);
   const composerInputContextLabel = normalizeComposerLabelText(messagePlaceholder ?? "") || "Chat message";
   const composerInputAccessibleLabel = composerInputLockMessage
@@ -3736,7 +3763,12 @@ export function AgentChatComposer({
     const editor = richEditorRef.current;
     if (!useRichComposer || !editor) {
       richInitializedRef.current = false;
+      richEditorNodeRef.current = null;
       return;
+    }
+    if (richEditorNodeRef.current !== editor) {
+      richEditorNodeRef.current = editor;
+      richInitializedRef.current = false;
     }
     if (!richInitializedRef.current) {
       editor.textContent = draft;
@@ -3831,7 +3863,7 @@ export function AgentChatComposer({
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+  }, [appControlContextItems, askQuestionActive, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
 
   // ── Chip selection highlight ─────────────────────────────────────────────
   // The native selection is not painted over contentEditable="false" chips, so
@@ -4683,6 +4715,67 @@ export function AgentChatComposer({
   };
 
   /**
+   * Programmatic writes to the answer while the editor lives in the question
+   * card: the draft and the contentEditable have to move together, because the
+   * card pages between questions and the editor is not a controlled input.
+   * Typing never comes through here — it flows editor → draft as usual.
+   */
+  const writeAnswerDraft = useCallback((text: string) => {
+    onDraftChange(text);
+    setRichEditorText(text);
+  }, [onDraftChange, setRichEditorText]);
+  const clearAnswerDraft = useCallback(() => {
+    writeAnswerDraft("");
+  }, [writeAnswerDraft]);
+
+  /**
+   * Keyboard for the editor in its question-card home.
+   *
+   * Enter sends the ANSWER. It cannot fall through to `handleKeyDown`'s send:
+   * that path ends in `submitComposerDraft`, which refuses while a blocking
+   * request is open, so Enter would simply do nothing. Escape and the history
+   * arrows are intercepted for the same class of reason — `handleKeyDown`
+   * answers Escape by cancelling the pending request, which would then decline
+   * a second time as the event bubbled to the card. Everything else (chip
+   * deletion, the `@` menu's arrows, Cmd+., the paste fallback) is the prompt
+   * box's handler unchanged.
+   */
+  const answerEditorKeyDown = (answer: { placeholder: string; onSubmitAnswer: () => void }) => (
+    (event: React.KeyboardEvent<HTMLElement>) => {
+      if (event.key === "Escape") {
+        // Closes the open menu and nothing else. With no menu open the event is
+        // left to bubble to the card, which declines.
+        if (commandMenuTrigger) {
+          event.preventDefault();
+          event.stopPropagation();
+          dismissCommandMenu(commandMenuTrigger);
+        }
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        if (commandMenuTrigger) {
+          if (commandMenuRef.current?.selectCurrent()) {
+            event.preventDefault();
+            return;
+          }
+          dismissCommandMenu(commandMenuTrigger);
+        }
+        event.preventDefault();
+        answer.onSubmitAnswer();
+        return;
+      }
+      if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !commandMenuTrigger) {
+        // Prompt-history recall belongs to the prompt box. Inside an answer the
+        // same keystroke replaces what the user is typing with an unrelated
+        // earlier message.
+        cancelPromptHistorySequence();
+        return;
+      }
+      handleKeyDown(event);
+    }
+  );
+
+  /**
    * Write the selection as canonical tokens plus a chip payload. Without this a
    * native copy takes the DOM text, which is the chip LABEL, so a PR chip
    * becomes "owner/repo#123" with no URL and a mention becomes a bare title.
@@ -5079,18 +5172,13 @@ export function AgentChatComposer({
   }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
 
   /**
-   * A question gate takes the composer over completely: the card replaces the
-   * textarea inside the same prompt-box frame, and the model / permission /
-   * effort row is hidden until it resolves. There is deliberately no second
-   * "answer the card above" banner — that banner sat on a composer
-   * `composerInputLocked` had already hard-locked, so the composer was dead
-   * and wearing a sign saying so.
+   * The request behind `askQuestionActive`, narrowed for the card. There is
+   * deliberately no second "answer the card above" banner — that banner sat on
+   * a composer `composerInputLocked` had already hard-locked, so the composer
+   * was dead and wearing a sign saying so. Now it is not locked at all: the
+   * editor moves into the card and stays fully live.
    */
-  const askQuestionRequest = pendingInput
-    && isAskQuestionRequest(pendingInput)
-    && pendingInput.questions.length > 0
-    ? pendingInput
-    : null;
+  const askQuestionRequest = askQuestionActive && pendingInput ? pendingInput : null;
   const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
   const selectedAppControlContext = appControlContextItems.find((item) => item.id === selectedAppControlContextId) ?? null;
   const selectedBuiltInBrowserContext = builtInBrowserContextItems.find((item) => item.id === selectedBuiltInBrowserContextId) ?? null;
@@ -6387,16 +6475,310 @@ export function AgentChatComposer({
         </div>
       )}
     >
-      {askQuestionRequest ? (
-        <AskQuestionComposer
-          key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
-          request={askQuestionRequest}
-          responding={approvalResponding ?? false}
-          onSubmit={(answers) => onApproval("accept", null, answers)}
-          onDecline={() => onApproval("decline")}
-        />
-      ) : (
-      <>
+      {(() => {
+        /*
+         * One editor, two homes.
+         *
+         * While a question blocks, the answer field is not a second, poorer
+         * text box — it is this exact surface (rich editor, `@` and `#` menus,
+         * smart-link chips, paste-image, drag-drop) rendered into the question
+         * card instead of the prompt box. Building it once and handing it to
+         * the card as a slot is what keeps the two from drifting; the earlier
+         * shape had a bare `<textarea>` in the card that could do none of it.
+         *
+         * `answer` is null in the prompt-box home, and the surface renders
+         * byte-identically to what it always did.
+         */
+        const renderInputSurface = (answer: { placeholder: string; onSubmitAnswer: () => void } | null) => (
+        <div
+          className="relative"
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {dragActive ? (
+            <div className="pointer-events-none absolute inset-0 z-[1]">
+              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} />
+            </div>
+          ) : null}
+
+          <div
+            className={cn("relative", voiceShimmer ? "ade-voice-shimmer" : "")}
+            onFocusCapture={() => {
+              // Focusing this composer makes it the dictation insertion target so
+              // a transcript lands in whichever composer the user is typing into.
+              registerAsDictationTarget();
+            }}
+          >
+            <ChatCommandMenu
+              ref={commandMenuRef}
+              trigger={commandMenuTrigger}
+              slashCommands={effectiveSlashCommands.map((c) => ({
+                name: c.command.replace(/^\//, ""),
+                description: c.description,
+                argumentHint: c.argumentHint,
+                source: c.source,
+              }))}
+              onFileSearch={onSearchAttachments}
+              onMentionSearch={onSearchMentions}
+              onPrSearch={onSearchPullRequests}
+              anchor={commandMenuAnchor}
+              onSelect={handleCommandMenuSelect}
+              onClose={closeCommandMenu}
+              onNoMatches={dismissCommandMenu}
+            />
+            {useRichComposer ? (
+              <div className="relative">
+                {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length && !builtInBrowserContextItems.length ? (
+                  <div className={cn(
+                    "pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30",
+                    answer ? "left-0 top-1" : null,
+                  )}>
+                    {answer
+                      ? answer.placeholder
+                      : composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
+                  </div>
+                ) : null}
+                <div
+                  ref={richEditorRef}
+                  contentEditable={!parallelLaunchBusy && !composerInputLocked}
+                  role="textbox"
+                  aria-multiline="true"
+                  aria-label={answer ? "Answer" : composerInputAccessibleLabel}
+                  suppressContentEditableWarning
+                  className={cn(
+                    // `text-left` is load-bearing: without it the contenteditable
+                    // inherits `text-align: center` from centered empty-state
+                    // ancestors, so pasting a URL (which swaps textarea → rich
+                    // editor) makes the whole prompt box render and type centered.
+                    "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
+                    dragActive ? "opacity-30" : "",
+                    parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
+                    // Re-homed inside the question card, the editor drops the
+                    // prompt box's own gutter: the card already supplies one.
+                    answer ? "min-h-[1.9rem] max-h-[160px] px-0 py-1" : null,
+                  )}
+                  data-chat-layout-variant={layoutVariant}
+                  data-composer-answer-editor={answer ? "true" : undefined}
+                  onInput={handleRichEditorInput}
+                  onCompositionStart={() => {
+                    imeComposingRef.current = true;
+                  }}
+                  onCompositionEnd={() => {
+                    imeComposingRef.current = false;
+                    handleRichEditorInput();
+                  }}
+                  onKeyDown={answer ? answerEditorKeyDown(answer) : handleKeyDown}
+                  onPaste={handlePaste}
+                  onCopy={handleCopy}
+                  onCut={handleCut}
+                  onKeyUp={captureRichSelection}
+                  onMouseUp={() => {
+                    cancelPromptHistorySequence();
+                    captureRichSelection();
+                  }}
+                  onBlur={() => {
+                    cancelPromptHistorySequence();
+                    captureRichSelection();
+                  }}
+                  onClick={(event) => {
+                    const target = event.target as HTMLElement | null;
+                    const smartLinkChip = target?.closest?.("[data-smart-link-url]") as HTMLElement | null;
+                    if (smartLinkChip?.dataset.smartLinkUrl) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setSelectedSmartLinkNode(smartLinkChip);
+                      return;
+                    }
+                    const chatContextChip = target?.closest?.("[data-composer-chip='chat-context']") as HTMLElement | null;
+                    if (chatContextChip) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setSelectedSmartLinkNode(chatContextChip);
+                      return;
+                    }
+                    const iosChip = target?.closest?.("[data-ios-context-id]") as HTMLElement | null;
+                    if (iosChip?.dataset.iosContextId) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (target?.dataset.iosRemove === "true") {
+                        onRemoveIosElementContext?.(iosChip.dataset.iosContextId);
+                        return;
+                      }
+                      setSelectedIosContextId((current) => current === iosChip.dataset.iosContextId ? null : iosChip.dataset.iosContextId ?? null);
+                      setSelectedAppControlContextId(null);
+                      setSelectedBuiltInBrowserContextId(null);
+                      return;
+                    }
+                    const appControlChip = target?.closest?.("[data-app-control-context-id]") as HTMLElement | null;
+                    if (appControlChip?.dataset.appControlContextId) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (target?.dataset.appControlRemove === "true") {
+                        onRemoveAppControlContext?.(appControlChip.dataset.appControlContextId);
+                        return;
+                      }
+                      setSelectedAppControlContextId((current) =>
+                        current === appControlChip.dataset.appControlContextId ? null : appControlChip.dataset.appControlContextId ?? null,
+                      );
+                      setSelectedIosContextId(null);
+                      setSelectedBuiltInBrowserContextId(null);
+                      return;
+                    }
+                    const builtInBrowserChip = target?.closest?.("[data-built-in-browser-context-id]") as HTMLElement | null;
+                    if (builtInBrowserChip?.dataset.builtInBrowserContextId) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (target?.dataset.builtInBrowserRemove === "true") {
+                        onRemoveBuiltInBrowserContext?.(builtInBrowserChip.dataset.builtInBrowserContextId);
+                        return;
+                      }
+                      setSelectedBuiltInBrowserContextId((current) =>
+                        current === builtInBrowserChip.dataset.builtInBrowserContextId ? null : builtInBrowserChip.dataset.builtInBrowserContextId ?? null,
+                      );
+                      setSelectedIosContextId(null);
+                      setSelectedAppControlContextId(null);
+                      return;
+                    }
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="relative">
+                {plainOverlayContent ? (
+                  <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+                    <div
+                      className={cn(
+                        "whitespace-pre-wrap break-words px-4 py-2.5 text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88",
+                        dragActive ? "opacity-30" : "",
+                        parallelLaunchBusy || composerInputLocked ? "opacity-50" : "",
+                      )}
+                      style={{ transform: `translateY(-${plainOverlayScrollTop}px)` }}
+                    >
+                      {plainOverlayContent}
+                    </div>
+                  </div>
+                ) : null}
+                <textarea
+                  ref={textareaRef}
+                  value={draft}
+                  onChange={(event) => {
+                    const val = event.target.value;
+                    clearPromptHistory();
+                    onDraftChange(val);
+                    if (/\s$/.test(val) && findSmartLinks(val).length > 0) {
+                      setSmartLinkEditorEnabled(true);
+                    }
+                    const cursorPos = event.target.selectionStart ?? val.length;
+                    lastPlainSelectionRef.current = cursorPos;
+                    if (imeComposingRef.current) return;
+                    evaluatePlainTrigger(event.currentTarget, cursorPos, true);
+                  }}
+                  rows={1}
+                  onInput={resizeTextarea}
+                  onScroll={(event) => {
+                    if (plainComposerTokens.length || plainUserShellChipRange) {
+                      setPlainOverlayScrollTop(event.currentTarget.scrollTop);
+                    }
+                  }}
+                  onCompositionStart={() => {
+                    imeComposingRef.current = true;
+                  }}
+                  onCompositionEnd={(event) => {
+                    imeComposingRef.current = false;
+                    const node = event.currentTarget;
+                    evaluatePlainTrigger(node, node.selectionStart ?? node.value.length, true);
+                  }}
+                  onSelect={(event) => {
+                    const node = event.currentTarget;
+                    const caret = node.selectionStart ?? node.value.length;
+                    lastPlainSelectionRef.current = caret;
+                    if (imeComposingRef.current) return;
+                    evaluatePlainTrigger(node, caret, false);
+                  }}
+                  disabled={parallelLaunchBusy || composerInputLocked}
+                  autoComplete="on"
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
+                  spellCheck={true}
+                  aria-label={composerInputAccessibleLabel}
+                  className={cn(
+                    "block w-full resize-none bg-transparent px-4 py-2.5 text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
+                    // The textarea sits above the token overlay with transparent text, so the
+                    // default (opaque) selection background would paint over the overlay and
+                    // make the selected text vanish entirely. A translucent selection reads as
+                    // a selection while letting the glyphs underneath stay legible.
+                    plainOverlayContent ? "relative z-[1] text-transparent selection:bg-fg/25" : "",
+                    dragActive ? "opacity-30" : "",
+                    parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
+                  )}
+                  style={plainOverlayContent ? { caretColor: "var(--color-fg)" } : undefined}
+                  data-chat-layout-variant={layoutVariant}
+                  placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
+                  onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
+                  onCopy={handleCopy}
+                  onCut={handleCut}
+                  onMouseUp={cancelPromptHistorySequence}
+                  onBlur={cancelPromptHistorySequence}
+                />
+              </div>
+            )}
+            {userShellChipRange && useRichComposer ? (
+              <div
+                className="flex items-center gap-1.5 px-4 pb-1.5 font-mono text-[11px] leading-none text-cyan-200/55"
+                title="User shell · unsandboxed"
+              >
+                <span
+                  className="rounded-[4px] bg-cyan-500/16 px-1 py-px text-cyan-100/85 shadow-[inset_0_0_0_1px_rgba(103,232,249,0.28)]"
+                  aria-hidden
+                >
+                  $
+                </span>
+                <span>User shell</span>
+              </div>
+            ) : null}
+            {selectedSmartLinkNode?.isConnected ? (
+              <ComposerSmartLinkMenu
+                anchor={selectedSmartLinkNode}
+                onClose={() => setSelectedSmartLinkNode(null)}
+                onRemove={removeSmartLinkNode}
+              />
+            ) : null}
+          </div>
+        </div>
+        );
+
+        if (askQuestionRequest) {
+          return (
+            <AskQuestionComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              responding={approvalResponding ?? false}
+              onSubmit={(answers) => {
+                // The draft WAS the answer; it must not survive into the next
+                // turn as a half-sent duplicate. Staged attachments deliberately
+                // do survive — no adapter carries a file inside an answer, so
+                // they ride the next message.
+                clearAnswerDraft();
+                onApproval("accept", null, answers);
+              }}
+              onDecline={() => {
+                clearAnswerDraft();
+                onApproval("decline");
+              }}
+              answerValue={draft}
+              onAnswerValueChange={writeAnswerDraft}
+              onAttachFiles={openUploadPicker}
+              attachDisabled={!canAttach}
+              attachBlockedReason={attachBlockedReason}
+              renderAnswerEditor={renderInputSurface}
+            />
+          );
+        }
+
+        return (
+          <>
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
         <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1.5">
@@ -6431,256 +6813,10 @@ export function AgentChatComposer({
         </div>
       ) : null}
 
-      <div
-        className="relative"
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        {dragActive ? (
-          <div className="pointer-events-none absolute inset-0 z-[1]">
-            <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} />
-          </div>
-        ) : null}
-
-        <div
-          className={cn("relative", voiceShimmer ? "ade-voice-shimmer" : "")}
-          onFocusCapture={() => {
-            // Focusing this composer makes it the dictation insertion target so
-            // a transcript lands in whichever composer the user is typing into.
-            registerAsDictationTarget();
-          }}
-        >
-          <ChatCommandMenu
-            ref={commandMenuRef}
-            trigger={commandMenuTrigger}
-            slashCommands={effectiveSlashCommands.map((c) => ({
-              name: c.command.replace(/^\//, ""),
-              description: c.description,
-              argumentHint: c.argumentHint,
-              source: c.source,
-            }))}
-            onFileSearch={onSearchAttachments}
-            onMentionSearch={onSearchMentions}
-            onPrSearch={onSearchPullRequests}
-            anchor={commandMenuAnchor}
-            onSelect={handleCommandMenuSelect}
-            onClose={closeCommandMenu}
-            onNoMatches={dismissCommandMenu}
-          />
-          {useRichComposer ? (
-            <div className="relative">
-              {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length && !builtInBrowserContextItems.length ? (
-                <div className="pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30">
-                  {composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
-                </div>
-              ) : null}
-              <div
-                ref={richEditorRef}
-                contentEditable={!parallelLaunchBusy && !composerInputLocked}
-                role="textbox"
-                aria-multiline="true"
-                aria-label={composerInputAccessibleLabel}
-                suppressContentEditableWarning
-                className={cn(
-                  // `text-left` is load-bearing: without it the contenteditable
-                  // inherits `text-align: center` from centered empty-state
-                  // ancestors, so pasting a URL (which swaps textarea → rich
-                  // editor) makes the whole prompt box render and type centered.
-                  "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
-                  dragActive ? "opacity-30" : "",
-                  parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
-                )}
-                data-chat-layout-variant={layoutVariant}
-                onInput={handleRichEditorInput}
-                onCompositionStart={() => {
-                  imeComposingRef.current = true;
-                }}
-                onCompositionEnd={() => {
-                  imeComposingRef.current = false;
-                  handleRichEditorInput();
-                }}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                onCopy={handleCopy}
-                onCut={handleCut}
-                onKeyUp={captureRichSelection}
-                onMouseUp={() => {
-                  cancelPromptHistorySequence();
-                  captureRichSelection();
-                }}
-                onBlur={() => {
-                  cancelPromptHistorySequence();
-                  captureRichSelection();
-                }}
-                onClick={(event) => {
-                  const target = event.target as HTMLElement | null;
-                  const smartLinkChip = target?.closest?.("[data-smart-link-url]") as HTMLElement | null;
-                  if (smartLinkChip?.dataset.smartLinkUrl) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setSelectedSmartLinkNode(smartLinkChip);
-                    return;
-                  }
-                  const chatContextChip = target?.closest?.("[data-composer-chip='chat-context']") as HTMLElement | null;
-                  if (chatContextChip) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setSelectedSmartLinkNode(chatContextChip);
-                    return;
-                  }
-                  const iosChip = target?.closest?.("[data-ios-context-id]") as HTMLElement | null;
-                  if (iosChip?.dataset.iosContextId) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (target?.dataset.iosRemove === "true") {
-                      onRemoveIosElementContext?.(iosChip.dataset.iosContextId);
-                      return;
-                    }
-                    setSelectedIosContextId((current) => current === iosChip.dataset.iosContextId ? null : iosChip.dataset.iosContextId ?? null);
-                    setSelectedAppControlContextId(null);
-                    setSelectedBuiltInBrowserContextId(null);
-                    return;
-                  }
-                  const appControlChip = target?.closest?.("[data-app-control-context-id]") as HTMLElement | null;
-                  if (appControlChip?.dataset.appControlContextId) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (target?.dataset.appControlRemove === "true") {
-                      onRemoveAppControlContext?.(appControlChip.dataset.appControlContextId);
-                      return;
-                    }
-                    setSelectedAppControlContextId((current) =>
-                      current === appControlChip.dataset.appControlContextId ? null : appControlChip.dataset.appControlContextId ?? null,
-                    );
-                    setSelectedIosContextId(null);
-                    setSelectedBuiltInBrowserContextId(null);
-                    return;
-                  }
-                  const builtInBrowserChip = target?.closest?.("[data-built-in-browser-context-id]") as HTMLElement | null;
-                  if (builtInBrowserChip?.dataset.builtInBrowserContextId) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (target?.dataset.builtInBrowserRemove === "true") {
-                      onRemoveBuiltInBrowserContext?.(builtInBrowserChip.dataset.builtInBrowserContextId);
-                      return;
-                    }
-                    setSelectedBuiltInBrowserContextId((current) =>
-                      current === builtInBrowserChip.dataset.builtInBrowserContextId ? null : builtInBrowserChip.dataset.builtInBrowserContextId ?? null,
-                    );
-                    setSelectedIosContextId(null);
-                    setSelectedAppControlContextId(null);
-                    return;
-                  }
-                }}
-              />
-            </div>
-          ) : (
-            <div className="relative">
-              {plainOverlayContent ? (
-                <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-                  <div
-                    className={cn(
-                      "whitespace-pre-wrap break-words px-4 py-2.5 text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88",
-                      dragActive ? "opacity-30" : "",
-                      parallelLaunchBusy || composerInputLocked ? "opacity-50" : "",
-                    )}
-                    style={{ transform: `translateY(-${plainOverlayScrollTop}px)` }}
-                  >
-                    {plainOverlayContent}
-                  </div>
-                </div>
-              ) : null}
-              <textarea
-                ref={textareaRef}
-                value={draft}
-                onChange={(event) => {
-                  const val = event.target.value;
-                  clearPromptHistory();
-                  onDraftChange(val);
-                  if (/\s$/.test(val) && findSmartLinks(val).length > 0) {
-                    setSmartLinkEditorEnabled(true);
-                  }
-                  const cursorPos = event.target.selectionStart ?? val.length;
-                  lastPlainSelectionRef.current = cursorPos;
-                  if (imeComposingRef.current) return;
-                  evaluatePlainTrigger(event.currentTarget, cursorPos, true);
-                }}
-                rows={1}
-                onInput={resizeTextarea}
-                onScroll={(event) => {
-                  if (plainComposerTokens.length || plainUserShellChipRange) {
-                    setPlainOverlayScrollTop(event.currentTarget.scrollTop);
-                  }
-                }}
-                onCompositionStart={() => {
-                  imeComposingRef.current = true;
-                }}
-                onCompositionEnd={(event) => {
-                  imeComposingRef.current = false;
-                  const node = event.currentTarget;
-                  evaluatePlainTrigger(node, node.selectionStart ?? node.value.length, true);
-                }}
-                onSelect={(event) => {
-                  const node = event.currentTarget;
-                  const caret = node.selectionStart ?? node.value.length;
-                  lastPlainSelectionRef.current = caret;
-                  if (imeComposingRef.current) return;
-                  evaluatePlainTrigger(node, caret, false);
-                }}
-                disabled={parallelLaunchBusy || composerInputLocked}
-                autoComplete="on"
-                autoCorrect="on"
-                autoCapitalize="sentences"
-                spellCheck={true}
-                aria-label={composerInputAccessibleLabel}
-                className={cn(
-                  "block w-full resize-none bg-transparent px-4 py-2.5 text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
-                  // The textarea sits above the token overlay with transparent text, so the
-                  // default (opaque) selection background would paint over the overlay and
-                  // make the selected text vanish entirely. A translucent selection reads as
-                  // a selection while letting the glyphs underneath stay legible.
-                  plainOverlayContent ? "relative z-[1] text-transparent selection:bg-fg/25" : "",
-                  dragActive ? "opacity-30" : "",
-                  parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
-                )}
-                style={plainOverlayContent ? { caretColor: "var(--color-fg)" } : undefined}
-                data-chat-layout-variant={layoutVariant}
-                placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                onCopy={handleCopy}
-                onCut={handleCut}
-                onMouseUp={cancelPromptHistorySequence}
-                onBlur={cancelPromptHistorySequence}
-              />
-            </div>
-          )}
-          {userShellChipRange && useRichComposer ? (
-            <div
-              className="flex items-center gap-1.5 px-4 pb-1.5 font-mono text-[11px] leading-none text-cyan-200/55"
-              title="User shell · unsandboxed"
-            >
-              <span
-                className="rounded-[4px] bg-cyan-500/16 px-1 py-px text-cyan-100/85 shadow-[inset_0_0_0_1px_rgba(103,232,249,0.28)]"
-                aria-hidden
-              >
-                $
-              </span>
-              <span>User shell</span>
-            </div>
-          ) : null}
-          {selectedSmartLinkNode?.isConnected ? (
-            <ComposerSmartLinkMenu
-              anchor={selectedSmartLinkNode}
-              onClose={() => setSelectedSmartLinkNode(null)}
-              onRemove={removeSmartLinkNode}
-            />
-          ) : null}
-        </div>
-      </div>
-      </>
-      )}
+          {renderInputSurface(null)}
+          </>
+        );
+      })()}
       </ChatComposerShell>
       </BorderBeam>
     </>

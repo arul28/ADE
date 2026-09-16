@@ -3295,9 +3295,12 @@ describe("AgentChatPane submit recovery", () => {
 
     const steering = await screen.findByTestId("codex-steering-question");
     expect(await screen.findByText("Which branch should I use?")).toBeTruthy();
+    // The composer's answer field is the rich contentEditable editor now, not a
+    // textarea: it takes typed text through an input event, not a value setter.
     const composerInput = screen.getAllByRole("textbox").find((node) => !steering.contains(node));
     expect(composerInput).toBeTruthy();
-    fireEvent.change(composerInput!, { target: { value: "main" } });
+    composerInput!.textContent = "main";
+    fireEvent.input(composerInput!);
     const composerSend = screen.getAllByTestId("ask-question-send").find((button) => !steering.contains(button));
     expect(composerSend).toBeTruthy();
     fireEvent.click(composerSend!);
@@ -3324,10 +3327,12 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByTestId("ask-question-composer")).toBeTruthy();
     expect(screen.getByText("Which branch should I use?")).toBeTruthy();
-    const answerInput = screen.getByRole("textbox") as HTMLInputElement;
+    const answerInput = screen.getByRole("textbox");
     const sendAnswer = screen.getByTestId("ask-question-send") as HTMLButtonElement;
 
-    expect(answerInput.disabled).toBe(false);
+    // The one textbox on screen is the composer's own editor, re-homed inside
+    // the card and fully live — a question locks sending, not typing.
+    expect(answerInput.getAttribute("contenteditable")).toBe("true");
     expect(sendAnswer.disabled).toBe(true);
 
     fireEvent.keyDown(answerInput, { key: "Enter" });
