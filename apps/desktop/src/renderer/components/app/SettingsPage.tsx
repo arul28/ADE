@@ -5,6 +5,7 @@ import {
   Bell,
   Brain,
   ChartLineUp,
+  ChatCircle,
   GearSix,
   GitBranch,
   HardDrives,
@@ -16,9 +17,10 @@ import {
 } from "@phosphor-icons/react";
 import { ActivitySection } from "../settings/ActivitySection";
 import { AppearanceSection } from "../settings/AppearanceSection";
+import { ChatSection } from "../settings/ChatSection";
+import { BudgetCapSettings } from "../settings/BudgetCapEditor";
 import { AboutSection } from "../settings/AboutSection";
 import { AdeCliSection } from "../settings/AdeCliSection";
-import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { DictationSection } from "../settings/DictationSection";
 import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
@@ -53,9 +55,15 @@ import {
   settingsTabLabel,
   type SettingEntry,
   type SettingsTabId,
+  DEFAULT_SETTINGS_TAB,
+  type SettingsTab,
+  SETTINGS_GROUPS,
+  groupScopeHint,
 } from "../settings/settingsManifest";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { ScopeChip } from "../settings/primitives/ScopeChip";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 /**
@@ -70,6 +78,7 @@ import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   general: GearSix,
   appearance: Palette,
+  chat: ChatCircle,
   agents: Brain,
   "lanes-git": GitBranch,
   integrations: PlugsConnected,
@@ -146,8 +155,9 @@ function providerIdFromHash(hash: string): string | null {
  * Agents & Models. One provider's page is a sub-view of this tab rather than a
  * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
  * manifest entry for each provider deeplinks straight to it. While a provider
- * is open the tab shows only that page — the background helpers and voice
- * settings below it are not part of the provider you drilled into.
+ * is open the tab shows only that page — the OpenAI voice key below the
+ * provider list is not part of the provider you drilled into. Dictation lives
+ * on the chat tab; scheduled work lives on activity.
  */
 function AgentsTabContent() {
   const location = useLocation();
@@ -186,12 +196,6 @@ function AgentsTabContent() {
       <WebSettingsSection entryIds={["agents.openai-key"]}>
         <OpenAiKeySection />
       </WebSettingsSection>
-      <WebSettingsSection entryIds={["agents.background-jobs", "agents.scheduled-work", "agents.budget"]}>
-        <AiFeaturesSection />
-      </WebSettingsSection>
-      <WebSettingsSection entryIds={["agents.dictation"]}>
-        <DictationSection />
-      </WebSettingsSection>
     </>
   );
 }
@@ -216,9 +220,7 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
             <ProjectSection />
           </WebSettingsSection>
           <WebSettingsSection entryIds={["general.ade-cli"]}>
-            <div id="ade-cli">
-              <AdeCliSection />
-            </div>
+            <AdeCliSection />
           </WebSettingsSection>
           <WebSettingsSection entryIds={["general.keep-awake"]}>
             <KeepAwakeSection />
@@ -241,6 +243,14 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
       return (
         <WebSettingsSection entryIds={settingsEntryIdsForTab("appearance")}>
           <AppearanceSection />
+        </WebSettingsSection>
+      );
+    case "chat":
+      return (
+        <WebSettingsSection entryIds={settingsEntryIdsForTab("chat")}>
+          <ChatSection />
+          {/* Voice input is chat dictation, so it lives with chat. */}
+          <DictationSection />
         </WebSettingsSection>
       );
     case "agents":
@@ -308,8 +318,10 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
       );
     case "stats":
       return (
-        <WebSettingsSection entryIds={["stats.usage"]}>
+        <WebSettingsSection entryIds={["stats.usage", "agents.budget"]}>
           <AdeUsageSection />
+          {/* The spend cap lives where spend lives. */}
+          <BudgetCapSettings />
         </WebSettingsSection>
       );
     default:
@@ -365,6 +377,31 @@ function CrossTabResults({
   );
 }
 
+/**
+ * One-shot highlight for the card a search or deep link just landed on.
+ *
+ * Static, so it lives at module scope rather than being rebuilt per render.
+ */
+const FLASH_STYLES = (
+  <style>{`
+    @keyframes ade-settings-flash {
+      0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 55%, transparent); }
+      100% { box-shadow: 0 0 0 10px transparent; }
+    }
+    .ade-settings-flash {
+      animation: ade-settings-flash 1.2s ease-out;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ade-settings-flash {
+        animation: none;
+        outline: 2px solid var(--color-accent);
+        outline-offset: 2px;
+      }
+    }
+  `}</style>
+);
+
+
 export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -398,7 +435,10 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   // entry naming one should land somewhere real rather than on an empty page,
   // so it falls through to the first tab this renderer does serve.
   const tabs = useMemo(() => availableSettingsTabs(), [machineBound]);
-  const defaultTab = tabs[0]?.id ?? "general";
+  // Explicit, so reordering the sidebar cannot move where Settings opens.
+  const defaultTab = tabs.some((tab) => tab.id === DEFAULT_SETTINGS_TAB)
+    ? DEFAULT_SETTINGS_TAB
+    : tabs[0]?.id ?? DEFAULT_SETTINGS_TAB;
   // A `#hash` names one specific setting, so it is strictly more precise than
   // the `?tab=` next to it. When the two disagree — an older link that still
   // says `?tab=general#github-connection` after GitHub moved to Integrations —
@@ -493,10 +533,22 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     }
     const entry = resolveSettingsHash(raw);
     if (!entry || entry.tab !== section) return;
+    let flashTimer: ReturnType<typeof setTimeout> | null = null;
     const frame = window.requestAnimationFrame(() => {
-      document.getElementById(entry.anchor)?.scrollIntoView({ block: "start", behavior: "smooth" });
+      const card = document.getElementById(entry.anchor);
+      if (!card) return;
+      card.scrollIntoView({ block: "start", behavior: "smooth" });
+      // Scrolling to a card is not the same as pointing at it. On a page of
+      // near-identical rows the user still has to find which one the search
+      // meant, and on a short page nothing scrolls at all, so the result looks
+      // like it did nothing. One flash answers both.
+      card.classList.add("ade-settings-flash");
+      flashTimer = setTimeout(() => card.classList.remove("ade-settings-flash"), 1_200);
     });
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (flashTimer) clearTimeout(flashTimer);
+    };
   }, [active, section, location.hash]);
 
   // A new tab should open at the top, not wherever the last one was scrolled.
@@ -552,7 +604,59 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     });
   }, [trimmedQuery, matchesThisTab, section]);
 
-  const activeTab = tabs.find((tab) => tab.id === section) ?? tabs[0];
+  const repoGroupLabel = useAppStore((state) => state.project?.displayName) ?? "This repository";
+
+  const renderTabButton = (tab: SettingsTab) => {
+    const Icon = TAB_ICONS[tab.id];
+    const isActive = section === tab.id;
+    const isHovered = hoveredId === tab.id;
+    return (
+      <button
+        key={tab.id}
+        type="button"
+        data-tour={`settings.${TOUR_IDS[tab.id] ?? tab.id}`}
+        onClick={() => navigateToTab(tab.id)}
+        onMouseEnter={() => setHoveredId(tab.id)}
+        onMouseLeave={() => setHoveredId(null)}
+        style={{
+          display: "flex",
+          width: "100%",
+          alignItems: "center",
+          gap: 10,
+          padding: "8px 10px",
+          border: "none",
+          background: isActive
+            ? "var(--shell-sidebar-item-active-bg)"
+            : isHovered
+              ? "var(--shell-sidebar-item-hover-bg)"
+              : "transparent",
+          color: isActive
+            ? "var(--shell-sidebar-item-active-fg)"
+            : isHovered
+              ? "var(--shell-sidebar-item-hover-fg)"
+              : "var(--shell-sidebar-item-fg)",
+          fontFamily: SANS_FONT,
+          fontSize: 11,
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "1px",
+          cursor: "pointer",
+          borderRadius: 8,
+          textAlign: "left",
+          transition: "background 120ms ease, color 120ms ease",
+        }}
+      >
+        <Icon size={14} weight="regular" style={{ flexShrink: 0 }} />
+        <span>{tab.label}</span>
+      </button>
+    );
+  };
+
+  const activeTab = tabs.find((tab) => tab.id === section)
+    ?? tabs.find((tab) => tab.id === defaultTab)
+    ?? tabs[0];
+  const activeGroupScope = SETTINGS_GROUPS
+    .find((group) => group.id === activeTab?.group)?.scope ?? "account";
   const tabEntryCount = settingsEntriesForTab(section).length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
 
@@ -574,49 +678,34 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           SETTINGS
         </div>
 
-        {tabs.map((tab) => {
-          const Icon = TAB_ICONS[tab.id];
-          const isActive = section === tab.id;
-          const isHovered = hoveredId === tab.id;
+        {SETTINGS_GROUPS.map((group) => {
+          const groupTabs = tabs.filter((tab) => tab.group === group.id);
+          // A group with nothing in it is not rendered. That is how the repo
+          // group disappears when Settings is opened outside a project: there
+          // is no repository to name and nothing filed under one.
+          if (!groupTabs.length) return null;
+          const label = group.label
+            ?? (group.id === "repo" ? repoGroupLabel : THIS_MACHINE_NAME);
           return (
-            <button
-              key={tab.id}
-              type="button"
-              data-tour={`settings.${TOUR_IDS[tab.id] ?? tab.id}`}
-              onClick={() => navigateToTab(tab.id)}
-              onMouseEnter={() => setHoveredId(tab.id)}
-              onMouseLeave={() => setHoveredId(null)}
-              style={{
-                display: "flex",
-                width: "100%",
-                alignItems: "center",
-                gap: 10,
-                padding: "8px 10px",
-                border: "none",
-                background: isActive
-                  ? "var(--shell-sidebar-item-active-bg)"
-                  : isHovered
-                    ? "var(--shell-sidebar-item-hover-bg)"
-                    : "transparent",
-                color: isActive
-                  ? "var(--shell-sidebar-item-active-fg)"
-                  : isHovered
-                    ? "var(--shell-sidebar-item-hover-fg)"
-                    : "var(--shell-sidebar-item-fg)",
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-                cursor: "pointer",
-                borderRadius: 8,
-                textAlign: "left",
-                transition: "background 120ms ease, color 120ms ease",
-              }}
-            >
-              <Icon size={14} weight="regular" style={{ flexShrink: 0 }} />
-              <span>{tab.label}</span>
-            </button>
+            <div key={group.id} style={{ marginBottom: 14 }}>
+              <div
+                style={{
+                  ...LABEL_STYLE,
+                  fontFamily: SANS_FONT,
+                  paddingLeft: 10,
+                  marginBottom: 6,
+                  // The group name is the scope, so it carries the weight the
+                  // per-row chips used to; muting it would hide the one thing
+                  // this reorganisation exists to say.
+                  color: "var(--shell-sidebar-item-fg)",
+                  opacity: 0.75,
+                }}
+                title={groupScopeHint(group.id)}
+              >
+                {label}
+              </div>
+              {groupTabs.map((tab) => renderTabButton(tab))}
+            </div>
           );
         })}
       </nav>
@@ -625,6 +714,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         {/* The remote banner contrasts a remote machine against this desktop.
             A browser has no "this one", and every section already states its
             own scope, so web gets the per-section lines instead. */}
+        {FLASH_STYLES}
         {isWebClientMode() ? null : <RemoteSettingsBanner />}
         {webMachineSectionsHidden && tabHasMachineSettings(section) ? <WebNoMachineNotice /> : null}
 
@@ -651,6 +741,12 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
               >
                 {activeTab.label}
               </h1>
+              {/* The page repeats its group's scope, so a deep link that drops
+                  a user straight onto a page still answers "where does this
+                  save" without them scrolling back to the sidebar. */}
+              <div style={{ marginTop: 6 }}>
+                <ScopeChip scope={activeGroupScope} />
+              </div>
               <p style={{ margin: "4px 0 0", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
                 {activeTab.description}
               </p>

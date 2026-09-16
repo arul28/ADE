@@ -4,11 +4,16 @@ import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import type { SettingScope } from "../settingsManifest";
 
 /**
- * ADE persists settings to four different places that look identical in the
- * UI — committed team YAML, gitignored machine YAML, main-process services,
- * and renderer localStorage. Add the remote-machine banner and a user cannot
- * tell whether a switch affects their laptop, their team, or a different
- * computer entirely. The chip names the scope; clicking it names the file.
+ * Names where a setting saves, and therefore who it affects.
+ *
+ * ADE used to persist settings in four places that looked identical in the UI —
+ * committed team YAML, gitignored machine YAML, main-process services, and
+ * renderer localStorage — and the chip was the only thing that said which. It
+ * was also, for most of its life, wrong: the scope was hand-typed at each call
+ * site rather than read from the manifest, so two shipping rows claimed "only
+ * this computer" for settings that reached every machine. The chip now takes
+ * its answer from the same manifest the sidebar and the palette read, which is
+ * what makes it trustworthy rather than decorative.
  */
 
 type ScopeCopy = {
@@ -19,26 +24,31 @@ type ScopeCopy = {
 };
 
 const SCOPE_COPY: Record<SettingScope, ScopeCopy> = {
-  team: {
-    label: "Team",
-    color: COLORS.info,
-    storedIn: ".ade/ade.yaml — committed to the repo",
-    affects: "Everyone who works in this repository, once you push.",
+  account: {
+    label: "Account",
+    color: COLORS.accent,
+    storedIn: "Your ADE account",
+    affects: "Every computer you sign in on.",
+  },
+  "account-repo": {
+    label: "Account · this repo",
+    color: COLORS.accent,
+    storedIn: "Your ADE account, filed under this repository",
+    affects: "Every computer you sign in on, but only inside this repository.",
   },
   machine: {
-    // Sourced, never spelled out. The chip's own `affects` line has always said
-    // "Only this computer"; a hardcoded "This Mac" here made one object claim
+    // Sourced, never spelled out. A hardcoded "This Mac" made one object claim
     // two different machines, and lied outright on Windows.
     label: THIS_MACHINE_NAME,
     color: COLORS.warning,
-    storedIn: ".ade/local.yaml and ADE's local services — gitignored",
-    affects: "Only this computer. Nothing here is shared or committed.",
+    storedIn: "This computer only",
+    affects: "Only this computer. It holds a path, a port, or a piece of hardware, so it would mean nothing anywhere else.",
   },
-  app: {
-    label: "This app",
-    color: COLORS.textMuted,
-    storedIn: "ADE's local app storage",
-    affects: "Only this ADE install. It won't follow you to another device.",
+  "machine-repo": {
+    label: `${THIS_MACHINE_NAME} · this repo`,
+    color: COLORS.warning,
+    storedIn: "This computer, filed under this repository",
+    affects: "Only this computer, and only inside this repository.",
   },
 };
 
@@ -49,8 +59,12 @@ export function ScopeChip({ scope, remoteMachineName }: { scope: SettingScope; r
 
   // A machine-scoped setting viewed through the remote banner writes to *that*
   // machine, not this one. Naming the local machine there would be a lie.
-  const isRemote = scope !== "team" && !!remoteMachineName?.trim();
-  const label = isRemote ? remoteMachineName!.trim() : copy.label;
+  const isRemote = scope.startsWith("machine") && !!remoteMachineName?.trim();
+  const label = isRemote
+    ? (scope === "machine-repo"
+      ? `${remoteMachineName!.trim()} · this repo`
+      : remoteMachineName!.trim())
+    : copy.label;
 
   useEffect(() => {
     if (!open) return;
@@ -74,6 +88,7 @@ export function ScopeChip({ scope, remoteMachineName }: { scope: SettingScope; r
         type="button"
         aria-expanded={open}
         aria-label={`Scope: ${label}. Show where this is stored.`}
+        data-scope={scope}
         onClick={() => setOpen((value) => !value)}
         style={{
           display: "inline-flex",
@@ -121,13 +136,13 @@ export function ScopeChip({ scope, remoteMachineName }: { scope: SettingScope; r
             Stored in
           </span>
           <span style={{ display: "block", marginTop: 2, fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            {isRemote ? `${copy.storedIn}, on ${label}` : copy.storedIn}
+            {isRemote ? `${copy.storedIn}, on ${remoteMachineName!.trim()}` : copy.storedIn}
           </span>
           <span style={{ display: "block", marginTop: 10, fontSize: 11, fontWeight: 600, color: COLORS.textPrimary }}>
             Affects
           </span>
           <span style={{ display: "block", marginTop: 2, fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            {isRemote ? `Only ${label}. Nothing here is shared or committed.` : copy.affects}
+            {isRemote ? `Only ${remoteMachineName!.trim()}.` : copy.affects}
           </span>
         </span>
       ) : null}

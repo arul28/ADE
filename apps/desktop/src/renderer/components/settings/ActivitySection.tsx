@@ -6,6 +6,7 @@ import {
   ActivitySettingsControls,
   useActivitySettings,
 } from "./ActivitySettingsControls";
+import { AiFeaturesSection } from "./AiFeaturesSection";
 
 /**
  * The Activity settings tab. It owns nothing: every control, every string, and
@@ -57,6 +58,11 @@ export function ActivitySection() {
       ) : null}
 
       <ActivitySettingsControls variant="page" model={model} />
+
+      {/* Scheduled work is running work, so its pause switch and job list are
+          part of this page rather than mounted beside it: the tab's section
+          must render every anchor the manifest promises for the tab. */}
+      <AiFeaturesSection />
     </div>
   );
 }

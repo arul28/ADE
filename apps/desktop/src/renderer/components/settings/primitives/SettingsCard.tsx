@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
-import type { SettingScope } from "../settingsManifest";
+import { settingsScopeForAnchor, type SettingScope } from "../settingsManifest";
 import { ScopeChip } from "./ScopeChip";
 
 /**
@@ -13,7 +13,7 @@ export function SettingsCard({
   description,
   control,
   scope,
-  showScopeChip = false,
+  showScopeChip,
   remoteMachineName,
   children,
   /** Renders the control below the description instead of to its right. */
@@ -24,13 +24,26 @@ export function SettingsCard({
   title: string;
   description?: React.ReactNode;
   control?: React.ReactNode;
+  /**
+   * Overrides the manifest. Only for a card whose anchor is deliberately not a
+   * manifest entry; a registered setting must never disagree with the registry.
+   */
   scope?: SettingScope;
+  /**
+   * Forces the chip on or off. Left undefined, the card shows a chip whenever
+   * the manifest knows this anchor's scope — which is the honest default,
+   * because "where does this save" is the one question a settings row cannot
+   * answer by looking at it.
+   */
   showScopeChip?: boolean;
   remoteMachineName?: string | null;
   children?: React.ReactNode;
   stacked?: boolean;
   disabled?: boolean;
 }) {
+  // The manifest is the source; an explicit `scope` is only for cards that are
+  // not registered settings at all.
+  const resolvedScope = scope ?? settingsScopeForAnchor(anchor);
   return (
     <section
       id={anchor}
@@ -67,8 +80,8 @@ export function SettingsCard({
             >
               {title}
             </h3>
-            {scope && showScopeChip ? (
-              <ScopeChip scope={scope} remoteMachineName={remoteMachineName} />
+            {resolvedScope && showScopeChip !== false ? (
+              <ScopeChip scope={resolvedScope} remoteMachineName={remoteMachineName} />
             ) : null}
           </div>
           {description ? (

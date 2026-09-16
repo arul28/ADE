@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   BudgetCapAction,
   BudgetCapConfig,
@@ -7,15 +7,18 @@ import type {
   BudgetCapType,
   BudgetPreset,
 } from "../../../shared/types";
-import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
-import { cn } from "../ui/cn";
+import { COLORS, MONO_FONT, SANS_FONT, outlineButton, recessedStyle } from "../lanes/laneDesignTokens";
+import { SettingsCard, SettingsNumber, SettingsSelect } from "./primitives";
 
-const CARD_SHADOW_STYLE: React.CSSProperties = {
-  background: "linear-gradient(180deg, rgba(20, 31, 45, 0.96) 0%, rgba(10, 18, 28, 0.94) 100%)",
-  border: "1px solid rgba(87, 108, 128, 0.22)",
-  boxShadow: "0 18px 40px -24px rgba(0, 0, 0, 0.78), inset 0 1px 0 rgba(255,255,255,0.04)",
-};
+/**
+ * The spend cap editor. Mounted in settings and in the top-bar usage popup, so
+ * it is a single card rather than a page: the anchor is what a deeplink or a
+ * ⌘K result lands on, and the caller supplies the surrounding layout.
+ *
+ * This is the one settings surface that still has a Save button: the caps are
+ * a multi-field rule set, and a half-typed rule persisted on keystroke would
+ * block or pause real work.
+ */
 
 type BudgetCapDraft = NonNullable<BudgetCapConfig["budgetCaps"]>[number] & { rowId: string };
 
@@ -25,9 +28,32 @@ const TYPE_OPTIONS: BudgetCapType[] = ["weekly-percent", "five-hour-percent"];
 const PROVIDER_OPTIONS: BudgetCapProvider[] = ["any", "claude", "codex"];
 const ACTION_OPTIONS: BudgetCapAction[] = ["block", "warn", "pause"];
 
-const FIELD_CLS = "w-full rounded-sm border border-[#2D2840] px-2 py-1 font-mono text-[10px] text-[#FAFAFA]";
-const FIELD_CLS_PRIMARY = `${FIELD_CLS} bg-[#14111D]`;
-const FIELD_CLS_ROW = `${FIELD_CLS} bg-[#181423]`;
+const fieldInputStyle: React.CSSProperties = {
+  width: "100%",
+  height: 30,
+  padding: "0 8px",
+  fontFamily: SANS_FONT,
+  fontSize: 12,
+  color: COLORS.textPrimary,
+  background: COLORS.recessedBg,
+  border: `1px solid ${COLORS.outlineBorder}`,
+  borderRadius: 8,
+};
+
+const fieldLabelStyle: React.CSSProperties = {
+  fontFamily: SANS_FONT,
+  fontSize: 11,
+  color: COLORS.textMuted,
+};
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label style={{ display: "grid", gap: 6, minWidth: 0 }}>
+      <span style={fieldLabelStyle}>{label}</span>
+      {children}
+    </label>
+  );
+}
 
 function capTypeLabel(value: BudgetCapType): string {
   if (value === "five-hour-percent") return "5-hour / session usage";
@@ -99,11 +125,12 @@ export function BudgetCapEditor({
 
   if (!config && !onSave) {
     return (
-      <div
-        className={cn("p-3", className)}
-        style={{ background: "#181423", border: "1px solid #2D2840" }}
-      >
-        <div className="font-mono text-[10px] text-[#71717A]">No budget configuration loaded.</div>
+      <div className={className}>
+        <SettingsCard
+          anchor="budget-cap"
+          title="Usage Guardrails"
+          description="No budget configuration loaded."
+        />
       </div>
     );
   }
@@ -136,197 +163,236 @@ export function BudgetCapEditor({
   };
 
   return (
-    <div className={cn("p-3 space-y-3", className)} style={CARD_SHADOW_STYLE}>
-      <div className="flex items-center justify-between">
-        <span
-          className="text-[11px] font-bold tracking-[-0.2px] text-[#FAFAFA]"
-          style={{ fontFamily: "var(--font-sans)" }}
-        >
-          Usage Guardrails
-        </span>
-        <div className="flex items-center gap-2">
-          {dirty ? <Chip className="text-[8px] text-amber-300">Unsaved</Chip> : null}
-          <Button size="sm" variant="ghost" onClick={() => setExpanded((value) => !value)}>
-            {expanded ? "Collapse" : `${caps.length} cap${caps.length !== 1 ? "s" : ""}`}
-          </Button>
-        </div>
-      </div>
+    <div className={className}>
+      <SettingsCard
+        anchor="budget-cap"
+        title="Usage Guardrails"
+        description={
+          summaryChips.length > 0 ? summaryChips.join(" · ") : "No budget caps configured yet."
+        }
+        control={
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            {dirty ? (
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.warning }}>Unsaved</span>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setExpanded((value) => !value)}
+              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+            >
+              {expanded ? "Collapse" : `${caps.length} cap${caps.length !== 1 ? "s" : ""}`}
+            </button>
+          </span>
+        }
+      >
+        {expanded ? (
+          <div style={{ display: "grid", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>
+              <Field label="Preset">
+                <SettingsSelect
+                  ariaLabel="Budget preset"
+                  value={draft.preset}
+                  onChange={(next) => { setDraft((current) => ({ ...current, preset: next })); setDirty(true); }}
+                  options={[
+                    { value: "", label: "None" },
+                    ...PRESET_OPTIONS.map((option) => ({ value: option as string, label: option })),
+                  ]}
+                />
+              </Field>
+              <Field label="Refresh (min)">
+                <input
+                  aria-label="Budget refresh interval in minutes"
+                  value={draft.refreshIntervalMin}
+                  onChange={(event) => { setDraft((current) => ({ ...current, refreshIntervalMin: event.target.value })); setDirty(true); }}
+                  style={fieldInputStyle}
+                />
+              </Field>
+              <Field label="Alert weekly %">
+                <input
+                  aria-label="Alert at weekly percent"
+                  value={draft.alertAtWeeklyPercent}
+                  onChange={(event) => { setDraft((current) => ({ ...current, alertAtWeeklyPercent: event.target.value })); setDirty(true); }}
+                  style={fieldInputStyle}
+                />
+              </Field>
+            </div>
 
-      <div className="flex flex-wrap gap-2">
-        {summaryChips.length > 0 ? summaryChips.map((label) => (
-          <Chip key={label} className="text-[9px] text-[#A78BFA]">{label}</Chip>
-        )) : <span className="font-mono text-[10px] text-[#71717A]">No budget caps configured yet.</span>}
-      </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <span style={fieldLabelStyle}>Cap rules</span>
+                <button
+                  type="button"
+                  style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                  onClick={() => {
+                    setDraft((current) => ({
+                      ...current,
+                      caps: [
+                        ...current.caps,
+                        {
+                          rowId: `new-${Date.now()}`,
+                          scope: "automation-rule",
+                          scopeId: "",
+                          capType: "weekly-percent",
+                          provider: "any",
+                          limit: 80,
+                          action: "warn",
+                        },
+                      ],
+                    }));
+                    setDirty(true);
+                  }}
+                >
+                  Add cap
+                </button>
+              </div>
 
-      {expanded ? (
-        <div className="space-y-3 border-t border-[#2D284060] pt-3">
-          <div className="grid grid-cols-2 gap-2">
-            <label className="space-y-1">
-              <span className="font-mono text-[9px] uppercase tracking-[0.8px] text-[#71717A]">Preset</span>
-              <select
-                value={draft.preset}
-                onChange={(event) => { setDraft((current) => ({ ...current, preset: event.target.value })); setDirty(true); }}
-                className={FIELD_CLS_PRIMARY}
-              >
-                <option value="">None</option>
-                {PRESET_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1">
-              <span className="font-mono text-[9px] uppercase tracking-[0.8px] text-[#71717A]">Refresh (min)</span>
-              <input
-                value={draft.refreshIntervalMin}
-                onChange={(event) => { setDraft((current) => ({ ...current, refreshIntervalMin: event.target.value })); setDirty(true); }}
-                className={FIELD_CLS_PRIMARY}
-              />
-            </label>
-            <label className="space-y-1">
-              <span className="font-mono text-[9px] uppercase tracking-[0.8px] text-[#71717A]">Alert weekly %</span>
-              <input
-                value={draft.alertAtWeeklyPercent}
-                onChange={(event) => { setDraft((current) => ({ ...current, alertAtWeeklyPercent: event.target.value })); setDirty(true); }}
-                className={FIELD_CLS_PRIMARY}
-              />
-            </label>
-          </div>
+              {caps.length === 0 ? (
+                <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>No caps configured.</div>
+              ) : caps.map((cap) => (
+                <div key={cap.rowId} style={recessedStyle({ padding: 12, borderRadius: 10, display: "grid", gap: 12 })}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+                    <Field label="Scope">
+                      <SettingsSelect
+                        ariaLabel="Cap scope"
+                        value={cap.scope}
+                        onChange={(next) => updateCap(cap.rowId, { scope: next as BudgetCapScope })}
+                        options={SCOPE_OPTIONS.map((option) => ({ value: option as string, label: option }))}
+                      />
+                    </Field>
+                    <Field label="Scope ID">
+                      <input
+                        aria-label="Cap scope id"
+                        value={cap.scopeId ?? ""}
+                        onChange={(event) => updateCap(cap.rowId, { scopeId: event.target.value })}
+                        style={fieldInputStyle}
+                      />
+                    </Field>
+                    <Field label="Cap type">
+                      <SettingsSelect
+                        ariaLabel="Cap type"
+                        value={cap.capType}
+                        onChange={(next) => updateCap(cap.rowId, { capType: next as BudgetCapType })}
+                        options={[...TYPE_OPTIONS, ...(TYPE_OPTIONS.includes(cap.capType) ? [] : [cap.capType])]
+                          .map((option) => ({ value: option as string, label: capTypeLabel(option) }))}
+                      />
+                    </Field>
+                    <Field label="Provider">
+                      <SettingsSelect
+                        ariaLabel="Cap provider"
+                        value={cap.provider}
+                        onChange={(next) => updateCap(cap.rowId, { provider: next as BudgetCapProvider })}
+                        options={PROVIDER_OPTIONS.map((option) => ({ value: option as string, label: option }))}
+                      />
+                    </Field>
+                    <Field label="Limit">
+                      <SettingsNumber
+                        ariaLabel="Cap limit"
+                        value={Number(cap.limit)}
+                        onChange={(next) => updateCap(cap.rowId, { limit: next })}
+                      />
+                    </Field>
+                    <Field label="Action">
+                      <SettingsSelect
+                        ariaLabel="Cap action"
+                        value={cap.action}
+                        onChange={(next) => updateCap(cap.rowId, { action: next as BudgetCapAction })}
+                        options={ACTION_OPTIONS.map((option) => ({ value: option as string, label: option }))}
+                      />
+                    </Field>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+                      {capTypeLabel(cap.capType)} cap, reset tracked from live provider windows.
+                    </span>
+                    <button
+                      type="button"
+                      style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                      onClick={() => {
+                        setDraft((current) => ({ ...current, caps: current.caps.filter((entry) => entry.rowId !== cap.rowId) }));
+                        setDirty(true);
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-mono text-[9px] uppercase tracking-[0.8px] text-[#71717A]">Cap rules</span>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  setDraft((current) => ({
-                    ...current,
-                    caps: [
-                      ...current.caps,
-                      {
-                        rowId: `new-${Date.now()}`,
-                        scope: "automation-rule",
-                        scopeId: "",
-                        capType: "weekly-percent",
-                        provider: "any",
-                        limit: 80,
-                        action: "warn",
-                      },
-                    ],
-                  }));
-                  setDirty(true);
+            {saveError ? (
+              <div
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
+                  background: "color-mix(in srgb, var(--color-error) 15%, transparent)",
+                  color: COLORS.danger,
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
                 }}
               >
-                Add cap
-              </Button>
-            </div>
-
-            {caps.length === 0 ? (
-              <div className="font-mono text-[10px] text-[#71717A]">No caps configured.</div>
-            ) : caps.map((cap) => (
-              <div
-                key={cap.rowId}
-                className="grid grid-cols-2 gap-2 rounded-sm border border-[#1E1B26] bg-[#14111D] p-2"
-              >
-                <label className="space-y-1">
-                  <span className="font-mono text-[9px] text-[#71717A]">Scope</span>
-                  <select
-                    value={cap.scope}
-                    onChange={(event) => updateCap(cap.rowId, { scope: event.target.value as BudgetCapScope })}
-                    className={FIELD_CLS_ROW}
-                  >
-                    {SCOPE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
-                </label>
-                <label className="space-y-1">
-                  <span className="font-mono text-[9px] text-[#71717A]">Scope ID</span>
-                  <input
-                    value={cap.scopeId ?? ""}
-                    onChange={(event) => updateCap(cap.rowId, { scopeId: event.target.value })}
-                    className={FIELD_CLS_ROW}
-                  />
-                </label>
-                <label className="space-y-1">
-                  <span className="font-mono text-[9px] text-[#71717A]">Cap type</span>
-                  <select
-                    value={cap.capType}
-                    onChange={(event) => updateCap(cap.rowId, { capType: event.target.value as BudgetCapType })}
-                    className={FIELD_CLS_ROW}
-                  >
-                    {[...TYPE_OPTIONS, ...(TYPE_OPTIONS.includes(cap.capType) ? [] : [cap.capType])].map((option) => (
-                      <option key={option} value={option}>{capTypeLabel(option)}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="space-y-1">
-                  <span className="font-mono text-[9px] text-[#71717A]">Provider</span>
-                  <select
-                    value={cap.provider}
-                    onChange={(event) => updateCap(cap.rowId, { provider: event.target.value as BudgetCapProvider })}
-                    className={FIELD_CLS_ROW}
-                  >
-                    {PROVIDER_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
-                </label>
-                <label className="space-y-1">
-                  <span className="font-mono text-[9px] text-[#71717A]">Limit</span>
-                  <input
-                    value={String(cap.limit)}
-                    onChange={(event) => updateCap(cap.rowId, { limit: Number(event.target.value) })}
-                    className={FIELD_CLS_ROW}
-                  />
-                </label>
-                <label className="space-y-1">
-                  <span className="font-mono text-[9px] text-[#71717A]">Action</span>
-                  <select
-                    value={cap.action}
-                    onChange={(event) => updateCap(cap.rowId, { action: event.target.value as BudgetCapAction })}
-                    className={FIELD_CLS_ROW}
-                  >
-                    {ACTION_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
-                </label>
-                <div className="col-span-2 flex justify-end">
-                  <span className="mr-auto self-center font-mono text-[9px] text-[#71717A]">
-                    {capTypeLabel(cap.capType)} cap, reset tracked from live provider windows.
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      setDraft((current) => ({ ...current, caps: current.caps.filter((entry) => entry.rowId !== cap.rowId) }));
-                      setDirty(true);
-                    }}
-                  >
-                    Remove
-                  </Button>
-                </div>
+                {saveError}
               </div>
-            ))}
-          </div>
+            ) : null}
 
-          {saveError ? (
-            <div className="rounded-sm border border-red-500/30 bg-red-500/10 p-2 font-mono text-[10px] text-red-300">
-              {saveError}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                onClick={() => {
+                  setDraft(toDraft(config));
+                  setDirty(false);
+                }}
+                disabled={saving}
+              >
+                Reset
+              </button>
+              <button
+                type="button"
+                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                onClick={() => void handleSave()}
+                disabled={!dirty || saving || !onSave}
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
             </div>
-          ) : null}
-
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setDraft(toDraft(config));
-                setDirty(false);
-              }}
-              disabled={saving}
-            >
-              Reset
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => void handleSave()} disabled={!dirty || saving || !onSave}>
-              {saving ? "Saving..." : "Save"}
-            </Button>
           </div>
-        </div>
-      ) : null}
+        ) : null}
+      </SettingsCard>
     </div>
   );
+}
+
+
+/**
+ * The spend cap as a settings row: owns the load/save round trip and renders
+ * the editor. Lives on the Usage page because that is where spend lives; the
+ * editor itself stays caller-agnostic so nothing else that mounts it changes.
+ */
+export function BudgetCapSettings() {
+  const [config, setConfig] = useState<BudgetCapConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.ade.usage.getBudgetConfig()
+      .then((next) => { if (!cancelled) setConfig(next); })
+      .catch(() => { if (!cancelled) setSaveError("ADE could not load the spend cap."); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const onSave = useCallback(async (next: BudgetCapConfig) => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      setConfig(await window.ade.usage.saveBudgetConfig(next));
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "ADE could not save the spend cap.");
+    } finally {
+      setSaving(false);
+    }
+  }, []);
+
+  return <BudgetCapEditor config={config} saving={saving} saveError={saveError} onSave={onSave} />;
 }

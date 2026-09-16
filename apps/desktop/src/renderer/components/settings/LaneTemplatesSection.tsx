@@ -6,9 +6,14 @@ import {
   LABEL_STYLE,
   outlineButton,
   primaryButton,
-  cardStyle,
 } from "../lanes/laneDesignTokens";
 import { SettingsDisclosure, SettingsToggle } from "./primitives";
+import {
+  SettingsManagerEmpty,
+  SettingsManagerPage,
+  SettingsManagerRow,
+  SettingsManagerTable,
+} from "./primitives/SettingsManagerPage";
 import { laneSetupScriptHasWork } from "../../../shared/types";
 import type {
   LaneTemplate,
@@ -232,12 +237,22 @@ function removeAt<T>(items: T[], index: number): T[] {
  * Matches `lanes-git.lane-templates` in `settingsManifest.ts`. Every state of
  * this section renders it, so a Cmd-K result or `?tab=lanes-git#lane-templates`
  * deeplink lands here whether templates are still loading or one is open in the
- * editor. `data-settings-anchor` mirrors the id, the way `SettingsCard` and
- * `SettingsSectionShell` do it, so settings search can filter this section too.
+ * editor. `SettingsManagerPage` owns the id and its `data-settings-anchor`
+ * mirror, the way `SettingsCard` does, so settings search can filter this
+ * section too.
  */
 const ANCHOR = "lane-templates";
 
-const sectionStyle: React.CSSProperties = { scrollMarginTop: 16, padding: 16 };
+const TITLE = "Lane templates";
+const DESCRIPTION = "Set up every new lane the same way: copy files in, install packages, run a script.";
+
+/** Template, what it configures, the default marker, actions. */
+const TEMPLATE_COLUMNS = [
+  { label: "Template", width: "minmax(200px, 1.4fr)" },
+  { label: "Configures", width: "minmax(180px, 1.2fr)" },
+  { label: "Default", width: "minmax(80px, 0.5fr)" },
+  { label: "Actions", width: "170px", align: "right" as const },
+];
 
 export function LaneTemplatesSection() {
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
@@ -294,43 +309,40 @@ export function LaneTemplatesSection() {
 
   if (loading) {
     return (
-      <section id={ANCHOR} data-settings-anchor={ANCHOR} style={sectionStyle}>
+      <SettingsManagerPage anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
         <div style={{ fontSize: 12, color: COLORS.textMuted }}>Loading templates...</div>
-      </section>
+      </SettingsManagerPage>
     );
   }
 
   if (editing) {
     return (
-      <section id={ANCHOR} data-settings-anchor={ANCHOR} style={sectionStyle}>
+      <SettingsManagerPage anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
         <TemplateEditor
           template={editing}
           onSave={handleSave}
           onCancel={() => setEditing(null)}
         />
-      </section>
+      </SettingsManagerPage>
     );
   }
 
   return (
-    <section id={ANCHOR} data-settings-anchor={ANCHOR} style={sectionStyle}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-        <div>
-          <div style={{ ...LABEL_STYLE, fontSize: 11, margin: 0 }}>LANE TEMPLATES</div>
-          <div style={{ fontSize: 11, color: COLORS.textDim, marginTop: 4 }}>
-            Set up every new lane the same way: copy files in, install packages, run a script.
-          </div>
-        </div>
+    <SettingsManagerPage
+      anchor={ANCHOR}
+      title={TITLE}
+      description={DESCRIPTION}
+      toolbar={
         <button
           style={outlineButton({ height: 28, fontSize: 11 })}
           onClick={() => setEditing(emptyTemplate())}
         >
           + New template
         </button>
-      </div>
-
+      }
+    >
       {templates.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
+        <div>
           <div style={subLabelStyle}>Use for new lanes</div>
           <select
             value={defaultId ?? ""}
@@ -348,30 +360,48 @@ export function LaneTemplatesSection() {
         </div>
       )}
 
-      {templates.length === 0 ? (
-        <EmptyState onCreateTemplate={() => setEditing(emptyTemplate())} />
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {templates.map((t) => (
-            <TemplateCard
+      <SettingsManagerTable columns={TEMPLATE_COLUMNS} minWidth={720}>
+        {templates.length === 0 ? (
+          <SettingsManagerEmpty
+            title="No templates yet"
+            description="A template says what happens when a lane is created: which files get copied in, what gets installed, and what script runs."
+            action={
+              <button
+                style={primaryButton({ height: 34, fontSize: 12 })}
+                onClick={() => setEditing(emptyTemplate())}
+              >
+                Create your first template
+              </button>
+            }
+          />
+        ) : (
+          templates.map((t) => (
+            <TemplateRow
               key={t.id}
               template={t}
               isDefault={t.id === defaultId}
               onEdit={() => setEditing({ ...t })}
               onDelete={() => handleDelete(t.id)}
             />
-          ))}
-        </div>
-      )}
-    </section>
+          ))
+        )}
+      </SettingsManagerTable>
+    </SettingsManagerPage>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Template card
+// Template row
 // ---------------------------------------------------------------------------
 
-function TemplateCard({
+/**
+ * One template in the manager table, plus its expanded configuration preview.
+ *
+ * The preview is a sibling of the row rather than a child because the row is a
+ * grid of the table's columns — a full-width detail block inside it would be
+ * squeezed into the first column.
+ */
+function TemplateRow({
   template,
   isDefault,
   onEdit,
@@ -393,52 +423,58 @@ function TemplateCard({
   if (template.docker?.composePath) features.push("docker");
   if (template.envVars && Object.keys(template.envVars).length > 0) features.push("env vars");
 
+  const name = template.name || "Untitled";
+
   return (
-    <div style={{
-      ...cardStyle({ padding: "12px 16px", borderRadius: 12 }),
-      ...(isDefault ? { borderColor: "color-mix(in srgb, var(--color-info) 40%, transparent)" } : {}),
-      transition: "border-color 150ms ease",
-    }}>
-      <div
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
-        onClick={() => setExpanded(!expanded)}
+    <>
+      <SettingsManagerRow
+        actions={
+          <>
+            <button
+              style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6 })}
+              onClick={onEdit}
+            >
+              Edit
+            </button>
+            <button
+              style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6, color: COLORS.danger, borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)" })}
+              onClick={() => { if (confirm(`Delete template "${template.name}"?`)) onDelete(); }}
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-label={expanded ? `Hide ${name} details` : `Show ${name} details`}
+              onClick={() => setExpanded(!expanded)}
+              style={{ ...removeBtn, fontSize: 10, color: COLORS.textDim, width: 16, textAlign: "center", transition: "transform 150ms ease", transform: expanded ? "rotate(180deg)" : "rotate(0)" }}
+            >
+              {"▾"}
+            </button>
+          </>
+        }
       >
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{template.name || "Untitled"}</span>
-            {isDefault && <span style={pillBadge(COLORS.info)}>DEFAULT</span>}
-          </div>
+        <div style={{ minWidth: 0 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{name}</span>
           {template.description && (
             <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {template.description}
             </div>
           )}
-          {features.length > 0 && (
-            <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
+        </div>
+        <div style={{ minWidth: 0 }}>
+          {features.length > 0 ? (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
               {features.map((f) => <span key={f} style={featureChip}>{f}</span>)}
             </div>
+          ) : (
+            <span style={{ fontSize: 11, color: COLORS.textDim }}>Nothing yet</span>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: 12 }}>
-          <button
-            style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6 })}
-            onClick={(e) => { e.stopPropagation(); onEdit(); }}
-          >
-            Edit
-          </button>
-          <button
-            style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6, color: COLORS.danger, borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)" })}
-            onClick={(e) => { e.stopPropagation(); if (confirm(`Delete template "${template.name}"?`)) onDelete(); }}
-          >
-            Delete
-          </button>
-          <span style={{ fontSize: 10, color: COLORS.textDim, marginLeft: 4, width: 16, textAlign: "center", transition: "transform 150ms ease", transform: expanded ? "rotate(180deg)" : "rotate(0)" }}>
-            {"▾"}
-          </span>
-        </div>
-      </div>
+        <div>{isDefault ? <span style={pillBadge(COLORS.info)}>DEFAULT</span> : null}</div>
+      </SettingsManagerRow>
       {expanded && (
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.borderMuted}`, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ padding: "12px 12px 14px", borderTop: `1px solid ${COLORS.borderMuted}`, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, display: "flex", flexDirection: "column", gap: 6 }}>
           {template.copyPaths && template.copyPaths.length > 0 && (
             <ConfigRow label="Files to copy" items={template.copyPaths.map((p) => p.dest ? `${p.source} → ${p.dest}` : p.source)} />
           )}
@@ -462,9 +498,11 @@ function TemplateCard({
           )}
         </div>
       )}
-    </div>
+    </>
   );
 }
+
+
 
 function ConfigRow({ label, items }: { label: string; items: string[] }) {
   return (
@@ -1016,30 +1054,6 @@ function Field({
       <div style={fieldLabelStyle}>{label}</div>
       {hint ? <div style={hintStyle}>{hint}</div> : null}
       <div style={{ marginTop: 10 }}>{children}</div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Empty state
-// ---------------------------------------------------------------------------
-
-function EmptyState({ onCreateTemplate }: { onCreateTemplate: () => void }) {
-  return (
-    <div style={{ ...cardStyle({ borderRadius: 12, padding: 24 }), textAlign: "center" }}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.textPrimary, marginBottom: 6 }}>
-        No templates yet
-      </div>
-      <div style={{ fontSize: 12, color: COLORS.textMuted, maxWidth: 420, margin: "0 auto", lineHeight: 1.5 }}>
-        A template says what happens when a lane is created: which files get copied in,
-        what gets installed, and what script runs.
-      </div>
-      <button
-        style={primaryButton({ height: 34, fontSize: 12, marginTop: 16 })}
-        onClick={onCreateTemplate}
-      >
-        Create your first template
-      </button>
     </div>
   );
 }

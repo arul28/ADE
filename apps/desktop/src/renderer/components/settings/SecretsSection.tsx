@@ -1,10 +1,26 @@
 import React from "react";
-import { Check, Copy, DownloadSimple, Eye, EyeSlash, Key, Plus, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import { Check, Copy, DownloadSimple, Eye, EyeSlash, Plus, Trash, UploadSimple, X } from "@phosphor-icons/react";
 import type { ProjectSecretSummary, ProjectSecretsImportPreview, ProjectSecretsListResult } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { SecretsImportEnvModal } from "./SecretsImportEnvModal";
-import { SettingsSectionShell } from "./settingsSectionUi";
+import {
+  SettingsManagerEmpty,
+  SettingsManagerPage,
+  SettingsManagerRow,
+  SettingsManagerTable,
+} from "./primitives/SettingsManagerPage";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+
+/** The anchor `secrets.secrets` in `settingsManifest.ts` points at. */
+const ANCHOR = "secrets";
+
+/** Name, value, updated, actions — shared by the header and every row. */
+const SECRET_COLUMNS = [
+  { label: "Name", width: "minmax(160px, 1fr)" },
+  { label: "Value", width: "minmax(180px, 1.4fr)" },
+  { label: "Updated", width: "minmax(140px, 0.9fr)" },
+  { label: "Actions", width: "132px", align: "right" as const },
+];
 
 const inputStyle: React.CSSProperties = {
   border: `1px solid ${COLORS.outlineBorder}`,
@@ -308,38 +324,34 @@ export function SecretsSection() {
   const secrets = snapshot?.secrets ?? [];
 
   return (
-    <SettingsSectionShell
+    <SettingsManagerPage
+      anchor={ANCHOR}
       title="Secrets"
-      description="Encrypted project secrets for ADE agents, desktop, and CLI."
-      icon={Key}
-      brandColor="#2563eb"
+      description="Encrypted project secrets for ADE agents, desktop, and CLI. Import reads a file from this computer. Export writes an unencrypted .env file containing all project secret values to Downloads on the machine hosting this project."
+      toolbar={
+        <>
+          <button
+            type="button"
+            disabled={choosingImport}
+            onClick={() => void chooseEnvFile()}
+            style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: choosingImport ? "not-allowed" : "pointer", opacity: choosingImport ? 0.55 : 1 }}
+          >
+            <UploadSimple size={14} />
+            {choosingImport ? "Opening…" : "Import .env"}
+          </button>
+          <button
+            type="button"
+            disabled={exporting || secrets.length === 0}
+            onClick={() => void exportSecrets()}
+            style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: exporting || secrets.length === 0 ? "not-allowed" : "pointer", opacity: exporting || secrets.length === 0 ? 0.55 : 1 }}
+          >
+            <DownloadSimple size={14} />
+            {exporting ? "Exporting…" : confirmingExport ? "Confirm plaintext export" : "Export .env"}
+          </button>
+        </>
+      }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 18, fontFamily: SANS_FONT }}>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ color: COLORS.textMuted, fontSize: 12, lineHeight: 1.5 }}>
-            Import reads a file from this computer. Export writes an unencrypted .env file containing all project secret values to Downloads on the machine hosting this project.
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              type="button"
-              disabled={choosingImport}
-              onClick={() => void chooseEnvFile()}
-              style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: choosingImport ? "not-allowed" : "pointer", opacity: choosingImport ? 0.55 : 1 }}
-            >
-              <UploadSimple size={14} />
-              {choosingImport ? "Opening…" : "Import .env"}
-            </button>
-            <button
-              type="button"
-              disabled={exporting || secrets.length === 0}
-              onClick={() => void exportSecrets()}
-              style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: exporting || secrets.length === 0 ? "not-allowed" : "pointer", opacity: exporting || secrets.length === 0 ? 0.55 : 1 }}
-            >
-              <DownloadSimple size={14} />
-              {exporting ? "Exporting…" : confirmingExport ? "Confirm plaintext export" : "Export .env"}
-            </button>
-          </div>
-        </div>
         <form
           onSubmit={handleSave}
           style={{
@@ -414,39 +426,12 @@ export function SecretsSection() {
           </div>
         )}
 
-        <div
-          style={{
-            border: `1px solid ${COLORS.outlineBorder}`,
-            borderRadius: 8,
-            overflowX: "auto",
-            background: "var(--color-card)",
-          }}
-        >
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(160px, 1fr) minmax(180px, 1.4fr) minmax(140px, 0.9fr) 132px",
-              gap: 12,
-              alignItems: "center",
-              padding: "9px 12px",
-              minWidth: 680,
-              borderBottom: `1px solid ${COLORS.outlineBorder}`,
-              color: COLORS.textMuted,
-              fontSize: 10,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              letterSpacing: 0,
-            }}
-          >
-            <span>Name</span>
-            <span>Value</span>
-            <span>Updated</span>
-            <span>Actions</span>
-          </div>
+        <SettingsManagerTable columns={SECRET_COLUMNS} minWidth={680}>
           {secrets.length === 0 ? (
-            <div style={{ padding: 18, color: COLORS.textMuted, fontSize: 12 }}>
-              No secrets saved.
-            </div>
+            <SettingsManagerEmpty
+              title="No secrets saved."
+              description="Add one above, or import a .env file from this computer."
+            />
           ) : (
             secrets.map((secret) => {
               const isVisible = Boolean(visibleNames[secret.name]);
@@ -454,18 +439,55 @@ export function SecretsSection() {
               const isConfirmingDelete = confirmDeleteName === secret.name;
               const rowCopied = isCopied(secret.name);
               return (
-                <div
+                <SettingsManagerRow
                   key={secret.name}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "minmax(160px, 1fr) minmax(180px, 1.4fr) minmax(140px, 0.9fr) 132px",
-                    gap: 12,
-                    alignItems: "center",
-                    padding: "10px 12px",
-                    minWidth: 680,
-                    borderTop: `1px solid ${COLORS.outlineBorder}`,
-                    minHeight: 54,
-                  }}
+                  actions={
+                    <>
+                      <button
+                        type="button"
+                        title={isVisible ? "Hide secret" : "Reveal secret"}
+                        aria-label={isVisible ? `Hide ${secret.name}` : `Reveal ${secret.name}`}
+                        disabled={isBusy}
+                        onClick={() => void toggleReveal(secret.name)}
+                        style={{ ...iconButtonStyle, opacity: isBusy ? 0.5 : 1 }}
+                      >
+                        {isVisible ? <EyeSlash size={15} /> : <Eye size={15} />}
+                      </button>
+                      <button
+                        type="button"
+                        title={rowCopied ? "Copied" : "Copy secret"}
+                        aria-label={rowCopied ? `Copied ${secret.name}` : `Copy ${secret.name}`}
+                        disabled={isBusy}
+                        onClick={() => void copySecret(secret.name)}
+                        style={{
+                          ...iconButtonStyle,
+                          color: rowCopied ? "#15803d" : COLORS.textSecondary,
+                          borderColor: rowCopied ? "color-mix(in srgb, #15803d 42%, transparent)" : COLORS.outlineBorder,
+                          background: rowCopied ? "color-mix(in srgb, #15803d 12%, var(--color-card))" : "var(--color-card)",
+                          opacity: isBusy ? 0.5 : 1,
+                        }}
+                      >
+                        {rowCopied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
+                      </button>
+                      <button
+                        type="button"
+                        title={isConfirmingDelete ? "Confirm delete" : "Delete secret"}
+                        aria-label={isConfirmingDelete ? `Confirm delete ${secret.name}` : `Delete ${secret.name}`}
+                        disabled={isBusy}
+                        onClick={() => void deleteSecret(secret.name)}
+                        style={{
+                          ...iconButtonStyle,
+                          width: isConfirmingDelete ? 72 : 30,
+                          color: isConfirmingDelete ? "white" : "#dc2626",
+                          background: isConfirmingDelete ? "#dc2626" : "var(--color-card)",
+                          borderColor: isConfirmingDelete ? "#dc2626" : COLORS.outlineBorder,
+                          opacity: isBusy ? 0.5 : 1,
+                        }}
+                      >
+                        {isConfirmingDelete ? "Confirm" : <Trash size={15} />}
+                      </button>
+                    </>
+                  }
                 >
                   <div style={{ minWidth: 0 }}>
                     <div style={{ color: COLORS.textPrimary, fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -479,56 +501,11 @@ export function SecretsSection() {
                   <div style={{ color: COLORS.textMuted, fontSize: 12, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {formatUpdatedAt(secret.updatedAt)}
                   </div>
-                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
-                    <button
-                      type="button"
-                      title={isVisible ? "Hide secret" : "Reveal secret"}
-                      aria-label={isVisible ? `Hide ${secret.name}` : `Reveal ${secret.name}`}
-                      disabled={isBusy}
-                      onClick={() => void toggleReveal(secret.name)}
-                      style={{ ...iconButtonStyle, opacity: isBusy ? 0.5 : 1 }}
-                    >
-                      {isVisible ? <EyeSlash size={15} /> : <Eye size={15} />}
-                    </button>
-                    <button
-                      type="button"
-                      title={rowCopied ? "Copied" : "Copy secret"}
-                      aria-label={rowCopied ? `Copied ${secret.name}` : `Copy ${secret.name}`}
-                      disabled={isBusy}
-                      onClick={() => void copySecret(secret.name)}
-                      style={{
-                        ...iconButtonStyle,
-                        color: rowCopied ? "#15803d" : COLORS.textSecondary,
-                        borderColor: rowCopied ? "color-mix(in srgb, #15803d 42%, transparent)" : COLORS.outlineBorder,
-                        background: rowCopied ? "color-mix(in srgb, #15803d 12%, var(--color-card))" : "var(--color-card)",
-                        opacity: isBusy ? 0.5 : 1,
-                      }}
-                    >
-                      {rowCopied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
-                    </button>
-                    <button
-                      type="button"
-                      title={isConfirmingDelete ? "Confirm delete" : "Delete secret"}
-                      aria-label={isConfirmingDelete ? `Confirm delete ${secret.name}` : `Delete ${secret.name}`}
-                      disabled={isBusy}
-                      onClick={() => void deleteSecret(secret.name)}
-                      style={{
-                        ...iconButtonStyle,
-                        width: isConfirmingDelete ? 72 : 30,
-                        color: isConfirmingDelete ? "white" : "#dc2626",
-                        background: isConfirmingDelete ? "#dc2626" : "var(--color-card)",
-                        borderColor: isConfirmingDelete ? "#dc2626" : COLORS.outlineBorder,
-                        opacity: isBusy ? 0.5 : 1,
-                      }}
-                    >
-                      {isConfirmingDelete ? "Confirm" : <Trash size={15} />}
-                    </button>
-                  </div>
-                </div>
+                </SettingsManagerRow>
               );
             })
           )}
-        </div>
+        </SettingsManagerTable>
       </div>
       {importPreview && (
         <SecretsImportEnvModal
@@ -546,6 +523,6 @@ export function SecretsSection() {
           onSave={() => void importSelectedSecrets()}
         />
       )}
-    </SettingsSectionShell>
+    </SettingsManagerPage>
   );
 }
