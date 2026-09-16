@@ -1,7 +1,17 @@
-import React, { useMemo, useRef, useState } from "react";
-import { ArrowLeft, CaretRight, ClockCounterClockwise, Cpu, FileText, IdentificationCard, Microphone, Notebook } from "@phosphor-icons/react";
+import React, { useRef, useState } from "react";
+import {
+  ArrowLeft,
+  CaretRight,
+  ClockCounterClockwise,
+  Cpu,
+  FileText,
+  IdentificationCard,
+  Microphone,
+  Notebook,
+} from "@phosphor-icons/react";
 
 import type { CtoIdentity, CtoSessionLogEntry } from "../../../shared/types";
+import { CTO_VOICE_DEFAULT, CTO_VOICE_VOICES } from "../../../shared/types/ctoVoice";
 import { cn } from "../ui/cn";
 import { CtoMemoryPanel } from "./CtoMemoryPanel";
 import { CtoPromptPreview } from "./CtoPromptPreview";
@@ -10,65 +20,85 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ctoModelSupportsLiveRedirect } from "./useCtoModelOptions";
 import { OpenAiKeySection } from "../settings/OpenAiKeySection";
-import { CTO_VOICE_DEFAULT, CTO_VOICE_VOICES } from "../../../shared/types/ctoVoice";
 
 /**
- * The CTO's settings, as a page rather than a drawer.
+ * The CTO's settings.
  *
- * The drawer was a 440px column with a model picker, a raw markdown editor, a
- * scrolling prompt and a history list stacked in it. Everything competed for
- * the same narrow space, and the things you actually change — the model, the
- * voice key — sat above two blocks you only ever read.
+ * Three rules this surface is built on, each one a thing the first attempt got
+ * wrong:
  *
- * So: a left rail of sections, one topic per pane, full width. Reading material
- * (memory, the effective prompt) opens on request instead of occupying the
- * surface by default.
+ *  - The rail carries LABELS, not descriptions. A one-line hint under every
+ *    entry truncated at "What it remembers between tur…", which is worse than
+ *    saying nothing. The explanation belongs in the pane, where there is room.
+ *  - Content is left-aligned against the rail. Centring it left a hand-width
+ *    of dead space between the two and made the page read as floating.
+ *  - One column width for every control. A 300px name field above a
+ *    full-bleed textarea is two designs on one screen.
  */
+
+const ACCENT = "#22D3EE";
+const ACCENT_RGB = "34, 211, 238";
 
 type SectionId = "identity" | "model" | "voice" | "memory" | "prompt" | "history";
 
-const SECTIONS: Array<{ id: SectionId; label: string; hint: string; icon: React.ElementType }> = [
-  { id: "identity", label: "Identity", hint: "Name and standing instructions", icon: IdentificationCard },
-  { id: "model", label: "Model", hint: "What the CTO thinks with", icon: Cpu },
-  { id: "voice", label: "Voice", hint: "Calls, key, and how it sounds", icon: Microphone },
-  { id: "memory", label: "Memory", hint: "What it remembers between turns", icon: Notebook },
-  { id: "prompt", label: "Prompt", hint: "The effective prompt, in full", icon: FileText },
-  { id: "history", label: "History", hint: "Past sessions", icon: ClockCounterClockwise },
+const SECTIONS: Array<{ id: SectionId; label: string; icon: React.ElementType }> = [
+  { id: "identity", label: "Identity", icon: IdentificationCard },
+  { id: "model", label: "Model", icon: Cpu },
+  { id: "voice", label: "Voice", icon: Microphone },
+  { id: "memory", label: "Memory", icon: Notebook },
+  { id: "prompt", label: "Prompt", icon: FileText },
+  { id: "history", label: "History", icon: ClockCounterClockwise },
 ];
 
-function Pane({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+/** One column width, so nothing on the page disagrees about where it ends. */
+const COLUMN = "w-full max-w-[560px]";
+
+function Pane({ title, lede, children }: { title: string; lede: string; children: React.ReactNode }) {
   return (
-    <div className="mx-auto w-full max-w-[720px] px-8 py-7">
-      <h2 className="text-[15px] font-semibold text-fg">{title}</h2>
-      {subtitle ? <p className="mt-1 text-[12px] leading-[1.6] text-muted-fg/50">{subtitle}</p> : null}
-      <div className="mt-6">{children}</div>
+    <div className="px-9 py-8">
+      <h2 className="text-[17px] font-semibold tracking-[-0.01em] text-fg">{title}</h2>
+      <p className={cn("mt-1.5 text-[12.5px] leading-[1.65] text-muted-fg/55", COLUMN)}>{lede}</p>
+      <div className="mt-7">{children}</div>
     </div>
   );
 }
 
-/**
- * A block you read rather than set.
- *
- * Collapsed to one line with its own summary, because a settings page whose
- * first screen is 4,500 tokens of prompt is a page nobody scrolls.
- */
-function Disclosure({
+/** Label, optional explanation, then the control — in that order, every time. */
+function Field({
   label,
-  summary,
+  hint,
+  htmlFor,
   children,
 }: {
   label: string;
-  summary?: string;
+  hint?: string;
+  htmlFor?: string;
   children: React.ReactNode;
 }) {
+  return (
+    <div className={cn("mb-7 last:mb-0", COLUMN)}>
+      <label htmlFor={htmlFor} className="block text-[12.5px] font-medium text-fg/90">
+        {label}
+      </label>
+      {hint ? <p className="mt-1 text-[11.5px] leading-[1.6] text-muted-fg/45">{hint}</p> : null}
+      <div className="mt-2.5">{children}</div>
+    </div>
+  );
+}
+
+const inputCls =
+  "w-full rounded-lg border border-white/[0.09] bg-white/[0.025] px-3 py-2 text-[13px] text-fg outline-none transition-colors placeholder:text-muted-fg/25 focus:border-white/[0.22] focus:bg-white/[0.04]";
+
+/** A block you read rather than set, so it stays shut until it is asked for. */
+function Disclosure({ label, children }: { label: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-xl border border-white/[0.07] bg-white/[0.015]">
+    <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.015]">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-4 py-3 text-left"
+        className="flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-white/[0.02]"
       >
         <CaretRight
           size={12}
@@ -76,7 +106,6 @@ function Disclosure({
           className={cn("shrink-0 text-muted-fg/45 transition-transform", open && "rotate-90")}
         />
         <span className="text-[12.5px] font-medium text-fg/85">{label}</span>
-        {summary ? <span className="ml-auto text-[11px] text-muted-fg/40">{summary}</span> : null}
       </button>
       {open ? <div className="border-t border-white/[0.06] px-4 py-4">{children}</div> : null}
     </div>
@@ -119,100 +148,114 @@ export function CtoSettingsPage({
   const [section, setSection] = useState<SectionId>("identity");
   const [name, setName] = useState(identity?.name ?? "");
   const [extra, setExtra] = useState(identity?.systemPromptExtension ?? "");
-  // The identity that was last saved, so the Save button can tell a real edit
-  // from a re-render.
   const savedRef = useRef({ name: identity?.name ?? "", extra: identity?.systemPromptExtension ?? "" });
   const dirty = name !== savedRef.current.name || extra !== savedRef.current.extra;
 
-  const historyCount = sessionLogs.length;
-  const activeSection = useMemo(() => SECTIONS.find((s) => s.id === section) ?? SECTIONS[0], [section]);
+  const voiceName = identity?.voiceName ?? CTO_VOICE_DEFAULT;
+  const backchannels = identity?.voiceBackchannels !== false;
 
   return (
     <div className="flex min-h-0 flex-1" data-testid="cto-settings-page">
-      {/* Section rail */}
       <nav
         aria-label="CTO settings sections"
-        className="flex w-[228px] shrink-0 flex-col gap-0.5 border-r border-white/[0.06] p-3"
+        className="flex w-[196px] shrink-0 flex-col border-r border-white/[0.06] bg-black/[0.18]"
       >
         <button
           type="button"
           onClick={onClose}
-          className="mb-2 flex items-center gap-2 rounded-lg px-2.5 py-2 text-[12px] font-medium text-muted-fg/60 transition-colors hover:bg-white/[0.04] hover:text-fg"
+          className="mx-2 mt-2 flex items-center gap-2 rounded-lg px-2.5 py-2 text-[12px] font-medium text-muted-fg/55 transition-colors hover:bg-white/[0.04] hover:text-fg"
         >
           <ArrowLeft size={13} weight="bold" />
           Back to the thread
         </button>
-        {SECTIONS.map((entry) => {
-          const Icon = entry.icon;
-          const selected = entry.id === section;
-          return (
-            <button
-              key={entry.id}
-              type="button"
-              onClick={() => setSection(entry.id)}
-              aria-current={selected ? "page" : undefined}
-              className={cn(
-                "flex items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
-                selected ? "bg-white/[0.06] text-fg" : "text-muted-fg/60 hover:bg-white/[0.03] hover:text-fg/85",
-              )}
-            >
-              <Icon size={14} className="mt-[3px] shrink-0" />
-              <span className="min-w-0">
-                <span className="block text-[12.5px] font-medium">
-                  {entry.label}
-                  {entry.id === "history" && historyCount > 0 ? (
-                    <span className="ml-1.5 font-normal text-muted-fg/35">{historyCount}</span>
-                  ) : null}
-                </span>
-                <span className="mt-0.5 block truncate text-[10.5px] text-muted-fg/35">{entry.hint}</span>
-              </span>
-            </button>
-          );
-        })}
+        <div className="mx-3 my-2 h-px bg-white/[0.07]" />
+        <div className="flex flex-col gap-px px-2 pb-3">
+          {SECTIONS.map((entry) => {
+            const Icon = entry.icon;
+            const selected = entry.id === section;
+            return (
+              <button
+                key={entry.id}
+                type="button"
+                onClick={() => setSection(entry.id)}
+                aria-current={selected ? "page" : undefined}
+                className={cn(
+                  "relative flex items-center gap-2.5 rounded-lg py-[7px] pl-3 pr-2.5 text-left text-[12.5px] transition-colors",
+                  selected
+                    ? "font-medium text-fg"
+                    : "text-muted-fg/60 hover:bg-white/[0.035] hover:text-fg/85",
+                )}
+                style={selected ? { background: `rgba(${ACCENT_RGB},0.10)` } : undefined}
+              >
+                {selected ? (
+                  <span
+                    aria-hidden
+                    className="absolute left-0 top-1/2 h-[15px] w-[2px] -translate-y-1/2 rounded-r"
+                    style={{ background: ACCENT }}
+                  />
+                ) : null}
+                <Icon size={15} style={selected ? { color: ACCENT } : undefined} className="shrink-0" />
+                {entry.label}
+                {entry.id === "history" && sessionLogs.length > 0 ? (
+                  <span className="ml-auto text-[10.5px] tabular-nums text-muted-fg/35">
+                    {sessionLogs.length}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
       </nav>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {section === "identity" ? (
-          <Pane title="Identity" subtitle="What the CTO is called, and anything it should always keep in mind.">
-            <label className="block text-[11.5px] font-medium text-muted-fg/60" htmlFor="cto-name">Name</label>
-            <input
-              id="cto-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="CTO"
-              className="mt-1.5 w-full max-w-[300px] rounded-lg border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-[13px] text-fg outline-none placeholder:text-muted-fg/30 focus:border-white/20"
-            />
+          <Pane title="Identity" lede="What the CTO is called, and anything it should always keep in mind.">
+            <Field label="Name" htmlFor="cto-name">
+              <input
+                id="cto-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="CTO"
+                className={inputCls}
+              />
+            </Field>
 
-            <label className="mt-6 block text-[11.5px] font-medium text-muted-fg/60" htmlFor="cto-extra">
-              Standing instructions
-            </label>
-            <p className="mt-1 text-[11px] leading-[1.6] text-muted-fg/40">
-              Added to every turn. ADE&rsquo;s own doctrine is fixed and is not editable here — this is what
-              <em> you </em> want the CTO to keep in mind about this project.
-            </p>
-            <textarea
-              id="cto-extra"
-              value={extra}
-              onChange={(e) => setExtra(e.target.value)}
-              rows={7}
-              placeholder="e.g. We ship on Fridays. Never touch the billing service without telling me first."
-              className="mt-2 w-full resize-y rounded-lg border border-white/[0.09] bg-white/[0.03] px-3 py-2.5 font-mono text-[12px] leading-[1.6] text-fg outline-none placeholder:text-muted-fg/25 focus:border-white/20"
-            />
+            <Field
+              label="Standing instructions"
+              htmlFor="cto-extra"
+              hint="Added to every turn, on top of ADE's own doctrine — which is fixed and not editable here."
+            >
+              <textarea
+                id="cto-extra"
+                value={extra}
+                onChange={(e) => setExtra(e.target.value)}
+                rows={8}
+                placeholder="We ship on Fridays. Never touch the billing service without telling me first."
+                className={cn(inputCls, "resize-y font-mono text-[12px] leading-[1.65]")}
+              />
+            </Field>
 
-            <div className="mt-4 flex items-center gap-3">
+            <div className={cn("flex items-center gap-3", COLUMN)}>
               <button
                 type="button"
                 disabled={!dirty}
                 onClick={() => {
-                  onIdentityChange({ name: name.trim(), systemPromptExtension: extra });
-                  savedRef.current = { name: name.trim(), extra };
-                  setName(name.trim());
+                  const trimmed = name.trim();
+                  onIdentityChange({ name: trimmed, systemPromptExtension: extra });
+                  savedRef.current = { name: trimmed, extra };
+                  setName(trimmed);
                 }}
-                className="rounded-lg border border-white/[0.12] bg-white/[0.06] px-3 py-1.5 text-[12px] font-medium text-fg transition-colors hover:bg-white/[0.1] disabled:opacity-35"
+                className={cn(
+                  "rounded-lg px-3.5 py-1.5 text-[12px] font-medium transition-all",
+                  dirty
+                    ? "text-black"
+                    : "cursor-default border border-white/[0.08] text-muted-fg/35",
+                )}
+                style={dirty ? { background: ACCENT } : undefined}
               >
                 Save
               </button>
-              {dirty ? <span className="text-[11px] text-muted-fg/40">Unsaved changes</span> : null}
+              {dirty ? <span className="text-[11.5px] text-muted-fg/45">Unsaved changes</span> : null}
             </div>
           </Pane>
         ) : null}
@@ -220,126 +263,149 @@ export function CtoSettingsPage({
         {section === "model" ? (
           <Pane
             title="Model"
-            subtitle="Only models that can steer a live turn — the CTO is interrupted constantly."
+            lede="Only models that can steer a live turn — the CTO is interrupted constantly."
           >
-            <div className="flex flex-wrap items-center gap-2">
-              <ModelPicker
-                value={currentModelId}
-                availableModelIds={availableModelIds}
-                filter={ctoModelSupportsLiveRedirect}
-                disabled={switchingModel}
-                fastModeActive={currentFastMode}
-                onFastModeToggle={onFastModeChange}
-                onChange={(modelId) => onModelChange(modelId, currentReasoningEffort)}
-                onOpenSignIn={onOpenProviderSettings}
-              />
-              <ReasoningEffortPicker
-                modelId={currentModelId}
-                reasoningEffort={currentReasoningEffort}
-                onChange={(effort) => onModelChange(currentModelId, effort)}
-              />
-            </div>
-            {loadingModels ? (
-              <div className="mt-3 text-[11.5px] text-muted-fg/40">Checking configured models…</div>
-            ) : availableModelIds.length === 0 ? (
-              <div className="mt-3 rounded-lg border border-amber-500/18 bg-amber-500/[0.06] px-3 py-2.5 text-[11.5px] leading-[1.6] text-amber-200/90">
-                No model the CTO can run on is configured yet. Sign in to Claude, Codex, or Cursor under
-                Settings → AI → Providers.
+            <Field label="Thinks with">
+              <div className="flex flex-wrap items-center gap-2">
+                <ModelPicker
+                  value={currentModelId}
+                  availableModelIds={availableModelIds}
+                  filter={ctoModelSupportsLiveRedirect}
+                  disabled={switchingModel}
+                  fastModeActive={currentFastMode}
+                  onFastModeToggle={onFastModeChange}
+                  onChange={(modelId) => onModelChange(modelId, currentReasoningEffort)}
+                  onOpenSignIn={onOpenProviderSettings}
+                />
+                <ReasoningEffortPicker
+                  modelId={currentModelId}
+                  reasoningEffort={currentReasoningEffort}
+                  onChange={(effort) => onModelChange(currentModelId, effort)}
+                />
               </div>
-            ) : switchingModel ? (
-              <div className="mt-3 text-[11.5px] text-muted-fg/45">Moving the thread to the new model…</div>
-            ) : null}
+              {loadingModels ? (
+                <p className="mt-3 text-[11.5px] text-muted-fg/40">Checking configured models…</p>
+              ) : availableModelIds.length === 0 ? (
+                <p className="mt-3 rounded-lg border border-amber-500/18 bg-amber-500/[0.06] px-3 py-2.5 text-[11.5px] leading-[1.6] text-amber-200/90">
+                  No model the CTO can run on is configured yet. Sign in to Claude, Codex, or Cursor under
+                  Settings → AI → Providers.
+                </p>
+              ) : switchingModel ? (
+                <p className="mt-3 text-[11.5px] text-muted-fg/45">Moving the thread to the new model…</p>
+              ) : null}
+            </Field>
           </Pane>
         ) : null}
 
         {section === "voice" ? (
           <Pane
             title="Voice"
-            subtitle="Talking to the CTO runs on your own OpenAI key. Its thinking stays on the model above."
+            lede="Talking to the CTO runs on your own OpenAI key. Its thinking stays on the model you picked."
           >
-            <OpenAiKeySection />
+            <div className={cn("mb-7", COLUMN)}>
+              <OpenAiKeySection />
+            </div>
 
-            <div className="mt-8">
-              <div className="text-[12px] font-medium text-fg/85">Voice</div>
-              <p className="mt-1 text-[11px] leading-[1.6] text-muted-fg/40">
-                Applies to the next call. Ten voices ship with GPT Live; they differ in pitch and pace,
-                not in what the CTO says.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {CTO_VOICE_VOICES.map((name) => {
-                  const selected = (identity?.voiceName ?? CTO_VOICE_DEFAULT) === name;
+            <Field
+              label="How it sounds"
+              hint="Ten voices ship with GPT Live. They differ in pitch and pace, not in what the CTO says. Applies to the next call."
+            >
+              <div className="flex flex-wrap gap-1.5">
+                {CTO_VOICE_VOICES.map((option) => {
+                  const selected = voiceName === option;
                   return (
                     <button
-                      key={name}
+                      key={option}
                       type="button"
                       aria-pressed={selected}
-                      onClick={() => onVoiceChange({ voiceName: name })}
+                      onClick={() => onVoiceChange({ voiceName: option })}
                       className={cn(
-                        "rounded-lg border px-2.5 py-1.5 text-[11.5px] capitalize transition-colors",
+                        "rounded-full border px-3 py-1 text-[11.5px] capitalize transition-colors",
                         selected
-                          ? "border-white/25 bg-white/[0.09] text-fg"
-                          : "border-white/[0.08] text-muted-fg/55 hover:bg-white/[0.04] hover:text-fg/85",
+                          ? "text-black"
+                          : "border-white/[0.09] text-muted-fg/60 hover:bg-white/[0.04] hover:text-fg/85",
                       )}
+                      style={selected ? { background: ACCENT, borderColor: ACCENT } : undefined}
                     >
-                      {name}
+                      {option}
                     </button>
                   );
                 })}
               </div>
+            </Field>
 
-              <label className="mt-6 flex cursor-pointer items-start gap-2.5">
-                <input
-                  type="checkbox"
-                  checked={identity?.voiceBackchannels !== false}
-                  onChange={(e) => onVoiceChange({ voiceBackchannels: e.target.checked })}
-                  className="mt-[3px] h-3.5 w-3.5 accent-white/70"
-                />
-                <span>
-                  <span className="block text-[12px] font-medium text-fg/85">Listening noises</span>
-                  <span className="mt-0.5 block text-[11px] leading-[1.6] text-muted-fg/40">
-                    Lets the CTO murmur while you talk. Off makes it wait in silence until you finish.
-                  </span>
+            <Field label="Listening noises">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={backchannels}
+                onClick={() => onVoiceChange({ voiceBackchannels: !backchannels })}
+                className="flex w-full items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.015] px-3.5 py-3 text-left transition-colors hover:bg-white/[0.03]"
+              >
+                <span
+                  aria-hidden
+                  className={cn(
+                    "relative h-[18px] w-[32px] shrink-0 rounded-full transition-colors",
+                    backchannels ? "" : "bg-white/[0.12]",
+                  )}
+                  style={backchannels ? { background: ACCENT } : undefined}
+                >
+                  <span
+                    className={cn(
+                      "absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white transition-all",
+                      backchannels ? "left-[16px]" : "left-[2px]",
+                    )}
+                  />
                 </span>
-              </label>
-            </div>
+                <span className="text-[11.5px] leading-[1.6] text-muted-fg/60">
+                  {backchannels
+                    ? "The CTO murmurs while you talk, the way a person does."
+                    : "The CTO waits in silence until you have finished."}
+                </span>
+              </button>
+            </Field>
           </Pane>
         ) : null}
 
         {section === "memory" ? (
-          <Pane title="Memory" subtitle="What the CTO carries between turns, model switches and compactions.">
-            <CtoMemoryPanel />
+          <Pane title="Memory" lede="What the CTO carries between turns, model switches and compactions.">
+            <div className={COLUMN}>
+              <CtoMemoryPanel />
+            </div>
           </Pane>
         ) : null}
 
         {section === "prompt" ? (
-          <Pane title="Prompt" subtitle="Everything the CTO is sent, assembled — read-only.">
-            <Disclosure label="Preview effective prompt">
-              <CtoPromptPreview compact />
-            </Disclosure>
+          <Pane title="Prompt" lede="Everything the CTO is sent, assembled. Read-only.">
+            <div className={COLUMN}>
+              <Disclosure label="Preview effective prompt">
+                <CtoPromptPreview compact />
+              </Disclosure>
+            </div>
           </Pane>
         ) : null}
 
         {section === "history" ? (
-          <Pane title="History" subtitle="Sessions this CTO has run in this project.">
-            {historyCount === 0 ? (
-              <div className="text-[12px] text-muted-fg/40">No sessions yet.</div>
-            ) : (
-              <div className="space-y-1" data-testid="session-history-list">
-                {sessionLogs.map((session) => (
-                  <TimelineEntry
-                    key={session.id}
-                    timestamp={session.createdAt}
-                    title={session.summary}
-                    status={session.capabilityMode}
-                    statusVariant={session.capabilityMode === "full_tooling" ? "success" : "muted"}
-                  />
-                ))}
-              </div>
-            )}
+          <Pane title="History" lede="Sessions this CTO has run in this project.">
+            <div className={COLUMN}>
+              {sessionLogs.length === 0 ? (
+                <p className="text-[12px] text-muted-fg/40">No sessions yet.</p>
+              ) : (
+                <div className="space-y-1" data-testid="session-history-list">
+                  {sessionLogs.map((session) => (
+                    <TimelineEntry
+                      key={session.id}
+                      timestamp={session.createdAt}
+                      title={session.summary}
+                      status={session.capabilityMode}
+                      statusVariant={session.capabilityMode === "full_tooling" ? "success" : "muted"}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </Pane>
         ) : null}
-
-        <div className="sr-only" aria-live="polite">{activeSection.label}</div>
       </div>
     </div>
   );
