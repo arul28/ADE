@@ -2895,7 +2895,12 @@ function renderEvent(
     return (
       <SubagentResultCard
         event={event}
-        onViewTranscript={() => openChatInfoFromActivity(options?.sessionId, event.agentKey)}
+        laneId={options?.laneId ?? null}
+        onViewTranscript={
+          event.childSessionId
+            ? undefined
+            : () => openChatInfoFromActivity(options?.sessionId, event.agentKey)
+        }
       />
     );
   }
@@ -2905,7 +2910,6 @@ function renderEvent(
     return (
       <SubagentStoppedGroupCard
         event={event}
-        onJumpToStart={options?.onScrollToRowKey}
       />
     );
   }

@@ -402,16 +402,18 @@ implements a two-layer transform:
    `turnEndMarker`, including turns that pause at a usage limit (the marker
    shows the work summary and folds usage into the marker instead of a separate
    usage row beside it). Tapping opens that turn's tool/file activity in a
-   sheet. `workPresentedTimelineEntries` drops settled `.toolGroup` and
-   `.changedFiles` rows from the inline transcript once a turn-end marker
-   exists; only the live turn keeps inline clusters. Chat Info still retains the
-   underlying events.
+   sheet. `workPresentedTimelineEntries` drops `.toolGroup` and `.changedFiles`
+   rows only when `workTurnToolActivityIndex` attached them to a completed
+   turn; a markerless or unterminated cluster that a later turn-end never
+   claimed stays inline. Chat Info still retains the underlying events.
 
    **ADE Code** mirrors the stack in `ChatView.tsx` `turnEndRows` on each
    `turn-end` block: collapsed `N tools · M files` when present, expanded tool
    and file entry rows when open, then the time / `Ran for` / status footer
    last. Settled `tool-calls-group` and non-live `files-changed-group` blocks
-   are omitted from scrollback (`isTranscriptBlockVisible`).
+   are omitted from scrollback (`isTranscriptBlockVisible`). A turn that
+   already has a checkpoint `turn_diff_summary` keeps that `[diff]` notice and
+   leaves `turn-end.fileEntries` empty so the files half is not listed twice.
 
    This is capability preserving: clients show only events and file data the
    selected provider actually emitted, without synthesizing Claude-style file

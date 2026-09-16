@@ -2,9 +2,10 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { BackgroundJobLine, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
+import { BackgroundJobLine, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
 import type {
   BackgroundJobGroupRenderEvent,
+  SubagentResultCardRenderEvent,
   SubagentSpawnAnchorRenderEvent,
   SubagentStoppedGroupEvent,
 } from "./chatTranscriptRows";
@@ -98,6 +99,57 @@ describe("SubagentSpawnCard", () => {
       .map(([evt]) => evt)
       .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
     expect(navEvent).toBeUndefined();
+  });
+});
+
+describe("SubagentResultCard", () => {
+  function resultEvent(overrides: Partial<SubagentResultCardRenderEvent> = {}): SubagentResultCardRenderEvent {
+    return {
+      type: "subagent_result_card",
+      agentKey: "child-abc",
+      description: "Wave 2 UI",
+      status: "completed",
+      summaryPreview: "Kickoff turn finished.",
+      error: null,
+      startedAt: "2026-07-14T10:00:00.000Z",
+      endedAt: "2026-07-14T10:01:00.000Z",
+      durationMs: 60_000,
+      totalTokens: null,
+      toolUseCount: 2,
+      worktreeBranch: null,
+      worktreePath: null,
+      parentLabel: null,
+      childSessionId: null,
+      spawnKind: null,
+      ...overrides,
+    };
+  }
+
+  it("navigates to the spawned chat after the spawn card is dropped", () => {
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    render(
+      <SubagentResultCard
+        event={resultEvent({ childSessionId: "child-abc", spawnKind: "peer" })}
+        laneId="lane-1"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /open/i }));
+
+    const navEvent = dispatchSpy.mock.calls
+      .map(([evt]) => evt)
+      .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
+    expect(navEvent).toBeTruthy();
+    expect(navEvent!.detail).toEqual({ sessionId: "child-abc", laneId: "lane-1" });
+    expect(screen.getByText("PEER")).toBeTruthy();
+    expect(screen.queryByText("View transcript")).toBeNull();
+  });
+
+  it("keeps Chat Info for a runtime-native result", () => {
+    const onViewTranscript = vi.fn();
+    render(<SubagentResultCard event={resultEvent()} onViewTranscript={onViewTranscript} />);
+    fireEvent.click(screen.getByRole("button", { name: /View transcript/i }));
+    expect(onViewTranscript).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -197,10 +249,9 @@ describe("SubagentStoppedGroupCard", () => {
     expect(screen.queryByTitle("Explore sync flow")).toBeNull();
   });
 
-  it("keeps jump-to-start on each folded agent when a scroller is wired", () => {
-    const onJumpToStart = vi.fn();
-    render(<SubagentStoppedGroupCard event={groupEvent("interrupt")} onJumpToStart={onJumpToStart} />);
-    fireEvent.click(screen.getByRole("button", { name: "Explore auth flow jump to start" }));
-    expect(onJumpToStart).toHaveBeenCalledWith("subagent-result:a");
+  it("does not offer jump-to-start when the list omits a scroller (folded rows are gone)", () => {
+    render(<SubagentStoppedGroupCard event={groupEvent("interrupt")} />);
+    expect(screen.queryByRole("button", { name: "Explore auth flow jump to start" })).toBeNull();
+    expect(screen.getByTitle("Explore auth flow")).toBeTruthy();
   });
 });

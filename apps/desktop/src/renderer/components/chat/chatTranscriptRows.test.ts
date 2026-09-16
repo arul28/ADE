@@ -412,6 +412,42 @@ describe("chatTranscriptRows", () => {
     expect(anchor.agentType).toBe("claude");
   });
 
+  it("copies childSessionId and spawnKind onto the result card after dropping the spawn card", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-123",
+          agentId: "child-123",
+          agentType: "claude",
+          description: "Wave 2 UI",
+          spawnKind: "peer",
+          taskType: "subagent",
+        },
+      },
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:01:00.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "chat:child-123",
+          agentId: "child-123",
+          status: "completed",
+          summary: "Kickoff turn finished.",
+        },
+      },
+    ]);
+
+    expect(rows.map((row) => row.event.type)).toEqual(["subagent_result_card"]);
+    const result = rows[0]!.event;
+    if (result.type !== "subagent_result_card") throw new Error("Expected result card");
+    expect(result.childSessionId).toBe("child-123");
+    expect(result.spawnKind).toBe("peer");
+    expect(rows.some((row) => row.event.type === "subagent_spawn_anchor")).toBe(false);
+  });
+
   it("keeps a navigable spawn card when the canonical dot twin follows the underscore event", () => {
     // Both events share the agentId identity key; the dot twin's taskId is bare
     // (no `chat:` prefix), so the anchor must retain the childSessionId derived
@@ -3540,9 +3576,9 @@ describe("interrupt-stopped subagent grouping", () => {
     expect(group.event.cause).toBe("interrupt");
     expect(group.event.count).toBe(3);
     expect(group.event.items).toEqual([
-      { agentKey: "agent-a", title: "Explore auth flow", jumpToStartRowKey: "subagent-result:agent-a" },
-      { agentKey: "agent-b", title: "Explore sync flow", jumpToStartRowKey: "subagent-result:agent-b" },
-      { agentKey: "agent-c", title: "Explore the UI", jumpToStartRowKey: "subagent-result:agent-c" },
+      { agentKey: "agent-a", title: "Explore auth flow", jumpToStartRowKey: "subagent-stopped-group:interrupt:agent-a" },
+      { agentKey: "agent-b", title: "Explore sync flow", jumpToStartRowKey: "subagent-stopped-group:interrupt:agent-a" },
+      { agentKey: "agent-c", title: "Explore the UI", jumpToStartRowKey: "subagent-stopped-group:interrupt:agent-a" },
     ]);
 
     // The completed agent keeps its own result card (real summary the user wants to read).

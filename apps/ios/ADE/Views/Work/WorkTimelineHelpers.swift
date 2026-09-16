@@ -1965,16 +1965,35 @@ func workPresentedTimelineEntries(
   provider: String? = nil
 ) -> [WorkTimelineEntry] {
   let hidesPromptSuggestions = provider.map { providerFamilyKey($0) == "claude" } == true
-  let liveIds = workEntryIdsAfterLatestTurnEnd(in: timeline)
-  let hasTurnEnd = timeline.contains { if case .turnEndMarker = $0.payload { return true }; return false }
+  // Hide only groups folded into a completed turn's disclosure. A later
+  // turn-end must not swallow an earlier markerless/unterminated cluster —
+  // the activity index drops those at a separator without attaching them,
+  // so they stay inline here.
+  let activity = workTurnToolActivityIndex(from: timeline)
+  var completedToolMemberIds = Set<String>()
+  for group in activity.completedByTurnId.values {
+    for member in group.members {
+      completedToolMemberIds.insert(member.id)
+    }
+  }
+  var completedFilePaths = Set<String>()
+  for group in activity.completedFilesByTurnId.values {
+    for file in group.files {
+      completedFilePaths.insert(file.path)
+    }
+  }
   return timeline.filter { entry in
-    if hasTurnEnd {
-      switch entry.payload {
-      case .toolGroup, .changedFiles:
-        return liveIds.contains(entry.id)
-      default:
-        break
+    switch entry.payload {
+    case .toolGroup(let group):
+      if group.members.contains(where: { completedToolMemberIds.contains($0.id) }) {
+        return false
       }
+    case .changedFiles(let group):
+      if group.files.contains(where: { completedFilePaths.contains($0.path) }) {
+        return false
+      }
+    default:
+      break
     }
     guard case .eventCard(let card) = entry.payload else { return true }
     switch card.kind {

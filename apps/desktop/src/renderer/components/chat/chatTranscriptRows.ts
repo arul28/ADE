@@ -193,6 +193,13 @@ export type SubagentResultCardRenderEvent = {
   worktreeBranch: string | null;
   worktreePath: string | null;
   parentLabel: string | null;
+  /**
+   * Spawned-ADE-chat navigation. Copied from the dropped spawn card so a
+   * settled child chat stays openable. Null for runtime-native subagents.
+   */
+  childSessionId: string | null;
+  /** Cosmetic relationship; null for runtime-native subagents. */
+  spawnKind: AgentChatSpawnKind | null;
 };
 
 /** One folded agent inside a {@link SubagentStoppedGroupEvent}. */
@@ -1702,6 +1709,8 @@ function handleSubagentLifecycleEvent(
     worktreeBranch: state.worktreeBranch,
     worktreePath: state.worktreePath,
     parentLabel: resolveParentLabel(state, anchors),
+    childSessionId: state.childSessionId,
+    spawnKind: state.spawnKind,
   };
   if (state.resultRowIndex == null) {
     state.resultRowIndex = rows.length;
@@ -3036,22 +3045,27 @@ function groupStoppedSubagentResultCards(
       continue;
     }
 
+    const firstAgentKey = (run[0]!.event as SubagentResultCardRenderEvent).agentKey;
+    const lastInRun = run[run.length - 1]!;
+    // Folded result rows (and the spawn cards they replaced) are gone, so a
+    // per-agent `subagent-result:*` jump no-ops. Point at the surviving group
+    // key; the list does not wire a jump affordance because that would scroll
+    // the card onto itself.
+    const groupKey = `subagent-stopped-group:${cause}:${firstAgentKey}`;
     const items: SubagentStoppedGroupItem[] = run.map((entry) => {
       const event = entry.event as SubagentResultCardRenderEvent;
       return {
         agentKey: event.agentKey,
         title: event.description?.trim() || "Subagent task",
-        jumpToStartRowKey: subagentResultKey(event.agentKey),
+        jumpToStartRowKey: groupKey,
       };
     });
-    const firstAgentKey = (run[0]!.event as SubagentResultCardRenderEvent).agentKey;
-    const lastInRun = run[run.length - 1]!;
     result.push({
       // The cause is part of the identity: an interrupt group and a usage-limit
       // group can both start at the same agent (a stop that lands on the same
       // run a limit already claimed), and sharing a key would make React reuse
       // one card's state for the other.
-      key: `subagent-stopped-group:${cause}:${firstAgentKey}`,
+      key: groupKey,
       timestamp: lastInRun.timestamp,
       event: { type: "subagent_stopped_group", cause, count: run.length, items },
     });

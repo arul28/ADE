@@ -336,6 +336,32 @@ final class WorkCardExpansionTests: XCTestCase {
     XCTAssertEqual(activity?.members.contains { $0.id == "command:bash-1" }, true)
   }
 
+  /// A later turn-end must not hide an earlier cluster that never got a `done`
+  /// marker. The activity index drops that work at a separator without attaching
+  /// it, so presentation keeps the orphan inline.
+  func testMarkerlessTurnKeepsItsToolClusterWhenALaterTurnEnds() {
+    let grouped = collapseConsecutiveWorkToolEntries([
+      userMessage("msg-1", turnId: "turn-orphan"),
+      toolCard(id: "read-orphan", toolName: "Read", argsText: #"{"file_path":"README.md"}"#),
+      turnSeparator(),
+      userMessage("msg-2", turnId: "turn-2"),
+      toolCard(id: "read-2", toolName: "Read", argsText: #"{"file_path":"main.swift"}"#),
+      turnEnd("turn-2", id: "end-2"),
+    ])
+
+    let presented = workPresentedTimelineEntries(grouped)
+    let inlineIds = presented.flatMap { entry -> [String] in
+      guard case .toolGroup(let group) = entry.payload else { return [] }
+      return group.members.map(\.id)
+    }
+    XCTAssertTrue(inlineIds.contains("tool:read-orphan"), "unterminated earlier work stays inline")
+    XCTAssertFalse(inlineIds.contains("tool:read-2"), "the finished turn's cluster still folds into the marker")
+
+    let index = workTurnToolActivityIndex(from: grouped)
+    XCTAssertNil(index.completedByTurnId["turn-orphan"])
+    XCTAssertEqual(index.completedByTurnId["turn-2"]?.members.contains { $0.id == "tool:read-2" }, true)
+  }
+
   /// A cluster and a file-change group are the same kind of thing to a reader,
   /// so the transcript cannot draw one and swallow the other.
   func testPresentationDrawsToolClustersAndFileChangesAlike() {
@@ -478,15 +504,31 @@ final class WorkCardExpansionTests: XCTestCase {
     )
   }
 
-  private func userMessage(_ id: String) -> WorkTimelineEntry {
-    message(id, role: "user", markdown: "run the tests")
+  private func turnSeparator(id: String = "sep-1") -> WorkTimelineEntry {
+    WorkTimelineEntry(
+      id: id,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      rank: 0,
+      payload: .turnSeparator(
+        WorkTurnSeparator(
+          time: "12:00",
+          provider: "claude",
+          modelLabel: "Opus",
+          modelId: nil
+        )
+      )
+    )
+  }
+
+  private func userMessage(_ id: String, turnId: String = "turn-1") -> WorkTimelineEntry {
+    message(id, role: "user", markdown: "run the tests", turnId: turnId)
   }
 
   private func assistantMessage(_ id: String) -> WorkTimelineEntry {
     message(id, role: "assistant", markdown: "Done.")
   }
 
-  private func message(_ id: String, role: String, markdown: String) -> WorkTimelineEntry {
+  private func message(_ id: String, role: String, markdown: String, turnId: String = "turn-1") -> WorkTimelineEntry {
     WorkTimelineEntry(
       id: "message-\(id)",
       timestamp: "2026-01-01T00:00:00.000Z",
@@ -497,7 +539,7 @@ final class WorkCardExpansionTests: XCTestCase {
           role: role,
           markdown: markdown,
           timestamp: "2026-01-01T00:00:00.000Z",
-          turnId: "turn-1",
+          turnId: turnId,
           itemId: nil
         )
       )

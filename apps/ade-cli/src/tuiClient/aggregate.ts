@@ -964,6 +964,7 @@ export function aggregateChatBlocks(args: {
   const assistantTextEventsByBlockId = new Map<string, AssistantTextEvent>();
   const reasoningItemIdByBlockId = new Map<string, string>();
   const turnStartedAt = new Map<string, number>();
+  const checkpointDiffTurnIds = new Set<string>();
   let toolActivitySegmentStart = 0;
   let interruptedTerminusCluster: {
     startBlockIndex: number;
@@ -1353,13 +1354,16 @@ export function aggregateChatBlocks(args: {
         ))
         .flatMap((block) => block.entries);
       const uniqueEntries = Array.from(new Map(entries.map((toolEntry) => [toolEntry.itemId, toolEntry])).values());
-      const fileEntries = blocks
-        .slice(toolActivitySegmentStart)
-        .filter((block): block is Extract<AggregatedBlock, { kind: "files-changed-group" }> => (
-          block.kind === "files-changed-group"
-          && (!turnId || !block.turnId || block.turnId === turnId)
-        ))
-        .flatMap((block) => block.entries);
+      const suppressCheckpointFiles = Boolean(turnId && checkpointDiffTurnIds.has(turnId));
+      const fileEntries = suppressCheckpointFiles
+        ? []
+        : blocks
+          .slice(toolActivitySegmentStart)
+          .filter((block): block is Extract<AggregatedBlock, { kind: "files-changed-group" }> => (
+            block.kind === "files-changed-group"
+            && (!turnId || !block.turnId || block.turnId === turnId)
+          ))
+          .flatMap((block) => block.entries);
       const uniqueFileEntries = Array.from(new Map(fileEntries.map((fileEntry) => [fileEntry.path, fileEntry])).values());
       const endedAt = safeMs(envelope.timestamp);
       const startedAt = turnStartedAt.get(turnKey);
@@ -1405,6 +1409,11 @@ export function aggregateChatBlocks(args: {
       workItemStartedAt.clear();
       segmentWorkItemStartedAt.clear();
       turnStartedAt.delete(turnKey);
+      continue;
+    }
+    if (event.type === "turn_diff_summary") {
+      if (turnId) checkpointDiffTurnIds.add(turnId);
+      passthrough(id, "notice");
       continue;
     }
     if (SILENCED_EVENT_TYPES.has(event.type)) {

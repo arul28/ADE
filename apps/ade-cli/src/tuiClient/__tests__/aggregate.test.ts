@@ -680,6 +680,35 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(blocks.filter((block) => block.kind === "error")).toHaveLength(0);
   });
 
+  it("leaves turn-end fileEntries empty when a checkpoint turn_diff_summary covers the turn", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "+added",
+        itemId: "f1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "turn_diff_summary",
+        turnId: "turn-1",
+        beforeSha: "aaa",
+        afterSha: "bbb",
+        files: [{ path: "src/app.ts", additions: 1, deletions: 0, status: "M" }],
+        totalAdditions: 1,
+        totalDeletions: 0,
+      }),
+      env("2026-01-01T12:00:02.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+    expect(turnEnd.fileEntries).toEqual([]);
+    expect(blocks.some((block) => block.kind === "notice")).toBe(true);
+  });
+
   it("derives command duration from running and completed command events when provider duration is missing", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "command", command: "npm test", cwd: "/tmp", output: "", itemId: "c1", turnId: "turn-1", status: "running" }),
