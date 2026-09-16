@@ -34,6 +34,25 @@ describe("aggregateChatBlocks typed groups", () => {
     ])).toBe("Retrying Claude · attempt 2 of 10");
   });
 
+  it("keeps an active retry after a same-turn inline steer", () => {
+    expect(deriveActiveProviderRetryActivityDetail([
+      env("2026-01-01T12:00:00.000Z", { type: "status", turnStatus: "started", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "activity",
+        activity: "working",
+        providerRetry: true,
+        detail: "Retrying Claude · attempt 2 of 10",
+        turnId: "turn-1",
+      }),
+      env("2026-01-01T12:00:02.000Z", {
+        type: "user_message",
+        text: "also check tests",
+        deliveryState: "inline",
+        turnId: "turn-1",
+      }),
+    ])).toBe("Retrying Claude · attempt 2 of 10");
+  });
+
   it("does not carry an untagged retry across a completed prior turn", () => {
     expect(deriveActiveProviderRetryActivityDetail([
       env("2026-01-01T12:00:00.000Z", {

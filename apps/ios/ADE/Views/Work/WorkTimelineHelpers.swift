@@ -3695,22 +3695,38 @@ func isLowSignalWorkSystemNotice(kind: String, message: String, detail: String?)
 /// metadata is provider-shaped and belongs in the live working indicator; this
 /// deliberately recognizes only the legacy shapes ADE itself emitted, rather
 /// than hiding arbitrary provider warnings that happen to mention retries.
+private let legacyAuthFailurePattern = try? NSRegularExpression(
+  pattern: "authentication|authenticate|auth(?:[_\\s-]+(?:failed|failure|error|required))|invalid\\s+(?:api\\s+)?key|invalid\\s+credentials|unauthori[sz]ed|\\b401\\b"
+)
+
+func containsLegacyAuthFailureSignal(_ text: String) -> Bool {
+  if let regex = legacyAuthFailurePattern {
+    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+    return regex.firstMatch(in: text, options: [], range: range) != nil
+  }
+  return text.contains("authentication")
+    || text.contains("authenticate")
+    || text.contains("auth failed")
+    || text.contains("auth_failed")
+    || text.contains("auth-failed")
+    || text.contains("auth failure")
+    || text.contains("auth_error")
+    || text.contains("auth error")
+    || text.contains("auth required")
+    || text.contains("invalid api key")
+    || text.contains("invalid key")
+    || text.contains("invalid credentials")
+    || text.contains("unauthorized")
+    || text.contains("unauthorised")
+    || text.contains("401")
+}
+
 func isLegacyProviderRetryNotice(kind: String, message: String, detail: String?) -> Bool {
   let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   let normalizedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   let normalizedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-  let authFailureSignals = [
-    "authentication",
-    "authenticate",
-    "invalid api key",
-    "invalid key",
-    "invalid credentials",
-    "unauthorized",
-    "http 401",
-    "401",
-  ]
   let authFailureText = "\(normalizedMessage) \(normalizedDetail)"
-  if normalizedKind == "auth" || authFailureSignals.contains(where: { authFailureText.contains($0) }) {
+  if normalizedKind == "auth" || containsLegacyAuthFailureSignal(authFailureText) {
     return false
   }
 

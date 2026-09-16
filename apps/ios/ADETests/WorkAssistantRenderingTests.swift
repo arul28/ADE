@@ -609,6 +609,34 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
     })
   }
 
+  func testShortAuthFailedSignalStaysVisibleOnMobileTimeline() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-16T00:00:01.000Z",
+        sequence: 1,
+        event: .systemNotice(
+          kind: "warning",
+          message: "Claude API retry 2/10: auth failed",
+          detail: "auth required",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertTrue(snapshot.eventCards.contains { card in
+      card.body == "Claude API retry 2/10: auth failed"
+    })
+  }
+
   func testAuthenticationFailureStatusPreservesAuthKindOnReplay() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:01.000Z","sequence":1,"event":{"type":"system_notice","noticeKind":"warning","status":"authentication_failed","message":"Claude API retry 2/10: unknown","detail":"provider rejected the credentials","turnId":"turn-1"}}

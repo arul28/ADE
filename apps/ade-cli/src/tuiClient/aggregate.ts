@@ -15,6 +15,7 @@ import {
   isLegacyProviderRetryNotice,
   isProviderRetryActivityEvent,
   isProviderRetryTurnBoundary,
+  isSameTurnProviderRetrySteer,
 } from "../../../desktop/src/shared/providerRetryPresentation";
 import { readRecord, summarizeInlineText } from "../../../desktop/src/renderer/components/chat/chatTranscriptRows";
 import { replaceInternalToolNames } from "../../../desktop/src/renderer/components/chat/toolPresentation";
@@ -164,7 +165,7 @@ export function deriveActiveProviderRetryActivityDetail(
       || event.type === "activity"
       || event.type === "done"
       || event.type === "error"
-      || event.type === "user_message"
+      || (event.type === "user_message" && !isSameTurnProviderRetrySteer(event))
       || (event.type === "status" && event.turnStatus !== "started")
     ) {
       return null;

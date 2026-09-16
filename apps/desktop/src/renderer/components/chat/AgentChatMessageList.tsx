@@ -98,6 +98,7 @@ import {
   isLegacyProviderRetryNotice,
   isProviderRetryActivityEvent,
   isProviderRetryTurnBoundary,
+  isSameTurnProviderRetrySteer,
 } from "../../../shared/providerRetryPresentation";
 import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import { isClaudeContextCategoryKind } from "../../../shared/claudeContextUsage";
@@ -4603,7 +4604,7 @@ function deriveActiveProviderRetryActivity(
       || evt.type === "activity"
       || evt.type === "done"
       || evt.type === "error"
-      || evt.type === "user_message"
+      || (evt.type === "user_message" && !isSameTurnProviderRetrySteer(evt))
       || (evt.type === "status" && evt.turnStatus !== "started")
     ) {
       return null;

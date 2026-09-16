@@ -1701,6 +1701,39 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).not.toContain("Claude API retry");
   });
 
+  it("keeps an active retry after a same-turn inline steer", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "activity",
+          activity: "working",
+          providerRetry: true,
+          detail: "Retrying Claude · attempt 2 of 10",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "user_message",
+          text: "also check tests",
+          deliveryState: "inline",
+          turnId: "turn-1",
+        },
+      },
+    ], { showStreamingIndicator: true });
+
+    expect(rendered.container.textContent).toContain("Retrying Claude · attempt 2 of 10");
+  });
+
   it("does not replay an untagged retry from a completed prior turn", () => {
     const rendered = renderMessageList([
       {

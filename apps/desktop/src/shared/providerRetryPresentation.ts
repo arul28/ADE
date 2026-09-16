@@ -97,14 +97,41 @@ export function isProviderRetryActivityEvent(event: unknown): event is ProviderR
 }
 
 /**
- * A terminal event or a real user message starts the next chronological turn
- * segment. Retry replay may inspect untagged legacy events within the current
- * segment, but must not carry one across that boundary from an older turn.
+ * Same-turn steers join the live backoff; they are not a new chronological
+ * segment. Queued, inline, and in-turn Codex accept/process rows keep the
+ * current retry visible until a real turn-starting user message arrives.
+ */
+export function isSameTurnProviderRetrySteer(event: AgentChatEvent): boolean {
+  if (event.type !== "user_message") return false;
+  switch (event.deliveryState) {
+    case "queued":
+    case "inline":
+    case "accepted":
+    case "processed":
+    case "unprocessed":
+      return true;
+    case "delivered":
+    case "failed":
+    case undefined:
+      return false;
+    default: {
+      const _exhaustive: never = event.deliveryState;
+      void _exhaustive;
+      return false;
+    }
+  }
+}
+
+/**
+ * A terminal event or a primary user message starts the next chronological
+ * turn segment. Retry replay may inspect untagged legacy events within the
+ * current segment, but must not carry one across that boundary from an older
+ * turn.
  */
 export function isProviderRetryTurnBoundary(event: AgentChatEvent): boolean {
   return event.type === "done"
     || (event.type === "status" && event.turnStatus !== "started")
-    || (event.type === "user_message" && event.deliveryState !== "queued");
+    || (event.type === "user_message" && !isSameTurnProviderRetrySteer(event));
 }
 
 function providerFromRetryText(message: string): string {

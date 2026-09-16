@@ -5,6 +5,8 @@ import {
   formatProviderRetryActivityDetail,
   isLegacyProviderRetryNotice,
   isProviderRetryActivityEvent,
+  isProviderRetryTurnBoundary,
+  isSameTurnProviderRetrySteer,
 } from "./providerRetryPresentation";
 
 describe("provider retry presentation", () => {
@@ -84,6 +86,50 @@ describe("provider retry presentation", () => {
       status: undefined,
       detail: undefined,
     })).toBe(false);
+    expect(isLegacyProviderRetryNotice({
+      type: "system_notice",
+      noticeKind: "warning",
+      message: "Claude API retry 2/10: auth failed",
+    })).toBe(false);
+    expect(isLegacyProviderRetryNotice({
+      type: "system_notice",
+      noticeKind: "warning",
+      message: "Claude API retry 2/10: unknown",
+      detail: "auth required",
+    })).toBe(false);
+    expect(isLegacyProviderRetryNotice({
+      type: "system_notice",
+      noticeKind: "warning",
+      message: "Claude API retry 2/10: unauthorised",
+    })).toBe(false);
+  });
+
+  it("does not treat same-turn inline or accepted steers as retry turn boundaries", () => {
+    const retry = {
+      type: "activity" as const,
+      activity: "working" as const,
+      providerRetry: true as const,
+      detail: "Retrying Claude · attempt 2 of 10",
+      turnId: "turn-1",
+    };
+    expect(isProviderRetryTurnBoundary({
+      type: "user_message",
+      text: "also check tests",
+      deliveryState: "inline",
+      turnId: "turn-1",
+    })).toBe(false);
+    expect(isProviderRetryTurnBoundary({
+      type: "user_message",
+      text: "keep going",
+      deliveryState: "accepted",
+      turnId: "turn-1",
+    })).toBe(false);
+    expect(isProviderRetryTurnBoundary({
+      type: "user_message",
+      text: "Start a new turn",
+      turnId: "turn-2",
+    })).toBe(true);
+    expect(isSameTurnProviderRetrySteer(retry)).toBe(false);
   });
 
   it("requires an explicit marker instead of guessing from free-form activity text", () => {
