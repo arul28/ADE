@@ -75,6 +75,23 @@ export function isIdentityConfirmHeld(sessionId?: string | null): boolean {
   return (identityConfirmHolds.get(key) ?? 0) > 0;
 }
 
+/**
+ * Is a voice call live on this session?
+ *
+ * The confirm-first hold above is taken for exactly one reason and released the
+ * moment the call hangs up, so it is also the answer to "is the user on a call
+ * right now" — the one question the status-line refresh needs, because a live
+ * call writes that line itself and an LLM-generated one would land seconds late
+ * and overwrite it with a question the user has already moved past.
+ *
+ * Its own name rather than a second call to `isIdentityConfirmHeld`: the two
+ * readers want different things from the same fact, and a reader asking about
+ * permissions should not have to know about status lines.
+ */
+export function isVoiceCallLiveOnSession(sessionId?: string | null): boolean {
+  return isIdentityConfirmHeld(sessionId);
+}
+
 export function normalizeIdentityPermissionMode(
   identityKey: AgentChatIdentityKey | undefined,
   mode: AgentChatSession["permissionMode"] | undefined,

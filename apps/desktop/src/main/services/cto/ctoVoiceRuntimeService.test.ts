@@ -22,6 +22,15 @@ import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/pro
 import { initApiKeyStore } from "../ai/apiKeyStore";
 import { getAdeActionDomainServices } from "../adeActions/registry";
 import type { CtoVoiceSocket } from "./ctoVoiceCallService";
+/**
+ * One microphone frame at the renderer's size: 2048 samples of PCM16, ~85 ms.
+ * The transcript gate reads a segment's length out of these bytes.
+ */
+const MIC_FRAME = Buffer.alloc(2048 * 2).toString("base64");
+
+/** Ten milliseconds of nothing: enough for every queued microtask to run. */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe("createCtoVoiceRuntimeService", () => {
   it("says in plain language that the machine has no OpenAI key", async () => {
     const { host } = createVoiceRuntimeHost();
@@ -232,6 +241,57 @@ describe("createCtoVoiceRuntimeService", () => {
       // The one thing this category must never carry.
       expect(JSON.stringify(event.payload)).not.toContain("AAAA");
     }
+  });
+
+  /**
+   * The owner's third complaint: the CTO row still read "hey there?" while the
+   * call had moved on through several exchanges. The generated status line takes
+   * a model round trip per settled turn; a spoken turn takes one second. So the
+   * call writes the line itself, and writes a truthful one on the way out.
+   */
+  it("tracks the call on the CTO row, and closes the line when it ends", async () => {
+    const fake = createFakeSocket();
+    const setStatusNote = vi.fn(() => true);
+    const { host } = createVoiceRuntimeHost({ sessionService: { setStatusNote } as never });
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+
+    await voice.start({ ownerToken: "owner-1" });
+    fake.open();
+    fake.receive({ type: "session.created", session: { id: "sess_1" } });
+
+    for (const said of ["hey there", "what is this project", "what should I do next"]) {
+      fake.receive({ type: "input_audio_buffer.speech_started" });
+      voice.pushAudio({
+        ownerToken: "owner-1",
+        chunks: Array.from({ length: 5 }, () => MIC_FRAME),
+        level: 0.4,
+      });
+      fake.receive({ type: "input_audio_buffer.speech_stopped" });
+      fake.receive({
+        type: "conversation.item.input_audio_transcription.completed",
+        item_id: said,
+        transcript: said,
+      });
+      await tick();
+      await tick();
+      fake.receive({ type: "response.done", response: { status: "completed" } });
+    }
+
+    expect(setStatusNote.mock.calls).toEqual([
+      ["session-1", "Voice call · 1 exchange"],
+      ["session-1", "Voice call · 2 exchanges"],
+      ["session-1", "Voice call · 3 exchanges"],
+    ]);
+
+    await voice.end({ ownerToken: "owner-1" });
+    // The closing line survives the confirm-hold release that clears the call's
+    // session binding — that release runs first, on the way out of the teardown.
+    expect(setStatusNote.mock.calls.at(-1))
+      .toEqual(["session-1", "Voice call ended · 3 exchanges"]);
+    voice.dispose();
   });
 
   it("pushes batched microphone chunks into the live call", async () => {
@@ -642,8 +702,6 @@ describe("a key stored on the runtime is a key the voice call can use", () => {
    error. These tests hold the line by CAUSE, never by matching the words.
    ──────────────────────────────────────────────────────────────────────────── */
 describe("what a call says when the turn did not answer", () => {
-  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
   /** Every response this call asked for, as the text it was told to read. */
   function spoken(fake: ReturnType<typeof createFakeSocket>): string[] {
     return fake.sent
@@ -683,6 +741,13 @@ describe("what a call says when the turn did not answer", () => {
     fake.open();
     fake.receive({ type: "session.created", session: { id: "sess_1" } });
     fake.receive({ type: "input_audio_buffer.speech_started" });
+    // The microphone has to agree that a person spoke: a transcript with no
+    // energy behind it is a hallucination and never becomes a turn.
+    voice.pushAudio({
+      ownerToken: "owner-1",
+      chunks: Array.from({ length: 5 }, () => MIC_FRAME),
+      level: 0.4,
+    });
     fake.receive({ type: "input_audio_buffer.speech_stopped" });
     fake.receive({
       type: "conversation.item.input_audio_transcription.completed",

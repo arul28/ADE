@@ -175,6 +175,7 @@ import {
 } from "./claudeReplayOverflowRecovery";
 import {
   isPrimaryPinnedIdentity,
+  isVoiceCallLiveOnSession,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
@@ -16067,6 +16068,12 @@ export function createAgentChatService(args: {
   ): void => {
     if (!turnStartedAt) return;
     if (managed.deleted) return;
+    // A live voice call owns this row's second line and writes it itself
+    // ("Voice call · 3 exchanges"). Generating one here takes a model round trip
+    // per settled turn, which on a call always lands after the next question has
+    // already been asked — that is how the row came to read "hey there?" three
+    // exchanges into a call. The generated line resumes when the call ends.
+    if (isVoiceCallLiveOnSession(managed.session.id)) return;
     const noteUpdatedAt = sessionService.getStatusNoteUpdatedAt?.(managed.session.id);
     if (noteUpdatedAt) {
       const noteMs = Date.parse(noteUpdatedAt);

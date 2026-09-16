@@ -563,6 +563,51 @@ describe("a call the router has to end on its own", () => {
     );
   });
 
+  /**
+   * The level the batch carries is what the transcript gate rules on, so the
+   * batch has to be credited with the LOUDEST frame in it. Sending the newest
+   * frame's level instead let a sentence that ended in a quiet syllable read as
+   * silence, which the gate would then have thrown away.
+   */
+  it("sends the loudest level in a microphone batch, not the last one", async () => {
+    const em: { fn: ((event: { payload: Record<string, unknown> }) => void) | null } = { fn: null };
+    const pushes: Array<Record<string, unknown>> = [];
+    const pool = {
+      callActionForRoot: vi.fn(async (_root: string, request: { action: string; args?: unknown }) => {
+        if (request.action === "pushAudio") pushes.push((request.args ?? {}) as Record<string, unknown>);
+        return {
+          domain: "cto_voice",
+          action: request.action,
+          result: request.action === "pullAudio" ? { ok: true, chunks: [], dropped: 0 } : { ok: true },
+          statusHints: {},
+        };
+      }),
+      subscribeEventsForRoot: vi.fn(async (_root, _req, onEvent) => {
+        em.fn = onEvent as typeof em.fn;
+        return () => {};
+      }),
+    } as unknown as LocalRuntimeConnectionPool;
+    const ipc = createIpcMain();
+    registerCtoVoiceIpc(ipc.ipcMain, { getCtx: () => runtimeCtx(), getLocalRuntimePool: () => pool });
+
+    vi.useFakeTimers();
+    try {
+      await ipc.invoke(IPC.ctoVoiceStart, undefined, 7);
+      em.fn?.({ payload: { type: "cto_voice_state", state: liveState() } });
+      ipc.emit(IPC.ctoVoicePushAudio, { audio: "AAAA", level: 0.03 }, 7);
+      ipc.emit(IPC.ctoVoicePushAudio, { audio: "BBBB", level: 0.42 }, 7);
+      ipc.emit(IPC.ctoVoicePushAudio, { audio: "CCCC", level: 0.04 }, 7);
+      await vi.advanceTimersByTimeAsync(150);
+    } finally {
+      vi.useRealTimers();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]?.chunks).toEqual(["AAAA", "BBBB", "CCCC"]);
+    expect(pushes[0]?.level).toBeCloseTo(0.42);
+  });
+
   it("broadcasts a terminal state when the pump cannot reach the runtime", async () => {
     // Before this, the pump's failure branch ended the call locally and
     // unsubscribed, and the local end broadcast nothing — so the HUD went on

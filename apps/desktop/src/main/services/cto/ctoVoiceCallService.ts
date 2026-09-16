@@ -8,14 +8,21 @@ import {
   CTO_VOICE_DEFAULT,
   CTO_VOICE_INITIAL_STATE,
   CTO_VOICE_CAPTURE_DEFAULT_NOTE,
+  CTO_VOICE_MIN_SPEECH_MS,
+  CTO_VOICE_MIN_SPEECH_PEAK_LEVEL,
   CTO_VOICE_PREOPEN_AUDIO_LIMIT,
   CTO_VOICE_SAMPLE_RATE,
   CTO_VOICE_TRANSCRIBE_MODEL,
+  CTO_VOICE_TURN_BURST_COOLDOWN_MS,
+  CTO_VOICE_TURN_BURST_LIMIT,
+  CTO_VOICE_TURN_BURST_WINDOW_MS,
+  ctoVoiceTranscriptHasSpeech,
   voiceCostUsd,
   type CtoVoiceCaption,
   type CtoVoiceName,
   type CtoVoicePhase,
   type CtoVoiceState,
+  type CtoVoiceTranscriptRejection,
 } from "../../../shared/types/ctoVoice";
 import { buildConfirmation, resolveSpokenConfirmation } from "./ctoVoiceConfirmation";
 
@@ -46,6 +53,11 @@ import { buildConfirmation, resolveSpokenConfirmation } from "./ctoVoiceConfirma
  *    a CTO turn.
  * 3. One response at a time. A second `response.create` while one is still
  *    generating is an error, so speech is queued and drained on `response.done`.
+ * 4. A transcript is not proof of speech. The transcriber invents words out of
+ *    near-silence, and each invented sentence used to become a real CTO turn
+ *    that spoke a real answer — the CTO appearing to talk to itself. Every
+ *    transcript is now judged against ADE's own microphone meter before it can
+ *    become an intent; see `judgeTranscript`.
  */
 
 export type CtoVoiceSocket = {
@@ -265,6 +277,25 @@ export function isBenignCtoVoiceServerError(message: string): boolean {
   return CTO_VOICE_BENIGN_SERVER_ERRORS.some((pattern) => pattern.test(message));
 }
 
+/**
+ * How long one microphone frame lasts, read off the frame itself.
+ *
+ * Derived from the payload rather than from a clock on purpose. The wall-clock
+ * gap between `speech_started` and `speech_stopped` is the SERVER's opinion,
+ * delivered a network round trip late and padded by its own VAD, so it says
+ * nothing reliable about how long the user's mouth was open. The bytes do: PCM16
+ * mono at the session rate is two bytes a sample, and the frames are the same
+ * audio the transcriber was given.
+ *
+ * Exported because the arithmetic is the load-bearing part of the length half of
+ * the transcript gate, and it is worth a test of its own.
+ */
+export function ctoVoiceFrameDurationMs(base64: string): number {
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  const bytes = Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+  return (bytes / 2) * (1_000 / CTO_VOICE_SAMPLE_RATE);
+}
+
 export type CtoVoiceBackendResult = {
   /** Read back to the user, word for word, by the realtime model. */
   spoken: string;
@@ -351,6 +382,20 @@ export type CtoVoiceCallDeps = {
   onState: (state: CtoVoiceState) => void;
   /** One chunk of output audio, base64 PCM16, for the renderer to play. */
   onOutputAudio?: (base64: string) => void;
+  /**
+   * The call's exchange count moved, or the call ended.
+   *
+   * An exchange is one ACCEPTED user turn — a rejected transcript is not one,
+   * because nothing was exchanged. Raised so the CTO row's status line can track
+   * a live call instead of describing the first thing that was said; `live:
+   * false` is the final, truthful line.
+   */
+  onExchange?: (args: { exchanges: number; live: boolean }) => void;
+  /**
+   * The clock, injected so the burst valve's window and cooldown are testable
+   * without waiting eight real seconds.
+   */
+  now?: () => number;
   logger?: { info: (msg: string, meta?: unknown) => void; warn: (msg: string, meta?: unknown) => void };
   /** Injected for tests; defaults to a real ws client. */
   createWebSocket?: (url: string, apiKey: string) => CtoVoiceSocket;
@@ -496,6 +541,44 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   /** Answers waiting for the current response to finish. Spoken in order. */
   let speakQueue: string[] = [];
 
+  const now = deps.now ?? (() => Date.now());
+
+  /**
+   * What ADE's OWN microphone heard since the last transcript was judged.
+   *
+   * The window is deliberately NOT `speech_started`..`speech_stopped`. Server VAD
+   * reports a segment after the fact and with its own prefix padding, so frames
+   * that belong to the user's first syllable arrive before the server admits the
+   * segment opened; resetting on `speech_started` threw exactly those away and
+   * would have rejected short real answers. Resetting on a JUDGEMENT instead —
+   * one transcript, one verdict, one reset — keeps the pre-roll and still cannot
+   * let one utterance's energy vouch for the next one's words.
+   *
+   * `voicedMs` counts only frames above the peak threshold: a minute of silence
+   * bracketed by two clicks must not read as a minute of speech.
+   *
+   * `framesWhileIdle` is how the echo case is told apart from the user case. A
+   * segment whose every frame arrived while ADE was speaking is the microphone
+   * hearing the CTO, not a person.
+   */
+  let mic = { peak: 0, voicedMs: 0, frames: 0, framesWhileIdle: 0 };
+  const resetMic = () => { mic = { peak: 0, voicedMs: 0, frames: 0, framesWhileIdle: 0 }; };
+
+  /**
+   * When each accepted turn was accepted, inside the burst window.
+   *
+   * Trimmed to the window on every read, so this is bounded by the rate a
+   * transcript source can physically produce transcripts rather than by the
+   * length of the call.
+   */
+  let acceptedTurnsAtMs: number[] = [];
+  /** When the last transcript of any kind arrived — the cooldown is measured off it. */
+  let lastTranscriptAtMs = 0;
+  /** Set while the burst valve is shut. Nothing is accepted until quiet clears it. */
+  let burstValveTripped = false;
+  /** Accepted user turns this call has had. The number the status line reports. */
+  let exchanges = 0;
+
   const emit = (patch: Partial<CtoVoiceState>) => {
     state = { ...state, ...patch };
     deps.onState(state);
@@ -555,7 +638,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
   const addCaption = (role: "user" | "assistant", text: string) => {
     if (!text.trim().length) return;
-    const caption: CtoVoiceCaption = { role, text: text.trim(), atMs: Date.now() - startedAtMs };
+    const caption: CtoVoiceCaption = { role, text: text.trim(), atMs: now() - startedAtMs };
     emit({ captions: [...state.captions, caption].slice(-200) });
   };
 
@@ -704,8 +787,77 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * turn that is already parked inside `canUseTool`, and must not also start a
    * second one.
    */
+  /**
+   * Did the user actually say this?
+   *
+   * A transcription event on its own is not evidence of speech — see the gate's
+   * constants in `shared/types/ctoVoice`. Returns the reason to throw the
+   * transcript away, or null to let it through. Reads state; writes nothing, so
+   * the caller decides what a verdict costs.
+   */
+  function judgeTranscript(final: string): CtoVoiceTranscriptRejection | null {
+    // The valve is released by quiet, not by an accepted transcript: while it is
+    // shut there are none, so "until the next accepted one" would latch forever.
+    if (burstValveTripped) {
+      if (now() - lastTranscriptAtMs < CTO_VOICE_TURN_BURST_COOLDOWN_MS) return "runaway";
+      burstValveTripped = false;
+      acceptedTurnsAtMs = [];
+      deps.logger?.info("cto_voice.transcript_valve_cleared", { callId: state.callId });
+    }
+    if (!ctoVoiceTranscriptHasSpeech(final)) return "empty";
+    // The CTO being heard by the microphone. Both halves matter: a segment that
+    // ran entirely under ADE's own voice AND never rose above the speech floor is
+    // echo, while the same segment WITH a real peak in it is a barge-in and the
+    // most urgent thing on the call.
+    if (mic.frames > 0 && mic.framesWhileIdle === 0 && mic.peak < CTO_VOICE_MIN_SPEECH_PEAK_LEVEL) {
+      return "echo";
+    }
+    if (mic.peak < CTO_VOICE_MIN_SPEECH_PEAK_LEVEL) return "no_speech_energy";
+    if (mic.voicedMs < CTO_VOICE_MIN_SPEECH_MS) return "too_short";
+    return null;
+  }
+
   function handleUserTranscript(text: string) {
     const final = text.trim();
+    const rejection = judgeTranscript(final);
+    lastTranscriptAtMs = now();
+    if (rejection) {
+      deps.logger?.info("cto_voice.transcript_rejected", {
+        callId: state.callId,
+        reason: rejection,
+        text: final,
+        peak: Number(mic.peak.toFixed(3)),
+        voicedMs: Math.round(mic.voicedMs),
+        frames: mic.frames,
+        framesWhileIdle: mic.framesWhileIdle,
+      });
+      // Nothing else happens: no turn, no speech, no caption. The utterance is
+      // burned so a redelivered transcription cannot try the same words again,
+      // and the meter starts clean so this segment's silence cannot be counted
+      // towards the next one.
+      utterance = { id: utterance.id, text: "", open: false, consumed: true };
+      resetMic();
+      return;
+    }
+
+    exchanges += 1;
+    acceptedTurnsAtMs = [...acceptedTurnsAtMs, lastTranscriptAtMs]
+      .filter((at) => lastTranscriptAtMs - at < CTO_VOICE_TURN_BURST_WINDOW_MS);
+    if (acceptedTurnsAtMs.length > CTO_VOICE_TURN_BURST_LIMIT) {
+      burstValveTripped = true;
+      deps.logger?.info("cto_voice.transcript_valve_tripped", {
+        callId: state.callId,
+        accepted: acceptedTurnsAtMs.length,
+        windowMs: CTO_VOICE_TURN_BURST_WINDOW_MS,
+      });
+    }
+    resetMic();
+    try {
+      deps.onExchange?.({ exchanges, live: true });
+    } catch (error) {
+      deps.logger?.warn("cto_voice.exchange_report_failed", { error: String(error) });
+    }
+
     utterance.text = final;
     utterance.open = false;
     addCaption("user", final);
@@ -717,7 +869,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         confirmation: pending,
         utteranceId: utterance.id,
         text: final,
-        nowMs: Date.now(),
+        nowMs: now(),
       });
       if (outcome.kind === "approved") { approvePending("voice"); return; }
       if (outcome.kind === "denied") { denyPending(); return; }
@@ -728,10 +880,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       return;
     }
 
-    if (!final.length) {
-      deps.logger?.warn("cto_voice.empty_transcript", { callId: state.callId });
-      return;
-    }
+    // No empty check here: a transcript with no words never reaches this line —
+    // `judgeTranscript` rejects it as "empty" before anything is recorded.
     void runCtoTurn();
   }
 
@@ -749,8 +899,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     if (type === "session.created" || type === "session.updated" || type === "conversation.created") {
       if (!sessionReady) {
         sessionReady = true;
-        startedAtMs = Date.now();
-        startedAtIso = new Date().toISOString();
+        startedAtMs = now();
+        startedAtIso = new Date(now()).toISOString();
         setPhase("listening");
       }
       return;
@@ -795,6 +945,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       const failure = (event.error ?? {}) as Record<string, unknown>;
       deps.logger?.warn("cto_voice.transcription_failed", { error: failure.message ?? null });
       utterance = { id: randomUUID(), text: "", open: false, consumed: true };
+      // One segment's audio answers for one transcript, and this one is over.
+      resetMic();
       speak("Sorry — I didn't catch that.");
       setPhase("listening");
       return;
@@ -885,7 +1037,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       toolName: args.toolName,
       prompt: args.prompt,
       utteranceId: utterance.id,
-      nowMs: Date.now(),
+      nowMs: now(),
       approvalItemId: args.itemId,
       ...(args.destructive === undefined ? {} : { destructive: args.destructive }),
     });
@@ -965,8 +1117,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       deps.logger?.warn("cto_voice.confirm_mode_restore_failed", { error: String(error) });
     }
 
-    const endedAt = new Date().toISOString();
-    const elapsedMs = startedAtMs ? Date.now() - startedAtMs : 0;
+    const endedAt = new Date(now()).toISOString();
+    const elapsedMs = startedAtMs ? now() - startedAtMs : 0;
 
     // The durable write happens whatever else failed. A call the user had is a
     // call the CTO must remember.
@@ -980,6 +1132,15 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       });
     } catch (error) {
       deps.logger?.warn("cto_voice.persist_failed", { error: String(error) });
+    }
+
+    // The last word on the row, and the truthful one: the call is over, and this
+    // is how many exchanges it actually had. Reported after the durable write so
+    // a persist that throws cannot leave the line reading "Voice call" forever.
+    try {
+      deps.onExchange?.({ exchanges, live: false });
+    } catch (error) {
+      deps.logger?.warn("cto_voice.exchange_report_failed", { error: String(error) });
     }
 
     emit({ phase: "ended", elapsedMs, pendingConfirmation: null, interrupted: false });
@@ -1018,6 +1179,13 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       sessionReady = false;
       responseActive = false;
       speakQueue = [];
+      // A second call on this service starts with an empty microphone record and
+      // an open gate: the previous call's burst must not shut this one's.
+      resetMic();
+      acceptedTurnsAtMs = [];
+      lastTranscriptAtMs = 0;
+      burstValveTripped = false;
+      exchanges = 0;
 
       const callId = randomUUID();
       emit({
@@ -1167,7 +1335,21 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         }
         // The level meter is the one thing that is still true before the socket
         // opens: the user IS talking, and the HUD should show it.
-        if (typeof level === "number") emit({ inputLevel: Math.max(0, Math.min(1, level)) });
+        if (typeof level === "number") {
+          const clamped = Math.max(0, Math.min(1, level));
+          // Recorded before the emit, because this is the evidence the
+          // transcript gate rules on and a throw in `emit` must not lose it.
+          mic.frames += 1;
+          if (!responseActive) mic.framesWhileIdle += 1;
+          mic.peak = Math.max(mic.peak, clamped);
+          if (clamped >= CTO_VOICE_MIN_SPEECH_PEAK_LEVEL) {
+            mic.voicedMs += ctoVoiceFrameDurationMs(base64);
+          }
+          // One emit per distinct level. Every frame of a batch carries the
+          // same level, so this is one state update per batch even though the
+          // meter above counted each frame.
+          if (clamped !== state.inputLevel) emit({ inputLevel: clamped });
+        }
       } catch (error) {
         deps.logger?.warn("cto_voice.push_audio_failed", { error: String(error) });
       }

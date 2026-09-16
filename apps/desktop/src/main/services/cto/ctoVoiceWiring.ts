@@ -305,7 +305,7 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
   let call: CallSlot | null = null;
   /** The audio pump: mic out, speaker in, at one shared cadence. */
   let audioPump: NodeJS.Timeout | null = null;
-  /** Mic frames since the last flush, and the newest level with them. */
+  /** Mic frames since the last flush, and the loudest level among them. */
   let micBatch: string[] = [];
   let micLevel: number | undefined;
   /** True while a drain is in flight, so a slow round trip cannot stack them. */
@@ -715,7 +715,10 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
     // ends and the moment its store hears about it. Two seconds of frames is
     // plenty of slack for a slow flush and still cannot grow without end.
     if (micBatch.length > MIC_BATCH_LIMIT) micBatch.splice(0, micBatch.length - MIC_BATCH_LIMIT);
-    if (typeof arg?.level === "number") micLevel = arg.level;
+    // The PEAK of the batch, not the newest frame: the batch is one metering
+    // event downstream, and the transcript gate must judge a segment on the
+    // loudest thing in it rather than on whichever frame the flush landed after.
+    if (typeof arg?.level === "number") micLevel = Math.max(micLevel ?? 0, arg.level);
   });
 
   ipcMain.handle(IPC.ctoVoiceSetMuted, async (event, arg: { muted?: unknown }): Promise<void> => {

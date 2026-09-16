@@ -5069,6 +5069,9 @@ app.whenReady().then(async () => {
         ctoStateService,
         agentChatService,
         ctoMemoryService,
+        // See the note at the other construction site: a live call owns the CTO
+        // row's status line, because the generated one lands seconds late.
+        sessionService,
         productAnalyticsService,
         eventBuffer: rpcEventBuffer,
       })

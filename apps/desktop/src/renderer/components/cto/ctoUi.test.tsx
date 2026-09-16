@@ -24,11 +24,13 @@ vi.mock("./useCtoModelOptions", () => ({
     loadingModels: false,
     openProviderSettings: vi.fn(),
   }),
-  resolveModelSelection: (modelId: string) => ({
+  // The second argument is the reasoning tier the choice must not rewrite; the
+  // real resolver passes it straight through, and so does this.
+  resolveModelSelection: (modelId: string, preferredReasoning?: string | null) => ({
     provider: "anthropic",
     model: "sonnet",
     modelId,
-    reasoningEffort: null,
+    reasoningEffort: preferredReasoning ?? null,
     supportsFastMode: modelId !== "anthropic/claude-opus-4-8",
   }),
   // The CTO pickers pass this straight to ModelPicker's `filter`, so the mock
@@ -344,7 +346,10 @@ describe("CtoPage settings", () => {
     expect(updateSession).toHaveBeenCalledWith({
       sessionId: "cto-session",
       modelId: "anthropic/claude-opus-4-8",
-      fastMode: true,
+      // Fast mode does not travel to a model that has no fast tier: the picked
+      // model is the one the stub marks as lacking one, so the switch turns it
+      // off rather than asking the chat service for a mode that does not exist.
+      fastMode: false,
     });
   });
 
@@ -361,6 +366,118 @@ describe("CtoPage settings", () => {
       sessionId: "cto-session",
       fastMode: true,
     }));
+  });
+
+  /**
+   * The defect that made the CTO feel vague.
+   *
+   * The owner picked Claude Opus 5 with a live session open. The page showed it
+   * — `currentModelId` prefers the session's model — but the durable identity
+   * preference was only written when NO session existed, so it silently stayed
+   * on `codex/gpt-5.6-luna` at low effort. The next fresh thread was created
+   * from that preference, on a smaller model at a lower reasoning tier than the
+   * one on screen.
+   */
+  describe("the model the CTO keeps", () => {
+    /** The identity preference, as the CTO state service would hold it. */
+    function ctoWithStalePreference() {
+      let prefs: Record<string, unknown> = {
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        modelId: "codex/gpt-5.6-luna",
+        reasoningEffort: "low",
+      };
+      const snapshot = () => ({
+        identity: { ...IDENTITY, modelPreferences: prefs },
+        recentSessions: [],
+      });
+      const updateIdentity = vi.fn(async ({ patch }: { patch: Record<string, any> }) => {
+        if (patch.modelPreferences) prefs = { ...prefs, ...patch.modelPreferences };
+        return snapshot();
+      });
+      // The stand-in for `ensureIdentitySession`, which builds a CTO session out
+      // of `modelPreferences.modelId` and `modelPreferences.reasoningEffort`.
+      const sessions: Array<Record<string, unknown>> = [];
+      ensureSession.mockImplementation(async () => {
+        const next = sessions.length === 0
+          ? { ...SESSION, provider: "codex", model: "gpt-5.6-luna", modelId: "codex/gpt-5.6-luna", reasoningEffort: "high" }
+          : {
+            ...SESSION,
+            id: "cto-session-2",
+            provider: prefs.provider,
+            model: prefs.model,
+            modelId: prefs.modelId,
+            reasoningEffort: prefs.reasoningEffort ?? null,
+          };
+        sessions.push(next);
+        return next;
+      });
+      (globalThis.window.ade as any).cto.updateIdentity = updateIdentity;
+      (globalThis.window.ade as any).cto.getState = vi.fn(async () => snapshot());
+      return { updateIdentity, sessions, readPrefs: () => prefs };
+    }
+
+    it("writes the pick into the identity even with a live session open", async () => {
+      const cto = ctoWithStalePreference();
+      render(<MemoryRouter><CtoPage /></MemoryRouter>);
+      await screen.findByTestId("cto-agent-chat-pane");
+
+      fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+      fireEvent.click(screen.getByRole("button", { name: /^Model/ }));
+      // The live session has to have landed before the pick, or the effort the
+      // pick carries is read off the module's warm cache instead of this thread.
+      await waitFor(() => expect(screen.getByTestId("model-picker").textContent)
+        .toBe("codex/gpt-5.6-luna"));
+      fireEvent.click(screen.getByTestId("model-picker"));
+
+      // Both, not one: the running thread moves AND the durable record changes.
+      await waitFor(() => expect(cto.updateIdentity).toHaveBeenCalledTimes(1));
+      expect(cto.updateIdentity).toHaveBeenCalledWith({
+        patch: {
+          modelPreferences: {
+            provider: "anthropic",
+            model: "sonnet",
+            modelId: "anthropic/claude-opus-4-8",
+            reasoningEffort: "high",
+          },
+        },
+      });
+      await waitFor(() => expect(updateSession).toHaveBeenCalledTimes(1));
+      expect(cto.readPrefs()).toMatchObject({
+        modelId: "anthropic/claude-opus-4-8",
+        reasoningEffort: "high",
+      });
+    });
+
+    it("starts a fresh session on the picked model and effort, not a stale one", async () => {
+      const cto = ctoWithStalePreference();
+      render(<MemoryRouter><CtoPage /></MemoryRouter>);
+      await screen.findByTestId("cto-agent-chat-pane");
+
+      fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+      fireEvent.click(screen.getByRole("button", { name: /^Model/ }));
+      // The live session has to have landed before the pick, or the effort the
+      // pick carries is read off the module's warm cache instead of this thread.
+      await waitFor(() => expect(screen.getByTestId("model-picker").textContent)
+        .toBe("codex/gpt-5.6-luna"));
+      fireEvent.click(screen.getByTestId("model-picker"));
+      await waitFor(() => expect(cto.updateIdentity).toHaveBeenCalledTimes(1));
+
+      fireEvent.click(screen.getByTestId("cto-fresh-session-start"));
+      fireEvent.click(screen.getByTestId("cto-fresh-session-confirm"));
+      await waitFor(() => expect(startFreshSession).toHaveBeenCalledTimes(1));
+
+      // The thread the owner lands on is the model they picked, at the tier they
+      // picked — before this, it was gpt-5.6-luna at low effort.
+      await waitFor(() => expect(cto.sessions.length).toBeGreaterThan(1));
+      expect(cto.sessions.at(-1)).toMatchObject({
+        provider: "anthropic",
+        modelId: "anthropic/claude-opus-4-8",
+        reasoningEffort: "high",
+      });
+      await waitFor(() => expect(screen.getByTestId("model-picker").textContent)
+        .toBe("anthropic/claude-opus-4-8"));
+    });
   });
 
   it("confirms before starting a fresh session, and starts exactly one", async () => {

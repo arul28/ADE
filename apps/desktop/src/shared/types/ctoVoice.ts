@@ -95,6 +95,109 @@ export const CTO_VOICE_PREOPEN_AUDIO_LIMIT = 50;
  */
 export const CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT = 200;
 
+/* ── The transcript gate ───────────────────────────────────────────────────
+ *
+ * A transcription event is NOT evidence that the user spoke.
+ *
+ * Whisper-family transcribers hallucinate words out of near-silence: a real
+ * call on 2026-09-16 produced six CTO turns in thirty-eight seconds from three
+ * spoken sentences, the other three being "Haha.", "OK,OK,好好好." and "아니."
+ * invented from room noise. Each became a real turn that spoke a real answer,
+ * which the owner experienced as the CTO talking to itself.
+ *
+ * So a transcript only becomes an intent when ADE's OWN microphone meter agrees
+ * that speech happened. The numbers below are the whole of that judgement, and
+ * every one of them is deliberately generous: rejecting a sentence the user
+ * really said is a worse failure than answering one they did not.
+ */
+
+/**
+ * Peak microphone amplitude (0..1) a segment must reach to count as speech.
+ *
+ * The renderer computes the peak absolute sample of each ~85 ms frame and hands
+ * it to `pushAudio`, off a capture chain with `autoGainControl` and
+ * `noiseSuppression` on. With AGC in the path even a quiet, close-mic sentence
+ * peaks well above 0.2, while suppressed room noise sits under 0.02 — so 0.05
+ * (about -26 dBFS) sits well below real speech and comfortably above the floor
+ * these hallucinations came out of. Low on purpose: this number is allowed to
+ * let noise through, it is not allowed to drop a sentence.
+ */
+export const CTO_VOICE_MIN_SPEECH_PEAK_LEVEL = 0.05;
+
+/**
+ * How much VOICED audio a segment needs before it can carry a sentence.
+ *
+ * Counted as the duration of the frames that were actually above the peak
+ * threshold, not the wall-clock length of the segment, so a long pause bracketed
+ * by two clicks cannot qualify. 240 ms is under the length of a spoken "yes"
+ * (~350 ms) and far over a keyboard click or a chair creak, which is the
+ * distinction being drawn — the shortest real utterance a call must accept is a
+ * one-word answer to a confirmation.
+ */
+export const CTO_VOICE_MIN_SPEECH_MS = 240;
+
+/**
+ * Accepted turns inside {@link CTO_VOICE_TURN_BURST_WINDOW_MS} before the gate
+ * closes entirely.
+ *
+ * The backstop for whatever the energy gate does not catch: a call answering
+ * faster than a human could possibly be asking. The CTO takes seconds to think
+ * and seconds more to speak, so more than four accepted turns inside ten
+ * seconds — one every 2.5 s — cannot be a conversation; it is a transcript
+ * source running away. Recovery is silence: see the cooldown below.
+ */
+export const CTO_VOICE_TURN_BURST_LIMIT = 4;
+
+/** The window the burst limit is counted over. */
+export const CTO_VOICE_TURN_BURST_WINDOW_MS = 10_000;
+
+/**
+ * Quiet needed to reopen the gate after a burst tripped it.
+ *
+ * "Until the next accepted transcript" cannot itself be the release condition —
+ * while the gate is shut there are no accepted transcripts — so the release is a
+ * stretch with no transcripts arriving at all. Eight seconds is long enough that
+ * a runaway source has visibly stopped, and short enough that a user who paused
+ * mid-call is not locked out of their own call.
+ */
+export const CTO_VOICE_TURN_BURST_COOLDOWN_MS = 8_000;
+
+/** Why a transcript was thrown away. One name per reason, and it goes in the log. */
+export type CtoVoiceTranscriptRejection =
+  | "empty"
+  | "no_speech_energy"
+  | "too_short"
+  | "echo"
+  | "runaway";
+
+/**
+ * Does this transcript carry words at all?
+ *
+ * Trimmed to nothing, or to nothing but punctuation and ellipses, is what a
+ * transcriber returns for silence it could not resist writing something about.
+ * Unicode-aware on purpose: the hallucinations in the reference call were CJK,
+ * so a check written against A-Z would have passed every one of them.
+ */
+export function ctoVoiceTranscriptHasSpeech(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text.trim());
+}
+
+/**
+ * The line the CTO row shows while a call is up, and after it ends.
+ *
+ * Deterministic and written by the call itself, rather than the LLM-generated
+ * status line a settled turn normally produces: that generation takes seconds,
+ * so during a call it always described an exchange the user had already moved
+ * past — the row read "hey there?" three questions later. An exchange is one
+ * accepted user turn, so the count is a claim ADE can stand behind.
+ */
+export function ctoVoiceStatusLine(args: { exchanges: number; live: boolean }): string {
+  const count = Math.max(0, Math.trunc(args.exchanges));
+  const head = args.live ? "Voice call" : "Voice call ended";
+  if (count < 1) return head;
+  return `${head} · ${count} ${count === 1 ? "exchange" : "exchanges"}`;
+}
+
 export const CTO_VOICE_VOICES = [
   "marin", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "cedar",
 ] as const;

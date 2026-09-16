@@ -2333,6 +2333,9 @@ export async function createAdeRuntime(args: {
       ctoStateService,
       agentChatService,
       ctoMemoryService,
+      // The CTO row's status line during a call is written straight to the
+      // session row: the generated one is always a turn behind on a call.
+      sessionService,
       productAnalyticsService,
       eventBuffer,
     });

@@ -3,6 +3,7 @@ import {
   beginIdentityConfirmHold,
   isIdentityConfirmHeld,
   isPrimaryPinnedIdentity,
+  isVoiceCallLiveOnSession,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
@@ -97,6 +98,24 @@ describe("identitySessionPolicy", () => {
     expect(resolveIdentityExecutionLane("assistant" as never, "lane-feature", "lane-primary")).toBe("lane-feature");
     expect(resolveIdentityExecutionLane("assistant" as never, "  lane-feature  ", "lane-primary")).toBe("lane-feature");
     expect(resolveIdentityExecutionLane("assistant" as never, "   ", "lane-primary")).toBe(null);
+  });
+});
+
+describe("who owns a session's status line", () => {
+  it("says a call is live on the session it is held on, and nowhere else", () => {
+    // The chat service asks this before regenerating a session's status line. A
+    // live call writes that line itself, deterministically and instantly; the
+    // generated one costs a model round trip per settled turn and on a call it
+    // always described a question the user had already moved past.
+    expect(isVoiceCallLiveOnSession("session-a")).toBe(false);
+    const release = beginIdentityConfirmHold("session-a");
+    try {
+      expect(isVoiceCallLiveOnSession("session-a")).toBe(true);
+      expect(isVoiceCallLiveOnSession("session-b")).toBe(false);
+    } finally {
+      release();
+    }
+    expect(isVoiceCallLiveOnSession("session-a")).toBe(false);
   });
 });
 

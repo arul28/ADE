@@ -181,17 +181,43 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     return next;
   }, [primaryLaneId]);
 
-  // Settings owns model selection for the CTO. With a live session it moves the
-  // running thread via updateSession, which also persists the choice into
-  // identity prefs. Before the session exists it writes identity prefs so
-  // ensureSession reconciles the model in.
+  /**
+   * Settings owns model selection for the CTO.
+   *
+   * The identity preference is the DURABLE record of the choice, and it is
+   * written every time — with a live session as well as without one. It used to
+   * be written only when no session existed, on the theory that `updateSession`
+   * would persist it on the way through. It did not always: the owner picked
+   * Claude Opus 5, the page showed it (because `currentModelId` prefers the live
+   * session's model), and `identity.modelPreferences` silently stayed on
+   * `codex/gpt-5.6-luna` at low effort — so the next fresh thread was created on
+   * a smaller model at a lower reasoning tier than the one on screen, and the CTO
+   * read as vague for reasons nothing in the UI could explain.
+   *
+   * Preference first, session second, so a failure between them leaves the
+   * durable record holding what the user picked rather than what they replaced.
+   */
   const handleModelChange = useCallback(async (modelId: string, reasoningEffort: string | null) => {
     if (!window.ade?.cto || switchingModel) return;
     const selection = resolveModelSelection(modelId, reasoningEffort);
     if (!selection) return;
+    // Fast mode is a property of the model, not of the picker: carrying a true
+    // onto a model that has no fast tier asks the chat service for a mode that
+    // does not exist there.
+    const nextFastMode = currentFastMode && selection.supportsFastMode;
     setSwitchingModel(true);
     setError(null);
     try {
+      await window.ade.cto.updateIdentity({
+        patch: {
+          modelPreferences: {
+            provider: selection.provider,
+            model: selection.model,
+            modelId: selection.modelId,
+            reasoningEffort: selection.reasoningEffort,
+          },
+        },
+      });
       if (session) {
         const modelUpdate = selection.modelId === session.modelId
           ? { reasoningEffort: selection.reasoningEffort }
@@ -200,21 +226,11 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           sessionId: session.id,
           modelId: selection.modelId,
           ...modelUpdate,
-          fastMode: currentFastMode,
+          fastMode: nextFastMode,
         });
         ctoPrimarySession = updated;
         setSession(updated);
       } else {
-        await window.ade.cto.updateIdentity({
-          patch: {
-            modelPreferences: {
-              provider: selection.provider,
-              model: selection.model,
-              modelId: selection.modelId,
-              reasoningEffort: selection.reasoningEffort,
-            },
-          },
-        });
         await refreshSession();
       }
       const snap = await window.ade.cto.getState({ recentLimit: 0 });

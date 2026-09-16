@@ -18,6 +18,7 @@ import {
   CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
   CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW,
   CTO_VOICE_SPOKEN_TURN_FAILED,
+  ctoVoiceStatusLine,
   describeVoiceApproval,
   isVoiceCallLive,
   type CtoVoiceAction,
@@ -65,6 +66,16 @@ export type CtoVoiceRuntimeHost = {
   ctoStateService?: AdeRuntime["ctoStateService"] | null;
   agentChatService?: AdeRuntime["agentChatService"] | null;
   ctoMemoryService?: AdeRuntime["ctoMemoryService"] | null;
+  /**
+   * The session row store, for the one line a call owns: the CTO row's status
+   * note. Written straight rather than through the chat service because the
+   * chat service's own status line is LLM-generated per settled turn, which
+   * during a call always lands seconds behind the conversation.
+   *
+   * Optional: a host without it simply does not update the row, and the call is
+   * otherwise unaffected.
+   */
+  sessionService?: Pick<AdeRuntime["sessionService"], "setStatusNote"> | null;
   /**
    * One coarse event per call, at its end. Optional: a runtime built without
    * analytics simply does not report, and nothing else changes.
@@ -214,6 +225,16 @@ export function createCtoVoiceRuntimeService(
   let droppedAudio = 0;
   /** The CTO session this call is driving, once confirm mode is on. */
   let callSessionId: string | null = null;
+  /**
+   * The same session id, kept for the call's LAST status line.
+   *
+   * `callSessionId` is deliberately cleared when confirm mode is released, and
+   * that release happens on the way out of `endCall` — before the final
+   * exchange report. Without a second binding the closing line ("Voice call
+   * ended · 3 exchanges") had nowhere to be written and the row stayed reading
+   * as though the call were still up.
+   */
+  let statusLineSessionId: string | null = null;
   let releaseConfirmHold: (() => void) | null = null;
   let inFlightInterrupt: Promise<unknown> = Promise.resolve();
 
@@ -362,6 +383,7 @@ export function createCtoVoiceRuntimeService(
         const laneId = await resolvePrimaryLaneId();
         const session = await agentChatService.ensureIdentitySession({ identityKey: "cto", laneId });
         callSessionId = confirmFirst ? session.id : null;
+        if (confirmFirst) statusLineSessionId = session.id;
         if (confirmFirst) {
           // Narrow first, release second: the gate is never open between them.
           const scoped = beginIdentityConfirmHold(session.id);
@@ -555,6 +577,32 @@ export function createCtoVoiceRuntimeService(
           "",
         ].join("\n");
         await ctoMemoryService.writeCallTranscript(callId, lines);
+      },
+
+      /**
+       * Keep the CTO row honest while the call runs.
+       *
+       * The row's second line is normally the LLM-generated status line a
+       * settled turn produces. On a call that generation is always behind: the
+       * owner watched the line read "hey there?" three exchanges later, because
+       * each regeneration takes seconds and a spoken turn takes one. A call
+       * therefore writes the line itself, deterministically, and the generated
+       * one stands down for the duration (`isVoiceCallLiveOnSession`).
+       *
+       * Written with the session the call is HELD on, so a call that never got
+       * as far as resolving a session writes nothing at all.
+       */
+      onExchange: ({ exchanges, live }: { exchanges: number; live: boolean }) => {
+        const sessionId = statusLineSessionId;
+        if (!sessionId || !host.sessionService) return;
+        try {
+          host.sessionService.setStatusNote(sessionId, ctoVoiceStatusLine({ exchanges, live }));
+        } catch (error) {
+          hostLogger?.warn("cto_voice.status_line_write_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       },
 
       onState: (next: CtoVoiceState) => publish(next),
@@ -786,10 +834,14 @@ export function createCtoVoiceRuntimeService(
       // runtime's own failure could be forwarded, leaving the HUD counting time
       // and cost against a call that had already been refused.
       try {
-        for (let i = 0; i < chunks.length; i++) {
-          // The level rides the last chunk only: one state emit per batch
-          // rather than one per 20 ms frame.
-          service?.pushAudio(chunks[i]!, i === chunks.length - 1 ? level : undefined);
+        for (const chunk of chunks) {
+          // The level rides EVERY frame in the batch, not just the last one.
+          // The transcript gate measures how much voiced audio a segment carried,
+          // and it can only credit a frame it was given a level for — crediting
+          // one frame per ~100 ms batch undercounted real speech by half and put
+          // a one-word answer under the minimum. The call service still emits one
+          // meter update per distinct level, so the HUD sees no more traffic.
+          service?.pushAudio(chunk, level);
         }
       } catch (error) {
         host.logger?.warn("cto_voice.push_audio_failed", { error: String(error) });
