@@ -1684,11 +1684,20 @@ export function createPrService({
     if (!sessionId) return;
 
     try {
-      const pr = db.get<{ id: string; lane_id: string }>(
-        "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
+      // The row only has to EXIST in this project. It deliberately does not
+      // have to belong to `args.laneId`: a chat may reference a pull request
+      // another lane opened ("Link a PR by number or URL"), and `linkToLane`
+      // leaves that row's ownership with the opening lane on purpose. Requiring
+      // equality here made every cross-lane link a silent no-op — the call
+      // reported success, no edge was written, and the PR vanished from the
+      // chat on the next read (`selectPrsForChatInLane` finds a foreign PR only
+      // through this edge). The real protection is the session lookup below,
+      // which still refuses any session that does not belong to `args.laneId`.
+      const pr = db.get<{ id: string }>(
+        "select id from pull_requests where id = ? and project_id = ? limit 1",
         [args.prId, projectId],
       );
-      if (!pr || pr.lane_id !== args.laneId) return;
+      if (!pr) return;
 
       // Chat surfaces use the terminal-session id. The Claude pointer fallback
       // keeps imported/older chats addressable when only their provider session

@@ -102,6 +102,50 @@
         { "kind": "chat", "token": "@chat:one", "label": "Chat one" },
         { "kind": "chat", "token": "@chat:one", "label": "Chat one" }
       ]
+    },
+    {
+      "text": "see @src/shared/chips.ts ok",
+      "chips": [
+        { "kind": "file", "token": "src/shared/chips.ts", "label": "chips.ts" }
+      ]
+    },
+    {
+      "text": "look in @src/shared/ please",
+      "chips": [
+        { "kind": "folder", "token": "src/shared/", "label": "shared/" }
+      ]
+    },
+    {
+      "text": "edit @src/a/b.ts. then @src/a/ (there)",
+      "chips": [
+        { "kind": "file", "token": "src/a/b.ts", "label": "b.ts" },
+        { "kind": "folder", "token": "src/a/", "label": "a/" }
+      ]
+    },
+    {
+      "text": "mail @example.com now",
+      "chips": []
+    },
+    {
+      "text": "arul@chat/nope is an email-shaped substring",
+      "chips": []
+    },
+    {
+      "text": "see https://github.com/arul28/ade/pull/7 ok",
+      "chips": [
+        {
+          "kind": "pr",
+          "token": "https://github.com/arul28/ade/pull/7",
+          "label": "arul28/ade#7"
+        }
+      ]
+    },
+    {
+      "text": "@chat:9e2315e8ddef touched @src/shared/chips.ts",
+      "chips": [
+        { "kind": "chat", "token": "@chat:9e2315e8ddef", "label": "Chat 9e2315e8" },
+        { "kind": "file", "token": "src/shared/chips.ts", "label": "chips.ts" }
+      ]
     }
   ]
 }

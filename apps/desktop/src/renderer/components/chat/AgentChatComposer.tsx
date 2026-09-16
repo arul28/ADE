@@ -585,12 +585,15 @@ function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | 
 }
 
 function getAttachBlockedReason(args: {
+  composerInputLocked: boolean;
+  composerInputLockMessage: string | null;
   parallelChatMode: boolean;
   attachmentCount: number;
 }): string | null {
   if (args.parallelChatMode && args.attachmentCount >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
     return `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`;
   }
+  if (args.composerInputLocked) return args.composerInputLockMessage ?? "Chat input is locked";
   return null;
 }
 
@@ -2411,9 +2414,19 @@ export function AgentChatComposer({
   // two designs to use — was the one moment you could not. No provider adapter
   // carries a file inside an answer, so the files stay staged and ride the next
   // turn; that is a delivery detail, not a reason to refuse the drop.
+  //
+  // The exemption belongs in `composerInputLocked` itself (which already
+  // excludes `askQuestionActive`), NOT here. Dropping the whole lock term also
+  // unlocked attachments during a genuine hard lock — a blocking approval that
+  // is not a question, or an external `inputLockMessage` — letting files be
+  // staged into a composer that refuses text and sending, to ride some later
+  // turn the user never connected them to.
   const canAttach = !attachmentPersistenceUnavailableReason
+    && !composerInputLocked
     && (!parallelChatMode || attachmentSlotsUsed < PARALLEL_CHAT_MAX_ATTACHMENTS);
   const attachBlockedReason = attachmentPersistenceUnavailableReason ?? getAttachBlockedReason({
+    composerInputLocked,
+    composerInputLockMessage,
     parallelChatMode,
     attachmentCount: attachmentSlotsUsed,
   });

@@ -482,22 +482,29 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       pinnedPrIdRef.current = null;
     }
     let cached: PrSummary | null = null;
+    // Published together with the selected PR, and only once the request is
+    // still the current one: this list is scoped to ONE lane+chat, so a read
+    // that resolves after the pane switched chats would otherwise paint the
+    // previous chat's PR chips under the new chat — and stick, whenever the
+    // stale read lands after the fresh one.
+    let nextLinkedPrs: PrSummary[] = [];
     try {
       if (typeof window.ade.prs.listAll === "function") {
         const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
         const scopedPrs = selectPrsForChatInLane(allPrs, laneId, sessionId);
         const visiblePrs = selectChatPrs(laneForPr, scopedPrs, sessionId);
-        setLinkedPrs(visiblePrs);
+        nextLinkedPrs = visiblePrs;
         const pinnedId = pinnedPrIdRef.current;
         cached = (pinnedId ? visiblePrs.find((entry) => entry.id === pinnedId) : null)
           ?? pickPrimaryPr(visiblePrs)
           ?? selectPrimaryLanePr(laneForPr, scopedPrs);
       } else {
         const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
-        setLinkedPrs(legacy ? [legacy] : []);
+        nextLinkedPrs = legacy ? [legacy] : [];
         cached = selectPrimaryLanePr(laneForPr, legacy ? [legacy] : []);
       }
       if (!requestIsCurrent()) return;
+      setLinkedPrs(nextLinkedPrs);
       setCurrentPr(cached);
       setLoading(false);
       if (options.live && cached && !cached.unmapped) {
@@ -618,9 +625,16 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   // Hot-refresh enriched detail (checks / reviews / merge status) whenever this
   // PR's content changes — driven by the relay's `prs-updated`, not a timer.
   const enrichedKeyRef = useRef<string | null>(null);
+  // Which PR the currently-held checks/reviews/status belong to. The chips
+  // above switch the selected PR synchronously, so without this the previous
+  // PR's checks, reviews and merge status stayed on screen — under the new
+  // PR's title, and driving the pane's red/green accent — for as long as the
+  // three GitHub reads took.
+  const enrichedPrIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!pr) {
       enrichedKeyRef.current = null;
+      enrichedPrIdRef.current = null;
       setChecks(null);
       setReviews(null);
       setStatus(null);
@@ -628,10 +642,17 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     }
     if (pr.unmapped) {
       enrichedKeyRef.current = null;
+      enrichedPrIdRef.current = null;
       setChecks(null);
       setReviews(null);
       setStatus(null);
       return;
+    }
+    if (enrichedPrIdRef.current !== pr.id) {
+      enrichedPrIdRef.current = pr.id;
+      setChecks(null);
+      setReviews(null);
+      setStatus(null);
     }
     const key = `${pr.id}:${pr.updatedAt}:${pr.headSha ?? ""}`;
     if (enrichedKeyRef.current === key) return;
@@ -656,8 +677,16 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const prRepoOwner = pr?.repoOwner ?? null;
   const prRepoName = pr?.repoName ?? null;
   useEffect(() => {
-    if (!prRepoOwner || !prRepoName) return;
+    // Relay status describes one repository's webhook, so it must not outlive
+    // the repo it was read for: selecting a PR in another repo (or one with no
+    // repo yet) has to drop back to the recency-based dot rather than keep
+    // claiming the previous repo's webhook is live.
+    if (!prRepoOwner || !prRepoName) {
+      setRelay(null);
+      return;
+    }
     let cancelled = false;
+    setRelay(null);
     window.ade.github
       .getAppInstallationStatus({ owner: prRepoOwner, name: prRepoName })
       .then((s) => {

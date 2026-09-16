@@ -383,6 +383,124 @@ describe("ChatPrPane", () => {
     renderPane();
     expect(await screen.findByText("polling")).toBeTruthy();
   });
+
+  // The chip row is scoped to ONE lane+chat. A list read that resolves after
+  // the pane has switched chats must be dropped, exactly like the selected PR
+  // already is — otherwise the previous chat's chips paint under the new chat,
+  // and stick for good whenever the stale read lands after the fresh one.
+  it("drops a linked-PR list that resolves after the pane switched chats", async () => {
+    const chatOneFirst = makePr({
+      id: "pr-chat-one-a",
+      githubPrNumber: 11,
+      title: "Chat one first PR",
+      updatedAt: "2026-07-01T00:00:00Z",
+      chatSessionIds: ["chat-1"],
+    });
+    const chatOneSecond = makePr({
+      id: "pr-chat-one-b",
+      githubPrNumber: 12,
+      title: "Chat one second PR",
+      updatedAt: "2026-06-01T00:00:00Z",
+      chatSessionIds: ["chat-1"],
+    });
+    const chatTwoOnly = makePr({
+      id: "pr-chat-two",
+      githubPrNumber: 22,
+      title: "Chat two PR",
+      updatedAt: "2026-07-02T00:00:00Z",
+      chatSessionIds: ["chat-2"],
+    });
+    const allPrs = [chatOneFirst, chatOneSecond, chatTwoOnly];
+    const firstRead = deferred<PrSummary[]>();
+    let reads = 0;
+    installAde({
+      refresh: vi.fn(async (args?: { prIds?: string[] }) =>
+        allPrs.filter((pr) => (args?.prIds ?? []).includes(pr.id))),
+    });
+    (window.ade.prs as { listAll: unknown }).listAll = vi.fn(() => {
+      reads += 1;
+      return reads === 1 ? firstRead.promise : Promise.resolve(allPrs);
+    });
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <ChatPrPane laneId="lane1" branchName="feature/pr-pane" sessionId="chat-1" />
+      </MemoryRouter>,
+    );
+
+    rerender(
+      <MemoryRouter>
+        <ChatPrPane laneId="lane1" branchName="feature/pr-pane" sessionId="chat-2" />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Chat two PR")).toBeTruthy();
+
+    await act(async () => {
+      firstRead.resolve(allPrs);
+      await firstRead.promise;
+    });
+
+    expect(screen.getByText("Chat two PR")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /#11/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /#12/ })).toBeNull();
+  });
+
+  // Checks, reviews and merge status belong to ONE pull request. The chips
+  // switch the selection synchronously, so without a clear the previous PR's
+  // enriched detail stayed on screen under the new PR's title — and drove the
+  // pane's red/green accent — until three GitHub reads came back.
+  it("clears the previous PR's checks when another linked PR is selected", async () => {
+    const primary = makePr({
+      id: "pr-primary",
+      githubPrNumber: 11,
+      title: "Primary linked PR",
+      updatedAt: "2026-07-01T00:00:00Z",
+      chatSessionIds: ["chat-1"],
+    });
+    const secondary = makePr({
+      id: "pr-secondary",
+      githubPrNumber: 12,
+      title: "Second linked PR",
+      updatedAt: "2026-06-01T00:00:00Z",
+      chatSessionIds: ["chat-1"],
+    });
+    const allPrs = [primary, secondary];
+    const secondaryChecks = deferred<PrCheck[]>();
+    installAde({
+      refresh: vi.fn(async (args?: { prIds?: string[] }) =>
+        allPrs.filter((pr) => (args?.prIds ?? []).includes(pr.id))),
+    });
+    (window.ade.prs as { listAll: unknown }).listAll = vi.fn(async () => allPrs);
+    (window.ade.prs as { getChecks: unknown }).getChecks = vi.fn((prId: string) => (
+      prId === "pr-primary"
+        ? Promise.resolve<PrCheck[]>([
+          { name: "build", status: "completed", conclusion: "failure", detailsUrl: null, startedAt: null, completedAt: null },
+          { name: "test", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null },
+        ])
+        : secondaryChecks.promise
+    ));
+
+    render(
+      <MemoryRouter>
+        <ChatPrPane laneId="lane1" branchName="feature/pr-pane" sessionId="chat-1" />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("1/2 checks failing")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /#12/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText("PR #12")).toBeTruthy();
+      expect(screen.queryByText("1/2 checks failing")).toBeNull();
+    });
+
+    await act(async () => {
+      secondaryChecks.resolve([]);
+      await secondaryChecks.promise;
+    });
+  });
 });
 
 describe("ChatPrPane title bar", () => {

@@ -91,6 +91,56 @@ describe("parseChips", () => {
   });
 });
 
+describe("parseChips: file and folder tokens", () => {
+  // The composer inserts `@${chipFromPath(...).token}` for a quick-open pick,
+  // so these are the most common chips in any message. The transcript parser
+  // knew only the entity grammar, so every file pill died on send.
+  it("pills the token the composer actually inserts", () => {
+    const chips = parseChips("see @src/shared/chips.ts ok");
+    expect(chips).toHaveLength(1);
+    expect(chips[0]!.kind).toBe("file");
+    expect(chips[0]!.token).toBe("src/shared/chips.ts");
+  });
+
+  it("keeps a folder a folder, trailing slash and all", () => {
+    const chips = parseChips("look in @src/shared/ please");
+    expect(chips).toHaveLength(1);
+    expect(chips[0]!.kind).toBe("folder");
+    expect(chips[0]!.token).toBe("src/shared/");
+  });
+
+  it("spans exactly the token, so the surrounding text is preserved", () => {
+    const text = "see @src/a/b.ts ok";
+    const parts = splitTextIntoChipParts(text);
+    const rebuilt = parts
+      .map((part) => (part.type === "text" ? part.text : `@${part.chip.token}`))
+      .join("");
+    expect(rebuilt).toBe(text);
+  });
+
+  it("drops trailing sentence punctuation but never a folder's slash", () => {
+    expect(parseChips("edit @src/a/b.ts.")[0]!.token).toBe("src/a/b.ts");
+    expect(parseChips("open @src/a/b/ (there)")[0]!.token).toBe("src/a/b/");
+  });
+
+  it("leaves the entity grammar and non-paths alone", () => {
+    // No `/` means it could be a domain or a handle; `:` belongs to the entity
+    // grammar. Both must stay out of this matcher.
+    expect(parseChips("mail @example.com now")).toHaveLength(0);
+    expect(parseChips("@bogus:123 and @chat: are not mentions")).toHaveLength(0);
+    expect(parseChips("arul@chat/nope is an email-shaped substring")).toHaveLength(0);
+    const entity = parseChips("@chat:9e2315e8ddef");
+    expect(entity).toHaveLength(1);
+    expect(entity[0]!.kind).toBe("chat");
+  });
+
+  it("does not double-match a path inside a url", () => {
+    const chips = parseChips("see https://github.com/arul28/ade/pull/7 ok");
+    expect(chips).toHaveLength(1);
+    expect(chips[0]!.kind).toBe("pr");
+  });
+});
+
 describe("splitTextIntoChipParts", () => {
   it("returns one text part when there is nothing to chip", () => {
     expect(splitTextIntoChipParts("plain message")).toEqual([{ type: "text", text: "plain message" }]);

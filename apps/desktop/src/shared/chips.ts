@@ -305,6 +305,47 @@ function smartLinkKindToChipKind(kind: SmartLinkPreview["kind"]): ChipKind {
  * prose, so paths become chips only when the composer inserts them from the
  * picker, or when a paste carries the chip payload.
  */
+/**
+ * `@`-prefixed file and folder paths, the token the composer inserts for a
+ * quick-open selection (`@src/shared/chips.ts`, `@src/shared/`).
+ *
+ * Without this the transcript dropped the most common chip of all back to raw
+ * text: the entity grammar only knows `@chat:` / `@lane:` / `@term:`, so a file
+ * pill survived the composer and died on send.
+ *
+ * Two deliberate restrictions:
+ *
+ *   - **The token must contain a `/`.** A bare `@name.ext` is indistinguishable
+ *     from a domain or a handle (`@example.com`), and turning one of those into
+ *     a file pill that navigates nowhere is worse than leaving a root-level file
+ *     as text. Nested paths are the overwhelming majority of quick-open hits.
+ *   - **No `:` anywhere in the token.** That is what keeps `@chat:abc` and
+ *     `@bogus:123` out of this matcher and leaves them to the entity grammar.
+ *
+ * The leading boundary mirrors `parseChatMentions`, so an email or a mid-word
+ * `foo@bar/baz` is not a mention here either.
+ */
+const PATH_MENTION_RE = /(^|[ \t\r\n([{,])@([^\s:]*\/[^\s:]*)/g;
+
+function parsePathMentions(text: string): ChipMatch[] {
+  const out: ChipMatch[] = [];
+  PATH_MENTION_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = PATH_MENTION_RE.exec(text)) !== null) {
+    const lead = match[1] ?? "";
+    let raw = match[2] ?? "";
+    // Trailing sentence punctuation belongs to the prose, not the path. A
+    // folder's own trailing slash is kept — it is what marks it as a folder.
+    raw = raw.replace(/[.,;!?)\]}]+$/, "");
+    if (!raw.includes("/")) continue;
+    const start = match.index + lead.length;
+    const isDirectory = raw.endsWith("/");
+    const chip = chipFromPath(isDirectory ? raw.slice(0, -1) : raw, { isDirectory });
+    out.push({ ...chip, start, end: start + 1 + raw.length });
+  }
+  return out;
+}
+
 export function parseChips(text: string, limit = 24): ChipMatch[] {
   if (!text || limit <= 0) return [];
 
@@ -319,6 +360,8 @@ export function parseChips(text: string, limit = 24): ChipMatch[] {
     const chip = chipFromSmartLink(link);
     matches.push({ ...chip, start: link.start, end: link.end });
   }
+
+  matches.push(...parsePathMentions(text));
 
   matches.sort((a, b) => a.start - b.start);
 

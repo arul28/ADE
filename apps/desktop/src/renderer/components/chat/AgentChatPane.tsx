@@ -1548,14 +1548,24 @@ function resolveWorkDraftStorageKind(workDraftKind: WorkDraftLaunchKind | WorkDr
  * persistent identity deliberately launches with different autonomy.
  */
 function launchConfigStorageKey(scope: {
+  bindingKey?: string | null;
   surfaceProfile: ChatSurfaceProfile;
   workDraftKind: WorkDraftStorageKind;
 }): string {
-  return [
-    LAST_LAUNCH_CONFIG_KEY_PREFIX,
-    scope.surfaceProfile,
-    scope.workDraftKind,
-  ].map(encodeURIComponent).join(":");
+  // Partitioned by the project BINDING, for the same reason
+  // `draftLaunchJobsScopeKey` is: launch memory is per MACHINE, but renderer
+  // `localStorage` is one store shared by every local and remote binding. With
+  // no binding in the key, choosing a local-only model and full autonomy on
+  // machine A became what machine B restored — and B can have neither that
+  // model installed nor those permissions wanted.
+  //
+  // An absent binding keeps the historical unscoped spelling, so it doubles as
+  // the migration key rather than needing a separate legacy tier.
+  const parts = [LAST_LAUNCH_CONFIG_KEY_PREFIX];
+  const bindingKey = scope.bindingKey?.trim();
+  if (bindingKey) parts.push(bindingKey);
+  parts.push(scope.surfaceProfile, scope.workDraftKind);
+  return parts.map(encodeURIComponent).join(":");
 }
 
 /**
@@ -1579,12 +1589,16 @@ function legacyLaunchConfigStorageKey(scope: {
 }
 
 function launchConfigStorageKeys(scope: {
+  bindingKey?: string | null;
   projectRoot: string | null | undefined;
   laneId: string | null | undefined;
   surfaceProfile: ChatSurfaceProfile;
   workDraftKind: WorkDraftLaunchKind | WorkDraftStorageKind;
 }): string[] {
   const sharedKind = resolveWorkDraftStorageKind(scope.workDraftKind);
+  // Index 0 is the WRITE key and the whole list is the READ order, so the
+  // machine-scoped key must come first and the unscoped one survives only as a
+  // one-way migration read for a user who already had a remembered config.
   const keys = [
     launchConfigStorageKey({ ...scope, workDraftKind: sharedKind }),
   ];
@@ -1593,6 +1607,15 @@ function launchConfigStorageKeys(scope: {
       launchConfigStorageKey({ ...scope, workDraftKind: "chat" }),
       launchConfigStorageKey({ ...scope, workDraftKind: "cli" }),
     );
+  }
+  if (scope.bindingKey?.trim()) {
+    keys.push(launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: sharedKind }));
+    if (sharedKind === "work-start") {
+      keys.push(
+        launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: "chat" }),
+        launchConfigStorageKey({ ...scope, bindingKey: null, workDraftKind: "cli" }),
+      );
+    }
   }
   // Legacy per-lane keys come last: a machine-wide value always wins, and the
   // old value is only consulted when nothing machine-wide exists yet.
@@ -3443,6 +3466,7 @@ export function AgentChatPane({
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
   const lastLaunchConfigStorageKeys = useMemo(() => {
     const primary = launchConfigStorageKeys({
+      bindingKey: projectBinding?.key ?? null,
       projectRoot,
       laneId: draftLaunchConfigLaneScopeId,
       surfaceProfile,
@@ -3450,6 +3474,7 @@ export function AgentChatPane({
     });
     const legacy = legacyWorkDraftLaneId
       ? launchConfigStorageKeys({
+          bindingKey: projectBinding?.key ?? null,
           projectRoot,
           laneId: legacyWorkDraftLaneId,
           surfaceProfile,
@@ -3457,7 +3482,7 @@ export function AgentChatPane({
         })
       : [];
     return [...new Set([...primary, ...legacy])];
-  }, [draftLaunchConfigLaneScopeId, legacyWorkDraftLaneId, projectRoot, surfaceProfile, workDraftStorageKind]);
+  }, [draftLaunchConfigLaneScopeId, legacyWorkDraftLaneId, projectBinding?.key, projectRoot, surfaceProfile, workDraftStorageKind]);
   const lastLaunchConfigStorageKey = lastLaunchConfigStorageKeys[0]!;
   const draftLaunchConfigScopeKey = useMemo(
     () => `${projectRoot ?? "project"}:${draftLaunchConfigLaneScopeId ?? "no-lane"}:${surfaceProfile}:${workDraftStorageKind}`,
