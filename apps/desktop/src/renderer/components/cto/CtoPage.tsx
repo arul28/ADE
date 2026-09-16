@@ -6,6 +6,8 @@ import type {
   ChatSurfacePresentation,
   CtoIdentity,
   CtoSessionLogEntry,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
 } from "../../../shared/types";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { useAppStore } from "../../state/appStore";
@@ -41,6 +43,15 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   /** Why the last call could not start. Its own line, so the header never moves. */
   const [talkNotice, setTalkNotice] = useState<string | null>(null);
   const [switchingModel, setSwitchingModel] = useState(false);
+  /**
+   * Whether ADE thinks this thread should be rotated, and whether it can still
+   * answer at all. Read-only: `getThreadHealth` never materializes a session,
+   * so asking is safe before the thread exists.
+   */
+  const [threadHealth, setThreadHealth] = useState<CtoThreadHealth | null>(null);
+  /** The owner said "not now". Kept per thread, so a new one asks again. */
+  const [rotationDismissedFor, setRotationDismissedFor] = useState<string | null>(null);
+  const [rotating, setRotating] = useState(false);
 
   const historyLoadedRef = useRef(false);
   const wakingRetriesRef = useRef(0);
@@ -91,10 +102,31 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     }
   }, []);
 
+  /**
+   * Ask whether this thread is running out of room.
+   *
+   * Same cadence as the snapshot above — on entering the tab, and again
+   * whenever the session identity changes — rather than a timer. The banner is
+   * an offer, not an alarm, so it does not need to be true to the second.
+   */
+  const loadThreadHealth = useCallback(async () => {
+    if (!window.ade?.cto?.getThreadHealth) return;
+    try {
+      setThreadHealth(await window.ade.cto.getThreadHealth());
+    } catch {
+      // Non-fatal: no banner is better than an error about a banner.
+    }
+  }, []);
+
   useEffect(() => {
     if (!active) return;
     void loadSummary();
   }, [active, loadSummary]);
+
+  useEffect(() => {
+    if (!active) return;
+    void loadThreadHealth();
+  }, [active, loadThreadHealth, session?.id]);
 
   useEffect(() => {
     if (!active || !settingsOpen || historyLoadedRef.current) return;
@@ -237,6 +269,34 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [refreshSession, session, switchingModel]);
 
+  /**
+   * Retire the thread and open a fresh one.
+   *
+   * ADE never does this on its own: every caller is a button the owner pressed.
+   * The module-level cache is dropped first, because the session it holds is
+   * the one that was just retired.
+   */
+  const handleStartFreshSession = useCallback(async (): Promise<CtoStartFreshSessionResult> => {
+    const startFresh = window.ade?.cto?.startFreshSession;
+    if (!startFresh) throw new Error("The CTO isn't available in this window.");
+    setRotating(true);
+    try {
+      const result = await startFresh();
+      ctoPrimarySession = null;
+      setSession(null);
+      setRotationDismissedFor(null);
+      historyLoadedRef.current = false;
+      wakingRetriesRef.current = 0;
+      setError(null);
+      setWakeAttempt((n) => n + 1);
+      await loadSummary();
+      await loadThreadHealth();
+      return result;
+    } finally {
+      setRotating(false);
+    }
+  }, [loadSummary, loadThreadHealth]);
+
   const lockedSessionSummary = useMemo<AgentChatSessionSummary | null>(() => {
     if (!session) return null;
     return {
@@ -282,6 +342,15 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
   const sessionReady = Boolean(session) && Boolean(primaryLaneId);
 
+  /**
+   * The offer to rotate, and the one rule about it: ADE never rotates on its
+   * own. It is advice with a button, dismissible per thread, and it stays out
+   * of the way while settings is the thing on screen.
+   */
+  const showRotationPrompt = Boolean(threadHealth?.rotationAdvised)
+    && !settingsOpen
+    && rotationDismissedFor !== (threadHealth?.sessionId ?? "none");
+
   return (
     <div className={cn(shellBodyCls, "relative flex-col")}>
       {/* Header */}
@@ -323,6 +392,15 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
         ) : null}
       </div>
 
+      {showRotationPrompt && threadHealth ? (
+        <CtoRotationPrompt
+          blocked={!threadHealth.canTakeTurn}
+          busy={rotating}
+          onStart={() => { void handleStartFreshSession().catch(() => {}); }}
+          onDismiss={() => setRotationDismissedFor(threadHealth.sessionId ?? "none")}
+        />
+      ) : null}
+
       {settingsOpen ? (
         <CtoSettingsPage
           identity={ctoIdentity}
@@ -336,6 +414,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           onModelChange={(modelId, reasoningEffort) => void handleModelChange(modelId, reasoningEffort)}
           onFastModeChange={(enabled) => void handleFastModeChange(enabled)}
           onOpenProviderSettings={openProviderSettings}
+          onStartFreshSession={handleStartFreshSession}
           onIdentityChange={(patch) => void handleIdentityChange(patch)}
           onClose={() => setSettingsOpen(false)}
         />
@@ -527,6 +606,70 @@ function WakingState({
         {detail ? (
           <TechnicalDetailsFold text={detail} className="mt-4 w-full max-w-[420px] text-left" />
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "This thread is getting full, and here is the way out."
+ *
+ * Quiet, one line of prose, and never in the way: it does not block the
+ * composer, it does not reappear once dismissed for this thread, and pressing
+ * it is the only thing that retires anything.
+ */
+function CtoRotationPrompt({
+  blocked,
+  busy,
+  onStart,
+  onDismiss,
+}: {
+  blocked: boolean;
+  busy: boolean;
+  onStart: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      data-testid="cto-rotation-prompt"
+      role="status"
+      className={cn(
+        "flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2",
+        blocked
+          ? "border-amber-500/15 bg-amber-500/[0.06]"
+          : "border-white/[0.05] bg-white/[0.02]",
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <div className={cn("text-[12px] font-medium", blocked ? "text-amber-200/90" : "text-fg/85")}>
+          {blocked
+            ? "This conversation is over its context limit"
+            : "This conversation is getting full"}
+        </div>
+        <div className="mt-0.5 text-[11.5px] leading-[1.5] text-muted-fg/60">
+          {blocked
+            ? "The CTO can't answer until you start a fresh session. Nothing it remembers is lost, and this conversation stays in History."
+            : "Starting a fresh session keeps everything the CTO remembers — this conversation stays in History. ADE won't do it on its own."}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          data-testid="cto-rotation-start"
+          disabled={busy}
+          onClick={onStart}
+          className="rounded-lg border border-white/[0.1] px-2.5 py-1 text-[11.5px] font-medium text-fg/85 transition-colors hover:bg-white/[0.05] disabled:opacity-60"
+        >
+          {busy ? "Starting…" : "Start a fresh session"}
+        </button>
+        <button
+          type="button"
+          data-testid="cto-rotation-dismiss"
+          onClick={onDismiss}
+          className="rounded-lg px-2 py-1 text-[11.5px] text-muted-fg/55 transition-colors hover:text-fg/80"
+        >
+          Not now
+        </button>
       </div>
     </div>
   );

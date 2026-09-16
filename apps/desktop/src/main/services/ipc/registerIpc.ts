@@ -655,6 +655,8 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
   CtoGetMemoryArgs,
   CtoUpdateMemoryArgs,
   CtoSearchMemoryArgs,
@@ -12017,6 +12019,36 @@ export function registerIpc({
       reasoningEffort: arg.reasoningEffort ?? null,
       permissionMode: "full-auto",
     });
+  });
+
+  ipcMain.handle(IPC.ctoGetThreadHealth, async (): Promise<CtoThreadHealth> => {
+    const ctx = getCtx();
+    const service = ctx.agentChatService;
+    return service
+      ? await service.getCtoThreadHealth()
+      : {
+          sessionId: null,
+          canTakeTurn: true,
+          blockedReason: null,
+          lastTurnFailure: null,
+          context: null,
+          rotationAdvised: false,
+        };
+  });
+
+  ipcMain.handle(IPC.ctoStartFreshSession, async (): Promise<CtoStartFreshSessionResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["agentChatService"] as const);
+    const laneId = await resolvePrimaryLaneIdOnly(ctx);
+    if (!laneId) {
+      throw new Error("No primary lane is available to host the CTO chat session.");
+    }
+    const result = await ctx.agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
+    return {
+      sessionId: result.session.id,
+      previousSessionId: result.previousSessionId,
+      handoff: result.handoff,
+    };
   });
 
   ipcMain.handle(IPC.ctoListSessionLogs, async (_event, arg: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> => {

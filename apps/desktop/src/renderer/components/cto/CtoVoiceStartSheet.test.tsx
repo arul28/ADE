@@ -3,7 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import { CTO_VOICE_INITIAL_STATE, type CtoVoiceStatePayload } from "../../../shared/types/ctoVoice";
+import {
+  CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+  CTO_VOICE_INITIAL_STATE,
+  type CtoVoiceStatePayload,
+} from "../../../shared/types/ctoVoice";
 import { CtoVoiceStartSheet } from "./CtoVoiceStartSheet";
 
 /**
@@ -16,6 +20,11 @@ import { CtoVoiceStartSheet } from "./CtoVoiceStartSheet";
  */
 
 const start = vi.fn(async () => ({ ok: true }) as { ok: boolean; error?: string; detail?: string });
+const startFreshSession = vi.fn(async () => ({
+  sessionId: "cto-2",
+  previousSessionId: "cto-1",
+  handoff: { written: true, thin: false, source: "model" as const },
+}));
 const onClose = vi.fn();
 
 let callState: CtoVoiceStatePayload = { ...CTO_VOICE_INITIAL_STATE, isCallOwner: true };
@@ -46,6 +55,7 @@ function setLive() {
 
 beforeEach(() => {
   start.mockClear();
+  startFreshSession.mockClear();
   onClose.mockClear();
   clearCtoMicrophoneFailure.mockClear();
   microphoneFailure = null;
@@ -55,6 +65,7 @@ beforeEach(() => {
       runtimeTarget: { platform: "darwin", arch: "arm64" },
       openSystemSettingsPane: vi.fn(async () => ({ opened: true })),
     },
+    cto: { startFreshSession },
   };
 });
 
@@ -182,6 +193,50 @@ describe("CtoVoiceStartSheet", () => {
 
     await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
     expect(screen.getByText(/OpenAI rejected this key/)).toBeTruthy();
+  });
+
+  it("offers a fresh session only when the chat itself is what refused the call", async () => {
+    start.mockResolvedValueOnce({
+      ok: false,
+      error: "chat-unavailable",
+      detail: CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+    });
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+    // The headline must not argue with the detail sentence printed after it.
+    expect(screen.getByText(/ADE can't start a call on this conversation\./)).toBeTruthy();
+    expect(screen.getByText(/over its context limit/)).toBeTruthy();
+    expect(screen.getByTestId("cto-voice-start-fresh-session")).toBeTruthy();
+    // The existing way out stays where it was.
+    expect(screen.getByTestId("cto-voice-try-again")).toBeTruthy();
+    expect(screen.getByTestId("cto-voice-sheet-close")).toBeTruthy();
+  });
+
+  it("keeps the fresh-session button off every other refusal", async () => {
+    start.mockResolvedValueOnce({ ok: false, error: "unavailable", detail: "no project is open" });
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+    expect(screen.queryByTestId("cto-voice-start-fresh-session")).toBeNull();
+  });
+
+  it("starts a fresh session and retries the call from the refusal card", async () => {
+    start.mockResolvedValueOnce({
+      ok: false,
+      error: "chat-unavailable",
+      detail: CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+    });
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId("cto-voice-start-fresh-session")).toBeTruthy());
+    expect(start).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId("cto-voice-start-fresh-session"));
+
+    await waitFor(() => expect(startFreshSession).toHaveBeenCalledTimes(1));
+    // Recovery means the call is tried again, not that the owner is sent back
+    // to the button they already pressed.
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
   });
 
   it("cancelling the key step closes without asking for the call again", async () => {

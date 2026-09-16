@@ -527,6 +527,31 @@ export function describeVoiceApproval(event: CtoVoiceApprovalEvent): {
 export const CTO_VOICE_CAPTURE_DEFAULT_NOTE =
   "The user shared the window they are looking at. It is attached to the next backend request.";
 
+/**
+ * What a call says when its turn did not produce an answer.
+ *
+ * A failed turn's error text is not an answer, and the call used to speak it —
+ * the user heard the CTO say "Prompt is too long" in its own voice. These are
+ * the three things a call may say instead, chosen by CAUSE rather than by
+ * matching the error's words. An interrupted turn says nothing at all: the user
+ * stopped it on purpose and does not need to be told what they just did.
+ */
+export const CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW =
+  "I can't think about that right now — this chat is over its limit. You can start a fresh CTO session from settings.";
+
+export const CTO_VOICE_SPOKEN_TURN_FAILED =
+  "Something went wrong on my side. Nothing was changed.";
+
+/**
+ * Why a call was refused before the socket was opened.
+ *
+ * The start sheet renders a refusal's `detail` verbatim, so this is the whole
+ * sentence the user reads — and it names the way out, because the refusal is
+ * only recoverable by starting a fresh thread.
+ */
+export const CTO_VOICE_CHAT_OVER_LIMIT_DETAIL =
+  "This chat is over its context limit, so the CTO cannot answer yet. Start a fresh CTO session and try again.";
+
 export type CtoVoiceState = {
   callId: string | null;
   phase: CtoVoicePhase;

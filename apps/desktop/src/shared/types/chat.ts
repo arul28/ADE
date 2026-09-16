@@ -1678,6 +1678,123 @@ export type AgentChatEvent =
       turnId?: string;
     };
 
+/**
+ * How a chat session's last settled turn ended, when it ended badly.
+ *
+ * `context_overflow` is the one failure that describes the CONVERSATION rather
+ * than the turn: the thread is too large for its model and every later turn
+ * will fail the same way until it is rotated. Everything else is a single
+ * turn's bad luck.
+ */
+export type AgentChatLastTurnFailure = {
+  kind: "context_overflow" | "error";
+  message: string;
+  at: string;
+  turnId?: string | null;
+};
+
+/** What the last settled turn said about how full the thread is. */
+export type AgentChatSessionContextHealth = {
+  /** 0..100 occupancy of the model's context window, when the runtime reports one. */
+  occupancyPct: number | null;
+  /** Consecutive settled turns at or above the rotation high-water mark. */
+  aboveHighWaterTurns: number;
+  /** True once a compaction — natural or ADE's fallback — has run in this thread. */
+  compactionSeen: boolean;
+  updatedAt: string;
+};
+
+export type AgentChatSessionTurnHealth = {
+  sessionId: string;
+  /** False only when the thread itself is the problem, never for a one-off error. */
+  canTakeTurn: boolean;
+  blockedReason: "context_overflow" | null;
+  lastTurnFailure: AgentChatLastTurnFailure | null;
+  context: AgentChatSessionContextHealth | null;
+  /**
+   * True when the thread should be rotated BEFORE it wedges — see
+   * `AGENT_CHAT_CONTEXT_ROTATION_PCT`. Advice, never an action: ADE offers, the
+   * user presses.
+   */
+  rotationAdvised: boolean;
+};
+
+/**
+ * Occupancy at which ADE starts offering a fresh thread.
+ *
+ * 80% is chosen because compaction has usually already run by then and cannot
+ * win back much more; the remaining fifth is the margin one large turn can
+ * spend. Below this the thread is simply busy, not endangered.
+ */
+export const AGENT_CHAT_CONTEXT_ROTATION_PCT = 80;
+
+/**
+ * How many consecutive settled turns must sit above the mark before ADE says
+ * anything. One spike is a big turn; two in a row is a trend.
+ */
+export const AGENT_CHAT_CONTEXT_ROTATION_TURNS = 2;
+
+/**
+ * The CTO thread's health, with a null session id when there is no thread yet.
+ *
+ * Its own type rather than a widened `AgentChatSessionTurnHealth`, because
+ * "there is no CTO thread" is a real answer the CTO page has to render and an
+ * intersection that merely relaxes the id hides it.
+ */
+/**
+ * Does this failure say the CONVERSATION is too big, rather than that one turn
+ * went wrong?
+ *
+ * The provider sentences are not ours and they are not stable, so this is a
+ * pattern rather than an equality — but it is read in exactly one place (the
+ * turn-health record written when a turn settles) and never used to choose what
+ * the CTO says out loud. The compaction refusal is included because it is the
+ * SECOND half of the same event: ADE tried to shrink the thread and could not,
+ * which is the strongest possible statement that this thread is finished.
+ */
+export function isContextOverflowFailureText(value: string | null | undefined): boolean {
+  if (typeof value !== "string" || !value.trim().length) return false;
+  return /prompt.{0,20}too long|context.{0,30}(?:overflow|window|length)|maximum context|too many tokens|could not be reduced below the context limit/i
+    .test(value);
+}
+
+/**
+ * How a blocking `runSessionTurn` ended.
+ *
+ * The provider's three terminal statuses, plus `skipped` for the two paths that
+ * never reach a provider at all (empty text, and a message the send pipeline
+ * declined to prepare). A caller that speaks the answer aloud needs this: a
+ * failed turn's `outputText` is its error message, and reading that out is how
+ * a CTO ends up saying "Prompt is too long" in its own voice.
+ */
+export type AgentChatBackgroundTurnStatus = "completed" | "interrupted" | "failed" | "skipped";
+
+/** What a blocking `runSessionTurn` hands back. Named so the collector that
+ *  fulfils it and the function that declares it cannot drift apart. */
+export type AgentChatBackgroundTurnResult = {
+  sessionId: string;
+  provider: AgentChatProvider;
+  model: string;
+  modelId?: string;
+  outputText: string;
+  status: AgentChatBackgroundTurnStatus;
+  /** The provider's own failure sentence, for logs. Never spoken to a user. */
+  errorMessage?: string | null;
+  usage?: {
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    cacheReadTokens?: number | null;
+    cacheCreationTokens?: number | null;
+  };
+  turnId?: string;
+  threadId?: string;
+  sdkSessionId?: string | null;
+};
+
+export type CtoThreadHealth = Omit<AgentChatSessionTurnHealth, "sessionId"> & {
+  sessionId: string | null;
+};
+
 export type AgentChatEventEnvelope = {
   sessionId: string;
   timestamp: string;
@@ -1705,6 +1822,17 @@ export type AgentChatEventEnvelope = {
     stepKey?: string | null;
     laneId?: string | null;
     runId?: string | null;
+    /**
+     * The CTO voice call this event was produced by.
+     *
+     * A call runs its thinking on the CTO's own thread, so its turns are real
+     * turns and its tool calls are real tool calls — hiding them would be a
+     * lie. Instead every event a voice turn emits carries the call it belongs
+     * to, and the transcript folds a consecutive run of them into one call
+     * card. Stamped by `agentChatService` while a voice turn is running; no
+     * client may set it.
+     */
+    voiceCallId?: string | null;
   };
 };
 

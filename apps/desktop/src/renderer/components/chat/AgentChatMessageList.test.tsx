@@ -5928,3 +5928,62 @@ describe("usage-limit turn footer", () => {
     expect(withoutPill.container.textContent).toContain("Claude session limit");
   });
 });
+
+describe("AgentChatMessageList voice calls", () => {
+  function voiceEnvelope(
+    sequence: number,
+    event: AgentChatEventEnvelope["event"],
+    voiceCallId?: string,
+  ): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-voice",
+      timestamp: new Date(Date.UTC(2026, 8, 16, 12, 0, sequence)).toISOString(),
+      sequence,
+      event,
+      ...(voiceCallId ? { provenance: { voiceCallId } } : {}),
+    } as AgentChatEventEnvelope;
+  }
+
+  const callEvents: AgentChatEventEnvelope[] = [
+    voiceEnvelope(1, { type: "user_message", text: "what is failing on main?", deliveryState: "delivered" }, "call-1"),
+    voiceEnvelope(2, { type: "text", text: "Two checks are red.", itemId: "a-1" }, "call-1"),
+    voiceEnvelope(3, { type: "user_message", text: "fix the first one", deliveryState: "delivered" }, "call-1"),
+  ];
+
+  it("renders a whole call collapsed as one card, not as loose bubbles", () => {
+    renderMessageList(callEvents);
+
+    const card = screen.getByTestId("voice-call-card");
+    expect(card.getAttribute("data-voice-call-id")).toBe("call-1");
+    expect(card.textContent).toContain("Voice call");
+    expect(card.textContent).toContain("2 exchanges");
+    expect(card.textContent).toContain("what is failing on main?");
+    // Collapsed is the default: nothing the model said is in the transcript yet.
+    expect(document.body.textContent).not.toContain("Two checks are red.");
+    expect(screen.queryByTestId("voice-call-rows")).toBeNull();
+  });
+
+  it("reveals the call's own rows when expanded", () => {
+    renderMessageList(callEvents);
+
+    const toggle = screen.getByRole("button", { expanded: false, name: /Voice call/ });
+    fireEvent.click(toggle);
+
+    expect(screen.getByRole("button", { name: /Voice call/ }).getAttribute("aria-expanded")).toBe("true");
+    const rows = screen.getByTestId("voice-call-rows");
+    expect(rows.textContent).toContain("what is failing on main?");
+    expect(rows.textContent).toContain("Two checks are red.");
+    expect(rows.textContent).toContain("fix the first one");
+  });
+
+  it("leaves a transcript with no voice events untouched", () => {
+    renderMessageList([
+      voiceEnvelope(1, { type: "user_message", text: "typed by hand", deliveryState: "delivered" }),
+      voiceEnvelope(2, { type: "text", text: "answered in text", itemId: "a-1" }),
+    ]);
+
+    expect(screen.queryByTestId("voice-call-card")).toBeNull();
+    expect(document.body.textContent).toContain("typed by hand");
+    expect(document.body.textContent).toContain("answered in text");
+  });
+});

@@ -305,6 +305,10 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatEventMetadata,
+  AgentChatLastTurnFailure,
+  AgentChatSessionContextHealth,
+  AgentChatSessionTurnHealth,
+  CtoThreadHealth,
   AgentChatSpawnCompletion,
   AgentChatSpawnKind,
   AgentChatSetSpawnKindArgs,
@@ -454,6 +458,11 @@ import {
   spawnCompletedNoticeMessage,
   spawnCompletionDeliveryFailedNoticeMessage,
   spawnParentGoneNoticeMessage,
+  AGENT_CHAT_CONTEXT_ROTATION_PCT,
+  isContextOverflowFailureText,
+  AgentChatBackgroundTurnResult,
+  AgentChatBackgroundTurnStatus,
+  AGENT_CHAT_CONTEXT_ROTATION_TURNS,
   activeTurnDispatchModes,
   defaultActiveTurnDispatchMode,
   providerSupportsLiveRedirect,
@@ -1283,6 +1292,65 @@ function claudeStructuredSubagentResult(value: unknown): ClaudeStructuredSubagen
   };
 }
 
+/** One hand-off line, clipped so a distillation cannot grow without bound. */
+function clipHandoffLine(value: string, maxChars = 200): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars - 1)}…`;
+}
+
+export function normalizeLastTurnFailure(value: unknown): AgentChatLastTurnFailure | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const kind = record.kind === "context_overflow" ? "context_overflow" : record.kind === "error" ? "error" : null;
+  if (!kind) return null;
+  const message = typeof record.message === "string" ? record.message.trim() : "";
+  const at = typeof record.at === "string" && record.at.trim().length ? record.at.trim() : "";
+  if (!at.length) return null;
+  const turnId = typeof record.turnId === "string" && record.turnId.trim().length ? record.turnId.trim() : null;
+  return { kind, message, at, ...(turnId ? { turnId } : {}) };
+}
+
+/** Read a persisted `contextHealth` back, or null if it is not one. */
+export function normalizeSessionContextHealth(value: unknown): AgentChatSessionContextHealth | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const at = typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt.trim() : "";
+  if (!at.length) return null;
+  const pct = typeof record.occupancyPct === "number" && Number.isFinite(record.occupancyPct)
+    ? Math.max(0, Math.min(100, record.occupancyPct))
+    : null;
+  const turns = typeof record.aboveHighWaterTurns === "number" && Number.isFinite(record.aboveHighWaterTurns)
+    ? Math.max(0, Math.floor(record.aboveHighWaterTurns))
+    : 0;
+  return {
+    occupancyPct: pct,
+    aboveHighWaterTurns: turns,
+    compactionSeen: record.compactionSeen === true,
+    updatedAt: at,
+  };
+}
+
+/**
+ * Should this thread be rotated before it wedges?
+ *
+ * Two conditions, both deliberately conservative. A thread that has ALREADY
+ * failed on overflow is past advice — it is broken, and saying so is the honest
+ * answer. Short of that, ADE only speaks up once the thread has sat above the
+ * high-water mark for two settled turns in a row AND a compaction has already
+ * run, because before compaction the occupancy number is not yet the thread's
+ * floor: the next compaction may win most of it back.
+ */
+export function shouldAdviseSessionRotation(
+  failure: AgentChatLastTurnFailure | null,
+  context: AgentChatSessionContextHealth | null,
+): boolean {
+  if (failure?.kind === "context_overflow") return true;
+  if (!context?.compactionSeen) return false;
+  if (context.occupancyPct == null) return false;
+  if (context.occupancyPct < AGENT_CHAT_CONTEXT_ROTATION_PCT) return false;
+  return context.aboveHighWaterTurns >= AGENT_CHAT_CONTEXT_ROTATION_TURNS;
+}
+
 function isClaudeContextOverflowResult(result: Record<string, unknown>, errors: string[]): boolean {
   if (result.terminal_reason === "prompt_too_long") return true;
   return /prompt.{0,20}too long|context.{0,30}(?:overflow|window|length)|maximum context|too many tokens/i.test(errors.join(" "));
@@ -1513,6 +1581,17 @@ type PersistedChatState = {
    * after the in-memory record of the replay is gone.
    */
   transcriptReplayOrigin?: TranscriptReplayOrigin | null;
+  /**
+   * How the last settled turn ended, when it ended badly.
+   *
+   * Durable because the one failure that matters here — the thread is over its
+   * context limit — is a property of the CONVERSATION, and survives every
+   * restart until the thread is rotated. It is what the CTO voice pre-flight
+   * reads to refuse a call the thread could not answer.
+   */
+  lastTurnFailure?: AgentChatLastTurnFailure | null;
+  /** How full the thread was at the last settled turn. See the type. */
+  contextHealth?: AgentChatSessionContextHealth | null;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -3674,6 +3753,25 @@ type ManagedChatSession = {
   pendingTranscriptReplay: string | null;
   /** See PersistedChatState.transcriptReplayOrigin. */
   transcriptReplayOrigin: TranscriptReplayOrigin | null;
+  /** See PersistedChatState.lastTurnFailure. */
+  lastTurnFailure: AgentChatLastTurnFailure | null;
+  /** See PersistedChatState.contextHealth. */
+  contextHealth: AgentChatSessionContextHealth | null;
+  /**
+   * The newest error text this turn produced, whether it arrived as an `error`
+   * event or as a failed `status`. Held only until the turn's `done` lands,
+   * which is where it becomes the durable `lastTurnFailure`.
+   */
+  liveTurnErrorText: string | null;
+  /**
+   * The CTO voice call whose turn is running on this session right now.
+   *
+   * Set for the life of one `runSessionTurn` call and stamped onto every
+   * envelope committed while it is set, so the transcript can fold a call into
+   * one card without anybody fabricating a message. Never persisted: a call
+   * does not survive a restart.
+   */
+  activeVoiceCallId: string | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -3879,22 +3977,7 @@ function deterministicChatSessionId(idempotencyKey: string): string {
 }
 
 type SessionTurnCollector = {
-  resolve: (value: {
-    sessionId: string;
-    provider: AgentChatProvider;
-    model: string;
-    modelId?: string;
-    outputText: string;
-    usage?: {
-      inputTokens?: number | null;
-      outputTokens?: number | null;
-      cacheReadTokens?: number | null;
-      cacheCreationTokens?: number | null;
-    };
-    turnId?: string;
-    threadId?: string;
-    sdkSessionId?: string | null;
-  }) => void;
+  resolve: (value: AgentChatBackgroundTurnResult) => void;
   reject: (error: Error) => void;
   outputText: string;
   turnId: string | null;
@@ -12438,7 +12521,7 @@ export function createAgentChatService(args: {
   // rely on it having flushed before teardown.
   const flushIdentityContinuityDeterministic = (
     managed: ManagedChatSession,
-    reason: "compaction" | "provider_reset",
+    reason: "compaction" | "provider_reset" | "session_rotation",
   ): string | null => {
     if (!usesIdentityContinuity(managed)) return null;
     const deterministic = buildDeterministicContinuitySummary(managed);
@@ -15081,6 +15164,8 @@ export function createAgentChatService(args: {
       ...(managed.transcriptReplayOrigin
         ? { transcriptReplayOrigin: managed.transcriptReplayOrigin }
         : {}),
+      ...(managed.lastTurnFailure ? { lastTurnFailure: managed.lastTurnFailure } : {}),
+      ...(managed.contextHealth ? { contextHealth: managed.contextHealth } : {}),
       ...(eventSequenceHighWaterMark > 0 ? { eventSequence: eventSequenceHighWaterMark } : {}),
       updatedAt: nowIso()
     };
@@ -16396,6 +16481,100 @@ export function createAgentChatService(args: {
     setUsageLimitResume(managed, null);
   };
 
+  /**
+   * How full the thread is right now, 0..100, or null when nothing says.
+   *
+   * Two sources, in order of authority: Claude's own context guardrail, which
+   * is maintained live from the SDK's usage reports, and — for every other
+   * provider — the settled turn's own usage against the context window it
+   * reported. Both are approximations of the same fact, and either is enough
+   * for a threshold whose job is to speak one turn before it is too late.
+   */
+  const readTurnOccupancyPct = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "done" }>,
+  ): number | null => {
+    if (managed.runtime?.kind === "claude") {
+      const pct = managed.runtime.contextGuardrail.occupancyPct;
+      if (typeof pct === "number" && Number.isFinite(pct)) return Math.max(0, Math.min(100, pct));
+    }
+    const usage = event.usage;
+    const window = typeof usage?.contextWindow === "number" && usage.contextWindow > 0 ? usage.contextWindow : null;
+    if (!window) return null;
+    const used = (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0) + (usage?.cacheCreationTokens ?? 0);
+    if (used <= 0) return null;
+    return Math.max(0, Math.min(100, (used / window) * 100));
+  };
+
+  const claudeCompactionSeen = (managed: ManagedChatSession): boolean => {
+    if (managed.runtime?.kind !== "claude") return false;
+    const guardrail = managed.runtime.contextGuardrail;
+    return guardrail.naturalCompactSeen
+      || guardrail.fallbackIssuedThisEpisode
+      || guardrail.compactionUnavailable;
+  };
+
+  /**
+   * THE single writer of a session's durable turn health.
+   *
+   * Called from `commitChatEvent` on every `done`, which is the one place all
+   * providers agree a turn is over. It answers two different questions with one
+   * write: "can this thread take another turn at all" (the overflow verdict,
+   * which outlives restarts) and "is this thread getting close" (the occupancy
+   * streak the CTO page offers a rotation on). A completed turn clears the
+   * failure, because a thread that just answered is not over its limit.
+   */
+  const recordSettledTurnHealth = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "done" }>,
+  ): void => {
+    const errorText = managed.liveTurnErrorText;
+    managed.liveTurnErrorText = null;
+    const previousFailure = managed.lastTurnFailure;
+    const previousContext = managed.contextHealth;
+
+    let nextFailure: AgentChatLastTurnFailure | null = previousFailure;
+    if (event.status === "completed") {
+      nextFailure = null;
+    } else if (event.status === "failed") {
+      const message = errorText?.trim() || managed.preview?.trim() || "The turn failed.";
+      nextFailure = {
+        kind: isContextOverflowFailureText(message) ? "context_overflow" : "error",
+        message,
+        at: nowIso(),
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+      };
+    }
+    // An interrupted turn says nothing about the thread's health: the user
+    // stopped it, so the previous verdict stands untouched.
+
+    const occupancyPct = readTurnOccupancyPct(managed, event);
+    let nextContext = previousContext;
+    if (occupancyPct != null) {
+      const above = occupancyPct >= AGENT_CHAT_CONTEXT_ROTATION_PCT;
+      nextContext = {
+        occupancyPct,
+        aboveHighWaterTurns: above ? (previousContext?.aboveHighWaterTurns ?? 0) + 1 : 0,
+        compactionSeen: claudeCompactionSeen(managed) || previousContext?.compactionSeen === true,
+        updatedAt: nowIso(),
+      };
+    }
+
+    const failureChanged = JSON.stringify(nextFailure ?? null) !== JSON.stringify(previousFailure ?? null);
+    const contextChanged = JSON.stringify(nextContext ?? null) !== JSON.stringify(previousContext ?? null);
+    if (!failureChanged && !contextChanged) return;
+    managed.lastTurnFailure = nextFailure;
+    managed.contextHealth = nextContext;
+    if (nextFailure?.kind === "context_overflow" && previousFailure?.kind !== "context_overflow") {
+      logger.warn("agent_chat.session_context_overflow", {
+        sessionId: managed.session.id,
+        provider: managed.session.provider,
+        occupancyPct,
+      });
+    }
+    persistChatState(managed);
+  };
+
   type CommitChatEventOptions = {
     liveEvent?: AgentChatEvent;
   };
@@ -16435,6 +16614,21 @@ export function createAgentChatService(args: {
       }
     }
 
+    // Durable turn health. The error text is remembered as it streams past and
+    // spent on the `done` — the same two signals the blocking-turn collector
+    // reads, recorded here so they outlive the turn and the process.
+    if (storedEvent.type === "error") {
+      managed.liveTurnErrorText = storedEvent.message;
+    } else if (
+      storedEvent.type === "status"
+      && storedEvent.turnStatus === "failed"
+      && storedEvent.message
+    ) {
+      managed.liveTurnErrorText = storedEvent.message;
+    } else if (storedEvent.type === "done") {
+      recordSettledTurnHealth(managed, storedEvent);
+    }
+
     // Session summaries are generated only when the chat is explicitly ended in ADE,
     // so "done" events intentionally do not produce a summary here.
 
@@ -16445,6 +16639,13 @@ export function createAgentChatService(args: {
       timestamp,
       event: storedEvent,
       sequence,
+      // A voice call's turns are real turns on the CTO's real thread, so they
+      // are written exactly like every other event — and carry the call they
+      // belong to, which is all the transcript needs to fold them into one
+      // card instead of a stream of messages nobody typed.
+      ...(managed.activeVoiceCallId
+        ? { provenance: { voiceCallId: managed.activeVoiceCallId } }
+        : {}),
     };
     const liveEnvelope: AgentChatEventEnvelope = liveEvent === storedEvent
       ? storedEnvelope
@@ -16453,6 +16654,9 @@ export function createAgentChatService(args: {
           timestamp,
           event: liveEvent,
           sequence,
+          ...(managed.activeVoiceCallId
+            ? { provenance: { voiceCallId: managed.activeVoiceCallId } }
+            : {}),
         };
 
     writeTranscript(managed, storedEnvelope);
@@ -16516,6 +16720,12 @@ export function createAgentChatService(args: {
       model: managed.session.model,
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       outputText: collector.outputText.trim() || managed.preview?.trim() || "",
+      // The turn's own verdict, not a guess made from its text. On a failed
+      // turn `outputText` above falls through to the session preview, which is
+      // the provider's error sentence — a caller must be able to tell that
+      // apart from an answer without pattern-matching English.
+      status: liveEvent.status,
+      errorMessage: collector.lastError,
       ...(collector.usage ? { usage: collector.usage } : {}),
       ...(liveEvent.turnId ? { turnId: liveEvent.turnId } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
@@ -20782,6 +20992,10 @@ export function createAgentChatService(args: {
       pendingReconstructionContext: null,
       pendingTranscriptReplay: null,
       transcriptReplayOrigin: null,
+      lastTurnFailure: null,
+      contextHealth: null,
+      liveTurnErrorText: null,
+      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
@@ -20861,6 +21075,8 @@ export function createAgentChatService(args: {
       managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
     }
     managed.transcriptReplayOrigin = normalizeTranscriptReplayOrigin(persisted?.transcriptReplayOrigin);
+    managed.lastTurnFailure = normalizeLastTurnFailure(persisted?.lastTurnFailure);
+    managed.contextHealth = normalizeSessionContextHealth(persisted?.contextHealth);
 
     managedSessions.set(sessionId, managed);
     // Deferred until the scheduler has read its durable rows back: before that,
@@ -35371,6 +35587,10 @@ export function createAgentChatService(args: {
       pendingReconstructionContext: null,
       pendingTranscriptReplay: null,
       transcriptReplayOrigin: null,
+      lastTurnFailure: null,
+      contextHealth: null,
+      liveTurnErrorText: null,
+      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -36552,6 +36772,10 @@ export function createAgentChatService(args: {
       pendingReconstructionContext: null,
       pendingTranscriptReplay: null,
       transcriptReplayOrigin: null,
+      lastTurnFailure: null,
+      contextHealth: null,
+      liveTurnErrorText: null,
+      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -49166,6 +49390,210 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Can this chat take another turn, and is it close to the edge?
+   *
+   * Read-only and cheap on purpose — it reads the session's own persisted
+   * bookkeeping rather than asking a provider anything, so the CTO voice
+   * pre-flight can call it on every Talk without opening a query, and the
+   * answer survives a restart the way the problem it describes does.
+   */
+  const getSessionTurnHealth = (
+    { sessionId }: { sessionId: string },
+  ): AgentChatSessionTurnHealth => {
+    const managed = ensureManagedSession(sessionId);
+    const failure = managed.lastTurnFailure;
+    const context = managed.contextHealth;
+    return {
+      sessionId: managed.session.id,
+      // Only the overflow verdict blocks: one failed turn is bad luck, a
+      // conversation that no longer fits is a property of the thread.
+      canTakeTurn: failure?.kind !== "context_overflow",
+      blockedReason: failure?.kind === "context_overflow" ? "context_overflow" : null,
+      lastTurnFailure: failure,
+      context,
+      rotationAdvised: shouldAdviseSessionRotation(failure, context),
+    };
+  };
+
+  /**
+   * The CTO thread's health, without creating one.
+   *
+   * Strictly read-only for the same reason `getCtoAttention` is: the CTO page
+   * polls this to decide whether to OFFER a fresh thread, and materializing a
+   * lane and a chat session as a side effect of drawing a banner would be a
+   * side effect nobody asked for.
+   */
+  const getCtoThreadHealth = async (): Promise<CtoThreadHealth> => {
+    const empty: CtoThreadHealth = {
+      sessionId: null,
+      canTakeTurn: true,
+      blockedReason: null,
+      lastTurnFailure: null,
+      context: null,
+      rotationAdvised: false,
+    };
+    try {
+      const cto = (await listIdentitySessions("cto"))[0];
+      if (!cto) return empty;
+      return getSessionTurnHealth({ sessionId: cto.sessionId });
+    } catch (error) {
+      logger.warn("agent_chat.cto_thread_health_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return empty;
+    }
+  };
+
+  /**
+   * What the outgoing thread knew, written down before it is retired.
+   *
+   * A fresh thread with no hand-off is an amnesiac one, and the case this
+   * exists for is exactly the case where the CTO cannot be ASKED to summarize
+   * itself: a conversation over its context limit cannot take the turn that
+   * would write the summary. So there are two paths and the deterministic one
+   * is not a fallback in the apologetic sense — it is the one that has to work.
+   */
+  const distilIdentityHandoff = async (
+    managed: ManagedChatSession,
+  ): Promise<{ text: string; source: "model" | "deterministic"; thin: boolean }> => {
+    // Deterministic first, always. Every line of it comes from something
+    // already on disk, so it works on a thread that cannot think — and a thread
+    // with nothing in it at all needs no model round-trip to tell us so.
+    const summary = sessionService.get(managed.session.id)?.summary?.trim()
+      ?? managed.preview?.trim()
+      ?? "";
+    const conversation = collectConversationEntries(managed);
+    const recent = conversation
+      .filter((entry) => entry.role === "user")
+      .slice(-8)
+      .map((entry) => `- ${clipHandoffLine(entry.text)}`);
+    const scheduled = (scheduledWorkScheduler?.list(managed.session.id) ?? [])
+      .slice(0, 8)
+      .map((schedule) => `- ${clipHandoffLine(schedule.prompt || schedule.kind)}`);
+    const sections: string[] = [];
+    if (summary.length) sections.push(`Where it left off: ${clipHandoffLine(summary, 400)}`);
+    if (recent.length) sections.push(["What was asked, most recent last:", ...recent].join("\n"));
+    if (scheduled.length) sections.push(["Work still scheduled on this thread:", ...scheduled].join("\n"));
+
+    // Ask the CTO itself only when there is something to summarize AND the
+    // thread can still take a turn. The case this whole routine exists for —
+    // a conversation over its context limit — can do neither.
+    const health = getSessionTurnHealth({ sessionId: managed.session.id });
+    if (sections.length && health.canTakeTurn && managed.session.status !== "active") {
+      try {
+        const asked = await runSessionTurn({
+          sessionId: managed.session.id,
+          text: [
+            "[ade] This conversation is about to be retired and replaced by a fresh one.",
+            "Write the hand-off note your next self will read. Plain prose, no markdown headings, at most 12 lines:",
+            "what we were working on, the decisions already made, what is still open, and anything you were told to remember.",
+            "Write only the note.",
+          ].join("\n"),
+          displayText: "Write your hand-off note before this thread is retired.",
+          timeoutMs: 120_000,
+        });
+        const text = asked.status === "completed" ? asked.outputText.trim() : "";
+        if (text.length) return { text, source: "model", thin: false };
+      } catch (error) {
+        logger.warn("agent_chat.identity_handoff_turn_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const thin = sections.length === 0;
+    if (thin) {
+      // Never silently skipped: an empty hand-off says so, and says where the
+      // conversation still is.
+      sections.push(
+        "This thread could not be summarized: nothing readable was left in its recent history — it may have been over its context limit. Its full transcript is still on disk under the retired session.",
+      );
+    }
+    return { text: sections.join("\n\n"), source: "deterministic", thin };
+  };
+
+  /**
+   * Retire the current identity thread and start a clean one.
+   *
+   * Deliberately not automatic and deliberately not destructive: the outgoing
+   * conversation is distilled into durable memory, appended to the daily log,
+   * flushed through the same continuity routine a compaction uses, and then
+   * ENDED — which is what puts it in History with its turn count, transcript
+   * and all. Identity, memory, daily log and project state are untouched. Only
+   * the conversation starts over.
+   */
+  const startFreshIdentitySession = async (args: {
+    identityKey: AgentChatIdentityKey;
+    laneId: string;
+  }): Promise<{
+    session: AgentChatSession;
+    previousSessionId: string | null;
+    handoff: { written: boolean; thin: boolean; source: "model" | "deterministic" | "none" };
+  }> => {
+    const existing = (await listIdentitySessions(args.identityKey))[0] ?? null;
+    let handoff: { written: boolean; thin: boolean; source: "model" | "deterministic" | "none" } = {
+      written: false,
+      thin: false,
+      source: "none",
+    };
+
+    if (existing) {
+      const managed = ensureManagedSession(existing.sessionId);
+      try {
+        const distilled = await distilIdentityHandoff(managed);
+        // The same routine a compaction runs, for the same reason: the rolling
+        // summary and `thread-state.md` are what the NEXT thread reads first.
+        flushIdentityContinuityDeterministic(managed, "session_rotation");
+        managed.continuitySummary = distilled.text;
+        managed.continuitySummaryUpdatedAt = nowIso();
+        persistChatState(managed);
+        writeCtoThreadStateFromSummary(managed, distilled.text, "session_rotation");
+        if (args.identityKey === "cto" && ctoMemoryService) {
+          const stamp = new Date().toISOString().slice(0, 10);
+          ctoMemoryService.appendDailyEntry(
+            `Thread retired (${existing.sessionId}) and a fresh CTO session started${distilled.thin ? " — hand-off was thin; see the retired transcript" : ""}.`,
+          );
+          ctoMemoryService.appendMemoryFact(
+            `${stamp} hand-off from retired CTO thread ${existing.sessionId}: ${distilled.text}`,
+          );
+        }
+        handoff = { written: true, thin: distilled.thin, source: distilled.source };
+      } catch (error) {
+        // A hand-off that could not be written must not strand the user on a
+        // thread that cannot answer — the rotation still happens, and the
+        // transcript is still on disk.
+        logger.warn("agent_chat.identity_handoff_write_failed", {
+          sessionId: existing.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      try {
+        await dispose({ sessionId: existing.sessionId });
+      } catch (error) {
+        logger.warn("agent_chat.identity_rotation_dispose_failed", {
+          sessionId: existing.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const session = await ensureIdentitySession({
+      identityKey: args.identityKey,
+      laneId: args.laneId,
+      reuseExisting: false,
+    });
+    logger.info("agent_chat.identity_session_rotated", {
+      identityKey: args.identityKey,
+      previousSessionId: existing?.sessionId ?? null,
+      sessionId: session.id,
+      handoffSource: handoff.source,
+      handoffThin: handoff.thin,
+    });
+    return { session, previousSessionId: existing?.sessionId ?? null, handoff };
+  };
+
+  /**
    * Cancel every pending-input surface before a user settles the session.
    *
    * This deliberately does not route through respondToInput: provider-facing
@@ -53402,22 +53830,18 @@ export function createAgentChatService(args: {
     reasoningEffort,
     executionMode,
     timeoutMs,
-  }: AgentChatSendArgs & { timeoutMs?: number | null }): Promise<{
-    sessionId: string;
-    provider: AgentChatProvider;
-    model: string;
-    modelId?: string;
-    outputText: string;
-    usage?: {
-      inputTokens?: number | null;
-      outputTokens?: number | null;
-      cacheReadTokens?: number | null;
-      cacheCreationTokens?: number | null;
-    };
-    turnId?: string;
-    threadId?: string;
-    sdkSessionId?: string | null;
-  }> => {
+    voiceCallId,
+  }: AgentChatSendArgs & {
+    timeoutMs?: number | null;
+    /**
+     * The CTO voice call this turn belongs to, when one is driving it.
+     *
+     * Stamped onto every envelope the turn commits so the transcript can fold
+     * the call into one card. Nothing else changes: the turn runs on the same
+     * session, with the same tools and the same approvals.
+     */
+    voiceCallId?: string | null;
+  }): Promise<AgentChatBackgroundTurnResult> => {
     const managed = ensureManagedSession(sessionId);
     const trimmed = text.trim();
     if (!trimmed.length) {
@@ -53427,6 +53851,8 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         outputText: "",
+        status: "skipped" as const,
+        errorMessage: null,
         ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
         ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
       };
@@ -53450,6 +53876,8 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         outputText: "",
+        status: "skipped" as const,
+        errorMessage: null,
         ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
         ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
       };
@@ -53462,7 +53890,15 @@ export function createAgentChatService(args: {
         : Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
           ? Math.max(15_000, Math.floor(Number(timeoutMs)))
           : DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS;
-    return await new Promise((resolve, reject) => {
+    // Held for the life of the turn, and given back however it ends: an
+    // abandoned id would stamp the user's NEXT typed message with a call that
+    // is already over.
+    const trimmedVoiceCallId = typeof voiceCallId === "string" && voiceCallId.trim().length
+      ? voiceCallId.trim()
+      : null;
+    if (trimmedVoiceCallId) managed.activeVoiceCallId = trimmedVoiceCallId;
+    try {
+      return await new Promise<AgentChatBackgroundTurnResult>((resolve, reject) => {
       const collector: SessionTurnCollector = {
         resolve,
         reject,
@@ -53500,7 +53936,12 @@ export function createAgentChatService(args: {
         }
         reject(error instanceof Error ? error : new Error(String(error)));
       });
-    });
+      });
+    } finally {
+      if (trimmedVoiceCallId && managed.activeVoiceCallId === trimmedVoiceCallId) {
+        managed.activeVoiceCallId = null;
+      }
+    }
   };
 
   /**
@@ -54365,6 +54806,9 @@ export function createAgentChatService(args: {
     getChatEventHistory,
     getChatEventHistoryPage,
     ensureIdentitySession,
+    startFreshIdentitySession,
+    getSessionTurnHealth,
+    getCtoThreadHealth,
     getCtoAttention,
     approveToolUse,
     listPendingInputs,

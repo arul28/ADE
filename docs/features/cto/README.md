@@ -190,6 +190,27 @@ The guarantee is that a deterministic flush always runs before anything can be l
 
 `AgentChatIdentityKey` is just `"cto"`. `ensureIdentitySession` reuses the newest CTO session regardless of which lane it was last active on: if nothing lives on the canonical lane but a CTO session exists elsewhere, it reuses that session and rebinds it to the canonical lane instead of forking a parallel thread. There is only ever one CTO thread per project.
 
+### One thread, and the way out of one that is finished
+
+A single project-level thread is the right default and it has one failure mode: it fills up. The owner's CTO thread crossed its context window by ordinary accumulation across twenty sessions of real work — 3,376 events, ~1.2M tokens against a 1M window — and then every turn failed with `Prompt is too long` while the fallback compaction answered *"conversation could not be reduced below the context limit"*. Nothing in the product said so, and nothing offered a way out.
+
+**Turn health is durable, and it is one field.** Every `done` event passes through `recordSettledTurnHealth` — the one place all providers agree a turn is over. It spends the error text the turn streamed past (from an `error` event or a failed `status`) and writes two things onto the session's persisted state:
+
+- `lastTurnFailure` — `{ kind: "context_overflow" | "error", message, at, turnId }`. The `context_overflow` verdict is the only failure that describes the *conversation* rather than the turn, and it is classified by `isContextOverflowFailureText` (which also matches the compaction refusal, because that is the second half of the same event). A completed turn clears it; an interrupted turn leaves it alone, because the user stopping a turn says nothing about the thread.
+- `contextHealth` — `{ occupancyPct, aboveHighWaterTurns, compactionSeen, updatedAt }`. Occupancy comes from Claude's own context guardrail where there is one, and otherwise from the settled turn's usage against the context window it reported, so Codex and the rest are covered too.
+
+`getSessionTurnHealth({ sessionId })` reads that record and nothing else — no provider round-trip, no query started — which is what lets the voice pre-flight call it on every Talk. `getCtoThreadHealth()` is the CTO-facing wrapper and is strictly read-only, like `getCtoAttention`: it resolves the thread through `listIdentitySessions` and must never call `ensureIdentitySession`, because materializing a lane and a session as a side effect of drawing a banner is not a thing a banner may do.
+
+**Rotation is offered, never taken.** `shouldAdviseSessionRotation` says yes when the thread has already failed on overflow (past advice — it is broken), or when occupancy has sat at or above `AGENT_CHAT_CONTEXT_ROTATION_PCT` (80%) for `AGENT_CHAT_CONTEXT_ROTATION_TURNS` (2) consecutive settled turns **and** a compaction has already run. The compaction condition matters: before compaction the occupancy number is not the thread's floor, so advising then would be advising for nothing. When it says yes, `CtoPage` shows a quiet, dismissible prompt above the thread. ADE never rotates on its own.
+
+**`startFreshIdentitySession` is the escape hatch, and it is not amnesia.** In order: distil the outgoing thread, flush continuity, write it to durable memory, retire the thread, create a new one.
+
+- The distillation prefers **asking the CTO** to write its own hand-off note — but only when there is something to summarize *and* `getSessionTurnHealth` says the thread can still take a turn. The case this whole routine exists for can do neither, so the **deterministic** path is not an apology: it builds the note from the session summary, the last eight user messages, and the titles of any scheduled work, all read from disk. If that comes back empty it says so in the entry — "could not be summarized… its full transcript is still on disk under the retired session" — rather than writing nothing.
+- The note goes through the routines a normal turn already uses: `flushIdentityContinuityDeterministic(managed, "session_rotation")`, then the note itself into `continuitySummary` and `thread-state.md` (`writeCtoThreadStateFromSummary`), a dated fact into `memory.md` (`appendMemoryFact`), and one line into the daily log (`appendDailyEntry`).
+- Then the old session is **ended**, which is what puts it in History with its turn count and leaves its transcript on disk, and `ensureIdentitySession({ reuseExisting: false })` creates the replacement. Identity, memory, daily log and project state are untouched; only the conversation restarts. `listIdentitySessions` sorts by `lastActivityAt`, so the next `ensureIdentitySession` resolves to the new thread.
+
+**Where it is reachable.** The `cto_state.startFreshSession` action (plus `IPC.ctoStartFreshSession` as the desktop's own fallback) and `window.ade.cto.startFreshSession()`. It is **CTO-only** in `ADE_ACTION_CTO_ONLY.cto_state`: nothing it touches is destructive, but deciding a thread is finished is the operator's call, and an agent that could make it could quietly drop the context it is being supervised with. `cto_state.getThreadHealth` stays open to every role, like `getAttention` — it creates nothing and returns no content. In the UI it is the "Start a fresh session" card under Settings → Model (confirm-before-act, with the plain sentence *"Everything the CTO remembers is kept, and this conversation stays in History. Only the live thread starts over."*), the rotation prompt on the CTO page, and a button on the voice start sheet's refusal card.
+
 ### Hidden from rosters, but never silent
 
 The CTO thread is pinned to the project's **primary lane** (it needs a lane for its cwd), but it is filtered out of every session roster so it never reads as a chat you started: `agentChatService.listSessions` drops identity sessions unless `includeIdentity` is set, and `chatSessionProjection.projectChatSummariesOntoSessions` plus `laneListSnapshotService` drop the backing terminal row before the Work tab, Lanes tab, workspace graph, and TopBar ever see it. `sessions:get` still resolves the id, so deeplinks and `CtoPage` keep working. Universal search deliberately *does* index the thread — it is your own conversation, and it should be findable in ⌘K.
@@ -471,6 +492,38 @@ what was said without ADE writing it twice.
 answered with an error rather than with speech, so speech is queued and drained
 on `response.done`. That is why the filler and the answer behind it are one
 stretch of `speaking` rather than two.
+
+### A call is one card in the thread, not a stream of messages
+
+A call runs its thinking on the CTO's **own** thread — that is the decision, and it is what keeps a call continuous with the chat. The first build took it literally: every spoken word became a user bubble and every reply an assistant message, so saying "hi" out loud left a transcription robot's output in the conversation.
+
+The fix does not hide anything, because the turns are real turns and the tool calls are real tool calls. Instead every event a voice turn commits is **tagged with the call it belongs to**:
+
+- `runSessionTurn` takes an optional `voiceCallId`. It sets `managed.activeVoiceCallId` for the life of the turn and gives it back in a `finally` — an abandoned id would stamp the user's next typed message with a call that is already over.
+- `commitChatEvent` stamps `provenance.voiceCallId` onto the stored and live envelopes while it is set. One choke point, so nothing a turn emits can escape untagged.
+- In the renderer, the collapse pass copies the id onto each render row and `groupVoiceCallRows` folds a maximal consecutive run of rows sharing one call id into a single `voice_call_group` row: a microphone glyph, "Voice call", the duration, the number of exchanges, and the first line of what was said. Collapsed is the default; expanding renders the folded rows inline through the same row renderer, so the utterances, the replies and any approval the call raised are all there. It follows the `boardMove` / `background_job_group` precedent rather than inventing a card shape.
+- A call that connected and produced nothing produces no rows, so there is no run and **no card at all**.
+
+### A call never reads an error out loud
+
+`runBackendTurn` used to return `result.outputText` whatever happened. On a failed turn that string falls through to the session preview, which is the provider's error sentence — so the owner heard the CTO say *"Prompt is too long"* in its own voice.
+
+`runSessionTurn` now answers with the turn's own terminal `status` (`completed` | `interrupted` | `failed` | `skipped`) alongside `errorMessage`, taken from the `done` event and the collector's recorded error rather than guessed from English. The call branches on **cause**:
+
+| Status | What is spoken |
+| --- | --- |
+| `completed` | The answer, split into speech and any scene fence. |
+| `failed`, context overflow | `CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW` — "I can't think about that right now — this chat is over its limit. You can start a fresh CTO session from settings." |
+| `failed`, anything else | `CTO_VOICE_SPOKEN_TURN_FAILED` — "Something went wrong on my side. Nothing was changed." |
+| `interrupted` | **Nothing.** The user stopped it on purpose; narrating that back at them is noise. The call service treats an empty answer as a return to `listening` rather than speaking an empty string, which would leave the HUD in `speaking` waiting for audio that never comes. |
+
+The real error is logged at warn level with its cause (`cto_voice.turn_failed`), so nothing is lost — it just is not read aloud.
+
+### A call is refused before the socket if the thread cannot answer
+
+Before `createCtoVoiceCallService(...).start()` — after the key check, before anything is billed — the runtime service resolves the CTO session and calls `agentChatService.getSessionTurnHealth`. If `canTakeTurn` is false (the thread is over its context limit; see [One thread, and the way out of one that is finished](#one-thread-and-the-way-out-of-one-that-is-finished)) it answers `{ ok: false, error: "chat-unavailable", detail: CTO_VOICE_CHAT_OVER_LIMIT_DETAIL }` and no WebSocket is opened. The detail sentence is the whole thing the user reads — *"This chat is over its context limit, so the CTO cannot answer yet. Start a fresh CTO session and try again."* — and the start sheet's refusal card carries a **Start a fresh session** button beside Try again, so the way out is one click from the failure rather than a hunt through settings.
+
+The pre-flight is a guard, not a gate: a lane or session that cannot be resolved is left for the start path to report with the sentence it already has.
 
 ### The call brain lives in the runtime, and the desktop is a router
 

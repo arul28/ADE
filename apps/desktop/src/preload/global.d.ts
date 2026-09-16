@@ -312,6 +312,8 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
   CtoUpdateIdentityArgs,
   CtoMemorySnapshot,
   CtoUpdateMemoryArgs,
@@ -3654,6 +3656,8 @@ declare global {
         ensureSession: (
           args?: CtoEnsureSessionArgs,
         ) => Promise<AgentChatSession>;
+        startFreshSession: () => Promise<CtoStartFreshSessionResult>;
+        getThreadHealth: () => Promise<CtoThreadHealth>;
         listSessionLogs: (
           args?: CtoListSessionLogsArgs,
         ) => Promise<CtoSessionLogEntry[]>;

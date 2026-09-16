@@ -98,10 +98,28 @@ describe("CtoPage settings", () => {
   const originalAde = globalThis.window.ade;
   const ensureSession = vi.fn().mockResolvedValue(SESSION);
   const updateSession = vi.fn().mockResolvedValue({ ...SESSION, modelId: "anthropic/claude-opus-4-8" });
+  const startFreshSession = vi.fn();
+  const getThreadHealth = vi.fn();
+
+  /** A healthy thread: plenty of room, nothing to offer. */
+  const HEALTHY = {
+    sessionId: "cto-session",
+    canTakeTurn: true,
+    blockedReason: null,
+    lastTurnFailure: null,
+    context: { occupancyPct: 12, aboveHighWaterTurns: 0, compactionSeen: false, updatedAt: "2026-05-01T00:00:00.000Z" },
+    rotationAdvised: false,
+  } as const;
 
   beforeEach(() => {
     ensureSession.mockReset().mockResolvedValue(SESSION);
     updateSession.mockClear();
+    getThreadHealth.mockReset().mockResolvedValue(HEALTHY);
+    startFreshSession.mockReset().mockResolvedValue({
+      sessionId: "cto-session-2",
+      previousSessionId: "cto-session",
+      handoff: { written: true, thin: false, source: "model" },
+    });
     useAppStore.setState({
       lanes: [{ id: "lane-primary", name: "Primary", laneType: "primary" } as never],
       lanesLoading: false,
@@ -112,6 +130,8 @@ describe("CtoPage settings", () => {
       cto: {
         getState: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
         ensureSession,
+        startFreshSession,
+        getThreadHealth,
         updateIdentity: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
         previewSystemPrompt: vi.fn().mockResolvedValue({
           prompt: "doctrine text\n\nstate text",
@@ -341,6 +361,106 @@ describe("CtoPage settings", () => {
       sessionId: "cto-session",
       fastMode: true,
     }));
+  });
+
+  it("confirms before starting a fresh session, and starts exactly one", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Model/ }));
+
+    // The first press is a question, not the action: nothing has been retired.
+    fireEvent.click(screen.getByTestId("cto-fresh-session-start"));
+    expect(startFreshSession).not.toHaveBeenCalled();
+    // And the question says what survives rather than asking "are you sure".
+    expect(screen.getByTestId("cto-fresh-session-confirm-text").textContent).toBe(
+      "Everything the CTO remembers is kept, and this conversation stays in History."
+      + " Only the live thread starts over.",
+    );
+
+    fireEvent.click(screen.getByTestId("cto-fresh-session-confirm"));
+
+    await waitFor(() => expect(startFreshSession).toHaveBeenCalledTimes(1));
+    expect((await screen.findByTestId("cto-fresh-session-result")).textContent)
+      .toBe("Fresh session started. The CTO wrote a hand-off note.");
+  });
+
+  it("backs out of the confirm without retiring anything", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Model/ }));
+
+    fireEvent.click(screen.getByTestId("cto-fresh-session-start"));
+    fireEvent.click(screen.getByTestId("cto-fresh-session-cancel"));
+
+    expect(startFreshSession).not.toHaveBeenCalled();
+    expect(screen.getByTestId("cto-fresh-session-start")).toBeTruthy();
+  });
+
+  it("says the hand-off was thin when it was, rather than claiming a note", async () => {
+    startFreshSession.mockResolvedValueOnce({
+      sessionId: "cto-session-2",
+      previousSessionId: "cto-session",
+      handoff: { written: true, thin: true, source: "deterministic" },
+    });
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Model/ }));
+    fireEvent.click(screen.getByTestId("cto-fresh-session-start"));
+    fireEvent.click(screen.getByTestId("cto-fresh-session-confirm"));
+
+    expect((await screen.findByTestId("cto-fresh-session-result")).textContent)
+      .toContain("still in History in full");
+  });
+
+  it("keeps the rotation prompt away while the thread has room", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+    await waitFor(() => expect(getThreadHealth).toHaveBeenCalled());
+
+    expect(screen.queryByTestId("cto-rotation-prompt")).toBeNull();
+  });
+
+  it("offers a fresh session once ADE advises rotating, and never rotates itself", async () => {
+    getThreadHealth.mockResolvedValue({ ...HEALTHY, rotationAdvised: true });
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+
+    const prompt = await screen.findByTestId("cto-rotation-prompt");
+    expect(prompt.textContent).toContain("This conversation is getting full");
+    expect(prompt.textContent).toContain("keeps everything the CTO remembers");
+    // Advice with a button. Nothing was retired by drawing it.
+    expect(startFreshSession).not.toHaveBeenCalled();
+    // And it is not a wall: the thread is still there behind it.
+    expect(screen.getByTestId("cto-agent-chat-pane")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("cto-rotation-start"));
+    await waitFor(() => expect(startFreshSession).toHaveBeenCalledTimes(1));
+  });
+
+  it("says the harder thing when the thread already cannot answer", async () => {
+    getThreadHealth.mockResolvedValue({
+      ...HEALTHY,
+      canTakeTurn: false,
+      blockedReason: "context_overflow",
+      rotationAdvised: true,
+    });
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+
+    const prompt = await screen.findByTestId("cto-rotation-prompt");
+    expect(prompt.textContent).toContain("over its context limit");
+    expect(prompt.textContent).toContain("Nothing it remembers is lost");
+  });
+
+  it("lets the rotation prompt be dismissed", async () => {
+    getThreadHealth.mockResolvedValue({ ...HEALTHY, rotationAdvised: true });
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-rotation-prompt");
+
+    fireEvent.click(screen.getByTestId("cto-rotation-dismiss"));
+
+    await waitFor(() => expect(screen.queryByTestId("cto-rotation-prompt")).toBeNull());
   });
 
   it("turns Fast mode off from settings on the locked CTO session", async () => {

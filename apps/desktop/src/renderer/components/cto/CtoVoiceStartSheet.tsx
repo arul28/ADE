@@ -45,6 +45,10 @@ const START_FAILURE_MESSAGES: Record<string, string> = {
   unavailable: "ADE can't start a call right now.",
   "confirm-mode": "ADE couldn't set the CTO's permissions for a call. Check that the project has a primary lane.",
   ended: "That call ended before it connected. Try again.",
+  // The detail sentence names the cause and the fix, so the headline only says
+  // that the CALL is what could not start — not why, and not that the CTO is
+  // broken.
+  "chat-unavailable": "ADE can't start a call on this conversation.",
 };
 
 const DEFAULT_START_FAILURE = "ADE couldn't start the call. See the logs for details.";
@@ -60,9 +64,35 @@ export function describeStartFailure(error: string | undefined, detail: string |
 type SheetFailure = {
   title: string;
   message: string;
+  /**
+   * The refusal code behind the message, kept so the card can offer the fix
+   * for THIS cause. Dropping it is what left a thread over its context limit
+   * with nothing but "Try again", which could only ever fail the same way.
+   */
+  error: string | null;
   /** Present only for microphone failures, which have a pane worth opening. */
   microphone: CtoVoiceMicrophoneBlockKind | null;
 };
+
+/**
+ * Retire the wedged conversation and open a fresh one.
+ *
+ * The sheet reaches for the bridge directly, the way it does for the system
+ * settings panes: it is a modal that owns its own recovery, not a presentation
+ * component someone else feeds.
+ */
+async function startFreshCtoSession(): Promise<boolean> {
+  const startFresh = window.ade?.cto?.startFreshSession;
+  if (!startFresh) return false;
+  try {
+    await startFresh();
+    return true;
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("[cto-voice] fresh session failed", error);
+    return false;
+  }
+}
 
 /**
  * The pane that can actually fix this cause, and what the button should say.
@@ -165,6 +195,7 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
       setFailure({
         title: START_FAILURE_TITLE,
         message: describeStartFailure(result.error, result.detail),
+        error: result.error ?? null,
         microphone: null,
       });
       setPhase("blocked");
@@ -172,6 +203,7 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
       setFailure({
         title: START_FAILURE_TITLE,
         message: DEFAULT_START_FAILURE,
+        error: null,
         microphone: null,
       });
       setPhase("blocked");
@@ -197,6 +229,7 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
     setFailure({
       title: CTO_VOICE_MICROPHONE_BLOCK_TITLE,
       message: microphoneFailure.message,
+      error: null,
       microphone: microphoneFailure.kind,
     });
     setPhase("blocked");
@@ -216,7 +249,7 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (phase !== "connecting") return;
     if (isVoiceCallLive(state.phase) || !state.error) return;
-    setFailure({ title: START_FAILURE_TITLE, message: state.error, microphone: null });
+    setFailure({ title: START_FAILURE_TITLE, message: state.error, error: null, microphone: null });
     setPhase("blocked");
   }, [phase, state.phase, state.error]);
 
@@ -244,6 +277,8 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
   }
 
   const settingsAction = settingsActionFor(failure?.microphone ?? null);
+  // The one refusal the owner can clear without leaving this sheet.
+  const chatOverLimit = failure?.error === "chat-unavailable";
 
   return (
     <div data-testid="cto-voice-sheet-blocked">
@@ -259,6 +294,22 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
             label={settingsAction.label}
             testId="cto-voice-open-mic-settings"
             onClick={() => { void openSettingsPane(settingsAction.paneId); }}
+          />
+        ) : null}
+        {chatOverLimit ? (
+          <SheetButton
+            label="Start a fresh session"
+            testId="cto-voice-start-fresh-session"
+            onClick={() => {
+              void (async () => {
+                setPhase("connecting");
+                if (await startFreshCtoSession()) {
+                  await run();
+                  return;
+                }
+                setPhase("blocked");
+              })();
+            }}
           />
         ) : null}
         <SheetButton

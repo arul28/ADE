@@ -6,6 +6,7 @@ import path from "node:path";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { projectAttachmentsDir, stageAttachmentBytes } from "../../../shared/chatAttachmentStagingFs";
 import { extractSceneFence, SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
+import { isContextOverflowFailureText } from "../../../shared/types/chat";
 import {
   CTO_VOICE_DEFAULT,
   CTO_VOICE_INITIAL_STATE,
@@ -14,6 +15,9 @@ import {
   CTO_VOICE_USD_PER_MINUTE,
   CTO_VOICE_VOICES,
   CTO_VOICE_ACTIONS,
+  CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+  CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW,
+  CTO_VOICE_SPOKEN_TURN_FAILED,
   describeVoiceApproval,
   isVoiceCallLive,
   type CtoVoiceAction,
@@ -440,7 +444,7 @@ export function createCtoVoiceRuntimeService(
           : CTO_VOICE_DEFAULT;
       },
 
-      runBackendTurn: async ({ intent, imageBase64, signal }: {
+      runBackendTurn: async ({ intent, callId, imageBase64, signal }: {
         intent: string;
         callId: string;
         signal: AbortSignal;
@@ -495,8 +499,34 @@ export function createCtoVoiceRuntimeService(
             ].join("\n"),
             displayText: intent,
             attachments,
+            // Every event this turn emits carries the call, so the transcript
+            // folds the whole call into one card instead of a stream of
+            // messages the user never typed.
+            ...(callId ? { voiceCallId: callId } : {}),
           });
-          return splitSpokenSceneAnswer(result.outputText);
+          // The turn's own verdict decides what is spoken — never its text.
+          // `outputText` on a failed turn is the provider's error sentence
+          // ('Prompt is too long'), and speaking that is how the CTO ended up
+          // reading an error out loud in its own voice.
+          if (result.status === "completed") return splitSpokenSceneAnswer(result.outputText);
+          const reason = result.errorMessage ?? result.outputText;
+          if (result.status === "interrupted") {
+            // The user stopped this themselves. Saying anything would be ADE
+            // narrating the user's own action back at them.
+            hostLogger?.info("cto_voice.turn_interrupted", { callId, sessionId: session.id });
+            return { spoken: "" };
+          }
+          const overLimit = isContextOverflowFailureText(reason);
+          hostLogger?.warn("cto_voice.turn_failed", {
+            callId,
+            sessionId: session.id,
+            status: result.status,
+            cause: overLimit ? "context_overflow" : "error",
+            error: reason,
+          });
+          return {
+            spoken: overLimit ? CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW : CTO_VOICE_SPOKEN_TURN_FAILED,
+          };
         } finally {
           signal.removeEventListener("abort", onAbort);
         }
@@ -662,6 +692,34 @@ export function createCtoVoiceRuntimeService(
         const apiKey = await readApiKey();
         if (!apiKey) {
           return { ok: false, error: "missing-key", detail: "no OpenAI key on this machine" };
+        }
+
+        // Pre-flight: a call is only worth opening a billed socket for if the
+        // thread behind it can still answer. The CTO thread is shared with the
+        // chat, and once it is over its context limit EVERY turn fails the same
+        // way — so the call would connect, listen, think, and then read an
+        // error out loud. Refusing here costs one cheap read of the session's
+        // own persisted turn health and no provider round-trip.
+        try {
+          const laneId = await resolvePrimaryLaneId();
+          const session = await agentChatService.ensureIdentitySession({ identityKey: "cto", laneId });
+          const health = agentChatService.getSessionTurnHealth({ sessionId: session.id });
+          if (!health.canTakeTurn) {
+            host.logger?.warn("cto_voice.start_refused_chat_unavailable", {
+              sessionId: session.id,
+              reason: health.blockedReason,
+            });
+            return {
+              ok: false,
+              error: "chat-unavailable",
+              detail: CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+            };
+          }
+        } catch (error) {
+          // The pre-flight is a guard, not a gate: a lane or a session that
+          // could not be resolved is the START path's problem to report, with
+          // the sentence it already has.
+          host.logger?.warn("cto_voice.preflight_failed", { error: String(error) });
         }
 
         outputAudio = [];

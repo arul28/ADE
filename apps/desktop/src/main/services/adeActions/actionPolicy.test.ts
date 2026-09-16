@@ -510,6 +510,24 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(isCtoOnlyAdeAction("cto_memory", "someMethodAddedLater")).toBe(true);
   });
 
+  it("keeps starting a fresh CTO session operator-only, and its reads open", () => {
+    const actions = ADE_ACTION_ALLOWLIST.cto_state ?? [];
+    expect(actions).toContain("startFreshSession");
+    expect(actions).toContain("getThreadHealth");
+
+    // Retiring the thread every other CTO surface is talking to is the
+    // operator's call — an agent could otherwise quietly drop the context it is
+    // being supervised with.
+    expect(isCtoOnlyAdeAction("cto_state", "startFreshSession")).toBe(true);
+
+    // Everything else on this domain is a read the whole fleet depends on and
+    // stays open, including the new health probe (it creates nothing).
+    expect(isCtoOnlyAdeAction("cto_state", "getThreadHealth")).toBe(false);
+    expect(isCtoOnlyAdeAction("cto_state", "getSnapshot")).toBe(false);
+    expect(isCtoOnlyAdeAction("cto_state", "getAttention")).toBe(false);
+    expect(isCtoOnlyAdeAction("cto_state", "updateIdentity")).toBe(false);
+  });
+
   it("gives recordDiscovery an input contract so any provider can call it", () => {
     const contract = getAdeActionInputContract("cto_memory", "recordDiscovery");
     expect(contract?.description).toContain("CTO");

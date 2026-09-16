@@ -678,6 +678,14 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       if (controller.signal.aborted) return;
 
       if (result.sceneSource) emit({ sceneSource: result.sceneSource });
+      // Nothing to say is a real answer here — an interrupted turn deliberately
+      // returns no sentence. Speaking an empty string produces no audio, so the
+      // HUD would sit in `speaking` forever waiting for a voice that never
+      // comes; go straight back to listening instead.
+      if (!result.spoken.trim().length) {
+        setPhase("listening");
+        return;
+      }
       speak(result.spoken);
       setPhase("speaking");
     } catch (error) {

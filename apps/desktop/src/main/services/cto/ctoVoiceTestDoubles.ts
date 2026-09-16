@@ -78,7 +78,17 @@ export function createVoiceRuntimeHost(overrides: Partial<CtoVoiceRuntimeHost> =
       updateSession: async () => undefined,
       approveToolUse: vi.fn(async () => undefined),
       subscribeToEvents: () => () => {},
-      runSessionTurn: async () => ({ outputText: "Three merged yesterday." }),
+      // The real `runSessionTurn` answers with the turn's own terminal status;
+      // the call only speaks a `completed` one.
+      runSessionTurn: async () => ({ outputText: "Three merged yesterday.", status: "completed" }),
+      getSessionTurnHealth: () => ({
+        sessionId: "session-1",
+        canTakeTurn: true,
+        blockedReason: null,
+        lastTurnFailure: null,
+        context: null,
+        rotationAdvised: false,
+      }),
       interrupt: async () => undefined,
     } as never,
     ctoMemoryService: { writeCallTranscript: vi.fn(async () => undefined) } as never,

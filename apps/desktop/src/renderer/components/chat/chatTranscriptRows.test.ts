@@ -4023,3 +4023,105 @@ describe("text adjacency across an older-history prepend", () => {
     expect(types.filter((type) => type === "text")).toHaveLength(2);
   });
 });
+
+describe("voice call folding", () => {
+  function voiceEvent(
+    sequence: number,
+    event: AgentChatEventEnvelope["event"],
+    voiceCallId: string | null,
+  ): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-voice",
+      timestamp: new Date(Date.UTC(2026, 8, 16, 12, 0, sequence)).toISOString(),
+      sequence,
+      event,
+      ...(voiceCallId ? { provenance: { voiceCallId } } : {}),
+    } as AgentChatEventEnvelope;
+  }
+
+  it("folds every row of one call into a single card", () => {
+    const grouped = groupEvents([
+      voiceEvent(1, { type: "user_message", text: "  what is failing on main?  " }, "call-1"),
+      voiceEvent(2, { type: "text", text: "Two checks are red.", itemId: "a-1" }, "call-1"),
+      voiceEvent(3, { type: "user_message", text: "fix the first one" }, "call-1"),
+      voiceEvent(4, { type: "text", text: "On it.", itemId: "a-2" }, "call-1"),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    const row = grouped[0]!;
+    expect(row.key).toBe("voice-call:call-1");
+    if (row.event.type !== "voice_call_group") throw new Error("expected a voice_call_group row");
+    expect(row.event.callId).toBe("call-1");
+    expect(row.event.exchanges).toBe(2);
+    expect(row.event.openingLine).toBe("what is failing on main?");
+    expect(row.event.hadApproval).toBe(false);
+    expect(row.event.durationMs).toBe(3000);
+    expect(row.event.rows).toHaveLength(4);
+    expect(row.timestamp).toBe(row.event.rows[3]!.timestamp);
+  });
+
+  it("marks a call that raised an approval", () => {
+    const grouped = groupEvents([
+      voiceEvent(1, { type: "user_message", text: "delete the branch" }, "call-2"),
+      voiceEvent(
+        2,
+        { type: "approval_request", itemId: "approval-1", kind: "command", description: "git branch -D x" },
+        "call-2",
+      ),
+    ]);
+
+    const card = grouped.find((row) => row.event.type === "voice_call_group");
+    expect(card).toBeTruthy();
+    if (card?.event.type !== "voice_call_group") throw new Error("expected a voice_call_group row");
+    expect(card.event.hadApproval).toBe(true);
+  });
+
+  it("keeps two calls apart and leaves the typed message between them ungrouped", () => {
+    const grouped = groupEvents([
+      voiceEvent(1, { type: "user_message", text: "first call" }, "call-a"),
+      voiceEvent(2, { type: "text", text: "sure", itemId: "a-1" }, "call-a"),
+      voiceEvent(3, { type: "user_message", text: "typed by hand" }, null),
+      voiceEvent(4, { type: "user_message", text: "second call" }, "call-b"),
+      voiceEvent(5, { type: "text", text: "ok", itemId: "a-2" }, "call-b"),
+    ]);
+
+    expect(grouped.map((row) => row.event.type)).toEqual([
+      "voice_call_group",
+      "user_message",
+      "voice_call_group",
+    ]);
+    expect(grouped.map((row) => row.key)).toEqual([
+      "voice-call:call-a",
+      grouped[1]!.key,
+      "voice-call:call-b",
+    ]);
+    const typed = grouped[1]!;
+    if (typed.event.type !== "user_message") throw new Error("expected the typed message to stay a user message");
+    expect(typed.event.text).toBe("typed by hand");
+  });
+
+  it("produces no card at all when nothing carries a voice call id", () => {
+    const events = [
+      voiceEvent(1, { type: "user_message", text: "typed" }, null),
+      voiceEvent(2, { type: "text", text: "answered", itemId: "a-1" }, null),
+    ];
+    const rows = collapseChatTranscriptEvents(events);
+    const grouped = groupChatTranscriptRows(rows);
+
+    expect(grouped.some((row) => row.event.type === "voice_call_group")).toBe(false);
+    // The wrapper must be a no-op on a voice-free transcript: identical rows in
+    // identical order, so today's transcript renders exactly as it did before.
+    expect(grouped.map((row) => ({ key: row.key, timestamp: row.timestamp, type: row.event.type }))).toEqual(
+      rows.map((row) => ({ key: row.key, timestamp: row.timestamp, type: row.event.type })),
+    );
+    expect(rows.every((row) => row.voiceCallId === undefined)).toBe(true);
+  });
+
+  it("stamps the call id onto every row a voice event produced", () => {
+    const rows = collapseChatTranscriptEvents([
+      voiceEvent(1, { type: "user_message", text: "hello" }, "call-3"),
+    ]);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.voiceCallId === "call-3")).toBe(true);
+  });
+});

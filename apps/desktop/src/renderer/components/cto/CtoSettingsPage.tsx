@@ -9,7 +9,7 @@ import {
   Notebook,
 } from "@phosphor-icons/react";
 
-import type { CtoIdentity, CtoSessionLogEntry } from "../../../shared/types";
+import type { CtoIdentity, CtoSessionLogEntry, CtoStartFreshSessionResult } from "../../../shared/types";
 import { CTO_VOICE_DEFAULT, CTO_VOICE_VOICES } from "../../../shared/types/ctoVoice";
 import { getModelById } from "../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -154,6 +154,154 @@ function ModelFacts({
   );
 }
 
+/**
+ * The sentence the confirm has to say out loud.
+ *
+ * Retiring a thread reads like a delete until someone tells you it is not one,
+ * so the confirm step does not ask "are you sure" — it says what survives.
+ */
+export const CTO_FRESH_SESSION_CONFIRM =
+  "Everything the CTO remembers is kept, and this conversation stays in History. Only the live thread starts over.";
+
+/** What the hand-off actually turned out to be, in one line. */
+export function describeFreshSessionResult(handoff: CtoStartFreshSessionResult["handoff"]): string {
+  if (handoff.thin) {
+    return "Fresh session started. The hand-off note was thin, so the old conversation is still in History in full.";
+  }
+  if (handoff.written && handoff.source === "model") {
+    return "Fresh session started. The CTO wrote a hand-off note.";
+  }
+  if (handoff.written && handoff.source === "deterministic") {
+    return "Fresh session started. ADE distilled a hand-off from the transcript.";
+  }
+  return "Fresh session started. There was no hand-off to write, and the old conversation is still in History.";
+}
+
+/**
+ * The way out of a thread that has run out of room.
+ *
+ * It sits under Model rather than Identity because this is a fact about the
+ * live thread — the same thing the card above it is talking about when it says
+ * switching models keeps the thread — and not about who the CTO is.
+ *
+ * Two-step confirm on the button, the way Secrets confirms a plaintext export:
+ * no dialog, and no `window.confirm`, which an Electron renderer should never
+ * reach for.
+ */
+function FreshSessionCard({
+  accent,
+  onStartFreshSession,
+}: {
+  accent: string;
+  onStartFreshSession: () => Promise<CtoStartFreshSessionResult>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setConfirming(false);
+    setBusy(true);
+    setResult(null);
+    setError(null);
+    try {
+      const next = await onStartFreshSession();
+      setResult(describeFreshSessionResult(next.handoff));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't start a fresh session.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <CtoCard
+      title="Start a fresh session"
+      description="Keeps everything the CTO remembers. Only the conversation starts over."
+      accent={accent}
+      testId="cto-fresh-session-card"
+    >
+      {confirming ? (
+        <div style={{ display: "grid", gap: 10 }}>
+          <p
+            data-testid="cto-fresh-session-confirm-text"
+            style={{
+              margin: 0,
+              fontFamily: SANS_FONT,
+              fontSize: 11.5,
+              lineHeight: 1.6,
+              color: COLORS.textSecondary,
+            }}
+          >
+            {CTO_FRESH_SESSION_CONFIRM}
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              type="button"
+              data-testid="cto-fresh-session-confirm"
+              onClick={() => void run()}
+              style={ctoButtonStyle("primary")}
+            >
+              Yes, start fresh
+            </button>
+            <button
+              type="button"
+              data-testid="cto-fresh-session-cancel"
+              onClick={() => setConfirming(false)}
+              style={ctoButtonStyle()}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          data-testid="cto-fresh-session-start"
+          disabled={busy}
+          onClick={() => setConfirming(true)}
+          style={{ ...ctoButtonStyle(), cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}
+        >
+          {busy ? "Starting a fresh session…" : "Start a fresh session"}
+        </button>
+      )}
+
+      {result ? (
+        <p
+          data-testid="cto-fresh-session-result"
+          role="status"
+          style={{
+            margin: "12px 0 0",
+            fontFamily: SANS_FONT,
+            fontSize: 11.5,
+            lineHeight: 1.6,
+            color: COLORS.textMuted,
+          }}
+        >
+          {result}
+        </p>
+      ) : null}
+
+      {error ? (
+        <p
+          data-testid="cto-fresh-session-error"
+          role="status"
+          style={{
+            margin: "12px 0 0",
+            fontFamily: SANS_FONT,
+            fontSize: 11.5,
+            lineHeight: 1.6,
+            color: COLORS.warning,
+          }}
+        >
+          {error}
+        </p>
+      ) : null}
+    </CtoCard>
+  );
+}
+
 export type CtoSettingsPageProps = {
   identity: CtoIdentity | null;
   sessionLogs: CtoSessionLogEntry[];
@@ -171,6 +319,13 @@ export type CtoSettingsPageProps = {
    * included, and they all go to `cto.updateIdentity`. Two props pointed at
    * the same handler only made it look as though there were two ways in.
    */
+  /**
+   * Retire the live thread and open a new one, hand-off and all.
+   *
+   * A prop rather than a `window.ade` call inside the page, the way every
+   * other action here is: `CtoPage` owns the bridge and this page draws.
+   */
+  onStartFreshSession?: () => Promise<CtoStartFreshSessionResult>;
   onIdentityChange: (patch: {
     name?: string;
     systemPromptExtension?: string;
@@ -192,6 +347,7 @@ export function CtoSettingsPage({
   onModelChange,
   onFastModeChange,
   onOpenProviderSettings,
+  onStartFreshSession,
   onIdentityChange,
   onClose,
 }: CtoSettingsPageProps) {
@@ -293,6 +449,7 @@ export function CtoSettingsPage({
     ),
 
     model: (
+      <div style={{ display: "grid", gap: 16 }}>
       <CtoCard
         title="Thinking model"
         description="Switching models keeps the thread and everything the CTO remembers."
@@ -350,6 +507,10 @@ export function CtoSettingsPage({
           </p>
         ) : null}
       </CtoCard>
+      {onStartFreshSession ? (
+        <FreshSessionCard accent={accent} onStartFreshSession={onStartFreshSession} />
+      ) : null}
+      </div>
     ),
 
     voice: (

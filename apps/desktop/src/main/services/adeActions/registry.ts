@@ -119,6 +119,8 @@ import type {
   CtoAttentionState,
   CtoRunProjectScanResult,
   CursorCloudServiceTier,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -1053,6 +1055,44 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
     getAttention: async (): Promise<CtoAttentionState> =>
       (await runtime.agentChatService?.getCtoAttention())
       ?? { status: "unknown", awaitingInput: false, since: null },
+    /**
+     * Read-only: can the CTO thread take a turn, and should it be rotated?
+     *
+     * Open to every role for the same reason `getAttention` is — it answers a
+     * question about a badge, creates nothing, and returns no content.
+     */
+    getThreadHealth: async (): Promise<CtoThreadHealth> =>
+      (await runtime.agentChatService?.getCtoThreadHealth())
+      ?? {
+        sessionId: null,
+        canTakeTurn: true,
+        blockedReason: null,
+        lastTurnFailure: null,
+        context: null,
+        rotationAdvised: false,
+      },
+    /**
+     * Retire the CTO thread and start a clean one.
+     *
+     * CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`): it ends the conversation
+     * every other surface is talking to. Nothing the CTO remembers is touched —
+     * identity, memory, the daily log and project state all carry over, and the
+     * outgoing thread is distilled into memory before it is retired.
+     */
+    startFreshSession: async (): Promise<CtoStartFreshSessionResult> => {
+      const agentChatService = runtime.agentChatService;
+      if (!agentChatService) throw new Error("The chat service is not available on this machine.");
+      await runtime.laneService?.ensurePrimaryLane();
+      const lanes = (await runtime.laneService?.list()) ?? [];
+      const laneId = lanes.find((lane) => lane.laneType === "primary")?.id;
+      if (!laneId) throw new Error("No primary lane is available to host the CTO chat session.");
+      const result = await agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
+      return {
+        sessionId: result.session.id,
+        previousSessionId: result.previousSessionId,
+        handoff: result.handoff,
+      };
+    },
   };
 }
 

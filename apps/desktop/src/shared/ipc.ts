@@ -1013,6 +1013,8 @@ export const IPC = {
   ctoGetState: "ade.cto.getState",
   ctoGetAttention: "ade.cto.getAttention",
   ctoEnsureSession: "ade.cto.ensureSession",
+  ctoStartFreshSession: "ade.cto.startFreshSession",
+  ctoGetThreadHealth: "ade.cto.getThreadHealth",
   ctoListSessionLogs: "ade.cto.listSessionLogs",
   ctoUpdateIdentity: "ade.cto.updateIdentity",
   ctoGetMemory: "ade.cto.getMemory",

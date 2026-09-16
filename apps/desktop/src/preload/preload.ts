@@ -224,6 +224,8 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
   CtoMemorySnapshot,
   CtoUpdateMemoryArgs,
   CtoSearchMemoryArgs,
@@ -11379,6 +11381,19 @@ const adeBridge = {
     ): Promise<AgentChatSession> =>
       callProjectRuntimeActionOr("chat", "ensureCtoSession", { args }, () =>
         ipcRenderer.invoke(IPC.ctoEnsureSession, args),
+      ),
+    /**
+     * Retire the CTO thread and start a clean one. CTO-only in the action
+     * policy; the plain-IPC fallback is the desktop's own path when no project
+     * runtime is bound.
+     */
+    startFreshSession: async (): Promise<CtoStartFreshSessionResult> =>
+      callProjectRuntimeActionOr("cto_state", "startFreshSession", {}, () =>
+        ipcRenderer.invoke(IPC.ctoStartFreshSession),
+      ),
+    getThreadHealth: async (): Promise<CtoThreadHealth> =>
+      callProjectRuntimeActionOr("cto_state", "getThreadHealth", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetThreadHealth),
       ),
     listSessionLogs: async (
       args: CtoListSessionLogsArgs = {},

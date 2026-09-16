@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isVoiceCallLive, type CtoVoiceState } from "../../../shared/types/ctoVoice";
+import {
+  CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+  CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW,
+  CTO_VOICE_SPOKEN_TURN_FAILED,
+  isVoiceCallLive,
+  type CtoVoiceState,
+} from "../../../shared/types/ctoVoice";
 import { createCtoVoiceRuntimeService, splitSpokenSceneAnswer } from "./ctoVoiceRuntimeService";
 import {
   createFakeSocket,
@@ -623,6 +629,173 @@ describe("a key stored on the runtime is a key the voice call can use", () => {
     // And the reverse state: deleting takes the call away again.
     expect(ai.deleteMachineApiKey({ provider: "openai" })).toMatchObject({ configured: false });
     expect(await voice.hasKey()).toBe(false);
+    voice.dispose();
+  });
+});
+
+/* ────────────────────────────────────────────────────────────────────────────
+   A failed turn is not an answer
+
+   The owner pressed Talk, said "hi", and heard the CTO say "Prompt is too
+   long" in its own voice — because `runBackendTurn` returned `outputText` no
+   matter how the turn ended, and on a failed turn that string is the provider's
+   error. These tests hold the line by CAUSE, never by matching the words.
+   ──────────────────────────────────────────────────────────────────────────── */
+describe("what a call says when the turn did not answer", () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  /** Every response this call asked for, as the text it was told to read. */
+  function spoken(fake: ReturnType<typeof createFakeSocket>): string[] {
+    return fake.sent
+      .filter((message) => message.type === "response.create")
+      .map((message) => String((message.response as { instructions?: unknown }).instructions ?? ""));
+  }
+
+  async function runOneUtterance(runSessionTurn: (args: unknown) => Promise<unknown>) {
+    const fake = createFakeSocket();
+    const { host } = createVoiceRuntimeHost({
+      agentChatService: {
+        ensureIdentitySession: async () => ({ id: "session-1" }),
+        updateSession: async () => undefined,
+        approveToolUse: async () => undefined,
+        subscribeToEvents: () => () => {},
+        runSessionTurn,
+        interrupt: async () => undefined,
+        getSessionTurnHealth: () => ({
+          sessionId: "session-1",
+          canTakeTurn: true,
+          blockedReason: null,
+          lastTurnFailure: null,
+          context: null,
+          rotationAdvised: false,
+        }),
+      } as never,
+      // Backchannels would put a second, unrelated sentence on the wire; this
+      // suite is about what a call says when the TURN did not answer.
+      ctoStateService: { getIdentity: () => ({ name: "Ada", voiceBackchannels: false, voiceName: "marin" }) } as never,
+      ctoMemoryService: null,
+    });
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+    expect(await voice.start({ ownerToken: "owner-1" })).toEqual({ ok: true });
+    fake.open();
+    fake.receive({ type: "session.created", session: { id: "sess_1" } });
+    fake.receive({ type: "input_audio_buffer.speech_started" });
+    fake.receive({ type: "input_audio_buffer.speech_stopped" });
+    fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: "item-1",
+      transcript: "hi",
+    });
+    await tick();
+    await tick();
+    return { voice, fake, state: voice.getState() };
+  }
+
+  it("speaks one human sentence, not the provider's error, when the thread is over its limit", async () => {
+    const { voice, fake } = await runOneUtterance(async () => ({
+      // Exactly what the owner's thread returned: a failed turn whose
+      // `outputText` fell through to the session preview, which is the error.
+      outputText: "Prompt is too long",
+      status: "failed",
+      errorMessage: "Prompt is too long",
+    }));
+
+    expect(spoken(fake)).toHaveLength(1);
+    expect(spoken(fake)[0]).toContain(CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW);
+    expect(spoken(fake).join(" ")).not.toContain("Prompt is too long");
+    voice.dispose();
+  });
+
+  it("speaks the generic sentence for a failure that is not about context", async () => {
+    const { voice, fake } = await runOneUtterance(async () => ({
+      outputText: "ECONNRESET while talking to the provider",
+      status: "failed",
+      errorMessage: "ECONNRESET while talking to the provider",
+    }));
+
+    expect(spoken(fake)).toHaveLength(1);
+    expect(spoken(fake)[0]).toContain(CTO_VOICE_SPOKEN_TURN_FAILED);
+    expect(spoken(fake).join(" ")).not.toContain("ECONNRESET");
+    voice.dispose();
+  });
+
+  it("says nothing at all when the user interrupted the turn themselves", async () => {
+    const { voice, fake } = await runOneUtterance(async () => ({
+      outputText: "",
+      status: "interrupted",
+      errorMessage: null,
+    }));
+
+    expect(spoken(fake)).toEqual([]);
+    // And the call is listening again rather than stuck waiting for audio that
+    // an empty commentary would never produce.
+    expect(voice.getState().phase).toBe("listening");
+    voice.dispose();
+  });
+
+  it("tags the turn with the call it belongs to, so the transcript can fold it", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const { voice } = await runOneUtterance(async (args) => {
+      seen.push(args as Record<string, unknown>);
+      return { outputText: "Three merged yesterday.", status: "completed" };
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.voiceCallId).toBe(voice.getState().callId);
+    expect(String(seen[0]!.voiceCallId ?? "")).not.toHaveLength(0);
+    voice.dispose();
+  });
+});
+
+describe("the pre-flight before a call is opened", () => {
+  it("refuses a call the CTO thread cannot answer, and names the way out", async () => {
+    const createWebSocket = vi.fn(() => createFakeSocket().socket);
+    const { host } = createVoiceRuntimeHost({
+      agentChatService: {
+        ensureIdentitySession: async () => ({ id: "session-1" }),
+        updateSession: async () => undefined,
+        approveToolUse: async () => undefined,
+        subscribeToEvents: () => () => {},
+        runSessionTurn: async () => ({ outputText: "", status: "completed" }),
+        interrupt: async () => undefined,
+        getSessionTurnHealth: () => ({
+          sessionId: "session-1",
+          canTakeTurn: false,
+          blockedReason: "context_overflow",
+          lastTurnFailure: { kind: "context_overflow", message: "Prompt is too long", at: "2026-09-16T00:00:00.000Z" },
+          context: null,
+          rotationAdvised: true,
+        }),
+      } as never,
+      ctoMemoryService: null,
+    });
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket,
+    });
+
+    expect(await voice.start({ ownerToken: "owner-1" })).toEqual({
+      ok: false,
+      error: "chat-unavailable",
+      detail: CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+    });
+    // Refused BEFORE the billed socket: nothing was opened.
+    expect(createWebSocket).not.toHaveBeenCalled();
+    voice.dispose();
+  });
+
+  it("opens the call when the thread can still take a turn", async () => {
+    const fake = createFakeSocket();
+    const { host } = createVoiceRuntimeHost({ ctoMemoryService: null });
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+
+    expect(await voice.start({ ownerToken: "owner-1" })).toEqual({ ok: true });
     voice.dispose();
   });
 });

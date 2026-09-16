@@ -116,6 +116,16 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * agent already has file read access to it, so this gate is not the boundary.
    * `updateMemory` (the rewrite path) stays CTO-only.
    */
+  /*
+   * `startFreshSession` retires the conversation every other CTO surface is
+   * talking to and starts a new one. Nothing it touches is destructive — memory,
+   * identity and the retired transcript all survive — but deciding that a thread
+   * is finished is the operator's call, not an agent's, and an agent that could
+   * make it could quietly drop the context it was being supervised with. Listed
+   * as `only` because every other method on this domain is a read the whole
+   * fleet already depends on.
+   */
+  cto_state: { only: ["startFreshSession"] },
   cto_memory: { allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] },
   /*
    * Fail-closed, with no exceptions at all.
@@ -670,8 +680,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getOnboardingState",
     "getSessionLogs",
     "getSnapshot",
+    "getThreadHealth",
     "previewSystemPrompt",
     "runProjectScan",
+    "startFreshSession",
     "updateIdentity",
   ],
   cto_memory: ["getSnapshot", "searchMemory", "updateMemory", "recordDiscovery"],

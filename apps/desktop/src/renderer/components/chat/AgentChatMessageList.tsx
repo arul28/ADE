@@ -35,6 +35,7 @@ import {
   Cube,
   Moon,
   Play,
+  Microphone,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -134,6 +135,7 @@ import {
   type SubagentResultCardRenderEvent,
   type SubagentSpawnAnchorRenderEvent,
   type SubagentStoppedGroupEvent,
+  type VoiceCallGroupRenderEvent,
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
   type ChatWorkLogEntry,
@@ -172,6 +174,8 @@ import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
 import {
+  ChatCard,
+  ChatCardFaint,
   ChatCardRow,
   ChatCardSub,
   ChatCardTitle,
@@ -1002,7 +1006,8 @@ type RenderEnvelope = {
   | BackgroundJobLineRenderEvent
   | BackgroundJobGroupRenderEvent
   | ScheduledWakeDividerRenderEvent
-  | SpawnWakeDividerRenderEvent;
+  | SpawnWakeDividerRenderEvent
+  | VoiceCallGroupRenderEvent;
   /** Folded-row count from the transcript collapse; see ChatTranscriptRenderEnvelope. */
   repeatCount?: number;
 };
@@ -2349,6 +2354,85 @@ function dispatchAdeCardAction(
   }
 }
 
+/** The option bag `renderEvent` takes, named so folded rows can be re-rendered with it. */
+type RenderEventOptions = NonNullable<Parameters<typeof renderEvent>[1]>;
+
+/**
+ * A whole CTO voice call as one transcript row.
+ *
+ * A call thinks on the normal chat thread, so without this every spoken word
+ * would read as a user bubble and every reply as an assistant message. Collapsed
+ * is therefore the default: one line saying a call happened, how long it ran,
+ * how much was said, and the first thing the user said. Expanding replays the
+ * exact rows the transcript would have shown, rendered by `renderEvent` itself —
+ * a `voice_call_group` never nests inside another, so the recursion is one level
+ * deep by construction. `work_log_group` rows are skipped here for the same
+ * reason the timeline skips them: tool work lives in the turn footer.
+ */
+function VoiceCallGroupCard({
+  event,
+  options,
+}: {
+  event: VoiceCallGroupRenderEvent;
+  options?: RenderEventOptions;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const duration = formatCompactDuration(event.durationMs);
+  const exchanges = `${event.exchanges} ${event.exchanges === 1 ? "exchange" : "exchanges"}`;
+  return (
+    <ChatCard
+      skin="rail"
+      tone="neutral"
+      data-testid="voice-call-card"
+      data-voice-call-id={event.callId}
+    >
+      <ChatCardRow
+        tone="neutral"
+        icon={Microphone}
+        align="top"
+        meta={duration ?? undefined}
+        action={(
+          <span className="text-fg/40">
+            {expanded
+              ? <CaretDown size={12} weight="bold" aria-hidden />
+              : <CaretRight size={12} weight="bold" aria-hidden />}
+          </span>
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          className="min-w-0 w-full text-left"
+        >
+          <ChatCardTitle>
+            Voice call
+            <ChatCardFaint>
+              {` · ${exchanges}`}
+              {event.hadApproval ? " · approval" : ""}
+            </ChatCardFaint>
+          </ChatCardTitle>
+          {event.openingLine ? <ChatCardSub>{event.openingLine}</ChatCardSub> : null}
+        </button>
+      </ChatCardRow>
+      {expanded ? (
+        <div className="mt-2.5 space-y-3 border-l border-white/[0.06] pl-3" data-testid="voice-call-rows">
+          {event.rows.map((row) => {
+            if (row.event.type === "work_log_group") return null;
+            return (
+              <div key={row.key} className="min-w-0 max-w-full overflow-hidden">
+                {row.event.type === "activity_bundle"
+                  ? <ChatActivityBundle event={row.event} sessionId={options?.sessionId} />
+                  : renderEvent(row as RenderEnvelope, options)}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </ChatCard>
+  );
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
@@ -2902,6 +2986,11 @@ function renderEvent(
         }
       />
     );
+  }
+
+  /* ── One CTO voice call, folded ── */
+  if (event.type === "voice_call_group") {
+    return <VoiceCallGroupCard event={event} options={options} />;
   }
 
   /* ── Grouped interrupt-stopped subagents ── */

@@ -10780,6 +10780,66 @@ describe("createAgentChatService", () => {
       return { db, ctoStateService, ctoMemoryService };
     }
 
+    /**
+     * The escape hatch from a wedged thread. The owner's CTO chat crossed its
+     * context limit by ordinary accumulation over twenty sessions, every turn
+     * failed with "Prompt is too long", and the fallback compaction refused —
+     * so the only way out is a new thread that does not arrive amnesiac.
+     */
+    it("starts a fresh CTO thread while identity, memory and History all survive", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      ctoStateService.updateIdentity({ name: "Ada" });
+      ctoMemoryService.appendMemoryFact("We ship on Fridays.");
+      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      const result = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      // A NEW conversation, and the old one named rather than forgotten.
+      expect(result.session.id).not.toBe(first.id);
+      expect(result.previousSessionId).toBe(first.id);
+      expect(result.session.identityKey).toBe("cto");
+
+      // Nothing the CTO remembers was touched.
+      expect(ctoStateService.getIdentity().name).toBe("Ada");
+      expect(ctoMemoryService.readMemory()).toContain("We ship on Fridays.");
+
+      // The retired thread lands in History with its own row.
+      expect(ctoStateService.getSessionLogs(20).some((entry) => entry.sessionId === first.id)).toBe(true);
+
+      // And the next ensure resolves to the NEW thread, not the retired one.
+      const next = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(next.id).toBe(result.session.id);
+
+      db.close();
+    });
+
+    it("distils the outgoing thread into durable memory without asking a model", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      const result = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      // No provider was reachable in this fixture, and that is the point: the
+      // thread this feature exists for cannot take the turn that would write
+      // its own note, so the deterministic distillation is the one that has to
+      // work — and it did.
+      expect(result.handoff).toMatchObject({ written: true, source: "deterministic" });
+
+      // The note is durable, dated, and names the thread it came from.
+      const memory = ctoMemoryService.readMemory();
+      expect(memory).toContain("hand-off from retired CTO thread");
+      expect(memory).toContain(first.id);
+
+      // And the rolling working summary the next thread reads first was
+      // refreshed from the same text.
+      expect(ctoMemoryService.getSnapshot().threadState).toContain("Work still scheduled");
+
+      db.close();
+    });
+
     it("persists a CTO model switch back into identity model preferences", async () => {
       const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
       const { service } = createService({ ctoStateService, ctoMemoryService });

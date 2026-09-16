@@ -72,6 +72,25 @@ export type CtoGetStateArgs = {
   recentLimit?: number;
 };
 
+/**
+ * What starting a fresh CTO thread actually did.
+ *
+ * `handoff` is reported rather than assumed because the case this exists for
+ * is a thread too full to summarize itself: `source` says whether the CTO wrote
+ * its own note or ADE distilled one from the transcript, and `thin` says the
+ * distillation found little to work with. The retired conversation is still in
+ * History with its transcript on disk either way.
+ */
+export type CtoStartFreshSessionResult = {
+  sessionId: string;
+  previousSessionId: string | null;
+  handoff: {
+    written: boolean;
+    thin: boolean;
+    source: "model" | "deterministic" | "none";
+  };
+};
+
 export type CtoEnsureSessionArgs = {
   modelId?: ModelId | null;
   reasoningEffort?: string | null;
