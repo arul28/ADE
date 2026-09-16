@@ -15,6 +15,7 @@ import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
   ACCOUNT_SESSION_ROTATION_JOURNAL_KEY,
   DEFAULT_REFRESH_ROTATION_WAIT_MS,
+  AccountRefreshUnavailableError,
   accountTokenGeneration,
   createAccountActionDomainService,
   createAccountAuthService,
@@ -3381,5 +3382,153 @@ describe("AccountAuthService when the credential store cannot be written", () =>
     // later attempt decides it.
     expect(service.getStatus()).not.toMatchObject({ sessionState: "expired" });
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(raw);
+  });
+});
+
+// The refresh broker exists because the rotation journal could narrow the
+// desktop-versus-brain race but never close it: two processes can both be
+// legitimately entitled to exchange a single-use token, and the loser has a
+// live session marked dead. Every `invalid_grant` in this machine's brain log
+// follows an interrupted rotation, and three of the four name a desktop pid.
+// Taking the entitlement away from every process but the brain closes it.
+describe("AccountAuthService refresh broker", () => {
+  const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+
+  function expiredSessionStore(): MemoryCredentialStore {
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    return store;
+  }
+
+  it("asks the broker and never POSTs the refresh token itself", async () => {
+    const store = expiredSessionStore();
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: "should_not_be_called" }, 500));
+    const getAccessToken = vi.fn(async () => "brokered-access-token");
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      getRefreshBroker: () => ({ getAccessToken }),
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe("brokered-access-token");
+    // The whole point: this process never touched the token endpoint.
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+    // And it never spent the rotating credential, so the brain's copy is intact.
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      refreshToken: "refresh-old",
+    });
+  });
+
+  it("serves a still-fresh access token without asking the broker at all", async () => {
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs + 3_600_000) / 1000) }),
+    })));
+    const getAccessToken = vi.fn(async () => "brokered-access-token");
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(),
+      getRefreshBroker: () => ({ getAccessToken }),
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await service.getAccessToken();
+    expect(getAccessToken).not.toHaveBeenCalled();
+  });
+
+  // A brain that cannot answer is exactly when a second refresher does the most
+  // damage, so there is deliberately no local fallback — and the failure must
+  // never be mistaken for a rejection.
+  it("does not fall back to a local exchange when the broker fails, and leaves the session intact", async () => {
+    const store = expiredSessionStore();
+    const raw = store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+    const fetchImpl = vi.fn(async () => jsonResponse({ access_token: "must-not-be-used" }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      getRefreshBroker: () => ({
+        getAccessToken: async () => {
+          throw new Error("connect ECONNREFUSED /tmp/ade.sock");
+        },
+      }),
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).rejects.toBeInstanceOf(AccountRefreshUnavailableError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    // Untouched: not deleted, not marked needs-re-auth, and still reported as a
+    // session this machine owns. An unreachable brain is not a rejection.
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(raw);
+    expect(service.getStatus()).not.toMatchObject({ sessionState: "expired" });
+  });
+
+  it("treats an empty brokered answer as unavailable rather than as a token", async () => {
+    const store = expiredSessionStore();
+    const raw = store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(),
+      getRefreshBroker: () => ({ getAccessToken: async () => "   " }),
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).rejects.toBeInstanceOf(AccountRefreshUnavailableError);
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(raw);
+  });
+
+  // The broker is read per call, not captured at construction, because the
+  // shared service is cached per secrets directory and the desktop's first
+  // caller can run before its runtime pool exists.
+  it("installs late: a broker that appears after construction is still used", async () => {
+    const store = expiredSessionStore();
+    let broker: { getAccessToken: () => Promise<string> } | null = null;
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(async () => jsonResponse({ error: "should_not_be_called" }, 500)),
+      getRefreshBroker: () => broker,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    broker = { getAccessToken: async () => "late-brokered-token" };
+    await expect(service.getAccessToken()).resolves.toBe("late-brokered-token");
+  });
+
+  // The brain itself installs no broker, so its own path must be untouched.
+  it("still exchanges locally when no broker is installed", async () => {
+    const store = expiredSessionStore();
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      access_token: jwt({ sub: "user_old", exp: Math.floor((nowMs + 3_600_000) / 1000) }),
+      refresh_token: "refresh-new",
+      token_type: "Bearer",
+      expires_in: 3600,
+    }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      getRefreshBroker: () => null,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await service.getAccessToken();
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      refreshToken: "refresh-new",
+    });
   });
 });

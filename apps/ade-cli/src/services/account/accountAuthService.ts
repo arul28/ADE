@@ -902,10 +902,69 @@ export async function callAccountAction(args: {
   return { domain: "account", action: args.action, result, statusHints: {} };
 }
 
+/**
+ * Fetches a fresh access token from the one process allowed to exchange the
+ * refresh credential. Implemented by every non-brain process; see the
+ * `refreshBroker` option below for why.
+ */
+export type AccountRefreshBroker = {
+  /**
+   * Resolves to a current access token, or rejects.
+   *
+   * A rejection must mean "ask again later", never "the session is gone". The
+   * broker sees only transport failures; it cannot observe the issuer, so it is
+   * never entitled to condemn a session.
+   */
+  getAccessToken(options: { forceRefresh: boolean; signal?: AbortSignal }): Promise<string>;
+};
+
+/**
+ * The brain could not be asked for a token. Transient by definition, and
+ * deliberately distinct from an expired or rejected session: the stored record
+ * is untouched, so the next attempt can succeed with no user action.
+ *
+ * This is the same class of event as an unreachable issuer, and gets the same
+ * treatment — an offline machine stays signed in with a stale token for as long
+ * as it takes.
+ */
+export class AccountRefreshUnavailableError extends Error {
+  readonly transient = true as const;
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "AccountRefreshUnavailableError";
+  }
+}
+
 export function createAccountAuthService(args: {
   credentialStore: SyncCredentialStore;
   getOAuthConfig: () => AccountOAuthConfig | Promise<AccountOAuthConfig>;
   getDeviceBridgeUrl?: () => string | Promise<string>;
+  /**
+   * Delegates the refresh exchange to the machine brain instead of running it
+   * here. Set on every process that is **not** the brain.
+   *
+   * The refresh token is single-use and rotating. Three processes on one
+   * machine — desktop, brain, and CLI — each holding it and each refreshing is
+   * what produced every sign-out this machine has ever had: the loser of the
+   * race receives `invalid_grant` and marks a live session dead. The rotation
+   * journal below narrows that window but cannot close it, because two
+   * processes can still both be legitimately entitled to exchange.
+   *
+   * A broker removes the race by construction rather than by timing: exactly
+   * one process ever POSTs the credential. When the broker cannot be reached,
+   * this service does **not** fall back to exchanging locally — that would
+   * reinstate the race precisely when the brain is unhealthy. It raises
+   * `AccountRefreshUnavailableError` instead, which is transient and leaves the
+   * stored session untouched, exactly as an unreachable issuer does.
+   *
+   * Read at call time, not at construction. `getSharedAccountAuthService`
+   * caches one service per secrets directory, so the first caller to ask for it
+   * fixes its options for the whole process — and on desktop that first caller
+   * can run before the runtime pool exists. A getter lets the desktop install
+   * the broker when it is genuinely ready without racing its own startup.
+   */
+  getRefreshBroker?: () => AccountRefreshBroker | null;
   /**
    * This machine's sync machine key — the same identity the account directory
    * files it under. Sent when a device login starts so the grant minted at the
@@ -965,6 +1024,7 @@ export function createAccountAuthService(args: {
     SHARED_REFRESH_TIMEOUT_MS,
     refreshRotationWaitMs * 2 + SHARED_REFRESH_ROTATION_HEADROOM_MS,
   );
+  const resolveRefreshBroker = (): AccountRefreshBroker | null => args.getRefreshBroker?.() ?? null;
   const pendingSessions = new Map<string, PendingLoginSession>();
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
@@ -2342,6 +2402,36 @@ export function createAccountAuthService(args: {
     ) {
       return record.accessToken;
     }
+    // Delegate before the local-exchange path below, and before the
+    // missing-refresh-token check: a brokered process is not entitled to look
+    // at the refresh token at all, and a stored record without one is still
+    // perfectly serviceable through the brain.
+    const refreshBroker = resolveRefreshBroker();
+    if (refreshBroker) {
+      try {
+        const brokered = await refreshBroker.getAccessToken({
+          forceRefresh: options.forceRefresh === true,
+          signal,
+        });
+        const token = brokered.trim();
+        if (!token) {
+          throw new AccountRefreshUnavailableError(
+            "The ADE brain returned an empty account token.",
+          );
+        }
+        return token;
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (error instanceof AccountRefreshUnavailableError) throw error;
+        // Never fall through to a local exchange. A brain that cannot answer is
+        // exactly when a second refresher does the most damage.
+        throw new AccountRefreshUnavailableError(
+          "ADE could not reach this machine's brain to refresh the account token.",
+          { cause: error },
+        );
+      }
+    }
+
     if (!record.refreshToken) {
       throw new Error("ADE account session expired. Run `ade login` again.");
     }

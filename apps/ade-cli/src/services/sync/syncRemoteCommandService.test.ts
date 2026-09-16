@@ -3649,7 +3649,11 @@ describe("web-reachable settings and lane-risk commands", () => {
     const refreshScheduledWork = vi.fn();
     const { service } = createService({
       projectConfigService: {
-        get: vi.fn().mockReturnValue({ shared: { ai: { defaultModel: "old-model" } }, local: {} }),
+        // `defaultModel` used to stand in here. It is gone: nothing ever read
+        // it, so the Settings control that wrote it was deleted and the key
+        // with it. Any surviving `ai` key proves the same thing this test is
+        // about — that a paired device's write reaches `save`.
+        get: vi.fn().mockReturnValue({ shared: { ai: { defaultProvider: "claude" } }, local: {} }),
         save,
       },
       agentChatService: { refreshScheduledWork },
@@ -3658,11 +3662,11 @@ describe("web-reachable settings and lane-risk commands", () => {
     expect(service.getPolicy("ai.updateConfig")?.viewerAllowed).toBe(true);
     expect(service.getPolicy("ai.deleteApiKey")?.viewerAllowed).toBe(true);
 
-    await service.execute(makePayload("ai.updateConfig", { defaultModel: "new-model" }));
+    await service.execute(makePayload("ai.updateConfig", { defaultProvider: "codex" }));
 
     expect(save).toHaveBeenCalledTimes(1);
     expect(save.mock.calls[0]![0].shared.ai).toEqual(
-      expect.objectContaining({ defaultModel: "new-model" }),
+      expect.objectContaining({ defaultProvider: "codex" }),
     );
     // The desktop IPC handler does this too; omitting it leaves scheduled runs
     // on the previous AI configuration.

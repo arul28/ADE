@@ -793,7 +793,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade help <command...>                         Display help for a command
     $ ade connect [--status]                        Link this machine to your ADE account
     $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
+    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
@@ -1898,8 +1898,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   auth: `${ADE_BANNER}
   ADE Account
 
-  ADE accounts are optional. Signing in unlocks remote-machine and account
-  directory features; every local ADE workflow continues to work signed out.
+  ADE requires an account. Signing in carries your settings, secrets, and
+  provider keys to every machine you use, and connects them to each other.
+  Work already on this machine is never blocked while you are signed out.
 
     $ ade login                    Sign in with loopback OAuth or auto-detected device flow
     $ ade login --headless         Print a verification URL + code for another browser
@@ -16381,7 +16382,6 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
       : {};
   const ai = isRecord(effective.ai) ? effective.ai : {};
   const defaultProvider = asString(ai.defaultProvider) ?? asString(ai.mode);
-  const defaultModel = asString(ai.defaultModel);
   const apiKeys = isRecord(ai.apiKeys) ? ai.apiKeys : {};
   const cliProviders = {
     claude: commandExists("claude"),
@@ -16395,7 +16395,6 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
   );
   const ready = Boolean(
     defaultProvider ||
-    defaultModel ||
     apiKeyProviders.length ||
     Object.values(cliProviders).some(Boolean),
   );
@@ -16410,7 +16409,6 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
       : "Configure AI providers in ADE desktop or install/sign in to a provider CLI.",
     details: {
       defaultProvider,
-      defaultModel,
       apiKeyProviders,
       cliProviders,
     },
@@ -25306,9 +25304,9 @@ function formatTextOutput(
           return "ADE couldn't read this computer's saved sign-in — nothing changed. Try again in a moment; if it keeps failing, run `ade login`.";
         }
         if (sessionState === "expired") {
-          return "Your ADE account sign-in expired — run `ade login` again. Local use does not require an account.";
+          return "Your ADE account sign-in expired — run `ade login` again.";
         }
-        return "Not signed in — local use does not require an account.";
+        return "Not signed in — run `ade login`.";
       }
       const identity = asString(value.email)
         ?? asString(value.name)

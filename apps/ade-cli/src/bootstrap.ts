@@ -181,6 +181,16 @@ import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/w
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
+import {
+  createAccountSettingsStore,
+  getSharedAccountSettingsStore,
+  type AccountSettingsStore,
+} from "./services/account/accountSettingsStore";
+import {
+  createAccountVaultStore,
+  getSharedAccountVaultStore,
+  type AccountVaultStore,
+} from "./services/account/accountVaultStore";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
@@ -325,6 +335,10 @@ export type AdeRuntime = {
   operationService: ReturnType<typeof createOperationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   projectSecretService?: ReturnType<typeof createProjectSecretService> | null;
+  /** Machine-scoped, so null on a `--no-sync` brain. */
+  accountSettingsStore?: AccountSettingsStore | null;
+  /** Machine-scoped, so null on a `--no-sync` brain. */
+  accountVaultStore?: AccountVaultStore | null;
   conflictService: ReturnType<typeof createConflictService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -1041,9 +1055,6 @@ export async function createAdeRuntime(args: {
       adeDir: paths.adeDir,
       logger,
       broadcastEvent: (event) => pushEvent("runtime", { type: "lane_env_event", event }),
-      // Setup scripts run unrestricted shell and can come from repo-committed
-      // shared config, so the executor gets the same trust gate test suites use.
-      projectConfigService,
     });
 
     const laneTemplateService = createLaneTemplateService({
@@ -1926,6 +1937,13 @@ export async function createAdeRuntime(args: {
     });
     teardown.push(() => stopCredentialWatch?.());
 
+    // Declared out here so the runtime object below can expose it. Built only
+    // when sync is on: a `--no-sync` brain (manual runtimes, tests) must never
+    // reach the account Worker, and having no store at all is a stronger
+    // guarantee of that than a store with its uploads disabled.
+    let accountSettingsStore: AccountSettingsStore | null = null;
+    let accountVaultStore: AccountVaultStore | null = null;
+
     // Brain → Cloudflare push relay publisher. Owns push registration (from the
     // paired phone via `push.*` sync commands) and fans agent/PR state transitions
     // out as APNs alerts + the aggregate "agent-runs" Live Activity. Machine-level
@@ -1993,6 +2011,84 @@ export async function createAdeRuntime(args: {
     pushPublisherService.setActivityRosterProvider(
       syncRuntimeOptions?.activityRosterProvider ?? null,
     );
+
+    // The account settings store. Shares this Worker and this machine identity
+    // with the push publisher above, and is keyed by the machine ADE directory
+    // for the same reason: the account is a property of the machine, not of
+    // whichever repository happens to be open, so every project scope in this
+    // brain must reach one store over one cache file.
+    const accountSettingsAdeDir = resolveMachineAdeLayout().adeDir;
+    accountSettingsStore = getSharedAccountSettingsStore(
+      accountSettingsAdeDir,
+      () => {
+        const settingsRegistrationStore = createPushRegistrationStore({
+          filePath: pushRelayFilePath,
+          logger,
+        });
+        return createAccountSettingsStore({
+          adeDir: accountSettingsAdeDir,
+          relay: createPushRelayClient({
+            store: settingsRegistrationStore,
+            logger,
+            getAccountAccessToken,
+            getAccountUserId: () => {
+              const status = accountAuthService.getStatus();
+              return status.signedIn ? status.userId?.trim() || null : null;
+            },
+          }),
+          getAccountUserId: () => {
+            const status = accountAuthService.getStatus();
+            return status.signedIn ? status.userId?.trim() || null : null;
+          },
+          getDeviceId: () => {
+            try {
+              return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+            } catch {
+              return null;
+            }
+          },
+          logger,
+        });
+      },
+    );
+    teardown.push(accountSettingsStore.startPeriodicSync());
+
+    // The vault rides the same Worker, the same machine identity, and the same
+    // beat. Kept a separate store rather than a second table on the settings
+    // one, so a credential can never be returned by a settings read and the two
+    // have different permissions, different disk posture, and different
+    // sign-out behaviour.
+    accountVaultStore = getSharedAccountVaultStore(accountSettingsAdeDir, () => {
+      const vaultRegistrationStore = createPushRegistrationStore({
+        filePath: pushRelayFilePath,
+        logger,
+      });
+      return createAccountVaultStore({
+        adeDir: accountSettingsAdeDir,
+        relay: createPushRelayClient({
+          store: vaultRegistrationStore,
+          logger,
+          getAccountAccessToken,
+          getAccountUserId: () => {
+            const status = accountAuthService.getStatus();
+            return status.signedIn ? status.userId?.trim() || null : null;
+          },
+        }),
+        getAccountUserId: () => {
+          const status = accountAuthService.getStatus();
+          return status.signedIn ? status.userId?.trim() || null : null;
+        },
+        getDeviceId: () => {
+          try {
+            return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+          } catch {
+            return null;
+          }
+        },
+        logger,
+      });
+    });
+    teardown.push(accountVaultStore.startPeriodicSync());
     const detachPushSources = publishPushEvents
       ? pushPublisherService.attachSources(projectId, {
         // The lightweight no-agent headless chat stub intentionally exposes
@@ -2368,6 +2464,8 @@ export async function createAdeRuntime(args: {
       operationService,
       projectConfigService,
       projectSecretService,
+      accountSettingsStore,
+      accountVaultStore,
       conflictService,
       gitService,
       diffService,

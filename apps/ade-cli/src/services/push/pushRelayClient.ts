@@ -674,6 +674,153 @@ export function createPushRelayClient(args: {
       requireOk("putActivityMachinePreferences", response);
     },
 
+    /**
+     * Read account settings changed after `since`.
+     *
+     * Returns `null` — never an empty page — when this machine has no account
+     * token. The two answers mean opposite things to the caller: "nothing
+     * changed" lets it advance its cursor, while "I could not ask" must leave
+     * the cursor and the cache exactly where they were.
+     */
+    async getAccountSettings(options?: {
+      since?: string | null;
+      scope?: string | null;
+    }): Promise<AccountSettingsPage | null> {
+      if (!args.getAccountAccessToken) return null;
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!expectedAccountUserId) return null;
+      const query = new URLSearchParams();
+      if (options?.since?.trim()) query.set("since", options.since.trim());
+      if (options?.scope?.trim()) query.set("scope", options.scope.trim());
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      const response = await request("GET", `/attention/account/settings${suffix}`, {
+        accountAuthorized: true,
+        expectedAccountUserId,
+      });
+      if (response.status === 401) return null;
+      requireOk("getAccountSettings", response);
+      const body = response.body ?? {};
+      return {
+        settings: Array.isArray(body.settings) ? body.settings as AccountSettingRecord[] : [],
+        cursor: typeof body.cursor === "string" ? body.cursor : null,
+        truncated: body.truncated === true,
+      };
+    },
+
+    /**
+     * Upload a batch. Returns `null` when there was no token to ask with, so an
+     * offline machine keeps its queue instead of believing it flushed.
+     */
+    async putAccountSettings(
+      settings: AccountSettingWrite[],
+      deviceId: string | null,
+    ): Promise<{ updatedAt: string | null } | null> {
+      if (!args.getAccountAccessToken) return null;
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!expectedAccountUserId) return null;
+      if (!settings.length) return { updatedAt: null };
+      const response = await request("PUT", "/attention/account/settings", {
+        body: { settings, ...(deviceId ? { deviceId } : {}) },
+        accountAuthorized: true,
+        expectedAccountUserId,
+      });
+      if (response.status === 401) return null;
+      requireOk("putAccountSettings", response);
+      const body = response.body ?? {};
+      return { updatedAt: typeof body.updatedAt === "string" ? body.updatedAt : null };
+    },
+
+    /** The way out. A reset that cannot reach the account is not a reset. */
+    async deleteAccountSetting(scope: string, key: string): Promise<boolean | null> {
+      if (!args.getAccountAccessToken) return null;
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!expectedAccountUserId) return null;
+      const response = await request(
+        "DELETE",
+        `/attention/account/settings/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`,
+        { accountAuthorized: true, expectedAccountUserId },
+      );
+      if (response.status === 401) return null;
+      // Already gone is the desired end state, not a failure.
+      if (response.status === 404) return false;
+      requireOk("deleteAccountSetting", response);
+      return response.body?.deleted === true;
+    },
+
+    /**
+     * Read vault items changed after `since`.
+     *
+     * `null` means this machine had no account token to ask with, which is not
+     * the same answer as an empty page and must not advance a cursor.
+     */
+    async getAccountVault(options?: {
+      since?: string | null;
+      scope?: string | null;
+    }): Promise<AccountVaultPage | null> {
+      if (!args.getAccountAccessToken) return null;
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!expectedAccountUserId) return null;
+      const query = new URLSearchParams();
+      if (options?.since?.trim()) query.set("since", options.since.trim());
+      if (options?.scope?.trim()) query.set("scope", options.scope.trim());
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      const response = await request("GET", `/attention/account/vault${suffix}`, {
+        accountAuthorized: true,
+        expectedAccountUserId,
+      });
+      if (response.status === 401) return null;
+      // The vault fails closed when the relay has no encryption key. That is an
+      // operator problem, not a credential problem, so it reads as "ask again
+      // later" rather than as an empty vault.
+      if (response.status === 503) return null;
+      requireOk("getAccountVault", response);
+      const body = response.body ?? {};
+      return {
+        items: Array.isArray(body.items) ? body.items as AccountVaultItem[] : [],
+        cursor: typeof body.cursor === "string" ? body.cursor : null,
+        truncated: body.truncated === true,
+      };
+    },
+
+    async putAccountVault(
+      items: AccountVaultWrite[],
+      deviceId: string | null,
+    ): Promise<{ updatedAt: string | null } | null> {
+      if (!args.getAccountAccessToken) return null;
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!expectedAccountUserId) return null;
+      if (!items.length) return { updatedAt: null };
+      const response = await request("PUT", "/attention/account/vault", {
+        body: { items, ...(deviceId ? { deviceId } : {}) },
+        accountAuthorized: true,
+        expectedAccountUserId,
+      });
+      if (response.status === 401 || response.status === 503) return null;
+      requireOk("putAccountVault", response);
+      const body = response.body ?? {};
+      return { updatedAt: typeof body.updatedAt === "string" ? body.updatedAt : null };
+    },
+
+    /** Revoking has to work from any machine, including one you no longer have. */
+    async deleteAccountVaultItem(
+      scope: string,
+      kind: string,
+      key: string,
+    ): Promise<boolean | null> {
+      if (!args.getAccountAccessToken) return null;
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!expectedAccountUserId) return null;
+      const response = await request(
+        "DELETE",
+        `/attention/account/vault/${encodeURIComponent(scope)}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`,
+        { accountAuthorized: true, expectedAccountUserId },
+      );
+      if (response.status === 401 || response.status === 503) return null;
+      if (response.status === 404) return false;
+      requireOk("deleteAccountVaultItem", response);
+      return response.body?.deleted === true;
+    },
+
     async health(): Promise<PushRelayHealth> {
       const response = await request("GET", "/health");
       const body = response.body ?? {};
@@ -685,4 +832,71 @@ export function createPushRelayClient(args: {
   };
 }
 
+/** One setting as the relay reports it. */
+export type AccountSettingRecord = {
+  scope: string;
+  key: string;
+  value: unknown;
+  updatedAt: string;
+  changedAt: string | null;
+  writerDeviceId: string | null;
+};
+
+/** One setting as a client sends it. `changedAt` is diagnostics, not ordering. */
+export type AccountSettingWrite = {
+  scope: string;
+  key: string;
+  value: unknown;
+  changedAt?: string;
+};
+
+export type AccountSettingsPage = {
+  settings: AccountSettingRecord[];
+  /**
+   * Pass back as `since` next time. Null only when the account has never
+   * written a setting, which is a legitimate starting state.
+   */
+  cursor: string | null;
+  /**
+   * The relay says so explicitly rather than leaving a client to infer it from
+   * a full page — guessing either loops forever on an exactly-full page or
+   * stops one page early on the next.
+   */
+  truncated: boolean;
+};
+
 export type PushRelayClient = ReturnType<typeof createPushRelayClient>;
+
+/** What ADE stores in the vault. Closed, because each kind needs an owner. */
+export type AccountVaultItemKind = "secret" | "provider_key" | "integration";
+
+export type AccountVaultItem = {
+  scope: string;
+  kind: AccountVaultItemKind;
+  key: string;
+  /**
+   * The credential, or null when the relay could not open its stored bytes.
+   *
+   * Null is never "absent". A client that treats it as absent will helpfully
+   * overwrite a credential that is still good on every other machine.
+   */
+  value: string | null;
+  updatedAt: string;
+  writerDeviceId: string | null;
+  refreshOwner: string | null;
+};
+
+export type AccountVaultWrite = {
+  scope: string;
+  kind: AccountVaultItemKind;
+  key: string;
+  value: string;
+  /** The machine allowed to exchange a rotating credential; null if it never rotates. */
+  refreshOwner?: string | null;
+};
+
+export type AccountVaultPage = {
+  items: AccountVaultItem[];
+  cursor: string | null;
+  truncated: boolean;
+};

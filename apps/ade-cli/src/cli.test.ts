@@ -596,7 +596,7 @@ describe("ADE CLI", () => {
       workspaceRoot: null,
       text: true,
     }, inferFormatter(statusPlan))).toBe(
-      "Not signed in — local use does not require an account.\n",
+      "Not signed in — run `ade login`.\n",
     );
   });
 
@@ -6761,7 +6761,7 @@ describe("ADE CLI", () => {
         "--text",
       ]);
       expect(staleAccountResult).toEqual({
-        output: "Not signed in — local use does not require an account.\n",
+        output: "Not signed in — run `ade login`.\n",
         exitCode: 1,
       });
       expect(requests.filter((request) => request.method === "account.call")
