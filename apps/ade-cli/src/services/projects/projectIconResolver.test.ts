@@ -82,13 +82,13 @@ describe("resolveRemoteProjectIcon", () => {
     expect(decodeDataUrl(icon.dataUrl as string).bytes.toString("utf8")).toBe("<svg/>");
   });
 
-  it("honors an explicit project.iconPath override in .ade/ade.yaml", () => {
+  it("honors an explicit project.iconPath override in .ade/local.yaml", () => {
     const root = makeTempRoot();
     // A conventional candidate exists, but the override must win.
     writeFileEnsuringDir(path.join(root, "logo.png"), Buffer.from([1]));
     writeFileEnsuringDir(path.join(root, "brand", "custom-icon.png"), Buffer.from([9, 9, 9]));
     writeFileEnsuringDir(
-      path.join(root, ".ade", "ade.yaml"),
+      path.join(root, ".ade", "local.yaml"),
       "version: 1\nproject:\n  iconPath: brand/custom-icon.png\n",
     );
 
@@ -102,7 +102,7 @@ describe("resolveRemoteProjectIcon", () => {
     const root = makeTempRoot();
     writeFileEnsuringDir(path.join(root, "logo.png"), Buffer.from([1, 2, 3]));
     writeFileEnsuringDir(
-      path.join(root, ".ade", "ade.yaml"),
+      path.join(root, ".ade", "local.yaml"),
       "version: 1\nproject:\n  iconPath: null\n",
     );
 
@@ -133,7 +133,7 @@ describe("resolveRemoteProjectIcon", () => {
     fs.writeFileSync(outside, Buffer.from([0xde, 0xad]));
     tempRoots.add(outside); // ensure cleanup
     writeFileEnsuringDir(
-      path.join(root, ".ade", "ade.yaml"),
+      path.join(root, ".ade", "local.yaml"),
       `version: 1\nproject:\n  iconPath: ../${path.basename(outside)}\n`,
     );
 
