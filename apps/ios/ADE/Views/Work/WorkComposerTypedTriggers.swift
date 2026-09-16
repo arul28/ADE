@@ -128,7 +128,11 @@ struct WorkSmartLink: Equatable {
     case .linear:
       return .linearIssue
     case .ade:
-      return WorkSmartLink.adeDeeplinkKind(host: components.host, parts: parts) ?? .adeLink
+      return WorkSmartLink.adeDeeplinkKind(
+        host: components.host,
+        parts: parts,
+        lineQueryValue: components.queryItems?.first(where: { $0.name == "line" })?.value
+      ) ?? .adeLink
     case .web:
       return .webPage
     }
@@ -166,7 +170,16 @@ struct WorkSmartLink: Equatable {
     return workSmartLinkIsAsciiNumber(String(parts[1]))
   }
 
-  static func adeDeeplinkKind(host: String?, parts: [String]) -> Kind? {
+  /// 1-15 ASCII digits, value >= 1, returned as the parsed number — the exact
+  /// rule `parseNonNegativeIntParam` applies before `buildFileTarget` accepts a
+  /// `?line=`. Returns nil when the desktop would reject the whole link.
+  static func parsedFileLine(_ raw: String?) -> Int? {
+    guard let raw, (1...15).contains(raw.count), workSmartLinkIsAsciiNumber(raw) else { return nil }
+    guard let value = Int(raw), value >= 1 else { return nil }
+    return value
+  }
+
+  static func adeDeeplinkKind(host: String?, parts: [String], lineQueryValue: String? = nil) -> Kind? {
     let segments = adeSegments(host: host, parts: parts)
     guard let head = segments.first?.lowercased() else { return nil }
     switch head {
@@ -179,9 +192,13 @@ struct WorkSmartLink: Equatable {
       return segments.count == 2 && isUuid(segments[1]) ? .lane : nil
     case "session":
       return segments.count == 2 && !segments[1].isEmpty ? .chat : nil
-    // A repo-relative path legitimately contains slashes, so this one is open-ended.
+    // A repo-relative path legitimately contains slashes, so this one is
+    // open-ended — but a PRESENT-and-invalid `?line=` makes the desktop reject
+    // the whole link, so it cannot stay a typed file chip here either.
     case "file":
-      return segments.count >= 2 ? .file : nil
+      guard segments.count >= 2 else { return nil }
+      if let raw = lineQueryValue, parsedFileLine(raw) == nil { return nil }
+      return .file
     case "commit":
       return segments.count == 2 && isCommitSha(segments[1]) ? .commit : nil
     case "artifact":
@@ -202,7 +219,7 @@ struct WorkSmartLink: Equatable {
   /// malformed link never gets a confident-looking label.
   static func adeDeeplinkLabel(host: String?, parts: [String], lineQueryValue: String? = nil) -> String? {
     let segments = adeSegments(host: host, parts: parts)
-    guard let kind = adeDeeplinkKind(host: host, parts: parts) else { return nil }
+    guard let kind = adeDeeplinkKind(host: host, parts: parts, lineQueryValue: lineQueryValue) else { return nil }
     func shortId(_ value: String) -> String { String(value.prefix(8)) }
     switch kind {
     case .pullRequest: return "#\(segments[3])"
@@ -213,10 +230,12 @@ struct WorkSmartLink: Equatable {
       let name = path.split(separator: "/").last.map(String.init) ?? path
       // `?line=` is part of the label on the desktop (`name:42`); dropping it
       // here made the same link read differently on the two surfaces.
-      // The desktop rejects a non-numeric or zero line outright, which drops the
-      // whole link to a generic ADE chip. Accepting "abc" here would label a
-      // link the desktop refuses to type at all.
-      if let line = lineQueryValue, workSmartLinkIsAsciiNumber(line), line != "0" {
+      // Mirrors parseNonNegativeIntParam + buildFileTarget exactly: 1-15 ASCII
+      // digits, value >= 1, and the LABEL uses the parsed number so `007`
+      // renders as `:7`. An invalid line makes the desktop reject the whole
+      // link, so this must not label one the desktop refuses to type at all —
+      // see `isValidFileLineQuery`, which the kind check consults too.
+      if let line = WorkSmartLink.parsedFileLine(lineQueryValue) {
         return "\(name):\(line)"
       }
       return name

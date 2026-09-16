@@ -676,7 +676,8 @@ jobs:
   # them.
   #
   # It always RUNS (ci-pass treats "skipped" as failure, deliberately), but on
-  # pull requests that do not touch apps/ios/** or this workflow it exits
+  # pull requests that do not touch apps/ios/**, the shared chip fixture, or
+  # this workflow it exits
   # success immediately, so non-iOS PRs pay only runner spin-up. Pushes to main
   # and workflow_dispatch always execute the full build + test.
   test-ios:
@@ -703,11 +704,17 @@ jobs:
           # checkout@v4 checks out the PR merge commit; diffing it against its
           # base parent yields exactly the changes this PR introduces.
           changed=$(git diff --name-only HEAD^1 HEAD || true)
-          if printf '%s\n' "$changed" | grep -qE '^(apps/ios/|\.github/workflows/ci\.yml)'; then
+          # The shared chip fixture lives under apps/desktop but the iOS suite
+          # asserts against it (WorkComposerTriggerDetectorTests.
+          # testMatchesSharedChipFixture). Without it in this gate, a
+          # desktop-only PR that adds a row skips the Swift suite and merges
+          # green, then breaks main — which is exactly the silent divergence
+          # the fixture exists to prevent.
+          if printf '%s\n' "$changed" | grep -qE '^(apps/ios/|apps/desktop/src/shared/__fixtures__/|\.github/workflows/ci\.yml)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No apps/ios changes in this PR; skipping the iOS build."
+            echo "No apps/ios or shared-fixture changes in this PR; skipping the iOS build."
           fi
 
       - name: Select Xcode 26

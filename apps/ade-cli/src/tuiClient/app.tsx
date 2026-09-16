@@ -3458,6 +3458,26 @@ function resolveRightPaneWidth(columns: number, rightOpen: boolean, drawerOpen: 
   );
 }
 
+
+/**
+ * Mentions that become real file attachments. A FOLDER row is a pointer: it has
+ * no bytes to upload, and attaching it reaches the model as "Attachment
+ * unavailable: <dir>" or a bogus CLI manifest row. Shared by the submit and the
+ * background-launch paths, which are otherwise identical and drifted apart —
+ * the folder guard reached only one of them.
+ */
+function attachableFileMentions(
+  selectedMentions: readonly MentionSuggestion[],
+  text: string,
+): MentionSuggestion[] {
+  return selectedMentions.filter((mention) => (
+    mention.kind === "file"
+    && Boolean(mention.filePath)
+    && mention.isDirectory !== true
+    && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
+  ));
+}
+
 function resolveCenterPaneWidth(columns: number, drawerOpen: boolean, rightPaneWidth: number): number {
   return Math.max(
     MIN_CENTER_PANE_WIDTH,
@@ -13250,15 +13270,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const submittedValue = value;
     const draftImageAttachments = promptImageAttachmentsRef.current;
     const promptAttachments: AgentChatFileRef[] = [
-      ...selectedMentions
-        .filter((mention) => (
-          mention.kind === "file"
-          && mention.filePath
-          // A folder row is a pointer; attaching it produces an "Attachment
-          // unavailable" line in the prompt, or a bogus CLI manifest row.
-          && mention.isDirectory !== true
-          && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
-        ))
+      ...attachableFileMentions(selectedMentions, text)
         .map((mention) => ({
           type: isImageFilePath(mention.filePath!) ? ("image" as const) : ("file" as const),
           path: mention.filePath!,
@@ -13468,12 +13480,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const submittedValue = value;
     const draftImageAttachments = promptImageAttachmentsRef.current;
     const promptAttachments: AgentChatFileRef[] = [
-      ...selectedMentions
-        .filter((mention) => (
-          mention.kind === "file"
-          && mention.filePath
-          && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
-        ))
+      ...attachableFileMentions(selectedMentions, text)
         .map((mention) => ({
           type: isImageFilePath(mention.filePath!) ? ("image" as const) : ("file" as const),
           path: mention.filePath!,

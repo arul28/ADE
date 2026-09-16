@@ -86,13 +86,6 @@ export function selectPrimaryLanePr(
   return pickPrimaryPr(candidates);
 }
 
-export function lanePrsForLane(
-  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
-  prs: PrSummary[],
-): PrSummary[] {
-  return selectLanePrs(lane, prs);
-}
-
 export type LanePrAttention = "danger" | "warning" | "active" | "success" | "muted";
 
 export type LanePrAttentionInput = {
