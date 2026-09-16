@@ -1913,11 +1913,16 @@ export function AgentChatComposer({
   onInterrupt: (mode?: AgentChatStopMode) => void;
   /** Live background job count for stop-menu labels. */
   backgroundJobCount?: number;
+  /**
+   * Resolves `false` when the response could not be delivered. The answer card
+   * stays open in that case, so a caller that cleared a draft to send it has to
+   * be able to put it back.
+   */
   onApproval: (
     decision: AgentChatApprovalDecision,
     responseText?: string | null,
     answers?: Record<string, string | string[]>,
-  ) => void;
+  ) => void | Promise<boolean>;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   /** Register this composer's attachment pipeline with its larger chat shell. */
   onRegisterDropTarget?: (target: AgentChatAttachmentDropTarget | null) => void;
@@ -4760,6 +4765,19 @@ export function AgentChatComposer({
           }
           dismissCommandMenu(commandMenuTrigger);
         }
+        // A FOCUSED CHIP owns Enter — it opens that chip's menu. Chips are
+        // `tabIndex = 0`, so they are reachable by keyboard inside an answer
+        // exactly as they are in the prompt box, and submitting the whole
+        // answer instead would make the same keystroke mean two different
+        // things in the two places the SAME editor is used. `handleKeyDown`
+        // already implements this; delegate rather than restate it.
+        const focusedChip = document.activeElement instanceof HTMLElement
+          ? document.activeElement.closest<HTMLElement>("[data-smart-link-url], [data-composer-chip='chat-context']")
+          : null;
+        if (focusedChip && event.currentTarget.contains(focusedChip)) {
+          handleKeyDown(event);
+          return;
+        }
         event.preventDefault();
         answer.onSubmitAnswer();
         return;
@@ -6541,7 +6559,14 @@ export function AgentChatComposer({
                 ) : null}
                 <div
                   ref={richEditorRef}
-                  contentEditable={!parallelLaunchBusy && !composerInputLocked}
+                  // An ANSWER freezes while its response is in flight. Two
+                  // reasons: text typed after submitting would surface as an
+                  // ordinary prompt the moment the card closes, and it would be
+                  // overwritten if a failed delivery restored the submitted
+                  // answer. Only the answer case locks — an ordinary approval
+                  // card leaves the composer usable.
+                  contentEditable={!parallelLaunchBusy && !composerInputLocked
+                    && !(answer != null && approvalResponding)}
                   role="textbox"
                   aria-multiline="true"
                   aria-label={answer ? "Answer" : composerInputAccessibleLabel}
@@ -6760,8 +6785,16 @@ export function AgentChatComposer({
                 // turn as a half-sent duplicate. Staged attachments deliberately
                 // do survive — no adapter carries a file inside an answer, so
                 // they ride the next message.
+                //
+                // Clearing it optimistically is right for the common case, but
+                // a failed response LEAVES THE CARD OPEN, and the text the user
+                // typed would be gone from a card still asking for it. Put it
+                // back on the one path that keeps asking.
+                const submitted = draft;
                 clearAnswerDraft();
-                onApproval("accept", null, answers);
+                void Promise.resolve(onApproval("accept", null, answers)).then((delivered) => {
+                  if (delivered === false) writeAnswerDraft(submitted);
+                });
               }}
               onDecline={() => {
                 clearAnswerDraft();

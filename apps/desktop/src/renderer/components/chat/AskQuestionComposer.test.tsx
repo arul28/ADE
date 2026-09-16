@@ -21,12 +21,24 @@ const buildRequest = (questions: PendingInputQuestion[], overrides: Partial<Pend
 
 const renderComposer = (
   request: PendingInputRequest,
-  handlers: { onSubmit?: (answers: Record<string, string | string[]>) => void; onDecline?: () => void } = {},
+  handlers: {
+    onSubmit?: (answers: Record<string, string | string[]>) => void;
+    onDecline?: () => void;
+    onAnswerValueChange?: (value: string) => void;
+  } = {},
 ) => {
   const onSubmit = handlers.onSubmit ?? vi.fn();
   const onDecline = handlers.onDecline ?? vi.fn();
-  render(<AskQuestionComposer request={request} onSubmit={onSubmit} onDecline={onDecline} />);
-  return { onSubmit, onDecline };
+  const onAnswerValueChange = handlers.onAnswerValueChange ?? vi.fn();
+  render(
+    <AskQuestionComposer
+      request={request}
+      onSubmit={onSubmit}
+      onDecline={onDecline}
+      onAnswerValueChange={onAnswerValueChange}
+    />,
+  );
+  return { onSubmit, onDecline, onAnswerValueChange };
 };
 
 const planQuestion = (overrides: Partial<PendingInputQuestion> = {}): PendingInputQuestion => ({
@@ -674,6 +686,25 @@ describe("AskQuestionComposer rich answer slot", () => {
     expect(screen.getByTestId("slot-editor").textContent).toBe("");
     fireEvent.click(screen.getByTestId("ask-question-dot-first"));
     expect(screen.getByTestId("slot-editor").textContent).toBe("answer one");
+  });
+
+  it("empties the shared draft when the next page has no editor at all", () => {
+    // Paging only handed the editor a value when the DESTINATION was a rich
+    // question. Moving to an option-only page left the previous page's answer
+    // sitting in the host's draft, where it resurfaced as an ordinary prompt
+    // once the card closed. The option-only page renders no editor, so the
+    // proof is the value handed to the host, not the DOM.
+    const onAnswerValueChange = vi.fn();
+    renderComposer(
+      buildRequest([
+        planQuestion({ id: "first", header: "Q1", question: "First?", options: undefined }),
+        planQuestion({ id: "second", header: "Q2", question: "Second?", allowsFreeform: false }),
+      ]),
+      { onAnswerValueChange },
+    );
+
+    fireEvent.click(screen.getByTestId("ask-question-dot-second"));
+    expect(onAnswerValueChange).toHaveBeenCalledWith("");
   });
 
   it("does not hijack digits typed into the supplied editor", () => {

@@ -340,9 +340,14 @@ export function AskQuestionComposer({
       setNotes((prev) => ({ ...prev, [question.id]: answerValue ?? "" }));
     }
     const next = questions[target];
-    if (next && isRichQuestion(next)) {
-      onAnswerValueChange?.(ownQuestionValue(notesById, next.id) ?? "");
-    }
+    // Hand the shared editor the destination's own answer — and EMPTY it when
+    // the destination has no editor at all. A secret or option-only page does
+    // not render the rich editor, so skipping this left the previous page's
+    // answer sitting in the host draft, where it would resurface as an ordinary
+    // prompt once the card went away.
+    onAnswerValueChange?.(
+      next && isRichQuestion(next) ? ownQuestionValue(notesById, next.id) ?? "" : "",
+    );
     setPage(target);
   }, [answerValue, isRichQuestion, notesById, onAnswerValueChange, question, questions, richAnswerActive, safePage]);
 

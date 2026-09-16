@@ -11792,8 +11792,11 @@ export function AgentChatPane({
     responseText?: string | null,
     answers?: Record<string, string | string[]>,
   ) => {
-    if (!selectedSessionId || !pendingInput) return;
-    await handleApproval(pendingInput.itemId, decision, responseText, answers);
+    // The boolean matters: the answer composer clears its draft to send it and
+    // restores it when delivery failed, because a failed response leaves the
+    // card open and still asking.
+    if (!selectedSessionId || !pendingInput) return false;
+    return await handleApproval(pendingInput.itemId, decision, responseText, answers);
   }, [handleApproval, pendingInput, selectedSessionId]);
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
@@ -13741,9 +13744,7 @@ export function AgentChatPane({
               void interrupt(mode);
             }}
             backgroundJobCount={selectedSession?.activeBackgroundTaskCount ?? 0}
-            onApproval={(decision, responseText, answers) => {
-              void approve(decision, responseText, answers);
-            }}
+            onApproval={(decision, responseText, answers) => approve(decision, responseText, answers)}
             onAddAttachment={addAttachment}
             onRegisterDropTarget={registerChatPaneDropTarget}
             onRemoveAttachment={removeAttachment}
