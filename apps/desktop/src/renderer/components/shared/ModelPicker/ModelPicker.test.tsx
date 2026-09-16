@@ -1469,7 +1469,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         catalogScopeKey="machine-a"
         onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
@@ -1491,7 +1490,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         catalogScopeKey="machine-b"
         onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
