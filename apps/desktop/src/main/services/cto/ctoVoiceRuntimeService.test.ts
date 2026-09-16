@@ -393,6 +393,136 @@ describe("createCtoVoiceRuntimeService", () => {
     );
   });
 
+  /**
+   * The other half of the barge-in, and the half that used to be missing.
+   *
+   * The renderer flushes its own playback graph, but the runtime keeps up to
+   * twenty seconds of already-generated answer in the pull queue — so the very
+   * next drain handed the speaker back the sentence the user just talked over.
+   */
+  it("throws away queued output audio the moment a barge-in lands", async () => {
+    const fake = createFakeSocket();
+    const { host } = createVoiceRuntimeHost();
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+
+    await voice.start({ ownerToken: "owner-1" });
+    fake.open();
+    fake.receive({ type: "session.created", session: { id: "sess_1" } });
+    fake.receive({ type: "response.created", response: { id: "resp_1" } });
+    fake.receive({ type: "response.output_audio.delta", delta: "AAAA" });
+    fake.receive({ type: "response.output_audio.delta", delta: "BBBB" });
+
+    fake.receive({ type: "input_audio_buffer.speech_started" });
+
+    expect(voice.getState().interrupted).toBe(true);
+    const drained = voice.pullAudio({ ownerToken: "owner-1" });
+    expect(drained.chunks).toEqual([]);
+    // Cancelled, not lost: the owner is not told audio went missing.
+    expect(drained.dropped).toBe(0);
+    voice.dispose();
+  });
+
+  /**
+   * The session is resolved once, before the socket opens, and that resolution
+   * is what the confirm-first hold is keyed on. Re-resolving it per turn walked
+   * the lane list and re-normalized the session again between the user
+   * finishing a sentence and the provider seeing it.
+   */
+  it("reuses the session the call already resolved instead of resolving one per turn", async () => {
+    const fake = createFakeSocket();
+    const { host } = createVoiceRuntimeHost();
+    const chat = host.agentChatService as unknown as Record<string, unknown>;
+    const ensureIdentitySession = vi.fn(async () => ({ id: "session-1" }));
+    chat.ensureIdentitySession = ensureIdentitySession;
+    const runSessionTurn = vi.fn(async () => ({ outputText: "Nine lanes.", status: "completed" }));
+    chat.runSessionTurn = runSessionTurn;
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+
+    await voice.start({ ownerToken: "owner-1" });
+    fake.open();
+    fake.receive({ type: "session.created", session: { id: "sess_1" } });
+    await tick();
+    const resolvedBeforeTheTurn = ensureIdentitySession.mock.calls.length;
+
+    fake.receive({ type: "input_audio_buffer.speech_started" });
+    voice.pushAudio({ ownerToken: "owner-1", chunks: [MIC_FRAME, MIC_FRAME, MIC_FRAME, MIC_FRAME], level: 0.5 });
+    fake.receive({ type: "input_audio_buffer.speech_stopped" });
+    fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "how many lanes",
+    });
+    await tick();
+
+    expect(runSessionTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-1" }),
+    );
+    expect(ensureIdentitySession.mock.calls.length).toBe(resolvedBeforeTheTurn);
+    voice.dispose();
+  });
+
+  /**
+   * The two numbers `cto_voice.turn_timing` cannot see from the call service:
+   * only this side is watching the thread's event stream, and "the model was
+   * slow" and "the tools were slow" have different fixes.
+   */
+  it("reports the turn's first text and its tool calls back to the call", async () => {
+    const fake = createFakeSocket();
+    const { host } = createVoiceRuntimeHost();
+    const chat = host.agentChatService as unknown as Record<string, unknown>;
+    const listeners = new Set<(envelope: unknown) => void>();
+    chat.subscribeToEvents = (handler: (envelope: unknown) => void) => {
+      listeners.add(handler);
+      return () => { listeners.delete(handler); };
+    };
+    chat.runSessionTurn = async (args: { voiceCallId?: string }) => {
+      const provenance = { voiceCallId: args.voiceCallId ?? null };
+      for (const listener of listeners) {
+        listener({ sessionId: "session-1", provenance, event: { type: "text", text: "Nine" } });
+        listener({ sessionId: "session-1", provenance, event: { type: "tool_call", tool: "listLanes" } });
+        listener({ sessionId: "session-1", provenance, event: { type: "text", text: " lanes." } });
+        // Another chat on the same thread. A voice turn's measurements are the
+        // voice turn's, so this one must not be counted.
+        listener({ sessionId: "session-1", provenance: {}, event: { type: "tool_call", tool: "bash" } });
+      }
+      return { outputText: "Nine lanes.", status: "completed" };
+    };
+    const lines: Array<{ event: string; meta: Record<string, unknown> }> = [];
+    host.logger = {
+      info: (event: string, meta?: Record<string, unknown>) => lines.push({ event, meta: meta ?? {} }),
+      warn: () => {},
+    };
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+
+    await voice.start({ ownerToken: "owner-1" });
+    fake.open();
+    fake.receive({ type: "session.created", session: { id: "sess_1" } });
+    fake.receive({ type: "input_audio_buffer.speech_started" });
+    voice.pushAudio({ ownerToken: "owner-1", chunks: [MIC_FRAME, MIC_FRAME, MIC_FRAME, MIC_FRAME], level: 0.5 });
+    fake.receive({ type: "input_audio_buffer.speech_stopped" });
+    fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "how many lanes",
+    });
+    await tick();
+    // The answer is spoken, and the audio for it is what closes the timing line.
+    fake.receive({ type: "response.output_audio.delta", delta: "AAAA" });
+
+    const timing = lines.find((line) => line.event === "cto_voice.turn_timing");
+    expect(timing).toBeDefined();
+    expect(timing?.meta.toolCalls).toBe(1);
+    expect(timing?.meta.turnStartToFirstTextMs).toEqual(expect.any(Number));
+    voice.dispose();
+  });
+
   it("hangs up a call whose owning window has gone quiet", async () => {
     vi.useFakeTimers();
     try {

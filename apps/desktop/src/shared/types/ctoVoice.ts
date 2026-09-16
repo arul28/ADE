@@ -152,6 +152,28 @@ export const CTO_VOICE_MIN_SPEECH_PEAK_LEVEL = 0.05;
 export const CTO_VOICE_MIC_WINDOW_MS = 3_000;
 
 /**
+ * Microphone peak (0..1) that interrupts the CTO's voice from the renderer.
+ *
+ * The renderer plays the CTO's audio, so it knows a barge-in a whole round trip
+ * before the server's VAD does: server `speech_started` has to reach the call
+ * service, become an `interrupted` state, cross the runtime event bus and the
+ * desktop router, and only then does the renderer flush. Audio already pulled
+ * into the playback graph keeps talking over the user for all of it.
+ *
+ * Deliberately four times {@link CTO_VOICE_MIN_SPEECH_PEAK_LEVEL} rather than
+ * equal to it. That number is a permissive floor for "was there speech in this
+ * segment at all", judged after the fact; this one fires instantly on two
+ * frames, so the CTO's own voice leaking back through the echo canceller must
+ * not be able to reach it — a self-interrupting call would cut every answer
+ * short in a noisy room. 0.2 is under a close-mic sentence with AGC on and well
+ * over suppressed echo.
+ *
+ * The server-side path stays the source of truth: this only silences the
+ * speaker, and it is the runtime that cancels the response and aborts the turn.
+ */
+export const CTO_VOICE_LOCAL_BARGE_IN_LEVEL = 0.2;
+
+/**
  * How much CONTIGUOUS voiced audio a segment needs before it can carry a
  * sentence.
  *

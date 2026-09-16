@@ -322,7 +322,15 @@ export function createCtoVoiceRuntimeService(
   };
 
   const publish = (next: CtoVoiceState): void => {
+    const wasInterrupted = state.interrupted;
     state = next;
+    // A barge-in silences the speaker, and everything already queued here was
+    // generated before the user started talking — so draining it after the
+    // interrupt is the CTO carrying on over them. The renderer flushes its own
+    // playback graph; this is the other half, and without it the next pull
+    // hands back up to twenty seconds of the answer the user just stopped.
+    // Not counted as dropped audio: these chunks were cancelled, not lost.
+    if (next.interrupted && !wasInterrupted) outputAudio = [];
     // Before the suppression check: a call cleared by a later one still ended,
     // and its outcome is the same product fact whether anyone was listening.
     if (!isVoiceCallLive(next.phase)) reportCallEnded(next);
@@ -486,8 +494,18 @@ export function createCtoVoiceRuntimeService(
         signal: AbortSignal;
         imageBase64?: string | null;
       }) => {
-        const laneId = await resolvePrimaryLaneId();
-        const session = await agentChatService.ensureIdentitySession({ identityKey: "cto", laneId });
+        // The call already resolved this session — `setCallConfirmMode` runs
+        // before the socket opens and is what the confirm-first hold is keyed
+        // on. Re-resolving it per turn walked the lane list and re-normalized
+        // the session again between the user finishing a sentence and the
+        // provider seeing it, which is time the user spends listening to
+        // nothing. Falling back to a full resolve keeps a call that never took
+        // the hold (confirm mode off) working exactly as before.
+        const sessionId = callSessionId
+          ?? (await agentChatService.ensureIdentitySession({
+            identityKey: "cto",
+            laneId: await resolvePrimaryLaneId(),
+          })).id;
 
         const attachments: Array<{ path: string; type: "image" }> = [];
         if (imageBase64) {
@@ -510,15 +528,31 @@ export function createCtoVoiceRuntimeService(
             // `stop_only`, not `stop_and_clear`: the CTO thread is one shared
             // session, so clearing the queue would throw away a message the
             // user typed into the chat and is still waiting on.
-            .interrupt({ sessionId: session.id, mode: "stop_only" })
+            .interrupt({ sessionId, mode: "stop_only" })
             .catch(() => { /* the turn had already finished */ });
         };
         signal.addEventListener("abort", onAbort, { once: true });
         // `runSessionTurn` throws on a session that already has a turn running.
         await inFlightInterrupt;
+
+        // What the call cannot see from the other side of `runBackendTurn`: how
+        // long the model took to say its first word, and how much of the wait
+        // was tools. Both go in `cto_voice.turn_timing`, which is the only
+        // place a slow call can be told apart from a slow model. Scoped to this
+        // call's own events — the CTO thread is shared with the chat.
+        let firstTextAtMs: number | null = null;
+        let toolCalls = 0;
+        const turnStartedAtMs = now();
+        const releaseTurnWatch = agentChatService.subscribeToEvents((envelope) => {
+          if (envelope.sessionId !== sessionId) return;
+          if (callId && envelope.provenance?.voiceCallId !== callId) return;
+          if (envelope.event.type === "tool_call") { toolCalls += 1; return; }
+          if (envelope.event.type !== "text") return;
+          if (firstTextAtMs === null) firstTextAtMs = now();
+        });
         try {
           const result = await agentChatService.runSessionTurn({
-            sessionId: session.id,
+            sessionId,
             text: [
               "[voice call] The user is speaking with you right now and will hear your reply.",
               "Answer in at most three sentences, in plain spoken language, with no markdown, no lists and no code.",
@@ -549,26 +583,34 @@ export function createCtoVoiceRuntimeService(
           // `outputText` on a failed turn is the provider's error sentence
           // ('Prompt is too long'), and speaking that is how the CTO ended up
           // reading an error out loud in its own voice.
-          if (result.status === "completed") return splitSpokenSceneAnswer(result.outputText);
+          const measured = {
+            ...(firstTextAtMs === null ? {} : { firstTextMs: Math.round(firstTextAtMs - turnStartedAtMs) }),
+            toolCalls,
+          };
+          if (result.status === "completed") {
+            return { ...splitSpokenSceneAnswer(result.outputText), ...measured };
+          }
           const reason = result.errorMessage ?? result.outputText;
           if (result.status === "interrupted") {
             // The user stopped this themselves. Saying anything would be ADE
             // narrating the user's own action back at them.
-            hostLogger?.info("cto_voice.turn_interrupted", { callId, sessionId: session.id });
-            return { spoken: "" };
+            hostLogger?.info("cto_voice.turn_interrupted", { callId, sessionId });
+            return { spoken: "", ...measured };
           }
           const overLimit = isContextOverflowFailureText(reason);
           hostLogger?.warn("cto_voice.turn_failed", {
             callId,
-            sessionId: session.id,
+            sessionId,
             status: result.status,
             cause: overLimit ? "context_overflow" : "error",
             error: reason,
           });
           return {
             spoken: overLimit ? CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW : CTO_VOICE_SPOKEN_TURN_FAILED,
+            ...measured,
           };
         } finally {
+          releaseTurnWatch();
           signal.removeEventListener("abort", onAbort);
         }
       },

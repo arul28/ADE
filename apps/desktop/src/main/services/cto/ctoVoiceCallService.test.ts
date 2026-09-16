@@ -181,13 +181,19 @@ describe("createCtoVoiceCallService", () => {
   });
 
   /**
-   * The filler is the whole reason a call does not feel like a form submission:
-   * it must be sent before the backend is even called, not after it returns.
+   * The regression this replaced: a filler on the first line of every turn.
+   * "Let me check that." went out before the backend was even called, which
+   * meant the user heard it before "Hello" too — four words of nothing, every
+   * single answer. A turn now says exactly one thing, and it is the answer.
+   *
+   * `backchannelsEnabled` is deliberately ON here: the setting no longer buys
+   * the filler back.
    */
-  it("speaks a filler before the backend work starts", async () => {
+  it("says nothing at all while the backend is thinking", async () => {
     const order: string[] = [];
     let releaseBackend: () => void = () => {};
     const harness = createService({
+      backchannelsEnabled: () => true,
       runBackendTurn: async () => {
         order.push("backend-started");
         await new Promise<void>((resolve) => { releaseBackend = resolve; });
@@ -198,21 +204,21 @@ describe("createCtoVoiceCallService", () => {
     utter(harness, "what merged yesterday");
     await tick();
 
-    expect(spoken(harness.fake).join("\n")).toContain("Let me check that.");
+    expect(spoken(harness.fake)).toEqual([]);
     expect(order).toEqual(["backend-started"]);
     expect(harness.latest().phase).toBe("thinking");
     releaseBackend();
   });
 
-  it("stays quiet before the answer when listening noises are off", async () => {
+  it("speaks the answer and nothing before it", async () => {
     const harness = createService({ backchannelsEnabled: () => false });
     await openCall(harness);
     utter(harness, "what merged yesterday");
     await tick();
 
-    const said = spoken(harness.fake).join("\n");
-    expect(said).not.toContain("Let me check that.");
-    expect(said).toContain("Three merged yesterday.");
+    const said = spoken(harness.fake);
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain("Three merged yesterday.");
   });
 
   /**
@@ -269,18 +275,102 @@ describe("createCtoVoiceCallService", () => {
    * `response.create` while one is generating is answered with an error instead
    * of with speech, so the answer would simply never be heard.
    */
-  it("waits for the filler to finish before it speaks the answer", async () => {
+  it("holds an answer until the response already in flight is over", async () => {
     const harness = createService();
     await openCall(harness);
+    // A response the server has already named — the state a queued answer has
+    // to survive. Asking for a second one here is answered with an error, not
+    // with speech, so the answer would simply never be heard.
+    harness.fake.receive({ type: "response.created", response: { id: "resp_1" } });
     utter(harness, "what merged yesterday");
     await tick();
 
-    expect(spoken(harness.fake)).toHaveLength(1);
-    expect(spoken(harness.fake)[0]).toContain("Let me check that.");
+    expect(spoken(harness.fake)).toEqual([]);
 
     harness.fake.receive({ type: "response.done", response: { status: "completed" } });
-    expect(spoken(harness.fake)).toHaveLength(2);
-    expect(spoken(harness.fake)[1]).toContain("Three merged yesterday.");
+    expect(spoken(harness.fake)).toHaveLength(1);
+    expect(spoken(harness.fake)[0]).toContain("Three merged yesterday.");
+  });
+
+  /**
+   * One line per turn, and it has to name every leg — a call that feels slow is
+   * a different bug depending on which of them is the seconds. The measured
+   * failure it exists for: three to five seconds from an accepted transcript to
+   * the CTO's first word, with no way to tell the transcriber's round trip from
+   * ADE's own work from the model's.
+   */
+  it("writes one turn_timing line naming every leg of the wait", async () => {
+    let clock = 1_000;
+    const lines: Array<{ event: string; meta: Record<string, unknown> }> = [];
+    const harness = createService({
+      now: () => clock,
+      logger: {
+        info: (event: string, meta?: unknown) => lines.push({
+          event,
+          meta: (meta ?? {}) as Record<string, unknown>,
+        }),
+        warn: () => {},
+      },
+      runBackendTurn: async () => {
+        clock += 800;
+        return { spoken: "Three merged yesterday.", firstTextMs: 500, toolCalls: 2 };
+      },
+    });
+    await openCall(harness);
+
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    hearMic(harness);
+    harness.fake.receive({ type: "input_audio_buffer.speech_stopped" });
+    // The transcriber's own round trip: the one leg that is entirely OpenAI's.
+    clock += 300;
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "what merged yesterday",
+    });
+    await tick();
+    // Nothing has been heard yet — the line is not written until it has.
+    expect(lines.filter((line) => line.event === "cto_voice.turn_timing")).toHaveLength(0);
+
+    clock += 200;
+    harness.fake.receive({ type: "response.output_audio.delta", delta: "AAAA" });
+
+    const timing = lines.filter((line) => line.event === "cto_voice.turn_timing");
+    expect(timing).toHaveLength(1);
+    expect(timing[0]!.meta).toMatchObject({
+      outcome: "spoken",
+      speechStoppedToTranscriptMs: 300,
+      acceptToTurnStartMs: 0,
+      turnStartToFirstTextMs: 500,
+      turnStartToBackendDoneMs: 800,
+      firstSpeakToFirstAudioMs: 200,
+      totalMs: 1_000,
+      toolCalls: 2,
+    });
+  });
+
+  it("still measures a turn that never made a sound", async () => {
+    const lines: Array<{ event: string; meta: Record<string, unknown> }> = [];
+    const harness = createService({
+      logger: {
+        info: (event: string, meta?: unknown) => lines.push({
+          event,
+          meta: (meta ?? {}) as Record<string, unknown>,
+        }),
+        warn: () => {},
+      },
+      // An interrupted turn deliberately answers with no sentence. A timing
+      // line that only appears for the happy path cannot tell you which turns
+      // were slow, so this one is written too.
+      runBackendTurn: async () => ({ spoken: "" }),
+    });
+    await openCall(harness);
+    utter(harness, "never mind");
+    await tick();
+
+    const timing = lines.filter((line) => line.event === "cto_voice.turn_timing");
+    expect(timing).toHaveLength(1);
+    expect(timing[0]!.meta.outcome).toBe("silent");
+    expect(timing[0]!.meta.firstSpeakToFirstAudioMs).toBeNull();
   });
 
   it("asks the CTO exactly what the transcript said", async () => {

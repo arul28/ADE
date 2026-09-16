@@ -5,6 +5,7 @@ import {
   CTO_VOICE_CAPTURE_DEFAULT_NOTE,
   CTO_VOICE_CAPTURE_EVENT,
   CTO_VOICE_INITIAL_STATE,
+  CTO_VOICE_LOCAL_BARGE_IN_LEVEL,
   CTO_VOICE_SAMPLE_RATE,
   ctoVoiceMicrophoneMessage,
   isVoiceCallLive,
@@ -42,6 +43,13 @@ const listeners = new Set<() => void>();
 
 function setState(next: CtoVoiceStatePayload) {
   state = next;
+  // A PHASE change lifts the local barge-in latch — not any pushed state. The
+  // meter pushes a state per distinct input level, so "the next state" arrives
+  // while the user is still mid-word and would un-silence the CTO immediately.
+  // A phase change is the main process saying something new happened, and it is
+  // what makes the latch unable to mute the next answer: a new answer always
+  // comes through `thinking` and `speaking`.
+  if (bargedInAtPhase !== null && next.phase !== bargedInAtPhase) bargedInAtPhase = null;
   listeners.forEach((listener) => listener());
 }
 
@@ -141,6 +149,20 @@ let mediaStream: MediaStream | null = null;
 let processor: ScriptProcessorNode | null = null;
 let playbackContext: AudioContext | null = null;
 let playbackAt = 0;
+/**
+ * Frames in a row over {@link CTO_VOICE_LOCAL_BARGE_IN_LEVEL} while the CTO is
+ * talking. Two, not one: a single transient is a door, a chair or a key press.
+ */
+let loudFramesWhileSpeaking = 0;
+/**
+ * True from a local barge-in until the main process pushes its next state.
+ *
+ * Without it the flush is undone a tenth of a second later: the audio pump is
+ * still draining the runtime's queue, so the chunks generated before the server
+ * heard anything would rebuild the playback graph and the CTO would carry on
+ * over the user.
+ */
+let bargedInAtPhase: CtoVoiceStatePayload["phase"] | null = null;
 
 /** Float32 [-1,1] → PCM16 little-endian, the format the session negotiated. */
 function floatToPcm16(input: Float32Array): Uint8Array {
@@ -308,6 +330,7 @@ async function startCapture() {
     const input = event.inputBuffer.getChannelData(0);
     let peak = 0;
     for (let i = 0; i < input.length; i += 1) peak = Math.max(peak, Math.abs(input[i]));
+    noteLocalBargeIn(peak);
     bridge()?.pushAudio(bytesToBase64(floatToPcm16(input)), peak);
   };
   source.connect(processor);
@@ -323,8 +346,47 @@ function stopCapture() {
   audioContext = null;
 }
 
+/**
+ * Is the CTO audibly talking right now?
+ *
+ * Scheduled audio, not a phase: the phase says what the main process believes,
+ * and the whole point of the local fast path is that this side knows first.
+ */
+export function voicePlaybackActive(): boolean {
+  if (!playbackContext) return false;
+  return playbackAt > playbackContext.currentTime;
+}
+
+/**
+ * Silence the CTO the moment the user talks over it, without waiting for the
+ * server.
+ *
+ * The server-side barge-in is still the one that cancels the response and
+ * aborts the turn behind it; this only stops the speaker, and only while audio
+ * is actually playing. Two consecutive frames over the threshold rather than
+ * one, because a single loud frame is a key press.
+ */
+export function noteLocalBargeIn(peak: number): void {
+  if (!voicePlaybackActive()) {
+    loudFramesWhileSpeaking = 0;
+    return;
+  }
+  if (peak < CTO_VOICE_LOCAL_BARGE_IN_LEVEL) {
+    loudFramesWhileSpeaking = 0;
+    return;
+  }
+  loudFramesWhileSpeaking += 1;
+  if (loudFramesWhileSpeaking < 2) return;
+  loudFramesWhileSpeaking = 0;
+  bargedInAtPhase = state.phase;
+  flushVoicePlayback();
+}
+
 /** Queue an output chunk so consecutive deltas play gaplessly. */
 export function playVoiceChunk(base64: string) {
+  // Everything already in the runtime's queue was generated before the user
+  // started talking, so playing it is exactly the thing the barge-in stopped.
+  if (bargedInAtPhase !== null) return;
   if (!playbackContext) {
     playbackContext = new AudioContext({ sampleRate: CTO_VOICE_SAMPLE_RATE });
     playbackAt = playbackContext.currentTime;
@@ -352,6 +414,13 @@ export function flushVoicePlayback() {
   void playbackContext?.close();
   playbackContext = null;
   playbackAt = 0;
+  loudFramesWhileSpeaking = 0;
+}
+
+/** Test seam: forget a local barge-in without waiting for a pushed state. */
+export function resetLocalBargeIn(): void {
+  bargedInAtPhase = null;
+  loudFramesWhileSpeaking = 0;
 }
 
 /* ── hook ── */

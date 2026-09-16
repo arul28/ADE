@@ -582,7 +582,7 @@ export function CtoSettingsPage({
           title="Thinking out loud"
           description={
             backchannels
-              ? "The CTO says a word while it looks something up."
+              ? "The CTO may make a short noise while it works."
               : "The CTO stays quiet until it has your answer."
           }
           accent={accent}

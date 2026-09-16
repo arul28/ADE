@@ -5,10 +5,19 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 
 import {
   CTO_VOICE_INITIAL_STATE,
+  CTO_VOICE_LOCAL_BARGE_IN_LEVEL,
   ctoVoiceMicrophoneMessage,
   type CtoVoiceStatePayload,
 } from "../../../shared/types/ctoVoice";
-import { useCtoVoiceAudioOwner } from "./useCtoVoiceCall";
+import {
+  flushVoicePlayback,
+  noteLocalBargeIn,
+  playVoiceChunk,
+  resetLocalBargeIn,
+  subscribeVoiceState,
+  useCtoVoiceAudioOwner,
+  voicePlaybackActive,
+} from "./useCtoVoiceCall";
 
 /**
  * A microphone that will not open must END the call and SAY so.
@@ -181,5 +190,133 @@ describe("useCtoVoiceAudioOwner", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(end).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A playback graph the test can watch, in the shape `playVoiceChunk` uses.
+ *
+ * `currentTime` never advances on its own, so "is the CTO still talking" is a
+ * question about scheduled audio rather than about a real clock.
+ */
+function installAudioContext() {
+  const closed: boolean[] = [];
+  class FakeAudioContext {
+    currentTime = 0;
+    destination = {};
+    createBuffer(_channels: number, samples: number) {
+      return {
+        duration: samples / 24_000,
+        getChannelData: () => new Float32Array(samples),
+      };
+    }
+    createBufferSource() {
+      return { buffer: null, connect: () => {}, start: () => {} };
+    }
+    close() { closed.push(true); return Promise.resolve(); }
+  }
+  (globalThis as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+  return { closed };
+}
+
+/** A tenth of a second of PCM16 silence, as base64 — one output chunk. */
+const OUTPUT_CHUNK = btoa(String.fromCharCode(...new Uint8Array(2400 * 2)));
+
+/**
+ * The local fast path for a barge-in.
+ *
+ * The server-side route is a full round trip — `speech_started` reaches the
+ * call service, becomes an `interrupted` state, crosses the runtime event bus
+ * and the desktop router — and audio already pulled into the renderer talks
+ * over the user for every millisecond of it. This side knows first, because it
+ * is the side holding the speaker.
+ */
+describe("local barge-in", () => {
+  beforeEach(() => {
+    installAudioContext();
+    flushVoicePlayback();
+    resetLocalBargeIn();
+  });
+
+  afterEach(() => {
+    flushVoicePlayback();
+    resetLocalBargeIn();
+  });
+
+  it("does not flush on a peak just under the threshold, however long it lasts", () => {
+    playVoiceChunk(OUTPUT_CHUNK);
+    expect(voicePlaybackActive()).toBe(true);
+
+    for (let frame = 0; frame < 8; frame += 1) {
+      noteLocalBargeIn(CTO_VOICE_LOCAL_BARGE_IN_LEVEL - 0.01);
+    }
+
+    expect(voicePlaybackActive()).toBe(true);
+  });
+
+  /** One loud frame is a key press or a chair. Two in a row is a person. */
+  it("flushes on the second consecutive frame at the threshold, not the first", () => {
+    playVoiceChunk(OUTPUT_CHUNK);
+
+    noteLocalBargeIn(CTO_VOICE_LOCAL_BARGE_IN_LEVEL);
+    expect(voicePlaybackActive()).toBe(true);
+
+    noteLocalBargeIn(CTO_VOICE_LOCAL_BARGE_IN_LEVEL);
+    expect(voicePlaybackActive()).toBe(false);
+  });
+
+  it("forgets a lone loud frame when the next one is quiet", () => {
+    playVoiceChunk(OUTPUT_CHUNK);
+
+    noteLocalBargeIn(CTO_VOICE_LOCAL_BARGE_IN_LEVEL);
+    noteLocalBargeIn(0);
+    noteLocalBargeIn(CTO_VOICE_LOCAL_BARGE_IN_LEVEL);
+
+    expect(voicePlaybackActive()).toBe(true);
+  });
+
+  it("ignores loud frames when nothing is playing", () => {
+    noteLocalBargeIn(1);
+    noteLocalBargeIn(1);
+    expect(voicePlaybackActive()).toBe(false);
+  });
+
+  /**
+   * The flush alone is not enough: the audio pump keeps draining the runtime's
+   * queue, and those chunks were generated before the user opened their mouth.
+   * Playing them would rebuild the graph a tenth of a second later.
+   */
+  it("keeps discarding chunks until the main process reports a new phase", () => {
+    const handlers: Array<(state: CtoVoiceStatePayload) => void> = [];
+    (globalThis.window as unknown as { ade: unknown }).ade = {
+      ctoVoice: {
+        onState: (handler: (state: CtoVoiceStatePayload) => void) => {
+          handlers.push(handler);
+          return () => {};
+        },
+      },
+    };
+    const release = subscribeVoiceState(() => {});
+    handlers[0]?.({ ...CTO_VOICE_INITIAL_STATE, phase: "speaking", isCallOwner: true });
+
+    playVoiceChunk(OUTPUT_CHUNK);
+    noteLocalBargeIn(1);
+    noteLocalBargeIn(1);
+    expect(voicePlaybackActive()).toBe(false);
+
+    // A state that is not a phase change — the meter pushes one of these per
+    // distinct input level, all through the user's sentence.
+    handlers[0]?.({
+      ...CTO_VOICE_INITIAL_STATE, phase: "speaking", inputLevel: 0.4, isCallOwner: true,
+    });
+    playVoiceChunk(OUTPUT_CHUNK);
+    expect(voicePlaybackActive()).toBe(false);
+
+    // The next answer, which must never be muted by a barge-in against the last.
+    handlers[0]?.({ ...CTO_VOICE_INITIAL_STATE, phase: "thinking", isCallOwner: true });
+    playVoiceChunk(OUTPUT_CHUNK);
+    expect(voicePlaybackActive()).toBe(true);
+
+    release();
   });
 });

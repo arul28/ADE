@@ -313,6 +313,16 @@ export type CtoVoiceBackendResult = {
   /** Read back to the user, word for word, by the realtime model. */
   spoken: string;
   /**
+   * Milliseconds from the backend turn starting to its first token of text.
+   *
+   * Reported by whoever ran the turn, because only that side is watching the
+   * thread's event stream. It is the difference between "the model is slow" and
+   * "ADE spent a second getting to the model", and those have different fixes.
+   */
+  firstTextMs?: number;
+  /** Tool calls the turn made. The other half of "why did that take five seconds". */
+  toolCalls?: number;
+  /**
    * A scene the turn drew, lifted out of the answer's one `scene` fence.
    *
    * The HUD renders it in the same sandbox the transcript uses, so a view drawn
@@ -340,6 +350,15 @@ export type CtoVoiceCallDeps = {
   getApiKey: () => Promise<string | null>;
   ctoName: () => string;
   projectName: () => string;
+  /**
+   * Kept, and deliberately not read today.
+   *
+   * It used to gate one unconditional filler ("Let me check that.") spoken at
+   * the top of every turn, which meant the user heard it before "Hello" too —
+   * the most annoying thing on a call. The filler is gone; the setting stays
+   * because the acknowledgement is moving to the realtime model, which will own
+   * whether it makes a noise while ADE works.
+   */
   backchannelsEnabled: () => boolean;
   voice?: () => CtoVoiceName;
   /**
@@ -660,6 +679,61 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   /** Accepted user turns this call has had. The number the status line reports. */
   let exchanges = 0;
 
+  /**
+   * When the server last said the user stopped talking.
+   *
+   * The first leg of the latency the user actually feels, and the only one
+   * nothing else records: the transcriber's own round trip. Reset per segment,
+   * so a transcript with no `speech_stopped` behind it reports no leg rather
+   * than one measured against a minute-old event.
+   */
+  let speechStoppedAtMs = 0;
+
+  /**
+   * One turn's latency, filled in as the turn passes each post.
+   *
+   * Held rather than logged at the end, because the last leg — the first audio
+   * the user hears — arrives after the turn is over. `flushTurnTiming` writes
+   * the line at whichever comes first: that audio, the next turn, or the call
+   * ending, so a turn that never made a sound is still measured.
+   */
+  type CtoVoiceTurnTiming = {
+    speechStoppedToTranscriptMs: number | null;
+    acceptedAtMs: number;
+    turnStartedAtMs: number | null;
+    backendDoneAtMs: number | null;
+    firstTextMs: number | null;
+    firstSpeakAtMs: number | null;
+    toolCalls: number;
+  };
+  let turnTiming: CtoVoiceTurnTiming | null = null;
+
+  /**
+   * Write the turn's timing line, once.
+   *
+   * Every leg is optional on purpose: an interrupted turn has no answer, a
+   * failed one has no audio, and a line that only appears for the happy path
+   * cannot tell you which turns were slow.
+   */
+  const flushTurnTiming = (outcome: string, firstAudioAtMs: number | null): void => {
+    const timing = turnTiming;
+    if (!timing) return;
+    turnTiming = null;
+    const since = (from: number | null, to: number | null): number | null =>
+      from === null || to === null ? null : Math.round(to - from);
+    deps.logger?.info("cto_voice.turn_timing", {
+      callId: state.callId,
+      outcome,
+      speechStoppedToTranscriptMs: timing.speechStoppedToTranscriptMs,
+      acceptToTurnStartMs: since(timing.acceptedAtMs, timing.turnStartedAtMs),
+      turnStartToFirstTextMs: timing.firstTextMs,
+      turnStartToBackendDoneMs: since(timing.turnStartedAtMs, timing.backendDoneAtMs),
+      firstSpeakToFirstAudioMs: since(timing.firstSpeakAtMs, firstAudioAtMs),
+      totalMs: since(timing.acceptedAtMs, firstAudioAtMs ?? timing.backendDoneAtMs),
+      toolCalls: timing.toolCalls,
+    });
+  };
+
   const emit = (patch: Partial<CtoVoiceState>) => {
     state = { ...state, ...patch };
     deps.onState(state);
@@ -757,6 +831,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   const speak = (content: string) => {
     const text = content.trim();
     if (!text.length) return;
+    // The post the audio leg is measured from: the queue may hold this behind
+    // another response, and that wait is part of what the user is waiting for.
+    if (turnTiming && turnTiming.firstSpeakAtMs === null) turnTiming.firstSpeakAtMs = now();
     speakQueue.push(text);
     drainSpeech();
   };
@@ -845,9 +922,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
     setPhase("thinking");
 
-    // Cover the gap immediately. The filler goes out before any backend work
-    // starts, because the point of it is that the user never hears silence.
-    if (deps.backchannelsEnabled()) speak("Let me check that.");
+    // Nothing is spoken here. A filler on the first line of every turn meant
+    // the user heard "Let me check that." before "Hello" too, and a call that
+    // says the same four words before every answer is worse than one that takes
+    // a beat. The acknowledgement belongs to whoever can judge the question.
 
     // Held locally, not read back off `abort`. By the time this turn's await
     // settles, `abort` names the controller of whatever turn SUPERSEDED it, so
@@ -860,6 +938,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     try {
       const image = pendingImage;
       pendingImage = null;
+      if (turnTiming) turnTiming.turnStartedAtMs = now();
       const result = await deps.runBackendTurn({
         intent,
         callId: state.callId ?? "",
@@ -867,9 +946,18 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         imageBase64: image,
       });
 
+      if (turnTiming) {
+        turnTiming.backendDoneAtMs = now();
+        turnTiming.firstTextMs = result.firstTextMs ?? null;
+        turnTiming.toolCalls = result.toolCalls ?? 0;
+      }
+
       // Superseded while the backend was working: the answer is to a question
       // the user has already moved on from, so it is dropped, not spoken.
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        flushTurnTiming("superseded", null);
+        return;
+      }
 
       if (result.sceneSource) emit({ sceneSource: result.sceneSource });
       // Nothing to say is a real answer here — an interrupted turn deliberately
@@ -877,14 +965,19 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // HUD would sit in `speaking` forever waiting for a voice that never
       // comes; go straight back to listening instead.
       if (!result.spoken.trim().length) {
+        flushTurnTiming("silent", null);
         setPhase("listening");
         return;
       }
       speak(result.spoken);
       setPhase("speaking");
     } catch (error) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        flushTurnTiming("superseded", null);
+        return;
+      }
       deps.logger?.warn("cto_voice.backend_failed", { error: String(error) });
+      flushTurnTiming("backend_failed", null);
       speak("That didn't work. I couldn't reach the project state just now.");
       setPhase("listening");
     }
@@ -967,6 +1060,23 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       framesWhileIdle: mic.framesWhileIdle,
       textLength: final.length,
     });
+
+    // A turn that never got a timing line — a spoken "yes" that resolved a
+    // confirmation rather than starting a turn — is written out here rather
+    // than left for the next one to overwrite.
+    flushTurnTiming("abandoned", null);
+    turnTiming = {
+      speechStoppedToTranscriptMs: speechStoppedAtMs
+        ? Math.round(lastTranscriptAtMs - speechStoppedAtMs)
+        : null,
+      acceptedAtMs: lastTranscriptAtMs,
+      turnStartedAtMs: null,
+      backendDoneAtMs: null,
+      firstTextMs: null,
+      firstSpeakAtMs: null,
+      toolCalls: 0,
+    };
+    speechStoppedAtMs = 0;
 
     exchanges += 1;
     acceptedTurnsAtMs = [...acceptedTurnsAtMs, lastTranscriptAtMs]
@@ -1056,6 +1166,15 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       return;
     }
 
+    // Recorded, not acted on. The segment is judged from the microphone's own
+    // frames, so this event decides nothing — but it is the moment the user
+    // stopped talking, and the wait from here to a transcript is the one leg of
+    // the latency that belongs entirely to OpenAI.
+    if (type === "input_audio_buffer.speech_stopped") {
+      speechStoppedAtMs = now();
+      return;
+    }
+
     if (type === "conversation.item.input_audio_transcription.delta") {
       if (!utterance.open) {
         utterance = { id: randomUUID(), text: "", open: true, consumed: false };
@@ -1085,7 +1204,13 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // because one socket's vocabulary is not a thing to guess at.
     if (type === "response.output_audio.delta" || type === "response.audio.delta") {
       const delta = typeof event.delta === "string" ? event.delta : null;
-      if (delta) deps.onOutputAudio?.(delta);
+      if (delta) {
+        // The last post, and the only one the user can actually hear. Written
+        // on the FIRST chunk of the response this turn's answer was queued as;
+        // every later chunk finds no record and writes nothing.
+        flushTurnTiming("spoken", now());
+        deps.onOutputAudio?.(delta);
+      }
       return;
     }
 
@@ -1230,6 +1355,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     });
     if (!started) return;
     started = false;
+    // A turn the hang-up landed in the middle of is still a measurement, and
+    // the queue below is about to throw away the answer it was waiting for.
+    flushTurnTiming("call_ended", null);
     const closing = socket;
     socket = null;
     socketOpen = false;
