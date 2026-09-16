@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowDown, CaretDown, CaretRight, Check, Gear, Square, X } from "@phosphor-icons/react";
+import { ArrowDown, CaretDown, CaretRight, Check, Gear, Square, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
