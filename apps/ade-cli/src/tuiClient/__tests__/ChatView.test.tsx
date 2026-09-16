@@ -15,6 +15,7 @@ import {
   selectedTextFromChatRows,
   workFileDiffKey,
   workGroupExpandKey,
+  resolveFileChangeDiffAction,
 } from "../components/ChatView";
 import { aggregateChatBlocks } from "../aggregate";
 import { chatEventLineId } from "../format";
@@ -46,9 +47,8 @@ function stripAnsi(value: string): string {
   return value.replace(/\[[0-9;]*m/g, "");
 }
 
-// Tool calls live behind the active/completed status rows, while file changes
-// remain in their chronological transcript cards. Tests that assert detail rows
-// pass `expanded: true` to open every available disclosure.
+// Tool calls and settled file changes fold into the completed turn-end row.
+// Tests that assert detail rows pass `expanded: true` to open every available disclosure.
 function expandAllWorkGroups(
   events: AgentChatEventEnvelope[],
   activeSession: AgentChatSessionSummary | null,
@@ -395,7 +395,8 @@ describe("ChatView", () => {
       },
     ], { expanded: true, width: 100 });
 
-    expect(frame).toContain("1 action");
+    expect(frame).toContain("1 tool");
+    expect(frame.indexOf("1 tool")).toBeLessThan(frame.search(/Ran for|Turn finished|\d{1,2}:\d{2}/));
     expect(frame).toContain("Codex docs — example.com");
   });
 
@@ -1300,13 +1301,14 @@ describe("ChatView", () => {
     ];
     const frame = renderEvents(events, { width: 100, expanded: true });
     // Expanded group: ok/failed status lives on each call's glyph.
-    expect(frame).toContain("4 actions");
+    expect(frame).toContain("4 tools");
     expect(frame.match(/✓/g)).toHaveLength(3);
     expect(frame.match(/✗/g)).toHaveLength(1);
     // Every shell command is visible when expanded.
     expect(frame).toContain("npm test");
     expect(frame).toContain("echo two");
     expect(frame).toContain("Ran for 8.3s");
+    expect(frame.indexOf("npm test")).toBeLessThan(frame.indexOf("Ran for 8.3s"));
   });
 
   it("hides missing and zero tool durations while preserving valid per-call durations", () => {
@@ -1391,8 +1393,8 @@ describe("ChatView", () => {
 
     const frame = renderEvents(events, { width: 100, expanded: true });
 
-    expect(frame.match(/1 action/g)).toHaveLength(2);
-    expect(frame).not.toContain("2 actions");
+    expect(frame.match(/1 tool/g)).toHaveLength(2);
+    expect(frame).not.toContain("2 tools");
     expect(frame).toContain("first");
     expect(frame).toContain("second");
   });
@@ -1424,9 +1426,10 @@ describe("ChatView", () => {
 
     const frame = renderEvents(events, { width: 100, expanded: true, streaming: true });
 
-    expect(frame).toContain("2 actions");
+    expect(frame).toContain("2 tools");
     expect(frame).toContain("1 action");
     expect(frame).not.toContain("3 actions");
+    expect(frame).not.toContain("3 tools");
     expect(frame).toContain("tagged-command");
     expect(frame).toContain("untagged-command");
     expect(frame).toContain("active-command");
@@ -1482,10 +1485,10 @@ describe("ChatView", () => {
     const frame = renderEvents([
       { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "text", text } },
     ], { width: 80 });
-    expect(frame).toMatch(/┌.*┬.*┐/);
-    expect(frame).toMatch(/├.*┼.*┤/);
-    expect(frame).toMatch(/└.*┴.*┘/);
-    expect(frame).toMatch(/│/);
+    expect(frame).toMatch(/\u250c.*\u252c/);
+    expect(frame).toMatch(/\u251c.*\u253c.*\u2524/);
+    expect(frame).toMatch(/\u2514.*\u2534.*\u2518/);
+    expect(frame).toMatch(/\u2502/);
     expect(frame).toContain("tool");
     expect(frame).toContain("duration");
     expect(frame).toContain("status");
@@ -1652,6 +1655,59 @@ describe("ChatView", () => {
       expandedLineIds: new Set([workGroupExpandKey(chatEventLineId(events[0]!, 0))]),
     });
     expect(rows.some((row) => row.actionId === workFileDiffKey(chatEventLineId(events[0]!, 0), "f1"))).toBe(true);
+  });
+
+  it("keeps settled turn-end file diffs keyed so a click still opens them", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "file_change", path: "src/app.ts", diff: "+a", kind: "modify", itemId: "f1", status: "completed", turnId: "t1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "done", turnId: "t1", status: "completed" },
+      },
+    ];
+    const blocks = aggregateChatBlocks({ events, notices: [], activeSession: session });
+    const turnEnd = blocks.find((block) => block.kind === "turn-end");
+    expect(turnEnd?.kind).toBe("turn-end");
+    if (turnEnd?.kind !== "turn-end") throw new Error("expected turn-end");
+    const actionId = workFileDiffKey(turnEnd.id, "f1");
+    const rows = renderChatSelectableRows({
+      blocks,
+      width: 120,
+      expandedLineIds: new Set([workGroupExpandKey(turnEnd.id)]),
+    });
+    expect(rows.some((row) => row.actionId === actionId)).toBe(true);
+    expect(resolveFileChangeDiffAction(blocks, actionId)?.selected.itemId).toBe("f1");
+  });
+
+  it("keeps markerless file changes visible after a later user message", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "file_change", path: "src/orphan.ts", diff: "+kept", kind: "modify", itemId: "f1", status: "completed", turnId: "t1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "user_message", text: "next turn" },
+      },
+    ];
+    const blocks = aggregateChatBlocks({ events, notices: [], activeSession: session });
+    const fileGroup = blocks.find((block) => block.kind === "files-changed-group");
+    expect(fileGroup?.kind).toBe("files-changed-group");
+    if (fileGroup?.kind !== "files-changed-group") throw new Error("expected files-changed-group");
+    expect(fileGroup.live).toBe(false);
+    const rows = renderChatSelectableRows({ blocks, width: 120 });
+    expect(rows.some((row) => row.text?.includes("src/orphan.ts"))).toBe(true);
   });
 
   it("tags a collapsed work-group header with an expandable click-target id", () => {

@@ -100,7 +100,7 @@ export type AggregatedBlock =
   | { kind: "conversation-reset"; id: string }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
-  | { kind: "turn-end"; id: string; turnId: string | null; timestamp: string; status: string; terminalReasonLabel?: string; durationMs?: number; entries: ToolCallEntry[] }
+  | { kind: "turn-end"; id: string; turnId: string | null; timestamp: string; status: string; terminalReasonLabel?: string; durationMs?: number; entries: ToolCallEntry[]; fileEntries: FileChangeEntry[] }
   | { kind: "approval"; id: string; line: RenderedChatLine }
   | { kind: "error"; id: string; line: RenderedChatLine }
   | { kind: "notice"; id: string; line: RenderedChatLine };
@@ -642,6 +642,28 @@ function subagentFoldKey(
   return `subagent:${identityKey}`;
 }
 
+function mergeFileEntriesByPath(entries: FileChangeEntry[]): FileChangeEntry[] {
+  const byPath = new Map<string, FileChangeEntry>();
+  const order: string[] = [];
+  for (const entry of entries) {
+    const existing = byPath.get(entry.path);
+    if (!existing) {
+      order.push(entry.path);
+      byPath.set(entry.path, entry);
+      continue;
+    }
+    byPath.set(entry.path, {
+      ...existing,
+      kind: entry.kind,
+      additions: existing.additions + entry.additions,
+      deletions: existing.deletions + entry.deletions,
+      diff: entry.diff.length > existing.diff.length ? entry.diff : existing.diff,
+      status: existing.status === "running" || entry.status === "running" ? "running" : entry.status,
+    });
+  }
+  return order.map((path) => byPath.get(path)!);
+}
+
 function activityBundleEntryFromEvent(
   id: string,
   event: AgentChatEvent,
@@ -753,12 +775,29 @@ function appendRuntimeActivityBlock(
   if (block.entries.length > 8) block.entries.splice(0, block.entries.length - 8);
 }
 
+function removeFoldedActivityEntry(
+  blocks: AggregatedBlock[],
+  foldKey: string,
+  fromIndex: number,
+): void {
+  for (let blockIndex = blocks.length - 1; blockIndex >= fromIndex; blockIndex -= 1) {
+    const block = blocks[blockIndex];
+    if (!block || block.kind !== "activity-bundle") continue;
+    block.entries = block.entries.filter((entry) => entry.foldKey !== foldKey);
+    if (block.entries.length === 0) blocks.splice(blockIndex, 1);
+  }
+}
+
 function appendActivityBundleBlock(
   blocks: AggregatedBlock[],
   id: string,
   turnId: string | null,
   entry: ActivityBundleEntry,
+  fromIndex: number,
 ): void {
+  if (entry.foldKey && entry.status !== "running") {
+    removeFoldedActivityEntry(blocks, entry.foldKey, fromIndex);
+  }
   const last = blocks[blocks.length - 1];
   let block: Extract<AggregatedBlock, { kind: "activity-bundle" }>;
   if (last && last.kind === "activity-bundle" && last.turnId === turnId) {
@@ -949,7 +988,18 @@ export function aggregateChatBlocks(args: {
   const assistantTextEventsByBlockId = new Map<string, AssistantTextEvent>();
   const reasoningItemIdByBlockId = new Map<string, string>();
   const turnStartedAt = new Map<string, number>();
+  // Desktop precomputes checkpoint turns from the full stream so a summary
+  // that lands after `done` still suppresses the files half.
+  const checkpointDiffTurnIds = new Set<string>();
+  let hasUntaggedCheckpoint = false;
+  for (const envelope of args.events) {
+    if (envelope.event.type !== "turn_diff_summary") continue;
+    const summaryTurnId = turnIdOf(envelope.event);
+    if (summaryTurnId) checkpointDiffTurnIds.add(summaryTurnId);
+    else hasUntaggedCheckpoint = true;
+  }
   let toolActivitySegmentStart = 0;
+  let segmentHasCheckpoint = false;
   let interruptedTerminusCluster: {
     startBlockIndex: number;
     turnEndBlock?: Extract<AggregatedBlock, { kind: "turn-end" }>;
@@ -987,7 +1037,7 @@ export function aggregateChatBlocks(args: {
 
     const activityEntry = activityBundleEntryFromEvent(id, event, resolvedSubagentKeysByParent);
     if (activityEntry) {
-      appendActivityBundleBlock(blocks, id, turnId, activityEntry);
+      appendActivityBundleBlock(blocks, id, turnId, activityEntry, toolActivitySegmentStart);
       continue;
     }
 
@@ -1022,6 +1072,7 @@ export function aggregateChatBlocks(args: {
       segmentWorkItemStartedAt.clear();
       passthrough(id, "user-bubble");
       toolActivitySegmentStart = blocks.length;
+      segmentHasCheckpoint = false;
       turnStartedAt.set(turnKey, safeMs(envelope.timestamp));
       continue;
     }
@@ -1338,6 +1389,19 @@ export function aggregateChatBlocks(args: {
         ))
         .flatMap((block) => block.entries);
       const uniqueEntries = Array.from(new Map(entries.map((toolEntry) => [toolEntry.itemId, toolEntry])).values());
+      const suppressCheckpointFiles = turnId
+        ? checkpointDiffTurnIds.has(turnId)
+        : hasUntaggedCheckpoint || segmentHasCheckpoint;
+      const fileEntries = suppressCheckpointFiles
+        ? []
+        : blocks
+          .slice(toolActivitySegmentStart)
+          .filter((block): block is Extract<AggregatedBlock, { kind: "files-changed-group" }> => (
+            block.kind === "files-changed-group"
+            && (!turnId || !block.turnId || block.turnId === turnId)
+          ))
+          .flatMap((block) => block.entries);
+      const uniqueFileEntries = mergeFileEntriesByPath(fileEntries);
       const endedAt = safeMs(envelope.timestamp);
       const startedAt = turnStartedAt.get(turnKey);
       const turnEndBlock: Extract<AggregatedBlock, { kind: "turn-end" }> = {
@@ -1349,6 +1413,7 @@ export function aggregateChatBlocks(args: {
         terminalReasonLabel: terminalReasonLabel(event.terminalReason) ?? undefined,
         durationMs: startedAt !== undefined && endedAt >= startedAt ? endedAt - startedAt : undefined,
         entries: uniqueEntries,
+        fileEntries: uniqueFileEntries,
       };
       if (interruptedTerminusCluster) {
         const existing = interruptedTerminusCluster.turnEndBlock;
@@ -1364,6 +1429,7 @@ export function aggregateChatBlocks(args: {
           existing.entries = Array.from(new Map(
             [...existing.entries, ...turnEndBlock.entries].map((toolEntry) => [toolEntry.itemId, toolEntry]),
           ).values());
+          existing.fileEntries = mergeFileEntriesByPath([...existing.fileEntries, ...turnEndBlock.fileEntries]);
         } else {
           blocks.splice(interruptedTerminusCluster.startBlockIndex);
           blocks.push(turnEndBlock);
@@ -1373,11 +1439,33 @@ export function aggregateChatBlocks(args: {
         blocks.push(turnEndBlock);
       }
       toolActivitySegmentStart = blocks.length;
+      segmentHasCheckpoint = false;
       toolEntryByItemKey.clear();
       segmentToolEntryByItemId.clear();
       workItemStartedAt.clear();
       segmentWorkItemStartedAt.clear();
       turnStartedAt.delete(turnKey);
+      continue;
+    }
+    if (event.type === "turn_diff_summary") {
+      if (turnId) checkpointDiffTurnIds.add(turnId);
+      else hasUntaggedCheckpoint = true;
+      let latestTurnEnd: Extract<AggregatedBlock, { kind: "turn-end" }> | null = null;
+      for (const block of blocks) {
+        if (block.kind === "turn-end") latestTurnEnd = block;
+      }
+      let claimedExistingTurnEnd = false;
+      for (const block of blocks) {
+        if (block.kind !== "turn-end") continue;
+        const matchesTurn = turnId ? block.turnId === turnId : !block.turnId;
+        const coversUntaggedDone = Boolean(turnId && !block.turnId && block === latestTurnEnd);
+        if (matchesTurn || coversUntaggedDone) {
+          block.fileEntries = [];
+          claimedExistingTurnEnd = true;
+        }
+      }
+      if (!claimedExistingTurnEnd) segmentHasCheckpoint = true;
+      passthrough(id, "notice");
       continue;
     }
     if (SILENCED_EVENT_TYPES.has(event.type)) {

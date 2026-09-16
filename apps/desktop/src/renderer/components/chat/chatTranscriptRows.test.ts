@@ -412,6 +412,42 @@ describe("chatTranscriptRows", () => {
     expect(anchor.agentType).toBe("claude");
   });
 
+  it("copies childSessionId and spawnKind onto the result card after dropping the spawn card", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-123",
+          agentId: "child-123",
+          agentType: "claude",
+          description: "Wave 2 UI",
+          spawnKind: "peer",
+          taskType: "subagent",
+        },
+      },
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:01:00.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "chat:child-123",
+          agentId: "child-123",
+          status: "completed",
+          summary: "Kickoff turn finished.",
+        },
+      },
+    ]);
+
+    expect(rows.map((row) => row.event.type)).toEqual(["subagent_result_card"]);
+    const result = rows[0]!.event;
+    if (result.type !== "subagent_result_card") throw new Error("Expected result card");
+    expect(result.childSessionId).toBe("child-123");
+    expect(result.spawnKind).toBe("peer");
+    expect(rows.some((row) => row.event.type === "subagent_spawn_anchor")).toBe(false);
+  });
+
   it("keeps a navigable spawn card when the canonical dot twin follows the underscore event", () => {
     // Both events share the agentId identity key; the dot twin's taskId is bare
     // (no `chat:` prefix), so the anchor must retain the childSessionId derived
@@ -1984,7 +2020,8 @@ describe("chatTranscriptRows edge cases", () => {
       },
     ]);
 
-    // todo + cron bundle; the subagent start/result render as their own cards.
+    // todo + cron bundle; Explore is still running (different taskId than the
+    // workflow result), so its spawn card stays. The workflow is one result card.
     expect(rows.map((row) => row.event.type)).toEqual([
       "activity_bundle",
       "subagent_spawn_anchor",
@@ -1997,7 +2034,7 @@ describe("chatTranscriptRows edge cases", () => {
     ]);
   });
 
-  it("normalizes canonical dotted subagent lifecycle events into spawn + result cards", () => {
+  it("normalizes canonical dotted subagent lifecycle events into one result card", () => {
     const rows = groupEvents([
       {
         sessionId: "session-1",
@@ -2027,14 +2064,11 @@ describe("chatTranscriptRows edge cases", () => {
     ]);
 
     expect(rows.map((row) => row.event.type)).toEqual([
-      "subagent_spawn_anchor",
       "subagent_result_card",
     ]);
-    if (rows[0]!.event.type !== "subagent_spawn_anchor") throw new Error("Expected spawn anchor");
+    if (rows[0]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
     expect(rows[0]!.event.agentKey).toBe("agent-canonical");
-    expect(rows[0]!.event.status).toBe("completed");
-    if (rows[1]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
-    expect(rows[1]!.event.summaryPreview).toBe("Canonical lifecycle mapped.");
+    expect(rows[0]!.event.summaryPreview).toBe("Canonical lifecycle mapped.");
   });
 
   it("gives each subagent its own stable spawn anchor row", () => {
@@ -2658,7 +2692,7 @@ describe("spawn_completed notice folding", () => {
   });
 });
 
-describe("subagent two-row rendering", () => {
+describe("subagent one-card rendering", () => {
   it("collapses a double subagent_started into exactly one enriched spawn anchor", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {
@@ -2738,7 +2772,7 @@ describe("subagent two-row rendering", () => {
     expect(anchor.event.statusLine).toBe("Located the modal in Modal.tsx");
   });
 
-  it("collapses a double subagent_result into one card, richer summary wins, anchor flips terminal", () => {
+  it("collapses a double subagent_result into one card, richer summary wins, and drops the spawn card", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {
         type: "subagent_started",
@@ -2761,16 +2795,10 @@ describe("subagent two-row rendering", () => {
     ]);
 
     expect(rows.map((row) => row.event.type)).toEqual([
-      "subagent_spawn_anchor",
       "subagent_result_card",
     ]);
-    const anchor = rows[0]!;
-    const result = rows[1]!;
-    if (anchor.event.type !== "subagent_spawn_anchor") throw new Error("Expected anchor");
+    const result = rows[0]!;
     if (result.event.type !== "subagent_result_card") throw new Error("Expected result card");
-    // Anchor flipped to terminal.
-    expect(anchor.event.status).toBe("completed");
-    expect(anchor.event.endedAt).not.toBeNull();
     // Richer summary wins over the "Status: …" placeholder.
     expect(result.event.summaryPreview).toBe(
       "Found the modal in src/components/UpdateModal.tsx and wired the trigger.",
@@ -2779,7 +2807,7 @@ describe("subagent two-row rendering", () => {
     expect(result.key).toBe("subagent-result:agent-1");
   });
 
-  it("mutates the anchor and appends the result at the tail after many intervening rows", () => {
+  it("drops the spawn card and appends the result at the tail after many intervening rows", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {
         type: "subagent_started",
@@ -2804,11 +2832,9 @@ describe("subagent two-row rendering", () => {
       }),
     ]);
 
-    expect(rows[0]!.event.type).toBe("subagent_spawn_anchor");
+    expect(rows[0]!.event.type).toBe("text");
     expect(rows[rows.length - 1]!.event.type).toBe("subagent_result_card");
-    if (rows[0]!.event.type !== "subagent_spawn_anchor") throw new Error("Expected anchor");
-    expect(rows[0]!.event.status).toBe("completed");
-    expect(rows[0]!.key).toBe("subagent-spawn:agent-1");
+    expect(rows.some((row) => row.event.type === "subagent_spawn_anchor")).toBe(false);
   });
 
   it("rebinds a taskId anchor to an agentId while keeping the original render key", () => {
@@ -2834,14 +2860,12 @@ describe("subagent two-row rendering", () => {
       }),
     ]);
 
-    // One anchor + one result card — rebind must not create a second anchor. The
+    // One result card — rebind must not create a second agent. The
     // render key stays bound to the original taskId (load-bearing for the virtualizer).
     expect(rows.map((row) => row.event.type)).toEqual([
-      "subagent_spawn_anchor",
       "subagent_result_card",
     ]);
-    expect(rows[0]!.key).toBe("subagent-spawn:task-1");
-    expect(rows[1]!.key).toBe("subagent-result:task-1");
+    expect(rows[0]!.key).toBe("subagent-result:task-1");
   });
 
   it("keeps incremental and full-recompute output identical over a mixed subagent stream", () => {
@@ -2999,21 +3023,10 @@ describe("subagent two-row rendering", () => {
 
     const full = collapseChatTranscriptEvents(stream);
     expect(full.map((row) => row.event.type)).toEqual([
-      "subagent_spawn_anchor",
       "text",
       "subagent_result_card",
     ]);
-    const [anchor, remainingText, result] = full;
-    expect(anchor?.key).toBe("subagent-spawn:agent-a");
-    expect(anchor?.event).toMatchObject({
-      type: "subagent_spawn_anchor",
-      agentKey: "agent-a",
-      description: "Inspect the transcript",
-      status: "completed",
-      statusLine: "Reading transcript rows",
-      toolCount: 2,
-      taskId: "agent-a",
-    });
+    const [remainingText, result] = full;
     expect(remainingText?.event).toMatchObject({
       type: "text",
       text: "Parent text that remains",
@@ -3563,9 +3576,9 @@ describe("interrupt-stopped subagent grouping", () => {
     expect(group.event.cause).toBe("interrupt");
     expect(group.event.count).toBe(3);
     expect(group.event.items).toEqual([
-      { agentKey: "agent-a", title: "Explore auth flow", jumpToStartRowKey: "subagent-spawn:agent-a" },
-      { agentKey: "agent-b", title: "Explore sync flow", jumpToStartRowKey: "subagent-spawn:agent-b" },
-      { agentKey: "agent-c", title: "Explore the UI", jumpToStartRowKey: "subagent-spawn:agent-c" },
+      { agentKey: "agent-a", title: "Explore auth flow", jumpToStartRowKey: "subagent-stopped-group:interrupt:agent-a" },
+      { agentKey: "agent-b", title: "Explore sync flow", jumpToStartRowKey: "subagent-stopped-group:interrupt:agent-a" },
+      { agentKey: "agent-c", title: "Explore the UI", jumpToStartRowKey: "subagent-stopped-group:interrupt:agent-a" },
     ]);
 
     // The completed agent keeps its own result card (real summary the user wants to read).

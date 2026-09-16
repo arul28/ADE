@@ -260,6 +260,57 @@ describe("aggregateChatBlocks typed groups", () => {
     });
   });
 
+  it("folds a settled subagent out of every activity bundle, not just the first", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "subagent_progress", taskId: "agent-1", parentToolUseId: "spawn-1", summary: "first burst", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", { type: "text", text: "working on it", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "subagent_progress", taskId: "agent-1", parentToolUseId: "spawn-1", summary: "second burst", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:03.000Z", { type: "subagent_result", taskId: "agent-1", parentToolUseId: "spawn-1", status: "completed", summary: "child done", turnId: "turn-1" } as unknown as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    const activityEntries = blocks
+      .filter((block): block is Extract<AggregatedBlock, { kind: "activity-bundle" }> => block.kind === "activity-bundle")
+      .flatMap((block) => block.entries);
+    expect(activityEntries).toHaveLength(1);
+    expect(activityEntries[0]).toMatchObject({
+      kind: "agent",
+      label: "child done",
+      status: "ok",
+    });
+  });
+
+  it("keeps a prior turn's settled subagent when a later turn reuses the same taskId", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-1", description: "first", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", { type: "subagent_result", taskId: "agent-1", parentToolUseId: "spawn-1", status: "completed", summary: "first done", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:02.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+      env("2026-01-01T12:00:03.000Z", { type: "user_message", text: "again", turnId: "turn-2" }),
+      env("2026-01-01T12:00:04.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-2", description: "second", turnId: "turn-2" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:05.000Z", { type: "subagent_result", taskId: "agent-1", parentToolUseId: "spawn-2", status: "completed", summary: "second done", turnId: "turn-2" } as unknown as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    const activityEntries = blocks
+      .filter((block): block is Extract<AggregatedBlock, { kind: "activity-bundle" }> => block.kind === "activity-bundle")
+      .flatMap((block) => block.entries);
+    expect(activityEntries.map((entry) => entry.label)).toEqual(["first done", "second done"]);
+  });
+
+  it("folds a tagged start into an untagged result in the same turn", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-1", description: "running", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", { type: "subagent_result", taskId: "agent-1", parentToolUseId: "spawn-1", status: "completed", summary: "child done" } as unknown as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    const activityEntries = blocks
+      .filter((block): block is Extract<AggregatedBlock, { kind: "activity-bundle" }> => block.kind === "activity-bundle")
+      .flatMap((block) => block.entries);
+    expect(activityEntries).toHaveLength(1);
+    expect(activityEntries[0]).toMatchObject({ label: "child done", status: "ok" });
+  });
+
   it("normalizes dotted subagent lifecycle events before activity bundling", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", {
@@ -678,6 +729,192 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(turnEnds).toHaveLength(1);
     expect(turnEnds[0]).toMatchObject({ status: "failed", timestamp: "2026-01-01T12:00:01.300Z" });
     expect(blocks.filter((block) => block.kind === "error")).toHaveLength(0);
+  });
+
+  it("leaves turn-end fileEntries empty when a checkpoint turn_diff_summary covers the turn", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "+added",
+        itemId: "f1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "turn_diff_summary",
+        turnId: "turn-1",
+        beforeSha: "aaa",
+        afterSha: "bbb",
+        files: [{ path: "src/app.ts", additions: 1, deletions: 0, status: "M" }],
+        totalAdditions: 1,
+        totalDeletions: 0,
+      }),
+      env("2026-01-01T12:00:02.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+    expect(turnEnd.fileEntries).toEqual([]);
+    expect(blocks.some((block) => block.kind === "notice")).toBe(true);
+  });
+
+  it("still suppresses turn-end files when turn_diff_summary arrives after done", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "+added",
+        itemId: "f1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:02.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+      env("2026-01-01T12:00:03.000Z", {
+        type: "turn_diff_summary",
+        turnId: "turn-1",
+        beforeSha: "aaa",
+        afterSha: "bbb",
+        files: [{ path: "src/app.ts", additions: 1, deletions: 0, status: "M" }],
+        totalAdditions: 1,
+        totalDeletions: 0,
+      }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+    expect(turnEnd.fileEntries).toEqual([]);
+  });
+
+  it("suppresses files for a legacy done that omitted turnId when a checkpoint summary exists", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "+added",
+        itemId: "f1",
+        status: "completed",
+      } as AgentChatEvent),
+      env("2026-01-01T12:00:02.000Z", { type: "done", status: "completed" } as AgentChatEvent),
+      env("2026-01-01T12:00:03.000Z", {
+        type: "turn_diff_summary",
+        turnId: "turn-1",
+        beforeSha: "aaa",
+        afterSha: "bbb",
+        files: [{ path: "src/app.ts", additions: 1, deletions: 0, status: "M" }],
+        totalAdditions: 1,
+        totalDeletions: 0,
+      }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+    expect(turnEnd.fileEntries).toEqual([]);
+  });
+
+  it("suppresses files when a tagged checkpoint precedes an untagged done", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "+added",
+        itemId: "f1",
+        status: "completed",
+      } as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "turn_diff_summary",
+        turnId: "turn-1",
+        beforeSha: "aaa",
+        afterSha: "bbb",
+        files: [{ path: "src/app.ts", additions: 1, deletions: 0, status: "M" }],
+        totalAdditions: 1,
+        totalDeletions: 0,
+      }),
+      env("2026-01-01T12:00:02.000Z", { type: "done", status: "completed" } as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+    expect(turnEnd.fileEntries).toEqual([]);
+    expect(blocks.some((block) => block.kind === "notice")).toBe(true);
+  });
+
+  it("keeps files on a later untagged turn that has no checkpoint of its own", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/a.ts",
+        kind: "modify",
+        diff: "+a",
+        itemId: "f1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "turn_diff_summary",
+        turnId: "turn-1",
+        beforeSha: "aaa",
+        afterSha: "bbb",
+        files: [{ path: "src/a.ts", additions: 1, deletions: 0, status: "M" }],
+        totalAdditions: 1,
+        totalDeletions: 0,
+      }),
+      env("2026-01-01T12:00:02.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+      env("2026-01-01T12:00:03.000Z", { type: "user_message", text: "next" }),
+      env("2026-01-01T12:00:04.000Z", {
+        type: "file_change",
+        path: "src/b.ts",
+        kind: "modify",
+        diff: "+b",
+        itemId: "f2",
+        status: "completed",
+      } as AgentChatEvent),
+      env("2026-01-01T12:00:05.000Z", { type: "done", status: "completed" } as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnds = blocks.filter((block) => block.kind === "turn-end") as Array<Extract<AggregatedBlock, { kind: "turn-end" }>>;
+    expect(turnEnds).toHaveLength(2);
+    expect(turnEnds[0]?.fileEntries).toEqual([]);
+    expect(turnEnds[1]?.fileEntries.map((entry) => entry.path)).toEqual(["src/b.ts"]);
+  });
+
+  it("merges same-path file bursts into one turn-end entry", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "+added",
+        itemId: "f1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:01.000Z", { type: "text", text: "still working", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "-gone\n-also",
+        itemId: "f2",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:03.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+    expect(turnEnd.fileEntries).toHaveLength(1);
+    expect(turnEnd.fileEntries[0]).toMatchObject({
+      path: "src/app.ts",
+      additions: 1,
+      deletions: 2,
+    });
   });
 
   it("derives command duration from running and completed command events when provider duration is missing", () => {

@@ -113,6 +113,24 @@ export function workFileDiffKey(blockId: string, itemId: string): string {
   return `${WORK_FILE_DIFF_PREFIX}${encodeURIComponent(blockId)}:${encodeURIComponent(itemId)}`;
 }
 
+/** Live file groups and settled turn-end lists both key diffs with {@link workFileDiffKey}. */
+export function resolveFileChangeDiffAction(
+  blocks: AggregatedBlock[],
+  actionId: string,
+): { entries: FileChangeEntry[]; selected: FileChangeEntry } | null {
+  for (const block of blocks) {
+    const entries = block.kind === "files-changed-group"
+      ? block.entries
+      : block.kind === "turn-end"
+        ? block.fileEntries
+        : null;
+    if (!entries?.length) continue;
+    const selected = entries.find((entry) => workFileDiffKey(block.id, entry.itemId) === actionId);
+    if (selected) return { entries, selected };
+  }
+  return null;
+}
+
 function textWidth(value: string): number {
   return terminalDisplayWidth(value);
 }
@@ -1307,30 +1325,66 @@ function turnEndRows(
   const duration = block.durationMs != null ? formatDurationMs(block.durationMs) : "";
   const status = block.status === "completed" ? "" : ` · ${block.status}`;
   const terminalReason = block.terminalReasonLabel ? ` · ${block.terminalReasonLabel}` : "";
-  const actionLabel = block.entries.length > 0
-    ? ` · ${block.entries.length} ${block.entries.length === 1 ? "action" : "actions"}`
-    : "";
-  const caret = block.entries.length > 0 ? `${expanded ? "▾" : "▸"} ` : "";
-  const text = `${caret}${time}${duration ? ` · Ran for ${duration}` : ""}${status}${terminalReason}${actionLabel}`;
-  const rows: RenderedChatRow[] = [{
-    id: block.id,
-    tone: "footer",
-    text,
-    color: theme.color.t4,
-    rail: null,
-    expandableGroupId: block.entries.length > 0 ? expandKey : undefined,
-  }];
-  if (expanded) {
-    for (const entry of block.entries) {
-      rows.push(toolCallEntryRow(block.id, entry, spinFrame));
-      rows.push(...webSearchResultRows(block.id, entry));
+  const toolCount = block.entries.length;
+  const fileCount = block.fileEntries.length;
+  const workParts: string[] = [];
+  if (toolCount > 0) workParts.push(`${toolCount} ${toolCount === 1 ? "tool" : "tools"}`);
+  if (fileCount > 0) workParts.push(`${fileCount} ${fileCount === 1 ? "file" : "files"}`);
+  const rows: RenderedChatRow[] = [];
+  if (workParts.length > 0) {
+    const caret = expanded ? "▾ " : "▸ ";
+    rows.push({
+      id: `${block.id}:work`,
+      tone: "footer",
+      text: `${caret}${workParts.join(" · ")}`,
+      color: theme.color.t4,
+      rail: null,
+      expandableGroupId: expandKey,
+    });
+    if (expanded) {
+      for (const entry of block.entries) {
+        rows.push(toolCallEntryRow(block.id, entry, spinFrame));
+        rows.push(...webSearchResultRows(block.id, entry));
+      }
+      const pathWidth = 40;
+      for (const file of block.fileEntries) {
+        rows.push(fileChangeEntryRow(block.id, file, pathWidth, spinFrame, "  "));
+      }
     }
   }
+  rows.push({
+    id: block.id,
+    tone: "footer",
+    text: `${time}${duration ? ` · Ran for ${duration}` : ""}${status}${terminalReason}`,
+    color: theme.color.t4,
+    rail: null,
+  });
   return rows;
 }
 
-function isTranscriptBlockVisible(block: AggregatedBlock): boolean {
-  return block.kind !== "tool-calls-group";
+function filesChangedGroupClaimed(
+  block: Extract<AggregatedBlock, { kind: "files-changed-group" }>,
+  blocks: AggregatedBlock[],
+): boolean {
+  const start = blocks.indexOf(block);
+  if (start < 0) return false;
+  for (let index = start + 1; index < blocks.length; index += 1) {
+    const next = blocks[index];
+    if (!next) continue;
+    if (next.kind === "user-bubble") return false;
+    if (next.kind !== "turn-end") continue;
+    if (!block.turnId || !next.turnId || block.turnId === next.turnId) return true;
+  }
+  return false;
+}
+
+function isTranscriptBlockVisible(block: AggregatedBlock, blocks: AggregatedBlock[]): boolean {
+  if (block.kind === "tool-calls-group") return false;
+  if (block.kind === "files-changed-group") {
+    if (block.live) return true;
+    return !filesChangedGroupClaimed(block, blocks);
+  }
+  return true;
 }
 
 function rowsForBlocks(
@@ -1342,7 +1396,7 @@ function rowsForBlocks(
 ): RenderedChatRow[] {
   const rows: RenderedChatRow[] = [];
   let prevKind: AggregatedBlock["kind"] | null = null;
-  for (const block of blocks.filter(isTranscriptBlockVisible)) {
+  for (const block of blocks.filter((candidate) => isTranscriptBlockVisible(candidate, blocks))) {
     if (prevKind && shouldInsertSpacer(prevKind, block.kind)) {
       rows.push(spacerRow(`${block.id}:spacer`));
     }
@@ -2096,7 +2150,7 @@ function ChatViewComponent({
   const shimmerTick = useShimmerTick();
   const rowInnerWidth = Math.max(24, width - 4);
   const presentedBlocks = useMemo(
-    () => blocks.filter(isTranscriptBlockVisible),
+    () => blocks.filter((block) => isTranscriptBlockVisible(block, blocks)),
     [blocks],
   );
   const activeToolEntries = useMemo(

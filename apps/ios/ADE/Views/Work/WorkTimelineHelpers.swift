@@ -1069,7 +1069,7 @@ func buildWorkSubagentTimelineRows(
       continue
     }
 
-    if let firstStarted {
+    if let firstStarted, firstResult == nil {
       positionedRows.append((
         firstStarted.index,
         WorkSubagentTimelineRow(
@@ -1939,6 +1939,19 @@ private func workSubagentStoppedGroupIdPrefix(
   }
 }
 
+/// Mirrors desktop `formatTurnWorkSummaryLabel` — one muted line above the turn
+/// footer hairline (`N tool(s) · M file(s)`).
+func workFormatTurnWorkSummaryLabel(toolCount: Int, fileCount: Int) -> String? {
+  var parts: [String] = []
+  if toolCount > 0 {
+    parts.append("\(toolCount) \(toolCount == 1 ? "tool" : "tools")")
+  }
+  if fileCount > 0 {
+    parts.append("\(fileCount) \(fileCount == 1 ? "file" : "files")")
+  }
+  return parts.isEmpty ? nil : parts.joined(separator: " · ")
+}
+
 /// The rows the transcript actually draws, from the rows the timeline holds.
 ///
 /// This is the seam where presentation-only rules belong. Tool and file-change
@@ -1952,7 +1965,19 @@ func workPresentedTimelineEntries(
   provider: String? = nil
 ) -> [WorkTimelineEntry] {
   let hidesPromptSuggestions = provider.map { providerFamilyKey($0) == "claude" } == true
+  // Hide only the exact inline groups flushed into a completed turn's sheet.
+  // Member ids and file paths are not identities — the same path in a later
+  // completed turn must not erase an earlier markerless cluster.
+  let claimedInlineGroupIds = workTurnToolActivityIndex(from: timeline).claimedInlineGroupIds
   return timeline.filter { entry in
+    switch entry.payload {
+    case .toolGroup, .changedFiles:
+      if claimedInlineGroupIds.contains(entry.id) {
+        return false
+      }
+    default:
+      break
+    }
     guard case .eventCard(let card) = entry.payload else { return true }
     switch card.kind {
     case "activity", "activityBundle", "todo":

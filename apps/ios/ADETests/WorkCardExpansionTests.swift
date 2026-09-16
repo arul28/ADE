@@ -308,9 +308,9 @@ final class WorkCardExpansionTests: XCTestCase {
   // MARK: - Finished turns keep their work
 
   /// The shape that reported this: a Claude turn whose whole body was one
-  /// `Read` and one approved shell command. Both fold into one cluster, and the
-  /// transcript has to still draw that cluster once the turn ends — a finished
-  /// turn collapses to one line, it does not disappear.
+  /// `Read` and one approved shell command. Both fold into one cluster, and
+  /// after `done` that cluster is disclosed from the turn-end marker — not as
+  /// a second inline row.
   func testFinishedTurnKeepsItsToolClusterInTheTranscript() {
     let grouped = collapseConsecutiveWorkToolEntries([
       userMessage("msg-1"),
@@ -321,19 +321,90 @@ final class WorkCardExpansionTests: XCTestCase {
     ])
 
     let presented = workPresentedTimelineEntries(grouped)
-    let members = presented.flatMap { entry -> [WorkToolGroupMember] in
+    let inlineMembers = presented.flatMap { entry -> [WorkToolGroupMember] in
       guard case .toolGroup(let group) = entry.payload else { return [] }
       return group.members
     }
+    XCTAssertTrue(inlineMembers.isEmpty, "settled tool clusters leave the inline transcript")
+    XCTAssertTrue(
+      presented.contains { if case .turnEndMarker = $0.payload { return true }; return false },
+      "the finished turn still has a turn-end marker"
+    )
 
-    XCTAssertTrue(
-      members.contains { $0.id == "tool:read-1" },
-      "the finished turn's Read has to keep a row in the transcript"
+    let activity = workTurnToolActivityIndex(from: grouped).completedByTurnId["turn-1"]
+    XCTAssertEqual(activity?.members.contains { $0.id == "tool:read-1" }, true)
+    XCTAssertEqual(activity?.members.contains { $0.id == "command:bash-1" }, true)
+  }
+
+  /// A later turn-end must not hide an earlier cluster that never got a `done`
+  /// marker. The activity index drops that work at a separator without attaching
+  /// it, so presentation keeps the orphan inline.
+  func testMarkerlessTurnKeepsItsToolClusterWhenALaterTurnEnds() {
+    let grouped = collapseConsecutiveWorkToolEntries([
+      userMessage("msg-1", turnId: "turn-orphan"),
+      toolCard(id: "read-orphan", toolName: "Read", argsText: #"{"file_path":"README.md"}"#),
+      turnSeparator(),
+      userMessage("msg-2", turnId: "turn-2"),
+      toolCard(id: "read-2", toolName: "Read", argsText: #"{"file_path":"main.swift"}"#),
+      turnEnd("turn-2", id: "end-2"),
+    ])
+
+    let presented = workPresentedTimelineEntries(grouped)
+    let inlineIds = presented.flatMap { entry -> [String] in
+      guard case .toolGroup(let group) = entry.payload else { return [] }
+      return group.members.map(\.id)
+    }
+    XCTAssertTrue(inlineIds.contains("tool:read-orphan"), "unterminated earlier work stays inline")
+    XCTAssertFalse(inlineIds.contains("tool:read-2"), "the finished turn's cluster still folds into the marker")
+
+    let index = workTurnToolActivityIndex(from: grouped)
+    XCTAssertNil(index.completedByTurnId["turn-orphan"])
+    XCTAssertEqual(index.completedByTurnId["turn-2"]?.members.contains { $0.id == "tool:read-2" }, true)
+  }
+
+  /// Same path in a later completed turn must not hide an earlier markerless
+  /// file cluster — hide by claimed group id, not by path.
+  func testSamePathOrphanFileClusterStaysInlineWhenALaterTurnEnds() {
+    let grouped = collapseConsecutiveWorkToolEntries([
+      userMessage("msg-1", turnId: "turn-orphan"),
+      fileChange(id: "orphan", path: "src/app.ts", diff: "+one"),
+      turnSeparator(),
+      userMessage("msg-2", turnId: "turn-2"),
+      fileChange(id: "later", path: "src/app.ts", diff: "+two\n+three"),
+      turnEnd("turn-2", id: "end-2"),
+    ])
+
+    let presented = workPresentedTimelineEntries(grouped)
+    let inlinePaths = presented.flatMap { entry -> [String] in
+      guard case .changedFiles(let group) = entry.payload else { return [] }
+      return group.files.map(\.path)
+    }
+    XCTAssertEqual(inlinePaths, ["src/app.ts"], "the unterminated cluster stays inline")
+    XCTAssertFalse(
+      presented.contains { entry in
+        guard case .changedFiles(let group) = entry.payload else { return false }
+        return group.files.contains { $0.diff.contains("+two") }
+      },
+      "the finished turn's cluster still folds into the marker"
     )
-    XCTAssertTrue(
-      members.contains { $0.id == "command:bash-1" },
-      "the finished turn's shell command has to keep a row in the transcript"
-    )
+  }
+
+  /// Narration can split one turn into two file clusters on the same path.
+  /// The turn-end sheet has to keep both edits, not the first cluster only.
+  func testTurnEndSheetMergesSamePathFileClusters() {
+    let grouped = collapseConsecutiveWorkToolEntries([
+      userMessage("msg-1", turnId: "turn-1"),
+      fileChange(id: "first", path: "src/app.ts", diff: "+added"),
+      assistantMessage("msg-2"),
+      fileChange(id: "second", path: "src/app.ts", diff: "-gone\n-also"),
+      turnEnd("turn-1", id: "end-1"),
+    ])
+
+    let files = workTurnToolActivityIndex(from: grouped).completedFilesByTurnId["turn-1"]?.files
+    XCTAssertEqual(files?.count, 1)
+    XCTAssertEqual(files?.first?.path, "src/app.ts")
+    XCTAssertEqual(files?.first?.additions, 1)
+    XCTAssertEqual(files?.first?.deletions, 2)
   }
 
   /// A cluster and a file-change group are the same kind of thing to a reader,
@@ -478,15 +549,49 @@ final class WorkCardExpansionTests: XCTestCase {
     )
   }
 
-  private func userMessage(_ id: String) -> WorkTimelineEntry {
-    message(id, role: "user", markdown: "run the tests")
+  private func turnSeparator(id: String = "sep-1") -> WorkTimelineEntry {
+    WorkTimelineEntry(
+      id: id,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      rank: 0,
+      payload: .turnSeparator(
+        WorkTurnSeparator(
+          time: "12:00",
+          provider: "claude",
+          modelLabel: "Opus",
+          modelId: nil
+        )
+      )
+    )
+  }
+
+  private func fileChange(id: String, path: String, diff: String) -> WorkTimelineEntry {
+    WorkTimelineEntry(
+      id: "file-\(id)",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      rank: 0,
+      payload: .fileChangeCard(
+        WorkFileChangeCardModel(
+          id: id,
+          path: path,
+          diff: diff,
+          kind: "modify",
+          status: .completed,
+          timestamp: "2026-01-01T00:00:00.000Z"
+        )
+      )
+    )
+  }
+
+  private func userMessage(_ id: String, turnId: String = "turn-1") -> WorkTimelineEntry {
+    message(id, role: "user", markdown: "run the tests", turnId: turnId)
   }
 
   private func assistantMessage(_ id: String) -> WorkTimelineEntry {
     message(id, role: "assistant", markdown: "Done.")
   }
 
-  private func message(_ id: String, role: String, markdown: String) -> WorkTimelineEntry {
+  private func message(_ id: String, role: String, markdown: String, turnId: String = "turn-1") -> WorkTimelineEntry {
     WorkTimelineEntry(
       id: "message-\(id)",
       timestamp: "2026-01-01T00:00:00.000Z",
@@ -497,7 +602,7 @@ final class WorkCardExpansionTests: XCTestCase {
           role: role,
           markdown: markdown,
           timestamp: "2026-01-01T00:00:00.000Z",
-          turnId: "turn-1",
+          turnId: turnId,
           itemId: nil
         )
       )

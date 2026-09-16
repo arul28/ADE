@@ -473,7 +473,7 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     fireEvent.click(screen.getByRole("button", { name: "Open in Work" }));
 
     expect(screen.getByTestId("location").textContent).toBe("/work?sessionId=chat-1::null");
@@ -509,7 +509,7 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     fireEvent.click(screen.getByRole("button", { name: "Open lane" }));
 
     expect(screen.getByTestId("location").textContent).toBe("/lanes?laneId=lane-1::null");
@@ -947,7 +947,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ], { sessionId: "session-1", onRevealChatTerminal });
 
-    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     fireEvent.click(await screen.findByRole("button", {
       name: "Open terminal logs or ask the agent to run this server in the chat terminal",
     }));
@@ -1180,7 +1180,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     fireEvent.click(findButtonByTextContent(/shell/));
 
     expect(screen.queryByText(/THE_END/)).toBeNull();
@@ -2214,7 +2214,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     expect(screen.queryByText("Hook: PreToolUse:Bash error")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
 
     expect(screen.getByText("PreToolUse:Bash error")).toBeTruthy();
     expect(screen.getAllByText("PreToolUse:Read error").length).toBeGreaterThan(0);
@@ -2815,6 +2815,11 @@ describe("AgentChatMessageList transcript rendering", () => {
 
   it("handles each external row jump request only once across transcript updates", () => {
     const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T09:59:00.000Z",
+        event: { type: "user_message", text: "Inspect the timeline.", turnId: "turn-1" },
+      },
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
@@ -3951,12 +3956,55 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(rendered.container.textContent).toContain("I’ll inspect the renderer first.");
     expect(rendered.container.textContent).toContain("The focused tests pass.");
-    expect(rendered.container.textContent).toContain("1 file changed");
+    expect(rendered.container.textContent).toContain("1 tool · 1 file");
     expect(rendered.container.textContent).not.toContain("npm test");
     expect(rendered.container.textContent).toContain("ran 5.0s");
+    expect(rendered.container.textContent!.indexOf("1 tool · 1 file"))
+      .toBeLessThan(rendered.container.textContent!.indexOf("ran 5.0s"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     expect(rendered.container.textContent).toContain("npm test");
+    const expanded = rendered.container.textContent ?? "";
+    expect(expanded.indexOf("npm test")).toBeLessThan(expanded.indexOf("ran 5.0s"));
+  });
+
+  it("left-aligns the turn work summary with Thought and keeps time/usage last when expanded", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "reasoning", text: "Checking the package name.", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "command",
+          command: "cat package.json",
+          cwd: "/repo",
+          output: "{}",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "completed",
+          exitCode: 0,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ]);
+
+    const summary = screen.getByRole("button", { name: /^Show .+ from this turn$/ });
+    expect(summary.className).toContain("text-left");
+    expect(summary.parentElement?.className).toContain("justify-start");
+    expect(summary.parentElement?.className).not.toContain("justify-center");
+
+    fireEvent.click(summary);
+    const text = rendered.container.textContent ?? "";
+    expect(text.indexOf("1 tool")).toBeLessThan(text.indexOf("cat package.json"));
+    expect(text.indexOf("cat package.json")).toBeLessThan(text.indexOf("ran 2.0s"));
   });
 
   // "Keep the last": the row you read is the most recent one; quiet successes
@@ -3990,7 +4038,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
 
     // Last call + the failure survive; the two quiet successes fold.
     expect(rendered.container.textContent).toContain("step-4.sh");
@@ -4005,7 +4053,7 @@ describe("AgentChatMessageList transcript rendering", () => {
   it("keeps mixed provider turn ids together while resetting fallback activity at a new user turn", () => {
     const rendered = renderMessageList(mixedIdToolActivityBoundaryEvents());
 
-    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     expect(rendered.container.textContent).toContain("tagged-command");
     expect(rendered.container.textContent).toContain("untagged-command");
     expect(rendered.container.textContent).not.toContain("stale-command");
@@ -4348,7 +4396,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByText("Refine summary card").length).toBeGreaterThanOrEqual(1);
 
     // Files now live in the inline FilesChangedPanel — diff stats appear next to the path.
-    expect(rendered.container.textContent).toMatch(/1 file changed/);
+    expect(rendered.container.textContent).toContain("1 file");
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("−1").length).toBeGreaterThanOrEqual(1);
 
@@ -4654,7 +4703,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).toMatch(/Implement calmer transcript rows/);
     expect(rendered.container.textContent).toMatch(/1\/2 complete/);
     expect(rendered.container.textContent).toMatch(/Inspect shared renderer/);
-    expect(rendered.container.textContent).toMatch(/1 file changed/);
+    expect(rendered.container.textContent).toContain("1 file");
+    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
 
     fireEvent.click(screen.getByRole("button", { name: "Review in Files" }));
     expect(screen.getByTestId("location").textContent).toBe(
@@ -5246,9 +5296,34 @@ describe("turn-level file-change de-clutter", () => {
       },
     ] as never);
 
-    const summaries = rendered.container.textContent?.match(/files? changed/g) ?? [];
-    expect(summaries).toHaveLength(1);
-    expect(rendered.container.textContent).toContain("2 files changed");
+    expect(rendered.container.textContent).toContain("2 files");
+    const text = rendered.container.textContent ?? "";
+    expect(text.lastIndexOf("2 files")).toBeLessThan(text.lastIndexOf("10:00"));
+  });
+
+  it("combines tools and files on one line above the done-divider time", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "tool_call", tool: "Read", args: { path: "a.ts" }, itemId: "t-1", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "file_change", kind: "modify", path: "/root/apps/a.ts", additions: 1, deletions: 0, diff: "", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ] as never);
+
+    expect(rendered.container.textContent).toContain("1 tool · 1 file");
+    const text = rendered.container.textContent ?? "";
+    expect(text.indexOf("1 tool · 1 file")).toBeGreaterThan(-1);
+    expect(text.indexOf("1 tool · 1 file")).toBeLessThan(text.search(/\d{1,2}:\d{2}/));
   });
 });
 
@@ -5732,6 +5807,47 @@ describe("usage-limit turn footer", () => {
       },
     } as AgentChatEventEnvelope,
   ]);
+
+  it("still shows the turn work summary on a usage-limit pause", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:00:00.000Z",
+        event: { type: "user_message", text: "Keep shipping the fix.", turnId: "turn-limit" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:02:00.000Z",
+        event: {
+          type: "command",
+          command: "npm test",
+          cwd: "/repo",
+          output: "ok",
+          itemId: "command-1",
+          turnId: "turn-limit",
+          status: "completed",
+          exitCode: 0,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:04:00.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-limit",
+          status: "failed",
+          terminalReason: "api_error",
+          apiErrorStatus: 429,
+          usage: { inputTokens: 12_000, outputTokens: 3_400 },
+        },
+      } as AgentChatEventEnvelope,
+    ];
+    const rendered = renderMessageList(events);
+    expect(rendered.container.textContent).toContain("1 tool");
+    expect(screen.getByText(/^Paused · usage limit/)).toBeTruthy();
+    expect(rendered.container.textContent!.indexOf("1 tool"))
+      .toBeLessThan(rendered.container.textContent!.indexOf("Paused · usage limit"));
+  });
 
   it("replaces the red FAILED line with one quiet paused line on a terminal 429", () => {
     renderMessageList(usageEnvelopes({ terminalReason: "api_error", apiErrorStatus: 429 }));

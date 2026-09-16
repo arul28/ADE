@@ -244,7 +244,7 @@ import {
 } from "./newLaneForm";
 import {
   ChatView,
-  workFileDiffKey,
+  resolveFileChangeDiffAction,
   chatScrollMaxOffsetFromSelectableRows,
   hasConversationContent,
   renderChatSelectableRows,
@@ -14578,24 +14578,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [addModeRows, chatRowBudget, chatWrapWidth, columns, drawerOpen, goalBannerRows, visibleChatSelectionRows]);
 
   const openFileChangeDiffAction = useCallback((actionId: string): boolean => {
-    for (const block of displayBlocksRef.current) {
-      if (block.kind !== "files-changed-group") continue;
-      const selected = block.entries.find((entry) => workFileDiffKey(block.id, entry.itemId) === actionId);
-      if (!selected) continue;
-      const files = block.entries.map((entry) => ({
-        path: entry.path,
-        additions: entry.additions,
-        deletions: entry.deletions,
-        body: entry.diff,
-      }));
-      const title = block.entries.length === 1 ? selected.path : "This turn";
-      setRightPane({ kind: "diff", title, files });
-      setRightOpen(true);
-      lastUserOpenedPaneRef.current = "diff";
-      focusDetailsOnly();
-      return true;
-    }
-    return false;
+    const resolved = resolveFileChangeDiffAction(displayBlocksRef.current, actionId);
+    if (!resolved) return false;
+    const { entries, selected } = resolved;
+    const files = entries.map((entry) => ({
+      path: entry.path,
+      additions: entry.additions,
+      deletions: entry.deletions,
+      body: entry.diff,
+    }));
+    const title = entries.length === 1 ? selected.path : "This turn";
+    setRightPane({ kind: "diff", title, files });
+    setRightOpen(true);
+    lastUserOpenedPaneRef.current = "diff";
+    focusDetailsOnly();
+    return true;
   }, [focusDetailsOnly]);
 
   const toggleExpandedLineId = useCallback((lineId: string) => {

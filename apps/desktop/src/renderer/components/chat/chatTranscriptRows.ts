@@ -139,8 +139,9 @@ type SubagentCardTerminalStatus = Exclude<SubagentCardStatus, "running">;
 
 /**
  * Anchor row for a real subagent, pushed once where the agent started and then
- * mutated IN PLACE (new object, same key) as progress/result events arrive.
- * Renders the two-row spawn card. Row key: `subagent-spawn:${agentKey}`.
+ * mutated IN PLACE (new object, same key) as progress arrives. Dropped when the
+ * result card is appended so the thread keeps one card per agent.
+ * Row key: `subagent-spawn:${agentKey}`.
  */
 export type SubagentSpawnAnchorRenderEvent = {
   type: "subagent_spawn_anchor";
@@ -192,13 +193,20 @@ export type SubagentResultCardRenderEvent = {
   worktreeBranch: string | null;
   worktreePath: string | null;
   parentLabel: string | null;
+  /**
+   * Spawned-ADE-chat navigation. Copied from the dropped spawn card so a
+   * settled child chat stays openable. Null for runtime-native subagents.
+   */
+  childSessionId: string | null;
+  /** Cosmetic relationship; null for runtime-native subagents. */
+  spawnKind: AgentChatSpawnKind | null;
 };
 
 /** One folded agent inside a {@link SubagentStoppedGroupEvent}. */
 export type SubagentStoppedGroupItem = {
   agentKey: string;
   title: string;
-  /** Stable row key of this agent's spawn anchor (`subagent-spawn:${agentKey}`). */
+  /** Stable row key of this agent's remaining card (`subagent-result:${agentKey}`). */
   jumpToStartRowKey: string;
 };
 
@@ -1489,11 +1497,11 @@ function classificationInput(state: SubagentAnchorState) {
  * Handle one of the three subagent lifecycle events. Returns true if the event
  * was consumed (caller should stop). Mutates rows and context in place.
  *
- * INVARIANT: the ONLY splice is the stale background-job-line drop below, which
- * repairs every stored position through `repairIndexedTranscriptRowsAfterSplice`.
- * Card rows are never spliced — only pushed at the tail or replaced by their
- * stored index, and every replacement verifies the stable key and repairs a
- * stale position before mutating.
+ * INVARIANT: splices go through `repairIndexedTranscriptRowsAfterSplice`.
+ * The stale background-job-line drop is one; dropping a spawn card once the
+ * result card exists is the other. Remaining card rows are pushed at the tail
+ * or replaced by their stored index, and every replacement verifies the stable
+ * key and repairs a stale position before mutating.
  */
 function handleSubagentLifecycleEvent(
   rows: ChatTranscriptRenderEnvelope[],
@@ -1602,6 +1610,11 @@ function handleSubagentLifecycleEvent(
       }
       return true;
     }
+    // A settled agent keeps its result card only. A late progress tick must not
+    // mint a second spawn row after the start card was dropped.
+    if (state.status !== "running" || state.endedAt != null) {
+      return true;
+    }
     if (state.rowIndex == null) {
       // First lifecycle → push the spawn anchor and record its index.
       state.status = "running";
@@ -1658,7 +1671,7 @@ function handleSubagentLifecycleEvent(
     return true;
   }
 
-  // Real subagent terminal: flip the anchor + push/mutate the result card.
+  // Real subagent terminal: drop the spawn card and keep one result card.
   state.status = terminalStatus;
   if (event.type === "subagent_result") {
     if (typeof event.totalTokens === "number") state.totalTokens = event.totalTokens;
@@ -1674,11 +1687,11 @@ function handleSubagentLifecycleEvent(
     state.error = state.resultSummary ?? state.error;
   }
 
-  // Flip the anchor terminal (freezes the live line) if it exists.
   if (state.rowIndex != null) {
     const expectedKey = subagentSpawnKey(state.renderKeyBase);
     const rowIndex = resolveSubagentRowPosition(rows, state, "rowIndex", expectedKey);
-    if (rowIndex != null) rows[rowIndex] = { key: expectedKey, timestamp, event: spawnAnchorEvent(state, anchors) };
+    if (rowIndex != null) removeCollapsedTranscriptRow(rows, context, rowIndex);
+    state.rowIndex = null;
   }
 
   const resultEvent: SubagentResultCardRenderEvent = {
@@ -1696,6 +1709,8 @@ function handleSubagentLifecycleEvent(
     worktreeBranch: state.worktreeBranch,
     worktreePath: state.worktreePath,
     parentLabel: resolveParentLabel(state, anchors),
+    childSessionId: state.childSessionId,
+    spawnKind: state.spawnKind,
   };
   if (state.resultRowIndex == null) {
     state.resultRowIndex = rows.length;
@@ -3030,22 +3045,27 @@ function groupStoppedSubagentResultCards(
       continue;
     }
 
+    const firstAgentKey = (run[0]!.event as SubagentResultCardRenderEvent).agentKey;
+    const lastInRun = run[run.length - 1]!;
+    // Folded result rows (and the spawn cards they replaced) are gone, so a
+    // per-agent `subagent-result:*` jump no-ops. Point at the surviving group
+    // key; the list does not wire a jump affordance because that would scroll
+    // the card onto itself.
+    const groupKey = `subagent-stopped-group:${cause}:${firstAgentKey}`;
     const items: SubagentStoppedGroupItem[] = run.map((entry) => {
       const event = entry.event as SubagentResultCardRenderEvent;
       return {
         agentKey: event.agentKey,
         title: event.description?.trim() || "Subagent task",
-        jumpToStartRowKey: subagentSpawnKey(event.agentKey),
+        jumpToStartRowKey: groupKey,
       };
     });
-    const firstAgentKey = (run[0]!.event as SubagentResultCardRenderEvent).agentKey;
-    const lastInRun = run[run.length - 1]!;
     result.push({
       // The cause is part of the identity: an interrupt group and a usage-limit
       // group can both start at the same agent (a stop that lands on the same
       // run a limit already claimed), and sharing a key would make React reuse
       // one card's state for the other.
-      key: `subagent-stopped-group:${cause}:${firstAgentKey}`,
+      key: groupKey,
       timestamp: lastInRun.timestamp,
       event: { type: "subagent_stopped_group", cause, count: run.length, items },
     });

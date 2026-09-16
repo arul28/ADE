@@ -281,10 +281,11 @@ implements a two-layer transform:
      `scheduled-wake:<scheduleId>:<turnId>` with fire time, reason, and late
      state; the compact while-you-were-away card scrolls to these stable keys.
    - `subagent_started` / `subagent_progress` / `subagent_result`
-     events collapse per agent (keyed by `agentId ?? taskId`) into two
-     stable render rows — a `subagent_spawn_anchor` at the start
-     position (mutated in place as progress arrives) and a
-     `subagent_result_card` at the settle position — while backgrounded
+     events collapse per agent (keyed by `agentId ?? taskId`) into one
+     card: a `subagent_spawn_anchor` while the agent is running, replaced
+     by a `subagent_result_card` at the settle position when it completes,
+     fails, or stops. A mass interrupt still folds adjacent stopped cards
+     into one `subagent_stopped_group`. Backgrounded
      shell commands collapse to a single `background_job_line`, pushed on
      the job's first sighting (so a running job is visible in the thread)
      and mutated in place through to its terminal state, which is never
@@ -379,20 +380,44 @@ implements a two-layer transform:
 4. **Client presentation.** Grouping remains lossless, but normalized tool,
    command, hook, and web-search groups no longer occupy permanent transcript
    rows. During a live turn they are available from the expandable working
-   status; after `done` they move to the existing turn-finished / `Ran for`
-   status. On desktop the `work_log_group` envelopes are filtered out of the
+   status; after `done` they collapse into one `N tools · M files` summary
+   stacked immediately above the turn's existing time/usage line, left-aligned
+   with Thought. Expanding lists the tools and files between that summary and
+   the time/usage line, which stays last. On desktop the `work_log_group` envelopes are filtered out of the
    rendered timeline entirely rather than rendered empty, so they do not
-   consume row gaps. File changes are reported **once per turn**, at that
-   turn's done divider, instead of once per uninterrupted burst of tool
+   consume row gaps. File changes share that same combined summary (unless a
+   checkpoint `turn_diff_summary` already covers the turn), instead of once per uninterrupted burst of tool
    entries — a turn whose bursts were broken up by prose used to stack six
    near-identical panels through one reply. Assistant narration is unchanged.
-   Desktop and hosted web share this
-   presentation in `AgentChatMessageList`; iOS opens the activity in a sheet so
-   the working row stays readable at narrow widths; ADE Code expands the same
-   activity from its working or turn-finished row. This is capability
-   preserving: clients show only events and file data the selected provider
-   actually emitted, without synthesizing Claude-style file histories for
-   other runtimes.
+
+   **Desktop and hosted web** implement this in `AgentChatMessageList` through
+   `ChatTurnWorkSummary` on the done divider: one expandable `N tools · M files`
+   row sits immediately above the turn's existing time/usage cutout, left-aligned
+   with Thought; expanding lists tools (`ChatToolActivityDetails`) and files
+   between that summary and the footer, which stays last. The list filters
+   `work_log_group` envelopes out of the rendered timeline entirely so grouped
+   tools never occupy a second inline row.
+
+   **iOS** puts the same counts on `WorkTurnEndMarkerView` at each
+   `turnEndMarker`, including turns that pause at a usage limit (the marker
+   shows the work summary and folds usage into the marker instead of a separate
+   usage row beside it). Tapping opens that turn's tool/file activity in a
+   sheet. `workPresentedTimelineEntries` drops `.toolGroup` and `.changedFiles`
+   rows only when `workTurnToolActivityIndex` attached them to a completed
+   turn; a markerless or unterminated cluster that a later turn-end never
+   claimed stays inline. Chat Info still retains the underlying events.
+
+   **ADE Code** mirrors the stack in `ChatView.tsx` `turnEndRows` on each
+   `turn-end` block: collapsed `N tools · M files` when present, expanded tool
+   and file entry rows when open, then the time / `Ran for` / status footer
+   last. Settled `tool-calls-group` and non-live `files-changed-group` blocks
+   are omitted from scrollback (`isTranscriptBlockVisible`). A turn that
+   already has a checkpoint `turn_diff_summary` keeps that `[diff]` notice and
+   leaves `turn-end.fileEntries` empty so the files half is not listed twice.
+
+   This is capability preserving: clients show only events and file data the
+   selected provider actually emitted, without synthesizing Claude-style file
+   histories for other runtimes.
 
 Each work-log entry carries a `collapseKey` built from `turnId`,
 `logicalItemId` (preferred) or `itemId`, and tool/command identity.

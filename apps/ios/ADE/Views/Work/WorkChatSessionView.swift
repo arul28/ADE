@@ -713,7 +713,7 @@ struct WorkChatSessionView: View {
   @State var bottomStickinessReleasedByUser = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
-  @State var turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], active: nil)
+  @State var turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], claimedInlineGroupIds: [], active: nil)
   @State var timelineIncrementalCache = WorkTimelineIncrementalCache()
   @State var timelineSourceKey: String?
   @State var timelineRebuildTask: Task<Void, Never>?
@@ -2259,7 +2259,7 @@ struct WorkChatSessionView: View {
           cancelScheduledTimelineSnapshotRebuild()
           timelineSnapshot = .empty
           timelinePresentation = .empty
-          turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], active: nil)
+          turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], claimedInlineGroupIds: [], active: nil)
           toolActivitySheet = nil
           scheduleTimelineSnapshotRebuild()
         }
@@ -2354,8 +2354,10 @@ struct WorkChatSessionView: View {
           )
         }
         .sheet(item: $toolActivitySheet) { selection in
-          if let group = toolActivityGroup(for: selection) {
-            WorkTurnActivitySheet(group: group)
+          let tools = toolActivityGroup(for: selection)
+          let files = toolActivityFiles(for: selection)
+          if tools != nil || files != nil {
+            WorkTurnActivitySheet(group: tools, files: files)
               .presentationDetents([.medium, .large])
               .presentationDragIndicator(.visible)
           }
@@ -2394,6 +2396,15 @@ private extension WorkChatSessionView {
       return turnToolActivity.active
     case .completed(let turnId):
       return turnToolActivity.completedByTurnId[turnId]
+    }
+  }
+
+  func toolActivityFiles(for selection: WorkToolActivitySheetSelection) -> WorkChangedFilesGroupModel? {
+    switch selection {
+    case .active:
+      return nil
+    case .completed(let turnId):
+      return turnToolActivity.completedFilesByTurnId[turnId]
     }
   }
 }

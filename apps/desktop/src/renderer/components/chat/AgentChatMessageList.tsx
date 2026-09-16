@@ -105,7 +105,7 @@ import { isClaudeContextCategoryKind } from "../../../shared/claudeContextUsage"
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
   ChatToolActivityDetails,
-  ChatTurnFilesChangedSummary,
+  ChatTurnWorkSummary,
   dedupeChatToolActivityEntries,
 } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
@@ -2895,11 +2895,11 @@ function renderEvent(
     return (
       <SubagentResultCard
         event={event}
-        onViewTranscript={() => openChatInfoFromActivity(options?.sessionId, event.agentKey)}
-        onJumpToStart={
-          options?.onScrollToRowKey
-            ? () => options!.onScrollToRowKey?.(`subagent-spawn:${event.agentKey}`)
-            : undefined
+        laneId={options?.laneId ?? null}
+        onViewTranscript={
+          event.childSessionId
+            ? undefined
+            : () => openChatInfoFromActivity(options?.sessionId, event.agentKey)
         }
       />
     );
@@ -2910,7 +2910,6 @@ function renderEvent(
     return (
       <SubagentStoppedGroupCard
         event={event}
-        onJumpToStart={options?.onScrollToRowKey}
       />
     );
   }
@@ -4199,7 +4198,7 @@ function DoneTurnDivider({
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
 }) {
-  const [activityOpen, setActivityOpen] = useState(false);
+  const [usageDetailsOpen, setUsageDetailsOpen] = useState(false);
   // Proof captured during this turn renders inline, at the moment it happened,
   // and starts collapsed so a long capture run never buries the reply.
   const [proofOpen, setProofOpen] = useState(false);
@@ -4221,15 +4220,12 @@ function DoneTurnDivider({
   const usageLimitLabel = usageLimitPaused
     ? usageLimitTurnFooterLabel(durationMs !== null ? formatTurnDuration(durationMs) : null)
     : null;
-  const hasToolActivity = toolEntries.length > 0;
-  // The usage row lives inside the disclosure for a paused turn, so the
-  // disclosure has to exist even when the turn logged no tool activity.
-  const hasDetails = hasToolActivity || Boolean(usageLimitPaused && tokenLine);
+  const usageLimitDetails = Boolean(usageLimitPaused && tokenLine);
   const content = usageLimitPaused ? (
     <span className="inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
       <span>{usageLimitLabel}</span>
-      {hasDetails ? (
-        activityOpen
+      {usageLimitDetails ? (
+        usageDetailsOpen
           ? <CaretDown size={9} weight="bold" className="opacity-55" />
           : <CaretRight size={9} weight="bold" className="opacity-55" />
       ) : null}
@@ -4270,77 +4266,68 @@ function DoneTurnDivider({
             <span>{tokenLine}</span>
           </>
         ) : null}
-      {hasToolActivity ? (
-        activityOpen
-          ? <CaretDown size={9} weight="bold" className="opacity-55" />
-          : <CaretRight size={9} weight="bold" className="opacity-55" />
-      ) : null}
     </span>
   );
+  const timeUsageRow = (
+    <div className="flex items-center gap-3">
+      <span className="h-px flex-1 bg-white/[0.06]" />
+      {usageLimitDetails ? (
+        <button
+          type="button"
+          aria-expanded={usageDetailsOpen}
+          aria-label={`${usageDetailsOpen ? "Hide" : "Show"} details from this turn`}
+          onClick={() => setUsageDetailsOpen((open) => !open)}
+          className="rounded-md py-0.5 transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
+        >
+          {content}
+        </button>
+      ) : content}
+      {turnProof.length > 0 ? (
+        <button
+          type="button"
+          aria-expanded={proofOpen}
+          onClick={() => setProofOpen((open) => !open)}
+          title={proofOpen ? "Hide the proof captured in this turn" : "Show the proof captured in this turn"}
+          className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-white/[0.16] hover:text-fg/75"
+        >
+          <Cube size={10} weight="bold" aria-hidden />
+          {turnProof.length} proof
+        </button>
+      ) : null}
+      <span className="h-px flex-1 bg-white/[0.06]" />
+    </div>
+  );
+
   return (
     <div className="my-4 min-w-0">
-      <div className="flex items-center gap-3">
-        <span className="h-px flex-1 bg-white/[0.06]" />
-        {hasDetails ? (
-          <button
-            type="button"
-            aria-expanded={activityOpen}
-            aria-label={`${activityOpen ? "Hide" : "Show"} ${usageLimitPaused ? "details" : "activity"} from this turn`}
-            onClick={() => setActivityOpen((open) => !open)}
-            className="rounded-md py-0.5 transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
-          >
-            {content}
-          </button>
-        ) : content}
-        {turnProof.length > 0 ? (
-          <button
-            type="button"
-            aria-expanded={proofOpen}
-            onClick={() => setProofOpen((open) => !open)}
-            title={proofOpen ? "Hide the proof captured in this turn" : "Show the proof captured in this turn"}
-            className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-white/[0.16] hover:text-fg/75"
-          >
-            <Cube size={10} weight="bold" aria-hidden />
-            {turnProof.length} proof
-          </button>
-        ) : null}
-        <span className="h-px flex-1 bg-white/[0.06]" />
-      </div>
+      <ChatTurnWorkSummary
+        toolEntries={toolEntries}
+        fileEntries={hasCheckpointDiffSummary ? EMPTY_WORK_LOG_ENTRIES : (turnFileEntries ?? EMPTY_WORK_LOG_ENTRIES)}
+        onReviewInFiles={onReviewInFiles}
+        onNavigateSuggestion={onNavigateSuggestion}
+        onInsertDraft={onInsertDraft}
+        onRevealChatTerminal={onRevealChatTerminal}
+        sessionId={sessionId}
+        chrome={timeUsageRow}
+      />
       <AnimatePresence initial={false}>
-        {hasDetails && activityOpen ? (
+        {usageLimitDetails && usageDetailsOpen ? (
           <motion.div
             initial={{ opacity: 0, height: 0, y: -4 }}
             animate={{ opacity: 1, height: "auto", y: 0 }}
             exit={{ opacity: 0, height: 0, y: -4 }}
             transition={{ duration: 0.16, ease: "easeOut" }}
-            /* Left-aligned like every other transcript row — this used to be the
-               only `mx-auto`-centred block in the thread. */
             className="mt-2 w-full max-w-[var(--chat-content-width,52rem)] overflow-hidden border-l border-white/[0.08] pl-4"
           >
-            {usageLimitPaused && tokenLine ? (
-              <div
-                data-testid="done-turn-usage-detail"
-                className="mb-2 font-mono tabular-nums text-[length:calc(var(--chat-font-size)*10/14)] text-fg/40"
-              >
-                {tokenLine}
-              </div>
-            ) : null}
-            <ChatToolActivityDetails
-              entries={toolEntries}
-              onNavigateSuggestion={onNavigateSuggestion}
-              onInsertDraft={onInsertDraft}
-              onRevealChatTerminal={onRevealChatTerminal}
-              sessionId={sessionId}
-            />
+            <div
+              data-testid="done-turn-usage-detail"
+              className="mb-2 font-mono tabular-nums text-[length:calc(var(--chat-font-size)*10/14)] text-fg/40"
+            >
+              {tokenLine}
+            </div>
           </motion.div>
         ) : null}
       </AnimatePresence>
-      {hasCheckpointDiffSummary ? null : (
-        <ChatTurnFilesChangedSummary
-          entries={turnFileEntries ?? EMPTY_WORK_LOG_ENTRIES}
-          onReviewInFiles={onReviewInFiles}
-        />
-      )}
       {turnProof.length > 0 && proofOpen ? (
         <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
           <ChatProofFilmstrip

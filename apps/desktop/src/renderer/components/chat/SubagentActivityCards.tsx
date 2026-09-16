@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, CaretDown, CaretRight, Check, Gear, Square, Stop, X } from "@phosphor-icons/react";
+import { ArrowDown, CaretDown, CaretRight, Check, Gear, Square, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
@@ -287,12 +287,12 @@ export function SubagentSpawnCard({
  */
 export function SubagentResultCard({
   event,
+  laneId,
   onViewTranscript,
-  onJumpToStart,
 }: {
   event: SubagentResultCardRenderEvent;
+  laneId?: string | null;
   onViewTranscript?: () => void;
-  onJumpToStart?: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const isSuccess = event.status === "completed";
@@ -302,6 +302,8 @@ export function SubagentResultCard({
   const statusWord = isSuccess ? "Finished" : isStopped ? "Stopped — interrupted" : "Failed";
   const title = event.description?.trim() || statusWord;
   const summary = firstMeaningfulSummary(event.summaryPreview);
+  const childSessionId = event.childSessionId?.trim() || null;
+  const typeAccent = spawnTypeAccent(event.spawnKind);
 
   const counters = [
     typeof event.toolUseCount === "number" && event.toolUseCount > 0
@@ -312,40 +314,42 @@ export function SubagentResultCard({
       : null,
   ].filter((part): part is string => Boolean(part));
 
+  const action = childSessionId ? (
+    <button
+      type="button"
+      onClick={() => navigateToSpawnedChat(childSessionId, laneId ?? null)}
+      className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors hover:text-[color:var(--chat-accent)]"
+      title="Open the spawned chat"
+    >
+      open
+      <CaretRight size={11} weight="bold" aria-hidden />
+    </button>
+  ) : onViewTranscript ? (
+    <button
+      type="button"
+      onClick={onViewTranscript}
+      className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors hover:text-[color:var(--chat-accent)]"
+      title="View transcript"
+    >
+      View transcript
+    </button>
+  ) : null;
+
   return (
     <ChatCard skin={isSuccess ? "inset" : "rail"} tone={isSuccess ? "ok" : "warn"}>
       <ChatCardRow
         tone={isSuccess ? "ok" : isStopped ? "idle" : "warn"}
         align="top"
         meta={duration}
-        action={onViewTranscript || onJumpToStart ? (
-          <span className="flex flex-col items-end gap-1">
-            {onViewTranscript ? (
-              <button
-                type="button"
-                onClick={onViewTranscript}
-                className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors hover:text-[color:var(--chat-accent)]"
-                title="View transcript"
-              >
-                View transcript
-              </button>
-            ) : null}
-            {onJumpToStart ? (
-              <button
-                type="button"
-                onClick={onJumpToStart}
-                className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/38 transition-colors hover:text-[color:var(--chat-accent)]"
-                title="Jump to start"
-              >
-                <ArrowUp size={11} weight="bold" aria-hidden />
-                jump to start
-              </button>
-            ) : null}
-          </span>
-        ) : null}
+        action={action}
       >
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
           <ChatCardTitle className={cn("shrink", !isSuccess && "text-amber-100/85")}>{title}</ChatCardTitle>
+          {typeAccent ? (
+            <span className={cn("shrink-0 rounded-md border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em]", typeAccent.chipClass)}>
+              {typeAccent.label}
+            </span>
+          ) : null}
           {!isSuccess && event.description?.trim() ? (
             <span className="shrink-0 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/60">
               {statusWord.toLowerCase()}

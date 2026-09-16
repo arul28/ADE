@@ -683,11 +683,12 @@ final class WorkUsageLimitResumeTests: XCTestCase {
   private func doneEnvelope(
     turnId: String,
     apiErrorStatus: Int?,
-    sequence: Int
+    sequence: Int,
+    timestamp: String? = nil
   ) -> WorkChatEnvelope {
     WorkChatEnvelope(
       sessionId: "chat-1",
-      timestamp: "2026-07-08T00:00:0\(sequence).000Z",
+      timestamp: timestamp ?? "2026-07-08T00:00:0\(sequence).000Z",
       sequence: sequence,
       event: .done(
         status: "failed",
@@ -716,6 +717,90 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertEqual(markers.count, 1)
     XCTAssertTrue(markers[0].usageLimitPaused)
     XCTAssertNotNil(markers[0].usage, "usage rides the marker so it can move behind the details toggle")
+  }
+
+  /// Desktop keeps the turn work summary on a usage-limit pause (`1 tool` above
+  /// `Paused · usage limit`), left-aligned like Thought — not only on completed turns.
+  func testUsageLimitPauseStillIndexesSettledToolsForWorkSummary() {
+    XCTAssertEqual(workFormatTurnWorkSummaryLabel(toolCount: 1, fileCount: 1), "1 tool · 1 file")
+    XCTAssertEqual(workFormatTurnWorkSummaryLabel(toolCount: 2, fileCount: 0), "2 tools")
+    XCTAssertNil(workFormatTurnWorkSummaryLabel(toolCount: 0, fileCount: 0))
+
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-08T19:00:00.000Z",
+        sequence: 1,
+        event: .userMessage(
+          text: "Keep shipping the fix.",
+          attachments: nil,
+          turnId: "turn-limit",
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-08T19:02:00.000Z",
+        sequence: 2,
+        event: .toolCall(
+          tool: "functions.exec_command",
+          argsText: "{\"cmd\":\"npm test\"}",
+          itemId: "command-1",
+          parentItemId: nil,
+          turnId: "turn-limit"
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-08T19:02:01.000Z",
+        sequence: 3,
+        event: .toolResult(
+          tool: "functions.exec_command",
+          resultText: "ok",
+          itemId: "command-1",
+          parentItemId: nil,
+          turnId: "turn-limit",
+          status: .completed
+        )
+      ),
+      doneEnvelope(
+        turnId: "turn-limit",
+        apiErrorStatus: 429,
+        sequence: 4,
+        // Snapshot rows sort by timestamp. A done frame earlier than the tools
+        // ranks them as live work after the turn end, so they never index.
+        timestamp: "2026-09-08T19:03:00.000Z"
+      ),
+    ]
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let index = workTurnToolActivityIndex(from: snapshot.timeline)
+    XCTAssertEqual(index.completedByTurnId["turn-limit"]?.count, 1)
+    XCTAssertEqual(
+      workFormatTurnWorkSummaryLabel(
+        toolCount: index.completedByTurnId["turn-limit"]?.count ?? 0,
+        fileCount: 0
+      ),
+      "1 tool"
+    )
+    let marker = snapshot.timeline.compactMap { entry -> WorkTurnEndMarker? in
+      guard case .turnEndMarker(let marker) = entry.payload else { return nil }
+      return marker
+    }.first
+    XCTAssertEqual(marker?.usageLimitPaused, true)
+    XCTAssertTrue(
+      workPresentedTimelineEntries(snapshot.timeline).allSatisfy { entry in
+        if case .toolGroup = entry.payload { return false }
+        return true
+      },
+      "settled tool clusters leave the inline transcript on a usage-limit turn too"
+    )
   }
 
   /// The 429 has to survive the real sync path, not just a hand-built envelope.
