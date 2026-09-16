@@ -11,7 +11,10 @@ import {
 import {
   buildCtoVoiceContext,
   createCtoVoiceRuntimeService,
+  describeVoiceActiveWork,
+  readVoiceTodayLog,
   splitSpokenSceneAnswer,
+  voiceRequestAsksForVisual,
 } from "./ctoVoiceRuntimeService";
 import {
   createFakeSocket,
@@ -489,6 +492,43 @@ function askCtoOnWire(fake: ReturnType<typeof createFakeSocket>, request: string
   });
 
   /**
+   * A call can draw, and on the live call of 2026-09-16 it did not, because
+   * "you may add a fence" reads as an option and "show me" did not read as an
+   * instruction. The turn prompt now says which of the two this request is.
+   */
+  it("tells the CTO to draw when the user asked to see something", async () => {
+    const asked: string[] = [];
+    const run = async (request: string) => {
+      const fake = createFakeSocket();
+      const { host } = createVoiceRuntimeHost();
+      const chat = host.agentChatService as unknown as Record<string, unknown>;
+      chat.runSessionTurn = async (args: { text: string }) => {
+        asked.push(args.text);
+        return { outputText: "Here it is.", status: "completed" };
+      };
+      const voice = createCtoVoiceRuntimeService(host, {
+        getApiKey: async () => "sk-test",
+        createWebSocket: () => fake.socket,
+      });
+      await voice.start({ ownerToken: "owner-1" });
+      fake.open();
+      fake.receive({ type: "session.created", session: { id: "sess_1" } });
+      await tick();
+      askCtoOnWire(fake, request);
+      await tick();
+      voice.dispose();
+    };
+
+    await run("show me a visual of the PRs merged yesterday");
+    expect(asked[0]).toContain("The user asked to SEE this, so draw it");
+    expect(asked[0]).toContain("actual values, actual labels");
+
+    await run("how many lanes do we have");
+    expect(asked[1]).toContain("When a picture says it better than words");
+    expect(asked[1]).not.toContain("so draw it");
+  });
+
+  /**
    * The two numbers `cto_voice.turn_timing` cannot see from the call service:
    * only this side is watching the thread's event stream, and "the model was
    * slow" and "the tools were slow" have different fixes.
@@ -647,6 +687,133 @@ describe("buildCtoVoiceContext", () => {
     });
     expect(block.length).toBeLessThanOrEqual(CTO_VOICE_CONTEXT_MAX_CHARS);
   });
+
+  /**
+   * Small talk was generic because the block had nothing about today in it.
+   * "How's it going?" is a question about the last few hours, and an identity
+   * plus a lane list cannot answer it.
+   */
+  it("carries what is in flight and what has happened today", () => {
+    const block = buildCtoVoiceContext({
+      ...base,
+      activeWork: ["- Open PRs (1):", "  · #1234 sync host recovery — checks passing"],
+      todayLog: ["- 14:20 — cancel the crons → done", "- 09:02 — start the voice lane → done"],
+    });
+    expect(block).toContain("What is happening right now");
+    expect(block).toContain("#1234 sync host recovery");
+    expect(block).toContain("Today so far (most recent first)");
+    expect(block.indexOf("14:20")).toBeLessThan(block.indexOf("09:02"));
+  });
+
+  it("leaves the new sections out when there is nothing in them", () => {
+    const block = buildCtoVoiceContext({ ...base, activeWork: [], todayLog: [] });
+    expect(block).not.toContain("What is happening right now");
+    expect(block).not.toContain("Today so far");
+  });
+
+  it("still trims to the cap with the work board and the log in it", () => {
+    const block = buildCtoVoiceContext({
+      ...base,
+      activeWork: Array.from({ length: 200 }, (_, index) => `- row ${index} ${"w".repeat(60)}`),
+      todayLog: Array.from({ length: 200 }, (_, index) => `- entry ${index} ${"t".repeat(60)}`),
+    });
+    expect(block.length).toBeLessThanOrEqual(CTO_VOICE_CONTEXT_MAX_CHARS);
+    expect(block).toContain("- Name: Ada");
+  });
+});
+
+describe("describeVoiceActiveWork", () => {
+  const empty = {
+    approvals: [], approvalsTotal: 0,
+    chats: [], chatsTotal: 0,
+    pullRequests: [], pullRequestsTotal: 0,
+    scheduledWork: [], scheduledWorkTotal: 0,
+  };
+
+  it("names each kind of work with its total", () => {
+    const lines = describeVoiceActiveWork({
+      ...empty,
+      approvals: [{ title: "Open a PR for ade/sync-fix" }],
+      approvalsTotal: 1,
+      chats: [{ title: "voice lane", status: "working" }],
+      chatsTotal: 1,
+      pullRequests: [{ number: 1234, title: "sync host recovery", checks: "passing" }],
+      pullRequestsTotal: 1,
+      scheduledWork: [{ title: "nightly audit", status: "scheduled" }],
+      scheduledWorkTotal: 1,
+    }).join("\n");
+    expect(lines).toContain("Waiting for you (1)");
+    expect(lines).toContain("Work in flight (1)");
+    expect(lines).toContain("#1234 sync host recovery — checks passing");
+    expect(lines).toContain("Scheduled (1)");
+  });
+
+  it("caps each kind and says how many it left out", () => {
+    const lines = describeVoiceActiveWork({
+      ...empty,
+      chats: Array.from({ length: 9 }, (_, index) => ({ title: `chat ${index}`, status: "working" })),
+      chatsTotal: 9,
+    }).join("\n");
+    expect(lines).toContain("Work in flight (9)");
+    expect(lines).toContain("…and 5 more running");
+    expect(lines).not.toContain("chat 4");
+  });
+
+  /**
+   * An absent section reads to the model as an unknown it has to go and ask
+   * about. "Nothing is running" is an answer it can give in its own voice.
+   */
+  it("says so out loud when nothing is running", () => {
+    expect(describeVoiceActiveWork(empty)).toEqual([
+      "- Nothing is running, waiting or open right now.",
+    ]);
+  });
+});
+
+describe("readVoiceTodayLog", () => {
+  it("drops the date header and puts the newest entry first", () => {
+    expect(readVoiceTodayLog({
+      dailyLog: "# 2026-09-16\n\n09:02 — started the lane → done\n14:20 — cancelled the crons → done\n",
+    })).toEqual([
+      "- 14:20 — cancelled the crons → done",
+      "- 09:02 — started the lane → done",
+    ]);
+  });
+
+  it("bounds the number of entries it carries", () => {
+    const body = Array.from({ length: 40 }, (_, index) => `line ${index}`).join("\n");
+    expect(readVoiceTodayLog({ dailyLog: body })).toHaveLength(12);
+  });
+
+  it("is empty for a day with nothing in it", () => {
+    expect(readVoiceTodayLog({ dailyLog: "# 2026-09-16\n" })).toEqual([]);
+    expect(readVoiceTodayLog(null)).toEqual([]);
+  });
+});
+
+/**
+ * "Show me a visual of the PRs merged yesterday" came back as an offer to
+ * DESCRIBE them. The CTO could always draw; nothing told it that "show me"
+ * meant draw.
+ */
+describe("voiceRequestAsksForVisual", () => {
+  it("recognises the ways a user asks to see something", () => {
+    for (const request of [
+      "show me a visual of the PRs merged yesterday",
+      "Draw the lane graph",
+      "can you chart the test failures",
+      "a quick diagram of how sync works",
+      "plot the last week",
+    ]) {
+      expect(voiceRequestAsksForVisual(request)).toBe(true);
+    }
+  });
+
+  it("leaves an ordinary request alone", () => {
+    for (const request of ["how many lanes do we have", "run the tests", "what merged yesterday"]) {
+      expect(voiceRequestAsksForVisual(request)).toBe(false);
+    }
+  });
 });
 
 /**
@@ -665,23 +832,59 @@ describe("buildCtoVoiceInstructions", () => {
     expect(prompt).toContain("never ChatGPT");
   });
 
-  it("names the seam and forbids guessing at a project fact", () => {
+  it("forbids guessing at a project fact and relays an answer faithfully", () => {
     const prompt = buildCtoVoiceInstructions(base);
-    expect(prompt).toContain("ask_cto");
     expect(prompt).toContain("Never guess a project fact");
     expect(prompt).toContain("Rephrase it for the ear");
   });
 
+  /**
+   * The brief is the only place the user's illusion can be broken from, and on
+   * the live call of 2026-09-16 it was broken three times in one call: "I'll
+   * hand it to the system that can actually do that work". The user is talking
+   * to the CTO, and the CTO does not have colleagues.
+   */
+  it("never gives the user a word for the seam", () => {
+    for (const acknowledgeAloud of [true, false]) {
+      const prompt = buildCtoVoiceInstructions({
+        ...base,
+        acknowledgeAloud,
+        context: "Who you are\n- Name: Ada",
+      }).toLowerCase();
+      for (const forbidden of ["the system", "backend", "cto thread", "hand off", "ask_cto"]) {
+        expect(prompt).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it("tells the model it can draw, not only describe", () => {
+    const prompt = buildCtoVoiceInstructions(base);
+    expect(prompt).toContain("show me");
+    expect(prompt).toContain("one picture appears beside the call");
+    expect(prompt).toContain("Never tell the user you can only describe it");
+  });
+
+  /**
+   * The user must never have to wonder whether their first request survived the
+   * second one, so the sentence that says which is part of the brief rather
+   * than something the model may or may not think of.
+   */
+  it("asks the model to say whether it is switching or taking the new one in turn", () => {
+    const prompt = buildCtoVoiceInstructions(base);
+    expect(prompt).toContain("I'll switch to that");
+    expect(prompt).toContain("I'll do that right after");
+  });
+
   it("asks for a varied acknowledgement, never a stock phrase", () => {
     const prompt = buildCtoVoiceInstructions({ ...base, acknowledgeAloud: true });
-    expect(prompt).toContain("Vary that sentence every single time");
+    expect(prompt).toContain("Vary it every single time");
     expect(prompt).toContain("Never reuse a stock phrase");
   });
 
   it("asks for silence when the user turned the acknowledgement off", () => {
     const prompt = buildCtoVoiceInstructions({ ...base, acknowledgeAloud: false });
-    expect(prompt).toContain("Call it silently");
-    expect(prompt).not.toContain("Vary that sentence");
+    expect(prompt).toContain("Do it silently");
+    expect(prompt).not.toContain("Vary it every single time");
   });
 
   /**

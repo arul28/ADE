@@ -66,6 +66,23 @@ export const CTO_VOICE_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
  */
 export const CTO_VOICE_TRANSCRIBE_LANGUAGE = "en";
 
+/**
+ * The hint the transcriber is given about what this call is about.
+ *
+ * Measured against the live API on 2026-09-16, six runs per configuration with
+ * TTS-synthesised audio fed through the real session config: `language: "en"`
+ * alone transcribed a spoken Serbian "Здраво" as `"Zdravo."` — romanised, so
+ * the language IS read — but a Russian "Привет" came back as `"Привет."` in
+ * Cyrillic in all three runs, and adding this prompt changed nothing in any of
+ * the six. So neither field forces English, and both are kept: the language is
+ * still the cheapest way to stop the per-utterance guess, and the prompt is
+ * what tells the model the vocabulary of the call ("lanes", "PRs") rather than
+ * of a podcast. What the wire cannot guarantee, the CTO turn's own "answer in
+ * English" line does.
+ */
+export const CTO_VOICE_TRANSCRIBE_PROMPT =
+  "English conversation about a software project called ADE, lanes, pull requests, tests.";
+
 /** Billed per second; the pill shows the running total from this. */
 export const CTO_VOICE_USD_PER_MINUTE = 0.05;
 
@@ -805,6 +822,50 @@ export const CTO_VOICE_TOOL_NAMES = [
 export type CtoVoiceToolName = (typeof CTO_VOICE_TOOL_NAMES)[number];
 
 /**
+ * What a second request means while the first one is still running.
+ *
+ * The decision is the model's, not a heuristic's, because the only thing that
+ * can tell "no wait, I meant the merged ones" from "also, run the tests" is
+ * whoever heard both sentences. A rule on this side would have to guess, and on
+ * the live call of 2026-09-16 the guess ADE actually shipped — every new
+ * request supersedes the running one — threw both requests away.
+ *
+ * `replace`: the new request corrects or updates the running one. The running
+ * one is stopped and this one runs instead.
+ * `queue`: the new request is an additional job. It runs when the current one
+ * finishes.
+ */
+export const CTO_VOICE_ASK_MODES = ["replace", "queue"] as const;
+
+export type CtoVoiceAskMode = (typeof CTO_VOICE_ASK_MODES)[number];
+
+/**
+ * The mode a request with no usable `mode` is treated as.
+ *
+ * `queue`, because it is the one that loses nothing: a queued request that
+ * should have replaced runs a few seconds late, where a replace that should
+ * have queued throws the running turn's work away.
+ */
+export const CTO_VOICE_ASK_MODE_DEFAULT: CtoVoiceAskMode = "queue";
+
+export function normalizeCtoVoiceAskMode(value: unknown): CtoVoiceAskMode {
+  return (CTO_VOICE_ASK_MODES as readonly string[]).includes(String(value))
+    ? (value as CtoVoiceAskMode)
+    : CTO_VOICE_ASK_MODE_DEFAULT;
+}
+
+/**
+ * How many requests may wait behind the running one.
+ *
+ * Two, and the bound is the conversation's rather than the queue's: a user who
+ * has stacked three jobs by voice has stopped listening to the answers, and a
+ * queue deeper than the call is long answers questions nobody is still waiting
+ * for. The third is refused out loud (`{ status: "busy" }`) so the user hears
+ * it rather than discovering it in silence.
+ */
+export const CTO_VOICE_ASK_QUEUE_LIMIT = 2;
+
+/**
  * The tools as the `session.update` carries them.
  *
  * Data rather than a literal inside the socket service, because the
@@ -822,7 +883,17 @@ export const CTO_VOICE_REALTIME_TOOLS = [
       + " requests, tests, terminals, running a command, changing anything, or any fact"
       + " about the project that is not in the context you were given. Pass the user's"
       + " request in their own words, plus any clarification they gave. Never guess a"
-      + " fact about the project — ask.",
+      + " fact about the project — ask."
+      + " If the user asked to see something — a visual, a chart, a diagram, a picture,"
+      + " a list, or anything phrased as 'show me' — say so in the request: one picture"
+      + " can be drawn beside the call, and the user is asking for it."
+      + " `mode` decides what happens when a request is already running. Use"
+      + " \"replace\" when this one corrects, changes or takes back the running one:"
+      + " the running one is stopped and this one runs instead. Use \"queue\" when it"
+      + " is an additional, separate job: it runs as soon as the current one is"
+      + " finished. When nothing is running, `mode` changes nothing. Tell the user"
+      + " which one you are doing in the same short sentence you acknowledge with —"
+      + " \"I'll switch to that\" for replace, \"I'll do that right after\" for queue.",
     parameters: {
       type: "object",
       properties: {
@@ -830,16 +901,24 @@ export const CTO_VOICE_REALTIME_TOOLS = [
           type: "string",
           description: "The user's request, in their own words, plus any clarification.",
         },
+        mode: {
+          type: "string",
+          enum: [...CTO_VOICE_ASK_MODES],
+          description:
+            "\"replace\" if this corrects or updates a request that is already running;"
+            + " \"queue\" if it is an additional task to do afterwards.",
+        },
       },
-      required: ["request"],
+      required: ["request", "mode"],
     },
   },
   {
     type: "function",
     name: CTO_VOICE_TOOL_CANCEL_WORK,
     description:
-      "Stop the work that is currently running. Use this when the user says stop,"
-      + " never mind, cancel that, or otherwise takes it back while work is in flight.",
+      "Stop the work that is currently running, and drop anything waiting behind"
+      + " it. Use this when the user says stop, never mind, cancel that, or otherwise"
+      + " takes it back while work is in flight.",
     parameters: { type: "object", properties: {} },
   },
   {
@@ -903,49 +982,68 @@ export function buildCtoVoiceInstructions(args: {
 }): string {
   const acknowledge = args.acknowledgeAloud !== false;
   const lines: string[] = [
-    `You are ${args.ctoName}, the CTO of ${args.projectName}, speaking with the user on a call.`,
+    `You are ${args.ctoName}, the CTO of ${args.projectName}, talking with the user on a call.`,
+    "",
+    "There is one of you. Everything the user hears is you, and everything that"
+    + " gets done is you doing it. Never narrate your own machinery: no tools, no"
+    + " functions, no other part of ADE, and nothing being passed, handed or"
+    + " relayed anywhere. Say 'I'll check' and 'On it', never 'I'll get that looked"
+    + " at for you'. If the user asks how you work, answer as a person would:"
+    + " you looked, you ran it, you read it.",
     "",
     "How you sound: warm, brief, conversational, plain spoken English. One or two"
     + " sentences unless you are asked for more. No lists, no markdown, no bullet"
     + " points, no exclamation marks, no 'great question', no congratulating the"
     + " user for asking. You are a person on a phone, not a document being read.",
     "",
-    "What you answer yourself: small talk, anything about who you are, and"
-    + " anything already in the context below. Answer those straight away — do not"
-    + " call a function for them, and do not make the user wait.",
+    "What you answer straight away: small talk, anything about who you are, and"
+    + " anything already in the context below. Do not call a function for those,"
+    + " and do not make the user wait.",
     "",
-    `What you hand over: anything that needs the project. Call ${CTO_VOICE_TOOL_ASK_CTO}`
-    + " for the code, the files, git, lanes, pull requests, tests, terminals, running"
-    + " a command, changing anything, or any fact about this project that is not in"
-    + " the context below. Never guess a project fact — ask.",
+    "What you go and look up: anything that needs the project — the code, the"
+    + " files, git, lanes, pull requests, tests, terminals, running a command,"
+    + " changing anything, or any fact about this project that is not in the"
+    + " context below. Never guess a project fact.",
+    "",
+    "You can show things, not only say them. When the user asks for a visual, a"
+    + " chart, a diagram, a picture, a timeline, or says 'show me', include that in"
+    + " what you look up and tell them plainly that you are drawing it — one"
+    + " picture appears beside the call while you talk. Never tell the user you can"
+    + " only describe it.",
   ];
 
   if (acknowledge) {
     lines.push(
       "",
-      `When you call ${CTO_VOICE_TOOL_ASK_CTO}, say ONE short natural sentence about`
-      + " what you are doing in the same breath, and call the function in the same"
-      + " turn. Vary that sentence every single time and keep it specific to what was"
-      + " asked — 'Sure, counting the lanes.', 'Okay, I'll look at that PR.',"
-      + " 'Let me pull the test output.' Never reuse a stock phrase, and never say"
-      + " the same acknowledgement twice on one call.",
+      "When you go and look something up, say ONE short natural sentence about what"
+      + " you are doing in the same breath, in the first person, and make the call in"
+      + " the same turn. Vary it every single time and keep it specific to what was"
+      + " asked — 'Sure, counting the lanes.', 'On it.', 'Okay, let me look at that"
+      + " PR.', 'Pulling the test output now.' Never reuse a stock phrase, and never"
+      + " say the same acknowledgement twice on one call.",
     );
   } else {
     lines.push(
       "",
-      `When you call ${CTO_VOICE_TOOL_ASK_CTO}, say nothing first. Call it silently`
-      + " and speak only once the answer comes back.",
+      "When you go and look something up, say nothing first. Do it silently and"
+      + " speak only once you have the answer.",
     );
   }
 
   lines.push(
     "",
-    "When the function returns, relay its answer faithfully. Rephrase it for the"
-    + " ear — shorter sentences, no formatting — but add no facts of your own and"
-    + " leave none of its facts out. If it reports that it was interrupted or that"
-    + " it failed, say so in one sentence and stop.",
+    "Two things at once: if what the user just said corrects, changes or takes back"
+    + " what you are already working on, switch to the new one and say so — \"I'll"
+    + " switch to that\". If it is a separate job, take it in turn and say so —"
+    + " \"I'll do that right after\". Say which of the two it is in the same short"
+    + " sentence, so the user never has to wonder whether the first one survived.",
     "",
-    `If the user says stop or never mind while work is running, call ${CTO_VOICE_TOOL_CANCEL_WORK}.`,
+    "When an answer comes back, relay it faithfully. Rephrase it for the ear —"
+    + " shorter sentences, no formatting — but add no facts of your own and leave"
+    + " none of its facts out. If it says it was interrupted or that it failed, say"
+    + " so in one sentence, in your own voice, and stop.",
+    "",
+    "If the user says stop or never mind while something is running, stop it.",
     "",
     "You are the CTO of this project. You are never ChatGPT, never an OpenAI"
     + " model, and never an assistant in general — do not say you are. If the user"

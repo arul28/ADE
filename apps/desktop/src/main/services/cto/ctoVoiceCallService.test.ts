@@ -13,6 +13,7 @@ import {
   CTO_VOICE_SAMPLE_RATE,
   CTO_VOICE_TRANSCRIBE_LANGUAGE,
   CTO_VOICE_TRANSCRIBE_MODEL,
+  CTO_VOICE_TRANSCRIBE_PROMPT,
   CTO_VOICE_TOOL_NAMES,
   CTO_VOICE_TURN_BURST_COOLDOWN_MS,
   ctoVoiceStatusLine,
@@ -126,7 +127,7 @@ function modelResponses(fake: ReturnType<typeof createFakeSocket>): number {
 function askCto(
   harness: ReturnType<typeof createService>,
   request: string,
-  options: { callId?: string; responseId?: string } = {},
+  options: { callId?: string; responseId?: string; mode?: "replace" | "queue" } = {},
 ) {
   harness.fake.receive({
     type: "response.done",
@@ -137,7 +138,7 @@ function askCto(
         type: "function_call",
         name: "ask_cto",
         call_id: options.callId ?? "call_1",
-        arguments: JSON.stringify({ request }),
+        arguments: JSON.stringify({ request, mode: options.mode ?? "queue" }),
       }],
     },
   });
@@ -231,6 +232,7 @@ describe("createCtoVoiceCallService", () => {
     expect(update.session.audio.input.transcription).toEqual({
       model: CTO_VOICE_TRANSCRIBE_MODEL,
       language: CTO_VOICE_TRANSCRIBE_LANGUAGE,
+      prompt: CTO_VOICE_TRANSCRIBE_PROMPT,
     });
     expect(update.session.audio.input.format)
       .toEqual({ type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE });
@@ -648,12 +650,13 @@ describe("createCtoVoiceCallService", () => {
     expect(harness.latest().pendingConfirmation?.destructive).toBe(false);
   });
 
-  it("drops a superseded answer instead of speaking it over the next one", async () => {
-    // The user asks, then interrupts and asks something else. The first turn is
-    // still running; when it finishes, its answer is to a question the user has
-    // moved on from. Reading the abort flag off the module binding asked the
-    // WRONG controller — by then it named the superseding turn — so the stale
-    // answer was spoken over the live one.
+  it("drops a replaced answer instead of speaking it over the next one", async () => {
+    // The user asks, then corrects themselves. The model calls `ask_cto` again
+    // with `mode: "replace"`; the first turn is still running, and when it
+    // finishes its answer is to a question the user has moved on from. Reading
+    // the abort flag off the module binding asked the WRONG controller — by
+    // then it named the replacing turn — so the stale answer was spoken over
+    // the live one.
     const release: Array<() => void> = [];
     const harness = createService({
       backchannelsEnabled: () => false,
@@ -669,10 +672,10 @@ describe("createCtoVoiceCallService", () => {
 
     askCto(harness, "the first question", { callId: "call_1" });
     await tick();
-    askCto(harness, "no wait, the second question", { callId: "call_2" });
+    askCto(harness, "no wait, the second question", { callId: "call_2", mode: "replace" });
     await tick();
 
-    // The first turn only finishes now, after it was superseded.
+    // The first turn only finishes now, after it was replaced.
     release.forEach((fn) => fn());
     await tick();
 
@@ -683,6 +686,235 @@ describe("createCtoVoiceCallService", () => {
     // in the conversation forever — and nobody is asked to speak about it.
     expect(results).toContainEqual({ status: "superseded", answer: "" });
     expect(modelResponses(harness.fake)).toBe(1);
+  });
+
+  /**
+   * Two requests at once, and who decides what happens to the first.
+   *
+   * On the live call of 2026-09-16 both requests were lost: the second one's
+   * `runSessionTurn` was attempted before the first had been interrupted, threw
+   * "Session already has an active background turn", and the abort landed three
+   * milliseconds later. The user heard that the CTO could not be reached, twice.
+   */
+  describe("two requests at once", () => {
+    /**
+     * A harness whose backend records when each turn starts and finishes, and
+     * releases them one at a time.
+     */
+    function createSerialHarness() {
+      const events: string[] = [];
+      const release = new Map<string, () => void>();
+      const harness = createService({
+        backchannelsEnabled: () => false,
+        runBackendTurn: async ({ intent, signal }) => {
+          const name = intent.split(" ")[0] ?? intent;
+          events.push(`start:${name}`);
+          await new Promise<void>((resolve) => release.set(name, resolve));
+          events.push(`end:${name}`);
+          if (signal.aborted) return { spoken: "", status: "interrupted" as const };
+          return { spoken: `${name} answer` };
+        },
+      });
+      return {
+        ...harness,
+        events,
+        finish: async (name: string) => {
+          release.get(name)?.();
+          await tick();
+        },
+      };
+    }
+
+    it("replaces the running request, and does not start the new one until it has unwound", async () => {
+      const harness = createSerialHarness();
+      await openCall(harness);
+
+      askCto(harness, "A the open PRs", { callId: "call_a" });
+      await tick();
+      expect(harness.events).toEqual(["start:A"]);
+
+      askCto(harness, "B no wait the merged ones", { callId: "call_b", mode: "replace" });
+      await tick();
+      // The correction does NOT start here. The aborted turn is still unwinding
+      // on the one CTO session, and starting on top of it is the bug.
+      expect(harness.events).toEqual(["start:A"]);
+
+      await harness.finish("A");
+      expect(harness.events).toEqual(["start:A", "end:A", "start:B"]);
+
+      await harness.finish("B");
+      const results = functionOutputs(harness.fake);
+      expect(results).toContainEqual({ status: "superseded", answer: "" });
+      expect(results).toContainEqual({ status: "ok", answer: "B answer" });
+      // Only the surviving answer is spoken about.
+      expect(modelResponses(harness.fake)).toBe(1);
+    });
+
+    it("queues an additional request and answers both, in order", async () => {
+      const harness = createSerialHarness();
+      await openCall(harness);
+
+      askCto(harness, "A the open PRs", { callId: "call_a" });
+      await tick();
+      askCto(harness, "B run the tests", { callId: "call_b", mode: "queue" });
+      await tick();
+      // Queued, not started: the CTO thread is one session.
+      expect(harness.events).toEqual(["start:A"]);
+
+      await harness.finish("A");
+      expect(harness.events).toEqual(["start:A", "end:A", "start:B"]);
+      // A's answer is being relayed; one response at a time, so B's relay waits
+      // for it exactly as any other queued response does.
+      expect(modelResponses(harness.fake)).toBe(1);
+      await harness.finish("B");
+      harness.fake.receive({ type: "response.done", response: { id: "resp_relay_a", status: "completed", output: [] } });
+      await tick();
+
+      expect(functionOutputs(harness.fake)).toEqual([
+        { status: "ok", answer: "A answer" },
+        { status: "ok", answer: "B answer" },
+      ]);
+      // Each answer is relayed on its own, as it lands.
+      expect(modelResponses(harness.fake)).toBe(2);
+    });
+
+    it("refuses a third waiting request rather than stacking it", async () => {
+      const harness = createSerialHarness();
+      await openCall(harness);
+
+      askCto(harness, "A one", { callId: "call_a" });
+      await tick();
+      askCto(harness, "B two", { callId: "call_b", mode: "queue" });
+      askCto(harness, "C three", { callId: "call_c", mode: "queue" });
+      askCto(harness, "D four", { callId: "call_d", mode: "queue" });
+      await tick();
+
+      const busy = functionOutputs(harness.fake).filter((row) => row.status === "busy");
+      expect(busy).toHaveLength(1);
+      expect(String(busy[0]!.reason)).toContain("already waiting");
+      expect(harness.events).toEqual(["start:A"]);
+    });
+
+    it("treats a request with no usable mode as an additional one", async () => {
+      // Nothing is thrown away by guessing "queue": the worst case is an answer
+      // a few seconds late. Guessing "replace" throws a running turn's work out.
+      const harness = createSerialHarness();
+      await openCall(harness);
+      askCto(harness, "A one", { callId: "call_a" });
+      await tick();
+      harness.fake.receive({
+        type: "response.done",
+        response: {
+          id: "resp_nomode",
+          status: "completed",
+          output: [{
+            type: "function_call",
+            name: "ask_cto",
+            call_id: "call_b",
+            arguments: JSON.stringify({ request: "B two" }),
+          }],
+        },
+      });
+      await tick();
+      expect(harness.events).toEqual(["start:A"]);
+      await harness.finish("A");
+      expect(harness.events).toContain("start:B");
+      await harness.finish("B");
+    });
+
+    it("cancel_work stops the running request and drops the queue", async () => {
+      const harness = createSerialHarness();
+      await openCall(harness);
+
+      askCto(harness, "A one", { callId: "call_a" });
+      await tick();
+      askCto(harness, "B two", { callId: "call_b", mode: "queue" });
+      await tick();
+
+      callTool(harness, "cancel_work", "call_cancel");
+      await tick();
+      // The queued one is answered immediately — an unanswered `function_call`
+      // sits in the conversation forever — and never runs.
+      expect(functionOutputs(harness.fake)).toContainEqual({ status: "cancelled", answer: "" });
+
+      await harness.finish("A");
+      expect(harness.events).toEqual(["start:A", "end:A"]);
+      expect(functionOutputs(harness.fake)).toContainEqual({ status: "cancelled" });
+    });
+
+    /**
+     * A barge-in that merely stops the audio is not an abandoned turn. The live
+     * call wrote `outcome: "abandoned"` for a request the CTO was still working
+     * on twenty-five seconds later, purely because the user spoke again.
+     */
+    it("leaves a running turn's timing record open when the user talks over it", async () => {
+      const lines: Array<{ event: string; meta: Record<string, unknown> }> = [];
+      const release: Array<() => void> = [];
+      const harness = createService({
+        backchannelsEnabled: () => false,
+        logger: {
+          info: (event: string, meta?: unknown) => lines.push({
+            event,
+            meta: (meta ?? {}) as Record<string, unknown>,
+          }),
+          warn: () => {},
+        },
+        runBackendTurn: async () => {
+          await new Promise<void>((resolve) => release.push(resolve));
+          return { spoken: "Three merged yesterday." };
+        },
+      });
+      await openCall(harness);
+
+      utter(harness, "what merged yesterday");
+      askCto(harness, "what merged yesterday", { callId: "call_a" });
+      await tick();
+
+      // The user thinks out loud while the work runs. Nothing is aborted.
+      utter(harness, "actually never mind the ordering");
+      await tick();
+      const outcomes = () => lines
+        .filter((line) => line.event === "cto_voice.turn_timing")
+        .map((line) => String(line.meta.outcome));
+      expect(outcomes()).not.toContain("abandoned");
+
+      release.forEach((fn) => fn());
+      await tick();
+      harness.fake.receive({ type: "response.output_audio.delta", delta: "AAAA" });
+      expect(outcomes()).toContain("spoken");
+    });
+
+    it("records a replaced turn as superseded, not abandoned", async () => {
+      const lines: Array<{ event: string; meta: Record<string, unknown> }> = [];
+      const harness = createService({
+        backchannelsEnabled: () => false,
+        logger: {
+          info: (event: string, meta?: unknown) => lines.push({
+            event,
+            meta: (meta ?? {}) as Record<string, unknown>,
+          }),
+          warn: () => {},
+        },
+        runBackendTurn: async ({ signal }) => {
+          if (signal.aborted) return { spoken: "", status: "interrupted" as const };
+          await tick();
+          return signal.aborted
+            ? { spoken: "", status: "interrupted" as const }
+            : { spoken: "ok" };
+        },
+      });
+      await openCall(harness);
+      askCto(harness, "A one", { callId: "call_a" });
+      askCto(harness, "B two", { callId: "call_b", mode: "replace" });
+      await tick();
+      await tick();
+
+      const outcomes = lines
+        .filter((line) => line.event === "cto_voice.turn_timing")
+        .map((line) => String(line.meta.outcome));
+      expect(outcomes).toContain("superseded");
+      expect(outcomes).not.toContain("abandoned");
+    });
   });
 
   it("accepts a spoken yes from the utterance after the question", async () => {

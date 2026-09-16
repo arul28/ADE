@@ -160,6 +160,115 @@ export function splitSpokenSceneAnswer(outputText: string): {
 }
 
 /**
+ * Did the user ask to SEE this, rather than to hear it?
+ *
+ * Deliberately a word list rather than a judgement: the request text is the
+ * realtime model's paraphrase of what was said, and it is the one place "show
+ * me the PRs merged yesterday" survives intact. A false positive costs one
+ * unread fence; a false negative costs the user the picture they asked for,
+ * which is the failure this exists to stop.
+ */
+const CTO_VOICE_VISUAL_WORDS = [
+  "show me",
+  "show us",
+  "draw",
+  "chart",
+  "graph",
+  "diagram",
+  "visual",
+  "visualise",
+  "visualize",
+  "picture",
+  "timeline",
+  "sketch",
+  "plot",
+  "illustrate",
+] as const;
+
+export function voiceRequestAsksForVisual(request: string): boolean {
+  const text = request.toLowerCase();
+  return CTO_VOICE_VISUAL_WORDS.some((word) => text.includes(word));
+}
+
+/** How many rows of any one kind the work board contributes. */
+const CTO_VOICE_ACTIVE_WORK_MAX_PER_KIND = 4;
+/** How many of today's log entries the block carries. */
+const CTO_VOICE_TODAY_LOG_MAX_ENTRIES = 12;
+
+/**
+ * The CTO's live-state snapshot, as lines a voice can read off.
+ *
+ * Not `renderCtoLiveStateBlock`: that block is built for a thinking model with
+ * a 6,000-character budget of its own and spells out lane ids, session ids and
+ * check states. What a call needs is the shape of the day in a dozen lines, and
+ * the ids are things the CTO looks up rather than things a voice says out loud.
+ */
+export function describeVoiceActiveWork(snapshot: {
+  approvals: Array<{ title: string }>;
+  approvalsTotal: number;
+  chats: Array<{ title: string; status: string }>;
+  chatsTotal: number;
+  pullRequests: Array<{ number: number; title: string; checks: string }>;
+  pullRequestsTotal: number;
+  scheduledWork: Array<{ title: string; status: string }>;
+  scheduledWorkTotal: number;
+}): string[] {
+  const lines: string[] = [];
+  const take = <T>(rows: T[]): T[] => rows.slice(0, CTO_VOICE_ACTIVE_WORK_MAX_PER_KIND);
+  const more = (shown: number, total: number, noun: string): void => {
+    if (total > shown) lines.push(`  …and ${total - shown} more ${noun}`);
+  };
+  if (snapshot.approvalsTotal > 0) {
+    lines.push(`- Waiting for you (${snapshot.approvalsTotal}):`);
+    for (const row of take(snapshot.approvals)) lines.push(`  · ${row.title}`);
+    more(take(snapshot.approvals).length, snapshot.approvalsTotal, "waiting");
+  }
+  if (snapshot.chatsTotal > 0) {
+    lines.push(`- Work in flight (${snapshot.chatsTotal}):`);
+    for (const row of take(snapshot.chats)) lines.push(`  · ${row.title} — ${row.status}`);
+    more(take(snapshot.chats).length, snapshot.chatsTotal, "running");
+  }
+  if (snapshot.pullRequestsTotal > 0) {
+    lines.push(`- Open PRs (${snapshot.pullRequestsTotal}):`);
+    for (const row of take(snapshot.pullRequests)) {
+      lines.push(`  · #${row.number} ${row.title} — checks ${row.checks}`);
+    }
+    more(take(snapshot.pullRequests).length, snapshot.pullRequestsTotal, "PRs");
+  }
+  if (snapshot.scheduledWorkTotal > 0) {
+    lines.push(`- Scheduled (${snapshot.scheduledWorkTotal}):`);
+    for (const row of take(snapshot.scheduledWork)) lines.push(`  · ${row.title} — ${row.status}`);
+    more(take(snapshot.scheduledWork).length, snapshot.scheduledWorkTotal, "scheduled");
+  }
+  // Said rather than left blank: "nothing is running" is an answer, and an
+  // absent section reads to the model as an unknown it has to go and ask about.
+  if (!lines.length) lines.push("- Nothing is running, waiting or open right now.");
+  return lines;
+}
+
+/**
+ * Today's daily-log entries, newest first.
+ *
+ * The file's own `# YYYY-MM-DD` header is dropped — the section says "today" —
+ * and the order is reversed because a call asks "what have we done today" and
+ * the useful end of that list is the recent one.
+ */
+export function readVoiceTodayLog(
+  snapshot: { dailyLog?: string | null } | null,
+  maxEntries = CTO_VOICE_TODAY_LOG_MAX_ENTRIES,
+): string[] {
+  const body = (snapshot?.dailyLog ?? "").trim();
+  if (!body.length) return [];
+  return body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"))
+    .reverse()
+    .slice(0, Math.max(1, maxEntries))
+    .map((line) => `- ${line}`);
+}
+
+/**
  * Everything the realtime model may answer from without asking the CTO.
  *
  * Pure, and built from plain data rather than from the services, so the two
@@ -184,6 +293,24 @@ export type CtoVoiceContextInput = {
   modelName: string | null;
   laneNames: string[];
   lanesTotal: number;
+  /**
+   * What is in flight right now, one line each, from the CTO's live-state
+   * snapshot: chats working, PRs open, approvals waiting, work scheduled.
+   *
+   * The reason small talk was generic. "How's it going?" is a question about
+   * today, and a model whose whole context was an identity and a lane list had
+   * nothing to answer it with but a pleasantry.
+   */
+  activeWork?: string[];
+  /**
+   * Today's daily-log entries, most recent first.
+   *
+   * The memory service's own "Recent daily log" section spans two days and is
+   * oldest-first so a truncation keeps the tail. Today, newest first, is a
+   * different question — "what have we done today" — and is worth the
+   * duplication because it is the one the user actually asks out loud.
+   */
+  todayLog?: string[];
   /** Durable memory, thread state and the daily log, as the memory service labels them. */
   memorySections: Array<{ title: string; body: string }>;
 };
@@ -225,6 +352,12 @@ export function buildCtoVoiceContext(
         laneLine,
       ].join("\n"),
     },
+    ...(input.activeWork?.length
+      ? [{ title: "What is happening right now", body: input.activeWork.join("\n") }]
+      : []),
+    ...(input.todayLog?.length
+      ? [{ title: "Today so far (most recent first)", body: input.todayLog.join("\n") }]
+      : []),
     ...input.memorySections
       .map((section) => ({ title: section.title, body: section.body.trim() }))
       .filter((section) => section.body.length > 0),
@@ -622,8 +755,28 @@ export function createCtoVoiceRuntimeService(
         } catch (error) {
           hostLogger?.warn("cto_voice.context_memory_failed", { error: String(error) });
         }
+        // Refreshed rather than read off the cache: the block is rebuilt after
+        // every completed request, which is exactly when what is in flight has
+        // just changed. A snapshot that cannot be captured — a host with no
+        // live-state sources — leaves the section out rather than failing.
+        let activeWork: string[] = [];
+        try {
+          const live = (await ctoStateService.refreshLiveState())
+            ?? ctoStateService.getLiveStateSnapshot();
+          if (live) activeWork = describeVoiceActiveWork(live);
+        } catch (error) {
+          hostLogger?.warn("cto_voice.context_live_state_failed", { error: String(error) });
+        }
+        let todayLog: string[] = [];
+        try {
+          todayLog = readVoiceTodayLog(ctoMemoryService?.getSnapshot() ?? null);
+        } catch (error) {
+          hostLogger?.warn("cto_voice.context_daily_log_failed", { error: String(error) });
+        }
         const preferred = identity.modelPreferences;
         return buildCtoVoiceContext({
+          activeWork,
+          todayLog,
           ctoName: identity.name || "CTO",
           persona: identity.persona || "Persistent project CTO for this ADE workspace.",
           projectName: path.basename(host.projectRoot.replace(/[\\/]+$/, "")) || "this project",
@@ -694,8 +847,17 @@ export function createCtoVoiceRuntimeService(
             .interrupt({ sessionId, mode: "stop_only" })
             .catch(() => { /* the turn had already finished */ });
         };
+        // Registered before anything can be awaited below, and checked once
+        // after: `addEventListener` on a signal that is ALREADY aborted never
+        // fires, so a turn aborted between being scheduled and starting would
+        // otherwise never interrupt the session it is about to collide with.
         signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
         // `runSessionTurn` throws on a session that already has a turn running.
+        // This await is necessary and not sufficient: `interrupt` resolves when
+        // the interrupt is ASKED for, not when the turn it stops is over. What
+        // makes a replace safe is the call service running requests serially —
+        // it starts the next one only after this function has returned.
         await inFlightInterrupt;
 
         // What the call cannot see from the other side of `runBackendTurn`: how
@@ -726,10 +888,16 @@ export function createCtoVoiceRuntimeService(
               // well because the intent text can still arrive with a foreign
               // word in it, and the CTO used to answer in kind.
               "Answer in English.",
-              // The one exception, and it is the product's: a call can draw.
               // Everything outside the fence is still spoken aloud, so the
               // picture supplements the sentences rather than replacing them.
-              `When a picture says it better than words, you may add exactly one \`\`\`${SCENE_FENCE_LANGUAGE} fence after your sentences. Never more than one, and never instead of speaking.`,
+              // The conditional line is not decoration — on the live call of
+              // 2026-09-16 the user asked for "a visual of the PRs merged
+              // yesterday" and the voice offered to DESCRIBE them, because
+              // "you may add a fence" reads as an option and "show me" did not
+              // read as an instruction to draw.
+              voiceRequestAsksForVisual(intent)
+                ? `The user asked to SEE this, so draw it: end your sentences with exactly one \`\`\`${SCENE_FENCE_LANGUAGE} fence containing a real rendering of what they asked for — actual values, actual labels, not a placeholder or a description of a picture. Say your sentences as well; the fence is what they look at while you talk.`
+                : `When a picture says it better than words, you may add exactly one \`\`\`${SCENE_FENCE_LANGUAGE} fence after your sentences. Never more than one, and never instead of speaking.`,
               // This sentence does not create the gate — the hold in
               // `setCallConfirmMode` does. It only tells the CTO what is about
               // to happen, so the pause reads as deliberate rather than broken.

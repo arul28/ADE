@@ -9,6 +9,8 @@ import {
   CTO_VOICE_TOOL_ASK_CTO,
   CTO_VOICE_TOOL_CANCEL_WORK,
   CTO_VOICE_TOOL_DENY,
+  CTO_VOICE_ASK_QUEUE_LIMIT,
+  normalizeCtoVoiceAskMode,
   ctoVoiceEndpointUrl,
   CTO_VOICE_DEFAULT,
   CTO_VOICE_INITIAL_STATE,
@@ -20,6 +22,7 @@ import {
   CTO_VOICE_SAMPLE_RATE,
   CTO_VOICE_TRANSCRIBE_LANGUAGE,
   CTO_VOICE_TRANSCRIBE_MODEL,
+  CTO_VOICE_TRANSCRIBE_PROMPT,
   CTO_VOICE_TURN_BURST_COOLDOWN_MS,
   CTO_VOICE_TURN_BURST_LIMIT,
   CTO_VOICE_TURN_BURST_WINDOW_MS,
@@ -64,8 +67,11 @@ import { buildConfirmation, resolveSpokenConfirmation } from "./ctoVoiceConfirma
  *    inside the conversation the user's audio outweighs the instruction and the
  *    model answers the user instead. A function result is the opposite: the
  *    model has to see the call it made in order to speak the answer to it.
- * 4. Only one `ask_cto` runs at a time, and a new one supersedes the old one.
- *    The CTO thread is a single session; two overlapping turns collide on it.
+ * 4. Only one `ask_cto` runs at a time — the CTO thread is a single session and
+ *    two overlapping turns collide on it — so every request goes through one
+ *    serial drain loop. What happens to a second request is the MODEL's call,
+ *    carried on the tool's `mode`: `replace` stops the running one, `queue`
+ *    waits for it. Two may wait; a third is refused out loud.
  * 5. A transcript is not proof of speech, and the gate that judges one now
  *    guards CAPTIONS and the spoken yes/no parser rather than whether the CTO is
  *    asked anything. See `judgeTranscript`.
@@ -637,12 +643,21 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * The `ask_cto` running right now, and the controller that stops it.
    *
    * One at a time, because the CTO thread is one session: a second turn on it
-   * throws. A new `ask_cto` supersedes the running one rather than queueing
-   * behind it — the user has moved on, and the old answer is to a question they
-   * are no longer waiting for.
+   * throws. What happens to a second request is the MODEL's call, carried on
+   * the tool's `mode` argument — `replace` stops the running one, `queue` waits
+   * for it — and the two are served by one serial drain loop below, which is
+   * also what makes a replace safe: the next turn is only started after the
+   * aborted one's `runBackendTurn` has actually returned.
    */
   let askCtoAbort: AbortController | null = null;
   let askCtoRunning = false;
+
+  /** A request the model made, and the timing record it was accepted under. */
+  type AskCtoJob = { callId: string; request: string; timing: CtoVoiceTurnTiming };
+  /** Requests waiting behind the running one, in the order they were asked. */
+  let askQueue: AskCtoJob[] = [];
+  /** True while `drainAskQueue` owns the loop, so nothing starts a second one. */
+  let askDraining = false;
 
   /**
    * Function calls already dispatched, by `call_id`.
@@ -805,9 +820,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * One turn's latency, filled in as the turn passes each post.
    *
    * Held rather than logged at the end, because the last leg — the first audio
-   * the user hears — arrives after the turn is over. `flushTurnTiming` writes
-   * the line at whichever comes first: that audio, the next turn, or the call
-   * ending, so a turn that never made a sound is still measured.
+   * the user hears — arrives after the turn is over. `writeTurnTiming` writes
+   * the line at whichever comes first: that audio, the turn's own verdict, or
+   * the call ending, so a turn that never made a sound is still measured.
    */
   type CtoVoiceTurnTiming = {
     speechStoppedToTranscriptMs: number | null;
@@ -818,19 +833,52 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     firstSpeakAtMs: number | null;
     toolCalls: number;
   };
-  let turnTiming: CtoVoiceTurnTiming | null = null;
+  /**
+   * The accepted transcript that has not reached a turn yet.
+   *
+   * One slot, because one transcript is accepted at a time. A turn TAKES this
+   * record when the model's request is dispatched and then owns it for the rest
+   * of its life — which is what stops the next transcript closing a record that
+   * belongs to work still running. The live call of 2026-09-16 wrote
+   * `outcome: "abandoned"` for a request the CTO was still working on twenty-five
+   * seconds later, purely because the user said something else in the meantime.
+   */
+  let pendingTiming: CtoVoiceTurnTiming | null = null;
 
   /**
-   * Write the turn's timing line, once.
+   * The record whose answer has been handed over and is waiting to be heard.
+   *
+   * Separate from `pendingTiming` because the last leg — the first audio the
+   * user hears — arrives after the turn is over, and by then the next utterance
+   * may already have opened a record of its own.
+   */
+  let speakingTiming: CtoVoiceTurnTiming | null = null;
+
+  const newTurnTiming = (
+    acceptedAtMs: number,
+    speechStoppedToTranscriptMs: number | null = null,
+  ): CtoVoiceTurnTiming => ({
+    speechStoppedToTranscriptMs,
+    acceptedAtMs,
+    turnStartedAtMs: null,
+    backendDoneAtMs: null,
+    firstTextMs: null,
+    firstSpeakAtMs: null,
+    toolCalls: 0,
+  });
+
+  /**
+   * Write one turn's timing line.
    *
    * Every leg is optional on purpose: an interrupted turn has no answer, a
    * failed one has no audio, and a line that only appears for the happy path
    * cannot tell you which turns were slow.
    */
-  const flushTurnTiming = (outcome: string, firstAudioAtMs: number | null): void => {
-    const timing = turnTiming;
-    if (!timing) return;
-    turnTiming = null;
+  const writeTurnTiming = (
+    timing: CtoVoiceTurnTiming,
+    outcome: string,
+    firstAudioAtMs: number | null,
+  ): void => {
     const since = (from: number | null, to: number | null): number | null =>
       from === null || to === null ? null : Math.round(to - from);
     deps.logger?.info("cto_voice.turn_timing", {
@@ -844,6 +892,32 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       totalMs: since(timing.acceptedAtMs, firstAudioAtMs ?? timing.backendDoneAtMs),
       toolCalls: timing.toolCalls,
     });
+  };
+
+  /**
+   * Close whichever record the audio now playing belongs to.
+   *
+   * The answer being spoken first, then the transcript the model answered for
+   * itself — that second case is the whole point of the hybrid and its
+   * `totalMs` is the number it exists to move.
+   */
+  const flushSpokenTiming = (firstAudioAtMs: number): void => {
+    if (speakingTiming) {
+      const timing = speakingTiming;
+      speakingTiming = null;
+      writeTurnTiming(timing, "spoken", firstAudioAtMs);
+      return;
+    }
+    if (!pendingTiming) return;
+    const timing = pendingTiming;
+    pendingTiming = null;
+    writeTurnTiming(timing, "spoken", firstAudioAtMs);
+  };
+
+  /** The post the audio leg is measured from, on whichever record is next up. */
+  const markFirstSpeak = (): void => {
+    const timing = speakingTiming ?? pendingTiming;
+    if (timing && timing.firstSpeakAtMs === null) timing.firstSpeakAtMs = now();
   };
 
   const emit = (patch: Partial<CtoVoiceState>) => {
@@ -941,7 +1015,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     if (!text.length) return;
     // The post the audio leg is measured from: the queue may hold this behind
     // another response, and that wait is part of what the user is waiting for.
-    if (turnTiming && turnTiming.firstSpeakAtMs === null) turnTiming.firstSpeakAtMs = now();
+    markFirstSpeak();
     responseQueue.push({ kind: "ade", text });
     drainResponses();
   };
@@ -959,7 +1033,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // The post the audio leg is measured from. The queue may hold this behind
     // a response already in flight, and that wait is part of what the user is
     // waiting for.
-    if (turnTiming && turnTiming.firstSpeakAtMs === null) turnTiming.firstSpeakAtMs = now();
+    markFirstSpeak();
     // A second one buys nothing: the model reads everything in the conversation
     // when it generates, so two queued responses would say the same thing twice.
     if (responseQueue.some((entry) => entry.kind === "model")) return;
@@ -1136,17 +1210,93 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   };
 
   /**
+   * Take the next request off the queue and run it, until the queue is empty.
+   *
+   * Serial by construction, and that is the fix for the bug that lost two
+   * requests on the live call of 2026-09-16: the next turn cannot start until
+   * the previous `runBackendTurn` has RETURNED, so a replace can never reach
+   * `runSessionTurn` while the turn it aborted is still unwinding on the one
+   * CTO session ("Session already has an active background turn"). Awaiting the
+   * interrupt promise was not enough — that resolves when the interrupt is
+   * asked for, not when the turn it interrupts is over.
+   */
+  async function drainAskQueue(): Promise<void> {
+    if (askDraining || askCtoRunning) return;
+    askDraining = true;
+    try {
+      for (;;) {
+        const next = askQueue.shift();
+        if (!next) return;
+        await runAskCto(next);
+      }
+    } finally {
+      askDraining = false;
+    }
+  }
+
+  /**
+   * One request from the model, placed according to the mode it chose.
+   *
+   * The mode is the model's judgement and nothing here second-guesses it: only
+   * whoever heard both sentences can tell "no wait, I meant the merged ones"
+   * from "also, run the tests".
+   */
+  function scheduleAskCto(job: AskCtoJob, mode: "replace" | "queue"): void {
+    // A question ADE asked out loud is waiting for an answer, and the turn that
+    // raised it is parked inside `canUseTool` on the one CTO session. Starting a
+    // second turn there would collide with it.
+    if (state.pendingConfirmation) {
+      writeTurnTiming(job.timing, "refused", null);
+      sendFunctionOutput(job.callId, {
+        status: "busy",
+        answer: "",
+        reason: "ADE is still waiting for the user to approve or decline the pending action.",
+      });
+      return;
+    }
+
+    if (!askCtoRunning) {
+      askQueue.push(job);
+      void drainAskQueue();
+      return;
+    }
+
+    // The cap is the conversation's, not the queue's: a third request stacked
+    // behind two is one the user has stopped waiting for. Replace is capped the
+    // same way — it is still a request that has to be answered in order.
+    if (askQueue.length >= CTO_VOICE_ASK_QUEUE_LIMIT) {
+      writeTurnTiming(job.timing, "refused", null);
+      sendFunctionOutput(job.callId, {
+        status: "busy",
+        answer: "",
+        reason: "Two requests are already waiting. Tell the user you will come back to this one.",
+      });
+      return;
+    }
+
+    if (mode === "replace") {
+      // At the FRONT, then stop what is running: the drain loop owns the order,
+      // so the correction is the very next thing to run and anything queued
+      // behind it keeps its place.
+      askQueue.unshift(job);
+      abortRunningAsk();
+      return;
+    }
+    askQueue.push(job);
+  }
+
+  /**
    * Run one request on the CTO thread and hand the answer back to the model.
    *
    * This is the seam. Everything the call can actually DO happens on the other
    * side of it, on the CTO's own session with its own model, memory and tools —
    * the realtime model only ever asks.
    */
-  async function runAskCto(callId: string, request: string) {
-    // A question ADE asked out loud is waiting for an answer, and the turn that
-    // raised it is parked inside `canUseTool` on the one CTO session. Starting a
-    // second turn there would collide with it.
+  async function runAskCto(job: AskCtoJob): Promise<void> {
+    const { callId, request, timing } = job;
+    // A confirmation can open between being queued and being run.
     if (state.pendingConfirmation) {
+      writeTurnTiming(timing, "refused", null);
       sendFunctionOutput(callId, {
         status: "busy",
         answer: "",
@@ -1157,10 +1307,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
     // Held locally, not read back off the module binding. By the time this
     // turn's await settles, `askCtoAbort` names the controller of whatever
-    // superseded it, so checking the binding asks the wrong question: the
-    // superseded turn sees "not aborted" and answers over the live one.
+    // replaced it, so checking the binding asks the wrong question: the
+    // replaced turn sees "not aborted" and answers over the live one.
     const controller = new AbortController();
-    askCtoAbort?.abort();
     askCtoAbort = controller;
     askCtoRunning = true;
     // Only when nothing is coming out of the speaker: the model's own
@@ -1171,22 +1320,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     try {
       const image = pendingImage;
       pendingImage = null;
-      // A turn with no accepted transcript behind it still has to be measured.
-      // The gate can reject a transcript the model heard perfectly well — it
-      // judges ADE's own microphone, not the model's ears — and a timing line
-      // that only appears for the happy path cannot say which turns were slow.
-      if (!turnTiming) {
-        turnTiming = {
-          speechStoppedToTranscriptMs: null,
-          acceptedAtMs: now(),
-          turnStartedAtMs: null,
-          backendDoneAtMs: null,
-          firstTextMs: null,
-          firstSpeakAtMs: null,
-          toolCalls: 0,
-        };
-      }
-      turnTiming.turnStartedAtMs = now();
+      timing.turnStartedAtMs = now();
       const result = await deps.runBackendTurn({
         intent: request,
         callId: state.callId ?? "",
@@ -1194,14 +1328,12 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         imageBase64: image,
       });
 
-      if (turnTiming) {
-        turnTiming.backendDoneAtMs = now();
-        turnTiming.firstTextMs = result.firstTextMs ?? null;
-        turnTiming.toolCalls = result.toolCalls ?? 0;
-      }
+      timing.backendDoneAtMs = now();
+      timing.firstTextMs = result.firstTextMs ?? null;
+      timing.toolCalls = result.toolCalls ?? 0;
 
       if (controller.signal.aborted) {
-        flushTurnTiming("superseded", null);
+        writeTurnTiming(timing, "superseded", null);
         sendFunctionOutput(callId, { status: "superseded", answer: "" }, false);
         return;
       }
@@ -1214,10 +1346,11 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         // An answer that will be spoken leaves its timing line open on purpose:
         // the last leg is the first audio the user hears, which has not happened
         // yet. An answer with nothing in it never will, so it is written here.
-        if (!answer.length) flushTurnTiming("silent", null);
+        if (!answer.length) writeTurnTiming(timing, "silent", null);
+        else handOverToSpeak(timing);
         sendFunctionOutput(callId, { status: "ok", answer });
       } else {
-        flushTurnTiming(status === "interrupted" ? "superseded" : "backend_failed", null);
+        writeTurnTiming(timing, status === "interrupted" ? "superseded" : "backend_failed", null);
         sendFunctionOutput(callId, {
           status,
           answer: "",
@@ -1226,12 +1359,12 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       }
     } catch (error) {
       if (controller.signal.aborted) {
-        flushTurnTiming("superseded", null);
+        writeTurnTiming(timing, "superseded", null);
         sendFunctionOutput(callId, { status: "superseded", answer: "" }, false);
         return;
       }
       deps.logger?.warn("cto_voice.backend_failed", { error: String(error) });
-      flushTurnTiming("backend_failed", null);
+      writeTurnTiming(timing, "backend_failed", null);
       // The error itself never travels: the model would read it out.
       sendFunctionOutput(callId, {
         status: "failed",
@@ -1242,22 +1375,56 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       if (askCtoAbort === controller) {
         askCtoAbort = null;
         askCtoRunning = false;
-        if (state.phase === "thinking") setPhase("listening");
+        if (state.phase === "thinking" && !askQueue.length) setPhase("listening");
       }
-      // Last, and only for the turn that is still the current one: a superseded
-      // turn's facts are older than the one that replaced it.
-      if (askCtoAbort === null && !controller.signal.aborted) void refreshSessionContext();
+      // Last, and only for a turn nothing is waiting behind: a replaced turn's
+      // facts are older than the one that replaced it, and a refresh between
+      // two queued turns is a session update the second one pays for twice.
+      if (!askQueue.length && !controller.signal.aborted) void refreshSessionContext();
     }
   }
 
-  /** Stop the running `ask_cto`, if there is one. Returns whether there was. */
-  function cancelRunningWork(): boolean {
+  /**
+   * The answer is written and the model is about to speak it.
+   *
+   * A record still waiting to be heard when the next one arrives never will be —
+   * its response was cancelled or talked over — so it is written out here
+   * rather than left open until the call ends.
+   */
+  function handOverToSpeak(timing: CtoVoiceTurnTiming): void {
+    if (speakingTiming) writeTurnTiming(speakingTiming, "unheard", null);
+    speakingTiming = timing;
+  }
+
+  /** Abort the running `ask_cto`, if there is one. Returns whether there was. */
+  function abortRunningAsk(): boolean {
     if (!askCtoRunning || !askCtoAbort) return false;
     askCtoAbort.abort();
-    askCtoAbort = null;
-    askCtoRunning = false;
-    if (state.phase === "thinking") setPhase("listening");
+    // The HUD moves now; the turn itself keeps unwinding on the CTO session and
+    // clears `askCtoRunning` in its own `finally`, which is what the drain loop
+    // waits for.
+    if (state.phase === "thinking" && !askQueue.length) setPhase("listening");
     return true;
+  }
+
+  /**
+   * Stop everything: the running request and anything waiting behind it.
+   *
+   * Every dropped request still answers its own `function_call` — an unanswered
+   * one sits in the conversation forever and the model keeps referring to it —
+   * but none of them asks for a response, because narrating a queue the user
+   * has just cancelled is noise.
+   */
+  function cancelRunningWork(): boolean {
+    const waiting = askQueue;
+    askQueue = [];
+    for (const job of waiting) {
+      writeTurnTiming(job.timing, "cancelled", null);
+      sendFunctionOutput(job.callId, { status: "cancelled", answer: "" }, false);
+    }
+    const stopped = abortRunningAsk();
+    if (!stopped && state.phase === "thinking") setPhase("listening");
+    return stopped || waiting.length > 0;
   }
 
   /**
@@ -1275,9 +1442,11 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
     if (name === CTO_VOICE_TOOL_ASK_CTO) {
       let request = "";
+      let mode = normalizeCtoVoiceAskMode(undefined);
       try {
-        const parsed = JSON.parse(argumentsJson || "{}") as { request?: unknown };
+        const parsed = JSON.parse(argumentsJson || "{}") as { request?: unknown; mode?: unknown };
         request = typeof parsed.request === "string" ? parsed.request.trim() : "";
+        mode = normalizeCtoVoiceAskMode(parsed.mode);
       } catch {
         request = "";
       }
@@ -1289,7 +1458,15 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         });
         return;
       }
-      void runAskCto(callId, request);
+      // Taken HERE, not when the turn starts: a queued request's wait is part of
+      // what the user waited, and by the time it runs the pending slot belongs
+      // to whatever they said next. A request the transcript gate rejected — it
+      // judges ADE's own microphone, not the model's ears — still gets a record,
+      // because a timing line that only appears for the happy path cannot say
+      // which turns were slow.
+      const timing = pendingTiming ?? newTurnTiming(now());
+      pendingTiming = null;
+      scheduleAskCto({ callId, request, timing }, mode);
       return;
     }
 
@@ -1425,21 +1602,16 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       textLength: final.length,
     });
 
-    // A turn that never got a timing line — a spoken "yes" that resolved a
-    // confirmation rather than starting a turn — is written out here rather
-    // than left for the next one to overwrite.
-    flushTurnTiming("abandoned", null);
-    turnTiming = {
-      speechStoppedToTranscriptMs: speechStoppedAtMs
-        ? Math.round(lastTranscriptAtMs - speechStoppedAtMs)
-        : null,
-      acceptedAtMs: lastTranscriptAtMs,
-      turnStartedAtMs: null,
-      backendDoneAtMs: null,
-      firstTextMs: null,
-      firstSpeakAtMs: null,
-      toolCalls: 0,
-    };
+    // Only a record that never reached a turn is abandoned here. A turn that is
+    // still running owns its own record and closes it itself — talking over
+    // work that carries on is an ordinary thing to do on a hybrid call, and
+    // calling that "abandoned" is how a request the CTO answered twenty-five
+    // seconds later was logged as thrown away.
+    if (pendingTiming) writeTurnTiming(pendingTiming, "abandoned", null);
+    pendingTiming = newTurnTiming(
+      lastTranscriptAtMs,
+      speechStoppedAtMs ? Math.round(lastTranscriptAtMs - speechStoppedAtMs) : null,
+    );
     speechStoppedAtMs = 0;
 
     exchanges += 1;
@@ -1573,7 +1745,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         // The last post, and the only one the user can actually hear. Written
         // on the FIRST chunk of the response this turn's answer was queued as;
         // every later chunk finds no record and writes nothing.
-        flushTurnTiming("spoken", now());
+        flushSpokenTiming(now());
         deps.onOutputAudio?.(delta);
       }
       return;
@@ -1772,7 +1944,13 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     started = false;
     // A turn the hang-up landed in the middle of is still a measurement, and
     // the queue below is about to throw away the answer it was waiting for.
-    flushTurnTiming("call_ended", null);
+    // Both slots: the answer nobody heard, and the utterance nothing ran for.
+    if (speakingTiming) writeTurnTiming(speakingTiming, "call_ended", null);
+    speakingTiming = null;
+    if (pendingTiming) writeTurnTiming(pendingTiming, "call_ended", null);
+    pendingTiming = null;
+    for (const job of askQueue) writeTurnTiming(job.timing, "call_ended", null);
+    askQueue = [];
     const closing = socket;
     socket = null;
     socketOpen = false;
@@ -1966,6 +2144,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
                 transcription: {
                   model: CTO_VOICE_TRANSCRIBE_MODEL,
                   language: CTO_VOICE_TRANSCRIBE_LANGUAGE,
+                  // Both, because measured against the live API neither one is
+                  // sufficient on its own — see `CTO_VOICE_TRANSCRIBE_PROMPT`.
+                  prompt: CTO_VOICE_TRANSCRIBE_PROMPT,
                 },
               },
               output: {
