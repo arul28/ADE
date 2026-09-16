@@ -1368,18 +1368,36 @@ struct WorkChatSessionView: View {
     }
   }
 
+  /// One derivation for all three composer gates. See `WorkComposerInputGate`
+  /// for why attaching is NOT the same question as typing.
+  var composerInputGate: WorkComposerInputGate {
+    workChatComposerInputGate(
+      canComposeMessages: canComposeMessages,
+      canSendMessages: canSendMessages,
+      sending: sending,
+      sendWillQueue: sendWillQueue,
+      hasPendingInputGate: hasPendingInputGate
+    )
+  }
+
   var canCompose: Bool {
     // Typing stays available so users can draft while disconnected or while
     // a turn is running, except when a blocking pending-input card is open —
     // those replies must go through the structured card the runtime is awaiting.
-    canComposeMessages && !hasPendingInputGate
+    composerInputGate.canCompose
+  }
+
+  /// Attaching survives a blocking question; the staged files ride the next
+  /// user turn rather than the structured answer.
+  var canAttach: Bool {
+    composerInputGate.canAttach
   }
 
   var canSend: Bool {
     // Existing chats accept messages while live, and can still accept them
     // during reconnects when desktop advertised chat.send as queueable. Pending
     // input is gated separately so the host receives a structured answer.
-    canSendMessages && (!sending || sendWillQueue) && !hasPendingInputGate
+    composerInputGate.canSend
   }
 
   var composerFeedback: String? {
@@ -1797,6 +1815,7 @@ struct WorkChatSessionView: View {
         awaitingInputGate: hasPendingInputGate,
         composerPlaceholder: composerPlaceholderText,
         canCompose: canCompose,
+        canAttach: canAttach,
         canSend: canSend && !composerSettingMutationInFlight,
         attachmentsAvailable: attachmentsAvailable,
         canUploadAttachments: isLive && attachmentsAvailable,
@@ -3026,6 +3045,9 @@ private struct WorkChatComposerCard: View {
   let awaitingInputGate: Bool
   let composerPlaceholder: String
   let canCompose: Bool
+  /// Staging files stays live while `canCompose` is false for a pending
+  /// question. See `WorkComposerInputGate`.
+  let canAttach: Bool
   let canSend: Bool
   let attachmentsAvailable: Bool
   let canUploadAttachments: Bool
@@ -3060,6 +3082,7 @@ private struct WorkChatComposerCard: View {
       awaitingInputGate: awaitingInputGate,
       composerPlaceholder: composerPlaceholder,
       canCompose: canCompose,
+      canAttach: canAttach,
       canSend: canSend,
       attachmentsAvailable: attachmentsAvailable,
       canUploadAttachments: canUploadAttachments,
@@ -3104,6 +3127,9 @@ private struct WorkChatComposerDraftInput: View {
   let awaitingInputGate: Bool
   let composerPlaceholder: String
   let canCompose: Bool
+  /// Files are not text: a blocking question leaves this true so the user can
+  /// attach while answering. See `WorkComposerInputGate`.
+  let canAttach: Bool
   let canSend: Bool
   let attachmentsAvailable: Bool
   let canUploadAttachments: Bool
@@ -3406,10 +3432,15 @@ private struct WorkChatComposerDraftInput: View {
       configureSuggestionController()
     }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
+    // Focus goes back to the composer field only when it is actually editable.
+    // While a question is open the field is locked, so pushing focus there would
+    // raise a keyboard over a field that rejects every keystroke; the tray and
+    // the question card keep the screen instead.
     .workChatAttachmentPicker(
       isPresented: $presentedPicker.isPresenting(.photos),
       attachments: $inputAttachments,
       onDismiss: {
+        composerCollapsed = false
         if canCompose { draftState.isFocused = true }
       }
     )
@@ -3417,6 +3448,7 @@ private struct WorkChatComposerDraftInput: View {
       presentedPicker: $presentedPicker,
       attachments: $inputAttachments,
       onDismiss: {
+        composerCollapsed = false
         if canCompose { draftState.isFocused = true }
       }
     )
@@ -3527,6 +3559,8 @@ private struct WorkChatComposerDraftInput: View {
       draft: $draftState.text,
       attachments: $inputAttachments,
       canCompose: canCompose && !settingsMutationInFlight,
+      canAttach: canAttach && !settingsMutationInFlight,
+      attachHint: workChatComposerAttachHint(canCompose: canCompose, canAttach: canAttach),
       attachmentsAvailable: attachmentsAvailable,
       onDictate: { dictationCoordinator.requestStart() },
       stashAvailable: stashAvailable,

@@ -32,6 +32,14 @@ struct WorkComposerOverflowButton: View {
   @Binding var draft: String
   @Binding var attachments: [WorkChatInputAttachment]
   let canCompose: Bool
+  /// Whether files may be staged. Nil means "same as `canCompose`", which is
+  /// what every composer without a pending-input gate wants. The chat composer
+  /// passes it explicitly: a blocking question locks TEXT, not FILES.
+  var canAttach: Bool? = nil
+  /// Plain-language note shown over the attach rows. The chat composer sets it
+  /// while a question is open, because "the paperclip still works" is only half
+  /// the answer — the user also needs to know where the file ends up.
+  var attachHint: String? = nil
   let attachmentsAvailable: Bool
   let onDictate: () -> Void
   let stashAvailable: Bool
@@ -60,6 +68,8 @@ struct WorkComposerOverflowButton: View {
     WorkChatComposerOverflowMenu(
       presentedPicker: $presentedPicker,
       canCompose: canCompose,
+      canAttach: canAttach ?? canCompose,
+      attachHint: attachHint,
       attachmentsAvailable: attachmentsAvailable,
       fileAttachmentAvailability: fileAttachmentAvailability,
       attachmentCount: attachments.count,
@@ -105,6 +115,12 @@ struct WorkComposerOverflowButton: View {
 struct WorkChatComposerOverflowMenu: View {
   @Binding var presentedPicker: WorkComposerPicker?
   let canCompose: Bool
+  /// Gates the three attach rows on their own. Defaults to `canCompose`; the
+  /// chat composer separates them so a pending question cannot take the
+  /// paperclip away. See `WorkComposerInputGate`.
+  var canAttach: Bool? = nil
+  /// See `WorkComposerOverflowButton.attachHint`.
+  var attachHint: String? = nil
   let attachmentsAvailable: Bool
   var fileAttachmentAvailability: WorkChatFileAttachmentAvailability = .available
   let attachmentCount: Int
@@ -117,17 +133,25 @@ struct WorkChatComposerOverflowMenu: View {
   let onStashOrView: () -> Void
 
   private var attachDisabled: Bool {
-    !canCompose || !attachmentsAvailable || attachmentCount >= workChatInputAttachmentLimit
+    !(canAttach ?? canCompose)
+      || !attachmentsAvailable
+      || attachmentCount >= workChatInputAttachmentLimit
   }
 
   var body: some View {
     Menu {
-      Button {
-        presentedPicker = .photos
-      } label: {
-        Label("Attach image", systemImage: "photo")
+      Section {
+        Button {
+          presentedPicker = .photos
+        } label: {
+          Label("Attach image", systemImage: "photo")
+        }
+        .disabled(attachDisabled)
+      } header: {
+        if let attachHint {
+          Text(attachHint)
+        }
       }
-      .disabled(attachDisabled)
 
       // Hidden outright on an images-only chat; present but disabled under a
       // plain-language header when the computer is simply out of date, so the

@@ -490,3 +490,76 @@ final class WorkChatLinkedPrSelectionTests: XCTestCase {
     XCTAssertEqual(workChatPrBadgeModel(tag: tag, pr: nil)?.linkedCount, 1)
   }
 }
+
+/// What a blocking question is allowed to take away from the composer.
+///
+/// The defect these pin: the question card locked the whole composer, so the
+/// one moment a user most needs to attach a file — the agent has just asked
+/// which of two screenshots to use — was the one moment the phone refused. The
+/// desktop never had this; its `AskQuestionComposer` gates the paperclip on
+/// `canAttach`, not on the pending-input gate.
+final class WorkComposerInputGateTests: XCTestCase {
+  private func gate(
+    canComposeMessages: Bool = true,
+    canSendMessages: Bool = true,
+    sending: Bool = false,
+    sendWillQueue: Bool = false,
+    hasPendingInputGate: Bool = false
+  ) -> WorkComposerInputGate {
+    workChatComposerInputGate(
+      canComposeMessages: canComposeMessages,
+      canSendMessages: canSendMessages,
+      sending: sending,
+      sendWillQueue: sendWillQueue,
+      hasPendingInputGate: hasPendingInputGate
+    )
+  }
+
+  func testAQuestionLocksTextAndSendButNotFiles() {
+    let gated = gate(hasPendingInputGate: true)
+    XCTAssertFalse(gated.canCompose)
+    XCTAssertFalse(gated.canSend)
+    XCTAssertTrue(gated.canAttach)
+  }
+
+  func testWithNoQuestionOpenEverythingFollowsTheChat() {
+    let open = gate()
+    XCTAssertTrue(open.canCompose)
+    XCTAssertTrue(open.canSend)
+    XCTAssertTrue(open.canAttach)
+  }
+
+  func testAChatThatCannotComposeAtAllCannotAttachEither() {
+    // Reading a subagent transcript, or no host: those are facts about the
+    // chat, not about the question, and they close the paperclip too.
+    let locked = gate(canComposeMessages: false, hasPendingInputGate: true)
+    XCTAssertFalse(locked.canCompose)
+    XCTAssertFalse(locked.canAttach)
+    XCTAssertFalse(locked.canSend)
+  }
+
+  func testAnInFlightSendStillBlocksSendingButNotAttaching() {
+    let inFlight = gate(sending: true)
+    XCTAssertFalse(inFlight.canSend)
+    XCTAssertTrue(inFlight.canAttach)
+    // A queueable host keeps Send live while the previous one is still moving.
+    XCTAssertTrue(gate(sending: true, sendWillQueue: true).canSend)
+  }
+
+  func testSendIsGatedIndependentlyOfComposing() {
+    // Drafting stays available while disconnected; only Send closes.
+    let offline = gate(canSendMessages: false)
+    XCTAssertTrue(offline.canCompose)
+    XCTAssertTrue(offline.canAttach)
+    XCTAssertFalse(offline.canSend)
+  }
+
+  func testAttachHintOnlyAppearsWhenTextIsLockedAndFilesAreNot() {
+    XCTAssertEqual(
+      workChatComposerAttachHint(canCompose: false, canAttach: true),
+      "Files ride your next message"
+    )
+    XCTAssertNil(workChatComposerAttachHint(canCompose: true, canAttach: true))
+    XCTAssertNil(workChatComposerAttachHint(canCompose: false, canAttach: false))
+  }
+}
