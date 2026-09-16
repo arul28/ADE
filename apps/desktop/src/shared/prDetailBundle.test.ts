@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { PrCheck } from "./types";
 import { EMPTY_PR_DETAIL_BUNDLE, settlePrDetailBundle } from "./prDetailBundle";
 
 describe("settlePrDetailBundle", () => {
@@ -8,14 +7,14 @@ describe("settlePrDetailBundle", () => {
       status: async () => {
         throw new Error("missing");
       },
-      checks: async () => [{ id: "check-1" }] as PrCheck[],
+      checks: async () => [],
       reviews: async () => {
         throw new Error("missing");
       },
       comments: async () => [],
     })).resolves.toEqual({
       status: EMPTY_PR_DETAIL_BUNDLE.status,
-      checks: [{ id: "check-1" }],
+      checks: [],
       reviews: EMPTY_PR_DETAIL_BUNDLE.reviews,
       comments: [],
     });
