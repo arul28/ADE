@@ -699,6 +699,8 @@ struct WorkNewChatScreen: View {
   @SceneStorage("ade.work.newChat.cursorCloudLaunchKey") private var cursorCloudLaunchKey = ""
   @SceneStorage("ade.work.newChat.cursorCloudLaunchSessionId") private var cursorCloudLaunchSessionId = ""
   @SceneStorage("ade.work.newChat.cursorCloudLaunchTurnId") private var cursorCloudLaunchTurnId = ""
+  @SceneStorage("ade.work.newChat.cursorCloudLaunchLaneId") private var cursorCloudLaunchLaneId = ""
+  @SceneStorage("ade.work.newChat.cursorCloudLaunchAgentId") private var cursorCloudLaunchAgentId = ""
   @State private var shellLaunchBusy: Bool = false
   @State private var queuedShellLaneIds = Set<String>()
   @State private var usageRefreshRevision = 0
@@ -1402,6 +1404,8 @@ struct WorkNewChatScreen: View {
       cursorCloudLaunchTurnId = UUID().uuidString.lowercased()
       cursorCloudLaunchFingerprint = fingerprint
       cursorCloudLaunchKey = "ade:\(cursorCloudLaunchSessionId):\(cursorCloudLaunchTurnId):cursor-cloud:create"
+      cursorCloudLaunchLaneId = ""
+      cursorCloudLaunchAgentId = ""
     }
     return cursorCloudLaunchKey
   }
@@ -1508,6 +1512,44 @@ struct WorkNewChatScreen: View {
     )
     let normalizedReasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
 
+    // Compute the cloud request identity before auto-creating a lane. The lane
+    // itself is retry state, not user input: including a freshly minted lane id
+    // here would generate a new idempotency key after an ambiguous timeout.
+    var cursorCloudRepoUrlForLaunch: String?
+    var cursorCloudLaunchFingerprintForRetry: String?
+    if cursorCloudMode {
+      let project = activeProjectSummary
+      let fallbackRepo = [project?.repoOwner, project?.repoName]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: "/")
+      let selectedRepoUrl = cursorCloudRepositoryUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let repoUrl = selectedRepoUrl?.isEmpty == false
+        ? selectedRepoUrl
+        : (fallbackRepo.isEmpty ? nil : "https://github.com/\(fallbackRepo)")
+      guard let repoUrl else {
+        errorMessage = "Choose a repository for this Cursor Cloud launch."
+        busy = false
+        return false
+      }
+      cursorCloudRepoUrlForLaunch = repoUrl
+      let baseBranch = cursorCloudBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+      let secretNames = cursorCloudSelectedSecretNames.sorted()
+      let launchFingerprint = workCursorCloudLaunchFingerprint(
+        projectId: activeProjectId,
+        laneId: isAutoCreateLane ? workAutoCreateLaneSentinelId : selectedLaneId,
+        promptText: rawText,
+        repoUrl: repoUrl,
+        startingRef: baseBranch.isEmpty ? nil : baseBranch,
+        modelId: workCursorCloudSDKModelId(for: modelId),
+        serviceTier: cursorCloudServiceTier,
+        autoCreatePR: cursorCloudAutoCreatePR,
+        secretNames: secretNames
+      )
+      cursorCloudLaunchFingerprintForRetry = launchFingerprint
+      _ = cursorCloudIdempotencyKey(for: launchFingerprint)
+    }
+
     // Resolve the target lane. When auto-create is selected we mint a fresh
     // lane first; on failure we surface the error and never create the session.
     // Track whether we created the lane so we can clean it up if the session
@@ -1517,7 +1559,16 @@ struct WorkNewChatScreen: View {
     var createdLaneId: String?
     var autoCreatedFallbackName: String?
     var autoCreatedTemporaryBranch: String?
-    if isAutoCreateLane {
+    if isAutoCreateLane,
+       let pendingFingerprint = cursorCloudLaunchFingerprintForRetry,
+       cursorCloudLaunchFingerprint == pendingFingerprint,
+       !cursorCloudLaunchLaneId.isEmpty {
+      // A previous cloud create may have reached Cursor before the transport
+      // or chat-open step timed out. Reuse its lane instead of creating a new
+      // lane and changing the request identity on retry.
+      targetLaneId = cursorCloudLaunchLaneId
+      targetLaneForScope = lanes.first { $0.id == targetLaneId }
+    } else if isAutoCreateLane {
       withAnimation(.snappy(duration: 0.16)) {
         autoCreateStatus = "Creating lane…"
       }
@@ -1534,6 +1585,9 @@ struct WorkNewChatScreen: View {
         createdLaneId = lane.id
         autoCreatedFallbackName = laneName
         autoCreatedTemporaryBranch = temporaryBranch
+        if cursorCloudMode {
+          cursorCloudLaunchLaneId = lane.id
+        }
         await onRefreshLanes()
       } catch {
         ADEHaptics.error()
@@ -1561,28 +1615,18 @@ struct WorkNewChatScreen: View {
     var createdChatSummary: AgentChatSessionSummary?
     var createdChatAttachments: [AgentChatFileRef] = []
     var namingAttachmentRefs: [AgentChatFileRef] = []
+    var cursorCloudAgentIdForLaunch: String?
 
     do {
       if cursorCloudMode {
-        let project = activeProjectSummary
-        let fallbackRepo = [project?.repoOwner, project?.repoName]
-          .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-          .filter { !$0.isEmpty }
-          .joined(separator: "/")
-        let repoUrl: String
-        if let selectedRepoUrl = cursorCloudRepositoryUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !selectedRepoUrl.isEmpty {
-          repoUrl = selectedRepoUrl
-        } else if !fallbackRepo.isEmpty {
-          repoUrl = "https://github.com/\(fallbackRepo)"
-        } else {
+        guard let repoUrl = cursorCloudRepoUrlForLaunch else {
           throw NSError(domain: "ADE", code: 41, userInfo: [NSLocalizedDescriptionKey: "Choose a repository for this Cursor Cloud launch."])
         }
         let baseBranch = cursorCloudBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
         let secretNames = cursorCloudSelectedSecretNames.sorted()
         let launchFingerprint = workCursorCloudLaunchFingerprint(
           projectId: activeProjectId,
-          laneId: targetLaneId,
+          laneId: isAutoCreateLane ? workAutoCreateLaneSentinelId : targetLaneId,
           promptText: rawText,
           repoUrl: repoUrl,
           startingRef: baseBranch.isEmpty ? nil : baseBranch,
@@ -1592,22 +1636,38 @@ struct WorkNewChatScreen: View {
           secretNames: secretNames
         )
         let launchIdempotencyKey = cursorCloudIdempotencyKey(for: launchFingerprint)
-        let created = try await syncService.createCursorCloudRun(
-          promptText: rawText,
-          repoUrl: repoUrl,
-          startingRef: baseBranch.isEmpty ? nil : baseBranch,
-          modelId: workCursorCloudSDKModelId(for: modelId),
-          serviceTier: cursorCloudServiceTier,
-          laneId: targetLaneId,
-          projectId: activeProjectId,
-          autoCreatePR: cursorCloudAutoCreatePR,
-          secretNames: secretNames,
-          rememberSecretNames: cursorCloudRememberSecretNames,
-          idempotencyKey: launchIdempotencyKey,
-          sessionId: cursorCloudLaunchSessionId
-        )
+        if isAutoCreateLane {
+          cursorCloudLaunchLaneId = targetLaneId
+        }
+        let agentId: String
+        if !cursorCloudLaunchAgentId.isEmpty,
+           cursorCloudLaunchFingerprint == launchFingerprint {
+          // The create already returned successfully on an earlier attempt;
+          // retry the attach step directly rather than replaying the run.
+          agentId = cursorCloudLaunchAgentId
+        } else {
+          let created = try await performLiveChatCreationWithoutReplay {
+            try await syncService.createCursorCloudRun(
+              promptText: rawText,
+              repoUrl: repoUrl,
+              startingRef: baseBranch.isEmpty ? nil : baseBranch,
+              modelId: workCursorCloudSDKModelId(for: modelId),
+              serviceTier: cursorCloudServiceTier,
+              laneId: targetLaneId,
+              projectId: activeProjectId,
+              autoCreatePR: cursorCloudAutoCreatePR,
+              secretNames: secretNames,
+              rememberSecretNames: cursorCloudRememberSecretNames,
+              idempotencyKey: launchIdempotencyKey,
+              sessionId: cursorCloudLaunchSessionId
+            )
+          }
+          cursorCloudLaunchAgentId = created.agent.agentId
+          agentId = created.agent.agentId
+        }
+        cursorCloudAgentIdForLaunch = agentId
         let opened = try await syncService.openCursorCloudChat(
-          agentId: created.agent.agentId,
+          agentId: agentId,
           laneId: targetLaneId,
           modelId: workCursorCloudSDKModelId(for: modelId),
           serviceTier: cursorCloudServiceTier
@@ -1622,6 +1682,8 @@ struct WorkNewChatScreen: View {
         cursorCloudLaunchFingerprint = ""
         cursorCloudLaunchKey = ""
         cursorCloudLaunchTurnId = ""
+        cursorCloudLaunchLaneId = ""
+        cursorCloudLaunchAgentId = ""
         if let createdLaneId, let autoCreatedFallbackName {
           startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName, temporaryBranch: autoCreatedTemporaryBranch, attachments: [])
         }
@@ -1799,6 +1861,17 @@ struct WorkNewChatScreen: View {
         }
         busy = false
         return true
+      }
+      if cursorCloudMode {
+        // An explicit create rejection is safe to clean up. A known cloud
+        // agent, including one restored from SceneStorage, must remain intact
+        // so the next submit can attach it instead of creating another run.
+        if cursorCloudAgentIdForLaunch == nil, let createdLaneId {
+          try? await syncService.deleteLane(createdLaneId)
+          await onRefreshLanes()
+        }
+        busy = false
+        return false
       }
       // The session never launched into a lane we just minted — tear it back
       // down so an auto-create failure doesn't leave an orphaned empty lane.

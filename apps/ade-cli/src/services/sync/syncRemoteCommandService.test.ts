@@ -196,6 +196,19 @@ describe("createSyncRemoteCommandService", () => {
     expect(invalidateCache).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects an invalid Cursor Cloud tier before invoking create", async () => {
+    const createCursorCloudRun = vi.fn();
+    const { service } = createService({ aiIntegrationService: { createCursorCloudRun } });
+
+    await expect(service.execute(makePayload("ai.createCursorCloudRun", {
+      promptText: "launch",
+      repoUrl: "https://github.com/acme/project",
+      modelId: "cursor/composer-cloud",
+      serviceTier: "turbo",
+    }))).rejects.toThrow("serviceTier must be 'fast', 'standard', null, or omitted");
+    expect(createCursorCloudRun).not.toHaveBeenCalled();
+  });
+
   it("serves machine Attention to paired viewers without project context", async () => {
     const snapshot = {
       contractVersion: 1,

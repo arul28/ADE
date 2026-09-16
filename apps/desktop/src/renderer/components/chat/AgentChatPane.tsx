@@ -13452,7 +13452,7 @@ export function AgentChatPane({
               // tier through this same handler, even when it targets another
               // model in the picker.
               const nextCursorCloudTier = resolveCursorCloudServiceTierOnModelChange(
-                cursorCloudMode,
+                cursorCloudSessionActive,
                 options,
               );
               if (!selectedSessionId) {

@@ -5705,8 +5705,12 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       cursor: typeof payload.cursor === "string" ? payload.cursor : undefined,
     }));
   register("ai.createCursorCloudRun", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const serviceTier = asOptionalCursorCloudServiceTier(payload.serviceTier);
     const result = await requireService(args.aiIntegrationService, "AI integration service not available.").createCursorCloudRun(
-      payload as Parameters<ReturnType<typeof createAiIntegrationService>["createCursorCloudRun"]>[0],
+      {
+        ...payload,
+        ...(serviceTier !== undefined ? { serviceTier } : {}),
+      } as Parameters<ReturnType<typeof createAiIntegrationService>["createCursorCloudRun"]>[0],
     );
     args.cursorCloudFleetService?.invalidateCache();
     return result;

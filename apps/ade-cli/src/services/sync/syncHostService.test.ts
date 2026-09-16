@@ -6452,9 +6452,10 @@ describe("CTO-gated Linear sync commands", () => {
 
         const result = await waitForEnvelope(peer.envelopes, "command_result", requestId);
         const errorCode = (result.payload as { error?: { code?: string } }).error?.code;
-        if (viewerBlocked && !controllerAllowed) {
-          // The registry is the gate: a paired controller never reaches the
-          // credential store, even though the action is advertised.
+        if (viewerBlocked) {
+          // Bootstrap hello metadata is caller-controlled and is not enough to
+          // grant controller-only cloud writes. Only record-backed paired or
+          // account-authenticated mobile/browser peers may invoke them.
           expect(errorCode).toBe("forbidden_command");
         } else {
           // Everything else clears the authorization gate at the same trust

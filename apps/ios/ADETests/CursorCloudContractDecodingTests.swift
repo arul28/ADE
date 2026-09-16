@@ -61,6 +61,45 @@ final class CursorCloudContractDecodingTests: XCTestCase {
     XCTAssertNotEqual(base, changed)
   }
 
+  func testCursorCloudAutoCreateFingerprintUsesStableLaneSentinelAcrossRetries() {
+    let firstLane = workCursorCloudLaunchFingerprint(
+      projectId: "project-1",
+      laneId: workAutoCreateLaneSentinelId,
+      promptText: "Fix the cloud run",
+      repoUrl: "https://github.com/acme/project",
+      startingRef: "main",
+      modelId: "grok-4.6",
+      serviceTier: nil,
+      autoCreatePR: false,
+      secretNames: []
+    )
+    let retryLane = workCursorCloudLaunchFingerprint(
+      projectId: "project-1",
+      laneId: workAutoCreateLaneSentinelId,
+      promptText: "Fix the cloud run",
+      repoUrl: "https://github.com/acme/project",
+      startingRef: "main",
+      modelId: "grok-4.6",
+      serviceTier: nil,
+      autoCreatePR: false,
+      secretNames: []
+    )
+    let generatedLane = workCursorCloudLaunchFingerprint(
+      projectId: "project-1",
+      laneId: "ade/generated-on-retry",
+      promptText: "Fix the cloud run",
+      repoUrl: "https://github.com/acme/project",
+      startingRef: "main",
+      modelId: "grok-4.6",
+      serviceTier: nil,
+      autoCreatePR: false,
+      secretNames: []
+    )
+
+    XCTAssertEqual(firstLane, retryLane)
+    XCTAssertNotEqual(firstLane, generatedLane)
+  }
+
   func testFleetResultDecodesEpochMsAndIsoTimestampsWithNullsAndUnknownFields() throws {
     // Mirrors desktop CursorCloudFleetResult: agent timestamps arrive as
     // epoch-ms numbers (typed) or ISO strings, `| null` fields may be absent,

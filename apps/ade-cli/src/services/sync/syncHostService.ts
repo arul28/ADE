@@ -910,20 +910,15 @@ type PeerState = {
 /**
  * Cursor Cloud lifecycle writes are available to the interactive mobile/web
  * clients, but not to another desktop or VPS peer acting as a read-only
- * viewer. Prefer the server-recorded pairing identity when one exists; the
- * metadata fallback only covers the bootstrap handshake before pairing.
+ * viewer. Bootstrap metadata is caller-controlled, so only the server-recorded
+ * pairing identity can grant this authority.
  */
 function isInteractiveControllerPeer(
-  peer: Pick<PeerState, "metadata" | "pairingRecord">,
+  peer: Pick<PeerState, "pairingRecord">,
 ): boolean {
-  if (peer.pairingRecord) {
-    return peer.pairingRecord.peerPlatform === "iOS"
-      || peer.pairingRecord.peerDeviceType === "phone"
-      || peer.pairingRecord.peerDeviceType === "browser";
-  }
-  return peer.metadata?.platform === "iOS"
-    || peer.metadata?.deviceType === "phone"
-    || peer.metadata?.deviceType === "browser";
+  return peer.pairingRecord?.peerPlatform === "iOS"
+    || peer.pairingRecord?.peerDeviceType === "phone"
+    || peer.pairingRecord?.peerDeviceType === "browser";
 }
 
 type PendingChangesetBatch = {
