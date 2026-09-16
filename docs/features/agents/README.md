@@ -199,8 +199,10 @@ actions is rejected so metadata cannot route around the check, and the
 automation action bridge strips the same keys. A child therefore cannot
 manufacture ownership of itself, and a grandchild's status report cannot revoke
 its grandparent's. The persisted lineage/dispatch metadata makes this
-restart-safe rather than a one-shot kickoff notification; final delivery failure
-becomes visible in the child after bounded retries.
+restart-safe rather than a one-shot kickoff notification. A missing parent is
+noted once in the child and closes the report channel. A delivery failure
+against a still-reachable parent becomes one visible warning after bounded
+retries.
 
 For a CLI child, the same parent/type fields are persisted in the tracked
 session's `resumeMetadata` and projected onto `TerminalSessionSummary` for

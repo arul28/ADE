@@ -13,6 +13,7 @@ import {
 } from "../format";
 import { formatRelativePastTime } from "../relativeTime";
 import { terminalReasonLabel } from "../terminalReason";
+import { spawnParentGoneNoticeMessage } from "../../../../desktop/src/shared/types/chat";
 
 describe("terminalReasonLabel", () => {
   it.each([
@@ -1507,6 +1508,29 @@ describe("renderChatLines", () => {
         "Refreshing provider status.",
         'Chat "Docs sweep" finished its turn',
       ]);
+    });
+
+    it("prints the parent-gone notice in plain language without a recovery command", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          {
+            sessionId: "s1",
+            timestamp: "2026-01-01T12:00:00.000Z",
+            sequence: 1,
+            event: {
+              type: "system_notice",
+              noticeKind: "info",
+              status: "spawn_parent_gone",
+              message: spawnParentGoneNoticeMessage(),
+            } as never,
+          },
+        ],
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.body).toBe(spawnParentGoneNoticeMessage());
+      expect(lines[0]?.body).not.toMatch(/messageSession|ADE_PARENT/);
     });
   });
 

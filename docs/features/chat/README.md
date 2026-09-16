@@ -2177,9 +2177,17 @@ wake appends `The user also sent N message(s) to this chat.` so the parent can
 read the transcript before following up. The takeover banner is shown once
 (`subagentTakeoverPromptShownAt` on the child); sending does not dismiss it.
 
-There is no new silent spawn type. Delivery retries three times. A final failure
-is logged as `agent_chat.spawn_completion_delivery_failed` and emits a visible
-warning in the child with the direct-report recovery command. Per-turn dedupe
+There is no new silent spawn type. Delivery retries three times only when the
+parent chat still exists. A deleted or missing parent is not a delivery
+failure: ADE demotes the child to a peer (if it was still a subagent), skips
+further parent notices and wakes, and emits at most one child
+`system_notice` with `status: "spawn_parent_gone"`:
+`This chat used to report back to another chat that was deleted. It will keep working here on its own.`
+That line is logged as `agent_chat.spawn_completion_parent_gone`. A true
+delivery failure against a still-reachable parent is logged as
+`agent_chat.spawn_completion_delivery_failed` and emits one child warning
+(`spawnCompletionDeliveryFailedNoticeMessage`) with no session id and no
+recovery command; later turns do not repeat it. Per-turn dedupe
 uses the child turn id found in the persisted parent transcript, so brain
 restarts do not sever the completion channel or replay the same report. Every
 child turn completion also writes one local
@@ -2234,7 +2242,8 @@ because ADE wrote it rather than the user. iOS mirrors the key list by hand in
 Both child types receive lineage env:
 `ADE_PARENT_CHAT_SESSION_ID` (the parent session id) plus `ADE_SPAWN_KIND`,
 and injected ADE guidance explains the type contract and direct-report recovery
-through `chat.messageSession`.
+through `chat.messageSession`. When the parent is gone, that recovery line is
+replaced with guidance not to report back.
 
 ### Inline card vs. quiet pill
 

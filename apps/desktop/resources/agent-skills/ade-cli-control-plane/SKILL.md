@@ -112,9 +112,11 @@ self-paced mission still reports when it actually finishes. ADE steers an active
 parent or wakes an idle parent. Once a human messages the child directly,
 ownership moves to the human and completions become quiet notes until the parent
 dispatches again. The persisted parent link and
-turn metadata survive brain restarts; a delivery failure retries and then
-becomes a visible warning in the child. Every child receives
-`ADE_PARENT_CHAT_SESSION_ID` and direct-report guidance as a recovery path.
+turn metadata survive brain restarts; a missing parent is noted once in the
+child and stops the report channel. A delivery failure against a parent that
+still exists retries and then becomes one visible warning in the child. Every
+child receives `ADE_PARENT_CHAT_SESSION_ID` and direct-report guidance while
+that parent is reachable.
 
 Tracked provider CLI sessions also require `subagent` or `peer` when parented
 and receive the same lineage environment. Their process boundary is still

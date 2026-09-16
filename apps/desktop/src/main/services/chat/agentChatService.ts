@@ -443,6 +443,8 @@ import {
   isAcpChatProvider,
   legacyPermissionModeFromDroidPermissionMode,
   spawnCompletedNoticeMessage,
+  spawnCompletionDeliveryFailedNoticeMessage,
+  spawnParentGoneNoticeMessage,
   activeTurnDispatchModes,
   defaultActiveTurnDispatchMode,
   providerSupportsLiveRedirect,
@@ -7828,10 +7830,18 @@ function stringifyExecutableToolOutput(output: unknown): string {
   }
 }
 
+type SpawnSelfReportGuidanceOpts = {
+  parentReachable?: boolean;
+};
+
 function buildSpawnSelfReportGuidance(
   session: Pick<AgentChatSession, "orchestrationParentSessionId" | "spawnKind">,
+  opts?: SpawnSelfReportGuidanceOpts,
 ): string | null {
   if (!session.orchestrationParentSessionId?.trim()) return null;
+  if (opts?.parentReachable === false) {
+    return "Your parent chat is gone. Do not try to report back to it. Keep working in this chat.";
+  }
   if (session.spawnKind === "subagent") {
     return "You were spawned as a subagent. ADE automatically wakes your parent after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. A human message does not close that report channel. If a human takes this chat over, ADE converts you to a peer and completions become quiet notes. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
   }
@@ -7843,10 +7853,11 @@ function buildSpawnSelfReportGuidance(
 
 function buildAdeSessionLineageGuidance(
   session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
+  opts?: SpawnSelfReportGuidanceOpts,
 ): string | null {
   if (!session) return null;
   const sessionBinding = `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
-  const spawnGuidance = buildSpawnSelfReportGuidance(session);
+  const spawnGuidance = buildSpawnSelfReportGuidance(session, opts);
   return [sessionBinding, spawnGuidance].filter(Boolean).join("\n");
 }
 
@@ -7863,9 +7874,10 @@ function buildAdeSessionLineageGuidance(
 function buildAdeGuidanceForLane(
   laneWorktreePath: string,
   session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
+  opts?: SpawnSelfReportGuidanceOpts,
 ): string {
   const base = buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
-  return [base, buildAdeSessionLineageGuidance(session)].filter(Boolean).join("\n");
+  return [base, buildAdeSessionLineageGuidance(session, opts)].filter(Boolean).join("\n");
 }
 
 function buildCodexDeveloperInstructions(args: {
@@ -7885,6 +7897,7 @@ function buildCodexDeveloperInstructions(args: {
     | "instructions"
   >;
   collaborationMode: "default" | "plan";
+  spawnGuidance?: SpawnSelfReportGuidanceOpts;
   /** Optional Linear-tracked-work directive appended to the base instructions. */
   linearDirective?: string | null;
 }): string {
@@ -7906,7 +7919,7 @@ function buildCodexDeveloperInstructions(args: {
     orchestrationParentSessionId: args.session.orchestrationParentSessionId,
     orchestrationStepId: args.session.orchestrationStepId,
   });
-  const spawnGuidance = buildSpawnSelfReportGuidance(args.session);
+  const spawnGuidance = buildSpawnSelfReportGuidance(args.session, args.spawnGuidance);
   return [base, args.linearDirective, spawnGuidance].filter(Boolean).join("\n\n");
 }
 
@@ -7927,6 +7940,7 @@ function buildOpenCodeSystemPrompt(args: {
     | "spawnKind"
     | "instructions"
   >;
+  spawnGuidance?: SpawnSelfReportGuidanceOpts;
 }): string {
   if (args.session.surface === "personal") return resolvePersonalSystemPrompt(args.session);
   const mode = args.session.permissionMode === "plan" || args.session.interactionMode === "plan"
@@ -7946,7 +7960,7 @@ function buildOpenCodeSystemPrompt(args: {
     orchestrationParentSessionId: args.session.orchestrationParentSessionId,
     orchestrationStepId: args.session.orchestrationStepId,
   });
-  return [base, buildAdeSessionLineageGuidance(args.session)]
+  return [base, buildAdeSessionLineageGuidance(args.session, args.spawnGuidance)]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -7960,11 +7974,20 @@ function resolveCodexInstructionCollaborationMode(
 function buildCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource" | "surface"
+    | "provider"
+    | "permissionMode"
+    | "interactionMode"
+    | "model"
+    | "reasoningEffort"
+    | "codexConfigSource"
+    | "surface"
+    | "orchestrationParentSessionId"
+    | "spawnKind"
   >,
   supportedModes: Set<string> | null,
   laneWorktreePath: string,
   linearDirective?: string | null,
+  spawnGuidance?: SpawnSelfReportGuidanceOpts,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
@@ -7988,6 +8011,7 @@ function buildCodexCollaborationMode(
             session,
             collaborationMode: mode,
             linearDirective,
+            spawnGuidance,
           }),
     },
   };
@@ -8999,7 +9023,8 @@ export function createAgentChatService(args: {
             ADE_PROJECT_ROOT: projectRoot,
             ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
           }),
-      ...(managed.session.orchestrationParentSessionId
+      ...(managed.session.orchestrationParentSessionId?.trim()
+        && parentChatStillExists(managed.session.orchestrationParentSessionId.trim())
         ? {
             ADE_PARENT_CHAT_SESSION_ID: managed.session.orchestrationParentSessionId,
             ADE_SPAWN_KIND: managed.session.spawnKind ?? "",
@@ -21221,6 +21246,7 @@ export function createAgentChatService(args: {
         runtime.collaborationModes,
         managed.laneWorktreePath,
         resolveSessionLinearDirective(managed.session.id),
+        spawnSelfReportOpts(managed.session),
       );
       if (
         requestedCollaborationMode === "plan"
@@ -25472,7 +25498,7 @@ export function createAgentChatService(args: {
       `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
       "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless ADE explicitly relaunches you elsewhere.",
       "",
-      buildAdeSessionLineageGuidance(managed.session) ?? "",
+      buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? "",
       "",
       ...slashCommandsSection,
     ].join("\n");
@@ -26328,7 +26354,11 @@ export function createAgentChatService(args: {
       const pendingContext = consumePendingTurnContextPrefix(managed, false)?.composed;
       if (pendingContext) prompt = `${pendingContext}\n\n${prompt}`;
       if (!isPersonalSession(managed.session) && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
-        const guidance = buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session);
+        const guidance = buildAdeGuidanceForLane(
+          managed.laneWorktreePath,
+          managed.session,
+          spawnSelfReportOpts(managed.session),
+        );
         if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
       }
 
@@ -26495,7 +26525,11 @@ export function createAgentChatService(args: {
         prompt = `${pendingContext}\n\n${prompt}`;
       }
       if (!isPersonalSession(managed.session) && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
-        const guidance = buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session);
+        const guidance = buildAdeGuidanceForLane(
+          managed.laneWorktreePath,
+          managed.session,
+          spawnSelfReportOpts(managed.session),
+        );
         if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
       }
       const { promptText, images } = await buildPiWorkerPrompt(
@@ -26725,6 +26759,7 @@ export function createAgentChatService(args: {
       const openCodeSystemPrompt = buildOpenCodeSystemPrompt({
         laneWorktreePath: managed.laneWorktreePath,
         session: managed.session,
+        spawnGuidance: spawnSelfReportOpts(managed.session),
       });
       const openCodePromptBody = {
         sessionID: runtime.handle.sessionId,
@@ -32948,6 +32983,7 @@ export function createAgentChatService(args: {
         session: managed.session,
         collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
         linearDirective: resolveSessionLinearDirective(managed.session.id),
+        spawnGuidance: spawnSelfReportOpts(managed.session),
       }),
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
@@ -33565,7 +33601,7 @@ export function createAgentChatService(args: {
           ...(linearDirective ? [linearDirective, ""] : []),
           ...slashCommandsSection,
           "",
-          buildAdeSessionLineageGuidance(managed.session) ?? "",
+          buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? "",
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
@@ -35064,9 +35100,54 @@ export function createAgentChatService(args: {
 
   const parentChatStillExists = (parentSessionId: string): boolean => {
     const live = managedSessions.get(parentSessionId);
-    if (live && !live.deleted) return true;
+    if (live) return !live.deleted;
     const row = sessionService.get(parentSessionId);
     return Boolean(row && isChatToolType(row.toolType));
+  };
+
+  const spawnSelfReportOpts = (
+    session: Pick<AgentChatSession, "orchestrationParentSessionId">,
+  ): SpawnSelfReportGuidanceOpts => {
+    const parentId = session.orchestrationParentSessionId?.trim();
+    return {
+      parentReachable: !parentId || parentChatStillExists(parentId),
+    };
+  };
+
+  const isMissingParentError = (error: unknown, parentSessionId: string): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return message === "Parent session was deleted."
+      || message === `Chat session '${parentSessionId}' was not found.`;
+  };
+
+  const childHasNoticeStatus = (child: ManagedChatSession, status: string): boolean =>
+    mergeEnvelopeStreams(
+      readTranscriptEnvelopes(child),
+      eventHistoryBySession.get(child.session.id) ?? [],
+    ).some((envelope) =>
+      envelope.event.type === "system_notice" && envelope.event.status === status
+    );
+
+  const noteUnreachableParent = (
+    child: ManagedChatSession,
+    parentSessionId: string,
+    reason: string,
+  ): void => {
+    reconcileOrphanedSubagent(child);
+    if (child.deleted || childHasNoticeStatus(child, "spawn_parent_gone")) return;
+    logger.info("agent_chat.spawn_completion_parent_gone", {
+      childSessionId: child.session.id,
+      parentSessionId,
+      spawnKind: child.session.spawnKind,
+      reason,
+    });
+    emitChatEvent(child, {
+      type: "system_notice",
+      noticeKind: "info",
+      status: "spawn_parent_gone",
+      message: spawnParentGoneNoticeMessage(),
+      detail: { spawnParentGone: { parentSessionId } },
+    });
   };
 
   const emitSpawnKindMeta = (managed: ManagedChatSession): void => {
@@ -35195,6 +35276,12 @@ export function createAgentChatService(args: {
     // Old persisted sessions may still carry `none` or no type. They remain
     // readable but cannot create new silent completion behavior.
     if (spawnKind !== "subagent" && spawnKind !== "peer") return;
+
+    if (!parentChatStillExists(parentSessionId)) {
+      noteUnreachableParent(child, parentSessionId, "parent_missing");
+      return;
+    }
+
     const resolvedTurnId = turnId?.trim()
       || [...child.recentConversationEntries].reverse().find((entry) => entry.turnId?.trim())?.turnId?.trim()
       || `event-${child.eventSequence + 1}`;
@@ -35358,6 +35445,10 @@ export function createAgentChatService(args: {
           return;
         } catch (error) {
           lastError = error;
+          if (isMissingParentError(error, parentSessionId) || !parentChatStillExists(parentSessionId)) {
+            noteUnreachableParent(child, parentSessionId, "parent_missing_during_delivery");
+            return;
+          }
           logger.warn("agent_chat.spawn_completion_delivery_failed", {
             childSessionId,
             childTurnId: resolvedTurnId,
@@ -35371,12 +35462,12 @@ export function createAgentChatService(args: {
           }
         }
       }
-      if (!child.deleted) {
+      if (!child.deleted && !childHasNoticeStatus(child, "spawn_completion_delivery_failed")) {
         emitChatEvent(child, {
           type: "system_notice",
           noticeKind: "warning",
           status: "spawn_completion_delivery_failed",
-          message: `ADE could not notify parent ${parentSessionId} after 3 attempts. Retry with chat.messageSession using $ADE_PARENT_CHAT_SESSION_ID.`,
+          message: spawnCompletionDeliveryFailedNoticeMessage(),
           detail: {
             spawnCompletionDeliveryFailure: {
               childTurnId: resolvedTurnId,
@@ -38976,7 +39067,13 @@ export function createAgentChatService(args: {
           personalChatUserPromptFallback(managed.session),
           personalSession ? null : buildExecutionModeDirective(executionMode, managed.session.provider),
           personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
-          shouldInjectGuidance ? buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session) : null,
+          shouldInjectGuidance
+            ? buildAdeGuidanceForLane(
+              managed.laneWorktreePath,
+              managed.session,
+              spawnSelfReportOpts(managed.session),
+            )
+            : null,
           personalSession
             ? null
             : buildComputerUseDirective(
@@ -43537,6 +43634,7 @@ export function createAgentChatService(args: {
                 session: managed.session,
                 collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
                 linearDirective: resolveSessionLinearDirective(managed.session.id),
+                spawnGuidance: spawnSelfReportOpts(managed.session),
               }),
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
@@ -46298,6 +46396,7 @@ export function createAgentChatService(args: {
               session: managed.session,
               collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
               linearDirective: resolveSessionLinearDirective(managed.session.id),
+              spawnGuidance: spawnSelfReportOpts(managed.session),
             }),
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
@@ -53104,6 +53203,7 @@ export function createAgentChatService(args: {
             laneWorktreePath: managed.laneWorktreePath,
             session: managed.session,
             collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
+            spawnGuidance: spawnSelfReportOpts(managed.session),
           }),
           ...codexServiceTierArgs(managed.session),
           ...codexPolicyArgs(codexPolicy),

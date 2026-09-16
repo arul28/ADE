@@ -16,6 +16,9 @@ import {
   providerSupportsHandoffFork,
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
+  spawnCompletedNoticeMessage,
+  spawnCompletionDeliveryFailedNoticeMessage,
+  spawnParentGoneNoticeMessage,
   type AgentChatFileRef,
   type AgentChatModelsArgs,
 } from "./chat";
@@ -252,5 +255,14 @@ describe("mergeAttachments", () => {
     const result = mergeAttachments(current, incoming);
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual(incoming[0]);
+  });
+});
+
+describe("spawn parent-gone copy", () => {
+  it("keeps user-facing notices free of session ids and recovery commands", () => {
+    expect(spawnParentGoneNoticeMessage()).toMatch(/deleted/);
+    expect(spawnParentGoneNoticeMessage()).not.toMatch(/messageSession|ADE_PARENT/);
+    expect(spawnCompletionDeliveryFailedNoticeMessage()).not.toMatch(/messageSession|ADE_PARENT/);
+    expect(spawnCompletedNoticeMessage("Docs")).toBe('Chat "Docs" finished its turn');
   });
 });

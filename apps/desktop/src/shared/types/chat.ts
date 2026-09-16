@@ -289,6 +289,19 @@ export function spawnCompletedNoticeMessage(childTitle: string): string {
   return `Chat "${childTitle}" finished its turn`;
 }
 
+/** One-line notice when a child can no longer report to a deleted parent chat. */
+export function spawnParentGoneNoticeMessage(): string {
+  return "This chat used to report back to another chat that was deleted. It will keep working here on its own.";
+}
+
+/**
+ * One-line notice when a still-reachable parent could not be updated after
+ * retries. Recovery commands stay in logs, not in this sentence.
+ */
+export function spawnCompletionDeliveryFailedNoticeMessage(): string {
+  return "ADE couldn't send this turn's update to the chat that started this one. This chat will keep working here.";
+}
+
 /**
  * The fallback line shown when a chat is blocked on the user and there is no
  * question text to show instead.
@@ -396,6 +409,9 @@ export type AgentChatNoticeDetail = {
     childTurnId: string;
     parentSessionId: string;
     error: string;
+  };
+  spawnParentGone?: {
+    parentSessionId: string;
   };
   crossMachineHandoff?: {
     handoffId: string;
