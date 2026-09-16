@@ -16353,6 +16353,13 @@ export function createAgentChatService(args: {
 
   const emitLiveOnlyChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     managed.lastActivityTimestamp = Date.now();
+    // Retry/reconnect activity bypasses emitChatEvent so it stays live-only.
+    // Flush any 100ms text/reasoning buffer first, otherwise that older
+    // fragment publishes after the retry and clients treat it as recovery.
+    if (event.type === "api_retry" || isProviderRetryActivityEvent(event)) {
+      flushBufferedReasoning(managed);
+      flushBufferedText(managed, "interleave");
+    }
     emitTransientChatEnvelope(managed.session.id, event);
   };
 

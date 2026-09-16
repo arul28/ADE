@@ -45548,6 +45548,36 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     });
   });
 
+  it("flushes buffered assistant text before a live-only Claude retry", async () => {
+    const { events } = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-retry-flush-buffer",
+      messages: [
+        {
+          type: "assistant",
+          message: { id: "m-retry-flush", content: [{ type: "text", text: "Running." }] },
+        },
+        {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 2,
+          max_retries: 10,
+          retry_delay_ms: 4_000,
+          error_status: 529,
+          error: "overloaded",
+        },
+      ],
+    });
+
+    const textIndex = events.findIndex((entry) =>
+      entry.event.type === "text" && entry.event.text === "Running.");
+    const retryIndex = events.findIndex((entry) => entry.event.type === "api_retry");
+    const retryActivityIndex = events.findIndex((entry) =>
+      entry.event.type === "activity" && entry.event.providerRetry === true);
+    expect(textIndex).toBeGreaterThanOrEqual(0);
+    expect(retryIndex).toBeGreaterThan(textIndex);
+    expect(retryActivityIndex).toBeGreaterThan(textIndex);
+  });
+
   it("emits deduplicated command lifecycle events only for ADE-owned Claude messages", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const send = vi.fn().mockResolvedValue(undefined);
