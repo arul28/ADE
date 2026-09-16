@@ -51,6 +51,7 @@ export function CursorCloudAdvancedMenu({
   const [placement, setPlacement] = useState<LanePopoverPlacement | null>(null);
   const attachPr = hideExistingPr ? null : existingPr;
   const secretCount = selectedNames.filter(isInjectableCloudSecretName).length;
+  const attachableSecretCount = new Set(availableNames.filter(isInjectableCloudSecretName)).size;
   const active = Boolean(attachPr) || autoCreatePR || secretCount > 0;
 
   const updatePosition = useCallback(() => {
@@ -190,14 +191,18 @@ export function CursorCloudAdvancedMenu({
                 </SmartTooltip>
               </label>
             )}
-            <div className="my-1.5 border-t border-white/[0.06]" />
-            <CursorCloudSecretsList
-              availableNames={availableNames}
-              selectedNames={selectedNames}
-              remember={remember}
-              onSelectedNamesChange={onSelectedNamesChange}
-              onRememberChange={onRememberChange}
-            />
+            {attachableSecretCount > 0 ? (
+              <>
+                <div className="my-1.5 border-t border-white/[0.06]" />
+                <CursorCloudSecretsList
+                  availableNames={availableNames}
+                  selectedNames={selectedNames}
+                  remember={remember}
+                  onSelectedNamesChange={onSelectedNamesChange}
+                  onRememberChange={onRememberChange}
+                />
+              </>
+            ) : null}
           </div>,
           document.body,
         )

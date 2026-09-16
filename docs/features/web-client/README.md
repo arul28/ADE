@@ -431,7 +431,13 @@ Browser `window.ade` adapter:
   its own terminal states (`connected`/`failed`/`cancelled`/`timeout` for
   OpenCode, `success`/`error` for Pi) — so there is no perpetual background
   poll. Pi sign-in has no honest offline fallback shape, so it reports
-  unavailable rather than fabricating a result. Its `cto.*` namespace is wired
+  unavailable rather than fabricating a result. The same adapter also routes
+  Cursor Cloud fleet reads, chat mirroring, follow-ups, and lane actions through
+  the host's advertised `ai.cursorCloud*` commands. Those commands expose the
+  account-wide, paged fleet and use the host-owned Cursor API key; the web
+  client keeps the same connected-only entry-point gate and fails mutations
+  honestly when the host is offline or the action is not advertised. Its
+  `cto.*` namespace is wired
   method by method on purpose — the host registers every `cto.*` action as
   viewer-allowed, so completing the namespace mechanically would hand any
   connected browser write access to the Linear credential store; only reads and

@@ -38,6 +38,7 @@ struct CursorCloudPaneToolbarButton: View {
 
   var body: some View {
     if syncService.activeProjectId != nil,
+       syncService.cursorCloudConnected,
        syncService.supportsRemoteAction("ai.cursorCloudFleet") {
       Button {
         ADEHaptics.light()

@@ -4080,6 +4080,10 @@ final class SyncService: ObservableObject {
   /// Last-known Linear connection status for the active project, refreshed by the
   /// Work top-bar button. `nil` until the first check. Gates the pane entry point.
   @Published private(set) var linearConnectionStatus: LinearConnectionStatus?
+  /// Last-known Cursor connection status for the active project. The Work
+  /// toolbar and every mobile Cursor Cloud entry point fail closed until the
+  /// host confirms that a Cursor API key/OAuth credential is available.
+  @Published private(set) var cursorCloudConnectionStatus: CursorCloudConnectionStatus?
   @Published var requestedWorkLaneNavigation: WorkLaneNavigationRequest?
   @Published var requestedWorkSessionNavigation: WorkSessionNavigationRequest?
   @Published var requestedFilesNavigation: FilesNavigationRequest?
@@ -9701,6 +9705,27 @@ final class SyncService: ObservableObject {
     }
   }
 
+  var cursorCloudConnected: Bool { cursorCloudConnectionStatus?.connected == true }
+
+  func fetchCursorCloudConnectionStatus() async throws -> CursorCloudConnectionStatus {
+    try await sendDecodableCommand(action: "ai.getStatus", as: CursorCloudConnectionStatus.self)
+  }
+
+  /// Refreshes the host-owned Cursor credential probe. This is intentionally
+  /// best-effort and fail-closed, matching the Linear entry-point pattern: a
+  /// phone never guesses that a cloud credential exists from an old cache.
+  func refreshCursorCloudConnection() async {
+    guard activeProjectId != nil, isAttached else {
+      cursorCloudConnectionStatus = nil
+      return
+    }
+    do {
+      cursorCloudConnectionStatus = try await fetchCursorCloudConnectionStatus()
+    } catch {
+      cursorCloudConnectionStatus = CursorCloudConnectionStatus(providerConnections: nil)
+    }
+  }
+
   /// Linear issue ids already attached to a lane (primary issue + additional
   /// links) in the active project, read from the local synced DB. Backs the
   /// Linear pane's "has lane" duplicate-guard badge. Cheap local read; callers
@@ -9744,8 +9769,74 @@ final class SyncService: ObservableObject {
   // desktop's Cursor connection sees, and every action routes through the
   // desktop like the Linear pane. No Cursor credentials live on device.
 
+  func fetchCursorCloudRepositories() async throws -> [CursorCloudRepository] {
+    try await sendDecodableCommand(action: "ai.listCursorCloudRepositories", as: [CursorCloudRepository].self)
+  }
+
+  func fetchCursorCloudLaneSecretNames(laneId: String) async throws -> [String] {
+    try await sendDecodableCommand(
+      action: "ai.getCursorCloudLaneSecretNames",
+      args: ["laneId": laneId],
+      as: [String].self
+    )
+  }
+
+  func createCursorCloudRun(
+    promptText: String,
+    repoUrl: String,
+    startingRef: String?,
+    modelId: String?,
+    serviceTier: String?,
+    laneId: String,
+    projectId: String?,
+    autoCreatePR: Bool = false,
+    secretNames: [String] = [],
+    rememberSecretNames: Bool = false,
+    idempotencyKey: String? = nil,
+    sessionId: String? = nil
+  ) async throws -> CursorCloudCreateRunResult {
+    var args: [String: Any] = [
+      "promptText": promptText,
+      "repoUrl": repoUrl,
+      "laneId": laneId,
+      "workOnCurrentBranch": false,
+      "autoCreatePR": autoCreatePR,
+      "skipReviewerRequest": true,
+    ]
+    if let idempotencyKey, !idempotencyKey.isEmpty { args["idempotencyKey"] = idempotencyKey }
+    if let startingRef, !startingRef.isEmpty { args["startingRef"] = startingRef }
+    if let modelId, !modelId.isEmpty { args["modelId"] = modelId }
+    if let serviceTier, !serviceTier.isEmpty { args["serviceTier"] = serviceTier }
+    if let sessionId, !sessionId.isEmpty { args["sessionId"] = sessionId }
+    if let projectId, !projectId.isEmpty { args["projectId"] = projectId }
+    if !secretNames.isEmpty {
+      args["secretNames"] = secretNames
+      if rememberSecretNames { args["rememberSecretNames"] = true }
+    }
+    return try await sendDecodableCommand(
+      action: "ai.createCursorCloudRun",
+      args: args,
+      as: CursorCloudCreateRunResult.self
+    )
+  }
+
   func fetchCursorCloudFleet() async throws -> CursorCloudFleetResult {
     try await sendDecodableCommand(action: "ai.cursorCloudFleet", as: CursorCloudFleetResult.self)
+  }
+
+  func fetchCursorCloudRuns(agentId: String) async throws -> CursorCloudRunListResult {
+    guard supportsRemoteAction("ai.listCursorCloudRuns") else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [NSLocalizedDescriptionKey: "Cursor Cloud run details are not available on this machine version."]
+      )
+    }
+    return try await sendDecodableCommand(
+      action: "ai.listCursorCloudRuns",
+      args: ["agentId": agentId, "limit": 1],
+      as: CursorCloudRunListResult.self
+    )
   }
 
   func resolveCursorCloudLane(agentId: String) async throws -> CursorCloudResolvedLane {
@@ -9774,10 +9865,32 @@ final class SyncService: ObservableObject {
     return ["stopped": (payload["stopped"] as? Bool) ?? true]
   }
 
-  func openCursorCloudChat(agentId: String, laneId: String) async throws -> CursorCloudOpenChatResult {
+  func unarchiveCursorCloudAgent(agentId: String) async throws {
+    _ = try await sendCommand(
+      action: "ai.unarchiveCursorCloudAgent",
+      args: ["agentId": agentId]
+    )
+  }
+
+  func fetchCursorCloudArtifacts(agentId: String) async throws -> [CursorCloudArtifactSummary] {
+    try await sendDecodableCommand(
+      action: "ai.listCursorCloudArtifacts",
+      args: ["agentId": agentId],
+      as: [CursorCloudArtifactSummary].self
+    )
+  }
+
+  func openCursorCloudChat(
+    agentId: String,
+    laneId: String,
+    modelId: String? = nil,
+    serviceTier: String? = nil
+  ) async throws -> CursorCloudOpenChatResult {
     // The host names the chat from Cursor's own agent record on hydration, so
     // there is no name to send.
-    let args: [String: Any] = ["cloudAgentId": agentId, "laneId": laneId]
+    var args: [String: Any] = ["cloudAgentId": agentId, "laneId": laneId]
+    if let modelId, !modelId.isEmpty { args["modelId"] = modelId }
+    if let serviceTier, !serviceTier.isEmpty { args["serviceTier"] = serviceTier }
     return try await sendDecodableCommand(
       action: "ai.openCursorCloudChat",
       args: args,
@@ -15672,7 +15785,8 @@ final class SyncService: ObservableObject {
   /// allowed to invoke, independent of the current transport state.
   func supportsViewerRemoteAction(_ action: String) -> Bool {
     guard supportsRemoteAction(action) else { return false }
-    return commandPolicy(for: action)?.viewerAllowed != false
+    let policy = commandPolicy(for: action)
+    return policy?.viewerAllowed != false || policy?.controllerAllowed == true
   }
 
   func isRemoteActionQueueable(_ action: String) -> Bool {
@@ -15696,7 +15810,8 @@ final class SyncService: ObservableObject {
         userInfo: [NSLocalizedDescriptionKey: "This action is not available for the current machine. Reconnect to refresh capabilities."]
       )
     }
-    guard commandPolicy(for: action)?.viewerAllowed != false else {
+    let policy = commandPolicy(for: action)
+    guard policy?.viewerAllowed != false || policy?.controllerAllowed == true else {
       throw NSError(
         domain: "ADE",
         code: 15,

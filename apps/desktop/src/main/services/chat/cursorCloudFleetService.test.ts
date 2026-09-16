@@ -64,8 +64,13 @@ function buildHarness(overrides?: {
     }
     return { exitCode: 0, stdout: "", stderr: "" };
   });
-  const listCursorCloudAgents = vi.fn(async () => ({
+  const listCursorCloudAgents = vi.fn(async (_args?: {
+    includeArchived?: boolean;
+    limit?: number;
+    cursor?: string | null;
+  }) => ({
     items: overrides?.agents ?? [],
+    nextCursor: undefined as string | undefined,
   }));
   const listCursorCloudRuns = vi.fn(async (_args: { agentId: string; limit?: number }) => ({
     items: overrides?.runs ?? [],
@@ -102,7 +107,31 @@ function buildHarness(overrides?: {
 }
 
 describe("cursorCloudFleetService", () => {
-  describe("project scoping", () => {
+  it("paginates Cursor's capped 100-agent pages so the fleet does not truncate", async () => {
+    const harness = buildHarness();
+    harness.listCursorCloudAgents.mockImplementation(async (args: {
+      includeArchived?: boolean;
+      limit?: number;
+      cursor?: string | null;
+    } = {}) => {
+      if (args.cursor === "page-2") {
+        return { items: [agent({ agentId: "bc-page-2" })], nextCursor: undefined };
+      }
+      return { items: [agent({ agentId: "bc-page-1" })], nextCursor: "page-2" };
+    });
+
+    const result = await harness.service.getFleet({ includeArchived: true, limit: 100 });
+
+    expect(result.items.map((entry) => entry.agent.agentId)).toEqual(["bc-page-1", "bc-page-2"]);
+    expect(harness.listCursorCloudAgents).toHaveBeenNthCalledWith(1, { includeArchived: true, limit: 100 });
+    expect(harness.listCursorCloudAgents).toHaveBeenNthCalledWith(2, {
+      includeArchived: true,
+      limit: 100,
+      cursor: "page-2",
+    });
+  });
+
+  describe("account-wide fleet ownership", () => {
     it("keeps agents whose repo matches the project origin", async () => {
       const harness = buildHarness({ agents: [agent({ agentId: "bc-1" })] });
       const result = await harness.service.getFleet();
@@ -123,7 +152,7 @@ describe("cursorCloudFleetService", () => {
       expect(result.items[0].ownership.laneName).toBe("lane-1");
     });
 
-    it("drops agents that are neither linked nor repo-matched", async () => {
+    it("keeps agents that are neither linked nor repo-matched as account rows", async () => {
       const harness = buildHarness({
         agents: [
           agent({ agentId: "bc-3", repos: ["https://github.com/other/repo"] }),
@@ -131,8 +160,9 @@ describe("cursorCloudFleetService", () => {
         ],
       });
       const result = await harness.service.getFleet();
-      expect(result.items.map((entry) => entry.agent.agentId)).toEqual(["bc-4"]);
-      expect(result.items[0].matchedBy).toBe("repo");
+      expect(result.items.map((entry) => entry.agent.agentId)).toEqual(["bc-3", "bc-4"]);
+      expect(result.items[0].matchedBy).toBe("account");
+      expect(result.items[1].matchedBy).toBe("repo");
     });
   });
 
@@ -414,6 +444,15 @@ describe("cursorCloudFleetService", () => {
       const result = await harness.service.stopAgentRun("bc-stop");
       expect(result.stopped).toBe(true);
       expect(harness.cancelCursorCloudRun).toHaveBeenCalledWith({ agentId: "bc-stop", runId: "run-77" });
+    });
+
+    it("invalidates the fleet cache after cancelling a run", async () => {
+      const harness = buildHarness({ agents: [agent({ agentId: "bc-cache" })], runs: [{ id: "run-1", agentId: "bc-cache" }] });
+      await harness.service.getFleet({ includeArchived: true });
+      await harness.service.stopAgentRun("bc-cache");
+      await harness.service.getFleet({ includeArchived: true });
+
+      expect(harness.listCursorCloudAgents).toHaveBeenCalledTimes(2);
     });
 
     it("says so when there is nothing to stop", async () => {

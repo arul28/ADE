@@ -57,10 +57,26 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // go limited, and an older host simply omits the actions.
   "ai.openCursorCloudChat",
   "ai.watchCursorCloudMirror",
+  "ai.listCursorCloudRepositories",
+  "ai.listCursorCloudAgents",
+  "ai.listCursorCloudRuns",
+  "ai.createCursorCloudRun",
+  "ai.getCursorCloudLaneSecretNames",
+  "ai.archiveCursorCloudAgent",
+  "ai.unarchiveCursorCloudAgent",
+  "ai.deleteCursorCloudAgent",
+  "ai.getCursorCloudAgent",
+  "ai.getCursorAgentUsage",
+  "ai.listCursorCloudArtifacts",
+  "ai.downloadCursorCloudArtifact",
+  "ai.cursorCloudStreamRun",
+  "ai.cancelCursorCloudRun",
+  "ai.cursorCloudFollowUp",
   // Cursor Cloud fleet view. The phone gates its Cloud pane affordances on
   // these; optional so an older brain simply omits the pane instead of going
   // limited.
   "ai.cursorCloudFleet",
+  "ai.getCursorCloudFleet",
   "ai.cursorCloudResolveLane",
   "ai.cursorCloudPullIntoLane",
   "ai.cursorCloudStopRun",

@@ -10869,7 +10869,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           kind: "list",
           title: fleet.items.length ? `Cloud agents · ${fleet.items.length}` : "Cloud agents",
           rows: formatCursorCloudFleetRows(fleet.items),
-          emptyText: "No Cursor Cloud agents for this project.",
+          emptyText: "No Cursor Cloud agents found for this account.",
           footnote: CURSOR_CLOUD_PANE_NOTE,
         });
       } catch (error) {

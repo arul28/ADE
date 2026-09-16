@@ -312,6 +312,7 @@ import type { createPtyService } from "../../../../desktop/src/main/services/pty
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
+import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
 import { dismissPendingInputBeforeSettle, settleTerminalSession } from "../../../../desktop/src/main/services/sessions/settleTerminalSession";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
@@ -515,6 +516,13 @@ function formatDeeplinkParseError(error: ParseError): string {
 
 function asOptionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function asOptionalCursorCloudServiceTier(value: unknown): "fast" | "standard" | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (value === "fast" || value === "standard") return value;
+  throw new Error("Cursor Cloud serviceTier must be 'fast', 'standard', null, or omitted.");
 }
 
 function asOptionalNumber(value: unknown): number | undefined {
@@ -5682,11 +5690,112 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return { ok: true };
   });
+  register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async () =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories());
+  register("ai.listCursorCloudAgents", { viewerAllowed: true }, async (payload) =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudAgents({
+      includeArchived: payload.includeArchived !== false,
+      limit: typeof payload.limit === "number" ? payload.limit : undefined,
+      cursor: typeof payload.cursor === "string" ? payload.cursor : undefined,
+    }));
+  register("ai.listCursorCloudRuns", { viewerAllowed: true }, async (payload) =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRuns({
+      agentId: requireString(payload.agentId, "ai.listCursorCloudRuns requires agentId."),
+      limit: typeof payload.limit === "number" ? payload.limit : undefined,
+      cursor: typeof payload.cursor === "string" ? payload.cursor : undefined,
+    }));
+  register("ai.createCursorCloudRun", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const serviceTier = asOptionalCursorCloudServiceTier(payload.serviceTier);
+    const result = await requireService(args.aiIntegrationService, "AI integration service not available.").createCursorCloudRun(
+      {
+        ...payload,
+        ...(serviceTier !== undefined ? { serviceTier } : {}),
+      } as Parameters<ReturnType<typeof createAiIntegrationService>["createCursorCloudRun"]>[0],
+    );
+    args.cursorCloudFleetService?.invalidateCache();
+    return result;
+  });
+  register("ai.getCursorCloudLaneSecretNames", { viewerAllowed: true }, async (payload) =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").getCursorCloudLaneSecretNames(
+      requireString(payload.laneId, "ai.getCursorCloudLaneSecretNames requires laneId."),
+    ));
+  register("ai.archiveCursorCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.aiIntegrationService, "AI integration service not available.").archiveCursorCloudAgent(
+      requireString(payload.agentId, "ai.archiveCursorCloudAgent requires agentId."),
+    );
+    args.cursorCloudFleetService?.invalidateCache();
+  });
+  register("ai.unarchiveCursorCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.aiIntegrationService, "AI integration service not available.").unarchiveCursorCloudAgent(
+      requireString(payload.agentId, "ai.unarchiveCursorCloudAgent requires agentId."),
+    );
+    args.cursorCloudFleetService?.invalidateCache();
+  });
+  register("ai.deleteCursorCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.aiIntegrationService, "AI integration service not available.").deleteCursorCloudAgent(
+      requireString(payload.agentId, "ai.deleteCursorCloudAgent requires agentId."),
+    );
+    args.cursorCloudFleetService?.invalidateCache();
+  });
+  register("ai.getCursorCloudAgent", { viewerAllowed: true }, async (payload) =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").getCursorCloudAgent(
+      requireString(payload.agentId, "ai.getCursorCloudAgent requires agentId."),
+    ));
+  register("ai.getCursorAgentUsage", { viewerAllowed: true }, async (payload) =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").getCursorAgentUsage({
+      agentId: requireString(payload.agentId, "ai.getCursorAgentUsage requires agentId."),
+      ...(typeof payload.runId === "string" ? { runId: payload.runId } : {}),
+    }));
+  register("ai.listCursorCloudArtifacts", { viewerAllowed: true }, async (payload) =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudArtifacts(
+      requireString(payload.agentId, "ai.listCursorCloudArtifacts requires agentId."),
+    ));
+  register("ai.downloadCursorCloudArtifact", { viewerAllowed: true }, async (payload) => {
+    const artifact = await requireService(args.aiIntegrationService, "AI integration service not available.").downloadCursorCloudArtifact({
+      agentId: requireString(payload.agentId, "ai.downloadCursorCloudArtifact requires agentId."),
+      path: requireString(payload.path, "ai.downloadCursorCloudArtifact requires path."),
+    });
+    if (
+      !Number.isSafeInteger(artifact.sizeBytes)
+      || artifact.sizeBytes < 0
+      || artifact.sizeBytes > CURSOR_CLOUD_ARTIFACT_MAX_BYTES
+    ) {
+      throw new Error(
+        `Cursor Cloud artifact is too large to transfer (max ${CURSOR_CLOUD_ARTIFACT_MAX_BYTES} bytes).`,
+      );
+    }
+    return artifact;
+  });
+  register("ai.cursorCloudStreamRun", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const agentId = requireString(payload.agentId, "ai.cursorCloudStreamRun requires agentId.");
+    const runId = requireString(payload.runId, "ai.cursorCloudStreamRun requires runId.");
+    return { subscriptionId: `cursor-cloud-stream-${agentId}-${runId}` };
+  });
+  register("ai.cancelCursorCloudRun", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").cancelCursorCloudRun({
+      agentId: requireString(payload.agentId, "ai.cancelCursorCloudRun requires agentId."),
+      runId: requireString(payload.runId, "ai.cancelCursorCloudRun requires runId."),
+    });
+    args.cursorCloudFleetService?.invalidateCache();
+  });
+  register("ai.cursorCloudFollowUp", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const serviceTier = asOptionalCursorCloudServiceTier(payload.serviceTier);
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").cursorCloudFollowUp({
+      agentId: requireString(payload.agentId, "ai.cursorCloudFollowUp requires agentId."),
+      prompt: requireString(payload.prompt, "ai.cursorCloudFollowUp requires prompt."),
+      ...(typeof payload.idempotencyKey === "string" ? { idempotencyKey: payload.idempotencyKey } : {}),
+      ...(typeof payload.modelId === "string" || payload.modelId === null ? { modelId: payload.modelId as string | null } : {}),
+      ...(serviceTier !== undefined ? { serviceTier } : {}),
+    });
+    args.cursorCloudFleetService?.invalidateCache();
+    return result;
+  });
   register("ai.openCursorCloudChat", { viewerAllowed: true, queueable: false }, async (payload) => {
     const sessionId = asTrimmedString(payload.sessionId);
     const modelId = asTrimmedString(payload.modelId);
     const reasoningEffort = asTrimmedString(payload.reasoningEffort);
     const fastMode = asOptionalBoolean(payload.fastMode);
+    const serviceTier = asOptionalCursorCloudServiceTier(payload.serviceTier);
     return requireService(args.agentChatService, "Agent chat service not available.").openCursorCloudChat({
       cloudAgentId: requireString(payload.cloudAgentId, "ai.openCursorCloudChat requires cloudAgentId."),
       laneId: requireString(payload.laneId, "ai.openCursorCloudChat requires laneId."),
@@ -5697,6 +5806,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       // every mobile, web, and relay call that omits the field.
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
       ...(fastMode !== undefined ? { fastMode } : {}),
+      ...(serviceTier !== undefined ? { serviceTier } : {}),
     });
   });
   register("ai.watchCursorCloudMirror", { viewerAllowed: true, queueable: false }, async (payload) => {
@@ -5715,9 +5825,18 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       limit: typeof payload.limit === "number" ? payload.limit : undefined,
     });
   });
+  // Keep the runtime-action spelling used by the desktop preload alongside
+  // the historical fleet command used by iOS clients.
+  register("ai.getCursorCloudFleet", { viewerAllowed: true }, async (payload) => {
+    const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
+    return fleetService.getFleet({
+      includeArchived: payload.includeArchived !== false,
+      limit: typeof payload.limit === "number" ? payload.limit : undefined,
+    });
+  });
   // Lane resolution can import a new lane (host state mutation), so like
   // pull it is refused for read-only viewers.
-  register("ai.cursorCloudResolveLane", { viewerAllowed: false }, async (payload) => {
+  register("ai.cursorCloudResolveLane", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
     const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
     return fleetService.resolveLaneForAgent(
       requireString(payload.agentId, "ai.cursorCloudResolveLane requires agentId."),
@@ -5726,13 +5845,13 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   // Pull mutates host lane worktrees (fetch + merge), so like chat.launchCli
   // it is refused for read-only viewers and never queued — it must run now,
   // against lane state as it exists at request time.
-  register("ai.cursorCloudPullIntoLane", { viewerAllowed: false }, async (payload) => {
+  register("ai.cursorCloudPullIntoLane", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
     const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
     return fleetService.pullIntoLane(
       requireString(payload.agentId, "ai.cursorCloudPullIntoLane requires agentId."),
     );
   });
-  register("ai.cursorCloudStopRun", { viewerAllowed: true, queueable: false }, async (payload) => {
+  register("ai.cursorCloudStopRun", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
     const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
     return fleetService.stopAgentRun(
       requireString(payload.agentId, "ai.cursorCloudStopRun requires agentId."),

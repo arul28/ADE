@@ -733,6 +733,9 @@ SDK-capable rows are eligible for chat sessions, CLI-capable rows are
 eligible for Work CLI launches, and rows with both flags appear in both
 surfaces.
 
+Cursor Cloud keeps its catalog namespace in ADE model IDs: the Cursor Grok row
+is `cursor/grok-4.6` (the SDK receives `grok-4.6`), not ACP's `xai/grok-4-6`.
+
 `resolveCursorSdkPolicy` (`services/chat/cursorSdkPolicy.ts`) turns the ADE
 permission mode into a `CursorSdkPermissionPolicy`: chat mode, approval policy,
 hard guards, orchestration-lead flag, and a `fullAuto` marker.

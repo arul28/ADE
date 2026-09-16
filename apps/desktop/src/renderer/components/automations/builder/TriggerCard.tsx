@@ -20,6 +20,7 @@ import {
   sourceForTriggerType,
   TRIGGER_SOURCES,
   type TriggerSource,
+  type TriggerSourceDef,
 } from "../triggerCatalog";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
@@ -211,16 +212,23 @@ function sessionTriggerHint(type: string): string {
   return "Runs after an agent session ends.";
 }
 
+export function triggerSourcesForConnection(cursorCloudConnected: boolean): readonly TriggerSourceDef[] {
+  return TRIGGER_SOURCES.filter((source) => source.value !== "cursor" || cursorCloudConnected);
+}
+
 export function TriggerCard({
   trigger,
   ingressStatus,
   onChange,
   onIngressChanged,
+  cursorCloudConnected = false,
 }: {
   trigger: AutomationTrigger;
   ingressStatus: AutomationIngressStatus | null;
   onChange: (next: AutomationTrigger) => void;
   onIngressChanged?: () => void;
+  /** The Cursor source is an integration surface, so hide it until auth is confirmed. */
+  cursorCloudConnected?: boolean;
 }) {
   const source = sourceForTriggerType(trigger.type);
   const def = sourceDef(source);
@@ -236,7 +244,7 @@ export function TriggerCard({
     <div className="space-y-3">
       {/* Source picker */}
       <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
-        {TRIGGER_SOURCES.map((s) => {
+        {triggerSourcesForConnection(cursorCloudConnected).map((s) => {
           const Icon = s.icon;
           const active = s.value === source;
           const iconWeight = s.value === "github" || active ? "fill" : "regular";

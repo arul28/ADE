@@ -1,7 +1,14 @@
 import { memo, useCallback } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Star, Lightning } from "@phosphor-icons/react";
-import { formatPiProviderLabel, modelSupportsFastMode, usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
+import {
+  formatPiProviderLabel,
+  modelSupportsFastMode,
+  modelSupportsServiceTier,
+  usesCodexNamedEffortLabels,
+  type ModelDescriptor,
+} from "../../../../shared/modelRegistry";
+import type { CursorCloudServiceTier } from "../../../../shared/types/config";
 import { ModelRowLogo } from "../ProviderLogos";
 import { cn } from "../../ui/cn";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
@@ -62,6 +69,10 @@ export type ModelListRowProps = {
    * row (plain toggle) and a non-selected one (select + enable).
    */
   onFastModeChange?: (modelId: string, next: boolean) => void;
+  /** Cursor Cloud's nullable fast/standard service-tier affordance. */
+  serviceTierMode?: boolean;
+  serviceTier?: CursorCloudServiceTier | null;
+  onServiceTierChange?: (modelId: string, next: CursorCloudServiceTier | null) => void;
 };
 
 const REASONING_LABELS: Record<string, string> = {
@@ -97,10 +108,17 @@ export const ModelListRow = memo(function ModelListRow({
   inlineReasoningChip,
   fastModeOn = false,
   onFastModeChange,
+  serviceTierMode = false,
+  serviceTier = null,
+  onServiceTierChange,
 }: ModelListRowProps) {
   const sub = subProviderLabel(model);
   const localBadge = isLocalModel(model);
-  const showFastChip = Boolean(onFastModeChange) && modelSupportsFastMode(model);
+  const showFastChip = !serviceTierMode && Boolean(onFastModeChange) && modelSupportsFastMode(model);
+  const showServiceTierChip = serviceTierMode
+    && Boolean(onServiceTierChange)
+    && (modelSupportsServiceTier(model, "fast") || modelSupportsServiceTier(model, "standard"));
+  const activeTier = serviceTierMode ? serviceTier : (fastModeOn ? "fast" : null);
   const reducedMotion = usePrefersReducedMotion();
 
   const handleSelect = useCallback(() => {
@@ -191,6 +209,36 @@ export const ModelListRow = memo(function ModelListRow({
       }
     },
     [fastModeOn, model.id, onFastModeChange],
+  );
+
+  const handleServiceTierClick = useCallback(
+    (event: React.MouseEvent) => {
+      event.stopPropagation();
+      event.preventDefault();
+      const supported = [
+        ...(modelSupportsServiceTier(model, "fast") ? ["fast" as const] : []),
+        ...(modelSupportsServiceTier(model, "standard") ? ["standard" as const] : []),
+      ];
+      const currentIndex = activeTier ? supported.indexOf(activeTier) : -1;
+      const next = currentIndex < 0
+        ? (supported[0] ?? null)
+        : currentIndex + 1 < supported.length
+          ? supported[currentIndex + 1] ?? null
+          : null;
+      onServiceTierChange?.(model.id, next);
+    },
+    [activeTier, model, onServiceTierChange],
+  );
+
+  const handleServiceTierKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        handleServiceTierClick(event as unknown as React.MouseEvent);
+      }
+    },
+    [handleServiceTierClick],
   );
 
   const handleRowKeyDown = useCallback(
@@ -304,36 +352,43 @@ export const ModelListRow = memo(function ModelListRow({
             ) : null}
           </span>
 
-          {showFastChip ? (
+          {showFastChip || showServiceTierChip ? (
             <button
               type="button"
               tabIndex={isFocused ? 0 : -1}
-              data-model-picker-fast-toggle="true"
-              aria-label={`Fast mode for ${model.displayName}`}
-              aria-pressed={fastModeOn}
-              data-fast-on={fastModeOn ? "true" : undefined}
+              data-model-picker-fast-toggle={showFastChip ? "true" : undefined}
+              data-model-picker-service-tier={showServiceTierChip ? "true" : undefined}
+              aria-label={showServiceTierChip
+                ? `Service tier for ${model.displayName}`
+                : `Fast mode for ${model.displayName}`}
+              aria-pressed={activeTier != null}
+              data-fast-on={activeTier === "fast" ? "true" : undefined}
               title={
-                fastModeOn
+                showServiceTierChip
+                  ? activeTier
+                    ? `${activeTier === "fast" ? "Fast" : "Standard"} tier selected — click to cycle`
+                    : "Leave service tier unset — click to choose a tier"
+                  : fastModeOn
                   ? "Fast mode on"
                   : isActive
                     ? "Enable fast mode"
                     : `Use ${model.displayName} in fast mode`
               }
-              onClick={handleFastChipClick}
-              onKeyDown={handleFastChipKeyDown}
+              onClick={showServiceTierChip ? handleServiceTierClick : handleFastChipClick}
+              onKeyDown={showServiceTierChip ? handleServiceTierKeyDown : handleFastChipKeyDown}
               className={cn(
                 "ml-1 inline-flex h-4 shrink-0 items-center gap-1 self-center rounded-full border px-1.5",
                 "text-[9px] font-semibold uppercase leading-none tracking-wide",
                 // Rest reads as plainly off; hover only darkens; the press itself
                 // is the depress; "on" is the only violet state.
                 reducedMotion ? "transition-none" : "transition-[color,background-color,border-color,transform] duration-100 active:scale-[0.97]",
-                fastModeOn
+                activeTier
                   ? "border-violet-400/50 bg-violet-500/85 text-white shadow-[0_0_0_1px_rgba(139,92,246,0.20)] hover:bg-violet-500 active:bg-violet-500/70"
                   : "border-white/[0.08] bg-white/[0.02] text-muted-fg/55 hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg/80 active:bg-white/[0.12]",
               )}
             >
-              <Lightning size={8} weight={fastModeOn ? "fill" : "regular"} />
-              <span>Fast</span>
+              <Lightning size={8} weight={activeTier === "fast" ? "fill" : "regular"} />
+              <span>{showServiceTierChip ? (activeTier === "fast" ? "Fast" : activeTier === "standard" ? "Standard" : "Tier") : "Fast"}</span>
             </button>
           ) : null}
 

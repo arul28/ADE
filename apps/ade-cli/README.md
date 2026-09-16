@@ -759,7 +759,17 @@ ade actions call stream_events --arg category=runtime --json                    
 ade --role cto actions run ai.piLoginSubmit --input-json "$(jq -n --arg v "$PI_API_KEY" '{providerId:"anthropic",requestId:"req-1",value:$v}')"  # answer a prompt; keep the value out of argv and shell history
 ade --role cto actions run ai.piLoginCancel --input-json '{"providerId":"anthropic"}'
 ade cursor cloud agents list --text
+ade cursor cloud agents list --archived --limit 100 --text
 ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
+ade cursor cloud agents resume --agent bc-... --prompt "address the review comments"
+ade cursor cloud agents archive --agent bc-...
+ade cursor cloud agents unarchive --agent bc-...
+ade cursor cloud runs list --agent bc-... --text
+ade cursor cloud artifacts list --agent bc-... --text
+ade cursor cloud artifacts download --agent bc-... --path dist/report.zip --out ./report.zip
+ade cursor cloud repos list --text
+ade cursor cloud models list --text
+ade cursor cloud me --text
 ade --role cto github app-auth login              # device-flow authorize the machine ADE GitHub App (headless/brain)
 ade github app-auth status --text                 # show the GitHub App credential state, login, expiry, and any renewal failure
 ade --role cto github app-auth clear              # remove the stored GitHub App authorization

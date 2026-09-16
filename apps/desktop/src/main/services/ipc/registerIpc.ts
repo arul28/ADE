@@ -5404,7 +5404,9 @@ export function registerIpc({
     async (_event, arg: CursorCloudCreateRunRequest): Promise<CursorCloudCreateRunResult> => {
       const ctx = getCtx();
       requireAppContextServices(ctx, ["aiIntegrationService"] as const);
-      return ctx.aiIntegrationService.createCursorCloudRun(arg);
+      const result = await ctx.aiIntegrationService.createCursorCloudRun(arg);
+      ctx.cursorCloudFleetService?.invalidateCache();
+      return result;
     },
   );
 
@@ -5421,18 +5423,21 @@ export function registerIpc({
     const ctx = getCtx();
     requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     await ctx.aiIntegrationService.archiveCursorCloudAgent(arg.agentId);
+    ctx.cursorCloudFleetService?.invalidateCache();
   });
 
   ipcMain.handle(IPC.aiCursorCloudUnarchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     await ctx.aiIntegrationService.unarchiveCursorCloudAgent(arg.agentId);
+    ctx.cursorCloudFleetService?.invalidateCache();
   });
 
   ipcMain.handle(IPC.aiCursorCloudDeleteAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     await ctx.aiIntegrationService.deleteCursorCloudAgent(arg.agentId);
+    ctx.cursorCloudFleetService?.invalidateCache();
   });
 
   ipcMain.handle(
@@ -5483,6 +5488,7 @@ export function registerIpc({
       const ctx = getCtx();
       requireAppContextServices(ctx, ["agentChatService"] as const);
       await ctx.agentChatService.cancelCursorCloudRun(arg);
+      ctx.cursorCloudFleetService?.invalidateCache();
     },
   );
 
@@ -5491,7 +5497,9 @@ export function registerIpc({
     async (_event, arg: CursorCloudFollowUpRequest): Promise<CursorCloudFollowUpResult> => {
       const ctx = getCtx();
       requireAppContextServices(ctx, ["agentChatService"] as const);
-      return await ctx.agentChatService.cursorCloudFollowUp(arg);
+      const result = await ctx.agentChatService.cursorCloudFollowUp(arg);
+      ctx.cursorCloudFleetService?.invalidateCache();
+      return result;
     },
   );
 
@@ -5507,6 +5515,7 @@ export function registerIpc({
         ...(arg.modelId ? { modelId: arg.modelId } : {}),
         ...(arg.reasoningEffort !== undefined ? { reasoningEffort: arg.reasoningEffort } : {}),
         ...(arg.fastMode !== undefined ? { fastMode: arg.fastMode } : {}),
+        ...(arg.serviceTier !== undefined ? { serviceTier: arg.serviceTier } : {}),
       });
     },
   );

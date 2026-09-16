@@ -1147,6 +1147,8 @@ export type CursorCloudModelParameter = {
   value: string;
 };
 
+export type CursorCloudServiceTier = "fast" | "standard";
+
 export type CursorCloudAgentSummary = {
   agentId: string;
   name: string;
@@ -1191,6 +1193,8 @@ export type CursorCloudCreateRunRequest = {
   reasoningEffort?: string | null;
   /** Explicit service tier selection from ADE's model controls. */
   fastMode?: boolean | null;
+  /** Explicit Cursor service tier. Null/absent leaves the tier unset. */
+  serviceTier?: CursorCloudServiceTier | null;
   workOnCurrentBranch?: boolean;
   autoCreatePR?: boolean;
   skipReviewerRequest?: boolean;
@@ -1221,7 +1225,10 @@ export type CursorCloudCreateRunResult = {
 export type CursorCloudFollowUpRequest = {
   agentId: string;
   prompt: string;
+  /** Stable key for safe redelivery of this turn. */
+  idempotencyKey?: string | null;
   modelId?: string | null;
+  serviceTier?: CursorCloudServiceTier | null;
 };
 
 export type CursorCloudFollowUpResult = {
@@ -1299,10 +1306,11 @@ export type CursorCloudFleetEntry = {
   modelId: string | null;
   ownership: CursorCloudFleetOwnership;
   /**
-   * Why this entry is in the open project's fleet: a linked ADE session
-   * ("session"), a repo match against the project origin ("repo"), or both.
+   * Why this entry is in the fleet: a linked ADE session ("session"), a repo
+   * match against the project origin ("repo"), both, or an account-level row
+   * that is not linked to this project ("account").
    */
-  matchedBy: "session" | "repo" | "both";
+  matchedBy: "session" | "repo" | "both" | "account";
 };
 
 export type CursorCloudFleetRelayState = "unconfigured" | "ready" | "error";
@@ -1339,6 +1347,7 @@ export type CursorCloudOpenChatRequest = {
   /** Preserve the launcher's exact Cursor model controls on a newly materialized chat. */
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  serviceTier?: CursorCloudServiceTier | null;
   /**
    * Predetermined ADE session id, typically the same id stamped as
    * cloud.metadata.ade_session_id at Agent.create.

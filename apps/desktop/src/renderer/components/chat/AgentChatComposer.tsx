@@ -89,6 +89,7 @@ import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
 import { ContextUsageDial } from "./usage/ContextUsageDial";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
@@ -1667,6 +1668,7 @@ export function AgentChatComposer({
   allowCliOnlyModels = false,
   reasoningEffort,
   fastMode = false,
+  cursorCloudServiceTier = null,
   usageViewModel = null,
   compactionPulse = false,
   onCompactContext,
@@ -1712,6 +1714,7 @@ export function AgentChatComposer({
   onModelChange,
   onReasoningEffortChange,
   onFastModeChange,
+  onCursorCloudServiceTierChange,
   onDraftChange,
   mentionLabels,
   onMentionLabelChange,
@@ -1816,6 +1819,7 @@ export function AgentChatComposer({
   allowCliOnlyModels?: boolean;
   reasoningEffort: string | null;
   fastMode?: boolean;
+  cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
   /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */
@@ -1890,9 +1894,10 @@ export function AgentChatComposer({
   orchestrationRole?: OrchestrationRole | null;
   messagePlaceholder?: string;
   inputLockMessage?: string | null;
-  onModelChange: (modelId: string, options?: { fastMode: boolean }) => void;
+  onModelChange: (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onFastModeChange?: (enabled: boolean) => void;
+  onCursorCloudServiceTierChange?: (tier: CursorCloudServiceTier | null) => void;
   onDraftChange: (value: string) => void;
   /** Persisted display labels keyed by their canonical mention token. */
   mentionLabels?: Record<string, string>;
@@ -2048,6 +2053,7 @@ export function AgentChatComposer({
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
 }) {
+  const cursorCloudSessionActive = cursorCloudModeActive || cursorRuntime === "cloud";
   const promptStashRef = useRef<ComposerPromptStashHandle>(null);
   const promptStashButtonEnabled = useRootAppStore((state) => state.promptStashButtonEnabled);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
@@ -5989,7 +5995,11 @@ export function AgentChatComposer({
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastMode={fastModeActive}
                   fastModeSupported={fastModeSupported}
-                  {...(onFastModeChange ? { onFastModeChange } : {})}
+                  {...(cursorCloudSessionActive ? {
+                    serviceTierMode: true,
+                    serviceTier: cursorCloudServiceTier,
+                    onServiceTierChange: onCursorCloudServiceTierChange,
+                  } : onFastModeChange ? { onFastModeChange } : {})}
                 />
                 <ReasoningEffortPicker
                   modelId={modelId}

@@ -127,7 +127,7 @@ struct CursorCloudFleetEntry: Codable, Equatable, Hashable, Identifiable {
   var prUrl: String?
   var modelId: String?
   var ownership: CursorCloudFleetOwnership
-  /// "session", "repo", or "both".
+  /// "session", "repo", "both", or "account".
   var matchedBy: String?
 
   var id: String { agent.agentId }
@@ -151,6 +151,75 @@ struct CursorCloudFleetResult: Codable, Equatable {
   var fetchedAt: String?
 
   var relayLive: Bool { relayState == "ready" }
+}
+
+/// Minimal projection of `ai.getStatus` used for the same connection gate as
+/// the desktop Cursor Cloud surfaces. Keeping this payload narrow lets iOS
+/// talk to newer hosts without coupling the view to the full AI settings
+/// schema.
+struct CursorCloudConnectionStatus: Codable, Equatable {
+  struct ProviderConnection: Codable, Equatable {
+    var authAvailable: Bool?
+  }
+
+  var providerConnections: [String: ProviderConnection]?
+
+  var connected: Bool {
+    providerConnections?["cursor"]?.authAvailable == true
+  }
+}
+
+struct CursorCloudArtifactSummary: Codable, Equatable, Hashable, Identifiable {
+  var path: String
+  var sizeBytes: Int?
+  var updatedAt: String?
+  var mimeType: String?
+
+  var id: String { path }
+}
+
+struct CursorCloudRepository: Codable, Equatable, Hashable, Identifiable {
+  var url: String
+
+  var id: String { url }
+}
+
+struct CursorCloudRunSummary: Codable, Equatable, Hashable, Identifiable {
+  var runId: String
+  var agentId: String
+  var status: String
+  var modelId: String?
+  var git: CursorCloudRunGit?
+
+  var id: String { runId }
+
+  var primaryBranch: String? {
+    git?.branches?.first(where: { !($0.branch?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) })?.branch
+  }
+
+  var primaryPrUrl: String? {
+    git?.branches?.first(where: { !($0.prUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) })?.prUrl
+  }
+}
+
+struct CursorCloudRunGit: Codable, Equatable, Hashable {
+  var branches: [CursorCloudRunBranch]?
+}
+
+struct CursorCloudRunBranch: Codable, Equatable, Hashable {
+  var repoUrl: String?
+  var branch: String?
+  var prUrl: String?
+}
+
+struct CursorCloudRunListResult: Codable, Equatable {
+  var items: [CursorCloudRunSummary]
+  var nextCursor: String?
+}
+
+struct CursorCloudCreateRunResult: Codable, Equatable {
+  var agent: CursorCloudAgentSummary
+  var run: CursorCloudRunSummary
 }
 
 struct CursorCloudResolvedLane: Codable, Equatable {

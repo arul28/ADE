@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { ClockCounterClockwise, PencilSimple, Play } from "@phosphor-icons/react";
 import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
+  AiSettingsStatus,
   AutomationDraftConfirmationRequirement,
   AutomationDraftIssue,
   AutomationIngressStatus,
@@ -91,6 +92,19 @@ function ruleMatchesSearch(rule: AutomationRuleSummary, query: string): boolean 
 
 type DetailView = "builder" | "history";
 
+export async function readCursorCloudConnectionForAutomation(
+  getStatus: () => Promise<AiSettingsStatus>,
+): Promise<boolean> {
+  try {
+    const status = await getStatus();
+    return status?.providerConnections?.cursor?.authAvailable === true;
+  } catch {
+    // A stale or unavailable AI bridge must not prevent unrelated automation
+    // data from loading; it only means the Cursor trigger is unavailable.
+    return false;
+  }
+}
+
 export function AutomationsWorkspace({
   active = true,
   pendingDraft,
@@ -124,6 +138,7 @@ export function AutomationsWorkspace({
   const manualRunPendingRef = useRef(false);
   const [running, setRunning] = useState(false);
   const [configTrustRequired, setConfigTrustRequired] = useState(false);
+  const [cursorCloudConnected, setCursorCloudConnected] = useState(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
   const savedSnapshotRef = useRef<string | null>(null);
 
@@ -152,23 +167,27 @@ export function AutomationsWorkspace({
     setLoading(true);
     setError(null);
     try {
-      const [nextRules, nextSuites, nextLanes, nextIngress, snapshot] = await Promise.all([
+      const [nextRules, nextSuites, nextLanes, nextIngress, snapshot, aiStatus] = await Promise.all([
         window.ade.automations.list(),
         window.ade.tests.listSuites(),
         window.ade.lanes.list({ includeArchived: false, includeStatus: false }),
         window.ade.automations.getIngressStatus(),
         window.ade.projectConfig.get(),
+        Promise.resolve()
+          .then(() => readCursorCloudConnectionForAutomation(() => window.ade.ai.getStatus())),
       ]);
       setRules(nextRules);
       setSuites(nextSuites);
       setLanes(nextLanes);
       setIngressStatus(nextIngress);
       setConfigTrustRequired(Boolean(snapshot.trust.requiresSharedTrust));
+      setCursorCloudConnected(aiStatus);
       setSelectedRuleId((current) => {
         if (current && nextRules.some((r) => r.id === current)) return current;
         return nextRules[0]?.id ?? null;
       });
     } catch (err) {
+      setCursorCloudConnected(false);
       setError(extractError(err));
     } finally {
       setLoading(false);
@@ -452,6 +471,7 @@ export function AutomationsWorkspace({
               onSimulate={() => void simulateDraft()}
               onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
               onIngressChanged={() => void refresh()}
+              cursorCloudConnected={cursorCloudConnected}
               saving={saving}
               simulating={simulating}
               running={running}

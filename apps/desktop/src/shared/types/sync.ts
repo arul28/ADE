@@ -2020,9 +2020,25 @@ export type SyncRemoteCommandAction =
   | "ai.getStatus"
   | "ai.updateConfig"
   | "ai.deleteApiKey"
+  | "ai.listCursorCloudRepositories"
+  | "ai.listCursorCloudAgents"
+  | "ai.listCursorCloudRuns"
+  | "ai.createCursorCloudRun"
+  | "ai.getCursorCloudLaneSecretNames"
+  | "ai.archiveCursorCloudAgent"
+  | "ai.unarchiveCursorCloudAgent"
+  | "ai.deleteCursorCloudAgent"
+  | "ai.getCursorCloudAgent"
+  | "ai.getCursorAgentUsage"
+  | "ai.listCursorCloudArtifacts"
+  | "ai.downloadCursorCloudArtifact"
+  | "ai.cursorCloudStreamRun"
+  | "ai.cancelCursorCloudRun"
+  | "ai.cursorCloudFollowUp"
   | "ai.openCursorCloudChat"
   | "ai.watchCursorCloudMirror"
   | "ai.cursorCloudFleet"
+  | "ai.getCursorCloudFleet"
   | "ai.cursorCloudResolveLane"
   | "ai.cursorCloudPullIntoLane"
   | "ai.cursorCloudStopRun"
@@ -2125,6 +2141,8 @@ export type SyncRemoteCommandAction =
 
 export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;
+  /** Allows only an authenticated phone/browser controller, never a desktop viewer. */
+  controllerAllowed?: boolean;
   requiresApproval?: boolean;
   localOnly?: boolean;
   queueable?: boolean;

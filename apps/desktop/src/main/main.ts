@@ -4261,6 +4261,7 @@ app.whenReady().then(async () => {
           eventId: record.eventId,
           createdAt: record.createdAt,
         });
+        cursorCloudFleetService?.invalidateCache();
         if (!automationService) return;
         await Promise.all(buildCursorCloudAutomationDispatches(record).map((dispatch) =>
           automationService.dispatchIngressTrigger(dispatch).catch((error) => {

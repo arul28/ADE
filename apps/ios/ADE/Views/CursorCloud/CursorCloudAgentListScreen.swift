@@ -12,11 +12,12 @@ struct CursorCloudAgentListScreen: View {
   @ObservedObject var store: CursorCloudPaneStore
   var onClose: () -> Void = {}
 
-  private enum ListContent { case skeletons, failure(String), connectPrompt, empty, agents }
+  private enum ListContent { case skeletons, failure(String), connectPrompt, empty, archivedOnly, agents }
 
   private var contentMode: ListContent {
     if store.keyMissing { return .connectPrompt }
     if !store.visibleEntries.isEmpty { return .agents }
+    if store.archivedCount > 0 { return .archivedOnly }
     switch store.phase {
     case .idle, .loading: return .skeletons
     case .failed(let message): return .failure(message)
@@ -35,6 +36,8 @@ struct CursorCloudAgentListScreen: View {
         connectPrompt
       case .empty:
         emptyState
+      case .archivedOnly:
+        archivedOnlyState
       case .agents:
         agentSections
       }
@@ -155,12 +158,36 @@ struct CursorCloudAgentListScreen: View {
     Section {
       VStack(spacing: 10) {
         CursorCloudMark(size: 26)
-        Text("No cloud agents for this project")
+        Text("No cloud agents")
           .font(.headline)
-        Text("Agents launched from a chat composer with a Cursor model — and anything running for this repo on cursor.com — will appear here.")
+        Text("Agents launched from ADE or anywhere on cursor.com appear here for this Cursor account.")
           .font(.caption)
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)
+      }
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 24)
+      .listRowBackground(Color.clear)
+    }
+  }
+
+  private var archivedOnlyState: some View {
+    Section {
+      VStack(spacing: 10) {
+        Image(systemName: "archivebox")
+          .font(.system(size: 24))
+          .foregroundStyle(CursorCloudBrand.primaryBright)
+        Text("All matching agents are archived")
+          .font(.headline)
+        Text("Reveal archived agents to inspect or unarchive them.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
+        Button("Show archived (\(store.archivedCount))") {
+          store.showArchived = true
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(CursorCloudBrand.primary)
       }
       .frame(maxWidth: .infinity)
       .padding(.vertical, 24)

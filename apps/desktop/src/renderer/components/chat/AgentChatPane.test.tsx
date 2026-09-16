@@ -62,6 +62,7 @@ import {
   resolveChatComposerSessionId,
   resolveRenderedChatSessionId,
   resolveUnchangedHistoryTurnActive,
+  resolveCursorCloudServiceTierOnModelChange,
   resetChatBootModelRefreshMemoForTests,
   resolveSnapshotHistoryCursor,
   selectAgentChatSessionViewEvictions,
@@ -11767,6 +11768,14 @@ describe("AgentChatPane per-chat runtime routing", () => {
 describe("AgentChatPane Cursor Cloud composer mode", () => {
   const CURSOR_MODEL_ID = "cursor/composer-cloud";
 
+  it("preserves a tier-row selection while ordinary model selection clears the tier", () => {
+    expect(resolveCursorCloudServiceTierOnModelChange(true, { serviceTier: "fast" })).toBe("fast");
+    expect(resolveCursorCloudServiceTierOnModelChange(true, { serviceTier: "standard" })).toBe("standard");
+    expect(resolveCursorCloudServiceTierOnModelChange(true)).toBeNull();
+    expect(resolveCursorCloudServiceTierOnModelChange(true, {})).toBeNull();
+    expect(resolveCursorCloudServiceTierOnModelChange(false, { serviceTier: "fast" })).toBeNull();
+  });
+
   function seedCursorChatCatalog(): string {
     const model = createDynamicCursorCliModelDescriptor("composer-cloud", "Composer Cloud", {
       cursorAvailability: { cli: true, sdk: true },
@@ -11889,8 +11898,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       pinnedReasoningEffort?: string | null;
     },
   ) {
-    // Pin the draft to the Cursor chat model the way a returning user's saved launch config does;
-    // cloud mode is only offered for a Cursor model.
+    // Pin the draft to the Cursor chat model the way a returning user's saved launch config does.
     const { pinnedModelId, pinnedReasoningEffort, ...paneArgs } = args ?? {};
     const workDraftKind = paneArgs.workDraftKind ?? "chat";
     const launchConfigKey = [
@@ -11941,6 +11949,20 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     expect(await screen.findByRole("button", { name: "Send to Cursor Cloud" })).toBeTruthy();
   });
 
+  it("offers Cursor Cloud before a connected draft has selected a Cursor model", async () => {
+    installAdeMocks({
+      sessions: [],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+    });
+    installCursorCloudMocks();
+    renderCursorCloudDraft({ pinnedModelId: "anthropic/claude-sonnet-5" });
+
+    await selectCursorCloudMachine();
+
+    expect(await screen.findByRole("button", { name: "Send to Cursor Cloud" })).toBeTruthy();
+  });
+
   it("opens the all-agents Cursor Cloud panel from the composer overflow", async () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
     const { listRepositories } = installCursorCloudMocks();
@@ -11978,8 +12000,8 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       laneId: "lane-1",
       modelId: "composer-cloud",
       reasoningEffort: null,
-      fastMode: false,
     })));
+    expect(openChat.mock.calls.at(-1)?.[0]).not.toHaveProperty("serviceTier");
   });
 
   it("sends a CLI-kind draft to Cursor Cloud when the machine is switched to cloud", async () => {
@@ -11995,8 +12017,8 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       promptText: "Run this in Cursor Cloud.",
       modelId: "composer-cloud",
       reasoningEffort: null,
-      fastMode: false,
     })));
+    expect(createRun.mock.calls.at(-1)?.[0]).not.toHaveProperty("serviceTier");
   });
 
   it("creates the lane and pushes its branch before starting a cloud agent on auto-create", async () => {
@@ -12378,8 +12400,8 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await waitFor(() => expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
       modelId: "composer-2.5",
       reasoningEffort: null,
-      fastMode: false,
     })));
+    expect(createRun.mock.calls.at(-1)?.[0]).not.toHaveProperty("serviceTier");
   });
 
   /**

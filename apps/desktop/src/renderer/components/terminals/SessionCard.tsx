@@ -44,7 +44,7 @@ import {
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
@@ -80,6 +80,12 @@ import {
   sessionElapsedAnchor,
 } from "../../../shared/sessionStatusPresentation";
 import { LaneNamingLabel, NamingPendingLabel } from "./LaneNamingLabel";
+import {
+  AI_STATUS_CACHE_INVALIDATED_EVENT,
+  AI_STATUS_CACHE_UPDATED_EVENT,
+  getAiStatusCached,
+  peekAiStatusCached,
+} from "../../lib/aiDiscoveryCache";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The Work-sidebar session card.
@@ -167,6 +173,10 @@ const DELTA_CHIP_STYLE: React.CSSProperties = {
   letterSpacing: "0",
   borderRadius: 4,
 };
+
+export function shouldShowCursorCloudRowBadge(connected: boolean, agentHref: string | null): boolean {
+  return connected && Boolean(agentHref);
+}
 
 function orchestrationRoleA11yLabel(role: OrchestrationRole, tag?: string | null): string {
   if (role === "worker" && tag && tag.trim().length > 0) {
@@ -487,6 +497,52 @@ export const SessionCard = React.memo(function SessionCard({
   const canonicalUiState = sessionCanonicalUiState(sessionAttentionInput);
   const canonicalPhase = canonicalUiState.phase;
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const activeProjectRoot = useAppStore(selectActiveProjectRoot);
+  const projectBinding = useAppStore((s) => s.projectBinding);
+  const hasCursorCloudAgent = Boolean(session.cursorCloudAgentId?.trim());
+  const [cursorCloudConnected, setCursorCloudConnected] = React.useState(() => {
+    if (!hasCursorCloudAgent) return false;
+    return peekAiStatusCached(activeProjectRoot, projectBinding)?.providerConnections?.cursor?.authAvailable === true;
+  });
+
+  React.useEffect(() => {
+    if (!hasCursorCloudAgent) {
+      setCursorCloudConnected(false);
+      return undefined;
+    }
+    let cancelled = false;
+    const applyCached = () => {
+      const cached = peekAiStatusCached(activeProjectRoot, projectBinding);
+      if (!cancelled) {
+        setCursorCloudConnected(cached?.providerConnections?.cursor?.authAvailable === true);
+      }
+    };
+    applyCached();
+    if (typeof window === "undefined" || typeof window.ade?.ai?.getStatus !== "function") {
+      return undefined;
+    }
+    void getAiStatusCached({
+      projectRoot: activeProjectRoot,
+      pin: projectBinding,
+    }).then((status) => {
+      if (!cancelled) setCursorCloudConnected(status.providerConnections?.cursor?.authAvailable === true);
+    }).catch(() => undefined);
+
+    const isRelevant = (event: Event): boolean => {
+      const projectRoot = (event as CustomEvent<{ projectRoot?: string | null }>).detail?.projectRoot;
+      return !projectRoot || !activeProjectRoot || projectRoot === activeProjectRoot;
+    };
+    const onCacheChange = (event: Event) => {
+      if (isRelevant(event)) applyCached();
+    };
+    window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onCacheChange);
+    window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onCacheChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onCacheChange);
+      window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onCacheChange);
+    };
+  }, [activeProjectRoot, hasCursorCloudAgent, projectBinding]);
   const delta = useSessionDelta(
     session.id,
     deltaEnabled && (!isRemoteProject || isSelected),
@@ -1129,7 +1185,7 @@ export const SessionCard = React.memo(function SessionCard({
   ) : null;
 
   const cloudAgentHref = cursorCloudAgentWebUrl(session.cursorCloudAgentId);
-  const cursorCloudLink = cloudAgentHref ? (
+  const cursorCloudLink = shouldShowCursorCloudRowBadge(cursorCloudConnected, cloudAgentHref) ? (
     <button
       type="button"
       data-testid="session-cursor-cloud-link"

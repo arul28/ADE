@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { CaretDown, Lightning } from "@phosphor-icons/react";
 import {
   modelSupportsFastMode,
+  modelSupportsServiceTier,
   type AuthType,
   type ModelDescriptor,
   type ProviderFamily,
@@ -25,6 +26,7 @@ import type {
   AgentChatModelCatalogRefreshProvider,
   OpenProjectBinding,
 } from "../../../../shared/types";
+import type { CursorCloudServiceTier } from "../../../../shared/types/config";
 import {
   clearRuntimeCatalogRequest,
   getRuntimeCatalogRequest,
@@ -41,7 +43,7 @@ import {
 
 export type ModelPickerProps = {
   value: string;
-  onChange: (modelId: string, options?: { fastMode: boolean }) => void;
+  onChange: (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => void;
   surfaceKey: string;
   compact?: boolean;
   disabled?: boolean;
@@ -90,6 +92,10 @@ export type ModelPickerProps = {
    * better than `modelSupportsFastMode` for the *selected* model.
    */
   fastModeSupported?: boolean;
+  /** Cursor Cloud's nullable three-state service-tier control. */
+  serviceTierMode?: boolean;
+  serviceTier?: CursorCloudServiceTier | null;
+  onServiceTierChange?: (next: CursorCloudServiceTier | null) => void;
   allowCliOnlyModels?: boolean;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   /**
@@ -126,6 +132,9 @@ export const ModelPicker = memo(function ModelPicker({
   fastModeActive,
   onFastModeToggle,
   fastModeSupported,
+  serviceTierMode = false,
+  serviceTier = null,
+  onServiceTierChange,
   allowCliOnlyModels = false,
   cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   hidePermissionRail = false,
@@ -382,7 +391,7 @@ export const ModelPicker = memo(function ModelPicker({
   );
 
   const handleSelect = useCallback(
-    (modelId: string, options?: { fastMode: boolean }) => {
+    (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => {
       if (options) {
         onChange(modelId, options);
       } else {
@@ -413,6 +422,8 @@ export const ModelPicker = memo(function ModelPicker({
   const legacyFastChip = !onFastModeChange && typeof onFastModeToggle === "function";
   const legacyFastSupported = legacyFastChip
     && (fastModeSupported ?? modelSupportsFastMode(selectedModel));
+  const serviceTierSupported = serviceTierMode
+    && (modelSupportsServiceTier(selectedModel, "fast") || modelSupportsServiceTier(selectedModel, "standard"));
 
   return (
     <div className={cn("inline-flex items-center gap-1.5", className)}>
@@ -439,6 +450,7 @@ export const ModelPicker = memo(function ModelPicker({
             open={open}
             fastMode={fastModeOn && !legacyFastChip}
             {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
+            {...(serviceTierMode ? { serviceTier, serviceTierSupported } : {})}
             className={triggerClassName}
           />
         </Popover.Trigger>
@@ -472,7 +484,21 @@ export const ModelPicker = memo(function ModelPicker({
                 allowRegistryExpansion={!constrainToAvailableModelIds}
                 fastMode={fastModeOn}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
-                {...(onFastModeChange ? { onFastModeChange } : {})}
+                {...(!serviceTierMode && onFastModeChange ? { onFastModeChange } : {})}
+                {...(serviceTierMode ? {
+                  serviceTierMode: true,
+                  serviceTier,
+                  onServiceTierChange: (modelId: string, next: CursorCloudServiceTier | null) => {
+                    const model = modelList.find((entry) => entry.id === modelId);
+                    if (!model) return;
+                    if (modelId === effectiveValue) {
+                      onServiceTierChange?.(next);
+                      return;
+                    }
+                    onChange(modelId, { fastMode: next === "fast", serviceTier: next });
+                    setOpen(false);
+                  },
+                } : {})}
                 {...(filter ? { registryFilter: filter } : {})}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
                 {...(runtimePin ? { runtimePin } : {})}
@@ -557,13 +583,20 @@ export function composeModelPickerTriggerLabel({
   value,
   fastMode = false,
   fastModeSupported,
+  serviceTier,
+  serviceTierSupported,
 }: {
   model: ModelDescriptor | undefined;
   value: string;
   fastMode?: boolean;
   fastModeSupported?: boolean;
+  serviceTier?: CursorCloudServiceTier | null;
+  serviceTierSupported?: boolean;
 }): string {
   const base = model?.displayName ?? (value.trim() || "Select model");
+  if (serviceTier && (serviceTierSupported ?? modelSupportsServiceTier(model, serviceTier))) {
+    return `${base} ${serviceTier === "fast" ? "Fast" : "Standard"}`;
+  }
   const fast = modelPickerTriggerIsFast({
     model,
     fastMode,
@@ -580,13 +613,15 @@ type TriggerProps = {
   open: boolean;
   fastMode: boolean;
   fastModeSupported?: boolean;
+  serviceTier?: CursorCloudServiceTier | null;
+  serviceTierSupported?: boolean;
   className?: string;
 };
 
 const ModelPickerTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ModelPickerTrigger(
-      { model, value, compact, disabled, open, fastMode, fastModeSupported, className, ...rest },
+      { model, value, compact, disabled, open, fastMode, fastModeSupported, serviceTier, serviceTierSupported, className, ...rest },
       ref,
     ) {
       const label = composeModelPickerTriggerLabel({
@@ -594,6 +629,7 @@ const ModelPickerTrigger = memo(
         value,
         fastMode,
         ...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {}),
+        ...(serviceTierSupported !== undefined ? { serviceTier, serviceTierSupported } : {}),
       });
       const showFastGlyph = modelPickerTriggerIsFast({
         model,

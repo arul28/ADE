@@ -16,6 +16,7 @@ import type { SubagentCapability } from "../subagentCapabilities";
 import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
 import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
+import type { CursorCloudServiceTier } from "./config";
 
 export type AgentChatProvider =
   | "codex"
@@ -2004,6 +2005,8 @@ export type AgentChatSession = {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** Cursor Cloud service tier; absent/null means let Cursor choose. */
+  cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
@@ -2143,6 +2146,7 @@ export type AgentChatSessionSummary = {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
@@ -2839,6 +2843,7 @@ export type AgentChatCreateArgs = {
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
@@ -3398,6 +3403,8 @@ export type AgentChatCloudOverrides = {
   workOnCurrentBranch?: boolean;
   prUrl?: string | null;
   skipReviewerRequest?: boolean;
+  /** Cursor Cloud service tier; absent/null leaves the service tier unset. */
+  serviceTier?: CursorCloudServiceTier | null;
   /** Linear identifier kept on the ADE session; not sent as cloud.metadata. */
   linearIssueId?: string | null;
   /** Project secret names to inject as cloud.envVars. Values are resolved in main. */
@@ -3952,6 +3959,7 @@ export type AgentChatUpdateSessionArgs = {
   modelId?: ModelId;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
