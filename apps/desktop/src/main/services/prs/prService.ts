@@ -57,6 +57,7 @@ import type {
   PrConflictAnalysis,
   PrCreationStrategy,
   PrEventPayload,
+  PrDetailBundle,
   PrGroupMemberRole,
   PrHealth,
   PrLaneSummary,
@@ -11759,6 +11760,29 @@ export function createPrService({
     }
   };
 
+  const loadDetailBundle = async (prId: string): Promise<PrDetailBundle> => {
+    const row = getRow(prId);
+    if (!row) throw new Error(`PR not found: ${prId}`);
+    const [statusResult, checksResult, reviewsResult, commentsResult] = await Promise.allSettled([
+      computeStatus(rowToSummary(row)),
+      getChecks(prId),
+      getReviews(prId),
+      getComments(prId),
+    ]);
+    const status = statusResult.status === "fulfilled" ? statusResult.value : null;
+    const checks = checksResult.status === "fulfilled" ? checksResult.value : [];
+    const reviews = reviewsResult.status === "fulfilled" ? reviewsResult.value : [];
+    const comments = commentsResult.status === "fulfilled" ? commentsResult.value : [];
+    upsertSnapshotRow({
+      prId,
+      ...(statusResult.status === "fulfilled" ? { status } : {}),
+      ...(checksResult.status === "fulfilled" ? { checks } : {}),
+      ...(reviewsResult.status === "fulfilled" ? { reviews } : {}),
+      ...(commentsResult.status === "fulfilled" ? { comments } : {}),
+    });
+    return { status, checks, reviews, comments };
+  };
+
   return {
     async createFromLane(args: CreatePrFromLaneArgs): Promise<PrSummary> {
       return await createFromLane(args);
@@ -11951,6 +11975,10 @@ export function createPrService({
       const reviews = await getReviews(prId);
       upsertSnapshotRow({ prId, reviews });
       return reviews;
+    },
+
+    async getDetailBundle(prId: string): Promise<PrDetailBundle> {
+      return await loadDetailBundle(prId);
     },
 
     async getReviewThreads(prId: string): Promise<PrReviewThread[]> {

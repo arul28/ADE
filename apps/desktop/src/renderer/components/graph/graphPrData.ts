@@ -1,13 +1,8 @@
-import type { PrCheck, PrComment, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import type { PrDetailBundle, PrSummary } from "../../../shared/types";
 import { derivePrActivityState } from "../prs/shared/prVisuals";
 import type { GraphPrOverlay } from "./graphTypes";
 
-export type GraphPrDetailBundle = {
-  status: PrStatus | null;
-  checks: PrCheck[];
-  reviews: PrReview[];
-  comments: PrComment[];
-};
+export type GraphPrDetailBundle = PrDetailBundle;
 
 function toTs(value: string | null | undefined): number {
   if (!value) return 0;

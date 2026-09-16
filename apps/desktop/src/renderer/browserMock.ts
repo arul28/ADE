@@ -6040,6 +6040,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         diverged: false,
         recommendedAction: "none",
       }),
+      getSyncStatuses: async (args: any) => Object.fromEntries(
+        (Array.isArray(args?.laneIds) ? args.laneIds : []).map((laneId: string) => [laneId, {
+          hasUpstream: true,
+          upstreamState: "tracking",
+          upstreamRef: "origin/main",
+          ahead: 0,
+          behind: 0,
+          diverged: false,
+          recommendedAction: "none",
+        }]),
+      ),
       getOriginRemote: resolvedArg({
         remoteUrl: "git@github.com:ade/browser-preview.git",
         branch: "main",
@@ -6410,6 +6421,21 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.reviews ??
         MOCK_REVIEWS_BY_PR[prId] ??
         [],
+      getDetailBundle: async (prId: string) => ({
+        status: ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.status ??
+          MOCK_STATUS_BY_PR[prId] ?? {
+            prId,
+            state: "open",
+            checksStatus: "passing",
+            reviewStatus: "none",
+            isMergeable: true,
+            mergeConflicts: false,
+            behindBaseBy: 0,
+          },
+        checks: ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.checks ?? MOCK_CHECKS_BY_PR[prId] ?? [],
+        reviews: ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.reviews ?? MOCK_REVIEWS_BY_PR[prId] ?? [],
+        comments: ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.comments ?? MOCK_COMMENTS_BY_PR[prId] ?? [],
+      }),
       getReviewThreads: resolvedArg([]),
       getDetailByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.detail ?? null,
       getFilesByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.files ?? [],

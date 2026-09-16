@@ -32,6 +32,8 @@ import type {
   GitStashSummary,
   GitSyncArgs,
   GitSyncMode,
+  GitSyncStatusesArgs,
+  GitSyncStatuses,
   GitUpstreamSyncStatus,
   LaneLinearIssue,
   LaneType,
@@ -676,7 +678,7 @@ export function createGitOperationsService({
     return normalized;
   }
 
-  return {
+  const service = {
     async stageFile(args: GitFileActionArgs): Promise<GitActionResult> {
       const filePath = ensureRelativeRepoPath(args.path);
       const { action } = await runLaneOperation({
@@ -1166,6 +1168,28 @@ export function createGitOperationsService({
           recommendedAction
         };
       });
+    },
+
+    async getSyncStatuses(args: GitSyncStatusesArgs): Promise<GitSyncStatuses> {
+      const laneIds = Array.from(
+        new Set(
+          (Array.isArray(args?.laneIds) ? args.laneIds : [])
+            .map((laneId) => typeof laneId === "string" ? laneId.trim() : "")
+            .filter(Boolean),
+        ),
+      );
+      const entries = await Promise.all(
+        laneIds.map(async (laneId) => {
+          try {
+            return [laneId, await this.getSyncStatus({ laneId })] as const;
+          } catch {
+            // Match the Graph's previous per-lane best-effort behavior: one
+            // missing worktree must not blank the other lanes' statuses.
+            return [laneId, null] as const;
+          }
+        }),
+      );
+      return Object.fromEntries(entries);
     },
 
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {
@@ -1802,4 +1826,6 @@ export function createGitOperationsService({
       return action;
     }
   };
+
+  return service;
 }

@@ -7344,7 +7344,15 @@ describe("per-chat runtime routing", () => {
     displayName: "Machine B",
   };
 
-  async function mountBridge(activeBinding: typeof machineA | typeof machineB = machineA) {
+  async function mountBridge(
+    activeBinding: typeof machineA | typeof machineB = machineA,
+    runtimeAction?: (request: {
+      domain?: string;
+      action?: string;
+      args?: unknown;
+      arg?: unknown;
+    }) => unknown | Promise<unknown>,
+  ) {
     const invoke = vi.fn(async (channel: string, arg?: unknown): Promise<unknown> => {
       if (channel === IPC.appGetWindowSession) {
         return {
@@ -7355,8 +7363,9 @@ describe("per-chat runtime routing", () => {
       }
       if (channel === IPC.localRuntimeCallAction || channel === IPC.remoteRuntimeCallAction) {
         const request = (arg as {
-          request?: { domain?: string; action?: string; args?: unknown };
+          request?: { domain?: string; action?: string; args?: unknown; arg?: unknown };
         } | undefined)?.request;
+        if (runtimeAction) return { result: await runtimeAction(request ?? {}) };
         if (request?.domain === "external-sessions" && request.action === "list") {
           return { result: [] };
         }
@@ -7435,6 +7444,41 @@ describe("per-chat runtime routing", () => {
       rootPath: "/repo-a",
       request: { domain: "chat", action: "sendMessage", args: localArgs },
     });
+  });
+
+  it("keeps Graph reads on a legacy bound runtime when batched actions are unavailable", async () => {
+    const status = { hasUpstream: true, upstreamState: "tracking", ahead: 1, behind: 0 };
+    const detail = {
+      status: { prId: "pr-1", isMergeable: true },
+      checks: [{ id: "check-1" }],
+      reviews: [{ id: "review-1" }],
+      comments: [{ id: "comment-1" }],
+    };
+    const { bridge, invoke } = await mountBridge(machineB, async (request) => {
+      if (request.action === "getSyncStatuses" || request.action === "getDetailBundle") {
+        throw new Error(`Action '${request.domain}.${request.action}' is not callable.`);
+      }
+      if (request.domain === "git" && request.action === "getSyncStatus") return status;
+      if (request.domain === "pr" && request.action === "getStatus") return detail.status;
+      if (request.domain === "pr" && request.action === "getChecks") return detail.checks;
+      if (request.domain === "pr" && request.action === "getReviews") return detail.reviews;
+      if (request.domain === "pr" && request.action === "getComments") return detail.comments;
+      throw new Error(`unexpected legacy Graph action: ${request.domain}.${request.action}`);
+    });
+
+    await expect(bridge.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] })).resolves.toEqual({
+      "lane-1": status,
+      "lane-2": status,
+    });
+    await expect(bridge.prs.getDetailBundle("pr-1")).resolves.toEqual(detail);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.gitGetSyncStatuses, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsGetDetailBundle, expect.anything());
+    expect(invoke.mock.calls.filter(([channel, payload]) =>
+      channel === IPC.remoteRuntimeCallAction
+      && ["getSyncStatus", "getStatus", "getChecks", "getReviews", "getComments"].includes(
+        (payload as { request?: { action?: string } })?.request?.action ?? "",
+      )
+    )).toHaveLength(6);
   });
 
   it("routes pinned lane and session lists to This computer without rebinding the window", async () => {

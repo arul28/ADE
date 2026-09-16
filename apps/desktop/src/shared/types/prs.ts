@@ -419,6 +419,14 @@ export type PrSnapshotHydration = {
   updatedAt: string | null;
 };
 
+/** The live sidecars the Graph PR dialog reads together. */
+export type PrDetailBundle = {
+  status: PrStatus | null;
+  checks: PrCheck[];
+  reviews: PrReview[];
+  comments: PrComment[];
+};
+
 export type PrEventPayload =
   | {
       type: "prs-updated";

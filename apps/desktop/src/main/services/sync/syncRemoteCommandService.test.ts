@@ -64,6 +64,7 @@ function createMockPrService() {
     refresh: vi.fn().mockResolvedValue(undefined),
     listSnapshots: vi.fn().mockReturnValue([]),
     getDetail: vi.fn().mockResolvedValue({}),
+    getDetailBundle: vi.fn().mockResolvedValue({ status: null, checks: [], reviews: [], comments: [] }),
     getStatus: vi.fn().mockResolvedValue({}),
     getChecks: vi.fn().mockResolvedValue([]),
     getReviews: vi.fn().mockResolvedValue([]),
@@ -172,6 +173,7 @@ function createMockGitService() {
     undoLastHeadChange: vi.fn().mockResolvedValue(undefined),
     redoLastHeadChange: vi.fn().mockResolvedValue(undefined),
     getSyncStatus: vi.fn().mockResolvedValue(null),
+    getSyncStatuses: vi.fn().mockResolvedValue({}),
     sync: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
     getConflictState: vi.fn().mockResolvedValue(null),
@@ -894,6 +896,15 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toEqual({});
     });
 
+    it("prs.getDetailBundle routes the Graph sidecars through one read", async () => {
+      const bundle = { status: { prId: "pr-42" }, checks: [{ id: "check-1" }], reviews: [], comments: [] };
+      prService.getDetailBundle.mockResolvedValue(bundle);
+
+      await expect(service.execute(makePayload("prs.getDetailBundle", { prId: " pr-42 " })))
+        .resolves.toEqual(bundle);
+      expect(prService.getDetailBundle).toHaveBeenCalledWith("pr-42");
+    });
+
     it("prs.createFromLane parses laneId + title + draft", async () => {
       await service.execute(makePayload("prs.createFromLane", {
         laneId: "lane-1",
@@ -1179,6 +1190,16 @@ describe("createSyncRemoteCommandService", () => {
         laneId: "lane-1",
         mode: "squash",
       }))).rejects.toThrow("git.pull mode must be ff-only, rebase, or merge.");
+    });
+
+    it("git.getSyncStatuses routes normalized lane ids through one batch read", async () => {
+      const statuses = { "lane-1": null, "lane-2": null };
+      gitService.getSyncStatuses.mockResolvedValue(statuses);
+
+      await expect(service.execute(makePayload("git.getSyncStatuses", {
+        laneIds: [" lane-1 ", "", "lane-2"],
+      }))).resolves.toEqual(statuses);
+      expect(gitService.getSyncStatuses).toHaveBeenCalledWith({ laneIds: ["lane-1", "lane-2"] });
     });
 
     it("git undo and redo head-change actions require a lane", async () => {

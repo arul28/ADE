@@ -2,6 +2,7 @@ import type {
   PrMergeContext,
   PrMobileGithubDetailSnapshot,
   PrMobileSnapshot,
+  PrDetailBundle,
   PrSummary,
   PrWithConflicts,
 } from "../../../shared/types";
@@ -60,6 +61,24 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
 
   function read<T>(action: string, args: unknown, fallback: T): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, cacheTtlMs: READ_CACHE_TTL_MS });
+  }
+
+  async function getDetailBundle(prId: string): Promise<PrDetailBundle> {
+    if (commands.hasAction("prs.getDetailBundle")) {
+      return await read<PrDetailBundle>("prs.getDetailBundle", { prId }, {
+        status: null,
+        checks: [],
+        reviews: [],
+        comments: [],
+      });
+    }
+    const [status, checks, reviews, comments] = await Promise.all([
+      read<PrDetailBundle["status"]>("prs.getStatus", { prId }, null).catch(() => null),
+      read<PrDetailBundle["checks"]>("prs.getChecks", { prId }, []).catch(() => []),
+      read<PrDetailBundle["reviews"]>("prs.getReviews", { prId }, []).catch(() => []),
+      read<PrDetailBundle["comments"]>("prs.getComments", { prId }, []).catch(() => []),
+    ]);
+    return { status, checks, reviews, comments };
   }
 
   // ---- Batched GitHub detail ----
@@ -297,6 +316,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       return events.on("prsEvent", listener as never);
     },
     getDetail: (prId: string) => read("prs.getDetail", { prId }, null),
+    getDetailBundle,
     getFiles: (prId: string) => read("prs.getFiles", { prId }, []),
     getCommits: (prId: string) => read("prs.getCommits", { prId }, []),
     getActionRuns: (prId: string) => read("prs.getActionRuns", { prId }, []),

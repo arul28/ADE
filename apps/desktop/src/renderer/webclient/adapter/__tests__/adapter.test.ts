@@ -2425,6 +2425,97 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("routes Graph fan-out reads through one batched sync command and one PR detail command", async () => {
+    fake.descriptors = descriptors(["git.getSyncStatuses", "prs.getDetailBundle"]);
+    const syncStatuses = {
+      "lane-1": { hasUpstream: true, upstreamState: "tracking" },
+      "lane-2": null,
+    };
+    const detail = {
+      status: { prId: "pr-1", isMergeable: true },
+      checks: [{ id: "check-1" }],
+      reviews: [{ id: "review-1" }],
+      comments: [{ id: "comment-1" }],
+    };
+    fake.commandResults.set("git.getSyncStatuses", syncStatuses);
+    fake.commandResults.set("prs.getDetailBundle", detail);
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] })).resolves.toEqual(syncStatuses);
+    await expect(adapter.ade.prs.getDetailBundle("pr-1")).resolves.toEqual(detail);
+
+    expect(fake.commandCalls).toEqual([
+      expect.objectContaining({
+        action: "git.getSyncStatuses",
+        args: { laneIds: ["lane-1", "lane-2"] },
+        opts: { projectId: "project-1" },
+      }),
+      expect.objectContaining({
+        action: "prs.getDetailBundle",
+        args: { prId: "pr-1" },
+        opts: { projectId: "project-1" },
+      }),
+    ]);
+
+    adapter.dispose();
+  });
+
+  it("keeps Graph sync data on a legacy host with only per-lane status reads", async () => {
+    fake.descriptors = descriptors(["git.getSyncStatus"]);
+    const status = { hasUpstream: true, upstreamState: "tracking", ahead: 1, behind: 0 };
+    fake.commandResults.set("git.getSyncStatus", status);
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] })).resolves.toEqual({
+      "lane-1": status,
+      "lane-2": status,
+    });
+    expect(fake.commandCalls.map((call) => call.action)).toEqual([
+      "git.getSyncStatus",
+      "git.getSyncStatus",
+    ]);
+    expect(fake.commandCalls.map((call) => call.args)).toEqual([
+      { laneId: "lane-1" },
+      { laneId: "lane-2" },
+    ]);
+
+    adapter.dispose();
+  });
+
+  it("keeps Graph PR detail data on a legacy host with per-sidecar reads", async () => {
+    fake.descriptors = descriptors([
+      "prs.getStatus",
+      "prs.getChecks",
+      "prs.getReviews",
+      "prs.getComments",
+    ]);
+    const detail = {
+      status: { prId: "pr-1", isMergeable: true },
+      checks: [{ id: "check-1" }],
+      reviews: [{ id: "review-1" }],
+      comments: [{ id: "comment-1" }],
+    };
+    fake.commandResults.set("prs.getStatus", detail.status);
+    fake.commandResults.set("prs.getChecks", detail.checks);
+    fake.commandResults.set("prs.getReviews", detail.reviews);
+    fake.commandResults.set("prs.getComments", detail.comments);
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.prs.getDetailBundle("pr-1")).resolves.toEqual(detail);
+    expect(fake.commandCalls.map((call) => call.action).sort()).toEqual([
+      "prs.getChecks",
+      "prs.getComments",
+      "prs.getReviews",
+      "prs.getStatus",
+    ]);
+    expect(fake.commandCalls.every((call) => call.args.prId === "pr-1")).toBe(true);
+
+    adapter.dispose();
+  });
+
   it("routes GitHub stack reads and mutations through the hosted command bridge", async () => {
     fake.descriptors = descriptors([
       "prs.listGithubStacks",

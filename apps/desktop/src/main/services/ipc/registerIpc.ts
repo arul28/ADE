@@ -325,6 +325,8 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
@@ -396,6 +398,7 @@ import type {
   GetPrCheckLogArgs,
   PrReviewThread,
   PrHealth,
+  PrDetailBundle,
   PrMergeContext,
   PrReview,
   PrStatus,
@@ -10022,6 +10025,11 @@ export function registerIpc({
     return await ctx.gitService.getSyncStatus(arg);
   });
 
+  ipcMain.handle(IPC.gitGetSyncStatuses, async (_event, arg: GitSyncStatusesArgs): Promise<GitSyncStatuses> => {
+    const ctx = ensureGitContext();
+    return await ctx.gitService.getSyncStatuses(arg);
+  });
+
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
     const ctx = ensureGitLaneContext();
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
@@ -11290,6 +11298,10 @@ export function registerIpc({
   ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getDetail(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetDetailBundle, (_e, args: { prId: string }): Promise<PrDetailBundle> => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getDetailBundle(args.prId);
   });
   ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();

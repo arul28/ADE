@@ -1,3 +1,8 @@
+import type {
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
+  GitUpstreamSyncStatus,
+} from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg as Pin } from "./runtimePinGuard";
 
@@ -12,6 +17,36 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
 
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, idempotent });
+  }
+
+  async function getSyncStatuses(args: GitSyncStatusesArgs): Promise<GitSyncStatuses> {
+    const laneIds = Array.from(
+      new Set(
+        (Array.isArray(args?.laneIds) ? args.laneIds : [])
+          .map((laneId) => typeof laneId === "string" ? laneId.trim() : "")
+          .filter(Boolean),
+      ),
+    );
+    if (laneIds.length === 0) return {};
+    if (commands.hasAction("git.getSyncStatuses")) {
+      return await call<GitSyncStatuses>("git.getSyncStatuses", { laneIds }, {});
+    }
+
+    const entries = await Promise.all(
+      laneIds.map(async (laneId) => {
+        try {
+          const status = await commands.call<GitUpstreamSyncStatus | null>(
+            "git.getSyncStatus",
+            { laneId },
+            { fallback: null },
+          );
+          return [laneId, status] as const;
+        } catch {
+          return [laneId, null] as const;
+        }
+      }),
+    );
+    return Object.fromEntries(entries);
   }
 
   /**
@@ -90,6 +125,10 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
     stashList: (args: unknown, pin?: Pin) => guarded("git.stashList", args, pin, []),
     stashClear: (args: unknown, pin?: Pin) => guarded("git.stashClear", args, pin, gitActionFallback, false),
     getSyncStatus: (args: unknown, pin?: Pin) => guarded("git.getSyncStatus", args, pin, null),
+    getSyncStatuses: (args: unknown, pin?: Pin) => {
+      assertWebRuntimePinRoutable("git.getSyncStatuses", pin, infra);
+      return getSyncStatuses(args as GitSyncStatusesArgs);
+    },
     getOriginRemote: (args: unknown, pin?: Pin) =>
       guarded("git.getOriginRemote", args, pin, { remoteUrl: null, branch: null }),
     getOpenPrForBranch: (args: unknown, pin?: Pin) =>

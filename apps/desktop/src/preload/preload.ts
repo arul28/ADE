@@ -323,6 +323,8 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -615,6 +617,7 @@ import type {
   PrConflictAnalysis,
   PrMergeContext,
   PrHealth,
+  PrDetailBundle,
   PrSnapshotHydration,
   PrWithConflicts,
   RebaseNeed,
@@ -1955,6 +1958,62 @@ function callPinnedOrBoundRuntimeActionOr<T>(
 ): Promise<T> {
   if (pin) return callPinnedRuntimeAction<T>(pin, domain, action, request);
   return callProjectRuntimeActionOr<T>(domain, action, request, local);
+}
+
+function isUnsupportedRuntimeActionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not callable|not exposed|not available|unknown action|unsupported action/i.test(message);
+}
+
+function normalizeGraphSyncLaneIds(args: GitSyncStatusesArgs): string[] {
+  return Array.from(
+    new Set(
+      (Array.isArray(args?.laneIds) ? args.laneIds : [])
+        .map((laneId) => typeof laneId === "string" ? laneId.trim() : "")
+        .filter(Boolean),
+    ),
+  );
+}
+
+async function readLegacyGraphSyncStatuses(
+  laneIds: string[],
+  pin?: OpenProjectBinding | null,
+): Promise<GitSyncStatuses> {
+  const entries = await Promise.all(
+    laneIds.map(async (laneId) => {
+      try {
+        const status = await callPinnedOrBoundRuntimeActionOr<GitUpstreamSyncStatus>(
+          pin,
+          "git",
+          "getSyncStatus",
+          { args: { laneId } },
+          () => ipcRenderer.invoke(IPC.gitGetSyncStatus, { laneId }),
+        );
+        return [laneId, status] as const;
+      } catch {
+        return [laneId, null] as const;
+      }
+    }),
+  );
+  return Object.fromEntries(entries);
+}
+
+async function readLegacyGraphPrDetailBundle(prId: string): Promise<PrDetailBundle> {
+  const [status, checks, reviews, comments] = await Promise.all([
+    callPrReadRuntimeActionOr<PrStatus | null>(null, "getStatus", { arg: prId }, () =>
+      ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
+    ).catch(() => null),
+    callPrReadRuntimeActionOr<PrCheck[]>(null, "getChecks", { arg: prId }, () =>
+      ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
+    ).catch(() => []),
+    callPrReadRuntimeActionOr<PrReview[]>(null, "getReviews", { arg: prId }, () =>
+      ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
+    ).catch(() => []),
+    callPrReadRuntimeActionOr<PrComment[]>(null, "getComments", { arg: prId }, () =>
+      ipcRenderer.invoke(IPC.prsGetComments, { prId }),
+    ).catch(() => []),
+  ]);
+  return { status, checks, reviews, comments };
 }
 
 // A lane's PR record lives in the `.ade` database of the machine that owns the
@@ -9680,6 +9739,25 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
       ),
+    getSyncStatuses: async (
+      args: GitSyncStatusesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitSyncStatuses> => {
+      const laneIds = normalizeGraphSyncLaneIds(args);
+      if (laneIds.length === 0) return {};
+      try {
+        return await callPinnedOrBoundRuntimeActionOr<GitSyncStatuses>(
+          pin,
+          "git",
+          "getSyncStatuses",
+          { args: { laneIds } },
+          () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, { laneIds }),
+        );
+      } catch (error) {
+        if (!isUnsupportedRuntimeActionError(error)) throw error;
+        return await readLegacyGraphSyncStatuses(laneIds, pin);
+      }
+    },
     getOriginRemote: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,
@@ -10627,6 +10705,16 @@ const adeBridge = {
       callPrReadRuntimeActionOr(null, "getDetail", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetDetail, { prId }),
       ),
+    getDetailBundle: async (prId: string): Promise<PrDetailBundle> => {
+      try {
+        return await callPrReadRuntimeActionOr(null, "getDetailBundle", { arg: prId }, () =>
+          ipcRenderer.invoke(IPC.prsGetDetailBundle, { prId }),
+        );
+      } catch (error) {
+        if (!isUnsupportedRuntimeActionError(error)) throw error;
+        return await readLegacyGraphPrDetailBundle(prId);
+      }
+    },
     getFiles: async (prId: string): Promise<PrFile[]> =>
       callPrReadRuntimeActionOr(null, "getFiles", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetFiles, { prId }),

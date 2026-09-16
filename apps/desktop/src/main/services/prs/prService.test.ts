@@ -4370,6 +4370,87 @@ describe("prService.getChecks", () => {
   });
 });
 
+describe("prService.getDetailBundle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("retains successful sidecars and snapshots when one detail read fails", async () => {
+    const row = makePrRow({ id: "pr-detail-bundle", github_pr_number: 90 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return {
+            data: makeGitHubPull({
+              number: 90,
+              mergeable: true,
+              mergeable_state: "clean",
+              head: { ref: "my-feature", sha: "head-sha" },
+              base: { ref: "main", sha: "base-sha" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+          return {
+            data: {
+              check_runs: [{
+                id: 7,
+                name: "CI",
+                status: "completed",
+                conclusion: "success",
+                html_url: "https://github.com/test-owner/test-repo/actions/runs/7",
+                app: { slug: "github-actions" },
+              }],
+            },
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/90/reviews") {
+          throw new Error("reviews temporarily unavailable");
+        }
+        if (args.path.includes("/compare/")) return { data: { behind_by: 0 } };
+        if (args.method === "POST" && args.path === "/graphql") {
+          return {
+            data: {
+              data: {
+                repository: {
+                  viewerPermission: "WRITE",
+                  pullRequest: {
+                    mergeable: "MERGEABLE",
+                    mergeStateStatus: "CLEAN",
+                    reviewDecision: null,
+                    headRefOid: "head-sha",
+                    baseRef: { branchProtectionRule: null },
+                    latestOpinionatedReviews: { nodes: [] },
+                  },
+                },
+              },
+            },
+          };
+        }
+        return { data: [] };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const bundle = await service.getDetailBundle(row.id);
+
+    expect(bundle.status).toEqual(expect.objectContaining({ prId: row.id, checksStatus: "passing" }));
+    expect(bundle.checks).toEqual([expect.objectContaining({ name: "CI", conclusion: "success" })]);
+    expect(bundle.reviews).toEqual([]);
+    expect(bundle.comments).toEqual([]);
+    const snapshotWrite = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_request_snapshots(")
+    );
+    expect(snapshotWrite?.[1]?.[3]).toContain('"name":"CI"');
+    expect(snapshotWrite?.[1]?.[4]).toBeNull();
+  });
+});
+
 describe("prService.getActionRuns", () => {
   beforeEach(() => {
     vi.clearAllMocks();
