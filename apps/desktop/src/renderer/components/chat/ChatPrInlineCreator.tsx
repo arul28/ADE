@@ -40,7 +40,8 @@ import { buildLinearPrReference } from "../../../shared/linearMagicWords";
 
 // --color-accent is #A78BFA (== Tailwind violet-400); use the named color so the
 // /opacity focus modifier resolves (Tailwind can't apply opacity to a var() color).
-const inputBase =
+/** Shared with the pane's "Link a PR" row so the two inputs cannot drift apart. */
+export const inputBase =
   "w-full rounded-lg border border-white/[0.07] bg-white/[0.03] px-2.5 py-1.5 text-[12px] text-fg/85 outline-none transition-colors placeholder:text-fg/30 focus:border-violet-400/55 focus:bg-white/[0.05]";
 
 export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({

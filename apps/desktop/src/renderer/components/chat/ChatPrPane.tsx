@@ -19,7 +19,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import type { OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
-import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
+import { ChatPrInlineCreator, inputBase } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
@@ -29,6 +29,128 @@ import { prStateTone, selectPrsForChatInLane } from "../../lib/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
+
+/**
+ * "Link a PR by number or URL" — the manual route into the many-to-many model.
+ *
+ * A chat gets its pull request automatically when it opens one. A pull request
+ * that already existed — opened from the PRs tab, from the CLI, or by a
+ * teammate — had no way to reach the chat at all, so a thread could show every
+ * PR except the one the user was actually working on.
+ *
+ * The caller hides this row whenever the pane is pinned to another machine.
+ * `prs.linkToLane` carries no pin, so it resolves the lane against the bound
+ * machine, which does not own this lane. That is the same reason the inline
+ * creator is hidden there.
+ */
+const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
+  laneId,
+  sessionId,
+  onLinked,
+}: {
+  laneId: string;
+  sessionId?: string | null;
+  onLinked: (pr: PrSummary) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setError(null);
+    setValue("");
+  }, []);
+
+  const submit = useCallback(async () => {
+    const trimmed = value.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const linked = await window.ade.prs.linkToLane({
+        laneId,
+        prUrlOrNumber: trimmed,
+        sessionId: sessionId ?? null,
+      });
+      setBusy(false);
+      close();
+      onLinked(linked);
+    } catch (err) {
+      // The service already says why (unknown number, wrong repo, no access);
+      // showing its own words beats a generic failure line.
+      setError(err instanceof Error ? err.message : "Could not link that pull request.");
+      setBusy(false);
+    }
+  }, [busy, close, laneId, onLinked, sessionId, value]);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/[0.08] bg-transparent px-3 py-1.5 text-[11px] font-medium text-fg/55 transition-colors hover:border-white/[0.14] hover:text-fg/85"
+      >
+        <GitPullRequest size={11} weight="bold" className="opacity-60" />
+        Link a PR by number or URL
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-3 flex flex-col gap-1.5">
+      <input
+        autoFocus
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void submit();
+            return;
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            close();
+          }
+        }}
+        placeholder="1237 or a github.com pull request URL"
+        aria-label="Pull request number or URL"
+        disabled={busy}
+        className={inputBase}
+      />
+      {error ? (
+        <p className="px-0.5 text-[11px] leading-4 text-rose-300/90">{error}</p>
+      ) : null}
+      <div className="flex gap-1.5">
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={busy || value.trim().length === 0}
+          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/[0.14] bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-fg/85 transition-colors hover:bg-white/[0.10] disabled:cursor-default disabled:opacity-50"
+        >
+          {busy ? (
+            <>
+              <ArrowsClockwise size={11} weight="bold" className="animate-spin" />
+              Linking…
+            </>
+          ) : (
+            "Link"
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={close}
+          disabled={busy}
+          className="inline-flex items-center justify-center rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11px] font-medium text-fg/55 transition-colors hover:text-fg/85 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+});
 
 /**
  * Left floating info-pane for an ADE chat's pull request. Mirrors the right
@@ -400,6 +522,15 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     setCurrentPr(created);
   }, [setCurrentPr]);
 
+  // A link adds a row to the chat's list rather than replacing one, so unlike a
+  // create it must re-read the list. Pin the new PR first: the refresh selects
+  // the primary, and a user who just named a PR means to look at that one.
+  const handleLinked = useCallback((linked: PrSummary) => {
+    pinnedPrIdRef.current = linked.id;
+    setCurrentPr(linked);
+    void refresh({ live: true });
+  }, [refresh, setCurrentPr]);
+
   useEffect(() => { void refresh({ live: true }); }, [refresh]);
 
   // Manual title-bar ↻: force a best-effort sync of this lane's PR (heals
@@ -643,6 +774,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
             onOpenGitHub={() => void openInGitHub()}
             onCopy={() => void copyLink()}
           />
+          {runtimePin ? null : (
+            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
+          )}
           </>
         ) : runtimePin ? (
           // Reading a foreign lane's PR is now routed to its machine; CREATING
@@ -657,13 +791,16 @@ export const ChatPrPane = React.memo(function ChatPrPane({
             Switch to {pinMachineName ?? "this chat's machine"} to open one.
           </p>
         ) : (
-          <ChatPrInlineCreator
-            laneId={laneId}
-            branchName={branchName ?? null}
-            sessionTitle={sessionTitle}
-            sessionId={sessionId}
-            onCreated={handleCreated}
-          />
+          <>
+            <ChatPrInlineCreator
+              laneId={laneId}
+              branchName={branchName ?? null}
+              sessionTitle={sessionTitle}
+              sessionId={sessionId}
+              onCreated={handleCreated}
+            />
+            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
+          </>
         )}
       </div>
     </div>
