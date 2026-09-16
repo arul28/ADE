@@ -801,7 +801,10 @@ import {
   type TranscriptionStatus,
   TranscriptionError,
 } from "../transcription/transcriptionService";
-import { requestMicrophoneAccess } from "../transcription/microphoneAccess";
+import {
+  requestMicrophoneAccess,
+  type MicrophoneAccessResult,
+} from "../transcription/microphoneAccess";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
 import { createAccountBridge, createBrainAccountActionCaller } from "../account/accountBridge";
@@ -8072,8 +8075,13 @@ export function registerIpc({
   // getMediaAccessStatus; Chromium owns any per-origin prompt.
   ipcMain.handle(
     IPC.transcriptionRequestMicAccess,
-    async (): Promise<{ status: "granted" | "denied" | "not-determined" | "restricted" | "unknown" }> => {
-      return requestMicrophoneAccess(process.platform, systemPreferences);
+    async (): Promise<MicrophoneAccessResult> => {
+      // `isPackaged` changes the ANSWER, not the wording: an unsigned build has
+      // no TCC identity, so its refusal is not one the user can grant in
+      // System Settings — the entry they see there belongs to the packaged app.
+      return requestMicrophoneAccess(process.platform, systemPreferences, {
+        isPackaged: app.isPackaged,
+      });
     },
   );
 

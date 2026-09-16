@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Microphone } from "@phosphor-icons/react";
 
-import { OpenAiKeySheet } from "../settings/OpenAiKeySheet";
+import { CtoVoiceStartSheet, describeStartFailure } from "./CtoVoiceStartSheet";
 import { isVoiceCallLive } from "../../../shared/types/ctoVoice";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { getFocusableElements } from "../ui/dialogFocus";
@@ -16,21 +16,94 @@ import { useCtoVoiceCall } from "./useCtoVoiceCall";
  * and the never-re-display rule have exactly one implementation.
  */
 /**
- * Why a call could not start, in the user's terms.
+ * The ring around Talk.
  *
- * Keyed by the `error` the main process answers with. Anything not listed gets
- * the generic line — the point is that every failure says something.
+ * A conic gradient on a square that is larger than the pill, spinning inside a
+ * rounded, clipped shell; the opaque button face sits on top and leaves only
+ * 1.5px of it showing as a border. Cheaper and far more robust than
+ * `mask-composite`, which several of our targets still render wrong, and it is
+ * one element and one keyframe rather than anything running in JS.
+ *
+ * Injected once from here rather than added to the global sheet: it belongs to
+ * this control and nothing else styles a Talk button.
  */
-const START_FAILURE_MESSAGES: Record<string, string> = {
-  // Every router refusal arrives as `unavailable`, not just a build without
-  // the feature — the detail sentence says which one, so the headline must not
-  // contradict it ("…in this build of ADE. No project is open.").
-  unavailable: "ADE can't start a call right now.",
-  "confirm-mode": "ADE couldn't set the CTO's permissions for a call. Check that the project has a primary lane.",
-  ended: "That call ended before it connected. Try again.",
-};
+const TALK_STYLE_ID = "cto-talk-style";
 
-const DEFAULT_START_FAILURE = "ADE couldn't start the call. See the logs for details.";
+const TALK_CSS = `
+.cto-talk-shell {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 1.5px;
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: 0 0 10px -3px rgba(167, 139, 250, 0.35);
+  transition: box-shadow 220ms ease;
+}
+.cto-talk-aurora {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 230%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  background: conic-gradient(
+    from 0deg,
+    #22d3ee, #60a5fa, #a78bfa, #f472b6, #fbbf24, #34d399, #22d3ee
+  );
+  opacity: 0.5;
+  animation: cto-talk-spin 7s linear infinite;
+}
+.cto-talk-shell:hover {
+  box-shadow: 0 0 16px -2px rgba(167, 139, 250, 0.55);
+}
+.cto-talk-shell:hover .cto-talk-aurora {
+  opacity: 0.85;
+  animation-duration: 4s;
+}
+/* On a call the ring speeds up; while the CTO is speaking it also breathes. */
+.cto-talk-shell[data-live="true"] .cto-talk-aurora { opacity: 0.8; animation-duration: 3.5s; }
+.cto-talk-shell[data-speaking="true"] .cto-talk-aurora { opacity: 0.95; animation-duration: 2s; }
+.cto-talk-shell[data-speaking="true"] { animation: cto-talk-breathe 1.6s ease-in-out infinite; }
+.cto-talk-face {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 29px;
+  padding: 0 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  background: #14121c;
+  transition: background 160ms ease, color 160ms ease;
+}
+.cto-talk-face:hover { background: #1b1826; }
+.cto-talk-face:disabled { cursor: default; }
+@keyframes cto-talk-spin { to { transform: translate(-50%, -50%) rotate(1turn); } }
+@keyframes cto-talk-breathe {
+  0%, 100% { box-shadow: 0 0 10px -3px rgba(167, 139, 250, 0.45); }
+  50% { box-shadow: 0 0 20px 0 rgba(167, 139, 250, 0.6); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cto-talk-aurora { animation: none; }
+  .cto-talk-shell[data-speaking="true"] { animation: none; }
+}
+`;
+
+/** One sheet for the whole app, added the first time a Talk button mounts. */
+function useTalkStyle(): void {
+  useEffect(() => {
+    if (typeof document === "undefined" || document.getElementById(TALK_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = TALK_STYLE_ID;
+    style.textContent = TALK_CSS;
+    document.head.append(style);
+  }, []);
+}
 
 /**
  * The key sheet's modal shell.
@@ -132,6 +205,7 @@ export type CtoTalkButtonProps = {
 
 export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
   const { state, start } = useCtoVoiceCall();
+  useTalkStyle();
   const [sheetOpen, setSheetOpen] = useState(false);
   const [starting, setStarting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -157,15 +231,11 @@ export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
       // flickered "Connecting…" and went back to "Talk" with no HUD, no sheet
       // and no error. A control that silently does nothing is worse than one
       // that says why it cannot.
-      const base = START_FAILURE_MESSAGES[result.error ?? ""] ?? DEFAULT_START_FAILURE;
-      const detail = result.detail?.trim();
-      // The detail is a second sentence, not a parenthetical: a bracket at the
-      // end of a one-line notice is the first thing truncation eats.
-      setNotice(detail ? `${base} ${detail.endsWith(".") ? detail : `${detail}.`}` : base);
+      setNotice(describeStartFailure(result.error, result.detail));
     } catch (error) {
       // `ipcMain.handle` turns a main-process throw into a rejected invoke, and
       // `void onClick()` swallowed it as an unhandled rejection.
-      setNotice(DEFAULT_START_FAILURE);
+      setNotice(describeStartFailure(undefined, undefined));
       // eslint-disable-next-line no-console
       console.error("[cto-voice] start failed", error);
     } finally {
@@ -196,7 +266,10 @@ export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
   // The only place the reason is drawn. The HUD says "Call failed" inside its
   // pill and stops there — the sentence it used to trail below itself had no
   // border to stay inside and landed on the composer.
-  const message = notice ?? callFailure;
+  // While the sheet is open it shows its own failures, with buttons that act
+  // on them. A page notice saying the same thing behind the modal is how a
+  // user learns to read neither.
+  const message = sheetOpen ? null : (notice ?? callFailure);
 
   useEffect(() => {
     onNotice?.(message);
@@ -205,26 +278,32 @@ export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => { void onClick(); }}
-        disabled={live}
-        data-testid="cto-talk-button"
-        title={live ? "A call is already running" : "Talk to the CTO"}
-        className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md px-2 text-[10px] font-medium transition-colors disabled:opacity-45"
-        style={{ border: "1px solid rgba(255,255,255,0.12)", color: COLORS.textSecondary, whiteSpace: "nowrap" }}
+      <span
+        className="cto-talk-shell"
+        data-live={live ? "true" : undefined}
+        data-speaking={state.phase === "speaking" ? "true" : undefined}
       >
-        <Microphone size={11} weight="bold" />
-        {starting ? "Connecting…" : "Talk"}
-      </button>
+        <span className="cto-talk-aurora" aria-hidden />
+        <button
+          type="button"
+          onClick={() => { void onClick(); }}
+          disabled={live}
+          data-testid="cto-talk-button"
+          title={live ? "A call is already running" : "Talk to the CTO"}
+          className="cto-talk-face"
+          style={{ color: live ? COLORS.textMuted : COLORS.textPrimary }}
+        >
+          <Microphone size={13} weight="fill" />
+          {starting ? "Connecting…" : "Talk"}
+        </button>
+      </span>
 
       {sheetOpen ? (
         <KeyDialog title="Talk to the CTO" onClose={() => setSheetOpen(false)}>
-          <OpenAiKeySheet
-            saveLabel="Save and start"
-            onCancel={() => setSheetOpen(false)}
-            onSaved={() => { setSheetOpen(false); void start(); }}
-          />
+          {/* The whole flow lives in here now: key, connecting, and the card
+              that explains a microphone that will not open. It closes itself
+              when the call is live. */}
+          <CtoVoiceStartSheet onClose={() => setSheetOpen(false)} />
         </KeyDialog>
       ) : null}
     </>

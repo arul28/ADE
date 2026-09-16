@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
+import { CtoHistoryList, dayLabel, sessionDuration, sessionTitle } from "./CtoHistoryList";
+import { VOICE_GRID_COLUMNS } from "./CtoSettingsPage";
 import { CtoMemoryPanel } from "./CtoMemoryPanel";
 import { CtoPage } from "./CtoPage";
 import { useAppStore } from "../../state/appStore";
@@ -111,6 +113,14 @@ describe("CtoPage settings", () => {
         getState: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
         ensureSession,
         updateIdentity: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
+        previewSystemPrompt: vi.fn().mockResolvedValue({
+          prompt: "doctrine text\n\nstate text",
+          tokenEstimate: 1234,
+          sections: [
+            { id: "doctrine", title: "IMMUTABLE ADE DOCTRINE", content: "doctrine text" },
+            { id: "continuity", title: "PROJECT CONTINUITY", content: "state text" },
+          ],
+        }),
       },
     } as never;
   });
@@ -193,7 +203,7 @@ describe("CtoPage settings", () => {
     // impossible, which is the part worth asserting.
     const voices = within(screen.getByRole("radiogroup", { name: "Voice" })).getAllByRole("radio");
     expect(voices).toHaveLength(CTO_VOICE_VOICES.length);
-    expect(CTO_VOICE_VOICES.length % 2).toBe(0);
+    expect(CTO_VOICE_VOICES.length % VOICE_GRID_COLUMNS).toBe(0);
   });
 
   it("says what the chosen model is, not just its name", async () => {
@@ -274,16 +284,21 @@ describe("CtoPage settings", () => {
     emit({ phase: "idle" });
   });
 
-  it("keeps memory and the prompt closed until they are asked for", async () => {
+  it("shows the prompt itself, under headings in plain words", async () => {
     render(<MemoryRouter><CtoPage /></MemoryRouter>);
     await screen.findByTestId("cto-agent-chat-pane");
     fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
     fireEvent.click(screen.getByRole("button", { name: /^Prompt/ }));
 
-    // The old panel opened onto 4.5k tokens of prompt. This one opens onto a
-    // line you can choose to expand.
-    const toggle = screen.getByRole("button", { name: /Show the full prompt/ });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // The prompt must be readable where it is, not behind a disclosure inside
+    // a card, and its sections must be named in words rather than shouted in
+    // the backend's own enum casing.
+    const preview = await screen.findByTestId("cto-prompt-preview");
+    expect(screen.queryByRole("button", { name: /Show the full prompt/ })).toBeNull();
+    expect(preview.textContent).toContain("Doctrine");
+    expect(preview.textContent).toContain("Project state");
+    expect(preview.textContent).not.toContain("IMMUTABLE ADE DOCTRINE");
+    expect(preview.textContent).toContain("doctrine text");
   });
 
   it("puts the voice key somewhere other than the Talk button", async () => {
@@ -389,6 +404,52 @@ describe("CtoMemoryPanel", () => {
 
     await waitFor(() => expect(updateMemory).toHaveBeenCalledTimes(1));
     expect(updateMemory).toHaveBeenCalledWith({ memory: "# Facts\n- ships on Fridays\n- prefers pnpm" });
+  });
+});
+
+describe("CtoHistoryList", () => {
+  const entry = {
+    id: "log-1",
+    sessionId: "session-1",
+    summary: "Session closed: reviewed the sync lane",
+    startedAt: "2026-05-01T10:00:00.000Z",
+    endedAt: "2026-05-01T10:12:00.000Z",
+    provider: "anthropic",
+    modelId: "anthropic/claude-sonnet-5",
+    capabilityMode: "full_tooling",
+    createdAt: "2026-05-01T10:12:00.000Z",
+  } as const;
+
+  afterEach(cleanup);
+
+  it("leads with the work, not the log line that recorded it", () => {
+    // And reads as a sentence: what is left after the prefix started mid-line.
+    expect(sessionTitle(entry)).toBe("Reviewed the sync lane");
+    // A log line with nothing but its own prefix still needs a title.
+    expect(sessionTitle({ ...entry, summary: "Session closed:" })).toBe("Untitled session");
+  });
+
+  it("states a duration only once the session has ended", () => {
+    expect(sessionDuration(entry)).toBe("12m");
+    expect(sessionDuration({ ...entry, endedAt: null })).toBeNull();
+  });
+
+  it("names the day in the words a person uses for it", () => {
+    const now = new Date("2026-05-03T09:00:00.000Z");
+    expect(dayLabel("2026-05-03T08:00:00.000Z", now)).toBe("Today");
+    expect(dayLabel("2026-05-02T08:00:00.000Z", now)).toBe("Yesterday");
+    expect(dayLabel("2026-04-28T08:00:00.000Z", now)).toMatch(/Apr 28/);
+  });
+
+  it("never prints the capability enum on an ordinary session", () => {
+    render(<CtoHistoryList sessions={[entry]} />);
+    const list = screen.getByTestId("session-history-list");
+    expect(list.textContent).not.toMatch(/full_tooling/i);
+    expect(list.textContent).not.toContain("Limited tools");
+    // The unusual case is the one worth a word.
+    cleanup();
+    render(<CtoHistoryList sessions={[{ ...entry, capabilityMode: "fallback" }]} />);
+    expect(screen.getByTestId("session-history-list").textContent).toContain("Limited tools");
   });
 });
 

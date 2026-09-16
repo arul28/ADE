@@ -301,7 +301,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
               onClick={() => setSettingsOpen(true)}
               aria-label="CTO settings"
               className={cn(
-                "flex h-7 w-7 items-center justify-center rounded-lg border transition-colors",
+                "flex h-8 w-8 items-center justify-center rounded-full border transition-colors",
                 settingsOpen
                   ? "border-white/15 bg-white/[0.06] text-fg"
                   : "border-white/[0.07] text-muted-fg/55 hover:bg-white/[0.04] hover:text-fg",

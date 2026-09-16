@@ -1351,6 +1351,8 @@ declare global {
         ) => () => void;
         requestMicAccess: () => Promise<{
           status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
+          /** Why it was refused, when it was. Absent on older hosts. */
+          block?: "os-denied" | "dev-build" | "in-use" | "unavailable" | null;
         }>;
       };
       modelPicker: {

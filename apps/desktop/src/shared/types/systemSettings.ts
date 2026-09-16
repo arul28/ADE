@@ -13,6 +13,11 @@ export const SYSTEM_SETTINGS_PANE_URLS = {
   /** macOS Privacy & Security › Full Disk Access. */
   "macos-full-disk-access":
     "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
+  /** macOS Privacy & Security › Microphone. */
+  "macos-microphone":
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+  /** Windows Settings › Privacy › Microphone. */
+  "windows-microphone": "ms-settings:privacy-microphone",
 } as const;
 
 export type SystemSettingsPaneId = keyof typeof SYSTEM_SETTINGS_PANE_URLS;

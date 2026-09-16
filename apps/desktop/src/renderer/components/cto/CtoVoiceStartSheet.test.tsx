@@ -1,0 +1,167 @@
+/* @vitest-environment jsdom */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+import { CTO_VOICE_INITIAL_STATE, type CtoVoiceStatePayload } from "../../../shared/types/ctoVoice";
+import { CtoVoiceStartSheet } from "./CtoVoiceStartSheet";
+
+/**
+ * The flow between "I have no key" and "I can hear the CTO".
+ *
+ * It used to end at Save — the sheet closed, the call started behind it, and a
+ * microphone that would not open became a yellow line under the page header
+ * with no way to act on it. These pin the sheet staying up until the call is
+ * genuinely live, and turning into something actionable when it is not.
+ */
+
+const start = vi.fn(async () => ({ ok: true }) as { ok: boolean; error?: string; detail?: string });
+const onClose = vi.fn();
+
+let callState: CtoVoiceStatePayload = { ...CTO_VOICE_INITIAL_STATE, isCallOwner: true };
+let microphoneFailure: { kind: string; message: string } | null = null;
+const clearCtoMicrophoneFailure = vi.fn(() => { microphoneFailure = null; });
+
+vi.mock("./useCtoVoiceCall", () => ({
+  useCtoVoiceCall: () => ({ state: callState, start }),
+  useCtoMicrophoneFailure: () => microphoneFailure,
+  clearCtoMicrophoneFailure: () => clearCtoMicrophoneFailure(),
+}));
+
+/* The key sheet is a whole settings surface; this suite is about the flow. */
+vi.mock("../settings/OpenAiKeySheet", () => ({
+  OpenAiKeySheet: ({ onSaved, onCancel, saveLabel }: {
+    onSaved?: () => void; onCancel?: () => void; saveLabel?: string;
+  }) => (
+    <div data-testid="key-sheet">
+      <button type="button" onClick={onSaved}>{saveLabel}</button>
+      <button type="button" onClick={onCancel}>Cancel</button>
+    </div>
+  ),
+}));
+
+function setLive() {
+  callState = { ...CTO_VOICE_INITIAL_STATE, phase: "listening", callId: "c1", isCallOwner: true };
+}
+
+beforeEach(() => {
+  start.mockClear();
+  onClose.mockClear();
+  clearCtoMicrophoneFailure.mockClear();
+  microphoneFailure = null;
+  callState = { ...CTO_VOICE_INITIAL_STATE, isCallOwner: true };
+  (globalThis.window as unknown as { ade: unknown }).ade = {
+    app: {
+      runtimeTarget: { platform: "darwin", arch: "arm64" },
+      openSystemSettingsPane: vi.fn(async () => ({ opened: true })),
+    },
+  };
+});
+
+afterEach(() => {
+  cleanup();
+  delete (globalThis.window as unknown as { ade?: unknown }).ade;
+});
+
+describe("CtoVoiceStartSheet", () => {
+  it("goes key → connecting → closed once the call is live", async () => {
+    const { rerender } = render(<CtoVoiceStartSheet onClose={onClose} />);
+    expect(screen.getByTestId("key-sheet")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Save and start"));
+
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-connecting")).toBeTruthy());
+    expect(start).toHaveBeenCalledTimes(1);
+    // Still open: the call has not connected yet, and closing here is what left
+    // the user with a header notice and no way forward.
+    expect(onClose).not.toHaveBeenCalled();
+
+    setLive();
+    rerender(<CtoVoiceStartSheet onClose={onClose} />);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows the microphone card instead of closing, with the sentence for the cause", async () => {
+    const { rerender } = render(<CtoVoiceStartSheet onClose={onClose} />);
+    fireEvent.click(screen.getByText("Save and start"));
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-connecting")).toBeTruthy());
+
+    microphoneFailure = {
+      kind: "dev-build",
+      message: "This is a development build. macOS cannot ask it for the microphone."
+        + " Start ADE from Terminal, or allow 'Electron' under Microphone in System Settings.",
+    };
+    rerender(<CtoVoiceStartSheet onClose={onClose} />);
+
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+    expect(screen.getByText("ADE cannot use the microphone")).toBeTruthy();
+    expect(screen.getByText(/development build/)).toBeTruthy();
+    expect(screen.getByTestId("cto-voice-open-mic-settings")).toBeTruthy();
+    expect(screen.getByTestId("cto-voice-try-again")).toBeTruthy();
+    expect(screen.getByTestId("cto-voice-sheet-close")).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("opens the platform's microphone pane by id, never by URL", async () => {
+    microphoneFailure = { kind: "os-denied", message: "no mic" };
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId("cto-voice-open-mic-settings")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("cto-voice-open-mic-settings"));
+
+    const open = (globalThis.window as unknown as {
+      ade: { app: { openSystemSettingsPane: ReturnType<typeof vi.fn> } };
+    }).ade.app.openSystemSettingsPane;
+    await waitFor(() => expect(open).toHaveBeenCalledWith("macos-microphone"));
+  });
+
+  it("re-runs the call from Try again, and forgets the last verdict first", async () => {
+    microphoneFailure = { kind: "os-denied", message: "no mic" };
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("cto-voice-try-again"));
+
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    // Without this the sheet snaps straight back to the card it just left.
+    expect(clearCtoMicrophoneFailure).toHaveBeenCalled();
+    expect(screen.getByTestId("cto-voice-sheet-connecting")).toBeTruthy();
+  });
+
+  it("renders a refused start inside the sheet rather than behind it", async () => {
+    start.mockResolvedValueOnce({ ok: false, error: "unavailable", detail: "no project is open" });
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+    fireEvent.click(screen.getByText("Save and start"));
+
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+    expect(screen.getByText("ADE cannot start the call")).toBeTruthy();
+    expect(screen.getByText(/no project is open\./)).toBeTruthy();
+    // Not a microphone problem, so no pane to offer.
+    expect(screen.queryByTestId("cto-voice-open-mic-settings")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("shows a call that died before it connected, with the runtime's own sentence", async () => {
+    const { rerender } = render(<CtoVoiceStartSheet onClose={onClose} />);
+    fireEvent.click(screen.getByText("Save and start"));
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-connecting")).toBeTruthy());
+
+    callState = {
+      ...CTO_VOICE_INITIAL_STATE,
+      phase: "failed",
+      error: "OpenAI rejected this key. Check it under CTO settings, Voice.",
+      isCallOwner: true,
+    };
+    rerender(<CtoVoiceStartSheet onClose={onClose} />);
+
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+    expect(screen.getByText(/OpenAI rejected this key/)).toBeTruthy();
+  });
+
+  it("cancelling the key step closes without starting anything", () => {
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(start).not.toHaveBeenCalled();
+  });
+});

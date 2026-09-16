@@ -115,6 +115,32 @@ export function isVoiceCallVisible(phase: CtoVoicePhase | string | null | undefi
 export const CTO_VOICE_CAPTURE_EVENT = "ade:cto-voice:attach-capture";
 
 /**
+ * Why the microphone would not open, in the four ways it actually happens.
+ *
+ * One sentence per cause, because "allow ADE in System Settings" is worse than
+ * useless when the OS has no entry for this binary to allow — which is the
+ * ordinary case for a development build, and the one that sent a user to a
+ * settings pane where ADE was already ticked.
+ */
+export type CtoVoiceMicrophoneBlockKind =
+  /** The OS knows this app and the answer is no. */
+  | "os-denied"
+  /**
+   * An unsigned development build. macOS gives `com.github.Electron` no TCC
+   * identity, so `askForMediaAccess` returns false without ever prompting and
+   * no amount of clicking in System Settings changes it: the entry the user
+   * sees is the packaged app's, not this one's.
+   */
+  | "dev-build"
+  /** The OS said yes and `getUserMedia` still refused: something else has it. */
+  | "in-use"
+  /** A stream arrived with no usable track. Rare, and not the user's doing. */
+  | "unavailable";
+
+/** The title every microphone failure is shown under. */
+export const CTO_VOICE_MICROPHONE_BLOCK_TITLE = "ADE cannot use the microphone";
+
+/**
  * What to say when the microphone will not open.
  *
  * Named per platform because the sentence is only useful if it points at the
@@ -123,13 +149,52 @@ export const CTO_VOICE_CAPTURE_EVENT = "ade:cto-voice:attach-capture";
  * Windows on ARM from Windows on x64 and has no business deciding this either.
  *
  * It lives here rather than in the component because the same failure has to
- * read identically wherever it surfaces — the HUD's notice and the call's
- * terminal state are the same event.
+ * read identically wherever it surfaces — the sheet's guidance card, the
+ * header notice and the call's terminal state are one event.
  */
-export function ctoVoiceMicrophoneUnavailableMessage(platform: string): string {
-  return platform === "win32"
-    ? "ADE could not open the microphone. Allow microphone access for ADE in Windows Settings, Privacy, Microphone."
-    : "ADE could not open the microphone. Allow microphone access for ADE in System Settings, Privacy & Security, Microphone.";
+export function ctoVoiceMicrophoneMessage(
+  kind: CtoVoiceMicrophoneBlockKind,
+  platform: string,
+): string {
+  const windows = platform === "win32";
+  switch (kind) {
+    case "dev-build":
+      // Windows has no equivalent: its microphone policy is one global switch
+      // that covers every desktop app including an unsigned Electron, so
+      // "start it from a terminal" would be false advice. It falls through to
+      // the settings sentence, which IS the fix there.
+      if (!windows) {
+        return "This is a development build. macOS cannot ask it for the microphone."
+          + " Start ADE from Terminal, or allow 'Electron' under Microphone in System Settings.";
+      }
+      return windows
+        ? "ADE could not open the microphone. Allow microphone access for ADE in Windows Settings, Privacy, Microphone."
+        : "ADE could not open the microphone. Allow microphone access for ADE in System Settings, Privacy & Security, Microphone.";
+    case "in-use":
+      return "Another app may be holding the microphone. Close it and try again.";
+    case "unavailable":
+      return windows
+        ? "ADE could not open the microphone. Check that a microphone is connected and enabled in Windows Settings, Sound."
+        : "ADE could not open the microphone. Check that a microphone is connected and enabled in System Settings, Sound.";
+    case "os-denied":
+    default:
+      return windows
+        ? "ADE could not open the microphone. Allow microphone access for ADE in Windows Settings, Privacy, Microphone."
+        : "ADE could not open the microphone. Allow microphone access for ADE in System Settings, Privacy & Security, Microphone.";
+  }
+}
+
+/**
+ * The sentence the router matches to recognise its own microphone hang-up.
+ *
+ * Every kind, because the renderer sends whichever one applied and the router
+ * must classify all of them to the one coarse analytics outcome.
+ */
+export function isCtoVoiceMicrophoneMessage(reason: string): boolean {
+  const kinds: CtoVoiceMicrophoneBlockKind[] = ["os-denied", "dev-build", "in-use", "unavailable"];
+  return kinds.some((kind) =>
+    reason === ctoVoiceMicrophoneMessage(kind, "darwin")
+    || reason === ctoVoiceMicrophoneMessage(kind, "win32"));
 }
 
 /**

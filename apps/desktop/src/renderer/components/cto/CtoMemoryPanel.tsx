@@ -1,24 +1,46 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { CaretRight } from "@phosphor-icons/react";
-import type { CtoMemorySnapshot } from "../../../shared/types";
-import { cn } from "../ui/cn";
+import { CalendarBlank, NotePencil } from "@phosphor-icons/react";
 
-const MONO_TEXTAREA =
-  "w-full rounded-lg border border-white/[0.08] bg-black/30 p-3 font-mono text-[11.5px] leading-5 text-fg/85 placeholder:text-muted-fg/35 focus:border-white/20 focus:outline-none resize-y";
+import type { CtoMemorySnapshot } from "../../../shared/types";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { CopyButton, CtoCard, TextBlock, ctoButtonStyle } from "./ctoSettingsUi";
 
 /**
- * The CTO's durable memory: an editable MEMORY.md, a read-only rolling thread
- * state, and today's collapsed activity log. These are the files the CTO reads
- * back on every model switch and after compaction.
+ * The CTO's memory, as four things rather than one wall.
+ *
+ * It is four different objects with four different rules — one the user writes,
+ * one the CTO writes, one the day writes, and the files underneath — and
+ * printing them as one column of text made them look like one undifferentiated
+ * dump. Each gets a card, an icon and a sentence saying who writes it.
  */
-export function CtoMemoryPanel() {
+
+const MONO = "var(--font-mono, ui-monospace, SFMono-Regular, monospace)";
+
+/** The files behind this pane, relative to the project. */
+const MEMORY_PATHS = [
+  { label: "Notes", path: ".ade/cto/MEMORY.md" },
+  { label: "Working summary", path: ".ade/cto/thread-state.md" },
+  { label: "Daily log", path: ".ade/cto/daily/<date>.md" },
+];
+
+function relativeTime(iso: string | null): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return null;
+  const seconds = Math.round((Date.now() - then) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ago`;
+}
+
+export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {}) {
   const [snapshot, setSnapshot] = useState<CtoMemorySnapshot | null>(null);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
-  const [logOpen, setLogOpen] = useState(false);
 
   const load = useCallback(async () => {
     const bridge = window.ade?.cto;
@@ -60,87 +82,160 @@ export function CtoMemoryPanel() {
     }
   }, [draft]);
 
-  const savedRecently = useMemo(
-    () => savedAt != null && Date.now() - savedAt < 4000,
-    [savedAt],
-  );
+  const savedRecently = useMemo(() => savedAt != null && Date.now() - savedAt < 4000, [savedAt]);
+  const updated = relativeTime(snapshot?.updatedAt ?? null);
 
   if (loading) {
-    return <div className="text-[12px] text-muted-fg/45">Loading memory…</div>;
+    return (
+      <p style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>Loading memory…</p>
+    );
   }
 
   return (
-    <div className="space-y-5">
-      <div>
-        <div className="flex items-baseline justify-between gap-3">
-          <div className="text-[12.5px] font-medium text-fg/85">What the CTO remembers</div>
-          <div className="flex items-center gap-2">
-            {savedRecently && !dirty && (
-              <span className="text-[11px] text-emerald-400/80">Saved</span>
-            )}
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }} data-testid="cto-memory-panel">
+      <CtoCard
+        title="Notes the CTO keeps"
+        description="You write these. The CTO reads them back on every turn, and they survive a model switch."
+        accent={accent}
+        testId="cto-memory-notes"
+        right={
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {savedRecently && !dirty ? (
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.success }}>Saved</span>
+            ) : null}
             <button
               type="button"
               disabled={!dirty || saving}
               onClick={() => void handleSave()}
-              className={cn(
-                "h-7 rounded-lg px-3 text-[12px] font-medium transition-colors",
-                dirty && !saving
-                  ? "bg-white/10 text-fg hover:bg-white/[0.14]"
-                  : "cursor-default bg-white/[0.04] text-muted-fg/35",
-              )}
+              style={{
+                ...ctoButtonStyle(dirty && !saving ? "primary" : "quiet"),
+                cursor: dirty && !saving ? "pointer" : "default",
+                opacity: dirty || saving ? 1 : 0.5,
+              }}
             >
+              <NotePencil size={12} />
               {saving ? "Saving…" : "Save"}
             </button>
           </div>
-        </div>
+        }
+      >
         <textarea
-          className={cn(MONO_TEXTAREA, "mt-2 min-h-[160px]")}
           value={draft}
-          placeholder="# Durable facts&#10;- Decisions, preferences, and standing context the CTO should always know."
-          onChange={(event) => setDraft(event.target.value)}
           spellCheck={false}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder="# Durable facts&#10;- Decisions, preferences, and standing context the CTO should always know."
+          style={{
+            width: "100%",
+            maxWidth: 720,
+            minHeight: 150,
+            maxHeight: 340,
+            resize: "vertical",
+            background: COLORS.recessedBg,
+            border: `1px solid ${COLORS.borderMuted}`,
+            borderRadius: 10,
+            padding: 12,
+            fontFamily: MONO,
+            fontSize: 11.5,
+            lineHeight: 1.7,
+            color: COLORS.textPrimary,
+            outline: "none",
+          }}
         />
-        <div className="mt-1.5 text-[11px] leading-4 text-muted-fg/45">
-          The CTO reads these notes back on every turn, and they survive a model switch.
-        </div>
-      </div>
+      </CtoCard>
 
-      {snapshot?.threadState?.trim() ? (
-        <div>
-          <div className="text-[12.5px] font-medium text-fg/85">Current thread state</div>
-          <div className="mt-1 text-[11px] leading-4 text-muted-fg/45">
-            The CTO writes this summary of the work so far, and you cannot edit it.
+      <CtoCard
+        title="Working summary"
+        description="The CTO writes this as the work moves. You cannot edit it."
+        accent={accent}
+        testId="cto-memory-summary"
+        right={
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {updated ? (
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                Updated {updated}
+              </span>
+            ) : null}
+            {snapshot?.threadState?.trim() ? <CopyButton value={snapshot.threadState.trim()} /> : null}
           </div>
-          <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/25 p-3 font-mono text-[11.5px] leading-5 text-fg/70">
-            {snapshot.threadState.trim()}
-          </pre>
-        </div>
-      ) : null}
+        }
+      >
+        {snapshot?.threadState?.trim() ? (
+          <TextBlock text={snapshot.threadState.trim()} />
+        ) : (
+          <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
+            Nothing yet. The CTO writes this once it has work to summarise.
+          </p>
+        )}
+      </CtoCard>
 
-      {snapshot?.dailyLog?.trim() ? (
-        <div>
-          <button
-            type="button"
-            onClick={() => setLogOpen((v) => !v)}
-            className="flex items-center gap-1.5 text-[12.5px] font-medium text-fg/80 transition-colors hover:text-fg"
+      <CtoCard
+        title="Daily log"
+        description="What the CTO did today, written as it happens."
+        accent={accent}
+        testId="cto-memory-daily"
+        right={
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontFamily: SANS_FONT,
+              fontSize: 11,
+              color: COLORS.textMuted,
+            }}
           >
-            <CaretRight
-              size={12}
-              weight="bold"
-              className={cn("text-muted-fg/50 transition-transform", logOpen && "rotate-90")}
-            />
-            Today's activity
-            <span className="font-normal text-muted-fg/40">· {snapshot.dailyLogDate}</span>
-          </button>
-          {logOpen && (
-            <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/25 p-3 font-mono text-[11.5px] leading-5 text-fg/65">
-              {snapshot.dailyLog.trim()}
-            </pre>
-          )}
-        </div>
-      ) : null}
+            <CalendarBlank size={12} />
+            {snapshot?.dailyLogDate ?? "—"}
+          </span>
+        }
+      >
+        {snapshot?.dailyLog?.trim() ? (
+          <TextBlock text={snapshot.dailyLog.trim()} collapsedHeight={160} />
+        ) : (
+          <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
+            Nothing logged today.
+          </p>
+        )}
+      </CtoCard>
 
-      {error && <div className="text-[12px] text-error">{error}</div>}
+      <CtoCard title="Where it lives" accent={accent} testId="cto-memory-paths">
+        <dl
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 120px) minmax(0, 1fr)",
+            gap: "6px 16px",
+            margin: 0,
+          }}
+        >
+          {MEMORY_PATHS.map((entry) => (
+            <React.Fragment key={entry.path}>
+              <dt style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
+                {entry.label}
+              </dt>
+              <dd
+                style={{
+                  margin: 0,
+                  fontFamily: MONO,
+                  fontSize: 11,
+                  color: COLORS.textSecondary,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={entry.path}
+              >
+                {entry.path}
+              </dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      </CtoCard>
+
+      {error ? (
+        <p role="alert" style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger }}>
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

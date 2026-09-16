@@ -5073,8 +5073,12 @@ const adeBridge = {
     // Check/request macOS microphone permission before capturing. Electron
     // returns a silent track instead of throwing when access is missing, so the
     // renderer must gate getUserMedia on this.
+    // `block` is additive: dictation reads `status` and is unaffected, while
+    // the voice call needs to know WHICH no it got — a development build's
+    // refusal is not one the user can grant in System Settings.
     requestMicAccess: async (): Promise<{
       status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
+      block?: "os-denied" | "dev-build" | "in-use" | "unavailable" | null;
     }> => ipcRenderer.invoke(IPC.transcriptionRequestMicAccess),
   },
   modelPicker: {

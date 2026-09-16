@@ -6,7 +6,7 @@ import { IPC } from "../../../shared/ipc";
 import {
   CTO_VOICE_AUDIO_POLL_INTERVAL_MS,
   CTO_VOICE_INITIAL_STATE,
-  ctoVoiceMicrophoneUnavailableMessage,
+  isCtoVoiceMicrophoneMessage,
   isVoiceCallLive,
   type CtoVoiceState,
 } from "../../../shared/types/ctoVoice";
@@ -116,12 +116,6 @@ type CtoVoiceTransport = {
 type CtoVoiceTransportResult =
   | { transport: CtoVoiceTransport }
   | { unavailable: string };
-
-/** True only for the sentence `ctoVoiceMicrophoneUnavailableMessage` produces. */
-function isMicrophoneUnavailableMessage(reason: string): boolean {
-  return reason === ctoVoiceMicrophoneUnavailableMessage("darwin")
-    || reason === ctoVoiceMicrophoneUnavailableMessage("win32");
-}
 
 function readState(value: unknown): CtoVoiceState | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -418,7 +412,7 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
       // The sentence is compared against OUR OWN constant, never parsed: the
       // renderer's copy is the only thing that can produce it, and what crosses
       // is the coarse kind, not the text.
-      const endKind = fallbackError && isMicrophoneUnavailableMessage(fallbackError)
+      const endKind = fallbackError && isCtoVoiceMicrophoneMessage(fallbackError)
         ? "microphone_unavailable"
         : undefined;
       await slot.transport.call("end", {

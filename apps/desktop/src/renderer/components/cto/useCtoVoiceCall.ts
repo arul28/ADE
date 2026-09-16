@@ -6,9 +6,10 @@ import {
   CTO_VOICE_CAPTURE_EVENT,
   CTO_VOICE_INITIAL_STATE,
   CTO_VOICE_SAMPLE_RATE,
-  ctoVoiceMicrophoneUnavailableMessage,
+  ctoVoiceMicrophoneMessage,
   isVoiceCallLive,
   type CtoVoiceBridge,
+  type CtoVoiceMicrophoneBlockKind,
   type CtoVoiceStatePayload,
 } from "../../../shared/types/ctoVoice";
 import { rendererRuntimeTarget } from "../../lib/platform";
@@ -90,6 +91,49 @@ export function subscribeVoiceState(handler: (state: CtoVoiceStatePayload) => vo
   return unsubscribe;
 }
 
+/* ── microphone verdict ── */
+
+/**
+ * The last microphone refusal, and who may clear it.
+ *
+ * A second store rather than a field on the call state, because the call state
+ * is the main process's word and this is the renderer's: the microphone lives
+ * on this side, and the reason it would not open is known here and nowhere
+ * else. Module-scoped for the same reason the audio objects are — the sheet
+ * that asks for the key and the host that opens the device are two components,
+ * and the verdict has to survive the one that fails.
+ */
+export type CtoVoiceMicrophoneFailure = {
+  kind: CtoVoiceMicrophoneBlockKind;
+  message: string;
+};
+
+let microphoneFailure: CtoVoiceMicrophoneFailure | null = null;
+const microphoneListeners = new Set<() => void>();
+
+function setMicrophoneFailure(next: CtoVoiceMicrophoneFailure | null): void {
+  microphoneFailure = next;
+  microphoneListeners.forEach((listener) => listener());
+}
+
+export function clearCtoMicrophoneFailure(): void {
+  if (microphoneFailure) setMicrophoneFailure(null);
+}
+
+function subscribeMicrophone(listener: () => void) {
+  microphoneListeners.add(listener);
+  return () => { microphoneListeners.delete(listener); };
+}
+
+/** The last microphone refusal, or null. Cleared when a call goes live. */
+export function useCtoMicrophoneFailure(): CtoVoiceMicrophoneFailure | null {
+  return useSyncExternalStore(
+    subscribeMicrophone,
+    () => microphoneFailure,
+    () => microphoneFailure,
+  );
+}
+
 /* ── capture ── */
 
 let audioContext: AudioContext | null = null;
@@ -119,26 +163,58 @@ function floatToPcm16(input: Float32Array): Uint8Array {
  * rather than growing a second one. Absent bridge — the browser preview — is
  * not a denial, and falls through to `getUserMedia` as before.
  */
-async function microphoneAccessDenied(): Promise<boolean> {
+/**
+ * A refusal the caller can act on, rather than an anonymous throw.
+ *
+ * The kind is what decides the sentence AND whether there is a settings pane
+ * worth offering, so it travels rather than being re-derived from a string.
+ */
+export class MicrophoneBlockedError extends Error {
+  constructor(readonly kind: CtoVoiceMicrophoneBlockKind) {
+    super(ctoVoiceMicrophoneMessage(kind, rendererRuntimeTarget().platform));
+    this.name = "MicrophoneBlockedError";
+  }
+}
+
+/**
+ * Ask the OS for the microphone before asking Chromium for it.
+ *
+ * On macOS Electron hands back a live, unmuted, all-zero track instead of
+ * throwing when the OS has not granted access, so `getUserMedia` succeeding
+ * proves nothing. Dictation already learned this and owns the gate
+ * (`ade.transcription.requestMicAccess` → `askForMediaAccess`); this reuses it
+ * rather than growing a second one. Absent bridge — the browser preview — is
+ * not a denial, and falls through to `getUserMedia` as before.
+ */
+async function microphoneBlockKind(): Promise<CtoVoiceMicrophoneBlockKind | null> {
   const ensureAccess = window.ade?.transcription?.requestMicAccess;
-  if (!ensureAccess) return false;
+  if (!ensureAccess) return null;
   try {
     const access = await ensureAccess();
-    return access.status !== "granted";
+    if (access.status === "granted") return null;
+    // An older host answers with a status and no kind; a settled refusal it
+    // cannot classify is still a refusal the OS owns.
+    return access.block ?? "os-denied";
   } catch {
     // An unreachable gate is not a denial; let `getUserMedia` decide.
-    return false;
+    return null;
   }
 }
 
 async function startCapture() {
   if (mediaStream) return;
-  if (await microphoneAccessDenied()) {
-    throw new Error("Microphone access was not granted.");
+  const blocked = await microphoneBlockKind();
+  if (blocked) throw new MicrophoneBlockedError(blocked);
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch {
+    // The OS said yes and Chromium still could not open the device. In practice
+    // that is another application holding it, which is a thing the user can fix
+    // and a very different instruction from "allow ADE in System Settings".
+    throw new MicrophoneBlockedError("in-use");
   }
-  mediaStream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-  });
   // A stream with no audio track, or one that is already over, is a failure
   // that arrived as a success. `muted` is deliberately NOT checked: a track can
   // legitimately start muted for a frame, and hanging up on that would refuse
@@ -146,7 +222,7 @@ async function startCapture() {
   const track = mediaStream.getAudioTracks()[0];
   if (!track || track.readyState === "ended") {
     stopCapture();
-    throw new Error("The microphone produced no audio track.");
+    throw new MicrophoneBlockedError("unavailable");
   }
   audioContext = new AudioContext({ sampleRate: CTO_VOICE_SAMPLE_RATE });
   const source = audioContext.createMediaStreamSource(mediaStream);
@@ -270,12 +346,23 @@ export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
       return;
     }
     let cancelled = false;
-    // The hang-up carries a reason because it comes from this side; see
-    // `CtoVoiceBridge.end` for why a silent one is not enough.
-    void startCapture().catch(() => {
-      if (cancelled) return;
-      void bridge()?.end(ctoVoiceMicrophoneUnavailableMessage(rendererRuntimeTarget().platform));
-    });
+    void startCapture()
+      .then(() => {
+        // The device opened: whatever the last attempt said is no longer true.
+        if (!cancelled) clearCtoMicrophoneFailure();
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const kind = error instanceof MicrophoneBlockedError ? error.kind : "unavailable";
+        const message = ctoVoiceMicrophoneMessage(kind, rendererRuntimeTarget().platform);
+        // Recorded BEFORE the hang-up: ending the call unmounts the HUD and
+        // closes the sheet's connecting state, and the verdict is the only
+        // thing either of them can show afterwards.
+        setMicrophoneFailure({ kind, message });
+        // The hang-up carries the same sentence because it comes from this
+        // side; see `CtoVoiceBridge.end` for why a silent one is not enough.
+        void bridge()?.end(message);
+      });
     return () => { cancelled = true; };
   }, [live]);
 

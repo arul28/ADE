@@ -5,7 +5,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 
 import {
   CTO_VOICE_INITIAL_STATE,
-  ctoVoiceMicrophoneUnavailableMessage,
+  ctoVoiceMicrophoneMessage,
   type CtoVoiceStatePayload,
 } from "../../../shared/types/ctoVoice";
 import { useCtoVoiceAudioOwner } from "./useCtoVoiceCall";
@@ -33,6 +33,7 @@ const liveOwner: CtoVoiceStatePayload = {
 
 function installBridge(overrides: {
   micStatus?: string;
+  micBlock?: string | null;
   getUserMedia?: () => Promise<MediaStream>;
   platform?: string;
 } = {}) {
@@ -41,7 +42,10 @@ function installBridge(overrides: {
   (globalThis.window as unknown as { ade: unknown }).ade = {
     app: { runtimeTarget: { platform: overrides.platform ?? "darwin", arch: "arm64" } },
     transcription: {
-      requestMicAccess: vi.fn(async () => ({ status: overrides.micStatus ?? "granted" })),
+      requestMicAccess: vi.fn(async () => ({
+        status: overrides.micStatus ?? "granted",
+        block: overrides.micBlock ?? null,
+      })),
     },
     ctoVoice: {
       end,
@@ -77,18 +81,36 @@ beforeEach(() => {
 });
 
 describe("useCtoVoiceAudioOwner", () => {
-  it("ends the call with the microphone sentence when getUserMedia refuses", async () => {
+  it("blames another app when the OS said yes and the device still would not open", async () => {
+    // `granted` plus a rejected `getUserMedia` is not a permissions problem, and
+    // sending the user to a settings pane where ADE is already ticked is the
+    // failure this classification exists to stop.
     const { end } = installBridge();
 
     render(<AudioOwner state={liveOwner} />);
 
     await waitFor(() => expect(end).toHaveBeenCalled());
-    expect(end).toHaveBeenCalledWith(ctoVoiceMicrophoneUnavailableMessage("darwin"));
-    expect(end.mock.calls[0]?.[0]).toContain("System Settings, Privacy & Security, Microphone");
+    expect(end).toHaveBeenCalledWith(ctoVoiceMicrophoneMessage("in-use", "darwin"));
+    expect(end.mock.calls[0]?.[0]).toBe("Another app may be holding the microphone. Close it and try again.");
+  });
+
+  it("sends a development build to the sentence it can act on", async () => {
+    // The owner's exact case: an agent-launched Electron has no TCC identity,
+    // so `askForMediaAccess` returns false without prompting and the packaged
+    // app's System Settings entry — already ticked — is a different binary.
+    const { end } = installBridge({ micStatus: "denied", micBlock: "dev-build" });
+
+    render(<AudioOwner state={liveOwner} />);
+
+    await waitFor(() => expect(end).toHaveBeenCalled());
+    expect(end.mock.calls[0]?.[0]).toBe(
+      "This is a development build. macOS cannot ask it for the microphone."
+      + " Start ADE from Terminal, or allow 'Electron' under Microphone in System Settings.",
+    );
   });
 
   it("points a Windows user at the Windows pane, from the bridge and not navigator", async () => {
-    const { end } = installBridge({ platform: "win32" });
+    const { end } = installBridge({ platform: "win32", micStatus: "denied", micBlock: "os-denied" });
 
     render(<AudioOwner state={liveOwner} />);
 
@@ -104,7 +126,7 @@ describe("useCtoVoiceAudioOwner", () => {
       getAudioTracks: () => [{ readyState: "live" }],
       getTracks: () => [{ stop: () => {} }],
     }) as unknown as MediaStream);
-    const { end } = installBridge({ micStatus: "denied", getUserMedia });
+    const { end } = installBridge({ micStatus: "denied", micBlock: "os-denied", getUserMedia });
 
     render(<AudioOwner state={liveOwner} />);
 
