@@ -44,6 +44,7 @@ export type PrCardChatSink = {
     laneId?: string,
     options?: { includeArchived?: boolean },
   ): Promise<AgentChatSessionSummary[]>;
+  getSessionSummary?(sessionId: string): Promise<AgentChatSessionSummary | null>;
   emitAdeCard(args: AgentChatEmitAdeCardArgs): Promise<void>;
 };
 
@@ -527,18 +528,30 @@ export async function emitPrCardsForChange(args: {
   for (const sibling of stackSiblings) {
     for (const sessionId of sibling.chatSessionIds ?? []) stackLinkedIds.add(sessionId);
   }
+  const listedById = new Map<string, AgentChatSessionSummary>();
+  const remember = (sessions: AgentChatSessionSummary[]) => {
+    for (const entry of sessions) listedById.set(entry.sessionId, entry);
+  };
+  const resolveById = async (sessionIds: Iterable<string>) => {
+    if (!chat.getSessionSummary) return;
+    await Promise.all([...sessionIds].map(async (sessionId) => {
+      if (listedById.has(sessionId)) return;
+      const summary = await chat.getSessionSummary?.(sessionId);
+      if (summary) listedById.set(summary.sessionId, summary);
+    }));
+  };
   const laneIds = new Set<string>([pr.laneId]);
   for (const sibling of stackSiblings) {
     if (sibling.laneId) laneIds.add(sibling.laneId);
   }
-  const listedRaw = stackLinkedIds.size > 0
-    ? (await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat()
-    : await chat.listSessions(pr.laneId, { includeArchived: false });
-  const listed = [...new Map(listedRaw.map((session) => [session.sessionId, session])).values()];
-  const ordinaryListed = linkedIds.size > 0
-    ? listed
-    : await chat.listSessions(pr.laneId, { includeArchived: false });
-  const ordinarySessions = selectPrCardSessions(ordinaryListed, [...linkedIds]);
+  if (stackLinkedIds.size > 0) {
+    remember((await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat());
+  } else {
+    remember(await chat.listSessions(pr.laneId, { includeArchived: false }));
+  }
+  await resolveById(stackLinkedIds);
+  const listed = [...listedById.values()];
+  const ordinarySessions = selectPrCardSessions(listed, [...linkedIds]);
   const stackSessions = selectPrCardSessions(listed, [...stackLinkedIds]);
   if (ordinarySessions.length === 0 && !(stackLanded && stackSessions.length > 0)) return 0;
 

@@ -360,6 +360,8 @@ export type LinkPrChatSessionArgs = {
 export type UnlinkPrChatSessionArgs = {
   prId: string;
   sessionId: string;
+  /** Default true. Stack-link rollback passes false so a failed offer does not hide the PR. */
+  dismiss?: boolean;
 };
 
 export type LinkPrChatStackArgs = {

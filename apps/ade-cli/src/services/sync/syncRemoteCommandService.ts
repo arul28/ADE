@@ -3353,6 +3353,7 @@ function parseUnlinkPrChatSessionArgs(value: Record<string, unknown>): UnlinkPrC
   return {
     prId: requireString(value.prId, "prs.unlinkChatSession requires prId."),
     sessionId: requireString(value.sessionId, "prs.unlinkChatSession requires sessionId."),
+    ...(value.dismiss === false ? { dismiss: false } : {}),
   };
 }
 

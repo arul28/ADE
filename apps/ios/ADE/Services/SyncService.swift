@@ -14892,15 +14892,19 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func unlinkPullRequestChatSession(prId: String, sessionId: String) async throws {
+  func unlinkPullRequestChatSession(prId: String, sessionId: String, dismiss: Bool = true) async throws {
     guard supportsRemoteAction("prs.unlinkChatSession") else {
       throw sessionLifecycleUnsupportedError("prs.unlinkChatSession")
     }
+    var args: [String: Any] = [
+      "prId": prId,
+      "sessionId": sessionId,
+    ]
+    if !dismiss {
+      args["dismiss"] = false
+    }
     try throwIfCommandRefused(
-      try await sendCommand(action: "prs.unlinkChatSession", args: [
-        "prId": prId,
-        "sessionId": sessionId,
-      ]),
+      try await sendCommand(action: "prs.unlinkChatSession", args: args),
       fallback: "Could not unlink this pull request."
     )
   }
@@ -14936,7 +14940,7 @@ final class SyncService: ObservableObject {
       }
     } catch {
       for prId in linked.reversed() {
-        try? await unlinkPullRequestChatSession(prId: prId, sessionId: sessionId)
+        try? await unlinkPullRequestChatSession(prId: prId, sessionId: sessionId, dismiss: false)
       }
       throw error
     }

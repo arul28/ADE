@@ -44,21 +44,21 @@ function entryRow(overrides: Partial<{
   };
 }
 
-function githubStackPayload(prNumbers = [7]) {
+function githubStackPayload(prNumbers = [7], options?: { merged?: boolean }) {
+  const merged = options?.merged !== false;
   return {
     id: "stack-4",
     number: 4,
     node_id: "S_4",
-    open: true,
+    open: !merged,
     created_at: "2026-01-01T00:00:00.000Z",
     base: { ref: "main" },
-    pull_requests: prNumbers.map((number, index) => ({
+    pull_requests: prNumbers.map((number) => ({
       number,
-      state: "closed",
+      state: merged ? "closed" : "open",
       draft: false,
-      merged_at: "2026-01-01T00:01:00.000Z",
+      merged_at: merged ? "2026-01-01T00:01:00.000Z" : null,
       head: { ref: `feat/layer-${number}`, sha: `sha-${number}` },
-      position: index + 1,
     })),
   };
 }
@@ -181,6 +181,7 @@ describe("githubStackStore.merge", () => {
       firstPostSeen = resolve;
     });
     let mergePosts = 0;
+    let stackGets = 0;
     const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
       if (args.method === "POST" && args.path.endsWith("/stacks/4/merge")) {
         mergePosts += 1;
@@ -195,7 +196,11 @@ describe("githubStackStore.merge", () => {
         };
       }
       if (args.method === "GET" && args.path.endsWith("/stacks/4")) {
-        return { data: githubStackPayload(), response: { status: 200 } };
+        stackGets += 1;
+        return {
+          data: githubStackPayload([7], { merged: stackGets > 1 }),
+          response: { status: 200 },
+        };
       }
       throw new Error(`unexpected ${args.method} ${args.path}`);
     });
@@ -214,6 +219,7 @@ describe("githubStackStore.merge", () => {
   it("does not treat a 202 stack merge as done until every open layer is merged", async () => {
     vi.useFakeTimers();
     let layerEightGets = 0;
+    let stackGets = 0;
     const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
       if (args.method === "POST" && args.path.endsWith("/stacks/4/merge")) {
         return { data: {}, response: { status: 202 } };
@@ -235,7 +241,11 @@ describe("githubStackStore.merge", () => {
         };
       }
       if (args.method === "GET" && args.path.endsWith("/stacks/4")) {
-        return { data: githubStackPayload([7, 8]), response: { status: 200 } };
+        stackGets += 1;
+        return {
+          data: githubStackPayload([7, 8], { merged: stackGets > 1 }),
+          response: { status: 200 },
+        };
       }
       throw new Error(`unexpected ${args.method} ${args.path}`);
     });
@@ -257,6 +267,45 @@ describe("githubStackStore.merge", () => {
       vi.useRealTimers();
     }
   });
+
+  it("polls GitHub stack membership after 202 even when the local cache is empty", async () => {
+    vi.useFakeTimers();
+    let stackGets = 0;
+    let pullGets = 0;
+    const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
+      if (args.method === "POST" && args.path.endsWith("/stacks/4/merge")) {
+        return { data: {}, response: { status: 202 } };
+      }
+      if (args.method === "GET" && args.path.endsWith("/pulls/7")) {
+        pullGets += 1;
+        return {
+          data: {
+            merged: pullGets >= 2,
+            merged_at: pullGets >= 2 ? "2026-01-01T00:01:00.000Z" : null,
+          },
+          response: { status: 200 },
+        };
+      }
+      if (args.method === "GET" && args.path.endsWith("/stacks/4")) {
+        stackGets += 1;
+        return {
+          data: githubStackPayload([7], { merged: stackGets > 1 }),
+          response: { status: 200 },
+        };
+      }
+      throw new Error(`unexpected ${args.method} ${args.path}`);
+    });
+    try {
+      const store = createStore(apiRequest as unknown as GithubService["apiRequest"], []);
+      const pending = store.merge(repo, 4);
+      await vi.advanceTimersByTimeAsync(2_000);
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      expect(pullGets).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("githubStackStore.rebase", () => {
@@ -264,6 +313,9 @@ describe("githubStackStore.rebase", () => {
     const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
       if (args.method === "POST" && args.path.endsWith("/stacks/4/rebase")) {
         throw new Error("Not Found");
+      }
+      if (args.method === "GET" && args.path.endsWith("/pulls/7")) {
+        return { data: { merged: false, head: { sha: "abc123" } }, response: { status: 200 } };
       }
       if (args.method === "PUT" && args.path.endsWith("/pulls/7/update-branch")) {
         throw new Error("Updating a stacked PR's branch via this endpoint is not supported.");
@@ -282,29 +334,39 @@ describe("githubStackStore.rebase", () => {
   it("waits for each update-branch head to move before rebasing the next layer", async () => {
     vi.useFakeTimers();
     const order: string[] = [];
-    let layerSevenGets = 0;
+    let updatedSeven = false;
+    let updatedEight = false;
+    let layerSevenPolls = 0;
     const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
       if (args.method === "POST" && args.path.endsWith("/stacks/4/rebase")) {
         throw new Error("Not Found");
       }
       if (args.method === "PUT" && args.path.endsWith("/pulls/7/update-branch")) {
         order.push("update-7");
+        updatedSeven = true;
         return { data: {}, response: { status: 202 } };
       }
       if (args.method === "PUT" && args.path.endsWith("/pulls/8/update-branch")) {
         order.push("update-8");
+        updatedEight = true;
         return { data: {}, response: { status: 202 } };
       }
       if (args.method === "GET" && args.path.endsWith("/pulls/7")) {
-        layerSevenGets += 1;
-        order.push(`get-7-${layerSevenGets}`);
-        if (layerSevenGets < 3) {
+        order.push(updatedSeven ? "poll-7" : "live-7");
+        if (!updatedSeven) {
+          return { data: { merged: false, head: { sha: "abc123" } }, response: { status: 200 } };
+        }
+        layerSevenPolls += 1;
+        if (layerSevenPolls < 3) {
           return { data: { merged: false, head: { sha: "abc123" } }, response: { status: 200 } };
         }
         return { data: { merged: false, head: { sha: "abc999" } }, response: { status: 200 } };
       }
       if (args.method === "GET" && args.path.endsWith("/pulls/8")) {
-        order.push("get-8");
+        order.push(updatedEight ? "poll-8" : "live-8");
+        if (!updatedEight) {
+          return { data: { merged: false, head: { sha: "def456" } }, response: { status: 200 } };
+        }
         return { data: { merged: false, head: { sha: "def999" } }, response: { status: 200 } };
       }
       if (args.method === "GET" && args.path.endsWith("/stacks/4")) {
@@ -322,8 +384,9 @@ describe("githubStackStore.rebase", () => {
       const result = await pending;
       expect(result.ok).toBe(true);
       expect(result.method).toBe("update_branch");
-      expect(order.indexOf("update-8")).toBeGreaterThan(order.indexOf("get-7-3"));
-      expect(order.indexOf("update-8")).toBeGreaterThan(order.indexOf("update-7"));
+      expect(order.indexOf("update-8")).toBeGreaterThan(order.lastIndexOf("poll-7"));
+      expect(order.indexOf("live-8")).toBeGreaterThan(order.indexOf("update-7"));
+      expect(order.indexOf("update-8")).toBeGreaterThan(order.indexOf("live-8"));
     } finally {
       vi.useRealTimers();
     }

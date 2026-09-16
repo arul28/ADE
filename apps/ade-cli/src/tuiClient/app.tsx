@@ -9343,15 +9343,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
   }, [chatRefreshPollActive, connection, diffLaneIdsKey]);
 
+  const chatPrCatalogConnectionRef = useRef<AdeCodeConnection | null>(null);
   useEffect(() => {
     if (!connection) {
+      chatPrCatalogConnectionRef.current = null;
       setPrByLaneId({});
       allPrsForChatRef.current = [];
       setChatLinkedPrs([]);
       return;
     }
-    allPrsForChatRef.current = [];
-    setChatLinkedPrs([]);
+    if (chatPrCatalogConnectionRef.current !== connection) {
+      chatPrCatalogConnectionRef.current = connection;
+      allPrsForChatRef.current = [];
+      setChatLinkedPrs([]);
+    }
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
     const refreshPrsByLane = async () => {

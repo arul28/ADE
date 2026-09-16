@@ -175,10 +175,10 @@ later layers update the same episode.
 The GitHub stack inspector is the merge/rebase surface. It tries
 `POST /repos/{owner}/{repo}/stacks/{number}/merge` (API version `2026-03-10`)
 and falls back to bottom-up `merge-async` plus GET polling until `merged_at`
-or the four-minute stack-merge action budget ends. A 202 stack-merge response
-is success only after every still-open layer reports merged. Rebase tries the
-stack rebase endpoint, then cascading `update-branch` with `expected_head_sha`,
-waiting for each layer's head SHA to advance before the next. A 404/403/405 leaves Merge stack and
+or the four-minute stack-merge action budget ends. A 202 stack-merge response is success only after ADE fetches the stack from
+GitHub and every still-open layer reports merged. Rebase tries the
+stack rebase endpoint, then cascading `update-branch` with `expected_head_sha`
+from the live head, waiting for each layer's head SHA to advance before the next. A 404/403/405 leaves Merge stack and
 Rebase stack visibly disabled with the GitHub reason — the peek only jumps
 here. Windows uses the same GitHub HTTP + SQLite path.
 

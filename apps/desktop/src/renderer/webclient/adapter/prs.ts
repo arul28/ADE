@@ -347,7 +347,11 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
         }, { ok: false }, false);
         if (!result.ok) {
           for (const prId of linkedIds.reverse()) {
-            await call("prs.unlinkChatSession", { prId, sessionId: offer.sessionId }, { ok: false }, false);
+            await call("prs.unlinkChatSession", {
+              prId,
+              sessionId: offer.sessionId,
+              dismiss: false,
+            }, { ok: false }, false);
           }
           invalidatePrsReads();
           return { ok: false, linked: 0 };

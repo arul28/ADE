@@ -737,4 +737,40 @@ describe("PR chat cards", () => {
     expect(emitAdeCard.mock.calls.map(([call]) => call.sessionId)).toEqual(["child"]);
     expect(emitAdeCard.mock.calls[0][0].card.variant).toBe("pr_ci");
   });
+
+  it("resolves an explicitly linked chat that lives on another lane", async () => {
+    const emitAdeCard = vi.fn().mockResolvedValue(undefined);
+    const getSessionSummary = vi.fn().mockResolvedValue(
+      session("review", "2026-07-27T12:00:00.000Z", { laneId: "lane-review" }),
+    );
+    await emitPrCardsForChange({
+      change: {
+        pr: pr({
+          checksStatus: "failing",
+          chatSessionIds: ["review"],
+        }),
+        previousState: "open",
+        previousChecksStatus: "passing",
+        previousReviewStatus: "approved",
+        previousMergeConflicts: false,
+        previousBehindBaseBy: 0,
+      },
+      dataSource: {
+        getActionRuns: vi.fn().mockResolvedValue([]),
+        getChecks: vi.fn().mockResolvedValue([]),
+        getReviews: vi.fn().mockResolvedValue([]),
+        getReviewThreads: vi.fn().mockResolvedValue([]),
+      },
+      chat: {
+        listSessions: vi.fn().mockResolvedValue([]),
+        getSessionSummary,
+        emitAdeCard,
+      },
+    });
+    expect(getSessionSummary).toHaveBeenCalledWith("review");
+    expect(emitAdeCard).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "review",
+      card: expect.objectContaining({ variant: "pr_ci" }),
+    }));
+  });
 });

@@ -724,7 +724,11 @@ export function createGithubStackStore(args: {
       .sort((left, right) => left.position - right.position);
     const deadlineMs = Date.now() + STACK_REBASE_POLL_DEADLINE_MS;
     for (const entry of openEntries) {
-      const previousHeadSha = entry.headSha.trim();
+      const { data: pull } = await githubService.apiRequest<Record<string, unknown>>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${entry.githubPrNumber}`,
+      });
+      const previousHeadSha = pullHeadSha(pull) || entry.headSha.trim();
       const body: Record<string, unknown> = {};
       if (previousHeadSha) body.expected_head_sha = previousHeadSha;
       await githubService.apiRequest<unknown>({
@@ -790,10 +794,19 @@ export function createGithubStackStore(args: {
           body: { merge_method: mergeMethod },
         });
         if (response?.status === 202) {
-          const stack = list(repo).find((entry) => entry.number === stackNumber);
-          const openNumbers = (stack?.entries ?? [])
+          const remote = await replaceFromRemote(repo, stackNumber);
+          const openNumbers = remote.entries
             .filter((entry) => !entry.mergedAt && entry.state !== "closed")
             .map((entry) => entry.githubPrNumber);
+          if (openNumbers.length === 0 && remote.entries.length === 0) {
+            return stackMutationFailure(
+              repo,
+              stackNumber,
+              new Error(`GitHub stack #${stackNumber} has no pull requests to verify after merge.`),
+              "merge",
+              "stack_api",
+            );
+          }
           if (openNumbers.length > 0) {
             const allMerged = await pollUntilPullsMerged(
               repo,
