@@ -26939,25 +26939,14 @@ async function runCli(
     plan.kind !== "brain" &&
     !parsed.options.headless
   ) {
-    const {
-      installCliRefreshBroker,
-      connectMachineBrainForRefresh,
-      probeMachineBrainSocket,
-      resolveMachineBrainSocketPath,
-    } = await import(
+    const { installMachineBrainRefreshBroker } = await import(
       "./services/account/cliRefreshBroker"
     );
-    const brokerSocketPath = parsed.options.socketPath ?? null;
-    await installCliRefreshBroker({
-      isBrainReachable: async () => probeMachineBrainSocket({
-        socketPath: await resolveMachineBrainSocketPath(brokerSocketPath),
-      }),
-      connect: () => connectMachineBrainForRefresh({
-        clientName: "ade-cli-refresh-broker",
-        version: VERSION,
-        protocolVersion: PROTOCOL_VERSION,
-        socketPath: parsed.options.socketPath ?? null,
-      }),
+    await installMachineBrainRefreshBroker({
+      clientName: "ade-cli-refresh-broker",
+      version: VERSION,
+      protocolVersion: PROTOCOL_VERSION,
+      socketPath: parsed.options.socketPath ?? null,
     });
   }
   const originalConsole = {

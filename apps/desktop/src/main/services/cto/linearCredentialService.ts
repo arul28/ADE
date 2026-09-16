@@ -4,6 +4,10 @@ import YAML from "yaml";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import {
+  describeVaultFailure,
+  fireAndForgetVaultWrite,
+} from "../account/vaultWrite";
 import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "./linearAppClient";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
@@ -95,12 +99,6 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const importSentinelPath = path.join(secretsDir, IMPORT_SENTINEL);
   const credentialStore = args.credentialStore ?? null;
 
-  const describeVaultFailure = (detail: unknown): string => {
-    if (detail instanceof Error) return detail.message;
-    if (isRecord(detail) && typeof detail.message === "string") return detail.message;
-    return getErrorMessage(detail);
-  };
-
   const logVaultFailure = (operation: string, detail: unknown): void => {
     args.logger?.warn("linear_sync.account_vault_sync_failed", {
       operation,
@@ -108,42 +106,25 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     });
   };
 
-  const fireAndForgetVaultCall = (
-    operation: "set" | "remove" | "get",
-    call: (vault: AccountVaultBridge) => Promise<unknown>,
-  ): void => {
-    let vault: AccountVaultBridge | null | undefined;
-    try {
-      vault = args.getAccountVault?.() ?? null;
-    } catch (error) {
-      logVaultFailure(operation, error);
-      return;
-    }
-    if (!vault) return;
-
-    let pending: Promise<unknown>;
-    try {
-      pending = call(vault);
-    } catch (error) {
-      logVaultFailure(operation, error);
-      return;
-    }
-    void Promise.resolve(pending).then((result) => {
-      if (!isRecord(result) || result.ok !== true) logVaultFailure(operation, result);
-    }).catch((error: unknown) => {
-      logVaultFailure(operation, error);
-    });
-  };
-
   const syncRefreshTokenToVault = (refreshToken: string): void => {
-    fireAndForgetVaultCall(
+    fireAndForgetVaultWrite(
+      {
+        getAccountVault: args.getAccountVault,
+        logger: args.logger,
+        logEvent: "linear_sync.account_vault_sync_failed",
+      },
       "set",
       (vault) => vault.set("all", "linear_refresh_token", "default", refreshToken),
     );
   };
 
   const removeRefreshTokenFromVault = (): void => {
-    fireAndForgetVaultCall(
+    fireAndForgetVaultWrite(
+      {
+        getAccountVault: args.getAccountVault,
+        logger: args.logger,
+        logEvent: "linear_sync.account_vault_sync_failed",
+      },
       "remove",
       (vault) => vault.remove("all", "linear_refresh_token", "default"),
     );

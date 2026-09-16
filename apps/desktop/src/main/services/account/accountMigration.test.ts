@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runAccountMigration } from "./accountMigration";
+import { getOpenAccountContexts } from "./accountMigrationRunner";
 
 const receiptDirs: string[] = [];
 
@@ -23,6 +24,18 @@ afterEach(() => {
 });
 
 describe("runAccountMigration", () => {
+  it("deduplicates migration contexts by project root", () => {
+    const first = { project: { rootPath: "/repo" }, marker: "first" };
+    const second = { project: { rootPath: "/repo" }, marker: "second" };
+    const contexts = getOpenAccountContexts([
+      first,
+      { project: { rootPath: null }, marker: "unopened" },
+      second,
+    ]);
+
+    expect(contexts).toEqual([second]);
+  });
+
   it("completes each source once and records its counts", async () => {
     const receiptDir = makeReceiptDir();
     const provider = vi.fn(() => ({ moved: 2, skipped: 1 }));

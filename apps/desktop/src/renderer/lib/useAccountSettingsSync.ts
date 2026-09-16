@@ -13,7 +13,6 @@ import { rootAppStoreApi } from "../state/appStore";
 import { fetchAccountStatus, subscribeAccountStatus } from "./account";
 import {
   startAccountSettingsSync,
-  type AccountSyncedStore,
 } from "./accountSettingsSync";
 
 // ---------------------------------------------------------------------------
@@ -40,7 +39,7 @@ export function useAccountSettingsSync(): void {
     let signedIn = false;
     let accountUserId: string | null = null;
     const stop = startAccountSettingsSync({
-      store: rootAppStoreApi as unknown as AccountSyncedStore,
+      store: rootAppStoreApi,
       getApi: () => window.ade?.accountSettings ?? null,
       isSignedIn: () => signedIn,
       getAccountUserId: () => accountUserId,

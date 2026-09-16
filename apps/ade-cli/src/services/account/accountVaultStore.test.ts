@@ -52,12 +52,13 @@ describe("account vault store", () => {
     fs.rmSync(adeDir, { recursive: true, force: true });
   });
 
-  const makeStore = () =>
+  const makeStore = (override?: Partial<Parameters<typeof createAccountVaultStore>[0]>) =>
     createAccountVaultStore({
       adeDir,
       relay: relay as unknown as AccountVaultRelay,
       getAccountUserId: () => accountUserId,
       getDeviceId: () => "this-machine",
+      ...override,
     });
 
   it("answers a read from the cache without touching the network", () => {
@@ -260,6 +261,40 @@ describe("account vault store", () => {
     store.set("all", "provider_key", "anthropic", "sk-live-abc");
 
     expect(fs.statSync(store.cachePathForTests()).mode & 0o777).toBe(0o600);
+  });
+
+  it("ignores corrupt persisted rows and pending entries with one warning", () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    fs.writeFileSync(path.join(adeDir, "account-vault.json"), JSON.stringify({
+      version: 1,
+      seqCounter: 1,
+      accountUserId: USER,
+      cursor: null,
+      items: {
+        "all\u0000provider_key\u0000valid": {
+          value: "sk-valid",
+          updatedAt: "2026-09-16T00:00:00.000Z",
+          writerDeviceId: null,
+          refreshOwner: null,
+        },
+        "all\u0000unknown\u0000corrupt": {
+          value: "sk-corrupt",
+          updatedAt: "2026-09-16T00:00:00.000Z",
+          writerDeviceId: null,
+          refreshOwner: null,
+        },
+      },
+      pending: [{ scope: "all", key: "missing-kind", deleted: false }],
+    }));
+
+    const store = makeStore({ logger });
+    expect(store.get("all", "provider_key", "valid")).toBe("sk-valid");
+    expect(store.get("all", "provider_key", "corrupt")).toBeNull();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "account.vault_cache_entry_dropped",
+      expect.objectContaining({ rowsField: "items" }),
+    );
   });
 
   it("encrypts the vault cache at rest and migrates a legacy plaintext cache on write", () => {

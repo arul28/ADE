@@ -14,7 +14,7 @@ import {
   SettingsManagerRow,
   SettingsManagerTable,
 } from "./primitives/SettingsManagerPage";
-import { SettingsSegmented } from "./primitives";
+import { SettingsSegmented, SettingsTextField } from "./primitives";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 
 /** The anchor `secrets.secrets` in `settingsManifest.ts` points at. */
@@ -369,21 +369,21 @@ export function SecretsSection() {
             alignItems: "center",
           }}
         >
-          <input
+          <SettingsTextField
             value={name}
-            onChange={(event) => setName(event.target.value)}
+            onChange={setName}
             placeholder="STRIPE_API_KEY"
-            aria-label="Secret name"
+            ariaLabel="Secret name"
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
             style={inputStyle}
           />
-          <input
+          <SettingsTextField
             value={value}
-            onChange={(event) => setValue(event.target.value)}
+            onChange={setValue}
             placeholder="Secret value"
-            aria-label="Secret value"
+            ariaLabel="Secret value"
             type="password"
             autoComplete="new-password"
             autoCapitalize="off"

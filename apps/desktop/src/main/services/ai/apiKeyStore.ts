@@ -7,6 +7,10 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { MachineApiKeySource, MachineApiKeyStatus } from "../../../shared/types/config";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import {
+  describeVaultFailure,
+  fireAndForgetVaultWrite,
+} from "../account/vaultWrite";
 import type { Logger } from "../logging/logger";
 import { writeFileAtomic } from "../state/durableFile";
 
@@ -89,14 +93,6 @@ let getAccountVault: (() => AccountVaultBridge | null | undefined) | null = null
 let getAccountUserId: (() => string | null) | null = null;
 let vaultLogger: Pick<Logger, "warn"> | null = null;
 
-function describeVaultFailure(detail: unknown): string {
-  if (detail instanceof Error) return detail.message;
-  if (detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string") {
-    return detail.message;
-  }
-  return String(detail ?? "unknown error");
-}
-
 function logVaultFailure(operation: string, provider: string, detail: unknown): void {
   vaultLogger?.warn("ai.api_key_vault_sync_failed", {
     operation,
@@ -112,31 +108,6 @@ function resolveAccountVault(operation: string, provider: string): AccountVaultB
     logVaultFailure(operation, provider, error);
     return null;
   }
-}
-
-function fireAndForgetVaultCall(
-  operation: "set" | "remove",
-  provider: string,
-  call: (vault: AccountVaultBridge) => Promise<unknown>,
-): void {
-  const vault = resolveAccountVault(operation, provider);
-  if (!vault) return;
-
-  let pending: Promise<unknown>;
-  try {
-    pending = call(vault);
-  } catch (error) {
-    logVaultFailure(operation, provider, error);
-    return;
-  }
-
-  void Promise.resolve(pending).then((result) => {
-    if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true) {
-      logVaultFailure(operation, provider, result);
-    }
-  }).catch((error: unknown) => {
-    logVaultFailure(operation, provider, error);
-  });
 }
 
 /**
@@ -1071,28 +1042,21 @@ function storeApiKeyIn(
     noteStoreWriteCommitted(scope);
     if (normalizedProvenance.source !== "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
     if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
-    if (!options.deviceOnly) {
-      fireAndForgetVaultCall(
-        "set",
-        normalizedProvider,
-        (vault) => vault.set("all", "provider_api_key", normalizedProvider, normalizedKey),
-      );
-    }
-    return;
+  } else {
+    const nextStore = { ...store, [normalizedProvider]: normalizedKey };
+    if (normalizedProvenance.source === "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
+    persistEncryptedStore(scope, nextStore);
+    deleteMacosKeychainSecretBestEffort(scope, normalizedProvider);
+    scope.missingMacosKeychainProviders.add(normalizedProvider);
+    scope.cache = nextStore;
+    noteStoreWriteCommitted(scope);
+    if (normalizedProvenance.source !== "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
+    if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
   }
-  const nextStore = { ...store, [normalizedProvider]: normalizedKey };
-  if (normalizedProvenance.source === "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
-  persistEncryptedStore(scope, nextStore);
-  deleteMacosKeychainSecretBestEffort(scope, normalizedProvider);
-  scope.missingMacosKeychainProviders.add(normalizedProvider);
-  scope.cache = nextStore;
-  noteStoreWriteCommitted(scope);
-  if (normalizedProvenance.source !== "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
-  if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
   if (!options.deviceOnly) {
-    fireAndForgetVaultCall(
+    fireAndForgetVaultWrite(
+      { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: normalizedProvider } },
       "set",
-      normalizedProvider,
       (vault) => vault.set("all", "provider_api_key", normalizedProvider, normalizedKey),
     );
   }
@@ -1175,30 +1139,22 @@ function deleteApiKeyIn(scope: ApiKeyScopeState, provider: string): void {
     const index = readCredentialProviderIndex(scope);
     writeCredentialProviderIndex(scope, index.providers.filter((entry) => entry !== normalizedProvider));
     noteStoreWriteCommitted(scope);
-    deleteProvenance(scope, normalizedProvider);
-    if (scope === projectScope) {
-      fireAndForgetVaultCall(
-        "remove",
-        normalizedProvider,
-        (vault) => vault.remove("all", "provider_api_key", normalizedProvider),
-      );
+  } else {
+    const nextStore = { ...store };
+    delete nextStore[normalizedProvider];
+    if (canPersistEncryptedStore(scope)) {
+      persistEncryptedStore(scope, nextStore);
     }
-    return;
+    deleteMacosKeychainSecretBestEffort(scope, normalizedProvider);
+    scope.missingMacosKeychainProviders.add(normalizedProvider);
+    scope.cache = nextStore;
+    noteStoreWriteCommitted(scope);
   }
-  const nextStore = { ...store };
-  delete nextStore[normalizedProvider];
-  if (canPersistEncryptedStore(scope)) {
-    persistEncryptedStore(scope, nextStore);
-  }
-  deleteMacosKeychainSecretBestEffort(scope, normalizedProvider);
-  scope.missingMacosKeychainProviders.add(normalizedProvider);
-  scope.cache = nextStore;
-  noteStoreWriteCommitted(scope);
   deleteProvenance(scope, normalizedProvider);
   if (scope === projectScope) {
-    fireAndForgetVaultCall(
+    fireAndForgetVaultWrite(
+      { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: normalizedProvider } },
       "remove",
-      normalizedProvider,
       (vault) => vault.remove("all", "provider_api_key", normalizedProvider),
     );
   }

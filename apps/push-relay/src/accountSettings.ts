@@ -44,7 +44,7 @@ const MAX_SETTINGS_PER_ACCOUNT = 5_000;
 const MAX_SETTINGS_PER_WRITE = 200;
 
 /** Bounds a `GET` page. Pulls ride a 30-second heartbeat, so they stay small. */
-const MAX_SETTINGS_PER_READ = 1_000;
+export const MAX_SETTINGS_PER_READ = 1_000;
 
 const MAX_SETTING_KEY_LENGTH = 200;
 
@@ -305,13 +305,3 @@ export async function handleAccountSettingsRoute(
   }
   return null;
 }
-
-export const accountSettingsTestInternals = Object.freeze({
-  MAX_SETTINGS_PER_ACCOUNT,
-  MAX_SETTINGS_PER_READ,
-  MAX_SETTINGS_PER_WRITE,
-  MAX_SETTING_VALUE_BYTES,
-  parseScopeKey: parseAccountScopeKey,
-  parseSettingKey,
-  parseWriteItem,
-});

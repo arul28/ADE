@@ -3,6 +3,7 @@ import {
   ACCOUNT_SYNCED_SETTINGS,
   startAccountSettingsSync,
   type AccountSettingsApi,
+  type AccountSettingsSyncOptions,
   type AccountSyncedSetting,
   type AccountSyncedStore,
 } from "./accountSettingsSync";
@@ -13,22 +14,28 @@ import type { AccountSettingRow } from "../../shared/types/accountSettings";
 // fields and write them through setters, exactly as the real registry does.
 // ---------------------------------------------------------------------------
 
-type FakeState = Record<string, unknown>;
+type FakeState = {
+  theme: string;
+  chatFontSizePx: number;
+  setTheme: (value: string) => void;
+  setChatFontSizePx: (value: number) => void;
+};
 
-function createStore(initial: Record<string, unknown>) {
+function createStore(initial: Partial<Pick<FakeState, "theme" | "chatFontSizePx">>) {
   const listeners = new Set<() => void>();
   const state: FakeState = {
-    ...initial,
-    setTheme: (value: unknown) => {
+    theme: initial.theme ?? "dark",
+    chatFontSizePx: initial.chatFontSizePx ?? 14,
+    setTheme: (value: string) => {
       state.theme = value;
       for (const listener of listeners) listener();
     },
-    setChatFontSizePx: (value: unknown) => {
+    setChatFontSizePx: (value: number) => {
       state.chatFontSizePx = value;
       for (const listener of listeners) listener();
     },
   };
-  const store: AccountSyncedStore = {
+  const store: AccountSyncedStore<FakeState> = {
     getState: () => state,
     subscribe: (listener) => {
       listeners.add(listener);
@@ -38,36 +45,36 @@ function createStore(initial: Record<string, unknown>) {
   return { store, state };
 }
 
-const SETTINGS: readonly AccountSyncedSetting[] = [
+const SETTINGS: readonly AccountSyncedSetting<FakeState>[] = [
   {
     key: "theme",
     scope: "account",
     read: (state) => state.theme,
-    apply: (state, value) => (state.setTheme as (v: unknown) => void)(value),
+    apply: (state, value) => state.setTheme(value as string),
   },
   {
     key: "chatFontSizePx",
     scope: "account",
     read: (state) => state.chatFontSizePx,
-    apply: (state, value) => (state.setChatFontSizePx as (v: unknown) => void)(value),
+    apply: (state, value) => state.setChatFontSizePx(value as number),
   },
 ];
 
-const REPO_SETTINGS: readonly AccountSyncedSetting[] = [
+const REPO_SETTINGS: readonly AccountSyncedSetting<FakeState>[] = [
   {
     key: "theme",
     scope: "account-repo",
     read: (state) => state.theme,
-    apply: (state, value) => (state.setTheme as (v: unknown) => void)(value),
+    apply: (state, value) => state.setTheme(value as string),
   },
 ];
 
-const MACHINE_SETTINGS: readonly AccountSyncedSetting[] = [
+const MACHINE_SETTINGS: readonly AccountSyncedSetting<FakeState>[] = [
   {
     key: "theme",
     scope: "machine",
     read: (state) => state.theme,
-    apply: (state, value) => (state.setTheme as (v: unknown) => void)(value),
+    apply: (state, value) => state.setTheme(value as string),
   },
 ];
 
@@ -107,7 +114,7 @@ const settle = async () => {
 
 let timers: Array<() => void>;
 
-function baseOptions(overrides: Partial<Parameters<typeof startAccountSettingsSync>[0]>) {
+function baseOptions(overrides: AccountSettingsSyncOptions<FakeState>) {
   return {
     settings: SETTINGS,
     storage: createStorage(),
@@ -117,7 +124,7 @@ function baseOptions(overrides: Partial<Parameters<typeof startAccountSettingsSy
     },
     clearInterval: () => {},
     ...overrides,
-  } as Parameters<typeof startAccountSettingsSync>[0];
+  } satisfies AccountSettingsSyncOptions<FakeState>;
 }
 
 beforeEach(() => {
@@ -171,7 +178,7 @@ describe("accountSettingsSync (renderer)", () => {
       baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
     );
     await settle();
-    (state.setTheme as (v: unknown) => void)("light");
+    state.setTheme("light");
     expect(api.set).toHaveBeenCalledWith({ scope: "all", key: "theme", value: "light" });
     stop();
   });
@@ -189,7 +196,7 @@ describe("accountSettingsSync (renderer)", () => {
       }),
     );
     await settle();
-    (withRemote.state.setTheme as (v: unknown) => void)("light");
+    withRemote.state.setTheme("light");
     expect(api.set).toHaveBeenCalledWith({
       scope: "repo:github.com/ade-dev/ade",
       key: "theme",
@@ -209,7 +216,7 @@ describe("accountSettingsSync (renderer)", () => {
       }),
     );
     await settle();
-    (noRemote.state.setTheme as (v: unknown) => void)("light");
+    noRemote.state.setTheme("light");
     expect(localApi.set).not.toHaveBeenCalled();
     stopLocal();
   });
@@ -226,7 +233,7 @@ describe("accountSettingsSync (renderer)", () => {
       }),
     );
     await settle();
-    (state.setTheme as (v: unknown) => void)("sepia");
+    state.setTheme("sepia");
     expect(api.list).not.toHaveBeenCalled();
     expect(api.set).not.toHaveBeenCalled();
     expect(state.theme).toBe("sepia");
@@ -264,7 +271,7 @@ describe("accountSettingsSync (renderer)", () => {
       }),
     );
     await settle();
-    (state.setTheme as (v: unknown) => void)("light");
+    state.setTheme("light");
     expect(api.set).toHaveBeenCalledTimes(1);
 
     // The server's copy predates the local edit: a pull must leave it alone.
@@ -282,7 +289,7 @@ describe("accountSettingsSync (renderer)", () => {
       baseOptions({ store, getApi: () => api, isSignedIn: () => false }),
     );
     await settle();
-    (state.setTheme as (v: unknown) => void)("sepia");
+    state.setTheme("sepia");
     timers[0]?.();
     await settle();
     expect(api.list).not.toHaveBeenCalled();
@@ -375,7 +382,7 @@ describe("accountSettingsSync (renderer)", () => {
     );
     await settle();
 
-    (state.setTheme as (value: unknown) => void)("light");
+    state.setTheme("light");
     expect(api.set).not.toHaveBeenCalled();
     expect(JSON.parse(storage.map.get("ade.accountSettings.dirty.v1") ?? "[]")).toContain(
       "__signed-out__\u0000theme",
@@ -402,7 +409,7 @@ describe("accountSettingsSync (renderer)", () => {
       baseOptions({ store, getApi: () => null, isSignedIn: () => true }),
     );
     await settle();
-    (state.setTheme as (v: unknown) => void)("light");
+    state.setTheme("light");
     timers[0]?.();
     await settle();
     expect(state.theme).toBe("light");
@@ -417,7 +424,7 @@ describe("accountSettingsSync (renderer)", () => {
     );
     await settle();
     stop();
-    (state.setTheme as (v: unknown) => void)("light");
+    state.setTheme("light");
     await settle();
     expect(api.set).not.toHaveBeenCalled();
   });

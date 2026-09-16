@@ -128,7 +128,7 @@ const MAX_VALUE_CHARS = 6_000;
 
 const MAX_ITEMS_PER_ACCOUNT = 2_000;
 const MAX_ITEMS_PER_WRITE = 100;
-const MAX_ITEMS_PER_READ = 500;
+export const MAX_ITEMS_PER_READ = 500;
 
 const MAX_ITEM_KEY_LENGTH = 200;
 
@@ -386,12 +386,3 @@ export async function handleAccountVaultRoute(
   }
   return null;
 }
-
-export const accountVaultTestInternals = Object.freeze({
-  ITEM_KINDS,
-  MAX_VALUE_CHARS,
-  MAX_ITEMS_PER_ACCOUNT,
-  MAX_ITEMS_PER_READ,
-  MAX_ITEMS_PER_WRITE,
-  parseWriteItem,
-});

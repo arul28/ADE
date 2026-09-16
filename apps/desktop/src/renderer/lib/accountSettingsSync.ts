@@ -41,6 +41,7 @@ import {
 } from "../../shared/accountSettingsScope";
 import type { AccountSettingRow, AccountSettingsResult } from "../../shared/types/accountSettings";
 import type { SettingScope } from "../components/settings/settingsManifest";
+import type { AppState } from "../state/appStore";
 
 /** How often a signed-in machine reconciles with the account. */
 export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
@@ -55,13 +56,13 @@ const DIRTY_STORAGE_KEY = "ade.accountSettings.dirty.v1";
 /**
  * The app-store slice this module reads and writes.
  *
- * Structural rather than `AppState` so a test can drive the whole path with a
- * hand-built object instead of booting the real store.
+ * Generic so the sync engine can be tested with a small state fixture while
+ * the production registry remains tied to the real app store below.
  */
-export type AccountSyncedState = Record<string, unknown>;
+export type AccountSyncedState = AppState;
 
-export type AccountSyncedStore = {
-  getState(): AccountSyncedState;
+export type AccountSyncedStore<State = AccountSyncedState> = {
+  getState(): State;
   subscribe(listener: () => void): () => void;
 };
 
@@ -73,26 +74,26 @@ export type AccountSyncedStore = {
  * user click uses. A hydrator that wrote raw state would be a second writer
  * with its own bugs.
  */
-export type AccountSyncedSetting = {
+export type AccountSyncedSetting<State = AccountSyncedState> = {
   /** The store key, which is also the account store's key. One name, not two. */
   key: string;
   scope: SettingScope;
-  read: (state: AccountSyncedState) => unknown;
-  apply: (state: AccountSyncedState, value: unknown) => void;
+  read: (state: State) => unknown;
+  apply: (state: State, value: unknown) => void;
 };
 
-function callSetter(state: AccountSyncedState, setter: string, value: unknown): void {
-  const fn = state[setter];
-  if (typeof fn === "function") (fn as (arg: unknown) => void)(value);
-}
-
-/** A plain value setting: `key` in the store, `set<Key>` to write it. */
-function pref(key: string, setter: string, scope: SettingScope = "account"): AccountSyncedSetting {
+/** A plain value setting with a setter checked against the real app state. */
+function pref<Value>(
+  key: string,
+  read: (state: AppState) => Value,
+  apply: (state: AppState, value: Value) => void,
+  scope: SettingScope = "account",
+): AccountSyncedSetting {
   return {
     key,
     scope,
-    read: (state) => state[key],
-    apply: (state, value) => callSetter(state, setter, value),
+    read,
+    apply: (state, value) => apply(state, value as Value),
   };
 }
 
@@ -106,22 +107,22 @@ function pref(key: string, setter: string, scope: SettingScope = "account"): Acc
  * travel.
  */
 export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
-  pref("theme", "setTheme"),
-  pref("terminalPreferences", "setTerminalPreferences"),
-  pref("smartTooltipsEnabled", "setSmartTooltipsEnabled"),
-  pref("launchPromptClipboardEnabled", "setLaunchPromptClipboardEnabled"),
-  pref("launchPromptClipboardNoticeEnabled", "setLaunchPromptClipboardNoticeEnabled"),
-  pref("promptStashButtonEnabled", "setPromptStashButtonEnabled"),
-  pref("voiceInputEnabled", "setVoiceInputEnabled"),
-  pref("codeBlockCopyButtonPosition", "setCodeBlockCopyButtonPosition"),
-  pref("agentTurnCompletionSound", "setAgentTurnCompletionSound"),
-  pref("agentTurnCompletionSoundVolume", "setAgentTurnCompletionSoundVolume"),
-  pref("agentTurnCompletionSoundQuietWhenFocused", "setAgentTurnCompletionSoundQuietWhenFocused"),
-  pref("chatFontSizePx", "setChatFontSizePx"),
-  pref("chatUserMinimapEnabled", "setChatUserMinimapEnabled"),
-  pref("chatTranscriptDensity", "setChatTranscriptDensity"),
-  pref("chatChromeTint", "setChatChromeTint"),
-  pref("chatShellGeometry", "setChatShellGeometry"),
+  pref("theme", (state) => state.theme, (state, value) => state.setTheme(value)),
+  pref("terminalPreferences", (state) => state.terminalPreferences, (state, value) => state.setTerminalPreferences(value)),
+  pref("smartTooltipsEnabled", (state) => state.smartTooltipsEnabled, (state, value) => state.setSmartTooltipsEnabled(value)),
+  pref("launchPromptClipboardEnabled", (state) => state.launchPromptClipboardEnabled, (state, value) => state.setLaunchPromptClipboardEnabled(value)),
+  pref("launchPromptClipboardNoticeEnabled", (state) => state.launchPromptClipboardNoticeEnabled, (state, value) => state.setLaunchPromptClipboardNoticeEnabled(value)),
+  pref("promptStashButtonEnabled", (state) => state.promptStashButtonEnabled, (state, value) => state.setPromptStashButtonEnabled(value)),
+  pref("voiceInputEnabled", (state) => state.voiceInputEnabled, (state, value) => state.setVoiceInputEnabled(value)),
+  pref("codeBlockCopyButtonPosition", (state) => state.codeBlockCopyButtonPosition, (state, value) => state.setCodeBlockCopyButtonPosition(value)),
+  pref("agentTurnCompletionSound", (state) => state.agentTurnCompletionSound, (state, value) => state.setAgentTurnCompletionSound(value)),
+  pref("agentTurnCompletionSoundVolume", (state) => state.agentTurnCompletionSoundVolume, (state, value) => state.setAgentTurnCompletionSoundVolume(value)),
+  pref("agentTurnCompletionSoundQuietWhenFocused", (state) => state.agentTurnCompletionSoundQuietWhenFocused, (state, value) => state.setAgentTurnCompletionSoundQuietWhenFocused(value)),
+  pref("chatFontSizePx", (state) => state.chatFontSizePx, (state, value) => state.setChatFontSizePx(value)),
+  pref("chatUserMinimapEnabled", (state) => state.chatUserMinimapEnabled, (state, value) => state.setChatUserMinimapEnabled(value)),
+  pref("chatTranscriptDensity", (state) => state.chatTranscriptDensity, (state, value) => state.setChatTranscriptDensity(value)),
+  pref("chatChromeTint", (state) => state.chatChromeTint, (state, value) => state.setChatChromeTint(value)),
+  pref("chatShellGeometry", (state) => state.chatShellGeometry, (state, value) => state.setChatShellGeometry(value)),
 ] as const;
 
 export type AccountSettingsApi = {
@@ -130,8 +131,8 @@ export type AccountSettingsApi = {
   sync(): Promise<AccountSettingsResult<null>>;
 };
 
-export type AccountSettingsSyncOptions = {
-  store: AccountSyncedStore;
+export type AccountSettingsSyncOptions<State = AccountSyncedState> = {
+  store: AccountSyncedStore<State>;
   /** Null whenever the bridge is missing — the web client, an older preload. */
   getApi: () => AccountSettingsApi | null | undefined;
   /** Whether an account is signed in right now. Re-read, never captured. */
@@ -142,7 +143,7 @@ export type AccountSettingsSyncOptions = {
   subscribeSignedIn?: (listener: () => void) => () => void;
   /** The open project's git remote, for `account-repo` keys. */
   getProjectRemote?: () => string | null;
-  settings?: readonly AccountSyncedSetting[];
+  settings?: readonly AccountSyncedSetting<State>[];
   pollMs?: number;
   now?: () => number;
   storage?: Pick<Storage, "getItem" | "setItem">;
@@ -218,8 +219,11 @@ function sameValue(left: unknown, right: unknown): boolean {
  * Returns a stop function. Safe to call with no bridge, no account, and no
  * network: each of those simply means the machine keeps its local copy.
  */
-export function startAccountSettingsSync(options: AccountSettingsSyncOptions): () => void {
-  const settings = (options.settings ?? ACCOUNT_SYNCED_SETTINGS).filter((entry) =>
+export function startAccountSettingsSync<State = AccountSyncedState>(
+  options: AccountSettingsSyncOptions<State>,
+): () => void {
+  const settings = (options.settings
+    ?? (ACCOUNT_SYNCED_SETTINGS as readonly AccountSyncedSetting<State>[])).filter((entry) =>
     isAccountScope(entry.scope),
   );
   const now = options.now ?? Date.now;
@@ -272,7 +276,7 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
    * such a checkout has no identity that means anything on a second machine,
    * so its settings wait here until it gets one.
    */
-  const scopeKeyFor = (entry: AccountSyncedSetting): string | null => {
+  const scopeKeyFor = (entry: AccountSyncedSetting<State>): string | null => {
     if (entry.scope === "account") return ACCOUNT_SCOPE_ALL;
     return accountRepoScopeKey(options.getProjectRemote?.() ?? null);
   };
@@ -341,7 +345,7 @@ export function startAccountSettingsSync(options: AccountSettingsSyncOptions): (
 
   /** Push one local change, stamping only after the request is queued. */
   function push(
-    entry: AccountSyncedSetting,
+    entry: AccountSyncedSetting<State>,
     value: unknown,
     existingDirtyKey = dirtyKey(accountUserId, entry.key),
   ): void {

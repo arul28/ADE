@@ -1,3 +1,5 @@
+import type { AccountStoreResult } from "./accountStore";
+
 /**
  * The wire shapes of the account settings store, shared by main, preload and
  * the renderer.
@@ -27,6 +29,4 @@ export type AccountSettingRow = {
  * try again later. Making unreachability a value rather than a rejection is
  * what keeps a theme change working on a train.
  */
-export type AccountSettingsResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; unavailable: true; message: string };
+export type AccountSettingsResult<T> = AccountStoreResult<T>;

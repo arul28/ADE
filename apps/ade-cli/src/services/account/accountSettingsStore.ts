@@ -50,6 +50,52 @@ type PendingWrite = {
   seq: number;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function decodeCachedSetting(value: unknown): CachedSetting | null {
+  if (!isRecord(value) || !("value" in value)) return null;
+  const updatedAt = nonEmptyString(value.updatedAt);
+  const changedAt = value.changedAt === null || typeof value.changedAt === "string"
+    ? value.changedAt
+    : undefined;
+  const writerDeviceId = value.writerDeviceId === null || typeof value.writerDeviceId === "string"
+    ? value.writerDeviceId
+    : undefined;
+  if (!updatedAt || changedAt === undefined || writerDeviceId === undefined) return null;
+  return { value: value.value, updatedAt, changedAt, writerDeviceId };
+}
+
+function decodePendingWrite(value: unknown): PendingWrite | null {
+  if (!isRecord(value)) return null;
+  const scope = nonEmptyString(value.scope);
+  const key = nonEmptyString(value.key);
+  const changedAt = nonEmptyString(value.changedAt);
+  if (
+    !scope
+    || !key
+    || !changedAt
+    || typeof value.deleted !== "boolean"
+    || typeof value.seq !== "number"
+    || !Number.isSafeInteger(value.seq)
+    || value.seq <= 0
+    || (!value.deleted && !("value" in value))
+  ) return null;
+  return {
+    scope,
+    key,
+    value: value.value,
+    deleted: value.deleted,
+    changedAt,
+    seq: value.seq,
+  };
+}
+
 function cacheKey(scope: string, key: string): string {
   return `${scope}${KEY_SEPARATOR}${key}`;
 }
@@ -100,12 +146,15 @@ export function createAccountSettingsStore(args: {
       uploadFailed: "account.settings_upload_failed",
       pullFailed: "account.settings_pull_failed",
       pullTruncated: "account.settings_pull_truncated",
+      cacheEntryDropped: "account.settings_cache_entry_dropped",
     },
     hasRelay: () => args.relay !== null,
     pendingMatches: (existing, write) =>
       existing.scope === write.scope && existing.key === write.key,
     pendingKey: (entry) => cacheKey(entry.scope, entry.key),
     remoteKey: (row) => cacheKey(row.scope, row.key),
+    decodeRow: decodeCachedSetting,
+    decodePending: decodePendingWrite,
     async upload(pending) {
       const relay = args.relay!;
       const writes = pending.filter((entry) => !entry.deleted);

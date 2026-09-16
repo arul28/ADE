@@ -7,7 +7,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
-import { SettingsDisclosure, SettingsTextField, SettingsToggle } from "./primitives";
+import { SettingsDisclosure, SettingsSelect, SettingsTextField, SettingsToggle } from "./primitives";
 import {
   SettingsManagerEmpty,
   SettingsManagerPage,
@@ -344,16 +344,16 @@ export function LaneTemplatesSection() {
       {templates.length > 0 && (
         <div>
           <div style={subLabelStyle}>Use for new lanes</div>
-          <select
+          <SettingsSelect
             value={defaultId ?? ""}
-            onChange={(e) => handleSetDefault(e.target.value)}
+            onChange={handleSetDefault}
+            ariaLabel="Default lane template"
+            options={[
+              { value: "", label: "None" },
+              ...templates.map((template) => ({ value: template.id, label: template.name })),
+            ]}
             style={{ ...inputStyle, maxWidth: 400 }}
-          >
-            <option value="">None</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
+          />
           <div style={hintStyle}>
             Picked for you when you create a lane. You can still choose a different one there.
           </div>

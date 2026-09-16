@@ -1,6 +1,7 @@
 import net from "node:net";
 import path from "node:path";
 import { AccountRefreshUnavailableError, type AccountRefreshBroker } from "./accountAuthService";
+import { createAccountRefreshBroker } from "./accountRefreshBroker";
 import { setSharedAccountRefreshBroker } from "./sharedAccountAuthService";
 
 /**
@@ -40,20 +41,6 @@ export type CliRefreshBrokerDeps = {
 
 const DEFAULT_BROKER_TIMEOUT_MS = 20_000;
 
-/** The brain's `account.call` envelope is `{ domain, action, result }`. */
-function unwrapBrainAccountResult(raw: unknown): unknown {
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const record = raw as Record<string, unknown>;
-    if (
-      Object.prototype.hasOwnProperty.call(record, "result") &&
-      (typeof record.domain === "string" || typeof record.action === "string")
-    ) {
-      return record.result;
-    }
-  }
-  return raw;
-}
-
 async function connectQuietly(
   connect: CliRefreshBrokerDeps["connect"],
 ): Promise<CliRefreshBrokerClient | null> {
@@ -86,31 +73,20 @@ export async function createCliRefreshBroker(
   deps: CliRefreshBrokerDeps,
 ): Promise<AccountRefreshBroker> {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_BROKER_TIMEOUT_MS;
-  return {
-    async getAccessToken() {
-      let reachable = false;
-      if (deps.isBrainReachable) {
-        try {
-          reachable = await deps.isBrainReachable();
-        } catch {
-          reachable = false;
-        }
-      } else {
-        const probe = await connectQuietly(deps.connect);
-        if (probe) {
-          reachable = true;
-          // Reachability is sampled per call; never hold the probe open while
-          // the auth service decides whether it needs a fresh token.
-          try {
-            probe.close();
-          } catch {}
-        }
-      }
-      // A missing brain is not a broker failure. Returning null deliberately
-      // hands the request back to AccountAuthService's local exchange path.
-      if (!reachable) return null;
-      // `forceRefresh` is deliberately not forwarded: only the brain decides
-      // when the credential is exchanged.
+  const isBrainReachable = deps.isBrainReachable ?? (async () => {
+    const probe = await connectQuietly(deps.connect);
+    if (!probe) return false;
+    // Reachability is sampled per call; never hold the probe open while the
+    // auth service decides whether it needs a fresh token.
+    try {
+      probe.close();
+    } catch {}
+    return true;
+  });
+
+  return createAccountRefreshBroker({
+    isReachable: isBrainReachable,
+    requestToken: async () => {
       const client = await connectQuietly(deps.connect);
       if (!client) {
         throw new AccountRefreshUnavailableError(
@@ -118,27 +94,10 @@ export async function createCliRefreshBroker(
         );
       }
       try {
-        const raw = await client.request<unknown>(
+        return await client.request<unknown>(
           "account.call",
           { action: "getToken", args: {} },
           { timeoutMs },
-        );
-        const token = unwrapBrainAccountResult(raw);
-        if (typeof token !== "string" || !token.trim()) {
-          throw new AccountRefreshUnavailableError(
-            "The ADE brain did not return an account token.",
-          );
-        }
-        return token.trim();
-      } catch (error) {
-        if (error instanceof AccountRefreshUnavailableError) throw error;
-        // Everything the brain can fail with here is transport- or
-        // brain-shaped. The broker cannot observe the issuer, so it is never
-        // entitled to condemn the session: report transient and keep the
-        // stored record intact.
-        throw new AccountRefreshUnavailableError(
-          "ADE couldn't ask the brain for an account token. Try again in a moment.",
-          { cause: error },
         );
       } finally {
         try {
@@ -146,7 +105,7 @@ export async function createCliRefreshBroker(
         } catch {}
       }
     },
-  };
+  });
 }
 
 /**
@@ -164,6 +123,21 @@ export async function installCliRefreshBroker(
     // Installing the broker must never be able to fail a command.
     return false;
   }
+}
+
+/** Install the standard machine-brain transport for a CLI or TUI client. */
+export async function installMachineBrainRefreshBroker(args: {
+  clientName: string;
+  version: string;
+  protocolVersion: number | string;
+  socketPath?: string | null;
+}): Promise<boolean> {
+  return await installCliRefreshBroker({
+    isBrainReachable: async () => probeMachineBrainSocket({
+      socketPath: await resolveMachineBrainSocketPath(args.socketPath),
+    }),
+    connect: () => connectMachineBrainForRefresh(args),
+  });
 }
 
 /**

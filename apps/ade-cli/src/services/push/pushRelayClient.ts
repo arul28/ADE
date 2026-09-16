@@ -749,7 +749,9 @@ export function createPushRelayClient(args: {
       if (!result.asked) return null;
       const body = result.body;
       return {
-        settings: Array.isArray(body.settings) ? body.settings as AccountSettingRecord[] : [],
+        settings: Array.isArray(body.settings)
+          ? body.settings.map(decodeAccountSettingRecord).filter((row): row is AccountSettingRecord => row !== null)
+          : [],
         cursor: typeof body.cursor === "string" ? body.cursor : null,
         truncated: body.truncated === true,
       };
@@ -807,7 +809,9 @@ export function createPushRelayClient(args: {
       if (!result.asked) return null;
       const body = result.body;
       return {
-        items: Array.isArray(body.items) ? body.items as AccountVaultItem[] : [],
+        items: Array.isArray(body.items)
+          ? body.items.map(decodeAccountVaultItem).filter((row): row is AccountVaultItem => row !== null)
+          : [],
         cursor: typeof body.cursor === "string" ? body.cursor : null,
         truncated: body.truncated === true,
       };
@@ -868,6 +872,32 @@ export type AccountSettingRecord = {
   writerDeviceId: string | null;
 };
 
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readNullableString(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === "string" ? value : undefined;
+}
+
+function readTimestamp(value: unknown): string | null {
+  const timestamp = readNonEmptyString(value);
+  return timestamp && !Number.isNaN(Date.parse(timestamp)) ? timestamp : null;
+}
+
+/** Validate one settings row at the relay boundary before it enters a cache. */
+export function decodeAccountSettingRecord(value: unknown): AccountSettingRecord | null {
+  if (!isRecord(value)) return null;
+  const scope = readNonEmptyString(value.scope);
+  const key = readNonEmptyString(value.key);
+  const updatedAt = readTimestamp(value.updatedAt);
+  const changedAt = readNullableString(value.changedAt);
+  const writerDeviceId = readNullableString(value.writerDeviceId);
+  if (!scope || !key || !updatedAt || changedAt === undefined || writerDeviceId === undefined) return null;
+  return { scope, key, value: value.value, updatedAt, changedAt, writerDeviceId };
+}
+
 /** One setting as a client sends it. `changedAt` is diagnostics, not ordering. */
 export type AccountSettingWrite = {
   scope: string;
@@ -917,6 +947,46 @@ export type AccountVaultItem = {
   writerDeviceId: string | null;
   refreshOwner: string | null;
 };
+
+const ACCOUNT_VAULT_ITEM_KINDS: ReadonlySet<string> = new Set([
+  "secret",
+  "provider_key",
+  "integration",
+  "provider_api_key",
+  "linear_refresh_token",
+  "project_secret",
+]);
+
+/** Validate one vault row before callers can mistake corrupt data for a secret. */
+export function decodeAccountVaultItem(value: unknown): AccountVaultItem | null {
+  if (!isRecord(value)) return null;
+  const scope = readNonEmptyString(value.scope);
+  const kind = readNonEmptyString(value.kind);
+  const key = readNonEmptyString(value.key);
+  const updatedAt = readTimestamp(value.updatedAt);
+  const itemValue = value.value === null || typeof value.value === "string" ? value.value : undefined;
+  const writerDeviceId = readNullableString(value.writerDeviceId);
+  const refreshOwner = readNullableString(value.refreshOwner);
+  if (
+    !scope
+    || !kind
+    || !ACCOUNT_VAULT_ITEM_KINDS.has(kind)
+    || !key
+    || !updatedAt
+    || itemValue === undefined
+    || writerDeviceId === undefined
+    || refreshOwner === undefined
+  ) return null;
+  return {
+    scope,
+    kind: kind as AccountVaultItemKind,
+    key,
+    value: itemValue,
+    updatedAt,
+    writerDeviceId,
+    refreshOwner,
+  };
+}
 
 export type AccountVaultWrite = {
   scope: string;

@@ -138,7 +138,7 @@ describe("cli refresh broker installation sites", () => {
     const source = await import("node:fs/promises").then((fs) =>
       fs.readFile(new URL("../../cli.ts", import.meta.url), "utf8"),
     );
-    const install = source.indexOf("installCliRefreshBroker");
+    const install = source.indexOf("installMachineBrainRefreshBroker");
     expect(install).toBeGreaterThan(-1);
     const guard = source.slice(Math.max(0, install - 1200), install);
     expect(guard).toContain('plan.kind !== "serve"');

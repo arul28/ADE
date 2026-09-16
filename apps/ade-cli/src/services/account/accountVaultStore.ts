@@ -60,6 +60,67 @@ type PendingWrite = {
   seq: number;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function isAccountVaultItemKind(value: unknown): value is AccountVaultItemKind {
+  return value === "secret"
+    || value === "provider_key"
+    || value === "integration"
+    || value === "provider_api_key"
+    || value === "linear_refresh_token"
+    || value === "project_secret";
+}
+
+function readNullableString(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === "string" ? value : undefined;
+}
+
+function decodeCachedItem(value: unknown): CachedItem | null {
+  if (!isRecord(value)) return null;
+  const updatedAt = nonEmptyString(value.updatedAt);
+  const itemValue = value.value === null || typeof value.value === "string" ? value.value : undefined;
+  const writerDeviceId = readNullableString(value.writerDeviceId);
+  const refreshOwner = readNullableString(value.refreshOwner);
+  if (!updatedAt || itemValue === undefined || writerDeviceId === undefined || refreshOwner === undefined) return null;
+  return { value: itemValue, updatedAt, writerDeviceId, refreshOwner };
+}
+
+function decodePendingWrite(value: unknown): PendingWrite | null {
+  if (!isRecord(value)) return null;
+  const scope = nonEmptyString(value.scope);
+  const kind = isAccountVaultItemKind(value.kind) ? value.kind : null;
+  const key = nonEmptyString(value.key);
+  const itemValue = value.value === null || typeof value.value === "string" ? value.value : undefined;
+  const refreshOwner = readNullableString(value.refreshOwner);
+  if (
+    !scope
+    || !kind
+    || !key
+    || itemValue === undefined
+    || typeof value.deleted !== "boolean"
+    || refreshOwner === undefined
+    || typeof value.seq !== "number"
+    || !Number.isSafeInteger(value.seq)
+    || value.seq <= 0
+  ) return null;
+  return {
+    scope,
+    kind,
+    key,
+    value: itemValue,
+    deleted: value.deleted,
+    refreshOwner,
+    seq: value.seq,
+  };
+}
+
 /** `<scope> <kind> <key>`, NUL-separated. */
 function cacheKey(scope: string, kind: string, key: string): string {
   return `${scope}${KEY_SEPARATOR}${kind}${KEY_SEPARATOR}${key}`;
@@ -69,10 +130,10 @@ function splitCacheKey(
   composite: string,
 ): { scope: string; kind: AccountVaultItemKind; key: string } | null {
   const parts = composite.split(KEY_SEPARATOR);
-  if (parts.length !== 3) return null;
+  if (parts.length !== 3 || !parts[0] || !parts[2] || !isAccountVaultItemKind(parts[1])) return null;
   return {
     scope: parts[0]!,
-    kind: parts[1] as AccountVaultItemKind,
+    kind: parts[1],
     key: parts[2]!,
   };
 }
@@ -174,6 +235,7 @@ export function createAccountVaultStore(args: {
       uploadFailed: "account.vault_upload_failed",
       pullFailed: "account.vault_pull_failed",
       pullTruncated: "account.vault_pull_truncated",
+      cacheEntryDropped: "account.vault_cache_entry_dropped",
       purgeFailed: "account.vault_purge_failed",
     },
     readFile: readCacheFile,
@@ -185,6 +247,8 @@ export function createAccountVaultStore(args: {
       && existing.key === write.key,
     pendingKey: (entry) => cacheKey(entry.scope, entry.kind, entry.key),
     remoteKey: (item) => cacheKey(item.scope, item.kind, item.key),
+    decodeRow: decodeCachedItem,
+    decodePending: decodePendingWrite,
     async upload(pending) {
       const relay = args.relay!;
       const writes = pending.filter((entry) => !entry.deleted && entry.value != null);

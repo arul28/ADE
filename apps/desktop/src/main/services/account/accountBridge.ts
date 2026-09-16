@@ -15,9 +15,12 @@ import {
   resolveOfficialAccountDirectoryBaseUrl,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import {
-  AccountRefreshUnavailableError,
   type AccountRefreshBroker,
 } from "../../../../../ade-cli/src/services/account/accountAuthService";
+import {
+  createAccountRefreshBroker,
+  unwrapAccountActionResult,
+} from "../../../../../ade-cli/src/services/account/accountRefreshBroker";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
@@ -134,11 +137,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Strip the brain's `{ domain, action, result }` envelope when it is present. */
-function unwrapBrainAccountResult(raw: unknown): unknown {
-  return isRecord(raw) && isRecord(raw.result) ? raw.result : raw;
-}
-
 /**
  * Read the brain's `account.call` answer for `repairMachinePairing`.
  *
@@ -151,7 +149,7 @@ function unwrapBrainAccountResult(raw: unknown): unknown {
 export function readMachinePairingRepairResult(
   raw: unknown,
 ): AdeAccountMachinePairingRepairResult {
-  const envelope = unwrapBrainAccountResult(raw);
+  const envelope = unwrapAccountActionResult(raw);
   if (!isRecord(envelope) || typeof envelope.repaired !== "boolean") {
     throw new Error(
       "ADE couldn't read the result of reconnecting this computer. Check Your computers to see whether it came back.",
@@ -190,7 +188,7 @@ function readNonEmpty(value: unknown): string | null {
  * code and opens no page is a worse dead end than the error it replaced.
  */
 export function readAccountDeviceLoginStart(raw: unknown): AdeAccountDeviceLoginStart {
-  const payload = unwrapBrainAccountResult(raw);
+  const payload = unwrapAccountActionResult(raw);
   const sessionId = isRecord(payload) ? readNonEmpty(payload.sessionId) : null;
   const userCode = isRecord(payload) ? readNonEmpty(payload.userCode) : null;
   const verificationUri = isRecord(payload) ? readNonEmpty(payload.verificationUri) : null;
@@ -231,7 +229,7 @@ const DEVICE_LOGIN_POLL_STATUSES = new Set([
 export function readAccountDeviceLoginProgress(
   raw: unknown,
 ): { status: AdeAccountDeviceLoginPoll["status"]; message: string | null; intervalSec: number | null } {
-  const payload = unwrapBrainAccountResult(raw);
+  const payload = unwrapAccountActionResult(raw);
   const status = isRecord(payload) ? readNonEmpty(payload.status) : null;
   if (!status || !DEVICE_LOGIN_POLL_STATUSES.has(status)) {
     // An unreadable poll is NOT a sign-in. Report it as an error so the caller
@@ -325,20 +323,7 @@ export function createBrainRefreshBroker(
 ): AccountRefreshBroker | null {
   const call = createBrainAccountActionCaller(pool, timeoutMs);
   if (!call) return null;
-  return {
-    async getAccessToken() {
-      // `forceRefresh` is deliberately not forwarded. Only the brain may decide
-      // when the credential is exchanged; a caller that could force it would be
-      // a second refresher wearing a different hat.
-      const token = unwrapBrainAccountResult(await call("getToken"));
-      if (typeof token !== "string" || !token.trim()) {
-        throw new AccountRefreshUnavailableError(
-          "The ADE brain did not return an account token.",
-        );
-      }
-      return token.trim();
-    },
-  };
+  return createAccountRefreshBroker({ requestToken: () => call("getToken") });
 }
 
 /**

@@ -3,9 +3,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
-import { accountVaultTestInternals, handleAccountVaultRoute } from "../src/accountVault";
-
-const { MAX_ITEMS_PER_READ } = accountVaultTestInternals;
+import { handleAccountVaultRoute, MAX_ITEMS_PER_READ } from "../src/accountVault";
 import type { AttentionRelayEnv } from "../src/attentionShared";
 
 // Vitest 0.34 resolves bare specifiers through Vite, which cannot see

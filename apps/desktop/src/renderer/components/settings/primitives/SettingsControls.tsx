@@ -91,6 +91,8 @@ export function SettingsTextField({
   autoFocus = false,
   spellCheck,
   autoComplete,
+  autoCapitalize,
+  autoCorrect,
   onKeyDown,
   onBlur,
   style,
@@ -108,6 +110,8 @@ export function SettingsTextField({
   autoFocus?: boolean;
   spellCheck?: boolean;
   autoComplete?: string;
+  autoCapitalize?: string;
+  autoCorrect?: string;
   onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>;
   onBlur?: React.FocusEventHandler<HTMLInputElement>;
   style?: React.CSSProperties;
@@ -125,6 +129,8 @@ export function SettingsTextField({
       autoFocus={autoFocus}
       spellCheck={spellCheck}
       autoComplete={autoComplete}
+      autoCapitalize={autoCapitalize}
+      autoCorrect={autoCorrect}
       onChange={(event) => onChange(event.target.value)}
       onKeyDown={onKeyDown}
       onFocus={() => setFocused(true)}
@@ -318,6 +324,7 @@ export function SettingsSelect<T extends string>({
   id,
   disabled = false,
   ariaLabel,
+  style,
 }: {
   value: T;
   options: readonly { value: T; label: string }[];
@@ -325,6 +332,7 @@ export function SettingsSelect<T extends string>({
   id?: string;
   disabled?: boolean;
   ariaLabel?: string;
+  style?: React.CSSProperties;
 }) {
   return (
     <select
@@ -344,6 +352,7 @@ export function SettingsSelect<T extends string>({
         border: `1px solid ${COLORS.outlineBorder}`,
         borderRadius: 8,
         cursor: disabled ? "not-allowed" : "pointer",
+        ...style,
       }}
     >
       {options.map((option) => (

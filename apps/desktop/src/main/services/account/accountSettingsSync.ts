@@ -25,25 +25,15 @@ import type {
   AccountSettingRow,
   AccountSettingsResult,
 } from "../../../shared/types/accountSettings";
-
-export type { AccountSettingRow, AccountSettingsResult };
+import {
+  createAccountActionBridge,
+  type AccountActionPool,
+} from "./accountActionBridge";
 
 export const ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE =
   "ADE's background service isn't running on this computer, so account settings stay on this machine for now.";
 
-type ActionRequest = {
-  domain: string;
-  action: string;
-  args?: Record<string, unknown>;
-  argsList?: unknown[];
-};
-
-export type AccountSettingsActionPool = {
-  callActionForRoot(
-    rootPath: string,
-    request: ActionRequest,
-  ): Promise<{ result: unknown }>;
-};
+export type AccountSettingsActionPool = AccountActionPool;
 
 export type AccountSettingsSyncOptions = {
   /** The local runtime pool, or null when desktop runs with no brain. */
@@ -53,17 +43,8 @@ export type AccountSettingsSyncOptions = {
   logger?: { debug?(message: string, meta?: Record<string, unknown>): void };
 };
 
-function unavailable<T>(message?: string): AccountSettingsResult<T> {
-  return { ok: false, unavailable: true, message: message ?? ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE };
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-/** The brain answers `{ domain, action, result }`; older paths answer bare. */
-function unwrap(raw: unknown): unknown {
-  return isRecord(raw) && "result" in raw && "domain" in raw ? raw.result : raw;
 }
 
 function toRow(value: unknown): AccountSettingRow | null {
@@ -83,56 +64,36 @@ function toRow(value: unknown): AccountSettingRow | null {
 }
 
 export function createAccountSettingsSyncService(options: AccountSettingsSyncOptions) {
-  const call = async <T>(
-    action: "list" | "get" | "set" | "remove" | "sync",
-    argsList: unknown[],
-    coerce: (raw: unknown) => T,
-  ): Promise<AccountSettingsResult<T>> => {
-    const pool = options.getPool();
-    if (!pool) return unavailable<T>();
-    const rootPath = options.getRootPath();
-    if (!rootPath) return unavailable<T>();
-    try {
-      const response = await pool.callActionForRoot(rootPath, {
-        domain: "account_settings",
-        action,
-        argsList,
-      });
-      return { ok: true, value: coerce(unwrap(response?.result)) };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error ?? "");
-      // Logged, never thrown. A settings sync that failed is work to retry on
-      // the next poll, not something to interrupt the user with.
-      options.logger?.debug?.("account_settings.call_failed", { action, error: message });
-      return unavailable<T>(message || undefined);
-    }
-  };
+  const bridge = createAccountActionBridge<AccountSettingRow>({
+    domain: "account_settings",
+    unavailableMessage: ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE,
+    getPool: options.getPool,
+    getRootPath: options.getRootPath,
+    logger: options.logger,
+    decodeRow: toRow,
+  });
 
   return {
     /** Every row in one scope (or all scopes when omitted). */
     async list(scope?: string | null): Promise<AccountSettingsResult<AccountSettingRow[]>> {
-      return await call(
-        "list",
-        scope ? [scope] : [],
-        (raw) => (Array.isArray(raw) ? raw.map(toRow).filter((row): row is AccountSettingRow => row !== null) : []),
-      );
+      return await bridge.list(scope);
     },
 
     async get(scope: string, key: string): Promise<AccountSettingsResult<unknown>> {
-      return await call("get", [scope, key], (raw) => raw);
+      return await bridge.call("get", [scope, key], (raw) => raw);
     },
 
     async set(scope: string, key: string, value: unknown): Promise<AccountSettingsResult<null>> {
-      return await call("set", [scope, key, value], () => null);
+      return await bridge.call("set", [scope, key, value], () => null);
     },
 
     async remove(scope: string, key: string): Promise<AccountSettingsResult<null>> {
-      return await call("remove", [scope, key], () => null);
+      return await bridge.call("remove", [scope, key], () => null);
     },
 
     /** Flush this machine's queue and take what changed. */
     async sync(): Promise<AccountSettingsResult<null>> {
-      return await call("sync", [], () => null);
+      return await bridge.call("sync", [], () => null);
     },
   };
 }

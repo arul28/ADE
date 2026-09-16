@@ -269,7 +269,7 @@ function readMachineKey(secretsDir: string): string | null {
  * construction rather than by timing. Today's installers:
  *   - desktop main, via `createBrainRefreshBroker` (accountBridge.ts), wired in
  *     `registerIpc.ts`;
- *   - every `ade …` command, via `installCliRefreshBroker` in `runCli`
+ *   - every `ade …` command, via `installMachineBrainRefreshBroker` in `runCli`
  *     (cliRefreshBroker.ts) — except the `serve`/`runtime`/`brain` plans and
  *     `--headless`, which host the runtime rather than defer to it;
  *   - the `ade code` TUI, via the same installer in `tuiClient/cli.tsx`.

@@ -1,3 +1,5 @@
+import type { AccountStoreResult } from "./accountStore";
+
 /**
  * The wire shapes of the account vault store, shared by main, preload and the
  * renderer.
@@ -17,6 +19,4 @@ export type AccountVaultItem = {
 };
 
 /** Every account-vault call answers with a value or an ordinary unavailable result. */
-export type AccountVaultResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; unavailable: true; message: string };
+export type AccountVaultResult<T> = AccountStoreResult<T>;

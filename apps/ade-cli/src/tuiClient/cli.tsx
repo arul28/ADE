@@ -187,24 +187,14 @@ export async function runAdeCodeCli(argv: string[] = process.argv.slice(2)): Pro
   // leaves a brain-less machine on its local exchange. Installed before the
   // app mounts, i.e. before the connection pool's first
   // getSharedAccountAuthService() call.
-  const {
-    installCliRefreshBroker,
-    connectMachineBrainForRefresh,
-    probeMachineBrainSocket,
-    resolveMachineBrainSocketPath,
-  } = await import(
+  const { installMachineBrainRefreshBroker } = await import(
     "../services/account/cliRefreshBroker"
   );
-  await installCliRefreshBroker({
-    isBrainReachable: async () => probeMachineBrainSocket({
-      socketPath: await resolveMachineBrainSocketPath(options.socketPath),
-    }),
-    connect: () => connectMachineBrainForRefresh({
-      clientName: "ade-code-refresh-broker",
-      version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
-      protocolVersion: "2025-06-18",
-      socketPath: options.socketPath,
-    }),
+  await installMachineBrainRefreshBroker({
+    clientName: "ade-code-refresh-broker",
+    version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+    protocolVersion: "2025-06-18",
+    socketPath: options.socketPath,
   });
   const { AdeCodeApp } = await import("./app");
   const { detectProjectLaunchContext } = await import("./project");

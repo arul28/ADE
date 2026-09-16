@@ -39,6 +39,10 @@ export type AccountCacheRow = { updatedAt: string };
  */
 export type AccountCachePending = { seq: number; deleted: boolean };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 export type AccountCacheFile<TRow extends AccountCacheRow, TPending extends AccountCachePending> = {
   version: number;
   /** Source of `seq`. Persisted so it survives a restart. */
@@ -79,6 +83,7 @@ export type AccountCacheStoreConfig<
     uploadFailed: string;
     pullFailed: string;
     pullTruncated: string;
+    cacheEntryDropped: string;
     /** Only the vault deletes its file, so only the vault needs this. */
     purgeFailed?: string;
   };
@@ -90,6 +95,10 @@ export type AccountCacheStoreConfig<
   pendingKey(entry: TPending): string;
   /** Cache key for a pulled row. */
   remoteKey(row: TRemote): string;
+  /** Decode one persisted row; invalid entries are ignored instead of cast. */
+  decodeRow(value: unknown): TRow | null;
+  /** Decode one persisted pending write; invalid entries are ignored instead of cast. */
+  decodePending(value: unknown): TPending | null;
   /**
    * Flush the queue. `null` means "could not ask" — the queue stays and the
    * pull is skipped. Throwing means the same, and is logged.
@@ -137,6 +146,7 @@ export function createAccountCacheStore<
   const cachePath = path.join(config.adeDir, config.cacheFileName);
   const { logger, rowsField } = config;
   let cache: AccountCacheFile<TRow, TPending> | null = null;
+  let corruptEntryLogged = false;
   let syncInFlight: Promise<void> | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   /**
@@ -153,6 +163,12 @@ export function createAccountCacheStore<
    * the state the purge just removed.
    */
   let epoch = 0;
+
+  const logCorruptEntry = (kind: "row" | "pending"): void => {
+    if (corruptEntryLogged) return;
+    corruptEntryLogged = true;
+    logger.warn(config.events.cacheEntryDropped, { kind, rowsField });
+  };
 
   function emptyCache(accountUserId: string | null): AccountCacheFile<TRow, TPending> {
     return {
@@ -185,25 +201,53 @@ export function createAccountCacheStore<
       // authority; the worst case is one pull.
       parsed = null;
     }
-    const loaded = parsed as Record<string, unknown> | null;
+    const loaded = isRecord(parsed) ? parsed : null;
+    const loadedAccountUserId = loaded?.accountUserId;
     if (
       !loaded
       || loaded.version !== config.cacheVersion
-      || ((loaded.accountUserId as string | null | undefined) ?? null) !== accountUserId
+      || !(
+        loadedAccountUserId === undefined
+        || loadedAccountUserId === null
+        || typeof loadedAccountUserId === "string"
+      )
+      || (loadedAccountUserId ?? null) !== accountUserId
     ) {
       cache = emptyCache(accountUserId);
       return cache;
     }
     const loadedRows = loaded[rowsField];
+    const rows: Record<string, TRow> = {};
+    if (isRecord(loadedRows)) {
+      for (const [key, value] of Object.entries(loadedRows)) {
+        const decoded = config.decodeRow(value);
+        if (decoded) rows[key] = decoded;
+        else logCorruptEntry("row");
+      }
+    } else if (loadedRows !== undefined) {
+      logCorruptEntry("row");
+    }
+    const pending: TPending[] = [];
+    if (Array.isArray(loaded.pending)) {
+      for (const value of loaded.pending) {
+        const decoded = config.decodePending(value);
+        if (decoded) pending.push(decoded);
+        else logCorruptEntry("pending");
+      }
+    } else if (loaded.pending !== undefined) {
+      logCorruptEntry("pending");
+    }
     cache = {
       version: config.cacheVersion,
-      seqCounter: typeof loaded.seqCounter === "number" ? loaded.seqCounter : 0,
+      seqCounter: typeof loaded.seqCounter === "number"
+        && Number.isSafeInteger(loaded.seqCounter)
+        && loaded.seqCounter >= 0
+        ? loaded.seqCounter
+        : 0,
       accountUserId,
       cursor: typeof loaded.cursor === "string" ? loaded.cursor : null,
-      rows: loadedRows && typeof loadedRows === "object"
-        ? loadedRows as Record<string, TRow>
-        : {},
-      pending: Array.isArray(loaded.pending) ? loaded.pending as TPending[] : [],
+      rows,
+      pending,
     };
     return cache;
   }

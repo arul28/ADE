@@ -4,11 +4,9 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  accountSettingsTestInternals,
   handleAccountSettingsRoute,
+  MAX_SETTINGS_PER_READ,
 } from "../src/accountSettings";
-
-const { MAX_SETTINGS_PER_READ } = accountSettingsTestInternals;
 import type { AttentionRelayEnv } from "../src/attentionShared";
 
 // Vitest 0.34 resolves bare specifiers through Vite, which cannot see

@@ -20,6 +20,10 @@ import type {
 } from "../../../shared/types/projectSecrets";
 import { readGitOriginUrl } from "../projects/recentProjectSummary";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import {
+  describeVaultFailure,
+  fireAndForgetVaultWrite,
+} from "../account/vaultWrite";
 import { nowIso } from "../shared/utils";
 import {
   formatProjectSecretEnv,
@@ -157,14 +161,6 @@ export function createProjectSecretService(projectRoot: string, options: Project
     accountScope = getAccountScope(),
   ): ProjectSecretStorage => entry.storage === "account" && !accountScope ? "device" : entry.storage;
 
-  const describeVaultFailure = (detail: unknown): string => {
-    if (detail instanceof Error) return detail.message;
-    if (detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string") {
-      return detail.message;
-    }
-    return String(detail ?? "unknown error");
-  };
-
   const logVaultFailure = (operation: string, name: string, detail: unknown): void => {
     options.logger?.warn?.("project_secret.account_vault_sync_failed", {
       operation,
@@ -182,30 +178,6 @@ export function createProjectSecretService(projectRoot: string, options: Project
     }
   };
 
-  const fireAndForgetVaultCall = (
-    operation: "set" | "remove",
-    name: string,
-    call: (vault: AccountVaultBridge) => Promise<unknown>,
-  ): void => {
-    const vault = resolveAccountVault(operation, name);
-    if (!vault) return;
-
-    let pending: Promise<unknown>;
-    try {
-      pending = call(vault);
-    } catch (error) {
-      logVaultFailure(operation, name, error);
-      return;
-    }
-    void Promise.resolve(pending).then((result) => {
-      if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true) {
-        logVaultFailure(operation, name, result);
-      }
-    }).catch((error: unknown) => {
-      logVaultFailure(operation, name, error);
-    });
-  };
-
   const syncSecretToVault = (
     name: string,
     value: string,
@@ -213,18 +185,28 @@ export function createProjectSecretService(projectRoot: string, options: Project
     accountScope = getAccountScope(),
   ): void => {
     if (storage !== "account" || !accountScope) return;
-    fireAndForgetVaultCall(
+    fireAndForgetVaultWrite(
+      {
+        getAccountVault: options.getAccountVault,
+        logger: options.logger,
+        logEvent: "project_secret.account_vault_sync_failed",
+        context: { name },
+      },
       "set",
-      name,
       (vault) => vault.set(accountScope, "project_secret", name, value),
     );
   };
 
   const removeSecretFromVault = (name: string, storage: ProjectSecretStorage, accountScope = getAccountScope()): void => {
     if (storage !== "account" || !accountScope) return;
-    fireAndForgetVaultCall(
+    fireAndForgetVaultWrite(
+      {
+        getAccountVault: options.getAccountVault,
+        logger: options.logger,
+        logEvent: "project_secret.account_vault_sync_failed",
+        context: { name },
+      },
       "remove",
-      name,
       (vault) => vault.remove(accountScope, "project_secret", name),
     );
   };

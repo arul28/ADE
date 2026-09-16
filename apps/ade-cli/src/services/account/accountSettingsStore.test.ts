@@ -74,6 +74,35 @@ describe("account settings store", () => {
     expect(reopened.get("all", "appearance.theme")).toBe("dark");
   });
 
+  it("ignores corrupt persisted rows and pending entries with one warning", () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    fs.writeFileSync(path.join(adeDir, "account-settings.json"), JSON.stringify({
+      version: 1,
+      seqCounter: 1,
+      accountUserId: USER,
+      cursor: null,
+      settings: {
+        "all\u0000appearance.theme": {
+          value: "dark",
+          updatedAt: "2026-09-16T00:00:00.000Z",
+          changedAt: null,
+          writerDeviceId: null,
+        },
+        corrupt: { updatedAt: 42 },
+      },
+      pending: [{ scope: "all", deleted: false }],
+    }));
+
+    const store = makeStore({ logger });
+    expect(store.get("all", "appearance.theme")).toBe("dark");
+    expect(store.list()).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "account.settings_cache_entry_dropped",
+      expect.objectContaining({ rowsField: "settings" }),
+    );
+  });
+
   // The whole point of a local-first store: a setting changed on a train is
   // still changed, and still queued, when the train arrives.
   it("keeps the queue when there is no account token to upload with", async () => {
