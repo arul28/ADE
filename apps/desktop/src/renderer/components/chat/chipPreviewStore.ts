@@ -43,6 +43,16 @@ const EMPTY_PREVIEW: ChipPreview = { title: null, iconDataUrl: null };
 
 /** Bounded like the runtime's own cache; a long session must not grow forever. */
 const MAX_ENTRIES = 256;
+/**
+ * The same ceiling for requests still awaiting an answer.
+ *
+ * An in-flight entry normally clears itself the moment its promise settles, and
+ * the request body catches everything, so the only way one survives is an IPC
+ * that never settles at all — a runtime that goes away mid-call over a relay.
+ * Refusing to start request 257 costs nothing: the chip simply keeps the raw
+ * label it is already showing, which is this module's documented degradation.
+ */
+const MAX_IN_FLIGHT = 256;
 /** The runtime caps icons at 64 KiB; base64 inflates by 4/3, plus the header. */
 const MAX_ICON_DATA_URL_LENGTH = 96 * 1024;
 
@@ -125,6 +135,7 @@ export function requestChipPreview(url: string, scope = ""): Promise<ChipPreview
   if (cached) return Promise.resolve(cached);
   const existing = inFlightByKey.get(key);
   if (existing) return existing;
+  if (inFlightByKey.size >= MAX_IN_FLIGHT) return Promise.resolve(EMPTY_PREVIEW);
 
   const request = (async (): Promise<ChipPreview> => {
     let value = EMPTY_PREVIEW;

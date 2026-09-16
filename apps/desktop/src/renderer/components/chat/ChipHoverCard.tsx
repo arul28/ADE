@@ -52,6 +52,13 @@ export type ChipCardSources = {
   sessions: TerminalSessionSummary[];
   /** Pin for pin-aware preload calls. Null = the chat runs on the tab's binding. */
   pin: OpenProjectBinding | null;
+  /**
+   * The chat's project root. Only used to KEY the coalesced PR read: with no
+   * pin, `projectKey` falls back to the literal `"active"`, which every project
+   * shares, so a read still in flight when the user switches projects would be
+   * joined by the new project and answered with the old one's rows.
+   */
+  rootPath: string | null;
 };
 
 const EMPTY_LANES: LaneSummary[] = [];
@@ -163,7 +170,7 @@ export async function loadChipCardData(
   // Pinned so the read lands on the chat's machine: a PR row lives in the
   // `.ade` database of the machine that owns its lane, and an unpinned read
   // would query the project tab's machine for a row it does not have.
-  const prs = await listPrsCoalesced({ pin: sources.pin })
+  const prs = await listPrsCoalesced({ pin: sources.pin, projectRoot: sources.rootPath })
     .catch(() => [] as Awaited<ReturnType<typeof listPrsCoalesced>>);
   const match = prs.find((pr) => {
     if (pr.githubPrNumber !== target.number) return false;
@@ -263,11 +270,12 @@ export function useChipHoverCard(chip: Chip, previewTitle: string | null): ChipH
   // Held in a ref, not in the effect's deps: a lane-status refresh replaces
   // these arrays constantly, and depending on them would reload an open card on
   // every tick. This is the ref form the chat-scope lint rule sanctions.
-  const sourcesRef = useRef<ChipCardSources>({ lanes: EMPTY_LANES, sessions: EMPTY_SESSIONS, pin: null });
+  const sourcesRef = useRef<ChipCardSources>({ lanes: EMPTY_LANES, sessions: EMPTY_SESSIONS, pin: null, rootPath: null });
   sourcesRef.current = {
     lanes: scopedLanes ?? EMPTY_LANES,
     sessions: machine?.sessions ?? EMPTY_SESSIONS,
     pin: scope.pin,
+    rootPath: scope.rootPath,
   };
   // A stable key, so re-pinning the chat reloads an open card without the
   // binding object's identity churn doing it on every merge.
