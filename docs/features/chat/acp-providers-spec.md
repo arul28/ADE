@@ -92,13 +92,15 @@ deprecated Python kimi-cli)
   `config.toml`. Live probe: `kimi doctor` and ACP both honour it. Installer
   default bin is `$HOME/.kimi-code/bin` — ADE's known-dir lookup includes that
   path because `KIMI_NO_MODIFY_PATH` skips rc edits. Model flag takes an ALIAS,
-  not a raw model id. ADE forwards the selected model alias and abstract
-  permission mode before the `acp` subcommand (`--model <alias>`, `--plan`,
-  `--auto`, or `--yolo` as applicable); Kimi has no ACP session config setter.
+  not a raw model id. ADE forwards the selected model alias and supported
+  abstract permission mode before the `acp` subcommand (`--model <alias>`,
+  `--plan`, `--auto`, or `--yolo`); ADE rejects `auto-edit` because Kimi has no
+  equivalent mode. Kimi has no ACP session config setter.
 - Tracked CLI: NO argv prompt for interactive TUI → use
   `{ initialInput: prompt, initialInputDelayMs: 750 }` (Cursor-branch shape).
-  Non-interactive `-p/--prompt` exists and **cannot** combine with `--yolo` or
-  `--auto`. Resume `-S <id>` / `-c` (lowercase c). Permission: `--yolo` XOR
+  Non-interactive `-p/--prompt` exists and **cannot** combine with `--yolo`,
+  `--auto`, or `--plan`. Resume `-S [<id>]` / `-c` (lowercase c). Permission:
+  `--yolo` XOR
   `--auto` (parse error: "Cannot combine --yolo with --auto"); `--plan`. Vendor
   docs say permission flags ARE allowed on resume (Emdash's omit-on-resume is
   stale) — verify with one live probe after login.

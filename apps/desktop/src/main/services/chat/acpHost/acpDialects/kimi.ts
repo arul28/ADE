@@ -56,7 +56,10 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   const model = resolveKimiCliModelForLaunch(context.modelId);
   if (model) args.push("--model", model);
   if (context.permissionMode === "yolo") args.push("--yolo");
-  else if (context.permissionMode === "auto-edit") args.push("--auto");
+  else if (context.permissionMode === "auto") args.push("--auto");
+  else if (context.permissionMode === "auto-edit") {
+    throw new Error("Kimi ACP cannot honor ADE's auto-edit permission mode; choose a supported Kimi mode.");
+  }
   else if (context.permissionMode === "plan") args.push("--plan");
   args.push("acp");
   return {

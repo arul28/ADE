@@ -507,7 +507,10 @@ async function runKimiTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
-  const cliArgs = ["--plan"];
+  // Kimi rejects --plan together with --prompt. Metadata generation is a
+  // non-interactive text task, so keep the supported prompt/output contract
+  // while keeping the task non-interactive.
+  const cliArgs: string[] = [];
   const model = resolveKimiCliModelForLaunch(args.descriptor.providerModelId);
   if (model) cliArgs.unshift("--model", model);
   cliArgs.push("--output-format", "text", "--prompt", combinedPrompt);

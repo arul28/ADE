@@ -412,6 +412,19 @@ describe("terminalSessionSignals", () => {
       provider: "copilot",
       targetId: "copilot-session-1",
     });
+    expect(parseTrackedCliResumeCommand("copilot --resume", "copilot")).toEqual({
+      provider: "copilot",
+      targetId: null,
+    });
+    expect(parseTrackedCliResumeCommand("kimi -S kimi-session-1", "kimi")).toEqual({
+      provider: "kimi",
+      targetId: "kimi-session-1",
+    });
+    expect(parseTrackedCliResumeCommand("kimi --session", "kimi")).toEqual({
+      provider: "kimi",
+      targetId: null,
+    });
+    expect(parseTrackedCliResumeCommand("kimi --resume", "kimi")).toBeNull();
     expect(parseTrackedCliResumeCommand("grok -r grok-session-1", "grok")).toEqual({
       provider: "grok",
       targetId: "grok-session-1",

@@ -479,18 +479,55 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
   }
 
   if (provider === "qwen" || provider === "copilot") {
-    const binary = provider === "qwen" ? "qwen" : "copilot";
-    const escapedBinary = binary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = command.match(new RegExp(`^${escapedBinary}\\b.*?(?:--resume(?:=|\\s+)([^\\s]+)|--continue\\b)(?:\\s|$)`, "i"));
-    if (!match) return undefined;
-    if (match[1] == null) return null;
-    return sanitizeResumeTargetId(match[1]) ?? undefined;
+    let parts: string[];
+    try {
+      parts = parseCommandLine(command);
+    } catch {
+      return undefined;
+    }
+    if (parts[0]?.toLowerCase() !== provider) return undefined;
+    const resumeIndex = parts.findIndex((part, index) =>
+      index > 0
+      && (part.toLowerCase() === "--continue"
+        || part.toLowerCase() === "--resume"
+        || part.toLowerCase().startsWith("--resume=")),
+    );
+    if (resumeIndex < 0) return undefined;
+    const selector = parts[resumeIndex]!.toLowerCase();
+    const inlineTarget = selector.startsWith("--resume=")
+      ? parts[resumeIndex]!.slice("--resume=".length)
+      : null;
+    const next = parts[resumeIndex + 1];
+    const raw = inlineTarget ?? (
+      selector === "--resume" && next && !next.startsWith("-")
+        ? next
+        : null
+    );
+    if (raw == null) return null;
+    return sanitizeResumeTargetId(raw) ?? undefined;
   }
 
   if (provider === "kimi") {
-    const match = command.match(/^kimi\b.*?(?:-S(?:=|\s+)([^\s]+)|--resume(?:=|\s+)([^\s]+)|-c\b)(?:\s|$)/i);
-    if (!match) return undefined;
-    const raw = match[1] ?? match[2];
+    let parts: string[];
+    try {
+      parts = parseCommandLine(command);
+    } catch {
+      return undefined;
+    }
+    if (parts[0]?.toLowerCase() !== "kimi") return undefined;
+    const sessionIndex = parts.findIndex((part, index) =>
+      index > 0 && (part === "-S" || part === "--session" || part.toLowerCase().startsWith("--session=")),
+    );
+    const continueIndex = parts.findIndex((part, index) => index > 0 && part === "-c");
+    const resumeIndex = sessionIndex >= 0 ? sessionIndex : continueIndex;
+    if (resumeIndex < 0) return undefined;
+    if (resumeIndex === continueIndex && sessionIndex < 0) return null;
+    const selector = parts[resumeIndex]!;
+    const inlineTarget = selector.toLowerCase().startsWith("--session=")
+      ? selector.slice("--session=".length)
+      : null;
+    const next = parts[resumeIndex + 1];
+    const raw = inlineTarget ?? (next && !next.startsWith("-") ? next : null);
     if (raw == null) return null;
     return sanitizeResumeTargetId(raw) ?? undefined;
   }

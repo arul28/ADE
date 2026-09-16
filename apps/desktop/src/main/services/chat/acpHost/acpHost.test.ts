@@ -304,6 +304,21 @@ describe("spawn plans", () => {
     expect(plan.env.KIMI_CODE_HOME).toBe("/home/.kimi-code");
   });
 
+  it("maps Kimi auto mode and rejects unsupported auto-edit", () => {
+    expect(kimiDialect.buildSpawnPlan({
+      binaryPath: "/bin/kimi",
+      cwd: "/lane",
+      baseEnv: {},
+      permissionMode: "auto",
+    }).args).toEqual(["--auto", "acp"]);
+    expect(() => kimiDialect.buildSpawnPlan({
+      binaryPath: "/bin/kimi",
+      cwd: "/lane",
+      baseEnv: {},
+      permissionMode: "auto-edit",
+    })).toThrow("cannot honor ADE's auto-edit permission mode");
+  });
+
   it("copilot gates the lane path through argv, not through the config file", () => {
     const plan = copilotDialect.buildSpawnPlan({
       binaryPath: "/bin/copilot",

@@ -372,7 +372,8 @@ describe("runProviderTask", () => {
     expect(spawnMock).toHaveBeenCalledTimes(3);
     const launched = spawnMock.mock.calls.map((call) => call[1]);
     expect(launched[0]).toEqual(expect.arrayContaining(["--safe-mode", "--output-format", "text", "--model", "qwen3-coder-plus"]));
-    expect(launched[1]).toEqual(expect.arrayContaining(["--model", "kimi-code/kimi-for-coding", "--plan"]));
+    expect(launched[1]).toEqual(expect.arrayContaining(["--model", "kimi-code/kimi-for-coding", "--output-format", "text", "--prompt"]));
+    expect(launched[1]).not.toContain("--plan");
     expect(launched[2]).toEqual(expect.arrayContaining(["--permission-mode", "plan", "--model", "grok-4.6", "--json-schema"]));
     expect(launched[0]).not.toContain("--prompt");
     expect((spawnMock.mock.results[0]!.value as MockSpawnProcess).stdin.end).toHaveBeenCalledWith(
