@@ -2438,6 +2438,41 @@ imports stay consistent. Those arguments are sent only for `target: "chat"`; a
 CLI import sends none of them so the resumed session keeps its provider state.
 See [External session import](../terminals-and-sessions/external-session-import.md).
 
+### Chips on the phone
+
+iOS re-implements the desktop chip model in Swift — it cannot import
+`apps/desktop/src/shared/chips.ts` — so mention chips, sent-message pills, and
+copy behave the same on both devices:
+
+- **Composer mentions draw as pills.** `WorkComposerTypedTriggers.swift` detects
+  `@` / `/` / `#` cursor-relatively and `WorkSmartLink` parses URL-shaped text,
+  including `ade://` deeplinks, into the same typed labels the desktop uses
+  (`ade://pr/owner/repo/1237` → `#1237`). An unrecognised `ade://` shape keeps
+  its descriptive path form rather than collapsing to a bare "ADE link".
+- **Sent messages draw their chips.** The transcript
+  (`WorkChatHeaderAndMessageViews.swift`) renders the same pills the composer
+  did, over the unchanged stored text.
+- **Copy still yields tokens.** Copying a message puts the canonical tokens on
+  the pasteboard, not the display labels, so a chip pasted anywhere else is
+  still a re-parseable pointer.
+- **N PRs per chat.** `LaneHelpers.swift` mirrors `selectLanePrs` (strictly
+  lane-owned) and `selectChatPrs` (the union with this chat's cross-lane links),
+  and `workChatPrTag` feeds the chat's PR switcher the same badge and sheet the
+  Lanes tab draws. See
+  [Multi-PR lane ownership and chat edges](../pull-requests/README.md#multi-pr-lane-ownership-and-chat-edges).
+- **Attachments while a question is open.** The paperclip stays live during a
+  structured question; files staged while answering ride the turn the answer
+  unblocks.
+
+Parity is enforced rather than asserted. `apps/desktop/src/shared/__fixtures__/chipCases.json`
+is read by `shared/chips.test.ts` **and**, from disk relative to `#filePath`, by
+`ADETests/WorkComposerTriggerDetectorTests.testMatchesSharedChipFixture`. Adding
+a row fails the iOS suite until Swift matches, and `.github/workflows/ci.yml`'s
+`test-ios` gate watches that fixture directory alongside `apps/ios/**`, so a
+desktop-only PR that adds a case cannot skip the Swift suite and break main.
+Hand-written twin tests prove today's parity and nothing about tomorrow's — two
+divergences had already been caught by review rather than by a failing test.
+
 ### Settled lifecycle and attention parity
 
 iOS mirrors `apps/desktop/src/shared/sessionCanonicalState.ts` in

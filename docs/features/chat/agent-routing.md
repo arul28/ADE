@@ -12,6 +12,7 @@ where the machinery lives.
 | `apps/desktop/src/shared/modelProfiles.ts` | Curated selection helpers (task routing, default pickers). |
 | `apps/desktop/src/shared/chatModelSwitching.ts` | `canSwitchChatSessionModel` / `filterChatModelIdsForSession` -- rules for mid-session model changes. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | `handoffSession`, permission translation, per-provider adapter. |
+| `apps/desktop/src/shared/permissionLadder.ts` | The four ordered autonomy levels (`plan` → `ask` → `auto-edit` → `full-auto`) and their mapping onto every provider's own vocabulary, so switching model family keeps the level instead of landing on that family's default. Nearest-**lower** on a miss. Deliberately separate from the abstract `AgentChatPermissionMode` words below; see [The permission ladder](#the-permission-ladder). |
 | `apps/desktop/src/shared/cursorModes.ts` | Canonical Cursor mode vocabulary and compatibility mapping from the legacy ADE permission field; permission-only full-auto/plan launches persist the native mode that the UI and later clients read. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | macOS-only signed Codex Computer Use MCP resolver. Requires explicit Codex config opt-in and verifies the standalone OpenAI client before it can be injected into a chat or CLI runtime. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. Reasoning/fast variants are per-provider: Claude/Codex/Droid/Pi keep their flags, but tracked OpenCode launches always run the root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — no `run --interactive` branch and no `--variant`, because the root command silently drops unknown args; variants remain a chat-runtime feature. |
@@ -449,6 +450,26 @@ silently resetting the thread into a new empty session.
 Permission controls are provider-native. The session carries an abstract
 `permissionMode` alongside provider-native fields.
 
+### One source for a configured default
+
+`ai.permissions.providers.*` (`AiProviderPermissions` in
+`shared/types/config.ts`) is the **only** per-provider permission source, for
+every provider. It is what the Settings control writes: one
+`AgentChatPermissionMode` per provider key (`claude`, `codex`, `cursor`,
+`droid`, `opencode`, `pi`, plus one key per ACP provider), with `codexSandbox`
+as Codex's second axis.
+
+`resolveChatConfig` in `agentChatService` used to read it for **Pi alone**.
+Every other provider ignored it and fell through to the legacy shared
+`permissions.cli` / `permissions.inProcess` knobs, so a Claude or Codex default
+chosen in Settings had no effect on a launch. It is now read per provider, and
+every branch ends in a concrete mode — a launch that sends nothing (an
+automation, a CLI start, a session normalize) depends on that. The parallel
+`ai.chat.*` permission keys this path also consulted (`defaultApprovalPolicy`,
+`claudePermissionMode`, `codexSandbox`, `opencodePermissionMode`) have no writer
+anywhere in the repository and are no longer read here; keeping one key per
+provider is what makes the written value and the runtime value the same value.
+
 ### Claude
 
 `AgentChatClaudePermissionMode`:
@@ -786,6 +807,58 @@ stop exists only to resend, it runs in `stop_only` mode with
 interrupted turn's own tail consumes it, so messages the user had already staged
 ride through the redirect instead of being cleared. `interrupt-replace` on
 OpenCode, Pi and Droid keeps its `stop_and_clear` contract.
+
+### The permission ladder
+
+Each agent CLI names its autonomy differently: Claude runs `plan` through
+`bypassPermissions`, Codex splits the question into an approval policy **and** a
+sandbox, Droid counts from `read-only` to `agi`, OpenCode and ACP each have
+their own words. Switching model family therefore dropped the user wherever that
+family's default happened to sit — you could be on the most permissive Claude
+mode, switch to Droid, and silently land on the most cautious one.
+
+`apps/desktop/src/shared/permissionLadder.ts` states the one thing the user
+actually means — how much the agent may do without asking — as four ordered
+levels, and maps each onto every provider's vocabulary.
+
+| Level | Claude | Codex (policy + sandbox) | OpenCode | Droid | ACP | Cursor |
+|---|---|---|---|---|---|---|
+| `plan` | `plan` | `untrusted` + `read-only` | `plan` | `read-only` | `plan` | `ask` |
+| `ask` | `default` | `on-request` + `workspace-write` | `edit` | `auto-low` | `default` | `agent` |
+| `auto-edit` | `acceptEdits` | `on-failure` + `workspace-write` | — | `auto-medium` | `auto-edit` | — |
+| `full-auto` | `bypassPermissions` | `never` + `danger-full-access` | `full-auto` | `auto-high` | `yolo` | `full-auto` |
+
+Two rules keep it honest:
+
+- **Nearest LOWER on a miss.** A family that cannot express the exact level
+  steps *down* the ladder — OpenCode has no separate `auto-edit` tier and
+  Cursor's `agent` spans both `ask` and `auto-edit`, so both resolve
+  `auto-edit` to their `ask` rung and report `downgraded: true`. Rounding up
+  would hand an agent more freedom than the user chose.
+- **The ladder only decides where an UNVISITED family starts.** The user's exact
+  per-family choice is remembered separately, so returning to Droid restores
+  `agi` even though the ladder itself only ever writes `auto-high`.
+
+Reading a level back out of a family (`permissionLevelFor*`) is the same rule in
+reverse, and Codex is where it matters: both axes are required for `full-auto`,
+because "never ask" with `workspace-write` is a user who still wants a sandbox.
+Treating that as `full-auto` would hand Claude `bypassPermissions` on a family
+switch — unsandboxed, in a family with no sandbox axis at all. OpenCode
+`config-toml` reads as `ask` for the same reason: it defers to the user's own
+file, and claiming a freedom that file may not grant is rounding up.
+
+**The ladder is deliberately separate from the abstract permission mode below,
+and the two must not be reconciled.** `AgentChatPermissionMode`
+(`plan | default | edit | full-auto`) is the generic vocabulary that
+`ade --permission-mode`, the CLI launch path, and every persisted session speak,
+and `droidPermissionModeFromLegacyPermissionMode` in `shared/types/chat.ts`
+translates it. In *that* vocabulary `edit` is the **cautious** editing tier
+(Droid `auto-low`) by original intent, so the two tables look inverted on the
+middle rungs. That is fine, because they answer different questions: the ladder
+reads and writes each family's concrete native mode on a model switch, the
+legacy converter maps a generic CLI word to a tier at launch, and **no code path
+converts between them**. "Fixing" the apparent inversion would shift
+`ade --permission-mode edit` and every persisted session carrying it.
 
 ### Abstract-to-native mapping
 

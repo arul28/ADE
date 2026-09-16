@@ -283,7 +283,8 @@ Renderer PR helpers outside the PRs tab (the Work-surface badge/pill path):
 | `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` | The lane→PR map every Work surface reads. Builds the bound machine's map from a coalesced `prs.listAll` + GitHub snapshot refreshed by `prs-updated`, then folds in each union machine's `prs` slice. Exports the three namespaced key builders (`laneBoundMachineKey`, `lanePrCompositeKey`, `laneAnyMachineKey`) and their accessors `boundMachineLanePrs`, `lanePrsForMachine`, and `laneHasAnyPr` — see [Which machine answers a PR read](#which-machine-answers-a-pr-read). |
 | `apps/desktop/src/renderer/lib/prReadCache.ts` | In-flight coalescing and cooldown for renderer PR reads (`listPrsCoalesced`, `refreshPrsCoalesced`, `refreshLinkedPrCoalesced`, `getGitHubSnapshotCoalesced`). The cache key is scoped by pin ahead of project root, so two reads differing only by pin are treated as reads of two different databases and never share an entry. `getGitHubSnapshotCoalesced` also keys on `automaticRefresh`, so a timer-driven snapshot and a user's Refresh never collapse onto one in-flight request — they mean different things to the service. |
 | `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx` | The compact PR chip itself. Presentation only — its host supplies `onOpen`, which is always `openLanePr`. |
-| `apps/desktop/src/renderer/lib/prChatScope.ts` | Pure chat-specific PR scoping. Explicit `pull_request_chat_sessions` edges win; rows with no edge use the lane fallback for legacy data, while a chat with no edge never displays another chat's explicitly linked PR. |
+| `apps/desktop/src/renderer/components/lanes/lanePageModel.ts` | `selectLanePrs` (strictly lane-owned, for lane surfaces) and `selectChatPrs` (lane-owned **plus** this chat's cross-lane links, for chat surfaces), both ordered by `comparePrTags`. The split is load-bearing; see [Lane surfaces and chat surfaces need two different selectors](#lane-surfaces-and-chat-surfaces-need-two-different-selectors). |
+| `apps/desktop/src/renderer/lib/prChatScope.ts` | Pure chat-specific PR scoping. `selectPrsForChat` narrows a set to one session; `selectPrsForChatInLane` is the one answer to "what does this chat show" for both the chat toolbar and the PR pane, which previously disagreed. Explicit `pull_request_chat_sessions` edges win, decided per PR so one linked row does not hide every older row in the lane; rows with no edge use the lane fallback for legacy data, while a chat with no edge never displays another chat's explicitly linked PR. `prStateTone` is the single state dot/label map. |
 
 Shared contracts:
 
@@ -863,12 +864,58 @@ Linear PR cards. Referencing a colleague's PR must not edit their repository.
 plain link is a pointer and never refuses, but creating a whole new worktree to
 host a PR that already has one leaves a duplicate behind.
 
-Both renderer filters that hid the extra PRs are relaxed on the same rule: a PR
-with an explicit chat-session link survives `selectLanePrs` regardless of its
-head branch, and the chat toolbar keeps a PR that this chat linked even when
-another lane opened it. Historical rows with no link still fall back to the
-branch rule and stay hidden.
+### Lane surfaces and chat surfaces need two different selectors
 
+The renderer filters that hid the extra PRs are relaxed, but not identically,
+and the two rules have to live apart
+(`renderer/components/lanes/lanePageModel.ts`):
+
+- **`selectLanePrs` stays strictly lane-owned.** Lane tags, badges, and Work
+  cards read it, and callers pass the *project-wide* PR list, so skipping the
+  `pr.laneId === lane.id` check would put one lane's PR on every lane in the
+  project. Only the **branch** half is relaxed: a PR this lane owns and a chat
+  deliberately linked stays visible even once the lane moves to another branch,
+  which is what lifts a lane's cap of one visible PR. Historical rows with no
+  link still fall back to the branch rule and stay hidden.
+- **`selectChatPrs` takes the union.** It is everything `selectLanePrs` gives
+  the lane, plus any PR this chat explicitly linked even though another lane
+  owns it. Chat surfaces must not be lane-bound, because `linkToLane`
+  deliberately leaves `lane_id` on the original owning lane — so without this a
+  cross-lane link would be written to the database and then filtered out of
+  every view.
+
+`renderer/lib/prChatScope.ts` narrows either set to one chat session.
+`selectPrsForChatInLane` exists because the rule had been written three times
+with three different answers: the chat toolbar accepted a cross-lane linked PR
+while the PR pane still pre-filtered on lane id, so the pane's own multi-PR
+selector could not show the very PR the toolbar was showing. `prStateTone` is
+there for the same reason — two of its three copies rendered a **draft** PR
+green, so one PR read amber in the pane header and green in the pane's selector.
+
+A chat therefore shows **N** pull requests, ordered by `comparePrTags`: open and
+draft first, then by recency, so the newest open PR is the primary one and the
+rest are reachable from the switcher. iOS mirrors all of it
+(`apps/ios/ADE/Views/Lanes/LaneHelpers.swift`: `selectLanePrs`,
+`selectChatPrs`, `workChatPrTag`).
+
+### Reaching a PR from the composer and from search
+
+- **`#` in the composer** opens the pull-request menu and inserts a PR chip.
+  The trigger is shared (`shared/composerTriggers.ts`), so a markdown heading
+  (`# Title`) never fires it — the space ends the token immediately — and
+  `owner/repo#12` inside a word does not either, because that text is already a
+  chip. Suggestions come from `prs.listAll` scoped to the **chat's** runtime pin
+  (a draft uses its selected execution binding), filtered by PR number prefix
+  for a numeric query and by title otherwise, capped at 20 rows. Transcript chip
+  hover cards read the same data through `listPrsCoalesced`.
+- **⌘K finds a chat by its PR.** `searchService` keeps a
+  `prTermsByChatSession` map, rebuilt on every PR index and sweep, and folds
+  `#1237`, `owner/repo#1237`, the PR URL, and the PR title into each linked
+  chat's meta document. It is rebuilt rather than appended so the ordering
+  dependency is gone: the returned set of changed session ids drives a
+  re-index, which is what makes the terms land on a chat indexed *before* the
+  first PR sweep, and what strips stale `#123` terms from a chat whose last PR
+  was unlinked.
 
 `pull_requests.lane_id` is intentionally non-unique. A live lane may retain
 multiple PR rows as it moves from one branch to another: a row whose
@@ -882,8 +929,8 @@ PR workspace and history views. `getForLane(laneId)` remains a single-value
 compatibility bridge: it prefers the current-branch PR and otherwise returns
 the newest previous-branch row, so renderer badge consumers must still apply
 the current-branch selector before displaying it. Lane, Work, and chat badges
-use only rows whose head branch matches the lane's current branch; a primary
-lane on its base branch has no PR badge. The PR workspace retains the complete
+go through `selectLanePrs` / `selectChatPrs` above rather than matching the
+branch themselves; a primary lane on its base branch has no PR badge. The PR workspace retains the complete
 set so branch switching does not erase merged/closed history.
 
 Chat ownership is a separate optional edge in
