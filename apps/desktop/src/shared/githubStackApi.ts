@@ -15,6 +15,12 @@ export function githubStackApiErrorKind(error: unknown): GithubStackApiErrorKind
   const status = githubHttpStatusFromError(error);
   if (status === 403) return "forbidden";
   if (status === 404 || status === 405) return "missing";
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  // GitHub rejects pulls/{n}/update-branch for stacked PRs; treat like a missing
+  // stack-rebase API rather than a generic mutation failure.
+  if (/updating a stacked pr'?s branch via this endpoint is not supported/i.test(message)) {
+    return "missing";
+  }
   return "other";
 }
 

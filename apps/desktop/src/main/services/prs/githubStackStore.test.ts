@@ -165,3 +165,24 @@ describe("githubStackStore.merge", () => {
     expect(mergePosts).toBe(2);
   });
 });
+
+describe("githubStackStore.rebase", () => {
+  it("marks rebase unavailable when update-branch rejects stacked PRs", async () => {
+    const apiRequest = vi.fn(async (args: { method: string; path: string }) => {
+      if (args.method === "POST" && args.path.endsWith("/stacks/4/rebase")) {
+        throw new Error("Not Found");
+      }
+      if (args.method === "PUT" && args.path.endsWith("/pulls/7/update-branch")) {
+        throw new Error("Updating a stacked PR's branch via this endpoint is not supported.");
+      }
+      throw new Error(`unexpected ${args.method} ${args.path}`);
+    });
+    const store = createStore(apiRequest as GithubService["apiRequest"]);
+    const result = await store.rebase(repo, 4);
+    expect(result).toMatchObject({
+      ok: false,
+      method: "unavailable",
+    });
+    expect(result.disabledReason).toMatch(/does not expose stack rebase/i);
+  });
+});

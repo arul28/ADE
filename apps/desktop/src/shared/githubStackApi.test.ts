@@ -26,4 +26,10 @@ describe("githubHttpStatusFromError", () => {
     expect(githubHttpStatusFromError(new Error("Resource not accessible by integration"))).toBe(403);
     expect(githubStackApiErrorKind(new Error("Resource not accessible by integration"))).toBe("forbidden");
   });
+
+  it("classifies stacked update-branch rejection as a missing stack-rebase API", () => {
+    expect(githubStackApiErrorKind(
+      new Error("Updating a stacked PR's branch via this endpoint is not supported."),
+    )).toBe("missing");
+  });
 });
