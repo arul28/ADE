@@ -2,7 +2,8 @@
 
 Agent Chat is the interactive AI coding surface inside ADE. Each chat binds a
 lane (git worktree + branch), a provider runtime (Claude, Codex, OpenCode,
-Cursor, Droid, Pi), and a transcript into a persistent `AgentChatSession`. The user talks
+Cursor, Droid, Pi, Qwen, Kimi, Grok, or GitHub Copilot), and a transcript into a persistent
+`AgentChatSession`. The user talks
 to the agent the same way they would use any IDE copilot, but with ADE's
 lane/session tracking, tool approval flow, identity continuity, and handoff
 machinery layered on top.

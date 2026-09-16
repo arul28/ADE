@@ -92,14 +92,23 @@ deprecated Python kimi-cli)
   `config.toml`. Live probe: `kimi doctor` and ACP both honour it. Installer
   default bin is `$HOME/.kimi-code/bin` — ADE's known-dir lookup includes that
   path because `KIMI_NO_MODIFY_PATH` skips rc edits. Model flag takes an ALIAS,
-  not a raw model id.
+  not a raw model id. ADE forwards the selected model alias and supported
+  abstract permission mode before the `acp` subcommand (`--model <alias>`,
+  `--plan`, `--auto`, or `--yolo`); ADE rejects `auto-edit` because Kimi has no
+  equivalent mode. Kimi has no ACP session config setter.
 - Tracked CLI: NO argv prompt for interactive TUI → use
   `{ initialInput: prompt, initialInputDelayMs: 750 }` (Cursor-branch shape).
-  Non-interactive `-p/--prompt` exists and **cannot** combine with `--yolo` or
-  `--auto`. Resume `-S <id>` / `-c` (lowercase c). Permission: `--yolo` XOR
+  Non-interactive `-p/--prompt` exists and **cannot** combine with `--yolo`,
+  `--auto`, or `--plan`. Resume `-S [<id>]` / `-c` (lowercase c). Permission:
+  `--yolo` XOR
   `--auto` (parse error: "Cannot combine --yolo with --auto"); `--plan`. Vendor
   docs say permission flags ARE allowed on resume (Emdash's omit-on-resume is
   stale) — verify with one live probe after login.
+- Metadata/title tasks use Kimi's native `--prompt` route with a temporary
+  `--agent-file` whose `tools` list is empty; they never receive project tools.
+  Kimi has no accept-edits equivalent, so ADE's generic accept-edits selection
+  keeps Kimi at its normal approval posture. An explicit native `auto-edit`
+  request remains rejected rather than being silently broadened to `--auto`.
 - Session id: NOT assignable at launch. Capture via sessions-dir disk-adopt
   (pattern: `scheduleCodexSessionIdCaptureBestEffort` in `ptyService.ts`) or a
   `SessionStart` hook. IDs are ULID-shaped.
@@ -268,10 +277,13 @@ Rust, Apache-2.0)
   with partial text `"1\n2\n3\n4\n5"` (github/copilot-cli #4561) → client-side
   cancel accounting is mandatory. ADE still attempts `session/close` and
   degrades, keeping the process for pooling. Real `session/prompt` turns work
-  (`"ping"`, usage on the prompt result + `usage_update`). `copilot -p --model
-  gpt-5.4` errors "not available"; the same flag on `--acp` is ignored and the
-  default model still answers. Config options use `currentValue` and nested
-  `value`, which ADE canonicalizes onto `value` / `options[].id`.
+  (`"ping"`, usage on the prompt result + `usage_update`). ACP model selection
+  is not a `session/new` config option: ADE uses Copilot's native
+  `session/set_model` request when the installed CLI supports it. Older ACP
+  builds accepted that request without changing inference and stayed on Auto,
+  so the runtime must tolerate a provider-side fallback. Config options use
+  `currentValue` and nested `value`, which ADE canonicalizes onto `value` /
+  `options[].id`.
 - Server-start flags (`--effort`, `--available-tools`, `--excluded-tools`) are
   process-global; `session/new` cannot override.
 - **Trust pre-seed: REMOVED. ADE does not write Copilot's config.** There was

@@ -23,6 +23,11 @@ describe("terminalSessionSignals", () => {
     expect(extractResumeCommandFromOutput(chunk, "codex")).toBe("codex resume session_abc123 --last");
   });
 
+  it("extracts native ACP resume command lines", () => {
+    expect(extractResumeCommandFromOutput("grok -r grok-session-1", "grok")).toBe("grok -r grok-session-1");
+    expect(extractResumeCommandFromOutput("qwen --resume qwen-session-1", "qwen")).toBe("qwen --resume qwen-session-1");
+  });
+
   it("extracts resume commands from shell-prompted lines", () => {
     const chunk = "arul@host project % codex resume thread_abc123";
     expect(extractResumeCommandFromOutput(chunk, "codex")).toBe("codex resume thread_abc123");
@@ -83,6 +88,8 @@ describe("terminalSessionSignals", () => {
     expect(defaultResumeCommandForTool("droid")).toBe("droid --resume");
     expect(defaultResumeCommandForTool("opencode")).toBe("opencode --continue");
     expect(defaultResumeCommandForTool("opencode-orchestrated")).toBe("opencode --continue");
+    expect(defaultResumeCommandForTool("grok")).toBe("grok -c");
+    expect(defaultResumeCommandForTool("copilot")).toBe("copilot --continue");
     // Pi has no safe default. `pi --continue` means "the most recent session
     // for this directory", and chat and the tracked CLI share one native Pi
     // store — a brand new terminal reopened a four-day-old transcript, and the
@@ -93,6 +100,7 @@ describe("terminalSessionSignals", () => {
 
   it("treats orchestrated OpenCode terminals as OpenCode resume sessions", () => {
     expect(providerFromTool("opencode-orchestrated")).toBe("opencode");
+    expect(providerFromTool("copilot-chat")).toBe("copilot");
     expect(normalizeResumeCommand("opencode --session open-1", "opencode-orchestrated")).toBe("opencode --session open-1");
   });
 
@@ -120,6 +128,22 @@ describe("terminalSessionSignals", () => {
     });
     expect(parseTrackedCliLaunchConfig("cursor-agent --mode ask", "cursor-cli")).toEqual({
       permissionMode: "plan",
+    });
+    expect(parseTrackedCliLaunchConfig("qwen -m qwen3-coder-plus --approval-mode auto-edit", "qwen")).toEqual({
+      permissionMode: "edit",
+      model: "qwen3-coder-plus",
+    });
+    expect(parseTrackedCliLaunchConfig("kimi -m kimi-code/k3 --plan", "kimi")).toEqual({
+      permissionMode: "plan",
+      model: "kimi-code/k3",
+    });
+    expect(parseTrackedCliLaunchConfig("grok -m grok-4.6 --permission-mode bypassPermissions", "grok")).toEqual({
+      permissionMode: "full-auto",
+      model: "grok-4.6",
+    });
+    expect(parseTrackedCliLaunchConfig("copilot --model gpt-5.4 --deny-tool=write --deny-tool=shell", "copilot")).toEqual({
+      permissionMode: "plan",
+      model: "gpt-5.4",
     });
     expect(parseTrackedCliLaunchConfig(
       "claude --permission-mode default --model claude-opus-4-8 --settings '{\"fastMode\":true}'",
@@ -203,6 +227,13 @@ describe("terminalSessionSignals", () => {
       targetId: null,
       launch: { permissionMode: "full-auto" },
     })).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "grok",
+      targetKind: "session",
+      targetId: "grok-session-1",
+      launch: { permissionMode: "default" },
+    })).toBe("grok --no-alt-screen --permission-mode default -r grok-session-1");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",
@@ -376,6 +407,31 @@ describe("terminalSessionSignals", () => {
     expect(parseTrackedCliResumeCommand("droid --resume 29f8d3bf-6620-4c89-a72e-5327670acc69", "droid")).toEqual({
       provider: "droid",
       targetId: "29f8d3bf-6620-4c89-a72e-5327670acc69",
+    });
+    expect(parseTrackedCliResumeCommand("copilot --resume copilot-session-1", "copilot")).toEqual({
+      provider: "copilot",
+      targetId: "copilot-session-1",
+    });
+    expect(parseTrackedCliResumeCommand("copilot --resume", "copilot")).toEqual({
+      provider: "copilot",
+      targetId: null,
+    });
+    expect(parseTrackedCliResumeCommand("kimi -S kimi-session-1", "kimi")).toEqual({
+      provider: "kimi",
+      targetId: "kimi-session-1",
+    });
+    expect(parseTrackedCliResumeCommand("kimi --session", "kimi")).toEqual({
+      provider: "kimi",
+      targetId: null,
+    });
+    expect(parseTrackedCliResumeCommand("kimi --resume", "kimi")).toBeNull();
+    expect(parseTrackedCliResumeCommand("grok -r grok-session-1", "grok")).toEqual({
+      provider: "grok",
+      targetId: "grok-session-1",
+    });
+    expect(parseTrackedCliResumeCommand("grok -c", "grok")).toEqual({
+      provider: "grok",
+      targetId: null,
     });
     expect(parseTrackedCliResumeCommand("OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_abc", "opencode")).toEqual({
       provider: "opencode",

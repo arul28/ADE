@@ -5042,6 +5042,10 @@ const CHAT_SESSION_TOOL_TYPES = [
   "cursor",
   "droid-chat",
   "pi-chat",
+  "qwen-chat",
+  "kimi-chat",
+  "grok-chat",
+  "copilot-chat",
 ] satisfies TerminalToolType[];
 type ChatSessionToolType = (typeof CHAT_SESSION_TOOL_TYPES)[number];
 
@@ -5067,6 +5071,10 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
   if (toolType === "claude-chat") return "claude";
   if (toolType === "cursor") return "cursor";
   if (toolType === "droid-chat") return "droid";
+  if (toolType === "qwen" || toolType === "qwen-chat") return "qwen";
+  if (toolType === "kimi" || toolType === "kimi-chat") return "kimi";
+  if (toolType === "grok" || toolType === "grok-chat") return "grok";
+  if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
   return "codex";
 }
 
@@ -5076,6 +5084,10 @@ function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
   if (provider === "claude") return "claude-chat";
   if (provider === "cursor") return "cursor";
   if (provider === "droid") return "droid-chat";
+  if (provider === "qwen") return "qwen-chat";
+  if (provider === "kimi") return "kimi-chat";
+  if (provider === "grok") return "grok-chat";
+  if (provider === "copilot") return "copilot-chat";
   return "codex-chat";
 }
 
@@ -6209,6 +6221,10 @@ function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string
   if (provider === "opencode") return `chat:opencode:${sessionId}`;
   if (provider === "cursor") return `chat:cursor:${sessionId}`;
   if (provider === "droid") return `chat:droid:${sessionId}`;
+  if (provider === "qwen") return `chat:qwen:${sessionId}`;
+  if (provider === "kimi") return `chat:kimi:${sessionId}`;
+  if (provider === "grok") return `chat:grok:${sessionId}`;
+  if (provider === "copilot") return `chat:copilot:${sessionId}`;
   return `chat:claude:${sessionId}`;
 }
 
@@ -13316,7 +13332,8 @@ export function createAgentChatService(args: {
   };
 
   // OpenCode handles API-key and local-model chats.
-  // CLI-wrapped models fall through to the existing Claude/Codex runtimes.
+  // CLI-wrapped models fall through to their provider-specific runtimes
+  // (Claude, Codex, Droid, or one of the ACP dialects).
   // Local model discovery is consolidated through OpenCode's provider inventory.
 
   const getAvailableRegistryModels = async (
@@ -15320,9 +15337,16 @@ export function createAgentChatService(args: {
 
   const parseResumeCommandPointer = (resumeCommand: string | null | undefined): Omit<ReconciledPointerCandidate, "source" | "at"> | null => {
     const command = resumeCommand?.trim() ?? "";
+    // ACP ids come from session/new and are persisted separately; treating
+    // their chat:<provider>:<ADE chat id> route marker as a native pointer
+    // makes recovery resume a session that never existed at the provider.
+    // Preserve the established pointer formats for the non-ACP providers.
     const chatMatch = command.match(/^chat:(codex|opencode|droid|cursor):(.+)$/u);
     if (chatMatch?.[1] && chatMatch[2]?.trim()) {
-      return { provider: chatMatch[1] as ReconciledPointerCandidate["provider"], pointer: chatMatch[2].trim() };
+      return {
+        provider: chatMatch[1] as ReconciledPointerCandidate["provider"],
+        pointer: chatMatch[2]!.trim(),
+      };
     }
     const claudeMatch = command.match(/(?:^|\s)claude(?:\s+[^\s]+)*\s+--resume\s+([^\s]+)/u);
     return claudeMatch?.[1]
@@ -25820,10 +25844,14 @@ export function createAgentChatService(args: {
   */
   const acpPermissionModeFromLegacyPermissionMode = (
     mode: AgentChatSession["permissionMode"] | undefined,
+    provider: AgentChatSession["provider"] | undefined,
   ): AgentChatAcpPermissionMode => {
     switch (mode) {
       case "plan": return "plan";
-      case "edit": return "auto-edit";
+      // Kimi has no accept-edits equivalent. Keep the generic composer
+      // selection fail-closed at Kimi's normal approval posture; an explicit
+      // native `auto-edit` request is still rejected by the Kimi dialect.
+      case "edit": return provider === "kimi" ? "default" : "auto-edit";
       case "auto": return "auto";
       case "full-auto": return "yolo";
       default: return "default";
@@ -25831,7 +25859,8 @@ export function createAgentChatService(args: {
   };
 
   const resolveAcpPermissionMode = (session: AgentChatSession): AgentChatAcpPermissionMode =>
-    session.acpPermissionMode ?? acpPermissionModeFromLegacyPermissionMode(session.permissionMode);
+    session.acpPermissionMode
+    ?? acpPermissionModeFromLegacyPermissionMode(session.permissionMode, session.provider);
 
   /**
    * True when ADE should answer a permission card itself rather than show it.
@@ -46953,7 +46982,18 @@ export function createAgentChatService(args: {
     }
     const liveManaged = managedSessions.get(row.id) ?? liveManagedInitial;
     const liveSession = liveManaged?.session ?? null;
-    const provider = liveSession?.provider ?? persisted?.provider ?? providerFromToolType(row.toolType);
+    const persistedProvider = liveSession?.provider ?? persisted?.provider ?? null;
+    const provider = persistedProvider ?? providerFromToolType(row.toolType);
+    if (persistedProvider && isChatToolType(row.toolType)) {
+      const canonicalToolType = toolTypeFromProvider(persistedProvider);
+      if (canonicalToolType !== row.toolType) {
+        row = sessionService.updateMeta({
+          sessionId: row.id,
+          toolType: canonicalToolType,
+          resumeCommand: resumeCommandForProvider(persistedProvider, row.id),
+        }) ?? row;
+      }
+    }
     const fallbackModel = liveSession?.model ?? persisted?.model ?? fallbackModelForProvider(provider);
     const hydratedModelId = liveSession?.modelId
       ?? persisted?.modelId
@@ -50775,6 +50815,7 @@ export function createAgentChatService(args: {
         // captured when the current ACP runtime was opened.
         managed.session.acpPermissionMode = acpPermissionModeFromLegacyPermissionMode(
           managed.session.permissionMode,
+          managed.session.provider,
         );
       }
     }

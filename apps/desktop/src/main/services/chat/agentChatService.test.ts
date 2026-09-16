@@ -2841,6 +2841,33 @@ describe("createAgentChatService", () => {
       expect(sessionService.create).toHaveBeenCalledTimes(1);
     });
 
+    it("persists Copilot chats with Copilot identity and repairs legacy Codex rows", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "copilot",
+        model: "gpt-5.4",
+        modelId: "github-copilot/gpt-5.4",
+      });
+
+      expect(sessionService.create).toHaveBeenCalledWith(expect.objectContaining({
+        toolType: "copilot-chat",
+        resumeCommand: `chat:copilot:${session.id}`,
+      }));
+
+      sessionService.updateMeta({
+        sessionId: session.id,
+        toolType: "codex-chat",
+        resumeCommand: "chat:codex",
+      });
+      await service.getSessionSummary(session.id);
+
+      expect(sessionService.get(session.id)).toEqual(expect.objectContaining({
+        toolType: "copilot-chat",
+        resumeCommand: `chat:copilot:${session.id}`,
+      }));
+    });
+
     it("persists create-time goals into the backing session row", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -50917,7 +50944,7 @@ describe("explicit provider-thread continuity recovery", () => {
     })}\n`);
     sessionService.setResumeCommand(resume.id, "chat:codex:thread-resume");
     sessionService.setResumeCommand(transcript.id, null);
-    sessionService.setResumeCommand(none.id, null);
+    sessionService.setResumeCommand(none.id, "chat:codex:   ");
     fs.writeFileSync(transcriptPath(transcript.id), `${JSON.stringify({
       sessionId: transcript.id,
       timestamp: new Date().toISOString(),
@@ -50933,6 +50960,24 @@ describe("explicit provider-thread continuity recovery", () => {
     expect(readPersistedChatState(resume.id).threadId).toBe("thread-resume");
     expect(readPersistedChatState(transcript.id).threadId).toBe("thread-transcript");
     expect(readPersistedChatState(none.id).continuityRecovery).toMatchObject({ state: "required", reason: "unknown" });
+
+    const acp = await service.createSession({
+      laneId: "lane-1",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+      title: "Qwen chat",
+    });
+    fs.rmSync(metadataPath(acp.id), { force: true });
+    fs.rmSync(metadataPath(acp.id) + ".lkg", { force: true });
+    sessionService.setResumeCommand(acp.id, "chat:qwen:" + acp.id);
+    service.reconcileThreadPointerFromRedundantSources(acp.id);
+    expect(readPersistedChatState(acp.id).acpSessionId).toBeUndefined();
+    expect(readPersistedChatState(acp.id).continuityRecovery).toMatchObject({
+      state: "required",
+      reason: "unknown",
+      provider: "qwen",
+    });
   });
 });
 

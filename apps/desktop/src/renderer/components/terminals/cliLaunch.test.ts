@@ -471,14 +471,14 @@ describe("ACP CLI providers", () => {
 
     const grok = buildTrackedCliResumeLaunchCommand(resumeMetadata("grok"));
     expect(grok.args).not.toContain("-s");
-    expect(grok.args).toEqual(expect.arrayContaining(["--resume", "11111111-2222-3333-4444-555555555555"]));
+    expect(grok.args).toEqual(expect.arrayContaining(["-r", "11111111-2222-3333-4444-555555555555"]));
 
     const copilot = buildTrackedCliResumeLaunchCommand(resumeMetadata("copilot"));
     expect(copilot.args).toContain("--resume=11111111-2222-3333-4444-555555555555");
   });
 
   it("continues the most recent ACP session when no target id was captured", () => {
-    for (const provider of ["qwen", "grok", "copilot"] as const) {
+    for (const provider of ["qwen", "copilot"] as const) {
       const launch = buildTrackedCliResumeLaunchCommand({
         provider,
         targetKind: "session",
@@ -487,6 +487,13 @@ describe("ACP CLI providers", () => {
       });
       expect(launch.args).toContain("--continue");
     }
+    const grok = buildTrackedCliResumeLaunchCommand({
+      provider: "grok",
+      targetKind: "session",
+      targetId: null,
+      launch: { permissionMode: "default" },
+    });
+    expect(grok.args).toContain("-c");
     const kimi = buildTrackedCliResumeLaunchCommand({
       provider: "kimi",
       targetKind: "session",

@@ -46,6 +46,9 @@ describe("isProviderLevelNamingFailure", () => {
     )).toBe(true);
     expect(isProviderLevelNamingFailure(new Error("spawn codex ENOENT"))).toBe(true);
     expect(isProviderLevelNamingFailure(new Error("401 unauthorized"))).toBe(true);
+    expect(isProviderLevelNamingFailure(
+      new Error("Image input is not supported with Qwen native metadata tasks"),
+    )).toBe(true);
   });
 
   it("does not condemn the provider for a single model lacking a capability", () => {

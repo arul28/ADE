@@ -53,11 +53,13 @@ import {
   type AcpSpawnPlan,
 } from "../acpHostTypes";
 import type { AcpAvailableCommand } from "../acpProtocolTypes";
+import { resolveCopilotCliModelForLaunch } from "../../../../../shared/cliLaunch";
 import {
   ADE_CLIENT_INFO,
   inlineImagePrompt,
   standardClose,
   standardLoad,
+  standardSetModel,
   transportGatedMcpInjection,
   withOptionalEnv,
 } from "./shared";
@@ -97,6 +99,8 @@ export function includeCopilotSlashCommand(command: AcpAvailableCommand): boolea
 
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   const args = ["--acp"];
+  const model = resolveCopilotCliModelForLaunch(context.modelId);
+  if (model) args.push("--model", model);
   if (context.configHome?.length) args.push("--config-dir", context.configHome);
   // `--add-dir` is the session path gate. It is argv only — it does not
   // rewrite config.json, which is why it survived the removal of the trust
@@ -186,6 +190,7 @@ export const copilotDialect = defineAcpDialect({
   loadSession: capability(standardLoad),
 
   sessionConfig: capabilityAbsent,
+  modelSelection: capability(standardSetModel),
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),
   configOptionIds: [],

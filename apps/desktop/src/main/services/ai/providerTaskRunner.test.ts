@@ -14,6 +14,22 @@ const resolveCodexExecutableMock = vi.fn(() => ({
   path: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd",
   source: "path",
 }));
+const resolveCopilotExecutableMock = vi.fn(() => ({
+  path: "C:\\Users\\me\\AppData\\Roaming\\npm\\copilot.cmd",
+  source: "path",
+}));
+const resolveQwenExecutableMock = vi.fn(() => ({
+  path: "C:\\Users\\me\\AppData\\Roaming\\npm\\qwen.cmd",
+  source: "path",
+}));
+const resolveKimiExecutableMock = vi.fn(() => ({
+  path: "C:\\Users\\me\\.kimi-code\\bin\\kimi.exe",
+  source: "path",
+}));
+const resolveGrokExecutableMock = vi.fn(() => ({
+  path: "C:\\Users\\me\\.grok\\bin\\grok.exe",
+  source: "path",
+}));
 const cursorLocalPromptMock = vi.fn();
 const assertCursorSdkSupportedMock = vi.fn();
 const getApiKeyMock = vi.fn((_provider: string): string | null => null);
@@ -32,6 +48,13 @@ vi.mock("./claudeCodeExecutable", () => ({
 
 vi.mock("./codexExecutable", () => ({
   resolveCodexExecutable: () => resolveCodexExecutableMock(),
+}));
+
+vi.mock("./acpExecutables", () => ({
+  resolveCopilotExecutable: () => resolveCopilotExecutableMock(),
+  resolveQwenExecutable: () => resolveQwenExecutableMock(),
+  resolveKimiExecutable: () => resolveKimiExecutableMock(),
+  resolveGrokExecutable: () => resolveGrokExecutableMock(),
 }));
 
 // The real store reads the OS credential store, so a developer machine with a
@@ -96,6 +119,7 @@ function createMockProcess(args: {
   stderr?: string;
   exitCode?: number;
   onStart?: () => void;
+  deferClose?: boolean;
 } = {}): MockSpawnProcess {
   const stdout = new EventEmitter();
   const stderr = new EventEmitter();
@@ -116,7 +140,7 @@ function createMockProcess(args: {
     args.onStart?.();
     if (args.stdout) stdout.emit("data", Buffer.from(args.stdout, "utf8"));
     if (args.stderr) stderr.emit("data", Buffer.from(args.stderr, "utf8"));
-    child.emit("close", args.exitCode ?? 0);
+    if (!args.deferClose) child.emit("close", args.exitCode ?? 0);
   });
 
   return child;
@@ -126,6 +150,10 @@ afterEach(() => {
   spawnMock.mockReset();
   resolveClaudeCodeExecutableMock.mockClear();
   resolveCodexExecutableMock.mockClear();
+  resolveCopilotExecutableMock.mockClear();
+  resolveQwenExecutableMock.mockClear();
+  resolveKimiExecutableMock.mockClear();
+  resolveGrokExecutableMock.mockClear();
   cursorLocalPromptMock.mockReset();
   assertCursorSdkSupportedMock.mockReset();
   getApiKeyMock.mockReset();
@@ -204,6 +232,31 @@ describe("runProviderTask", () => {
     expect(child.stdin.end).toHaveBeenCalledWith("Summarize the worktree state.");
   });
 
+  it("terminates a provider task when writing its prompt fails", async () => {
+    const child = createMockProcess({ deferClose: true });
+    spawnMock.mockReturnValueOnce(child);
+
+    const pending = runProviderTask({
+      cwd: process.cwd(),
+      descriptor: {
+        family: "anthropic",
+        isCliWrapped: true,
+        providerModelId: "claude-sonnet-5",
+      } as any,
+      prompt: "This prompt cannot be delivered.",
+      feature: "unit-test",
+      projectConfig: {} as any,
+    });
+
+    await vi.waitFor(() => {
+      expect(child.stdin.end).toHaveBeenCalled();
+    });
+    child.stdin.emit("error", Object.assign(new Error("EIO"), { code: "EIO" }));
+
+    await expect(pending).rejects.toThrow("EIO");
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
   it("pipes Codex prompts over stdin instead of argv", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-provider-task-runner-"));
     spawnMock.mockImplementationOnce((_command: unknown, argv: string[]) => {
@@ -253,6 +306,138 @@ describe("runProviderTask", () => {
       mkdtempSpy.mockRestore();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("runs Copilot metadata prompts with the selected model and no tools", async () => {
+    spawnMock.mockReturnValueOnce(createMockProcess({
+      stdout: '{"chatTitle":"Copilot title"}',
+    }));
+
+    const result = await runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: {
+        family: "github-copilot",
+        providerRoute: "copilot-acp",
+        isCliWrapped: true,
+        providerModelId: "github-copilot/gpt-5.4",
+      } as any,
+      prompt: "Name this chat.",
+      system: "Be concise.",
+      jsonSchema: { type: "object", properties: { chatTitle: { type: "string" } } },
+      feature: "session-metadata",
+      projectConfig: {} as any,
+    });
+
+    expect(result.text).toBe('{"chatTitle":"Copilot title"}');
+    expect(result.structuredOutput).toEqual({ chatTitle: "Copilot title" });
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [command, argv, options] = spawnMock.mock.calls[0]!;
+    expect(command).toBe(expectedLaunchCommand("C:\\Users\\me\\AppData\\Roaming\\npm\\copilot.cmd"));
+    expect(launchArgvContains(argv, "--model")).toBe(true);
+    expect(launchArgvValueAfter(argv, "--model")).toBe("gpt-5.4");
+    expect(launchArgvContains(argv, "--deny-tool=*")).toBe(true);
+    expect(launchArgvContains(argv, "--deny-url=*")).toBe(true);
+    expect(launchArgvContains(argv, "--prompt")).toBe(false);
+    expect(options).toMatchObject({
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const child = spawnMock.mock.results[0]!.value as MockSpawnProcess;
+    expect(child.stdin.end).toHaveBeenCalledWith(
+      'Be concise.\n\nName this chat.\n\nReturn only valid JSON matching this schema:\n{\n  "type": "object",\n  "properties": {\n    "chatTitle": {\n      "type": "string"\n    }\n  }\n}',
+    );
+  });
+
+  it("runs Qwen, Kimi, and Grok metadata prompts through their ACP CLIs", async () => {
+    spawnMock
+      .mockReturnValueOnce(createMockProcess({ stdout: '{"chatTitle":"Qwen title"}' }))
+      .mockReturnValueOnce(createMockProcess({ stdout: '{"chatTitle":"Kimi title"}' }))
+      .mockReturnValueOnce(createMockProcess({ stdout: '{"chatTitle":"Grok title"}' }));
+
+    const common = {
+      cwd: "/tmp/lane",
+      prompt: "Name this chat.",
+      jsonSchema: { type: "object", properties: { chatTitle: { type: "string" } } },
+      feature: "session-metadata",
+      projectConfig: {} as any,
+    };
+    const writeFileSpy = vi.spyOn(fs, "writeFileSync");
+    let results: Awaited<ReturnType<typeof runProviderTask>>[];
+    let wroteNoToolsAgent = false;
+    try {
+      results = await Promise.all([
+        runProviderTask({
+          ...common,
+          descriptor: {
+            family: "qwen",
+            providerRoute: "qwen-acp",
+            isCliWrapped: true,
+            providerModelId: "qwen/qwen3-coder-plus",
+          } as any,
+        }),
+        runProviderTask({
+          ...common,
+          descriptor: {
+            family: "moonshot",
+            providerRoute: "kimi-acp",
+            isCliWrapped: true,
+            providerModelId: "moonshot/kimi-for-coding",
+          } as any,
+        }),
+        runProviderTask({
+          ...common,
+          descriptor: {
+            family: "xai",
+            providerRoute: "grok-acp",
+            isCliWrapped: true,
+            providerModelId: "xai/grok-4.6",
+          } as any,
+        }),
+      ]);
+    } finally {
+      wroteNoToolsAgent = writeFileSpy.mock.calls.some(([, contents]) => String(contents).includes("tools: []"));
+      writeFileSpy.mockRestore();
+    }
+    expect(wroteNoToolsAgent).toBe(true);
+
+    expect(results.map((result) => result.structuredOutput)).toEqual([
+      { chatTitle: "Qwen title" },
+      { chatTitle: "Kimi title" },
+      { chatTitle: "Grok title" },
+    ]);
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+    const launched = spawnMock.mock.calls.map((call) => call[1]);
+    expect(launched[0]).toEqual(expect.arrayContaining(["--safe-mode", "--output-format", "text", "--model", "qwen3-coder-plus"]));
+    expect(launched[1]).toEqual(expect.arrayContaining(["--model", "kimi-code/kimi-for-coding", "--agent-file", "--output-format", "text", "--prompt"]));
+    expect(launchArgvValueAfter(launched[1], "--agent-file")).toMatch(/ade-kimi-task-/);
+    expect(launched[1]).not.toContain("--plan");
+    expect(launched[2]).toEqual(expect.arrayContaining(["--permission-mode", "plan", "--model", "grok-4.6", "--json-schema"]));
+    expect(launched[0]).not.toContain("--prompt");
+    expect((spawnMock.mock.results[0]!.value as MockSpawnProcess).stdin.end).toHaveBeenCalledWith(
+      expect.stringContaining("Name this chat."),
+    );
+  });
+
+  it.each([
+    ["Qwen", "qwen", "qwen-acp", "qwen/qwen3-coder-plus"],
+    ["Kimi", "moonshot", "kimi-acp", "moonshot/kimi-for-coding"],
+    ["Grok", "xai", "grok-acp", "xai/grok-4.6"],
+  ] as const)("rejects image-backed metadata tasks when %s has no native image input", async (
+    providerLabel,
+    family,
+    providerRoute,
+    providerModelId,
+  ) => {
+    await expect(runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: { family, providerRoute, isCliWrapped: true, providerModelId } as any,
+      prompt: "Name this chat.",
+      feature: "session-metadata",
+      imagePaths: ["/tmp/settings.png"],
+      projectConfig: {} as any,
+  })).rejects.toThrow(
+    "Image input is not supported with " + providerLabel + " native metadata tasks",
+  );
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it("routes every Cursor task through the SDK worker pool with no policy of its own", async () => {

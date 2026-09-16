@@ -20,11 +20,13 @@ import {
 import { parseCommandLine } from "../../shared/shell";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
-const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode|pi)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
+const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode|pi|qwen|kimi|grok|copilot)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
 const RESUME_HINT_PREFIX_REGEX = /\b(?:resume|continue)\s+with\s+(.+)$/i;
 const RESUME_COMMAND_LINE_REGEX = /^(?:.*?(?:[%$#❯›]\s+))?((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:claude|codex|cursor-agent|droid|opencode|pi)\s+.+)$/i;
 
 export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
+
+const RESUME_NATIVE_ACP_COMMAND_LINE_REGEX = /^((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:qwen|kimi|grok|copilot)\s.+)$/i;
 
 function normalizeCommand(raw: string): string {
   return raw
@@ -152,11 +154,15 @@ function droidSpecStringSetting(settings: Record<string, unknown> | null, key: s
 
 function toolFromCommand(raw: string): TerminalToolType | null {
   const normalized = stripLeadingEnvAssignments(raw).trim().toLowerCase();
-  if (normalized.startsWith("claude ")) return "claude";
-  if (normalized.startsWith("codex ")) return "codex";
-  if (normalized.startsWith("cursor-agent ")) return "cursor-cli";
-  if (normalized.startsWith("droid ")) return "droid";
-  if (normalized.startsWith("opencode ")) return "opencode";
+  if (/^claude(?:\s|$)/.test(normalized)) return "claude";
+  if (/^codex(?:\s|$)/.test(normalized)) return "codex";
+  if (/^cursor-agent(?:\s|$)/.test(normalized)) return "cursor-cli";
+  if (/^droid(?:\s|$)/.test(normalized)) return "droid";
+  if (/^opencode(?:\s|$)/.test(normalized)) return "opencode";
+  if (/^qwen(?:\s|$)/.test(normalized)) return "qwen";
+  if (/^kimi(?:\s|$)/.test(normalized)) return "kimi";
+  if (/^grok(?:\s|$)/.test(normalized)) return "grok";
+  if (/^copilot(?:\s|$)/.test(normalized)) return "copilot";
   if (/^pi(?:\s|$)/.test(normalized)) return "pi";
   return null;
 }
@@ -168,6 +174,10 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
   if (toolType === "droid") return "droid";
   if (toolType === "opencode" || toolType === "opencode-orchestrated" || toolType === "opencode-chat") return "opencode";
   if (toolType === "pi" || toolType === "pi-chat") return "pi";
+  if (toolType === "qwen" || toolType === "qwen-chat") return "qwen";
+  if (toolType === "kimi" || toolType === "kimi-chat") return "kimi";
+  if (toolType === "grok" || toolType === "grok-chat") return "grok";
+  if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
   return null;
 }
 
@@ -245,6 +255,40 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
     return "default";
   }
 
+  if (provider === "qwen") {
+    const approvalMode = extractCliFlagValue(normalized, "--approval-mode")?.toLowerCase();
+    if (approvalMode === "yolo" || normalized.includes("--yolo")) return "full-auto";
+    if (approvalMode === "auto") return "auto";
+    if (approvalMode === "auto-edit") return "edit";
+    if (approvalMode === "plan") return "plan";
+    if (approvalMode === "default") return "default";
+    return "default";
+  }
+
+  if (provider === "kimi") {
+    if (normalized.includes("--yolo")) return "full-auto";
+    if (normalized.includes("--auto")) return "edit";
+    if (normalized.includes("--plan")) return "plan";
+    return "default";
+  }
+
+  if (provider === "grok") {
+    const permission = extractCliFlagValue(normalized, "--permission-mode")?.toLowerCase();
+    if (permission === "bypasspermissions") return "full-auto";
+    if (permission === "auto") return "auto";
+    if (permission === "acceptedits") return "edit";
+    if (permission === "plan") return "plan";
+    if (permission === "default") return "default";
+    return "default";
+  }
+
+  if (provider === "copilot") {
+    if (normalized.includes("--allow-all-tools")) return "full-auto";
+    if (normalized.includes("--deny-tool=write") && normalized.includes("--deny-tool=shell")) return "plan";
+    if (normalized.includes("--allow-tool=write")) return "edit";
+    return "default";
+  }
+
   if (provider === "opencode") {
     if (
       normalized.includes("opencode_config_content=")
@@ -280,7 +324,10 @@ export function parseTrackedCliLaunchConfig(
     ?? extractTrackedCliPermissionMode(normalized, provider);
   const model = droidStringSetting(droidSettings, "model")
     ?? droidSpecStringSetting(droidSettings, "specModeModel")
-    ?? extractCliFlagValue(normalized, "--model");
+    ?? extractCliFlagValue(normalized, "--model")
+    ?? (provider === "qwen" || provider === "kimi" || provider === "grok"
+      ? extractCliFlagValue(normalized, "-m")
+      : null);
   const reasoningEffort = droidStringSetting(droidSettings, "reasoningEffort")
     ?? droidSpecStringSetting(droidSettings, "specModeReasoningEffort")
     ?? (provider === "codex"
@@ -396,6 +443,95 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
     return sanitizeResumeTargetId(raw) ?? undefined;
   }
 
+  if (provider === "grok") {
+    let parts: string[];
+    try {
+      parts = parseCommandLine(command);
+    } catch {
+      return undefined;
+    }
+    if (parts[0]?.toLowerCase() !== "grok") return undefined;
+    const resumeIndex = parts.findIndex((part, index) =>
+      index > 0
+      && (
+        part === "-r"
+        || part === "-c"
+        || part.toLowerCase() === "--resume"
+        || part.toLowerCase() === "--continue"
+        || part.toLowerCase().startsWith("--resume=")
+      ),
+    );
+    if (resumeIndex < 0) return undefined;
+    const selector = parts[resumeIndex]!.toLowerCase();
+    const inlineTarget = selector.startsWith("--resume=")
+      ? parts[resumeIndex]!.slice("--resume=".length)
+      : selector.startsWith("-r=")
+        ? parts[resumeIndex]!.slice(3)
+        : null;
+    const next = parts[resumeIndex + 1];
+    const raw = inlineTarget ?? (
+      (selector === "-r" || selector === "--resume") && next && !next.startsWith("-")
+        ? next
+        : null
+    );
+    if (raw == null) return null;
+    return sanitizeResumeTargetId(raw) ?? undefined;
+  }
+
+  if (provider === "qwen" || provider === "copilot") {
+    let parts: string[];
+    try {
+      parts = parseCommandLine(command);
+    } catch {
+      return undefined;
+    }
+    if (parts[0]?.toLowerCase() !== provider) return undefined;
+    const resumeIndex = parts.findIndex((part, index) =>
+      index > 0
+      && (part.toLowerCase() === "--continue"
+        || part.toLowerCase() === "--resume"
+        || part.toLowerCase().startsWith("--resume=")),
+    );
+    if (resumeIndex < 0) return undefined;
+    const selector = parts[resumeIndex]!.toLowerCase();
+    const inlineTarget = selector.startsWith("--resume=")
+      ? parts[resumeIndex]!.slice("--resume=".length)
+      : null;
+    const next = parts[resumeIndex + 1];
+    const raw = inlineTarget ?? (
+      selector === "--resume" && next && !next.startsWith("-")
+        ? next
+        : null
+    );
+    if (raw == null) return null;
+    return sanitizeResumeTargetId(raw) ?? undefined;
+  }
+
+  if (provider === "kimi") {
+    let parts: string[];
+    try {
+      parts = parseCommandLine(command);
+    } catch {
+      return undefined;
+    }
+    if (parts[0]?.toLowerCase() !== "kimi") return undefined;
+    const sessionIndex = parts.findIndex((part, index) =>
+      index > 0 && (part === "-S" || part === "--session" || part.toLowerCase().startsWith("--session=")),
+    );
+    const continueIndex = parts.findIndex((part, index) => index > 0 && part === "-c");
+    const resumeIndex = sessionIndex >= 0 ? sessionIndex : continueIndex;
+    if (resumeIndex < 0) return undefined;
+    if (resumeIndex === continueIndex && sessionIndex < 0) return null;
+    const selector = parts[resumeIndex]!;
+    const inlineTarget = selector.toLowerCase().startsWith("--session=")
+      ? selector.slice("--session=".length)
+      : null;
+    const next = parts[resumeIndex + 1];
+    const raw = inlineTarget ?? (next && !next.startsWith("-") ? next : null);
+    if (raw == null) return null;
+    return sanitizeResumeTargetId(raw) ?? undefined;
+  }
+
   const match = (provider === "pi"
     ? command.match(/^pi\b.*?(?:--session(?:=|\s+)([^\s]+)|--continue\b|-c\b|-r\b)(?:\s|$)/i)
     : command.match(/^opencode\b.*?(?:--session(?:=|\s+)([^\s]+)|-s\s+([^\s]+)|--continue\b|-c\b)(?:\s|$)/i));
@@ -475,6 +611,10 @@ export function defaultResumeCommandForTool(toolType: TerminalToolType | null | 
   if (toolType === "cursor-cli") return "cursor-agent --model auto --continue";
   if (toolType === "droid") return "droid --resume";
   if (toolType === "opencode" || toolType === "opencode-orchestrated") return "opencode --continue";
+  if (toolType === "qwen") return "qwen --continue";
+  if (toolType === "kimi") return "kimi -c";
+  if (toolType === "grok") return "grok -c";
+  if (toolType === "copilot") return "copilot --continue";
   // Deliberately null for Pi. `pi --continue` means "the most recent session
   // for this directory", and since ADE chat and the tracked CLI share one
   // native Pi store that can be another terminal's session or a chat's — a
@@ -505,7 +645,10 @@ export function extractResumeCommandFromOutput(
         if (!trimmed) return [];
         const hinted = trimmed.match(RESUME_HINT_PREFIX_REGEX)?.[1]?.trim();
         if (hinted && toolFromCommand(hinted)) return [hinted];
-        const command = trimmed.match(RESUME_COMMAND_LINE_REGEX)?.[1]?.trim();
+        const command = (
+          trimmed.match(RESUME_COMMAND_LINE_REGEX)
+          ?? trimmed.match(RESUME_NATIVE_ACP_COMMAND_LINE_REGEX)
+        )?.[1]?.trim();
         return command ? [command] : [];
       }),
   ];
