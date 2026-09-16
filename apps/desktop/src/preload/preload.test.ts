@@ -8825,6 +8825,12 @@ describe("per-chat runtime routing", () => {
       });
 
       await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-a"] });
+      // Measure the pump's OWN timer against a baseline, not the whole
+      // environment's count. `getTimerCount()` is global: it counts every
+      // pending fake timer, so any unrelated one shifts the total and fails
+      // this test for a reason it is not about. That is what happened on CI
+      // while it passed locally.
+      const timersBeforePump = vi.getTimerCount();
       const onData = vi.fn();
       const onExit = vi.fn();
       const removeData = bridge.pty.onData(onData, machineB);
@@ -8834,10 +8840,13 @@ describe("per-chat runtime routing", () => {
       expect(streamCalls).toBe(1);
 
       removeData();
-      expect(vi.getTimerCount()).toBe(1);
+      // The exit listener still holds the pump, so its timer must survive.
+      expect(vi.getTimerCount()).toBe(timersBeforePump + 1);
       removeExit();
       await Promise.resolve();
-      expect(vi.getTimerCount()).toBe(0);
+      // Last listener gone: the pump releases its timer and leaves nothing of
+      // its own pending.
+      expect(vi.getTimerCount()).toBe(timersBeforePump);
       expect(
         invoke.mock.calls
           .filter(([channel]) => channel === IPC.ptyDataSubscriptions)
