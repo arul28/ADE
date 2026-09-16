@@ -327,6 +327,12 @@ describe("createSyncRemoteCommandService", () => {
 
     expect(getSyncStatuses).toHaveBeenCalledWith({ laneIds: ["lane-1", "lane-2"] });
     expect(getDetailBundle).toHaveBeenCalledWith("pr-1");
+
+    getSyncStatuses.mockResolvedValue({});
+    await expect(service.execute(makePayload("git.getSyncStatuses", {
+      laneIds: [],
+    }))).resolves.toEqual({});
+    expect(getSyncStatuses).toHaveBeenLastCalledWith({ laneIds: [] });
   });
 
   it("caps ai.getStatus probes at 30 seconds", async () => {

@@ -185,6 +185,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
   const [prs, setPrs] = React.useState<PrWithConflicts[]>(() => readGraphPrCache(projectRoot));
   const lanesRef = React.useRef(lanes);
+  const prDraftRequestIdRef = React.useRef(0);
   React.useEffect(() => {
     lanesRef.current = lanes;
   }, [lanes]);
@@ -1913,9 +1914,11 @@ function GraphInner({ active = true }: { active?: boolean }) {
       });
 
       if (!existing) {
+        const requestId = ++prDraftRequestIdRef.current;
         void window.ade.prs
           .draftDescription({ laneId })
           .then((draft) => {
+            if (prDraftRequestIdRef.current !== requestId) return;
             setPrDialog((prev) => mergeGeneratedPrDraft(
               prev,
               laneId,
@@ -1924,6 +1927,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
             ));
           })
           .catch((error) => {
+            if (prDraftRequestIdRef.current !== requestId) return;
             const message = error instanceof Error ? error.message : String(error);
             setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, error: message } : prev));
           });

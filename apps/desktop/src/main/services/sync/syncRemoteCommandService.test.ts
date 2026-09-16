@@ -1200,6 +1200,12 @@ describe("createSyncRemoteCommandService", () => {
         laneIds: [" lane-1 ", "", "lane-2"],
       }))).resolves.toEqual(statuses);
       expect(gitService.getSyncStatuses).toHaveBeenCalledWith({ laneIds: ["lane-1", "lane-2"] });
+
+      gitService.getSyncStatuses.mockResolvedValue({});
+      await expect(service.execute(makePayload("git.getSyncStatuses", {
+        laneIds: [],
+      }))).resolves.toEqual({});
+      expect(gitService.getSyncStatuses).toHaveBeenLastCalledWith({ laneIds: [] });
     });
 
     it("git undo and redo head-change actions require a lane", async () => {

@@ -5534,7 +5534,7 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").getSyncStatus(parseConflictLaneArgs(payload, "git.getSyncStatus")));
   register("git.getSyncStatuses", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getSyncStatuses({
-      laneIds: requireStringArray(payload.laneIds, "git.getSyncStatuses requires laneIds."),
+      laneIds: asStringArray(payload.laneIds),
     }));
   register("git.getOriginRemote", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getOriginRemote(parseConflictLaneArgs(payload, "git.getOriginRemote")));
