@@ -13,7 +13,7 @@ import {
   formatLegacyProviderRetryActivityDetail,
   formatProviderRetryActivityDetail,
   isLegacyProviderRetryNotice,
-  isProviderRetryActivityDetail,
+  isProviderRetryActivityEvent,
 } from "../../../desktop/src/shared/providerRetryPresentation";
 import { readRecord, summarizeInlineText } from "../../../desktop/src/renderer/components/chat/chatTranscriptRows";
 import { replaceInternalToolNames } from "../../../desktop/src/renderer/components/chat/toolPresentation";
@@ -131,17 +131,15 @@ export function deriveActiveProviderRetryActivityDetail(
   }
   if (!activeTurnId) return null;
 
-  let legacyRetryDetail: string | null = null;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!.event;
     const eventTurnId = turnIdOf(event)?.trim() ?? "";
     if (eventTurnId && eventTurnId !== activeTurnId) continue;
-    if (event.type === "activity" && isProviderRetryActivityDetail(event.detail)) {
-      return event.detail.trim();
+    if (isProviderRetryActivityEvent(event)) {
+      return event.detail?.trim() || null;
     }
     if (event.type === "system_notice" && isLegacyProviderRetryNotice(event)) {
-      legacyRetryDetail ??= formatLegacyProviderRetryActivityDetail(event);
-      continue;
+      return formatLegacyProviderRetryActivityDetail(event);
     }
     if (event.type === "api_retry") {
       return formatProviderRetryActivityDetail({
@@ -170,7 +168,7 @@ export function deriveActiveProviderRetryActivityDetail(
       return null;
     }
   }
-  return legacyRetryDetail;
+  return null;
 }
 
 type AssistantTextEvent = Extract<AgentChatEvent, { type: "text" }>;

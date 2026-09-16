@@ -20,6 +20,10 @@ export type ProviderRetryActivityOptions = {
   phase?: "retrying" | "reconnecting";
 };
 
+export type ProviderRetryActivityEvent = Extract<AgentChatEvent, { type: "activity" }> & {
+  providerRetry: true;
+};
+
 const TRANSPORT_FALLBACK_PATTERN = /(?:fall(?:ing)?\s+back|fallback).*(?:web\s*socket|websocket).*(?:https?|transport)|(?:web\s*socket|websocket).*(?:https?|transport).*(?:fallback|tim(?:e|ed)\s*out|timeout)/i;
 const LEGACY_PROVIDER_HEALTH_RETRY_PATTERN = /^(?:codex|opencode)\s+hit a provider error and is retrying automatically\b/i;
 
@@ -80,9 +84,15 @@ export function formatProviderRetryActivityDetail(options: ProviderRetryActivity
   return parts.join(" · ");
 }
 
-/** Renderer/TUI guard for activity details emitted by this helper. */
-export function isProviderRetryActivityDetail(detail: unknown): detail is string {
-  return typeof detail === "string" && /^(?:Retrying|Reconnecting to)\s+.+/.test(detail.trim());
+/**
+ * Guard for host-generated provider retry activity. The marker is intentional:
+ * activity detail is free-form provider/tool text and must not be treated as
+ * lifecycle state just because it starts with an English retry verb.
+ */
+export function isProviderRetryActivityEvent(event: unknown): event is ProviderRetryActivityEvent {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return false;
+  const candidate = event as Record<string, unknown>;
+  return candidate.type === "activity" && candidate.providerRetry === true;
 }
 
 function providerFromRetryText(message: string): string {

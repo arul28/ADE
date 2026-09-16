@@ -458,7 +458,7 @@ import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   classifyProviderRetryCause,
   formatProviderRetryActivityDetail,
-  isProviderRetryActivityDetail,
+  isProviderRetryActivityEvent,
 } from "../../../shared/providerRetryPresentation";
 import { buildClaudeToolApprovalOptions, claudeToolNeedsDefaultToNo } from "../../../shared/claudePermissionDialog";
 import {
@@ -13671,8 +13671,7 @@ export function createAgentChatService(args: {
       for (const mapped of mapPiSdkEventToChatEvents(event, turnId, runtime.activeCompactionId)) {
         // Provider retries are ephemeral status, not transcript content. Pi's
         // ordinary activity remains durable for the work-log grouping rules.
-        const isRetryActivity = mapped.type === "activity"
-          && isProviderRetryActivityDetail(mapped.detail);
+        const isRetryActivity = isProviderRetryActivityEvent(mapped);
         if (isRetryActivity) emitLiveOnlyChatEvent(managed, mapped);
         else emitChatEvent(managed, mapped);
       }
@@ -16702,6 +16701,7 @@ export function createAgentChatService(args: {
     emitLiveOnlyChatEvent(managed, {
       type: "activity",
       activity: "working",
+      providerRetry: true,
       detail: formatProviderRetryActivityDetail({
         provider: "claude",
         attempt,
@@ -27117,13 +27117,14 @@ export function createAgentChatService(args: {
             : Math.max(0, Math.round((nextAtMs - nowMs) / 1000));
           const classificationText = [
             providerMessage.length ? providerMessage : "The provider request failed.",
-            action?.title?.trim() || null,
-            action?.message?.trim() || null,
-            action?.link?.trim() || null,
+            typeof action?.title === "string" ? action.title.trim() : null,
+            typeof action?.message === "string" ? action.message.trim() : null,
+            typeof action?.link === "string" ? action.link.trim() : null,
           ].filter((line): line is string => Boolean(line)).join(" ");
           emitLiveOnlyChatEvent(managed, {
             type: "activity",
             activity: "working",
+            providerRetry: true,
             detail: formatProviderRetryActivityDetail({
               provider: "opencode",
               attempt,
@@ -32315,6 +32316,7 @@ export function createAgentChatService(args: {
         emitLiveOnlyChatEvent(managed, {
           type: "activity",
           activity: "working",
+          providerRetry: true,
           detail: formatProviderRetryActivityDetail({
             provider: "codex",
             attempt: numberOrNull(params.attempt ?? params.retryAttempt ?? params.retry_attempt),
@@ -41336,6 +41338,7 @@ export function createAgentChatService(args: {
         emitLiveOnlyChatEvent(managed, {
           type: "activity",
           activity: "working",
+          providerRetry: true,
           detail: formatProviderRetryActivityDetail({
             provider: "cursor",
             cause: "transport",
@@ -41348,6 +41351,7 @@ export function createAgentChatService(args: {
       emitLiveOnlyChatEvent(managed, {
         type: "activity",
         activity: "working",
+        providerRetry: true,
         detail: formatProviderRetryActivityDetail({
           provider: "cursor",
           cause: first.reason === "silent_run" ? "timeout" : "transport",

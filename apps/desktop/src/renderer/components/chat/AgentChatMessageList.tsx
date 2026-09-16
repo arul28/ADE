@@ -96,7 +96,7 @@ import {
   formatLegacyProviderRetryActivityDetail,
   formatProviderRetryActivityDetail,
   isLegacyProviderRetryNotice,
-  isProviderRetryActivityDetail,
+  isProviderRetryActivityEvent,
 } from "../../../shared/providerRetryPresentation";
 import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import { isClaudeContextCategoryKind } from "../../../shared/claudeContextUsage";
@@ -4569,13 +4569,12 @@ function deriveActiveProviderRetryActivity(
   activeTurnId: string | null,
 ): string | null {
   if (!activeTurnId) return null;
-  let legacyRetryDetail: string | null = null;
   for (let i = events.length - 1; i >= 0; i--) {
     const evt = events[i]!.event;
     const eventTurnId = getEventTurnId(evt);
     if (eventTurnId && eventTurnId !== activeTurnId) continue;
-    if (evt.type === "activity" && isProviderRetryActivityDetail(evt.detail)) {
-      return evt.detail.trim();
+    if (isProviderRetryActivityEvent(evt)) {
+      return evt.detail?.trim() || null;
     }
     if (evt.type === "api_retry") {
       const cause = evt.errorStatus === 429
@@ -4592,8 +4591,7 @@ function deriveActiveProviderRetryActivity(
       });
     }
     if (evt.type === "system_notice" && isLegacyProviderRetryNotice(evt)) {
-      legacyRetryDetail ??= formatLegacyProviderRetryActivityDetail(evt);
-      continue;
+      return formatLegacyProviderRetryActivityDetail(evt);
     }
     if (
       evt.type === "text"
@@ -4609,7 +4607,7 @@ function deriveActiveProviderRetryActivity(
       return null;
     }
   }
-  return legacyRetryDetail;
+  return null;
 }
 
 function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {

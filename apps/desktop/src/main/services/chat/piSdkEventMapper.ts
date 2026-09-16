@@ -90,6 +90,7 @@ export function mapPiSdkEventToChatEvents(
     return [{
       type: "activity",
       activity: "working",
+      providerRetry: true,
       detail: formatProviderRetryActivityDetail({
         provider: "pi",
         attempt,

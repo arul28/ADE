@@ -114,6 +114,7 @@ describe("mapPiSdkEventToChatEvents", () => {
     }, "turn-1")).toEqual([{
       type: "activity",
       activity: "working",
+      providerRetry: true,
       detail: "Reconnecting to Pi · attempt 2 of 5 · retrying in 4s",
       turnId: "turn-1",
     }]);

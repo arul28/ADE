@@ -479,24 +479,25 @@ describe("ChatView", () => {
       },
       {
         sessionId: "s1",
-        timestamp: "2026-01-01T12:00:02.000Z",
-        sequence: 3,
-        event: {
-          type: "activity",
-          activity: "working",
-          detail: "Reconnecting to Claude · attempt 2 of 10 · retrying in 4s",
-          turnId: "turn-active",
-        },
-      },
-      {
-        sessionId: "s1",
         timestamp: "2026-01-01T12:00:02.100Z",
-        sequence: 4,
+        sequence: 3,
         event: {
           type: "system_notice",
           noticeKind: "provider_health",
           message: "Codex hit a provider error and is retrying automatically.",
           detail: "Retrying in 4s.",
+          turnId: "turn-active",
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:03.000Z",
+        sequence: 4,
+        event: {
+          type: "activity",
+          activity: "working",
+          providerRetry: true,
+          detail: "Reconnecting to Claude · attempt 2 of 10 · retrying in 4s",
           turnId: "turn-active",
         },
       },

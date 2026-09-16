@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "../aggregate";
+import {
+  aggregateChatBlocks,
+  deriveActiveProviderRetryActivityDetail,
+  derivePendingSteers,
+  type AggregatedBlock,
+} from "../aggregate";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 
 let sequenceCounter = 0;
@@ -17,6 +22,18 @@ function aggregate(events: AgentChatEventEnvelope[]): AggregatedBlock[] {
 }
 
 describe("aggregateChatBlocks typed groups", () => {
+  it("keeps a legacy retry label when older output precedes the notice", () => {
+    expect(deriveActiveProviderRetryActivityDetail([
+      env("2026-01-01T12:00:00.000Z", { type: "text", text: "Started working.", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "system_notice",
+        noticeKind: "warning",
+        message: "Claude API retry 2/10: unknown",
+        turnId: "turn-1",
+      }),
+    ])).toBe("Retrying Claude · attempt 2 of 10");
+  });
+
   it("groups tool_calls + commands together and keeps file_changes as a separate group", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "read", args: { path: "a.ts" }, itemId: "t1", turnId: "turn-1" }),

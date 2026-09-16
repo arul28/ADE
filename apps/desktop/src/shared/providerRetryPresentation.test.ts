@@ -4,7 +4,7 @@ import {
   formatLegacyProviderRetryActivityDetail,
   formatProviderRetryActivityDetail,
   isLegacyProviderRetryNotice,
-  isProviderRetryActivityDetail,
+  isProviderRetryActivityEvent,
 } from "./providerRetryPresentation";
 
 describe("provider retry presentation", () => {
@@ -62,8 +62,22 @@ describe("provider retry presentation", () => {
     })).toBe(true);
   });
 
-  it("only treats ADE-formatted activity as retry state", () => {
-    expect(isProviderRetryActivityDetail("Reconnecting to GitHub Copilot · attempt 2")).toBe(true);
-    expect(isProviderRetryActivityDetail("Waiting for the provider")).toBe(false);
+  it("requires an explicit marker instead of guessing from free-form activity text", () => {
+    expect(isProviderRetryActivityEvent({
+      type: "activity",
+      activity: "working",
+      detail: "Reconnecting to GitHub Copilot · attempt 2",
+      providerRetry: true,
+    })).toBe(true);
+    expect(isProviderRetryActivityEvent({
+      type: "activity",
+      activity: "running_command",
+      detail: "Retrying failed test shard",
+    })).toBe(false);
+    expect(isProviderRetryActivityEvent({
+      type: "activity",
+      activity: "working",
+      detail: "Reconnecting to GitHub Copilot · attempt 2",
+    })).toBe(false);
   });
 });

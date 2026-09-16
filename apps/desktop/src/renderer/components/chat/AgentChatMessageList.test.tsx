@@ -1661,6 +1661,7 @@ describe("AgentChatMessageList transcript rendering", () => {
         event: {
           type: "activity",
           activity: "working",
+          providerRetry: true,
           detail: "Reconnecting to Claude · attempt 6 of 10 · retrying in 8s",
           turnId: "turn-1",
         },
@@ -1670,6 +1671,34 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).toContain("Reconnecting to Claude · attempt 6 of 10 · retrying in 8s");
     expect(rendered.container.textContent).not.toContain("Claude API retry");
     expect(rendered.container.textContent).not.toContain("provider health");
+  });
+
+  it("keeps a replayed legacy retry label when older output precedes the notice", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Started working.", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "warning",
+          message: "Claude API retry 2/10: unknown",
+          turnId: "turn-1",
+        },
+      },
+    ], { showStreamingIndicator: true });
+
+    expect(rendered.container.textContent).toContain("Retrying Claude · attempt 2 of 10");
+    expect(rendered.container.textContent).not.toContain("Claude API retry");
   });
 
   it("renders unauthenticated agent CLI errors as a re-login card", () => {

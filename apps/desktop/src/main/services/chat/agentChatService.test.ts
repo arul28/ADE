@@ -20939,12 +20939,24 @@ describe("createAgentChatService", () => {
         && event.event.detail === "Reconnecting to Cursor",
       );
       expect(retryActivities).toHaveLength(1);
-      expect((await service.getChatEventHistory(session.id)).events).not.toEqual(
+      const history = await service.getChatEventHistory(session.id);
+      expect(history.events).not.toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             event: expect.objectContaining({
               type: "system_notice",
               message: "Reconnected to Cursor and continued.",
+            }),
+          }),
+        ]),
+      );
+      expect(history.events).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: expect.objectContaining({
+              type: "activity",
+              activity: "working",
+              detail: "Reconnecting to Cursor",
             }),
           }),
         ]),
@@ -34023,7 +34035,13 @@ describe("createAgentChatService", () => {
           type: "session.status",
           properties: {
             sessionID,
-            status: { type: "retry", attempt: 1, message: providerMessage, next: Date.now() + 8000 },
+            status: {
+              type: "retry",
+              attempt: 1,
+              message: providerMessage,
+              next: Date.now() + 8000,
+              action: { title: { malformed: true }, message: null, link: 42 },
+            },
           },
         },
         // The real sequence: OpenCode reports `busy` between two retry attempts.
@@ -34048,6 +34066,7 @@ describe("createAgentChatService", () => {
       expect(retryActivities).toHaveLength(2);
       expect(retryActivities[0]!.detail).toMatch(/^Retrying OpenCode · attempt 1 · retrying in /);
       expect(retryActivities[1]!.detail).toMatch(/^Retrying OpenCode · attempt 2 · retrying in /);
+      expect(retryActivities.every((event) => (event as { providerRetry?: true }).providerRetry === true)).toBe(true);
       expect(turn.events.some((event) => event.event.type === "system_notice" && event.event.noticeKind === "provider_health")).toBe(false);
 
       await turn.finish();
