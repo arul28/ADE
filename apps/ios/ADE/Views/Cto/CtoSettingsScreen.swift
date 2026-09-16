@@ -437,10 +437,13 @@ private struct IdentityCard: View {
             )
           RoundedRectangle(cornerRadius: 13, style: .continuous)
             .stroke(ADEColor.ctoAccent.opacity(0.3), lineWidth: 0.5)
-          // The mark, not a letter: matches the desktop CtoMark and the tab
-          // icon, and does not change when the CTO is renamed.
-          Image(systemName: "location.north.circle")
-            .font(.system(size: 21, weight: .medium))
+          // The mark, not a letter: the same drawing as the desktop rail and
+          // the tab icon, and it does not change when the CTO is renamed.
+          Image("CtoMark")
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .frame(width: 22, height: 22)
             .foregroundStyle(ADEColor.textPrimary)
         }
         .frame(width: 44, height: 44)

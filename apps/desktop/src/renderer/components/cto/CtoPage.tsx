@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Desktop, Gear, Strategy, X } from "@phosphor-icons/react";
+import { Gear, Robot, Strategy } from "@phosphor-icons/react";
 import type {
   AgentChatSession,
   AgentChatSessionSummary,
@@ -10,9 +10,8 @@ import type {
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { CtoMark } from "./CtoMark";
 import { CtoTalkButton } from "./CtoTalkButton";
-import { CtoSettingsPanel } from "./CtoSettingsPanel";
+import { CtoSettingsPage } from "./CtoSettingsPage";
 import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
@@ -193,6 +192,29 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [currentFastMode, refreshSession, session, switchingModel]);
 
+  /**
+   * Save the name and the standing instructions.
+   *
+   * `updateIdentity` answers the whole snapshot, so the local copy is replaced
+   * rather than patched — a merge here would drift from whatever the service
+   * normalized on the way in.
+   */
+  const handleIdentityChange = useCallback(async (patch: {
+    name?: string;
+    systemPromptExtension?: string;
+    voiceName?: string;
+    voiceBackchannels?: boolean;
+  }) => {
+    if (!window.ade?.cto) return;
+    setError(null);
+    try {
+      const snapshot = await window.ade.cto.updateIdentity({ patch });
+      setCtoIdentity(snapshot.identity);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save the CTO's identity.");
+    }
+  }, []);
+
   const handleFastModeChange = useCallback(async (enabled: boolean) => {
     if (!window.ade?.cto || switchingModel) return;
     setSwitchingModel(true);
@@ -263,27 +285,14 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-2.5">
         <div className="flex min-w-0 items-center gap-2.5">
-          {/* The mark, not a letter in a box: the CTO is named, so it gets the
-              same glyph here as in the tab rail rather than the first character
-              of whatever the user renamed it to. No chip around it — the ring
-              is already a frame, and two were one too many. */}
-          <CtoMark size={22} className="shrink-0" style={{ color: CTO_ACCENT }} />
+          {/* The same glyph as the tab rail and as iOS, not the first character
+              of whatever the user renamed the CTO to. One mark, every surface. */}
+          <Robot size={22} weight="regular" className="shrink-0" style={{ color: CTO_ACCENT }} />
           <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
         </div>
 
         <div className="ml-auto flex shrink-0 items-center gap-2">
           <CtoTalkButton />
-          {/* The CTO thread is pinned to the local primary lane by design, so
-              the machine is stated as a fact — never offered as a choice. */}
-          <span
-            data-testid="cto-machine-indicator"
-            title="The CTO thread is pinned to This computer and cannot be moved."
-            className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-dashed border-white/[0.12] px-2 font-sans text-[10px] font-medium text-muted-fg/55"
-            style={{ whiteSpace: "nowrap" }}
-          >
-            <Desktop size={11} aria-hidden />
-            Always runs on This computer
-          </span>
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
@@ -300,8 +309,27 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
         </div>
       </div>
 
+      {settingsOpen ? (
+        <CtoSettingsPage
+          identity={ctoIdentity}
+          sessionLogs={sessionLogs}
+          currentModelId={currentModelId}
+          currentReasoningEffort={currentReasoningEffort}
+          currentFastMode={currentFastMode}
+          availableModelIds={availableModelIds}
+          loadingModels={loadingModels}
+          switchingModel={switchingModel}
+          onModelChange={(modelId, reasoningEffort) => void handleModelChange(modelId, reasoningEffort)}
+          onFastModeChange={(enabled) => void handleFastModeChange(enabled)}
+          onOpenProviderSettings={openProviderSettings}
+          onIdentityChange={(patch) => void handleIdentityChange(patch)}
+          onVoiceChange={(patch) => void handleIdentityChange(patch)}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
+
       {/* Thread / waking */}
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className={cn("min-h-0 flex-1 overflow-hidden", settingsOpen && "hidden")}>
         {bridgeMissing ? (
           <WakingState title="The CTO isn't available" subtitle="Reopen ADE to reconnect." />
         ) : needsModelPick ? (
@@ -348,46 +376,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
         )}
       </div>
 
-      {/* Settings overlay */}
-      {settingsOpen && (
-        <>
-          <button
-            type="button"
-            aria-label="Close settings"
-            onClick={() => setSettingsOpen(false)}
-            className="absolute inset-0 z-30 cursor-default bg-black/40"
-          />
-          <div
-            role="dialog"
-            aria-label="CTO settings"
-            className="absolute inset-y-0 right-0 z-40 flex w-[440px] max-w-full flex-col border-l border-white/[0.08] bg-[#0C0B12] shadow-[-16px_0_44px_rgba(0,0,0,0.5)]"
-          >
-            <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-3">
-              <div className="text-[13px] font-semibold text-fg">Settings</div>
-              <button
-                type="button"
-                onClick={() => setSettingsOpen(false)}
-                aria-label="Close settings"
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg"
-              >
-                <X size={15} />
-              </button>
-            </div>
-            <CtoSettingsPanel
-              sessionLogs={sessionLogs}
-              currentModelId={currentModelId}
-              currentReasoningEffort={currentReasoningEffort}
-              currentFastMode={currentFastMode}
-              availableModelIds={availableModelIds}
-              loadingModels={loadingModels}
-              switchingModel={switchingModel}
-              onModelChange={(modelId, reasoningEffort) => void handleModelChange(modelId, reasoningEffort)}
-              onFastModeChange={(enabled) => void handleFastModeChange(enabled)}
-              onOpenProviderSettings={openProviderSettings}
-            />
-          </div>
-        </>
-      )}
     </div>
   );
 }

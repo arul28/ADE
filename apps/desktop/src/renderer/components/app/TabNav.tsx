@@ -7,13 +7,13 @@ import {
   Graph,
   GitPullRequest,
   MagnifyingGlass,
-  ClockCounterClockwise,
+  Clock,
+  HourglassSimple,
   Robot,
   ChatCircleDots,
   GearSix,
 } from "@phosphor-icons/react";
 import { UserCircle } from "@phosphor-icons/react";
-import { CtoMark } from "../cto/CtoMark";
 import { cn } from "../ui/cn";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../state/appStore";
@@ -85,7 +85,7 @@ const mainItems: TabNavItem[] = [
   {
     to: "/cto",
     label: "CTO",
-    icon: CtoMark,
+    icon: Robot,
     description: "Chat with the persistent project CTO and manage its identity and settings.",
     docUrl: docs.ctoOverview,
   },
@@ -99,14 +99,14 @@ const mainItems: TabNavItem[] = [
   {
     to: "/history",
     label: "History",
-    icon: ClockCounterClockwise,
+    icon: HourglassSimple,
     description: "Explore commit history, lane operations, branch links, and recent project movement.",
     docUrl: docs.historyOverview,
   },
   {
     to: "/automations",
     label: "Automations",
-    icon: Robot,
+    icon: Clock,
     description: "Manage automation rules that trigger ADE work from events, schedules, and guarded actions.",
     docUrl: docs.automationsOverview,
   },

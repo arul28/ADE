@@ -647,7 +647,7 @@ that could not work without it.
   picker (`onParallelSlotCodexFastModeChange`).
 
   Surfaces not yet migrated (`ModelSelector`, `ReviewLaunchModelControls`,
-  `CtoSettingsPanel`, `ChatModelSelectionPendingCard`, `ProjectlessComposer`)
+  `CtoSettingsPage`, `ChatModelSelectionPendingCard`, `ProjectlessComposer`)
   still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
   which keeps rendering the old sibling chip. Migrating them is a prop
   rename with nothing else to unwind.

@@ -14,10 +14,25 @@ import { useCtoVoiceCall } from "./useCtoVoiceCall";
  * the key sheet — the same one Settings uses, so the cost sentence, the field,
  * and the never-re-display rule have exactly one implementation.
  */
+/**
+ * Why a call could not start, in the user's terms.
+ *
+ * Keyed by the `error` the main process answers with. Anything not listed gets
+ * the generic line — the point is that every failure says something.
+ */
+const START_FAILURE_MESSAGES: Record<string, string> = {
+  unavailable: "Voice calls aren't available in this build of ADE.",
+  "confirm-mode": "ADE couldn't set the CTO's permissions for a call. Check that the project has a primary lane.",
+  ended: "That call ended before it connected. Try again.",
+};
+
+const DEFAULT_START_FAILURE = "ADE couldn't start the call. See the logs for details.";
+
 export function CtoTalkButton() {
   const { state, start } = useCtoVoiceCall();
   const [sheetOpen, setSheetOpen] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // `isVoiceCallLive`, not "not idle": a failed call is over, and the old
   // check left this button disabled forever after one.
@@ -26,17 +41,50 @@ export function CtoTalkButton() {
   const onClick = useCallback(async () => {
     if (live || starting) return;
     setStarting(true);
+    setNotice(null);
     try {
       const result = await start();
-      // The one failure worth a sheet rather than an error: no key yet.
-      if (!result.ok && result.error === "missing-key") setSheetOpen(true);
+      if (result.ok) return;
+      // No key yet is the one failure that has a next step rather than a
+      // message, so it opens the sheet.
+      if (result.error === "missing-key") {
+        setSheetOpen(true);
+        return;
+      }
+      // Everything else used to fall through to nothing at all: the button
+      // flickered "Connecting…" and went back to "Talk" with no HUD, no sheet
+      // and no error. A control that silently does nothing is worse than one
+      // that says why it cannot.
+      setNotice(START_FAILURE_MESSAGES[result.error ?? ""] ?? DEFAULT_START_FAILURE);
+    } catch (error) {
+      // `ipcMain.handle` turns a main-process throw into a rejected invoke, and
+      // `void onClick()` swallowed it as an unhandled rejection.
+      setNotice(DEFAULT_START_FAILURE);
+      // eslint-disable-next-line no-console
+      console.error("[cto-voice] start failed", error);
     } finally {
       setStarting(false);
     }
   }, [live, start, starting]);
 
+  // A call that fails after it starts (a refused socket, a dropped connection)
+  // reports through the call state, not the start result.
+  const failure = state.phase === "failed" ? state.error : null;
+  const message = notice ?? failure;
+
   return (
     <>
+      {message ? (
+        <span
+          data-testid="cto-talk-error"
+          role="status"
+          className="max-w-[320px] truncate text-[10px]"
+          style={{ color: COLORS.warning }}
+          title={message}
+        >
+          {message}
+        </span>
+      ) : null}
       <button
         type="button"
         onClick={() => { void onClick(); }}

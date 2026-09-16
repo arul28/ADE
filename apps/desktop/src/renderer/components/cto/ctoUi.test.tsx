@@ -149,21 +149,47 @@ describe("CtoPage settings", () => {
     expect(ensureSession).not.toHaveBeenCalled();
   });
 
-  it("states that the CTO always runs on This computer without offering a switch", async () => {
-    render(<MemoryRouter><CtoPage /></MemoryRouter>);
-    await screen.findByTestId("cto-agent-chat-pane");
-
-    const indicator = screen.getByTestId("cto-machine-indicator");
-    expect(indicator.textContent).toBe("Always runs on This computer");
-    // Pinned by design: the indicator is a statement, never a control.
-    expect(indicator.tagName).toBe("SPAN");
-  });
-
   it("keeps model controls off the main chat header", async () => {
     render(<MemoryRouter><CtoPage /></MemoryRouter>);
     await screen.findByTestId("cto-agent-chat-pane");
 
     expect(screen.queryByTestId("model-picker")).toBeNull();
+  });
+
+  it("gives settings the whole surface instead of a drawer over the thread", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    // A page, not an overlay: the thread is not underneath it competing for
+    // the same 440px the old sheet had.
+    await screen.findByTestId("cto-settings-page");
+    expect(screen.getByRole("button", { name: /Back to the thread/ })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Back to the thread/ }));
+    expect(screen.queryByTestId("cto-settings-page")).toBeNull();
+  });
+
+  it("keeps memory and the prompt closed until they are asked for", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Prompt/ }));
+
+    // The old panel opened onto 4.5k tokens of prompt. This one opens onto a
+    // line you can choose to expand.
+    const toggle = screen.getByRole("button", { name: /Preview effective prompt/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("puts the voice key somewhere other than the Talk button", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Voice/ }));
+
+    // Before this, the only way to reach the key was to press Talk without one.
+    expect(screen.getByText(/billed by the second/i)).toBeTruthy();
   });
 
   it("routes a settings model switch through agentChat.updateSession on the locked session", async () => {
@@ -172,6 +198,9 @@ describe("CtoPage settings", () => {
     await screen.findByTestId("cto-agent-chat-pane");
 
     fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    // Settings is a page with sections now, and it opens on Identity — the
+    // model controls live one click away rather than at the top of a column.
+    fireEvent.click(screen.getByRole("button", { name: /^Model/ }));
     fireEvent.click(screen.getByTestId("model-picker"));
 
     await waitFor(() => expect(updateSession).toHaveBeenCalledTimes(1));
@@ -188,6 +217,9 @@ describe("CtoPage settings", () => {
 
     expect(screen.queryByTestId("model-fast-toggle")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    // Settings is a page with sections now, and it opens on Identity — the
+    // model controls live one click away rather than at the top of a column.
+    fireEvent.click(screen.getByRole("button", { name: /^Model/ }));
     fireEvent.click(screen.getByTestId("model-fast-toggle"));
 
     await waitFor(() => expect(updateSession).toHaveBeenCalledWith({
@@ -202,6 +234,9 @@ describe("CtoPage settings", () => {
     await screen.findByTestId("cto-agent-chat-pane");
 
     fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    // Settings is a page with sections now, and it opens on Identity — the
+    // model controls live one click away rather than at the top of a column.
+    fireEvent.click(screen.getByRole("button", { name: /^Model/ }));
     const fastToggle = screen.getByTestId("model-fast-toggle");
     expect(fastToggle.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(fastToggle);

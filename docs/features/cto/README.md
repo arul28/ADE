@@ -24,7 +24,7 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 ### Renderer (`apps/desktop/src/renderer/components/cto/`)
 
 - `CtoPage.tsx` — the `/cto` shell. A single full-bleed chat thread (`AgentChatPane` with a locked session), not tabs. The slim header shows only the CTO name/avatar and Settings gear; model controls stay in settings. The CTO composer also hides lane, permission, model, reasoning, and fast-mode controls because the session is project-level, always full-access, and settings-owned. There is no setup wizard and no first-run card — a project that has never picked a model opens on `ModelPickCard`, which is the CTO's welcome screen. The primary session is cached module-side so it stays warm across tab switches, and is obtained via `window.ade.cto.ensureSession()`. When the wake retries are exhausted the thread is replaced by a failure pane rather than a raw error line: it says the CTO didn't answer and that the thread is still there, puts the underlying error in a `TechnicalDetailsFold`, and offers **Try again**, which resets the retry budget and re-runs the wake effect — a failure pane with no way out is a dead end. It also owns `ModelPickCard` (`data-testid="cto-model-pick"`), which takes the thread's place while `modelPreferences` is null; the wake effect is gated on the same condition **and** on the identity snapshot having landed, so nothing materializes a session before the pick is known or on a provider the user has not chosen.
-- `CtoSettingsPanel.tsx` — the right-side settings sheet. Sections, in order: Model (`ModelPicker` + reasoning-effort + supported Fast toggle, both narrowed by `ctoModelSupportsLiveRedirect`), Memory (`CtoMemoryPanel`), Prompt (collapsible `CtoPromptPreview`), and History (collapsible session history). There is no Identity section: the CTO's voice is the doctrine's, not a setting.
+- `CtoSettingsPage.tsx` — settings as a page, not a sheet. A left rail of six sections — Identity, Model, Voice, Memory, Prompt, History — and one topic per pane at a readable width. It replaced a 440px drawer that stacked a model picker, a raw markdown editor, a 4.5k-token prompt and a history list in one column, where the things you change sat above two blocks you only read. Memory and Prompt now open on request. Identity carries the name and standing instructions only: the CTO's *voice* is still the doctrine's, and `IMMUTABLE_CTO_DOCTRINE` is not editable from here.
 - `CtoMemoryPanel.tsx` — "what the CTO remembers": an editable `MEMORY.md` textarea (save via `window.ade.cto.updateMemory`), a read-only current thread-state, and a collapsible today's daily log. Loads via `window.ade.cto.getMemory`.
 - `CtoPromptPreview.tsx` — renders the effective, layered system prompt (doctrine, continuity, memory guidance, environment knowledge, capabilities).
 - `useCtoModelOptions.ts` — loads the user's configured model IDs for the settings Model section, and owns `ctoModelSupportsLiveRedirect(descriptor)`, the `ModelPicker` filter both CTO pickers pass. It resolves eligibility through `resolveChatProviderForDescriptor` — the provider the model would actually launch on, never its registry family, because an OpenAI model that is not CLI-wrapped runs under OpenCode, which stages everything. `ctoSessionViewState.ts` — view-state helpers. `shared/designTokens.ts` + `shared/TimelineEntry.tsx` — shared class tokens and the session-history timeline row.
@@ -161,7 +161,7 @@ The composer follows: the CTO session's steer queue cap is zero — a delivery t
 
 There is no setup wizard, no personality question, and no first-run card. A project that has never picked a model opens on `ModelPickCard` (`data-testid="cto-model-pick"`), and that card **is** the welcome screen: the CTO introduces itself in its own voice — "I run point on this project" — explains why it can only run on a model that accepts a message into a turn already underway, and the `ModelPicker` underneath is the reply affordance. A first turn, not a form. iOS renders the same state as `.modelPick` in `ctoRootContent`, ordered ahead of `.thread` for the same reason.
 
-What is gone from it is the point. Personality, work style, and tone are not choices: the voice is `IMMUTABLE_CTO_DOCTRINE`'s, and there is no Identity section in `CtoSettingsPanel` to override it. The only thing ADE genuinely cannot infer is which model should do the thinking, so that is the only thing first run asks. See [Only providers that can redirect a live turn](#only-providers-that-can-redirect-a-live-turn) for why the catalog is narrowed to Claude, Codex, and Cursor, and why picking here moves the existing thread rather than starting a second one.
+What is gone from it is the point. Personality, work style, and tone are not choices: the voice is `IMMUTABLE_CTO_DOCTRINE`'s, and the Identity section in `CtoSettingsPage` cannot override it — it holds the name and the user's own standing instructions, which are added to the doctrine rather than replacing any of it. The only thing ADE genuinely cannot infer is which model should do the thinking, so that is the only thing first run asks. See [Only providers that can redirect a live turn](#only-providers-that-can-redirect-a-live-turn) for why the catalog is narrowed to Claude, Codex, and Cursor, and why picking here moves the existing thread rather than starting a second one.
 
 `CtoIdentity.name` survives as a field rather than a question. It defaults to `"CTO"`, seeds the system prompt (`You are ${identity.name}`), the header, the avatar initial, and `buildCtoVoiceInstructions`'s `ctoName` — but it is written through `ctoUpdateIdentity` / the `cto.updateIdentity` sync command, not through a settings form. Nothing in the desktop or iOS settings UI edits it today.
 
@@ -416,6 +416,17 @@ That flag is the whole architecture. The voice model owns *the conversation* —
 
 It also means permissions live in ADE's code rather than in a prompt the model is free to reinterpret. `buildCtoVoiceInstructions` tells the live model how to speak and when to delegate; it is told nothing about what it is allowed to do, because it decides none of that.
 
+### The two things a call lets you change
+
+`voiceName` and `voiceBackchannels` live on `CtoIdentity`, not in machine settings:
+a voice is a property of *this* CTO, and a different project may want a different
+one. Both are optional and additive, so an identity written before voice existed
+falls back to `CTO_VOICE_DEFAULT` and backchannels on. `normalizeIdentity`
+checks the stored name against `CTO_VOICE_VOICES` rather than trusting it — a
+hand-edited `identity.yaml` naming a voice OpenAI does not have would otherwise
+fail at connect time, long after the mistake was made. The wiring reads both per
+call, so a change in Settings → Voice applies to the next call with no restart.
+
 ### Two measured facts the loop is built around
 
 Both are load bearing and neither is obvious from the API shape.
@@ -474,7 +485,7 @@ The HUD renders nothing in the `idle` and `ended` phases, and the pill shows the
 
 ## Tab model
 
-The CTO tab is a single persistent thread plus a settings sheet — there is no Chat/Team/Workflows/Settings tab bar. The header exposes only the name/avatar and a gear that slides in `CtoSettingsPanel` from the right. Model, reasoning, and Fast mode live in settings. A project with no model picked yet shows `ModelPickCard` across the whole surface instead of the thread.
+The CTO tab is a single persistent thread plus a settings page — there is no Chat/Team/Workflows/Settings tab bar. The header exposes the mark, the name, **Talk**, and a gear that swaps the thread for `CtoSettingsPage`; **Back to the thread** returns. Model, reasoning, Fast mode, and everything voice live there. A project with no model picked yet shows `ModelPickCard` across the whole surface instead of the thread.
 
 ## IPC surface
 

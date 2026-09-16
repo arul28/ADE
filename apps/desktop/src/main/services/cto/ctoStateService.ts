@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { CTO_VOICE_VOICES } from "../../../shared/types/ctoVoice";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
@@ -413,6 +414,17 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
       ? source.systemPromptExtension.trim()
       : undefined;
 
+  // Voice settings are checked against the shipped list rather than trusted: a
+  // hand-edited identity.yaml naming a voice OpenAI does not have would fail
+  // the call at connect time, long after the mistake was made.
+  const voiceName = typeof source.voiceName === "string"
+    && (CTO_VOICE_VOICES as readonly string[]).includes(source.voiceName.trim())
+    ? source.voiceName.trim()
+    : undefined;
+  const voiceBackchannels = typeof source.voiceBackchannels === "boolean"
+    ? source.voiceBackchannels
+    : undefined;
+
   return {
     name,
     version,
@@ -420,6 +432,8 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     ...(systemPromptExtension ? { systemPromptExtension } : {}),
     modelPreferences: normalizeModelPreferences(modelPreferencesRaw),
     ...(onboardingState ? { onboardingState } : {}),
+    ...(voiceName ? { voiceName } : {}),
+    ...(voiceBackchannels === undefined ? {} : { voiceBackchannels }),
     updatedAt,
   };
 }

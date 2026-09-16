@@ -2,7 +2,10 @@ import { BrowserWindow, type IpcMain } from "electron";
 
 import { IPC } from "../../../shared/ipc";
 import {
+  CTO_VOICE_DEFAULT,
   CTO_VOICE_DESTRUCTIVE_TOOLS,
+  CTO_VOICE_VOICES,
+  type CtoVoiceName,
   CTO_VOICE_USD_PER_MINUTE,
   isVoiceCallLive,
   type CtoVoiceState,
@@ -208,9 +211,16 @@ export function createCtoVoiceWiringDeps(host: CtoVoiceHost): () => CtoVoiceWiri
         const root = ctx.project?.rootPath ?? "";
         return root.split(/[\\/]/).filter(Boolean).pop() ?? "this project";
       },
-      // Backchannels are a comfort setting, not a capability. Default on; the
-      // toggle lives with the other voice settings.
-      backchannelsEnabled: () => true,
+      // Read per call from the identity, so a change in settings applies to the
+      // next call without a restart. Both fall back to the shipped defaults for
+      // an identity written before voice existed.
+      backchannelsEnabled: () => ctoStateService.getIdentity().voiceBackchannels !== false,
+      voice: () => {
+        const stored = ctoStateService.getIdentity().voiceName;
+        return (CTO_VOICE_VOICES as readonly string[]).includes(stored ?? "")
+          ? (stored as CtoVoiceName)
+          : CTO_VOICE_DEFAULT;
+      },
 
       runBackendTurn: async ({ intent, imageBase64, signal }) => {
         const laneId = await host.resolvePrimaryLaneId();

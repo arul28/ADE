@@ -108,8 +108,11 @@ struct CtoRootScreen: View {
       ZStack {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
           .fill(ADEColor.ctoAccent.opacity(0.16))
-        Image(systemName: "cpu")
-          .font(.system(size: 22, weight: .semibold))
+        Image("CtoMark")
+          .renderingMode(.template)
+          .resizable()
+          .scaledToFit()
+          .frame(width: 24, height: 24)
           .foregroundStyle(ADEColor.ctoAccent)
       }
       .frame(width: 52, height: 52)
