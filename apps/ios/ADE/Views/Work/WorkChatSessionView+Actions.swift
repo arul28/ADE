@@ -1359,7 +1359,7 @@ extension WorkChatSessionView {
     timelineIncrementalCache.reset()
     timelineSnapshot = .empty
     timelinePresentation = .empty
-    turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], active: nil)
+    turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], claimedInlineGroupIds: [], active: nil)
     toolActivitySheet = nil
   }
 
@@ -1385,7 +1385,7 @@ extension WorkChatSessionView {
     )
 
     let alreadyEmpty = timelineSnapshot == .empty && timelinePresentation == .empty
-    turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], active: nil)
+    turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], claimedInlineGroupIds: [], active: nil)
     toolActivitySheet = nil
     if !alreadyEmpty {
       timelineSnapshot = .empty

@@ -406,6 +406,10 @@ extension WorkChatSessionView {
 struct WorkTurnToolActivityIndex {
   let completedByTurnId: [String: WorkToolGroupModel]
   let completedFilesByTurnId: [String: WorkChangedFilesGroupModel]
+  /// Timeline row ids (`.toolGroup` / `.changedFiles`) flushed into a
+  /// turn-end sheet. Presentation hides those exact rows, never a global
+  /// member-id or path set that would also swallow an orphan cluster.
+  let claimedInlineGroupIds: Set<String>
   let active: WorkToolGroupModel?
 }
 
@@ -426,8 +430,10 @@ enum WorkToolActivitySheetSelection: Identifiable, Equatable {
 func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToolActivityIndex {
   var completed: [String: WorkToolGroupModel] = [:]
   var completedFiles: [String: WorkChangedFilesGroupModel] = [:]
+  var claimedInlineGroupIds = Set<String>()
   var pendingMembers: [WorkToolGroupMember] = []
   var pendingFiles: [WorkChangedFileEntry] = []
+  var pendingGroupIds: [String] = []
   var currentUserTurnId: String?
 
   func mergedGroup(id: String, members: [WorkToolGroupMember]) -> WorkToolGroupModel? {
@@ -438,10 +444,37 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
   }
 
   func mergedFiles(id: String, files: [WorkChangedFileEntry]) -> WorkChangedFilesGroupModel? {
-    var seen = Set<String>()
-    let unique = files.filter { seen.insert($0.path).inserted }
+    var byPath: [String: WorkChangedFileEntry] = [:]
+    var order: [String] = []
+    for file in files {
+      if let existing = byPath[file.path] {
+        let richerDiff = file.diff.count > existing.diff.count ? file.diff : existing.diff
+        let status: WorkToolCardStatus = (file.status == .running || existing.status == .running)
+          ? .running
+          : file.status
+        byPath[file.path] = WorkChangedFileEntry(
+          id: existing.id,
+          path: existing.path,
+          kind: file.kind,
+          additions: existing.additions + file.additions,
+          deletions: existing.deletions + file.deletions,
+          diff: richerDiff,
+          status: status
+        )
+      } else {
+        order.append(file.path)
+        byPath[file.path] = file
+      }
+    }
+    let unique = order.compactMap { byPath[$0] }
     guard !unique.isEmpty else { return nil }
     return WorkChangedFilesGroupModel(id: id, files: unique)
+  }
+
+  func clearPending() {
+    pendingMembers.removeAll(keepingCapacity: true)
+    pendingFiles.removeAll(keepingCapacity: true)
+    pendingGroupIds.removeAll(keepingCapacity: true)
   }
 
   for entry in entries {
@@ -452,14 +485,15 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
       let steerId = message.steerId?.trimmingCharacters(in: .whitespacesAndNewlines)
       let isFollowUp = steerId?.isEmpty == false
       if normalizedTurnId != currentUserTurnId || (normalizedTurnId == nil && !isFollowUp) {
-        pendingMembers.removeAll(keepingCapacity: true)
-        pendingFiles.removeAll(keepingCapacity: true)
+        clearPending()
       }
       currentUserTurnId = normalizedTurnId
     case .toolGroup(let group):
       pendingMembers.append(contentsOf: group.members)
+      pendingGroupIds.append(entry.id)
     case .changedFiles(let group):
       pendingFiles.append(contentsOf: group.files)
+      pendingGroupIds.append(entry.id)
     case .turnEndMarker(let marker):
       if let group = mergedGroup(id: "turn-activity:\(marker.turnId)", members: pendingMembers) {
         completed[marker.turnId] = group
@@ -467,12 +501,11 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
       if let files = mergedFiles(id: "turn-files:\(marker.turnId)", files: pendingFiles) {
         completedFiles[marker.turnId] = files
       }
-      pendingMembers.removeAll(keepingCapacity: true)
-      pendingFiles.removeAll(keepingCapacity: true)
+      claimedInlineGroupIds.formUnion(pendingGroupIds)
+      clearPending()
       currentUserTurnId = nil
     case .turnSeparator:
-      pendingMembers.removeAll(keepingCapacity: true)
-      pendingFiles.removeAll(keepingCapacity: true)
+      clearPending()
       currentUserTurnId = nil
     default:
       continue
@@ -482,6 +515,7 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
   return WorkTurnToolActivityIndex(
     completedByTurnId: completed,
     completedFilesByTurnId: completedFiles,
+    claimedInlineGroupIds: claimedInlineGroupIds,
     active: mergedGroup(id: "turn-activity:active", members: pendingMembers)
   )
 }

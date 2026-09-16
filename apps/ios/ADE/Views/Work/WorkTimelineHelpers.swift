@@ -1965,31 +1965,14 @@ func workPresentedTimelineEntries(
   provider: String? = nil
 ) -> [WorkTimelineEntry] {
   let hidesPromptSuggestions = provider.map { providerFamilyKey($0) == "claude" } == true
-  // Hide only groups folded into a completed turn's disclosure. A later
-  // turn-end must not swallow an earlier markerless/unterminated cluster —
-  // the activity index drops those at a separator without attaching them,
-  // so they stay inline here.
-  let activity = workTurnToolActivityIndex(from: timeline)
-  var completedToolMemberIds = Set<String>()
-  for group in activity.completedByTurnId.values {
-    for member in group.members {
-      completedToolMemberIds.insert(member.id)
-    }
-  }
-  var completedFilePaths = Set<String>()
-  for group in activity.completedFilesByTurnId.values {
-    for file in group.files {
-      completedFilePaths.insert(file.path)
-    }
-  }
+  // Hide only the exact inline groups flushed into a completed turn's sheet.
+  // Member ids and file paths are not identities — the same path in a later
+  // completed turn must not erase an earlier markerless cluster.
+  let claimedInlineGroupIds = workTurnToolActivityIndex(from: timeline).claimedInlineGroupIds
   return timeline.filter { entry in
     switch entry.payload {
-    case .toolGroup(let group):
-      if group.members.contains(where: { completedToolMemberIds.contains($0.id) }) {
-        return false
-      }
-    case .changedFiles(let group):
-      if group.files.contains(where: { completedFilePaths.contains($0.path) }) {
+    case .toolGroup, .changedFiles:
+      if claimedInlineGroupIds.contains(entry.id) {
         return false
       }
     default:

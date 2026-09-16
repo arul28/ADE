@@ -709,6 +709,61 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(blocks.some((block) => block.kind === "notice")).toBe(true);
   });
 
+  it("still suppresses turn-end files when turn_diff_summary arrives after done", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "+added",
+        itemId: "f1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-01-01T12:00:02.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+      env("2026-01-01T12:00:03.000Z", {
+        type: "turn_diff_summary",
+        turnId: "turn-1",
+        beforeSha: "aaa",
+        afterSha: "bbb",
+        files: [{ path: "src/app.ts", additions: 1, deletions: 0, status: "M" }],
+        totalAdditions: 1,
+        totalDeletions: 0,
+      }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+    expect(turnEnd.fileEntries).toEqual([]);
+  });
+
+  it("suppresses files for a legacy done that omitted turnId when a checkpoint summary exists", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "file_change",
+        path: "src/app.ts",
+        kind: "modify",
+        diff: "+added",
+        itemId: "f1",
+        status: "completed",
+      } as AgentChatEvent),
+      env("2026-01-01T12:00:02.000Z", { type: "done", status: "completed" } as AgentChatEvent),
+      env("2026-01-01T12:00:03.000Z", {
+        type: "turn_diff_summary",
+        turnId: "turn-1",
+        beforeSha: "aaa",
+        afterSha: "bbb",
+        files: [{ path: "src/app.ts", additions: 1, deletions: 0, status: "M" }],
+        totalAdditions: 1,
+        totalDeletions: 0,
+      }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+    expect(turnEnd.fileEntries).toEqual([]);
+  });
+
   it("derives command duration from running and completed command events when provider duration is missing", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "command", command: "npm test", cwd: "/tmp", output: "", itemId: "c1", turnId: "turn-1", status: "running" }),

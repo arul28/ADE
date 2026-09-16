@@ -362,6 +362,51 @@ final class WorkCardExpansionTests: XCTestCase {
     XCTAssertEqual(index.completedByTurnId["turn-2"]?.members.contains { $0.id == "tool:read-2" }, true)
   }
 
+  /// Same path in a later completed turn must not hide an earlier markerless
+  /// file cluster — hide by claimed group id, not by path.
+  func testSamePathOrphanFileClusterStaysInlineWhenALaterTurnEnds() {
+    let grouped = collapseConsecutiveWorkToolEntries([
+      userMessage("msg-1", turnId: "turn-orphan"),
+      fileChange(id: "orphan", path: "src/app.ts", diff: "+one"),
+      turnSeparator(),
+      userMessage("msg-2", turnId: "turn-2"),
+      fileChange(id: "later", path: "src/app.ts", diff: "+two\n+three"),
+      turnEnd("turn-2", id: "end-2"),
+    ])
+
+    let presented = workPresentedTimelineEntries(grouped)
+    let inlinePaths = presented.flatMap { entry -> [String] in
+      guard case .changedFiles(let group) = entry.payload else { return [] }
+      return group.files.map(\.path)
+    }
+    XCTAssertEqual(inlinePaths, ["src/app.ts"], "the unterminated cluster stays inline")
+    XCTAssertFalse(
+      presented.contains { entry in
+        guard case .changedFiles(let group) = entry.payload else { return false }
+        return group.files.contains { $0.diff.contains("+two") }
+      },
+      "the finished turn's cluster still folds into the marker"
+    )
+  }
+
+  /// Narration can split one turn into two file clusters on the same path.
+  /// The turn-end sheet has to keep both edits, not the first cluster only.
+  func testTurnEndSheetMergesSamePathFileClusters() {
+    let grouped = collapseConsecutiveWorkToolEntries([
+      userMessage("msg-1", turnId: "turn-1"),
+      fileChange(id: "first", path: "src/app.ts", diff: "+added"),
+      assistantMessage("msg-2"),
+      fileChange(id: "second", path: "src/app.ts", diff: "-gone\n-also"),
+      turnEnd("turn-1", id: "end-1"),
+    ])
+
+    let files = workTurnToolActivityIndex(from: grouped).completedFilesByTurnId["turn-1"]?.files
+    XCTAssertEqual(files?.count, 1)
+    XCTAssertEqual(files?.first?.path, "src/app.ts")
+    XCTAssertEqual(files?.first?.additions, 1)
+    XCTAssertEqual(files?.first?.deletions, 2)
+  }
+
   /// A cluster and a file-change group are the same kind of thing to a reader,
   /// so the transcript cannot draw one and swallow the other.
   func testPresentationDrawsToolClustersAndFileChangesAlike() {
@@ -515,6 +560,24 @@ final class WorkCardExpansionTests: XCTestCase {
           provider: "claude",
           modelLabel: "Opus",
           modelId: nil
+        )
+      )
+    )
+  }
+
+  private func fileChange(id: String, path: String, diff: String) -> WorkTimelineEntry {
+    WorkTimelineEntry(
+      id: "file-\(id)",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      rank: 0,
+      payload: .fileChangeCard(
+        WorkFileChangeCardModel(
+          id: id,
+          path: path,
+          diff: diff,
+          kind: "modify",
+          status: .completed,
+          timestamp: "2026-01-01T00:00:00.000Z"
         )
       )
     )

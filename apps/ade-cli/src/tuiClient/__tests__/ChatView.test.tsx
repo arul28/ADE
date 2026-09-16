@@ -15,6 +15,7 @@ import {
   selectedTextFromChatRows,
   workFileDiffKey,
   workGroupExpandKey,
+  resolveFileChangeDiffAction,
 } from "../components/ChatView";
 import { aggregateChatBlocks } from "../aggregate";
 import { chatEventLineId } from "../format";
@@ -1654,6 +1655,35 @@ describe("ChatView", () => {
       expandedLineIds: new Set([workGroupExpandKey(chatEventLineId(events[0]!, 0))]),
     });
     expect(rows.some((row) => row.actionId === workFileDiffKey(chatEventLineId(events[0]!, 0), "f1"))).toBe(true);
+  });
+
+  it("keeps settled turn-end file diffs keyed so a click still opens them", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "file_change", path: "src/app.ts", diff: "+a", kind: "modify", itemId: "f1", status: "completed", turnId: "t1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "done", turnId: "t1", status: "completed" },
+      },
+    ];
+    const blocks = aggregateChatBlocks({ events, notices: [], activeSession: session });
+    const turnEnd = blocks.find((block) => block.kind === "turn-end");
+    expect(turnEnd?.kind).toBe("turn-end");
+    if (turnEnd?.kind !== "turn-end") throw new Error("expected turn-end");
+    const actionId = workFileDiffKey(turnEnd.id, "f1");
+    const rows = renderChatSelectableRows({
+      blocks,
+      width: 120,
+      expandedLineIds: new Set([workGroupExpandKey(turnEnd.id)]),
+    });
+    expect(rows.some((row) => row.actionId === actionId)).toBe(true);
+    expect(resolveFileChangeDiffAction(blocks, actionId)?.selected.itemId).toBe("f1");
   });
 
   it("tags a collapsed work-group header with an expandable click-target id", () => {

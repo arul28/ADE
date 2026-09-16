@@ -113,6 +113,24 @@ export function workFileDiffKey(blockId: string, itemId: string): string {
   return `${WORK_FILE_DIFF_PREFIX}${encodeURIComponent(blockId)}:${encodeURIComponent(itemId)}`;
 }
 
+/** Live file groups and settled turn-end lists both key diffs with {@link workFileDiffKey}. */
+export function resolveFileChangeDiffAction(
+  blocks: AggregatedBlock[],
+  actionId: string,
+): { entries: FileChangeEntry[]; selected: FileChangeEntry } | null {
+  for (const block of blocks) {
+    const entries = block.kind === "files-changed-group"
+      ? block.entries
+      : block.kind === "turn-end"
+        ? block.fileEntries
+        : null;
+    if (!entries?.length) continue;
+    const selected = entries.find((entry) => workFileDiffKey(block.id, entry.itemId) === actionId);
+    if (selected) return { entries, selected };
+  }
+  return null;
+}
+
 function textWidth(value: string): number {
   return terminalDisplayWidth(value);
 }

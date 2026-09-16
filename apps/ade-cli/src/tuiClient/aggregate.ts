@@ -964,7 +964,16 @@ export function aggregateChatBlocks(args: {
   const assistantTextEventsByBlockId = new Map<string, AssistantTextEvent>();
   const reasoningItemIdByBlockId = new Map<string, string>();
   const turnStartedAt = new Map<string, number>();
+  // Desktop precomputes checkpoint turns from the full stream so a summary
+  // that lands after `done` still suppresses the files half.
   const checkpointDiffTurnIds = new Set<string>();
+  let hasUntaggedCheckpoint = false;
+  for (const envelope of args.events) {
+    if (envelope.event.type !== "turn_diff_summary") continue;
+    const summaryTurnId = turnIdOf(envelope.event);
+    if (summaryTurnId) checkpointDiffTurnIds.add(summaryTurnId);
+    else hasUntaggedCheckpoint = true;
+  }
   let toolActivitySegmentStart = 0;
   let interruptedTerminusCluster: {
     startBlockIndex: number;
@@ -1354,7 +1363,9 @@ export function aggregateChatBlocks(args: {
         ))
         .flatMap((block) => block.entries);
       const uniqueEntries = Array.from(new Map(entries.map((toolEntry) => [toolEntry.itemId, toolEntry])).values());
-      const suppressCheckpointFiles = Boolean(turnId && checkpointDiffTurnIds.has(turnId));
+      const suppressCheckpointFiles = turnId
+        ? checkpointDiffTurnIds.has(turnId)
+        : hasUntaggedCheckpoint;
       const fileEntries = suppressCheckpointFiles
         ? []
         : blocks
@@ -1413,6 +1424,19 @@ export function aggregateChatBlocks(args: {
     }
     if (event.type === "turn_diff_summary") {
       if (turnId) checkpointDiffTurnIds.add(turnId);
+      else hasUntaggedCheckpoint = true;
+      let latestTurnEnd: Extract<AggregatedBlock, { kind: "turn-end" }> | null = null;
+      for (const block of blocks) {
+        if (block.kind === "turn-end") latestTurnEnd = block;
+      }
+      for (const block of blocks) {
+        if (block.kind !== "turn-end") continue;
+        const matchesTurn = turnId ? block.turnId === turnId : !block.turnId;
+        const coversUntaggedDone = Boolean(turnId && !block.turnId && block === latestTurnEnd);
+        if (matchesTurn || coversUntaggedDone) {
+          block.fileEntries = [];
+        }
+      }
       passthrough(id, "notice");
       continue;
     }

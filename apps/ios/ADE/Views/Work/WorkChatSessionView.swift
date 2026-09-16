@@ -713,7 +713,7 @@ struct WorkChatSessionView: View {
   @State var bottomStickinessReleasedByUser = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
-  @State var turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], active: nil)
+  @State var turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], claimedInlineGroupIds: [], active: nil)
   @State var timelineIncrementalCache = WorkTimelineIncrementalCache()
   @State var timelineSourceKey: String?
   @State var timelineRebuildTask: Task<Void, Never>?
@@ -2259,7 +2259,7 @@ struct WorkChatSessionView: View {
           cancelScheduledTimelineSnapshotRebuild()
           timelineSnapshot = .empty
           timelinePresentation = .empty
-          turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], active: nil)
+          turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], claimedInlineGroupIds: [], active: nil)
           toolActivitySheet = nil
           scheduleTimelineSnapshotRebuild()
         }
