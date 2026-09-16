@@ -4004,6 +4004,10 @@ export function AgentChatPane({
   // useChatPrPaneOpen. `persistKey` makes open/closed per chat and durable
   // across restarts: open it once for a chat and it stays open until closed.
   const { prPaneOpen, setPrPaneOpen } = useChatPrPaneOpen(companionStateKey);
+  const [prPaneFocusPrId, setPrPaneFocusPrId] = useState<string | null>(null);
+  useEffect(() => {
+    setPrPaneFocusPrId(null);
+  }, [companionStateKey]);
   const renderedSession = useMemo(
     () => (
       renderedSessionId
@@ -12988,6 +12992,7 @@ export function AgentChatPane({
           ? () => setPrPaneOpen((v) => !v)
           : undefined}
         prPaneOpen={prPaneOpen}
+        onFocusLinkedPr={setPrPaneFocusPrId}
         runtimePin={chatRuntimePin}
         trailingActions={chatHeaderTrailingActions}
         onToggleToolsPane={onToggleToolsPane}
@@ -14385,6 +14390,7 @@ export function AgentChatPane({
                             branchName={laneGitBranch}
                             sessionTitle={selectedSession?.title ?? null}
                             sessionId={renderedSessionId}
+                            preferredPrId={prPaneFocusPrId}
                             onClose={() => setPrPaneOpen(false)}
                             runtimePin={chatRuntimePin}
                           />,

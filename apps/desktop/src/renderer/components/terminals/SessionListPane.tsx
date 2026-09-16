@@ -2039,7 +2039,9 @@ export const SessionListPane = React.memo(function SessionListPane({
     const chatPrs = sessionLane && isChatToolType(session.toolType)
       ? selectPrsForChat(chatCatalog, session.id, { currentBranch: sessionLane.branchRef })
       : sessionLanePrs;
-    const sessionPr = sessionLane ? selectPrimaryLanePr(sessionLane, chatPrs) : null;
+    const sessionPr = sessionLane
+      ? (selectPrimaryLanePr(sessionLane, chatPrs) ?? chatPrs[0] ?? null)
+      : null;
     const lanePrimary = sessionLane ? selectPrimaryLanePr(sessionLane, sessionLanePrs) : null;
     const showChatPrChip = Boolean(
       sessionPr

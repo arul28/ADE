@@ -53,6 +53,7 @@ struct PrDetailView: View {
   @State private var githubStackRebaseUnavailableReason: String?
   @State private var githubStackBusy = false
   @State private var githubStackConfirm: String?
+  @State private var githubStackConfirmStackId: String?
   @State private var actionsSheetPresented: Bool = false
   /// Closing a PR from the actions sheet asks first, matching desktop. The
   /// inline merge rail has its own two-tap confirm; this covers the other entry
@@ -1193,9 +1194,17 @@ struct PrDetailView: View {
         stackBusy: githubStackBusy,
         pendingConfirm: githubStackConfirm,
         onMerge: { mutateGithubStack(action: "merge") },
-        onRebase: { mutateGithubStack(action: "rebase") }
+        onRebase: { mutateGithubStack(action: "rebase") },
+        onCancel: {
+          githubStackConfirm = nil
+          githubStackConfirmStackId = nil
+        }
       )
       .prListRow()
+      .onChange(of: stack.id) { _, _ in
+        githubStackConfirm = nil
+        githubStackConfirmStackId = nil
+      }
     } else {
       PrOverviewMergeRail(model: overviewMergeRailModel, checklist: mergeChecklistItems)
         .prListRow()
@@ -1756,7 +1765,7 @@ struct PrDetailView: View {
     commitBody: String? = nil
   ) {
     guard nativeStackMembership == nil else {
-      performGithubStackMutation(action: "merge")
+      mutateGithubStack(action: "merge")
       return
     }
     // Stale-head guard: pass the SHA the status was computed against so GitHub
@@ -1776,8 +1785,10 @@ struct PrDetailView: View {
   }
 
   private func mutateGithubStack(action: String) {
-    if githubStackConfirm != action {
+    let stackId = nativeStackMembership?.id
+    if githubStackConfirm != action || githubStackConfirmStackId != stackId {
       githubStackConfirm = action
+      githubStackConfirmStackId = stackId
       return
     }
     performGithubStackMutation(action: action)
@@ -1809,6 +1820,7 @@ struct PrDetailView: View {
           githubStackMergeUnavailableReason = nil
           githubStackRebaseUnavailableReason = nil
           githubStackConfirm = nil
+          githubStackConfirmStackId = nil
           await reload(includeLiveSidecars: true)
         } else if result.method == "unavailable" {
           let reason = result.disabledReason ?? result.error

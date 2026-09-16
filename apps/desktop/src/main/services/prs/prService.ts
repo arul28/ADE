@@ -1914,6 +1914,7 @@ export function createPrService({
     }
   };
 
+  const pendingAgentStackAttaches = new Map<string, { prId: string; laneId: string }>();
   const attachNewStackLayerToParentChats = (args: { prId: string; laneId: string }): void => {
     try {
       const parent = db.get<{ parent_lane_id: string | null }>(
@@ -1927,10 +1928,39 @@ export function createPrService({
         [args.prId, projectId],
       );
       if (!pr) return;
-      const stackNumber = githubStackStore.knownStackNumberForPr(
-        { owner: pr.repo_owner, name: pr.repo_name },
-        Number(pr.github_pr_number),
+      const knownStackNumber = db.get<{ github_stack_number: number }>(
+        `
+          select github_stack_number
+            from github_pr_stack_entries
+           where project_id = ?
+             and lower(repo_owner) = lower(?)
+             and lower(repo_name) = lower(?)
+             and github_pr_number = ?
+           limit 1
+        `,
+        [projectId, pr.repo_owner, pr.repo_name, Number(pr.github_pr_number)],
       );
+      const inferredParentStack = db.get<{ github_stack_number: number }>(
+        `
+          select entry.github_stack_number as github_stack_number
+            from pull_requests sibling
+            join github_pr_stack_entries entry
+              on entry.project_id = sibling.project_id
+             and lower(entry.repo_owner) = lower(sibling.repo_owner)
+             and lower(entry.repo_name) = lower(sibling.repo_name)
+             and entry.github_pr_number = sibling.github_pr_number
+           where sibling.project_id = ?
+             and sibling.lane_id = ?
+             and lower(sibling.repo_owner) = lower(?)
+             and lower(sibling.repo_name) = lower(?)
+           group by entry.github_stack_number
+           limit 1
+        `,
+        [projectId, parentLaneId, pr.repo_owner, pr.repo_name],
+      );
+      const stackNumber = knownStackNumber
+        ? Number(knownStackNumber.github_stack_number)
+        : (inferredParentStack ? Number(inferredParentStack.github_stack_number) : null);
       if (stackNumber == null) return;
       const parentSessions = db.all<{ session_id: string }>(
         `
@@ -7696,6 +7726,7 @@ export function createPrService({
     markHotRefresh([prId]);
     linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
     if (args.source === "agent") {
+      pendingAgentStackAttaches.set(prId, { prId, laneId: lane.id });
       attachNewStackLayerToParentChats({ prId, laneId: lane.id });
     }
 
@@ -7731,7 +7762,11 @@ export function createPrService({
     });
 
     const refreshed = await refreshOne(prId);
-    return withGithubStackMembership(refreshed) ?? refreshed;
+    const withStack = withGithubStackMembership(refreshed) ?? refreshed;
+    if (args.source === "agent") {
+      attachNewStackLayerToParentChats({ prId, laneId: lane.id });
+    }
+    return withStack;
   };
 
   const linkToLane = async (args: LinkPrToLaneArgs): Promise<PrSummary> => {
@@ -10243,7 +10278,30 @@ export function createPrService({
     githubService,
     logger,
     onSnapshotChanged: invalidateGithubSnapshotCache,
-    onReconciled: () => emitPrsUpdated(),
+    onReconciled: () => {
+      emitPrsUpdated();
+      for (const pending of pendingAgentStackAttaches.values()) {
+        attachNewStackLayerToParentChats(pending);
+      }
+      for (const [prId, pending] of [...pendingAgentStackAttaches]) {
+        const row = db.get<{ github_stack_number: number }>(
+          `
+            select entry.github_stack_number as github_stack_number
+              from pull_requests pr
+              join github_pr_stack_entries entry
+                on entry.project_id = pr.project_id
+               and lower(entry.repo_owner) = lower(pr.repo_owner)
+               and lower(entry.repo_name) = lower(pr.repo_name)
+               and entry.github_pr_number = pr.github_pr_number
+             where pr.id = ?
+               and pr.project_id = ?
+             limit 1
+          `,
+          [pending.prId, projectId],
+        );
+        if (row) pendingAgentStackAttaches.delete(prId);
+      }
+    },
   });
   const withGithubStackMemberships = (summaries: PrSummary[]): PrSummary[] => {
     if (summaries.length === 0) return summaries;
@@ -12390,6 +12448,7 @@ export function createPrService({
       const offer = getStackLinkOffer({ sessionId: args.sessionId, prId: args.prId });
       if (!offer || offer.stackNumber !== args.stackNumber) return { ok: false, linked: 0 };
       const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
+      if (unclaimed.length === 0) return { ok: false, linked: 0 };
       const canonicalSessionId = resolveCanonicalChatSessionId(offer.sessionId) ?? offer.sessionId;
       const restoreDismissals = new Set(
         unclaimed

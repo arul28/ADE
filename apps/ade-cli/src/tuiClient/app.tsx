@@ -11556,6 +11556,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             kind: "form",
             title: "Open PR",
             command: "pr-open",
+            sessionId,
             fields: [
               { name: "title", label: "Title", required: true, placeholder: defaultTitle, initialValue: defaultTitle },
               { name: "body", label: "Body", placeholder: "Optional" },
@@ -12916,7 +12917,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         title,
         body,
         draft: false,
-        sessionId: activeSession?.sessionId ?? activeSessionId ?? null,
+        sessionId: form.sessionId ?? sessionId,
         source: "human",
       });
       setRightPane({ kind: "details", title: "PR open", body: renderObject(created, 24) });

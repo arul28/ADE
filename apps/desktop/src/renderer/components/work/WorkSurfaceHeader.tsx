@@ -140,6 +140,7 @@ export type WorkSurfaceHeaderProps = {
    */
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
+  onFocusLinkedPr?: (prId: string) => void;
   /** See `ChatGitToolbar.runtimePin`: the machine this lane's PR is read from. */
   runtimePin?: OpenProjectBinding | null;
   /** Surface-specific trailing actions (right side of the row). */
@@ -180,6 +181,7 @@ export function WorkSurfaceHeader({
   prSessionId = null,
   onTogglePrPane,
   prPaneOpen,
+  onFocusLinkedPr,
   runtimePin = null,
   trailingActions,
   onToggleToolsPane,
@@ -227,6 +229,7 @@ export function WorkSurfaceHeader({
             sessionId={prSessionId}
             onTogglePrPane={onTogglePrPane}
             prPaneOpen={prPaneOpen}
+            onFocusLinkedPr={onFocusLinkedPr}
             runtimePin={runtimePin}
           />
         ) : null}

@@ -850,6 +850,7 @@ struct PrOverviewGitHubStackCard: View {
   var pendingConfirm: String? = nil
   var onMerge: (() -> Void)? = nil
   var onRebase: (() -> Void)? = nil
+  var onCancel: (() -> Void)? = nil
 
   private var canMutateStack: Bool { canMergeStack || canRebaseStack }
 
@@ -913,6 +914,11 @@ struct PrOverviewGitHubStackCard: View {
             .buttonStyle(.glassProminent)
             .disabled(stackBusy || mergeUnavailableReason != nil)
           }
+        }
+        if pendingConfirm != nil {
+          Button("Cancel") { onCancel?() }
+            .buttonStyle(.glass)
+            .disabled(stackBusy)
         }
         Button(action: onOpenGitHub) {
           Label("Review on GitHub", systemImage: "arrow.up.right.square")

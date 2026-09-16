@@ -3308,12 +3308,18 @@ function parseMergeGithubStackArgs(value: Record<string, unknown>): MergeGitHubP
     throw new Error("prs.mergeGithubStack requires a positive integer stackNumber.");
   }
   const mergeMethod = asTrimmedString(value.mergeMethod);
+  if (
+    mergeMethod
+    && mergeMethod !== "merge"
+    && mergeMethod !== "squash"
+    && mergeMethod !== "rebase"
+  ) {
+    throw new Error("prs.mergeGithubStack mergeMethod must be merge, squash, or rebase.");
+  }
   return {
     ...(repo ? { repo } : {}),
     stackNumber,
-    ...(mergeMethod === "merge" || mergeMethod === "squash" || mergeMethod === "rebase"
-      ? { mergeMethod }
-      : {}),
+    ...(mergeMethod ? { mergeMethod } : {}),
   };
 }
 

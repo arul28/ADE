@@ -339,6 +339,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   branchName,
   sessionTitle = null,
   sessionId = null,
+  preferredPrId = null,
   onClose,
   runtimePin = null,
 }: {
@@ -352,6 +353,8 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   sessionTitle?: string | null;
   /** The chat whose explicit PR links should be shown first. */
   sessionId?: string | null;
+  /** Toolbar pick: show this linked PR instead of the lane primary. */
+  preferredPrId?: string | null;
   /** Closes the pane — wired to the title bar's ✕ (the header PR pill also toggles it). */
   onClose?: () => void;
   /** See `ChatGitToolbar.runtimePin` — the machine this lane's PR row lives on. */
@@ -412,18 +415,32 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   laneIdRef.current = laneId;
   selectedPrIdRef.current = selectedPrId;
 
+  const clearPeekDetails = useCallback(() => {
+    setChecks(null);
+    setReviews(null);
+    setStatus(null);
+    setPeekFiles([]);
+    setFilesRemaining(0);
+    setStackOffer(null);
+  }, []);
+
+  const showPr = useCallback((nextPr: PrSummary | null) => {
+    if (nextPr?.id !== currentPrIdRef.current) clearPeekDetails();
+    setSelectedPrId(nextPr?.id ?? null);
+    currentPrIdRef.current = nextPr?.id ?? null;
+    setPr(nextPr);
+  }, [clearPeekDetails]);
+
   const applyScopedPrs = useCallback((scoped: PrSummary[], preferredId?: string | null) => {
-    const preferred = String(preferredId ?? selectedPrIdRef.current ?? "").trim();
+    const preferred = String(preferredId ?? preferredPrId ?? selectedPrIdRef.current ?? "").trim();
     const nextPr = (preferred ? scoped.find((candidate) => candidate.id === preferred) : null)
       ?? selectPrimaryLanePr(laneForPr, scoped)
       ?? scoped[0]
       ?? null;
     setLinkedPrs(scoped);
-    setSelectedPrId(nextPr?.id ?? null);
-    currentPrIdRef.current = nextPr?.id ?? null;
-    setPr(nextPr);
+    showPr(nextPr);
     return nextPr;
-  }, [laneForPr]);
+  }, [laneForPr, preferredPrId, showPr]);
 
   const refresh = useCallback(async (options: { live?: boolean } = {}) => {
     const requestId = refreshRequestRef.current + 1;
@@ -490,12 +507,10 @@ export const ChatPrPane = React.memo(function ChatPrPane({
           ? catalog.map((candidate) => (candidate.id === created.id ? { ...candidate, ...created } : candidate))
           : [...catalog, created]
       ));
-      setSelectedPrId(created.id);
-      currentPrIdRef.current = created.id;
-      setPr(created);
+      showPr(created);
       return next;
     });
-  }, []);
+  }, [showPr]);
 
   useEffect(() => { void refresh({ live: true }); }, [refresh]);
 
@@ -582,6 +597,13 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     }, runtimePinRef.current);
     return unsubscribe;
   }, [applyScopedPrs, laneId, refresh, runtimePinKey]);
+
+  useEffect(() => {
+    const preferred = String(preferredPrId ?? "").trim();
+    if (!preferred) return;
+    const candidate = linkedPrs.find((entry) => entry.id === preferred);
+    if (candidate) showPr(candidate);
+  }, [linkedPrs, preferredPrId, showPr]);
 
   // Hot-refresh enriched detail (checks / reviews / merge status) whenever this
   // PR's content changes — driven by the relay's `prs-updated`, not a timer.
@@ -804,11 +826,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
               <button
                 key={candidate.id}
                 type="button"
-                onClick={() => {
-                  setSelectedPrId(candidate.id);
-                  currentPrIdRef.current = candidate.id;
-                  setPr(candidate);
-                }}
+                onClick={() => showPr(candidate)}
                 className={cn(
                   "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10.5px] tabular-nums transition-colors",
                   candidate.id === pr?.id

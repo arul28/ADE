@@ -231,6 +231,7 @@ export function CliSessionWorkSurfaceHeader({
   toolsPaneOpen,
   onTogglePrPane,
   prPaneOpen,
+  onFocusLinkedPr,
   runtimePin = null,
 }: {
   session: TerminalSessionSummary;
@@ -246,6 +247,7 @@ export function CliSessionWorkSurfaceHeader({
    * instead of opening the inline slide-out menu. */
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
+  onFocusLinkedPr?: (prId: string) => void;
   /** See `ChatGitToolbar.runtimePin`. */
   runtimePin?: OpenProjectBinding | null;
 }) {
@@ -283,6 +285,7 @@ export function CliSessionWorkSurfaceHeader({
       prSessionId={session.id}
       onTogglePrPane={onTogglePrPane}
       prPaneOpen={prPaneOpen}
+      onFocusLinkedPr={onFocusLinkedPr}
       runtimePin={runtimePin}
       onContextMenu={
         onContextMenu

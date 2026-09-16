@@ -789,6 +789,10 @@ function CliSessionSurface({
   // PR reads follow the lane's machine now, so a foreign CLI session gets the
   // same pill and pane as a local one — the pin just routes them.
   const { prPaneOpen, setPrPaneOpen } = useChatPrPaneOpen(session.id);
+  const [prPaneFocusPrId, setPrPaneFocusPrId] = useState<string | null>(null);
+  useEffect(() => {
+    setPrPaneFocusPrId(null);
+  }, [session.id]);
   const supportsSplit = layoutVariant !== "grid-tile";
   const prFloating = prPaneOpen && Boolean(session.laneId) && supportsSplit;
   return (
@@ -805,6 +809,7 @@ function CliSessionSurface({
           toolsPaneOpen={toolsPaneOpen}
           onTogglePrPane={session.laneId ? () => setPrPaneOpen((v) => !v) : undefined}
           prPaneOpen={prPaneOpen}
+          onFocusLinkedPr={setPrPaneFocusPrId}
           runtimePin={runtimePin}
         />
       ) : null}
@@ -834,6 +839,8 @@ function CliSessionSurface({
                 <ChatPrPane
                   laneId={session.laneId}
                   branchName={null}
+                  sessionId={session.id}
+                  preferredPrId={prPaneFocusPrId}
                   onClose={() => setPrPaneOpen(false)}
                   runtimePin={runtimePin}
                 />

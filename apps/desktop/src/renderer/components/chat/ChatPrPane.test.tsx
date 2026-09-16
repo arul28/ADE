@@ -559,6 +559,57 @@ describe("ChatPrPane title bar", () => {
     expect(await screen.findByText("Top layer")).toBeTruthy();
   });
 
+  it("opens the toolbar-selected PR instead of the lane primary", async () => {
+    const first = makePr({
+      id: "pr-1",
+      githubPrNumber: 11,
+      title: "Bottom layer",
+      chatSessionIds: ["chat-1"],
+    });
+    const second = makePr({
+      id: "pr-2",
+      githubPrNumber: 12,
+      title: "Top layer",
+      laneId: "lane-2",
+      chatSessionIds: ["chat-1"],
+    });
+    installAde({ listAll: vi.fn().mockResolvedValue([first, second]) });
+    renderPane({ sessionId: "chat-1", preferredPrId: "pr-2" });
+    expect(await screen.findByText("Top layer")).toBeTruthy();
+  });
+
+  it("clears peek files when switching linked PRs", async () => {
+    const first = makePr({
+      id: "pr-1",
+      githubPrNumber: 11,
+      title: "Bottom layer",
+      chatSessionIds: ["chat-1"],
+    });
+    const second = makePr({
+      id: "pr-2",
+      githubPrNumber: 12,
+      title: "Top layer",
+      laneId: "lane-2",
+      chatSessionIds: ["chat-1"],
+    });
+    const getFiles = vi.fn((prId: string) => {
+      if (prId === "pr-1") {
+        return Promise.resolve([{ filename: "apps/desktop/src/first.ts", additions: 4, deletions: 1 }]);
+      }
+      return new Promise<PrFile[]>(() => {});
+    });
+    installAde({
+      listAll: vi.fn().mockResolvedValue([first, second]),
+      getFiles: [],
+    });
+    (globalThis.window as unknown as { ade: { prs: { getFiles: typeof getFiles } } }).ade.prs.getFiles = getFiles as never;
+    renderPane({ sessionId: "chat-1" });
+    expect(await screen.findByText("src/first.ts")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show pull request #12" }));
+    expect(await screen.findByText("Top layer")).toBeTruthy();
+    expect(screen.queryByText("src/first.ts")).toBeNull();
+  });
+
   it("keeps the stack offer visible when linkChatStack fails", async () => {
     const first = makePr({
       id: "pr-1",

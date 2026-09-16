@@ -346,15 +346,17 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
           allowCrossLane: true,
         }, { ok: false }, false);
         if (!result.ok) {
+          let remaining = 0;
           for (const prId of linkedIds.reverse()) {
-            await call("prs.unlinkChatSession", {
+            const unlinked = await call<{ ok: boolean }>("prs.unlinkChatSession", {
               prId,
               sessionId: offer.sessionId,
               dismiss: false,
             }, { ok: false }, false);
+            if (!unlinked.ok) remaining += 1;
           }
           invalidatePrsReads();
-          return { ok: false, linked: 0 };
+          return { ok: false, linked: remaining };
         }
         linkedIds.push(sibling.prId);
       }

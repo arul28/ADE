@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GitHubStackInspector } from "./GitHubStackInspector";
-import type { GitHubPrListItem, GitHubPrStack } from "../../../../shared/types";
+import type { GitHubPrListItem, GitHubPrStack, GitHubStackMutationResult } from "../../../../shared/types";
 
 afterEach(cleanup);
 
@@ -95,5 +95,53 @@ describe("GitHubStackInspector", () => {
     fireEvent.click(merge);
     fireEvent.click(screen.getByRole("button", { name: "Confirm merge" }));
     await waitFor(() => expect(onMerge).toHaveBeenCalled());
+  });
+
+  it("does not apply a merge result after the selected stack changes", async () => {
+    let finishMerge!: (value: GitHubStackMutationResult) => void;
+    const mergePromise = new Promise<GitHubStackMutationResult>((resolve) => {
+      finishMerge = resolve;
+    });
+    const onMerge = vi.fn().mockReturnValue(mergePromise);
+    const { rerender } = render(
+      <GitHubStackInspector
+        stack={stack()}
+        items={[item()]}
+        selectedPrNumber={19}
+        syncing={false}
+        onSelectPr={() => {}}
+        onOpenGitHub={() => {}}
+        onSync={() => {}}
+        onAddPullRequests={async () => {}}
+        onUnstack={async () => {}}
+        onMerge={onMerge}
+        onRebase={async () => ({ ok: true, method: "stack_api" })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Merge stack" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm merge" }));
+    rerender(
+      <GitHubStackInspector
+        stack={stack({ id: "stack-2", number: 5 })}
+        items={[item()]}
+        selectedPrNumber={19}
+        syncing={false}
+        onSelectPr={() => {}}
+        onOpenGitHub={() => {}}
+        onSync={() => {}}
+        onAddPullRequests={async () => {}}
+        onUnstack={async () => {}}
+        onMerge={onMerge}
+        onRebase={async () => ({ ok: true, method: "stack_api" })}
+      />,
+    );
+    finishMerge({
+      ok: false,
+      stack: null,
+      method: "unavailable",
+      disabledReason: "stale stack result",
+    });
+    await waitFor(() => expect(onMerge).toHaveBeenCalled());
+    expect(screen.queryByText("stale stack result")).toBeNull();
   });
 });

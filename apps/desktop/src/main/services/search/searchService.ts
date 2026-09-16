@@ -1409,7 +1409,8 @@ export function createSearchService(deps: SearchServiceDeps) {
   }): Promise<Candidate[]> => {
     if (args.excludeSessionContent || !args.kinds.includes("chat") || !deps.prs) return [];
     const prNumber = parsePrNumberQuery(args.queryText)
-      ?? (args.parsed.terms.length === 1 ? parsePrNumberQuery(args.parsed.terms[0] ?? "") : null);
+      ?? args.parsed.terms.map((term) => parsePrNumberQuery(term)).find((value): value is number => value != null)
+      ?? null;
     if (!prNumber) return [];
     const summaries = await deps.prs.listAll();
     const matches = summaries.filter((pr) => pr.githubPrNumber === prNumber);
@@ -1423,6 +1424,9 @@ export function createSearchService(deps: SearchServiceDeps) {
           || session.chatSessionId === args.scopeChatSessionId;
         if (!scopeAllowsSession) continue;
         if (args.laneId && session.laneId !== args.laneId) continue;
+        const haystack = `${session.title ?? ""} #${prNumber} ${summary.title}`;
+        if (!matchesAllTerms(haystack, args.parsed)) continue;
+        if (args.parsed.sinceIso && sessionUpdatedAt(session) < args.parsed.sinceIso) continue;
         out.push({
           docId: `chat:${session.id}:pr:${summary.id}`,
           kind: "chat",

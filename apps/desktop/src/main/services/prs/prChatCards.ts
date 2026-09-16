@@ -544,15 +544,16 @@ export async function emitPrCardsForChange(args: {
   for (const sibling of stackSiblings) {
     if (sibling.laneId) laneIds.add(sibling.laneId);
   }
-  if (stackLinkedIds.size > 0) {
+  // Ordinary cards stay on this PR's lane (plus explicit edges). Listing every
+  // stack lane first would let an unlinked member fall back into a sibling chat.
+  remember(await chat.listSessions(pr.laneId, { includeArchived: false }));
+  await resolveById(linkedIds);
+  const ordinarySessions = selectPrCardSessions([...listedById.values()], [...linkedIds]);
+  if (stackLanded || stackLinkedIds.size > 0) {
     remember((await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat());
-  } else {
-    remember(await chat.listSessions(pr.laneId, { includeArchived: false }));
   }
   await resolveById(stackLinkedIds);
-  const listed = [...listedById.values()];
-  const ordinarySessions = selectPrCardSessions(listed, [...linkedIds]);
-  const stackSessions = selectPrCardSessions(listed, [...stackLinkedIds]);
+  const stackSessions = selectPrCardSessions([...listedById.values()], [...stackLinkedIds]);
   if (ordinarySessions.length === 0 && !(stackLanded && stackSessions.length > 0)) return 0;
 
   const cards: AdeCardPayload[] = [];

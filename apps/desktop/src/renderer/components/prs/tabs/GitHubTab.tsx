@@ -570,7 +570,7 @@ export function GitHubTab({
       stackNumber: selectedStack.number,
       pullRequests,
     });
-    await loadSnapshot({ silent: true });
+    await loadSnapshot({ silent: true, force: true });
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
   const handleUnstack = React.useCallback(async () => {
@@ -579,7 +579,7 @@ export function GitHubTab({
       repo: snapshot.repo,
       stackNumber: selectedStack.number,
     });
-    await loadSnapshot({ silent: true });
+    await loadSnapshot({ silent: true, force: true });
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
   const handleMergeStack = React.useCallback(async (mergeMethod: MergeMethod): Promise<GitHubStackMutationResult> => {
@@ -596,7 +596,7 @@ export function GitHubTab({
       stackNumber: selectedStack.number,
       mergeMethod,
     });
-    await loadSnapshot({ silent: true });
+    await loadSnapshot({ silent: true, force: true });
     return result;
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
@@ -613,7 +613,7 @@ export function GitHubTab({
       repo: snapshot.repo,
       stackNumber: selectedStack.number,
     });
-    await loadSnapshot({ silent: true });
+    await loadSnapshot({ silent: true, force: true });
     return result;
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 

@@ -143,6 +143,9 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // Per-layer merge-async + poll; stacks can have many open layers.
   ["prs.mergeGithubStack", 4 * 60_000],
   ["prs.rebaseGithubStack", 120_000],
+  // Preload and TUI call the same actions on the `pr` domain.
+  ["pr.mergeGithubStack", 4 * 60_000],
+  ["pr.rebaseGithubStack", 120_000],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

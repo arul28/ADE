@@ -26,6 +26,8 @@ describe("localRuntimeActionTimeoutMs", () => {
   it("outlives a multi-layer GitHub stack merge-async fallback", () => {
     expect(localRuntimeActionTimeoutMs("prs", "mergeGithubStack")).toBe(4 * 60_000);
     expect(localRuntimeActionTimeoutMs("prs", "rebaseGithubStack")).toBe(120_000);
+    expect(localRuntimeActionTimeoutMs("pr", "mergeGithubStack")).toBe(4 * 60_000);
+    expect(localRuntimeActionTimeoutMs("pr", "rebaseGithubStack")).toBe(120_000);
   });
 
   it("leaves cheap simulator actions on the default budget", () => {

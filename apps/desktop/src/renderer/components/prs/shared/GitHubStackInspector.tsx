@@ -79,12 +79,15 @@ export function GitHubStackInspector({
     (entry) => entry.githubPrNumber === selectedPrNumber,
   )?.position;
 
+  const stackIdRef = React.useRef(stack.id);
+  stackIdRef.current = stack.id;
+
   React.useEffect(() => {
     setRebaseUnavailableReason(null);
     setMergeUnavailableReason(null);
     setError(null);
     setPendingConfirm(null);
-  }, [stack.number]);
+  }, [stack.id]);
 
   const addPullRequests = async () => {
     const pullRequests = parsePullRequests(pullInput);
@@ -150,8 +153,10 @@ export function GitHubStackInspector({
     }
     setBusyAction("merge");
     setError(null);
+    const requestedStackId = stack.id;
     try {
       const result = await onMerge(mergeMethod);
+      if (stackIdRef.current !== requestedStackId) return;
       applyMutationResult("merge", result, "GitHub could not merge this stack.");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "GitHub could not merge this stack.");
@@ -167,8 +172,10 @@ export function GitHubStackInspector({
     }
     setBusyAction("rebase");
     setError(null);
+    const requestedStackId = stack.id;
     try {
       const result = await onRebase();
+      if (stackIdRef.current !== requestedStackId) return;
       applyMutationResult("rebase", result, "GitHub could not rebase this stack.");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "GitHub could not rebase this stack.");

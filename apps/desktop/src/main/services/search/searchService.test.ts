@@ -1336,4 +1336,45 @@ describe("searchService PR-number chat hits", () => {
     service.dispose();
     fs.rmSync(root, { recursive: true, force: true });
   });
+
+  it("drops PR-number chat hits that miss extra terms or the since filter", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-pr-chat-filter-"));
+    const session = makeSession({ id: "chat-pr-42", title: "Webhook relay" });
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => [session],
+        get: async (id) => id === session.id ? session : null,
+      },
+      prs: {
+        listAll: async () => [{
+          id: "pr-42",
+          laneId: "lane-1",
+          projectId: "proj",
+          repoOwner: "ade",
+          repoName: "desktop",
+          githubPrNumber: 42,
+          githubUrl: "https://github.com/ade/desktop/pull/42",
+          title: "Add webhook relay",
+          state: "open",
+          updatedAt: "2026-07-05T00:00:00.000Z",
+          chatSessionIds: ["chat-pr-42"],
+        } as never],
+        getDetail: async () => null,
+        getComments: async () => [],
+      },
+      now: () => NOW,
+    });
+
+    const extra = await service.query({ query: "#42 unrelated", kinds: ["chat"] });
+    expect(extra.results.some((item) => item.sessionId === "chat-pr-42")).toBe(false);
+
+    const since = await service.query({ query: "#42 since:2026-07-06", kinds: ["chat"] });
+    expect(since.results.some((item) => item.sessionId === "chat-pr-42")).toBe(false);
+
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 });

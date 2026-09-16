@@ -49,6 +49,8 @@ type ChatGitToolbarProps = {
    */
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
+  /** When the pane is open, select this linked PR instead of the lane primary. */
+  onFocusLinkedPr?: (prId: string) => void;
   /**
    * The machine this lane lives on, when it is not the machine the project tab
    * is bound to. A lane's PR record lives in its own machine's database, so
@@ -165,6 +167,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   sessionId = null,
   onTogglePrPane,
   prPaneOpen,
+  onFocusLinkedPr,
   runtimePin = null,
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
@@ -572,6 +575,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
                   className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.06]"
                   onClick={() => {
                     if (onTogglePrPane && !prPaneOpen) onTogglePrPane();
+                    onFocusLinkedPr?.(candidate.id);
                     if (!onTogglePrPane) openPr(candidate);
                   }}
                   title={candidate.title || `PR #${candidate.githubPrNumber}`}
@@ -595,7 +599,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         ) : null}
       </div>
     );
-  }, [laneId, linkedPr, linkedPrs, navigate, onTogglePrPane, openPr, prPaneOpen, prPillActive, runtimePin]);
+  }, [laneId, linkedPr, linkedPrs, navigate, onFocusLinkedPr, onTogglePrPane, openPr, prPaneOpen, prPillActive, runtimePin]);
 
   // Slide-out panel that appears to the right of the PR badge when toggled.
   const prMenu = useMemo(() => {

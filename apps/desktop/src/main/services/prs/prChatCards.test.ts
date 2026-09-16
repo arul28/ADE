@@ -738,6 +738,48 @@ describe("PR chat cards", () => {
     expect(emitAdeCard.mock.calls[0][0].card.variant).toBe("pr_ci");
   });
 
+  it("keeps an unlinked stack member's CI card on that PR's own lane", async () => {
+    const emitAdeCard = vi.fn().mockResolvedValue(undefined);
+    const membership = { id: "stack-4", number: 4, size: 2, position: 1, baseBranch: "main" };
+    const bottom = pr({
+      stack: membership,
+      chatSessionIds: ["parent"],
+    });
+    const top = pr({
+      id: "pr-8",
+      githubPrNumber: 8,
+      title: "Top layer",
+      laneId: "lane-2",
+      checksStatus: "failing",
+      stack: { ...membership, position: 2 },
+      chatSessionIds: [],
+    });
+    const listSessions = vi.fn().mockImplementation(async (laneId: string) => (
+      laneId === "lane-1"
+        ? [session("parent", "2026-07-27T12:00:00.000Z")]
+        : [session("child", "2026-07-27T12:01:00.000Z", { laneId: "lane-2" })]
+    ));
+    await emitPrCardsForChange({
+      change: {
+        pr: top,
+        previousState: "open",
+        previousChecksStatus: "passing",
+        previousReviewStatus: "approved",
+        previousMergeConflicts: false,
+        previousBehindBaseBy: 0,
+      },
+      relatedPrs: [bottom, top],
+      dataSource: {
+        getActionRuns: vi.fn().mockResolvedValue([]),
+        getChecks: vi.fn().mockResolvedValue([]),
+        getReviews: vi.fn().mockResolvedValue([]),
+        getReviewThreads: vi.fn().mockResolvedValue([]),
+      },
+      chat: { listSessions, emitAdeCard },
+    });
+    expect(emitAdeCard.mock.calls.map(([call]) => call.sessionId)).toEqual(["child"]);
+  });
+
   it("resolves an explicitly linked chat that lives on another lane", async () => {
     const emitAdeCard = vi.fn().mockResolvedValue(undefined);
     const getSessionSummary = vi.fn().mockResolvedValue(
