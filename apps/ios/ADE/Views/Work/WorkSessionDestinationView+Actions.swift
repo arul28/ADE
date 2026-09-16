@@ -1116,6 +1116,8 @@ extension WorkSessionDestinationView {
       if laneOpenPr != nil { laneOpenPr = nil }
       if lanePrSummary != nil { lanePrSummary = nil }
       if lanePrTag != nil { lanePrTag = nil }
+      if !laneChatPrs.isEmpty { laneChatPrs = [] }
+      if selectedChatPrId != nil { selectedChatPrId = nil }
       return
     }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1124,12 +1126,18 @@ extension WorkSessionDestinationView {
       laneOpenPr = nil
       lanePrSummary = nil
       lanePrTag = nil
+      laneChatPrs = []
     }
+    // A pick belongs to one lane. Carrying it across would show lane A's PR on
+    // lane B for as long as the id happened to stay resolvable.
+    if laneChanged, selectedChatPrId != nil { selectedChatPrId = nil }
     guard !trimmed.isEmpty else {
       lastResolvedPrLaneId = trimmed
       laneOpenPr = nil
       lanePrSummary = nil
       lanePrTag = nil
+      laneChatPrs = []
+      selectedChatPrId = nil
       return
     }
 
@@ -1158,15 +1166,68 @@ extension WorkSessionDestinationView {
     if lanePrSummary != resolution.summary { lanePrSummary = resolution.summary }
     if lanePrTag != resolution.tag { lanePrTag = resolution.tag }
     if laneOpenPr != resolution.mappedPr { laneOpenPr = resolution.mappedPr }
+
+    // Every PR this chat is linked to, not just the one the badge shows.
+    let chatPrs = workChatPullRequests(
+      lane: lanes.first(where: { $0.id == trimmed }),
+      pullRequests: items,
+      sessionId: sessionId
+    )
+    if laneChatPrs != chatPrs { laneChatPrs = chatPrs }
+    // A pick that no longer exists (PR merged away, link removed) must fall
+    // back to the primary rather than blanking the badge.
+    if let picked = selectedChatPrId, !chatPrs.contains(where: { $0.id == picked }) {
+      selectedChatPrId = nil
+    }
+  }
+
+  /// The pull request every chat PR surface is currently showing: the user's
+  /// pick from the switcher when they made one, otherwise whatever
+  /// `resolveLaneOpenPr` chose. One accessor so the badge, the sheet, and the
+  /// snapshot fetch can never disagree about which PR they are describing.
+  var chatDisplayPr: PullRequestListItem? {
+    if let selectedChatPrId,
+       let picked = laneChatPrs.first(where: { $0.id == selectedChatPrId }) {
+      return picked
+    }
+    return laneOpenPr
+  }
+
+  var chatDisplayPrTag: LanePrTag? {
+    if let selectedChatPrId,
+       let picked = laneChatPrs.first(where: { $0.id == selectedChatPrId }) {
+      return workChatPrTag(from: picked)
+    }
+    return lanePrTag
+  }
+
+  /// The remote summary describes the lane's resolved PR only. Once the user
+  /// switches rows it is about a DIFFERENT pull request, so it must not be
+  /// allowed to caption the one on screen.
+  var chatDisplayPrSummary: PrSummary? {
+    selectedChatPrId == nil ? lanePrSummary : nil
+  }
+
+  @MainActor
+  func selectChatPr(_ prId: String) {
+    let trimmed = prId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, laneChatPrs.contains(where: { $0.id == trimmed }) else { return }
+    guard selectedChatPrId != trimmed else { return }
+    selectedChatPrId = trimmed
+    // The snapshot on screen belongs to the previous row; drop it before the
+    // refresh so no check count is ever read against the wrong PR.
+    prDetailsSnapshot = nil
+    prDetailsError = nil
+    Task { await refreshChatPrDetails(force: true) }
   }
 
   /// Navigate to the resolved lane PR. No-op (rather than crash) if the PR was
   /// cleared between menu render and tap.
   func openLaneOpenPr() {
-    guard let tag = lanePrTag else { return }
+    guard let tag = chatDisplayPrTag else { return }
     prDetailsPresented = false
-    if let prId = tag.prId ?? laneOpenPr?.id, !prId.isEmpty {
-      let laneId = (laneOpenPr?.laneId ?? headerMenuLaneId).trimmingCharacters(in: .whitespacesAndNewlines)
+    if let prId = tag.prId ?? chatDisplayPr?.id, !prId.isEmpty {
+      let laneId = (chatDisplayPr?.laneId ?? headerMenuLaneId).trimmingCharacters(in: .whitespacesAndNewlines)
       syncService.requestedPrNavigation = PrNavigationRequest(
         prId: prId,
         prNumber: tag.githubPrNumber,
@@ -1207,7 +1268,7 @@ extension WorkSessionDestinationView {
 
     await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: force, clearBeforeLoad: false)
 
-    guard let prId = laneOpenPr?.id ?? lanePrSummary?.id else {
+    guard let prId = chatDisplayPr?.id ?? chatDisplayPrSummary?.id else {
       prDetailsSnapshot = nil
       await loadPrCreateCapabilitiesIfNeeded()
       return
@@ -1218,6 +1279,12 @@ extension WorkSessionDestinationView {
         try await syncService.refreshPullRequestSnapshots(prId: prId)
         let items = (try? await syncService.fetchPullRequestListItems(laneId: headerMenuLaneId)) ?? []
         laneOpenPr = workChatMappedPullRequest(for: lanePrTag, in: items)
+        let refreshedChatPrs = workChatPullRequests(
+          lane: lanes.first(where: { $0.id == headerMenuLaneId }),
+          pullRequests: items,
+          sessionId: sessionId
+        )
+        if laneChatPrs != refreshedChatPrs { laneChatPrs = refreshedChatPrs }
       } catch {
         prDetailsError = SyncUserFacingError.message(for: error)
       }

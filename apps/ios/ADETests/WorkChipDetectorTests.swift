@@ -331,3 +331,162 @@ final class WorkChipClipboardCanonicalTextTests: XCTestCase {
     XCTAssertFalse(plain.contains("◫"))
   }
 }
+
+/// Which pull requests one chat shows, and which one leads.
+///
+/// The defect these pin is a cap, not a crash: a chat could surface exactly one
+/// PR, so a lane that had opened a second one — or a PR from another lane
+/// deliberately linked to this session — was simply invisible on the phone.
+final class WorkChatLinkedPrSelectionTests: XCTestCase {
+  private func lane(id: String, branch: String, type: String = "worktree") -> LaneSummary {
+    LaneSummary(
+      id: id, name: "Lane \(id)", description: nil, laneType: type, baseRef: "main",
+      branchRef: branch, worktreePath: "/tmp/\(id)", attachedRootPath: nil,
+      parentLaneId: nil, childCount: 0, stackDepth: 0, parentStatus: nil, isEditProtected: false,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil,
+      createdAt: "", archivedAt: nil, devicesOpen: nil
+    )
+  }
+
+  private func pr(
+    id: String,
+    laneId: String,
+    number: Int,
+    state: String = "open",
+    headBranch: String = "feature/a",
+    updatedAt: String = "2026-09-01T00:00:00.000Z",
+    chatSessionIds: [String]? = nil,
+    detached: PrDetachedLane? = nil
+  ) -> PullRequestListItem {
+    PullRequestListItem(
+      id: id,
+      laneId: laneId,
+      laneName: nil,
+      projectId: "project-1",
+      repoOwner: "arul28",
+      repoName: "ade",
+      githubPrNumber: number,
+      githubUrl: "https://github.com/arul28/ade/pull/\(number)",
+      title: "PR \(number)",
+      state: state,
+      baseBranch: "main",
+      headBranch: headBranch,
+      checksStatus: "none",
+      reviewStatus: "none",
+      additions: 0,
+      deletions: 0,
+      lastSyncedAt: nil,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: updatedAt,
+      adeKind: "single",
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil,
+      detached: detached,
+      chatSessionIds: chatSessionIds
+    )
+  }
+
+  func testEveryPrTheLaneOwnsIsVisibleNotJustTheBranchMatch() {
+    let l = lane(id: "lane-1", branch: "feature/a")
+    let prs = [
+      pr(id: "pr-1", laneId: "lane-1", number: 1),
+      // Same lane, different branch — visible only because a chat linked it.
+      pr(id: "pr-2", laneId: "lane-1", number: 2, headBranch: "feature/b", chatSessionIds: ["chat-1"]),
+    ]
+    let visible = workChatPullRequests(lane: l, pullRequests: prs, sessionId: "chat-1")
+    XCTAssertEqual(Set(visible.map(\.id)), ["pr-1", "pr-2"])
+  }
+
+  func testPrLinkedFromAnotherLaneIsVisibleToThisChat() {
+    // `linkToLane` leaves `lane_id` on the ORIGINAL owning lane, so a
+    // lane-only filter would write the link and then hide it forever.
+    let l = lane(id: "lane-1", branch: "feature/a")
+    let prs = [
+      pr(id: "pr-1", laneId: "lane-1", number: 1),
+      pr(id: "pr-9", laneId: "lane-other", number: 9, headBranch: "other", chatSessionIds: ["chat-1"]),
+    ]
+    let visible = workChatPullRequests(lane: l, pullRequests: prs, sessionId: "chat-1")
+    XCTAssertEqual(Set(visible.map(\.id)), ["pr-1", "pr-9"])
+  }
+
+  func testAnotherChatsLinkedPrIsNotVisibleHere() {
+    let l = lane(id: "lane-1", branch: "feature/a")
+    let prs = [
+      pr(id: "pr-1", laneId: "lane-1", number: 1),
+      pr(id: "pr-2", laneId: "lane-1", number: 2, headBranch: "feature/b", chatSessionIds: ["chat-2"]),
+      pr(id: "pr-9", laneId: "lane-other", number: 9, headBranch: "other", chatSessionIds: ["chat-2"]),
+    ]
+    let visible = workChatPullRequests(lane: l, pullRequests: prs, sessionId: "chat-1")
+    XCTAssertEqual(visible.map(\.id), ["pr-1"])
+  }
+
+  func testOneLinkedRowDoesNotHideTheLegacyUnlinkedRows() {
+    // The lane fallback is decided PER PR. A row with no links at all predates
+    // the link table and must stay visible next to a linked one.
+    let l = lane(id: "lane-1", branch: "feature/a")
+    let prs = [
+      pr(id: "pr-legacy", laneId: "lane-1", number: 1),
+      pr(id: "pr-linked", laneId: "lane-1", number: 2, chatSessionIds: ["chat-1"]),
+    ]
+    let visible = workChatPullRequests(lane: l, pullRequests: prs, sessionId: "chat-1")
+    XCTAssertEqual(Set(visible.map(\.id)), ["pr-legacy", "pr-linked"])
+  }
+
+  func testDetachedRowsAreHistoryNotLiveLaneState() {
+    let l = lane(id: "lane-1", branch: "feature/a")
+    let prs = [
+      pr(id: "pr-1", laneId: "lane-1", number: 1),
+      pr(
+        id: "pr-gone",
+        laneId: "lane-1",
+        number: 2,
+        chatSessionIds: ["chat-1"],
+        detached: PrDetachedLane(at: "2026-09-01T00:00:00.000Z", laneName: "old", laneColor: nil, chats: 0, artifacts: 0, checkpoints: 0)
+      ),
+    ]
+    let visible = workChatPullRequests(lane: l, pullRequests: prs, sessionId: "chat-1")
+    XCTAssertEqual(visible.map(\.id), ["pr-1"])
+  }
+
+  func testNewestOpenPrLeadsTheList() {
+    let l = lane(id: "lane-1", branch: "feature/a")
+    let prs = [
+      pr(id: "pr-merged", laneId: "lane-1", number: 5, state: "merged",
+         updatedAt: "2026-09-10T00:00:00.000Z", chatSessionIds: ["chat-1"]),
+      pr(id: "pr-old-open", laneId: "lane-1", number: 3,
+         updatedAt: "2026-09-02T00:00:00.000Z", chatSessionIds: ["chat-1"]),
+      pr(id: "pr-new-open", laneId: "lane-1", number: 4,
+         updatedAt: "2026-09-09T00:00:00.000Z", chatSessionIds: ["chat-1"]),
+    ]
+    let visible = workChatPullRequests(lane: l, pullRequests: prs, sessionId: "chat-1")
+    XCTAssertEqual(visible.first?.id, "pr-new-open")
+    XCTAssertEqual(Set(visible.map { $0.id }), ["pr-merged", "pr-old-open", "pr-new-open"])
+  }
+
+  func testOpenBeatsDraftWhichBeatsTerminal() {
+    let draft = pr(id: "d", laneId: "l", number: 1, state: "draft", updatedAt: "2026-09-12T00:00:00.000Z")
+    let open = pr(id: "o", laneId: "l", number: 2, state: "open", updatedAt: "2026-09-01T00:00:00.000Z")
+    let merged = pr(id: "m", laneId: "l", number: 3, state: "merged", updatedAt: "2026-09-20T00:00:00.000Z")
+    XCTAssertEqual(pickPrimaryPr([merged, draft, open])?.id, "o")
+    XCTAssertEqual(pickPrimaryPr([merged, draft])?.id, "d")
+    XCTAssertNil(pickPrimaryPr([]))
+  }
+
+  func testNoLaneMeansNoPrs() {
+    XCTAssertTrue(workChatPullRequests(lane: nil, pullRequests: [], sessionId: "chat-1").isEmpty)
+  }
+
+  func testBadgeCarriesTheLinkedCount() {
+    let tag = workChatPrTag(from: pr(id: "pr-1", laneId: "lane-1", number: 7))
+    XCTAssertEqual(workChatPrBadgeModel(tag: tag, pr: nil, linkedCount: 3)?.linkedCount, 3)
+    // Never below one: the badge exists, so at least one PR does.
+    XCTAssertEqual(workChatPrBadgeModel(tag: tag, pr: nil, linkedCount: 0)?.linkedCount, 1)
+    XCTAssertEqual(workChatPrBadgeModel(tag: tag, pr: nil)?.linkedCount, 1)
+  }
+}

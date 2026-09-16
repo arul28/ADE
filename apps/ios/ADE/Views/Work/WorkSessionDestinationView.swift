@@ -872,6 +872,13 @@ struct WorkSessionDestinationView: View {
   @State var laneOpenPr: PullRequestListItem?
   @State var lanePrSummary: PrSummary?
   @State var lanePrTag: LanePrTag?
+  /// Every pull request this chat is linked to, primary first. A chat is not
+  /// capped at one PR — the lane may own several, and a PR opened on another
+  /// lane can be linked to this session explicitly.
+  @State var laneChatPrs: [PullRequestListItem] = []
+  /// The user's pick from the switcher. Nil means "show what the resolver
+  /// chose", which is the primary row.
+  @State var selectedChatPrId: String?
   /// Lane the last completed PR resolve ran for; lets same-lane re-resolves
   /// keep showing the current PR instead of clearing it first.
   @State var lastResolvedPrLaneId: String?
@@ -1249,8 +1256,10 @@ struct WorkSessionDestinationView: View {
     )
   }
 
+  /// Follows the switcher: "Open on GitHub" must open the PR on screen, not the
+  /// one the resolver happened to pick first.
   var lanePrGitHubUrlString: String {
-    (lanePrTag?.githubUrl ?? laneOpenPr?.githubUrl ?? "")
+    (chatDisplayPrTag?.githubUrl ?? chatDisplayPr?.githubUrl ?? "")
       .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
@@ -1423,9 +1432,9 @@ struct WorkSessionDestinationView: View {
         }
       }) {
         WorkChatPrDetailsSheet(
-          tag: lanePrTag,
-          pr: laneOpenPr,
-          summary: lanePrSummary,
+          tag: chatDisplayPrTag,
+          pr: chatDisplayPr,
+          summary: chatDisplayPrSummary,
           snapshot: prDetailsSnapshot,
           laneColor: headerMenuLaneColor,
           canCreate: canCreatePullRequestForHeaderLane,
@@ -1445,7 +1454,10 @@ struct WorkSessionDestinationView: View {
               openLaneOpenPr()
             }
           },
-          onOpenGitHub: openLanePrOnGitHub
+          onOpenGitHub: openLanePrOnGitHub,
+          linkedPrs: laneChatPrs,
+          selectedPrId: chatDisplayPr?.id,
+          onSelectPr: { selectChatPr($0) }
         )
         .presentationDetents([.height(500), .large])
         .presentationDragIndicator(.visible)
@@ -1841,7 +1853,12 @@ struct WorkSessionDestinationView: View {
       viewingSubagent: viewingSubagent
     )
     let chatPrBadge: WorkChatPrBadgeModel? = prPolicy.rendersPrBadge
-      ? workChatPrBadgeModel(tag: lanePrTag, pr: laneOpenPr, summary: lanePrSummary)
+      ? workChatPrBadgeModel(
+          tag: chatDisplayPrTag,
+          pr: chatDisplayPr,
+          summary: chatDisplayPrSummary,
+          linkedCount: laneChatPrs.count
+        )
       : nil
     let openPrDetails: (() -> Void)? = prPolicy.rendersPrBadge ? { presentChatPrDetails() } : nil
     let inputLockMessage: String? = viewingSubagent
