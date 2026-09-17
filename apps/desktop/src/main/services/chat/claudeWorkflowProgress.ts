@@ -233,7 +233,9 @@ export function summarizeClaudeWorkflowRun(snapshot: ClaudeWorkflowProgressSnaps
 export function finalizeClaudeWorkflowProgress(
   snapshot: ClaudeWorkflowProgressSnapshot,
 ): ClaudeWorkflowProgressSnapshot {
-  if (!snapshot.agents.some((agent) => agent.status === "running")) return snapshot;
+  if (!snapshot.agents.some((agent) => agent.status === "running") && snapshot.queuedCount === 0) {
+    return snapshot;
+  }
   const agents = snapshot.agents.map((agent) => agent.status === "running"
     ? {
         ...agent,
@@ -244,6 +246,7 @@ export function finalizeClaudeWorkflowProgress(
   return {
     ...snapshot,
     agents,
+    queuedCount: 0,
     runningCount: 0,
     doneCount: agents.filter((agent) => agent.status === "completed").length,
     failedCount: agents.filter((agent) => agent.status === "failed").length,

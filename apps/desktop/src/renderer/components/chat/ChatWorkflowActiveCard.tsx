@@ -40,6 +40,11 @@ function workflowAgentIndex(taskId: string, fallback: number): number {
   return match ? Number(match[1]) : fallback;
 }
 
+function workflowLineageParentTaskId(taskId: string): string | undefined {
+  const match = /^(.*)::a\d+$/.exec(taskId);
+  return match?.[1] || undefined;
+}
+
 function fallbackWorkflowProgress(members: ChatSubagentSnapshot[]): AgentChatWorkflowProgress {
   const agents: AgentChatWorkflowAgent[] = members.map((snapshot, fallbackIndex) => ({
     key: snapshot.agentId ?? snapshot.taskId,
@@ -67,9 +72,9 @@ function fallbackWorkflowProgress(members: ChatSubagentSnapshot[]): AgentChatWor
 
 /**
  * Groups the parent Workflow row with its synthetic workflow-agent rows. The
- * prefix match keeps two workflows with the same display name independent;
- * the name fallback is only for older event histories that predate the rich
- * workflow snapshot.
+ * lineage ID keeps two workflows with the same display name independent; the
+ * name fallback is only for older event histories that predate rich workflow
+ * snapshots.
  */
 export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatWorkflowRun[] {
   const directParents = snapshots.filter(
@@ -78,11 +83,13 @@ export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatW
     ),
   );
   const directParentIds = new Set(directParents.map((snapshot) => snapshot.taskId));
-  const directNames = new Set(directParents.map(workflowName));
-  const directMemberPrefixes = directParents.map((snapshot) => `${snapshot.taskId}::a`);
+  const lineageParentIds = new Set(
+    snapshots
+      .map((snapshot) => workflowLineageParentTaskId(snapshot.taskId))
+      .filter((parentId): parentId is string => parentId !== undefined),
+  );
   const runs: ChatWorkflowRun[] = directParents.map((parent) => {
-    const prefix = `${parent.taskId}::a`;
-    const members = snapshots.filter((snapshot) => snapshot.taskId.startsWith(prefix));
+    const members = snapshots.filter((snapshot) => workflowLineageParentTaskId(snapshot.taskId) === parent.taskId);
     return {
       id: parent.taskId,
       name: workflowName(parent),
@@ -94,19 +101,32 @@ export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatW
 
   const fallbackGroups = new Map<string, ChatSubagentSnapshot[]>();
   for (const snapshot of snapshots) {
-    if (!snapshot.workflowName?.trim() || directNames.has(workflowName(snapshot))) continue;
+    const name = snapshot.workflowName?.trim();
+    if (!name) continue;
     if (directParentIds.has(snapshot.taskId)) continue;
-    if (directMemberPrefixes.some((prefix) => snapshot.taskId.startsWith(prefix))) continue;
-    const group = fallbackGroups.get(workflowName(snapshot)) ?? [];
+    const lineageParentId = workflowLineageParentTaskId(snapshot.taskId);
+    if (lineageParentId && directParentIds.has(lineageParentId)) continue;
+    const groupKey = lineageParentId
+      ? "lineage:" + lineageParentId
+      : lineageParentIds.has(snapshot.taskId)
+        ? "lineage:" + snapshot.taskId
+        : "name:" + name;
+    const group = fallbackGroups.get(groupKey) ?? [];
     group.push(snapshot);
-    fallbackGroups.set(workflowName(snapshot), group);
+    fallbackGroups.set(groupKey, group);
   }
-  for (const [name, group] of fallbackGroups) {
-    const parent = group.find((snapshot) => snapshot.taskType === "local_workflow") ?? group[0];
+  for (const [groupKey, group] of fallbackGroups) {
+    const lineageParentId = groupKey.startsWith("lineage:")
+      ? groupKey.slice("lineage:".length)
+      : undefined;
+    const parent = group.find((snapshot) => snapshot.taskId === lineageParentId)
+      ?? group.find((snapshot) => snapshot.taskType === "local_workflow")
+      ?? group[0];
     if (!parent) continue;
+    const name = workflowName(parent);
     const members = group.filter((snapshot) => snapshot.taskId !== parent.taskId);
     runs.push({
-      id: `workflow:${name}`,
+      id: lineageParentId ? "workflow:" + lineageParentId : "workflow:" + name,
       name,
       parent,
       progress: fallbackWorkflowProgress(members),
@@ -265,7 +285,9 @@ export function ChatWorkflowActiveCard({
 }) {
   const runs = useMemo(() => deriveChatWorkflowRuns(snapshots), [snapshots]);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const openRun = runs.find((run) => run.id === openRunId) ?? null;
+  const visibleRuns = showAll ? runs : runs.slice(0, 3);
   const liveAnnouncement = runs.slice(0, 3).map((run) => {
     const running = workflowAgentViews(run).filter((view) => view.status === "running").length;
     return `${run.name}: ${statusLabel(run.parent.status)}${running > 0 ? `, ${running} agent${running === 1 ? "" : "s"} running` : ""}`;
@@ -284,15 +306,28 @@ export function ChatWorkflowActiveCard({
       data-testid="chat-workflow-active-card-list"
     >
       <span className="sr-only" role="status" aria-live="polite">{liveAnnouncement}</span>
-      <div className="mb-1.5 flex items-center justify-between px-1">
+      <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
         <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.1em] text-fg/42">
           <TreeStructure aria-hidden size={13} className="text-amber-200/75" />
           Workflow activity
         </div>
-        <span className="text-[10px] tabular-nums text-fg/28">{runs.length} tracked</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="text-[10px] tabular-nums text-fg/28">{runs.length} tracked</span>
+          {runs.length > 3 ? (
+            <button
+              type="button"
+              onClick={() => setShowAll((current) => !current)}
+              aria-expanded={showAll}
+              className="rounded px-1 py-0.5 text-[10px] font-medium normal-case tracking-normal text-amber-200/65 transition-colors hover:bg-amber-200/[0.08] hover:text-amber-100"
+              data-testid="chat-workflow-show-all"
+            >
+              {showAll ? "Show less" : "Show all"}
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="space-y-1.5">
-        {runs.slice(0, 3).map((run) => {
+        {visibleRuns.map((run) => {
           const progress = run.progress;
           const total = progress.agents.length + progress.queuedCount;
           const views = workflowAgentViews(run);

@@ -611,6 +611,29 @@ describe("deriveChatSubagentSnapshots", () => {
         workflowProgress,
       }),
     ]);
+
+    const workflowEvent = (timestamp: string, progress: unknown): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp,
+      event: {
+        type: "subagent_progress",
+        taskId: "workflow-1",
+        taskType: "local_workflow",
+        workflowName: "review",
+        description: "Run review workflow",
+        summary: "Verify",
+        workflowProgress: progress as never,
+      },
+    });
+    const malformed = workflowEvent("2026-03-10T12:00:01.000Z", { agents: "malformed" });
+    expect(deriveChatSubagentSnapshots([events[0]!, malformed])[0]?.workflowProgress).toEqual(workflowProgress);
+    expect(deriveChatSubagentSnapshots([malformed])[0]?.workflowProgress).toBeUndefined();
+
+    const replacement = { ...workflowProgress, queuedCount: 0, runningCount: 0 };
+    expect(deriveChatSubagentSnapshots([
+      events[0]!,
+      workflowEvent("2026-03-10T12:00:02.000Z", replacement),
+    ])[0]?.workflowProgress).toEqual(replacement);
   });
 
   // A spawned ADE child chat emits BOTH the underscore `subagent_started`

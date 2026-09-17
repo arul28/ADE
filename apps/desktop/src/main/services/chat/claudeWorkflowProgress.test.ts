@@ -99,6 +99,7 @@ describe("parseClaudeWorkflowProgress", () => {
     ], TASK_ID)!;
     const finalized = finalizeClaudeWorkflowProgress(snapshot);
     expect(finalized.runningCount).toBe(0);
+    expect(finalized.queuedCount).toBe(0);
     expect(finalized.agents.map((agent) => agent.status)).toEqual(["stopped", "completed"]);
     expect(finalized.agents[0]!.summary).toContain("Workflow ended");
   });

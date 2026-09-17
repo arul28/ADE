@@ -53,6 +53,31 @@ describe("chat pane scalability helpers", () => {
     expect(snapshots[0]?.workflowProgress).toBeUndefined();
   });
 
+  it("accepts the ellipsis added by the provider preview clip at the boundary", () => {
+    const clipped = "x".repeat(240) + "…";
+    const progress = {
+      phases: [{ index: 0, title: clipped }],
+      agents: [{
+        key: "agent-1",
+        index: 0,
+        name: "agent",
+        status: "running",
+        summary: clipped,
+        lastToolName: clipped,
+      }],
+      queuedCount: 0,
+      runningCount: 1,
+      doneCount: 0,
+      failedCount: 0,
+    };
+
+    expect(isAgentChatWorkflowProgress(progress)).toBe(true);
+    expect(isAgentChatWorkflowProgress({
+      ...progress,
+      phases: [{ index: 0, title: clipped + "x" }],
+    })).toBe(false);
+  });
+
   it("keeps a child active after its parent turn ends until the child emits a result", () => {
     const parentDoneEvents: AgentChatEventEnvelope[] = [
       {

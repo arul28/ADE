@@ -72,7 +72,9 @@ export const SUBAGENT_PANE_ROSTER_CAPACITY = 5;
 
 const MAX_WORKFLOW_AGENT_ENTRIES = 300;
 const MAX_WORKFLOW_PHASE_ENTRIES = 50;
-const MAX_WORKFLOW_TEXT_CHARS = 240;
+// The main-process preview clip keeps 240 source characters and appends one
+// ellipsis character, so the stored boundary is one character wider.
+const MAX_WORKFLOW_TEXT_CHARS = 241;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
