@@ -8,9 +8,13 @@ import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared
 // Electron-main module would pull `electron` into it.
 import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/shared/types/builtInBrowser";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
-import { MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS } from "../../../../desktop/src/shared/types/macDesktop";
+import {
+  MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS,
+  reduceMacDesktopNotParked,
+} from "../../../../desktop/src/shared/types/macDesktop";
 import type {
   MacDesktopEventPayload,
+  MacDesktopNotParked,
   MacDesktopServiceApi,
   MacDesktopStatus,
 } from "../../../../desktop/src/shared/types/macDesktop";
@@ -424,6 +428,7 @@ function summarizeAgentPresence(
 function summarizeMacDesktop(
   status: MacDesktopStatus,
   lastObservation: WorkToolsMacDesktopState["lastObservation"],
+  notParked: readonly MacDesktopNotParked[],
 ): WorkToolsMacDesktopState {
   return {
     supported: status.supported,
@@ -436,6 +441,10 @@ function summarizeMacDesktop(
     // longer exists, so it leaves with the display rather than lingering.
     lastObservation: status.display ? lastObservation : null,
     hostIsLocal: status.hostIsLocal,
+    // Same rule the desktop panel folds with, from the same event. Copied out
+    // of the tracking list so a later mutation of it cannot reach a published
+    // state object.
+    notParked: [...notParked],
   };
 }
 
@@ -511,6 +520,16 @@ export function createWorkToolsStateService(
     string,
     NonNullable<WorkToolsMacDesktopState["lastObservation"]>
   >();
+  /**
+   * Windows `window-not-parked` reported, per lane, newest first.
+   *
+   * Tracked here rather than read back off `getStatus`: the status has no such
+   * field, because a window that would not park is not on the display the status
+   * describes — it is on the human's own screen, which is exactly why it is
+   * worth saying. Entries leave on the `windows-changed` that shows the window
+   * landed after all, and with the display.
+   */
+  const macDesktopNotParkedByLane = new Map<string, readonly MacDesktopNotParked[]>();
   // Lanes this service has been asked about or told about, so a host-wide
   // event (a revoked permission, a lost driver) can reach every client that
   // has a view open rather than none.
@@ -606,7 +625,11 @@ export function createWorkToolsStateService(
       });
       return null;
     }
-    return summarizeMacDesktop(status, macDesktopObservationByLane.get(laneId) ?? null);
+    return summarizeMacDesktop(
+      status,
+      macDesktopObservationByLane.get(laneId) ?? null,
+      macDesktopNotParkedByLane.get(laneId) ?? [],
+    );
   };
 
   // Push, never poll. Every edge the service announces is one a mirrored client
@@ -623,6 +646,17 @@ export function createWorkToolsStateService(
       });
     } else if (event.type === "display-destroyed") {
       macDesktopObservationByLane.delete(event.laneId);
+    }
+    const notParkedLaneId = event.type === "window-not-parked"
+      || event.type === "windows-changed"
+      || event.type === "display-destroyed"
+      ? event.laneId
+      : null;
+    if (notParkedLaneId) {
+      const current = macDesktopNotParkedByLane.get(notParkedLaneId) ?? [];
+      const next = reduceMacDesktopNotParked(current, event, notParkedLaneId, Date.now());
+      if (next.length) macDesktopNotParkedByLane.set(notParkedLaneId, next);
+      else macDesktopNotParkedByLane.delete(notParkedLaneId);
     }
     const laneId = macDesktopEventLaneId(event);
     if (laneId) {

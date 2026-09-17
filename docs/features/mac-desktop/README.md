@@ -139,7 +139,13 @@ A window joins the lane's display in one of two ways.
 
 A window that moves itself off the display is re-parked once per move, with a
 bounded retry. A window that keeps leaving is released and reported, rather than
-fought.
+fought. "Reported" is a `window-not-parked` event, and it is shown: the desktop
+panel prints one line under the parked-windows footer ("Window 42 stayed on your
+screen (window_not_ready)") with a dismiss, and the same newest line appears in
+the Work tools mirror on the phone and the web client via
+`WorkToolsMacDesktopState.notParked`. Each surface keeps the three newest, one
+entry per window, and drops an entry when a later `windows-changed` shows the
+window parked after all.
 
 Single-instance apps are one lane at a time. A second lane asking for the same
 bundle id is refused with `MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE`, and the message

@@ -2957,6 +2957,49 @@ function scopeWorkToolsAdeActionArgs(
   return workToolsArgs;
 }
 
+/**
+ * `mac_desktop` carries a caller-asserted identity the same way `work_tools`
+ * carried a caller-asserted lane.
+ *
+ * Every acting command on the domain takes an optional `chatSessionId`, and the
+ * service treats it as WHO is holding the display's input lease: it is how a
+ * turn's clips, the lease itself and the release-on-chat-end hook are attributed.
+ * Nothing checked that the id belonged to the caller, so an agent in chat A
+ * could pass chat B's id and act as B — taking the lease B was holding, or
+ * having its own clicks charged to B's turn. An agent never has a reason to name
+ * a chat other than its own, so the field is simply overwritten with the
+ * caller's own session id (and dropped when the caller has none, e.g. a bare
+ * run/step identity, so no foreign id survives).
+ *
+ * `laneId` is pinned the same way `work_tools.getLaneState` pins it: a bound
+ * agent's display is its own lane's display, whatever it asked for. Unlike
+ * `work_tools` this does NOT deny an agent-shaped caller with no resolvable
+ * lane — `getStatus` is the domain's capability probe and has to answer on every
+ * host, and the acting commands all fail closed in the service anyway because a
+ * lease they do not hold is refused there. What they must not do is fail closed
+ * while wearing someone else's name, which is what the strip above prevents.
+ *
+ * User clients keep what they sent: the desktop renderer, the web client and a
+ * paired phone each drive whichever lane's display their UI is showing, and the
+ * human's takeover holds the lease under a `controllerId`, not a chat id.
+ */
+function scopeMacDesktopAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  isUserClient: boolean,
+  macDesktopArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  if (isUserClient) return macDesktopArgs;
+  const { chatSessionId: _callerSupplied, ...rest } = macDesktopArgs;
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  return {
+    ...rest,
+    ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
+    ...(sessionLaneId ? { laneId: sessionLaneId } : {}),
+  };
+}
+
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
 const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(["claude", "codex", "cursor", "droid", "opencode", "pi"]);
 
@@ -4144,6 +4187,20 @@ async function runTool(args: {
         argsList,
         hasScalarArg,
         rawObjectArgs,
+      );
+    } else if (domain === "mac_desktop" && !isUserClient) {
+      // Every action on the domain, including `getStatus`: the status read is
+      // what tells a caller whether the lease is free and who holds it, and it
+      // takes the same `chatSessionId`. No CTO carve-out — an elevated run/step
+      // identity has no chat of its own to act as, so it acts as nobody. User
+      // clients are branched around entirely rather than returned early from the
+      // scoping function, so this adds no object-args requirement to a surface
+      // that was already free to call the domain however it liked.
+      scopedObjectArgs = scopeMacDesktopAdeActionArgs(
+        runtime,
+        session,
+        isUserClient,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
     } else if (domain === "work_tools" && (!callerIsCto || action === "setActiveTool")) {
       // The CTO carve-out is a READ carve-out. `setActiveTool` is this domain's

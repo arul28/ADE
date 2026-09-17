@@ -6438,6 +6438,15 @@ struct WorkToolsMacDesktopObservation: Codable, Equatable {
   var caption: String?
 }
 
+/// A window the driver could not park, so it stayed on the human's own screen.
+///
+/// `at` is the host client's clock and is only used for ordering, so it is not
+/// decoded here — the host already sends the list newest first.
+struct WorkToolsMacDesktopNotParked: Codable, Equatable {
+  var windowId: Int
+  var reason: String
+}
+
 struct WorkToolsMacDesktopState: Codable, Equatable {
   var supported: Bool
   var display: WorkToolsMacDesktopDisplay?
@@ -6447,6 +6456,9 @@ struct WorkToolsMacDesktopState: Codable, Equatable {
   var lease: WorkToolsMacDesktopLease?
   var stream: WorkToolsMacDesktopStream?
   var lastObservation: WorkToolsMacDesktopObservation?
+  /// Newest first, at most three. Absent from an older host, which is not the
+  /// same as "nothing is stranded" — it is "this host cannot say".
+  var notParked: [WorkToolsMacDesktopNotParked]?
 }
 
 struct WorkToolsObservationPreview: Codable, Equatable {

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types";
-import type {
-  MacDesktopEventPayload,
-  MacDesktopStatus,
+import {
+  reduceMacDesktopNotParked,
+  type MacDesktopEventPayload,
+  type MacDesktopNotParked,
+  type MacDesktopStatus,
 } from "../../../shared/types/macDesktop";
 import { MAC_DESKTOP_CURSOR_FADE_MS } from "./macDesktopGeometry";
 import { captionMacDesktopFrame, clearMacDesktopFrame } from "./macDesktopFrameStore";
@@ -107,6 +109,13 @@ export function macDesktopCursorFromEvent(
 
 export type UseMacDesktopStatus = {
   status: MacDesktopStatus | null;
+  /**
+   * Windows the driver could not park, newest first, at most
+   * `MAC_DESKTOP_NOT_PARKED_MAX`. Empty is the normal state.
+   */
+  notParked: readonly MacDesktopNotParked[];
+  /** Drops one stranded-window line the user has read. */
+  dismissNotParked: (windowId: number) => void;
   setStatus: React.Dispatch<React.SetStateAction<MacDesktopStatus | null>>;
   /** The last thing that went wrong loudly enough to replace the picture. */
   error: string | null;
@@ -127,6 +136,7 @@ export function useMacDesktopStatus(args: {
   const [status, setStatus] = useState<MacDesktopStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState<MacDesktopAgentCursor | null>(null);
+  const [notParked, setNotParked] = useState<readonly MacDesktopNotParked[]>([]);
 
   const refresh = useCallback(async () => {
     const next = await macDesktopApi().getStatus({ laneId, chatSessionId: sessionId }, runtimePin);
@@ -168,6 +178,10 @@ export function useMacDesktopStatus(args: {
     if (!api) return;
     return api.onEvent((event) => {
       setStatus((current) => reduceMacDesktopStatus(current, event, laneId));
+      // Tracked beside the status rather than inside it: a window that stayed on
+      // the human's own screen is not part of `getStatus`'s answer, so a refresh
+      // must not silently clear a warning nothing has fixed.
+      setNotParked((current) => reduceMacDesktopNotParked(current, event, laneId, Date.now()));
       if (event.type === "display-destroyed" && event.laneId === laneId) {
         clearMacDesktopFrame(laneId);
         return;
@@ -187,5 +201,12 @@ export function useMacDesktopStatus(args: {
     return () => clearTimeout(timer);
   }, [cursor]);
 
-  return { status, setStatus, error, setError, refresh, cursor };
+  const dismissNotParked = useCallback((windowId: number) => {
+    setNotParked((current) => {
+      const next = current.filter((entry) => entry.windowId !== windowId);
+      return next.length === current.length ? current : next;
+    });
+  }, []);
+
+  return { status, setStatus, error, setError, refresh, cursor, notParked, dismissNotParked };
 }

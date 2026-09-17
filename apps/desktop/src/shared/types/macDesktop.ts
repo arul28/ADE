@@ -651,6 +651,70 @@ export type MacDesktopEventPayload =
   | { type: "permission-changed"; permissions: MacDesktopPermissions }
   | { type: "driver-health"; health: MacDesktopDriverHealth };
 
+/**
+ * A window `window-not-parked` reported, as a client holds it.
+ *
+ * `at` is the client's own clock (`Date.now()`) rather than a host timestamp:
+ * the event carries none, and this is only ever used to order three entries
+ * against each other, never compared across machines.
+ */
+export type MacDesktopNotParked = {
+  windowId: number;
+  reason: string;
+  at: number;
+};
+
+/**
+ * How many stranded windows a client remembers.
+ *
+ * A driver that cannot park anything emits one of these per window per attempt,
+ * and the surfaces that show them have room for a single line. Three is enough
+ * to say "this keeps happening" without turning the footer into a log.
+ */
+export const MAC_DESKTOP_NOT_PARKED_MAX = 3;
+
+/**
+ * Folds one event into the stranded-window list. Newest first, bounded.
+ *
+ * Lives here rather than in either client because both the desktop panel and
+ * the read-only Work-tools mirror have to answer the same question the same
+ * way — a phone that still claims a window is stranded after the desktop has
+ * parked it is worse than a phone that never said so.
+ *
+ * Returns the SAME array when nothing changed, so a React state setter that
+ * compares by identity re-renders nothing.
+ */
+export function reduceMacDesktopNotParked(
+  current: readonly MacDesktopNotParked[],
+  event: MacDesktopEventPayload,
+  laneId: string,
+  now: number,
+): readonly MacDesktopNotParked[] {
+  if (event.type === "window-not-parked") {
+    if (event.laneId !== laneId) return current;
+    // One entry per window: a driver retrying the same window reports the
+    // newest reason, it does not fill the list with one window's history.
+    const rest = current.filter((entry) => entry.windowId !== event.windowId);
+    return [{ windowId: event.windowId, reason: event.reason, at: now }, ...rest]
+      .slice(0, MAC_DESKTOP_NOT_PARKED_MAX);
+  }
+  if (event.type === "windows-changed") {
+    if (event.laneId !== laneId) return current;
+    // The window landed after all. `laneId` on the window IS parked-ness — a
+    // window with no lane is still loose on the human's own screen.
+    const parked = new Set(
+      event.windows.filter((window) => window.laneId === laneId).map((window) => window.id),
+    );
+    const next = current.filter((entry) => !parked.has(entry.windowId));
+    return next.length === current.length ? current : next;
+  }
+  // The display is gone, so nothing is waiting to land on it.
+  if (event.type === "display-destroyed" && event.laneId === laneId) {
+    return current.length ? [] : current;
+  }
+  return current;
+}
+
 // ---------------------------------------------------------------------------
 // The seat provider interface
 // ---------------------------------------------------------------------------

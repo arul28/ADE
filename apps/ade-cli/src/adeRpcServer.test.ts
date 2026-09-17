@@ -5154,6 +5154,80 @@ describe("adeRpcServer", () => {
     expect(setActiveTool).toHaveBeenCalledWith({ laneId: "lane-b", tool: "browser" });
   });
 
+  it("pins mac_desktop to the caller's own chat session and lane", async () => {
+    // `chatSessionId` on this domain is WHO holds the display's input lease and
+    // whose turn a clip is charged to. Nothing checked it belonged to the
+    // caller, so an agent in chat A could act as chat B.
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const getStatus = vi.fn(async () => ({ supported: true, running: false }));
+    const observe = vi.fn(async (args: unknown) => args);
+    fixture.runtime.macDesktopService = { getStatus, observe } as any;
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+
+    // A foreign chat session id is replaced with the caller's own, and the lane
+    // is pinned the same way `work_tools.getLaneState` pins it.
+    const foreign = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-b", chatSessionId: "chat-b" },
+    });
+    expect(foreign?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-a",
+      chatSessionId: "chat-a",
+    }));
+
+    // Omitting it entirely is filled in, not left blank: an agent's call is
+    // always attributed to the chat that made it.
+    observe.mockClear();
+    const missing = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-a" },
+    });
+    expect(missing?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-a",
+      chatSessionId: "chat-a",
+    }));
+
+    // A run/step identity has no chat of its own, so it acts as nobody rather
+    // than as whoever it named.
+    observe.mockClear();
+    const stepHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(stepHandler, { callerId: "step-1", role: "agent", runId: "run-1", stepId: "step-1" });
+    const step = await callTool(stepHandler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-b", chatSessionId: "chat-b" },
+    });
+    expect(step?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-b" }));
+    expect(observe.mock.calls[0]?.[0]).not.toHaveProperty("chatSessionId");
+
+    // A user client keeps what it sent: the desktop renderer, the web client and
+    // a paired phone each drive whichever lane's display their UI is showing.
+    observe.mockClear();
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const human = await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-b", chatSessionId: "chat-b" },
+    });
+    expect(human?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-b",
+      chatSessionId: "chat-b",
+    }));
+  });
+
   it("strips a caller-supplied callerLaneId from work_tools reads", async () => {
     // `callerLaneId` IS the aggregator's ownership check, so it is never the
     // caller's to supply — including on the user-client path, where it used to

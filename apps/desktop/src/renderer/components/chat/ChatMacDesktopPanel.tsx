@@ -88,6 +88,8 @@ export function ChatMacDesktopPanel({
     setError: setStatusError,
     refresh: refreshStatus,
     cursor,
+    notParked,
+    dismissNotParked,
   } = useMacDesktopStatus({ laneId, laneName, sessionId, runtimePin });
   const [windowsOpen, setWindowsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -327,6 +329,7 @@ export function ChatMacDesktopPanel({
   const parkedLine = windows.length
     ? windows.map((entry) => [entry.appName, entry.title].filter(Boolean).join(" — ")).join(" · ")
     : "No windows parked yet";
+  const notParkedNewest = notParked[0] ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2" data-testid="mac-desktop-panel">
@@ -516,6 +519,35 @@ export function ChatMacDesktopPanel({
       <p className="truncate px-1 text-[11px] text-muted-fg" data-testid="mac-desktop-parked">
         {parkedLine}
       </p>
+
+      {/*
+        ── A window that would not go ──────────────────────────────────
+
+        The service forwards `window-not-parked` precisely because the window is
+        still on the user's OWN screen, and until this line existed the only
+        surface that knew was the event log. Newest only: the list holds three so
+        a repeat replaces the entry instead of stacking, but the footer has room
+        for one sentence and the second one would push the screen up.
+      */}
+      {notParkedNewest ? (
+        <p
+          className="flex items-center gap-2 px-1 text-[11px] text-amber-300"
+          data-testid="mac-desktop-not-parked"
+        >
+          <WarningCircle size={12} className="shrink-0" />
+          <span className="truncate">
+            {`Window ${notParkedNewest.windowId} stayed on your screen (${notParkedNewest.reason})`}
+          </span>
+          <button
+            type="button"
+            className="ml-auto shrink-0 underline underline-offset-2"
+            data-testid="mac-desktop-not-parked-dismiss"
+            onClick={() => dismissNotParked(notParkedNewest.windowId)}
+          >
+            Dismiss
+          </button>
+        </p>
+      ) : null}
     </div>
   );
 }

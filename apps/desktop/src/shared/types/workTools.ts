@@ -15,6 +15,7 @@
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
+  MacDesktopNotParked,
   MacDesktopPermissions,
   MacDesktopStreamSummary,
   MacDesktopWindow,
@@ -216,6 +217,16 @@ export type WorkToolsMacDesktopState = {
    * `MacDesktopStatus.hostIsLocal`; a phone or a browser tab always reads false.
    */
   hostIsLocal: boolean;
+  /**
+   * Windows the driver could not park, newest first, at most
+   * `MAC_DESKTOP_NOT_PARKED_MAX`. The desktop panel keeps the same list from the
+   * same event; this is how a phone learns a window is sitting on the human's
+   * own screen without being on that Mac to see it.
+   *
+   * Optional on the wire: an older daemon publishes no such field, and a client
+   * must read it as `notParked ?? []` rather than as "none stranded".
+   */
+  notParked?: MacDesktopNotParked[];
 };
 
 export type WorkToolsLaneState = {

@@ -788,6 +788,34 @@ describe("workToolsStateService", () => {
       service.dispose();
     });
 
+    it("mirrors stranded windows, newest first, and drops one once it parks", async () => {
+      // `window-not-parked` used to reach the mirror and stop there. A window
+      // the driver could not park is on the human's own screen, which is the one
+      // thing a phone cannot see, so it is the thing most worth forwarding.
+      const mac = macService(() => macStatus());
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      await service.getLaneState({ laneId: "lane-1" });
+      mac.emit({ type: "window-not-parked", laneId: "lane-1", windowId: 1, reason: "window_not_ready" });
+      mac.emit({ type: "window-not-parked", laneId: "lane-1", windowId: 2, reason: "denied" });
+      // Another lane's stranded window must not show up in this lane's mirror.
+      mac.emit({ type: "window-not-parked", laneId: "lane-2", windowId: 3, reason: "denied" });
+
+      const stranded = await service.getLaneState({ laneId: "lane-1" });
+      expect(stranded.macDesktop?.notParked).toEqual([
+        { windowId: 2, reason: "denied", at: expect.any(Number) },
+        { windowId: 1, reason: "window_not_ready", at: expect.any(Number) },
+      ]);
+
+      mac.emit({
+        type: "windows-changed",
+        laneId: "lane-1",
+        windows: [{ id: 2, laneId: "lane-1", appName: "Safari" }] as never,
+      });
+      const settled = await service.getLaneState({ laneId: "lane-1" });
+      expect(settled.macDesktop?.notParked?.map((entry) => entry.windowId)).toEqual([1]);
+      service.dispose();
+    });
+
     it("reports the tool as absent when getStatus fails, and warns", async () => {
       const warn = vi.fn();
       const mac = macService(() => {

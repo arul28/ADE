@@ -295,6 +295,18 @@ struct WorkToolsSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
               }
             }
+            // A window that would not park is still on the human's own Mac,
+            // which is the one thing this pane cannot show a picture of — so it
+            // says it. Newest only, matching the desktop panel's single line.
+            if let stranded = (macDesktop.notParked ?? []).first {
+              Label(
+                "Window \(stranded.windowId) stayed on your screen (\(stranded.reason))",
+                systemImage: "exclamationmark.triangle"
+              )
+              .font(.caption)
+              .foregroundStyle(ADEColor.warning)
+              .frame(maxWidth: .infinity, alignment: .leading)
+            }
           }
           .frame(maxWidth: .infinity, alignment: .leading)
         } else {

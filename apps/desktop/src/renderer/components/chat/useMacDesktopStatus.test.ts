@@ -6,6 +6,7 @@ import type {
   MacDesktopStatus,
   MacDesktopWindow,
 } from "../../../shared/types/macDesktop";
+import { reduceMacDesktopNotParked } from "../../../shared/types/macDesktop";
 import {
   macDesktopCursorFromEvent,
   reduceMacDesktopStatus,
@@ -150,6 +151,79 @@ describe("reduceMacDesktopStatus", () => {
       windowId: 2,
       reason: "denied",
     }, "lane-1")).toBe(status);
+  });
+});
+
+describe("reduceMacDesktopNotParked", () => {
+  const stranded = (windowId: number, reason = "window_not_ready"): MacDesktopEventPayload => ({
+    type: "window-not-parked",
+    laneId: "lane-1",
+    windowId,
+    reason,
+  });
+  const parkedWindow = (id: number, laneId: string | null): MacDesktopWindow => ({
+    id,
+    appName: "Safari",
+    title: "ADE",
+    laneId,
+    onDisplayId: laneId ? 7 : null,
+  } as unknown as MacDesktopWindow);
+
+  it("keeps the three newest, newest first, one entry per window", () => {
+    let list = reduceMacDesktopNotParked([], stranded(1), "lane-1", 1_000);
+    list = reduceMacDesktopNotParked(list, stranded(2), "lane-1", 2_000);
+    list = reduceMacDesktopNotParked(list, stranded(3), "lane-1", 3_000);
+    list = reduceMacDesktopNotParked(list, stranded(4), "lane-1", 4_000);
+    expect(list.map((entry) => entry.windowId)).toEqual([4, 3, 2]);
+    expect(list[0]).toEqual({ windowId: 4, reason: "window_not_ready", at: 4_000 });
+
+    // A retry on a window already in the list replaces it with the newest
+    // reason rather than filling the list with one window's history.
+    const retried = reduceMacDesktopNotParked(list, stranded(3, "denied"), "lane-1", 5_000);
+    expect(retried.map((entry) => entry.windowId)).toEqual([3, 4, 2]);
+    expect(retried[0]?.reason).toBe("denied");
+  });
+
+  it("drops a window a later windows-changed shows parked, and keeps the rest", () => {
+    let list = reduceMacDesktopNotParked([], stranded(1), "lane-1", 1_000);
+    list = reduceMacDesktopNotParked(list, stranded(2), "lane-1", 2_000);
+    const after = reduceMacDesktopNotParked(list, {
+      type: "windows-changed",
+      laneId: "lane-1",
+      // Window 2 landed. Window 1 came back in the list with no lane, which is
+      // a window still loose on the human's own screen — it stays reported.
+      windows: [parkedWindow(2, "lane-1"), parkedWindow(1, null)],
+    }, "lane-1", 3_000);
+    expect(after.map((entry) => entry.windowId)).toEqual([1]);
+  });
+
+  it("returns the same array when nothing changed, and clears with the display", () => {
+    const list = reduceMacDesktopNotParked([], stranded(1), "lane-1", 1_000);
+    // Another lane's news, and a windows-changed that parked nothing on the
+    // list, both have to be identity-stable or the panel re-renders per event.
+    expect(reduceMacDesktopNotParked(list, stranded(9), "lane-2", 2_000)).toBe(list);
+    expect(reduceMacDesktopNotParked(list, {
+      type: "windows-changed",
+      laneId: "lane-1",
+      windows: [parkedWindow(5, "lane-1")],
+    }, "lane-1", 2_000)).toBe(list);
+    expect(reduceMacDesktopNotParked(list, {
+      type: "lease-changed",
+      laneId: "lane-1",
+      lease: null,
+    }, "lane-1", 2_000)).toBe(list);
+
+    // The display is gone, so nothing is waiting to land on it.
+    expect(reduceMacDesktopNotParked(list, {
+      type: "display-destroyed",
+      laneId: "lane-1",
+      reason: "stopped",
+    }, "lane-1", 2_000)).toEqual([]);
+    expect(reduceMacDesktopNotParked([], {
+      type: "display-destroyed",
+      laneId: "lane-1",
+      reason: "stopped",
+    }, "lane-1", 2_000)).toEqual([]);
   });
 });
 
