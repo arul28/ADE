@@ -1,0 +1,36 @@
+---
+title: "v1.2.74"
+description: "Release notes for ADE v1.2.74 - September 17, 2026"
+---
+
+ADE account is required. Settings follow four scopes, credentials live in an encrypted vault, and OpenCode sign-in is a first-class provider path. Cursor Cloud stays in the top bar.
+
+---
+
+## Account and settings
+
+- **An ADE account is required.** Desktop, CLI, TUI, hosted web, and iOS report a lost session as a lost session instead of falling through as a guest. Local work on the machine can continue while signed out.
+- **Settings use four scopes:** account, account-repo, machine, and machine-repo. Account preferences follow you after a successful Worker sync. A cold empty cache does not upload local defaults over existing rows.
+- **Provider keys and Linear credentials live in a platform-encrypted vault.** Writes carry an owner fence. Vault mutations retry while the brain is down. Sign-out purges vault credentials and keeps settings.
+- **Machine secrets migrate on sign-in** with a receipt. Truncated vault pages finish before migration runs. Linear refresh grants stamp this machine as `refreshOwner`.
+- **Settings pages are unified.** Cursor Cloud lives in the top bar only, sized to match Linear — not a sidebar tab.
+
+## Providers
+
+- **OpenCode sign-in is a primary provider path**, including SDK-backed auth rather than a side door.
+- **Cursor SDK 1.0.31** adds inline steer on a live turn. Leftover Cursor Cloud ids no longer hide inline send on iOS.
+- **Codex pins 0.153.4** and defaults to GPT-6 Astra.
+
+## Chat and Work
+
+- **One chip model everywhere**, N PRs per chat, and last-used launch settings.
+- **CTO gets a live voice call**, a persistent director, a work board, and auto handoff. The thread no longer bloats from the call.
+- **Work tools, browser, and App Control** are rebuilt for agents.
+- Provider retries stay inline. Settled tools condense above the turn time line. Parent-notify warnings stop after the parent is deleted.
+- Lanes and chats can be named from the ADE provider. Usage meters stay in sync across windows. Cursor chats can Read attached images.
+
+## iOS
+
+- **Device hub** with a host-encoded live view, device tools, and semantic actions.
+- Hub status cards and instant chat open. Chat, attachments, and limits match the mobile upgrades.
+- Recover a blocked project host from the phone. Manage-lane rename and a compact header. Linear launch drafts reset per issue.

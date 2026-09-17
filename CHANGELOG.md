@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.74] - 2026-09-17
+
+### Account and settings
+
+- An ADE account is required on desktop, CLI, TUI, hosted web, and iOS. A lost session reports its real state instead of falling through as a guest (#1252).
+- Settings use four scopes (`account`, `account-repo`, `machine`, `machine-repo`). Account preferences upload only after a successful Worker sync; a cold empty cache does not overwrite remote rows (#1252).
+- Provider API keys and Linear credentials live in a platform-encrypted vault with owner fences and retries while the brain is down. Settings survive sign-out; vault credentials do not (#1252).
+- Silent receipt-backed migration finishes every vault page before it runs. Linear refresh grants stamp this machine as `refreshOwner` (#1252).
+- Cursor Cloud lives in the top bar only, sized to match Linear — not a sidebar tab (#1252, #1254).
+
+### Providers
+
+- OpenCode sign-in is a primary provider path, including SDK-backed auth (#1253).
+- Cursor SDK 1.0.31 adds inline steer on a live turn (#1250). Leftover Cursor Cloud ids no longer hide inline send on iOS (#1254).
+- Codex pins 0.153.4 and defaults to GPT-6 Astra (#1230).
+
+### Chat and Work
+
+- One chip model everywhere, N PRs per chat, and last-used launch settings (#1248).
+- CTO live voice, persistent director, work board, and auto handoff (#1249, #1237).
+- Work tools, browser, and App Control rebuilt for agents (#1229).
+- Provider retries stay inline; settled tools condense above the turn time line (#1244, #1240).
+- Lanes and chats can be named from the ADE provider (#1223). Usage meters stay in sync across windows (#1227). Cursor chats can Read attached images (#1226).
+
+### iOS
+
+- Device hub with a host-encoded live view, device tools, and semantic actions (#1236).
+- Hub status cards and instant chat open (#1236, hub follow-ups). Chat, attachments, and limits match the mobile upgrades (#1235).
+- Recover a blocked project host from the phone (#1234). Manage-lane rename and a compact header (#1224).
+
 ## [1.2.73] - 2026-09-02
 
 ### Claude
@@ -1944,7 +1974,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.73...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.74...HEAD
+[1.2.74]: https://github.com/arul28/ADE/compare/v1.2.73...v1.2.74
 [1.2.73]: https://github.com/arul28/ADE/compare/v1.2.72...v1.2.73
 [1.2.72]: https://github.com/arul28/ADE/compare/v1.2.71...v1.2.72
 [1.2.71]: https://github.com/arul28/ADE/compare/v1.2.70...v1.2.71
