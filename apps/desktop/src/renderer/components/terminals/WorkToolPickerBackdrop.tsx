@@ -5,6 +5,7 @@ import { createBackdropRenderer } from "./workToolPickerBackdropRenderer";
 
 export {
   BACKDROP_FRAME_MS,
+  BACKDROP_IDLE_FRAME_MS,
   BACKDROP_MAX_DPR,
   BACKDROP_PIXEL_BUDGET,
   backdropThemeFor,
@@ -26,7 +27,7 @@ export type { WorkToolPickerBackdropTheme } from "./workToolPickerBackdropShader
  * 2. The budget. This is decoration on a page you land on constantly, sitting
  *    inside an Electron renderer that is also running a terminal, a browser
  *    view and a chat stream. It renders at DPR 1, never more than
- *    `BACKDROP_PIXEL_BUDGET` pixels, never faster than 30 fps, and not at all
+ *    `BACKDROP_PIXEL_BUDGET` pixels, never faster than 30 fps — 20 while nothing is chasing the pointer — and not at all
  *    while the window is blurred, the document hidden, the canvas scrolled out
  *    of view, or the pointer's device cannot hover. Under
  *    `prefers-reduced-motion` it paints one frame and stops. Without WebGL — or

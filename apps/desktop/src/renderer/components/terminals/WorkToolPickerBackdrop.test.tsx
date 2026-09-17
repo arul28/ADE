@@ -4,6 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   BACKDROP_FRAME_MS,
+  BACKDROP_IDLE_FRAME_MS,
   BACKDROP_MAX_DPR,
   BACKDROP_PIXEL_BUDGET,
   WorkToolPickerBackdrop,
@@ -127,6 +128,14 @@ describe("resolveBackdropSize", () => {
 
   it("caps the frame rate at 30, so a 240Hz panel costs seven skipped frames", () => {
     expect(BACKDROP_FRAME_MS).toBeCloseTo(1000 / 30, 5);
+  });
+
+  it("drops to 20 fps when nothing is chasing the pointer", () => {
+    // Idle is what this page is doing essentially all the time, and the drift
+    // underneath the swirl moves a few pixels a second. The 30 fps ceiling is
+    // for the cursor, which has to keep up with a hand.
+    expect(BACKDROP_IDLE_FRAME_MS).toBeCloseTo(1000 / 20, 5);
+    expect(BACKDROP_IDLE_FRAME_MS).toBeGreaterThan(BACKDROP_FRAME_MS);
   });
 
   it("leaves the reference's 5-tap blur out of the fragment shader", () => {
@@ -387,5 +396,124 @@ describe("WorkToolPickerBackdrop context lifecycle", () => {
       });
     });
     expect(rect.mock.calls.length - baseline).toBe(1);
+  });
+});
+
+describe("WorkToolPickerBackdrop frame scheduling", () => {
+  beforeAll(() => {
+    class NoopObserver {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    if (typeof globalThis.ResizeObserver === "undefined") {
+      globalThis.ResizeObserver = NoopObserver as unknown as typeof ResizeObserver;
+    }
+    if (typeof globalThis.IntersectionObserver === "undefined") {
+      globalThis.IntersectionObserver = NoopObserver as unknown as typeof IntersectionObserver;
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("waits on a timer between frames instead of a rAF per display refresh", () => {
+    // Measured in the real pane before this: 240 rAF callbacks a second to draw
+    // 30 frames, because the loop asked for a frame and skipped seven of every
+    // eight. A page with a pending rAF is a page the compositor schedules a
+    // BeginFrame for on every vsync — on the 240Hz panel this repo is developed
+    // on that is eight wake-ups per drawn frame, for one drawn frame.
+    const { gl } = stubGl();
+    useStubGl(gl);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.useFakeTimers();
+    let pending: FrameRequestCallback | null = null;
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      pending = cb;
+      return 1;
+    });
+
+    render(<WorkToolPickerBackdrop theme="dark" />);
+
+    // The FIRST animated frame is still asked for straight away — mount paints
+    // one frame outright, and the loop should not sleep before it starts.
+    expect(raf).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // After that frame lands, the next one is owed to the clock, not to the
+    // display: no rAF is left pending, so no BeginFrame is scheduled for it.
+    act(() => {
+      pending?.(performance.now());
+    });
+    expect(raf).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+  });
+
+  it("paints one frame and stops under reduced motion", () => {
+    const { gl } = stubGl();
+    useStubGl(gl);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) => ({
+      matches: query.includes("reduced-motion"),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia);
+    vi.useFakeTimers();
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+
+    render(<WorkToolPickerBackdrop theme="dark" />);
+
+    expect(gl.drawArrays).toHaveBeenCalledTimes(1);
+    expect(raf).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops on a battery that is low and not charging, and resumes when it charges", async () => {
+    const { gl } = stubGl();
+    useStubGl(gl);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const listeners = new Map<string, () => void>();
+    const status = {
+      charging: false,
+      level: 0.12,
+      addEventListener: (type: string, listener: () => void) => {
+        listeners.set(type, listener);
+      },
+      removeEventListener: (type: string) => {
+        listeners.delete(type);
+      },
+    };
+    (navigator as unknown as { getBattery?: () => Promise<typeof status> }).getBattery = () =>
+      Promise.resolve(status);
+    const cancel = vi.spyOn(window, "cancelAnimationFrame");
+
+    render(<WorkToolPickerBackdrop theme="dark" />);
+    const mountDraws = gl.drawArrays.mock.calls.length;
+    // The battery answer is a promise, so the loop starts and then stands down.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(cancel).toHaveBeenCalled();
+    const frames = gl.drawArrays.mock.calls.length;
+    // The last composited frame stays on screen; nothing new is drawn.
+    expect(frames).toBe(mountDraws);
+
+    // Plugged in: the drift comes back.
+    status.charging = true;
+    act(() => {
+      listeners.get("chargingchange")?.();
+    });
+    expect(listeners.size).toBe(2);
+
+    delete (navigator as unknown as { getBattery?: unknown }).getBattery;
   });
 });

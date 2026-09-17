@@ -295,6 +295,16 @@ export const BACKDROP_MAX_DPR = 1;
 export const BACKDROP_PIXEL_BUDGET = 600_000;
 /** 30 fps. Drift this slow gains nothing from 60, let alone from 240. */
 export const BACKDROP_FRAME_MS = 1000 / 30;
+/**
+ * 20 fps while nothing is chasing the cursor.
+ *
+ * The 30 fps ceiling exists for the swirl, which has to keep up with a pointer;
+ * the drift underneath it moves a few pixels a second and cannot be told apart
+ * at 20. Idle is the state the picker is in essentially all the time, so this is
+ * a third of the mesh's cost back for a difference nobody can see. The moment
+ * the pointer touches the canvas the loop steps back up to `BACKDROP_FRAME_MS`.
+ */
+export const BACKDROP_IDLE_FRAME_MS = 1000 / 20;
 
 /**
  * The drawing-buffer size for a given CSS box — the whole size/budget policy,
