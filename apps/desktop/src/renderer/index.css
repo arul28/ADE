@@ -256,6 +256,11 @@
   --color-accent: #049068;
   --color-accent-fg: #ffffff;
   --color-accent-muted: rgba(4, 144, 104, 0.10);
+  /* Light never defined these, so every light surface that reached for them —
+     the tools picker backdrop among them — silently got the DARK theme's
+     violets on a green page. */
+  --color-accent-bright: #4FC49B;
+  --color-accent-deep: #0E9A72;
   --color-surface-raised: #ffffff;
   --color-surface-recessed: #eae7e2;
   --color-surface-overlay: rgba(255, 255, 255, 0.92);
@@ -2316,57 +2321,142 @@ button:active, [role="button"]:active {
   pointer-events: none;
 }
 
-/* The no-WebGL fallback: the same corner light, flat. A software-rendered mesh
-   would be the most expensive thing in the window. */
+/* The no-WebGL fallback. A software-rendered mesh would be the most expensive
+   thing in the window, so this is the same ramp painted flat — four stops of it,
+   not a corner light. A fallback that reads as "the gradient failed" is worse
+   than no gradient, so the stops here are the shader's own (`--color-bg` →
+   `--color-accent-deep` → `--color-accent` → `--color-accent-bright`) at
+   alphas chosen to land in the same luminance band the shader does. */
 .ade-tool-picker-static {
   background:
     radial-gradient(
-      120% 90% at 16% 10%,
-      color-mix(in srgb, var(--color-accent-deep) 30%, transparent),
+      90% 70% at 12% 6%,
+      color-mix(in srgb, var(--color-accent-deep) 72%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      75% 65% at 82% 18%,
+      color-mix(in srgb, var(--color-accent) 46%, transparent),
       transparent 62%
     ),
     radial-gradient(
-      110% 80% at 86% 82%,
-      color-mix(in srgb, var(--color-accent) 18%, transparent),
-      transparent 60%
+      85% 75% at 70% 92%,
+      color-mix(in srgb, var(--color-accent-bright) 34%, transparent),
+      transparent 66%
     ),
-    var(--color-bg);
+    radial-gradient(
+      60% 50% at 30% 62%,
+      color-mix(in srgb, var(--color-accent-deep) 40%, transparent),
+      transparent 70%
+    ),
+    /* The deep stop is TINTED, like the shader's own base and like the
+       reference's `#031C26`. Bottoming out on `--color-bg` gives the fallback
+       no bottom — it just dissolves into the pane. */
+    #17122E;
 }
 
 [data-theme="light"] .ade-tool-picker-static {
   background:
     radial-gradient(
-      120% 90% at 16% 10%,
-      color-mix(in srgb, var(--color-accent-bright) 34%, transparent),
+      90% 70% at 12% 6%,
+      color-mix(in srgb, var(--color-accent-deep) 34%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      75% 65% at 82% 18%,
+      color-mix(in srgb, var(--color-accent) 24%, transparent),
       transparent 62%
     ),
     radial-gradient(
-      110% 80% at 86% 82%,
+      85% 75% at 70% 92%,
+      color-mix(in srgb, var(--color-accent-bright) 30%, transparent),
+      transparent 66%
+    ),
+    radial-gradient(
+      60% 50% at 30% 62%,
       color-mix(in srgb, var(--color-accent-bright) 22%, transparent),
-      transparent 60%
+      transparent 70%
     ),
     var(--color-surface);
 }
 
-/* The card. Now that there is something behind it, the card is a piece of
-   glass rather than a flat rectangle: a translucent fill, one
-   hairline, and nothing else at rest. No `backdrop-filter` — six blur regions
-   over a 30fps animating canvas re-blur on every backdrop frame and spend back
-   everything the backdrop's own budget (DPR 1, 600k px, 30fps) saves. The
-   measured 82% fill is what carries the violet through and holds contrast.
-   Hover is the only place this page spends
-   colour — a 2px lift, the hairline to 45% accent, and one soft accent glow
-   over 160ms. Press settles back to a 0.99 scale, so the card gives under the
-   cursor rather than jumping out from under it. */
+/* The scrim: one element between the backdrop and the grid, and the reason the
+   ramp above is allowed to be this bold.
+
+   The alternative — the one this file used to take — is to flatten the mesh
+   until the cards win, which is how the backdrop ended up invisible. This
+   instead calms only the middle third, where the cards actually stand, and
+   leaves the corners at full strength. Pure paint, no filter, no layout: an
+   ellipse of `--color-bg` fading to nothing well before the edge, plus a
+   top-and-bottom wash so the column's scroll edges do not cut the gradient off
+   mid-lobe. Untouchable, like the canvas under it. */
+.ade-tool-picker-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      68% 52% at 50% 48%,
+      color-mix(in srgb, var(--color-bg) 58%, transparent),
+      color-mix(in srgb, var(--color-bg) 22%, transparent) 62%,
+      transparent 82%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg) 30%, transparent) 0%,
+      transparent 24%,
+      transparent 76%,
+      color-mix(in srgb, var(--color-bg) 30%, transparent) 100%
+    );
+}
+
+[data-theme="light"] .ade-tool-picker-scrim {
+  background:
+    radial-gradient(
+      68% 52% at 50% 48%,
+      color-mix(in srgb, var(--color-surface) 62%, transparent),
+      color-mix(in srgb, var(--color-surface) 24%, transparent) 62%,
+      transparent 82%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface) 34%, transparent) 0%,
+      transparent 24%,
+      transparent 76%,
+      color-mix(in srgb, var(--color-surface) 34%, transparent) 100%
+    );
+}
+
+/* The card: a piece of glass standing on the gradient, not a flat rectangle
+   punched out of it.
+
+   Three layers, and each one is there for a reason the flat version could not
+   cover. The FILL is a translucent `--color-card` — 80% now rather than the old
+   82%, because the scrim already takes the mesh under the grid down to roughly
+   the band the old 82% was compensating for, so the card can afford to be more
+   glass and still hold a 12px muted line at 4:1 over the brightest spot it can
+   sit on. The INNER hairline (`inset 0 0 0 1px`) is the accent at low alpha:
+   it is what makes the edge read as lit from the gradient rather than drawn on
+   top of it, and it costs one shadow with no blur. The OUTER hairline is still
+   the border, kept neutral so the two do not fight.
+
+   Still no `backdrop-filter`. Seven blur regions over a 30fps animating canvas
+   re-blur on every backdrop frame and spend back everything the backdrop's own
+   budget (DPR 1, 600k px, 30fps) saves — the translucent fill plus the inner
+   accent edge buys the same read for one paint.
+
+   Hover is where this page spends colour: a 3px lift, the border and the inner
+   edge up to a real accent, and one soft accent glow over 160ms. Press settles
+   back to a 0.99 scale, so the card gives under the cursor rather than jumping
+   out from under it. */
 .ade-tool-card {
-  border-radius: 10px;
-  border: 1px solid rgb(255 255 255 / 0.12);
-  /* 82%, not the 50-ish a "glass" card wants to be: the mesh peaks at a
-     luminance of ~118 and a card thin enough to show that peak takes its own
-     12px muted line down to a 2.4:1 contrast. 82% keeps every line at or above
-     4:1 over the brightest spot the backdrop can produce, and the blur still
-     carries the violet through. */
-  background: color-mix(in srgb, var(--color-card) 82%, transparent);
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 12%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.06),
+    0 1px 2px -1px rgb(0 0 0 / 0.4);
   transition:
     transform 160ms ease-out,
     background-color 160ms ease-out,
@@ -2376,21 +2466,56 @@ button:active, [role="button"]:active {
 
 [data-theme="light"] .ade-tool-card {
   border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
-  background: color-mix(in srgb, var(--color-card) 84%, transparent);
+  background: color-mix(in srgb, var(--color-card) 82%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 10%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.5),
+    0 1px 2px -1px rgb(15 23 42 / 0.08);
 }
 
 .ade-tool-card:not(:disabled):hover,
 .ade-tool-card:not(:disabled)[data-highlighted="true"] {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
   background: color-mix(in srgb, var(--color-card) 90%, transparent);
-  box-shadow: 0 8px 22px -12px color-mix(in srgb, var(--color-accent) 55%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.1),
+    0 10px 26px -12px color-mix(in srgb, var(--color-accent) 60%, transparent);
+}
+
+[data-theme="light"] .ade-tool-card:not(:disabled):hover,
+[data-theme="light"] .ade-tool-card:not(:disabled)[data-highlighted="true"] {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 26%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.6),
+    0 10px 26px -14px color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+
+/* The glyph, tinted at rest. `--color-accent` at full strength would make the
+   icon compete with the label, and `text-muted-fg` on a coloured gradient reads
+   as a disabled control — 62% of the accent mixed into the muted foreground
+   sits between the two, and hover takes it the rest of the way. */
+.ade-tool-card-icon {
+  color: color-mix(in srgb, var(--color-accent) 62%, var(--color-muted-fg));
 }
 
 /* Press: the lift collapses and the card takes a hair off its own size. */
 .ade-tool-card:not(:disabled):active {
   transform: translateY(-1px) scale(0.99);
   background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tool-card {
+    transition: none;
+  }
+
+  .ade-tool-card:not(:disabled):hover,
+  .ade-tool-card:not(:disabled)[data-highlighted="true"],
+  .ade-tool-card:not(:disabled):active {
+    transform: none;
+  }
 }
 
 /* The last-opened tool is `aria-current` but carries NO fill: the picker is a

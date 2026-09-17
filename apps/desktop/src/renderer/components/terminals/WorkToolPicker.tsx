@@ -46,10 +46,12 @@ const COLUMN_MAX_PX = 512;
  * There is no title and no subline: the tab strip above already says "Tools",
  * and a page with six labelled cards on it does not need to be introduced.
  *
- * Behind the grid, a slow violet mesh (`WorkToolPickerBackdrop`) — the one
- * decorated surface in the pane, because it is the one surface with nothing on
- * it. The cards float on it: translucent, blurred, one hairline each, lifting
- * 2px under the cursor. Each is still deliberately thin — a monochrome 16px
+ * Behind the grid, a slow multi-stop mesh in the theme's own accent ramp
+ * (`WorkToolPickerBackdrop`) — the one decorated surface in the pane, because it
+ * is the one surface with nothing on it — and a scrim between the two that
+ * calms the middle so the cards stay legible without flattening the gradient.
+ * The cards float on it: translucent, an accent-lit inner edge, one hairline
+ * each, lifting 3px under the cursor. Each is still deliberately thin — a monochrome 16px
  * glyph, the name, and exactly one line underneath. No tinted squares, no key
  * caps, no per-card activity dot; the only mark a card can carry is a red dot
  * when that tool is actually broken, because that is the one fact worth
@@ -122,6 +124,11 @@ export function WorkToolPicker({
       {/* Behind everything and untouchable: the canvas must never eat a click
           meant for the card on top of it, and it is never in the tab order. */}
       <WorkToolPickerBackdrop theme={theme} className="ade-tool-picker-backdrop" />
+      {/* Between the gradient and the cards. The backdrop is bold enough now
+          that the middle of the pane needs calming for a 12px muted line to
+          hold contrast — but only the middle, which is why this is a scrim and
+          not a lower-intensity palette. Untouchable, like the canvas. */}
+      <div aria-hidden="true" data-tool-picker-scrim="" className="ade-tool-picker-scrim" />
       <div
         data-tool-picker-scroll=""
         className="relative flex h-full min-h-0 flex-col overflow-auto"
@@ -196,7 +203,10 @@ export function WorkToolPicker({
                         size={16}
                         weight="regular"
                         aria-hidden="true"
-                        className="shrink-0 text-muted-fg transition-colors duration-[160ms] ease-out group-hover:text-accent group-data-[highlighted=true]:text-accent"
+                        // Tinted at rest, not only on hover: the glyph is the
+                        // one mark on the card, and a muted-grey one on a
+                        // violet/green gradient reads as switched off.
+                        className="ade-tool-card-icon shrink-0 transition-colors duration-[160ms] ease-out group-hover:text-accent group-data-[highlighted=true]:text-accent"
                       />
                       <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-fg">
                         {definition.label}

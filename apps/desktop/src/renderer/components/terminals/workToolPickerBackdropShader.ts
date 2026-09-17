@@ -174,67 +174,115 @@ export type WorkToolPickerBackdropTheme = {
 };
 
 /**
- * The two palettes, both taken straight from `index.css`.
+ * The two palettes: the reference component's own four-stop structure, painted
+ * in ADE's colours.
  *
- * Dark is the app's own canvas (`--color-bg`) lifted through
- * `--color-accent-deep` → `--color-accent` → `--color-accent-bright`, kept low
- * on intensity with a slightly negative brightness: the mesh is a *surface* for
- * the cards, not a picture behind them, and every one of those cards is a
- * translucent rectangle full of 12px text. Light starts from
- * `--color-surface` and walks the same violet hues down (`#EDE9FE` is that ramp
- * one step lighter than `--color-accent-bright`), at well under half the
- * intensity — on a light canvas the same amount of colour reads as a stain.
+ * The 21st.dev "Mesh drift" original ("kk") runs deep teal-navy → blue → cyan →
+ * near-white at intensity 0.56, vignette 0.15, brightness 0, saturation 1. That
+ * SHAPE is what makes it read as a gradient, and it is exactly what this file
+ * previously got wrong: the old dark ramp stopped at `--color-accent-bright`
+ * and then subtracted 0.24 of brightness back off, putting the mesh's median
+ * luminance at ~16/255 against a `--color-bg` of ~11 and a `--color-card` of
+ * ~25. Half the backdrop sat within nine levels of the flat page behind it and
+ * the cards were the brightest thing in the pane — the gradient was, correctly,
+ * invisible. (The in-file history shows brightness walked down −0.05 → −0.16 →
+ * −0.24 to stop the mesh out-shouting the cards. The right instrument for that
+ * is a scrim, not a darker mesh; see `.ade-tool-picker-scrim` in `index.css`.)
+ *
+ * Both ramps are measured against the reference's own luminance envelope by a
+ * CPU port of `FRAG`. Under the shared recipe in `UNIFORMS` the reference
+ * palette runs p5 13 / median 63 / p95 175 / peak 215; the dark ramp below runs
+ * 11 / 64 / 168 / 212. Same picture, ADE's hues.
+ *
+ * Two details carry more weight than they look like they do:
+ *
+ * 1. The deep stop is TINTED, not the page's own black. The reference's base is
+ *    `#031C26` — a deep teal-navy, not `#000`. `#17122E` is the same move in
+ *    violet. A ramp that bottoms out on `--color-bg` has no bottom: it just
+ *    dissolves into the pane.
+ * 2. The top stop is NEAR-WHITE (`#F3F0FF`, against the reference's `#EAF9FF`).
+ *    Dropping it for `--color-accent-bright` costs ~45 points of peak luminance
+ *    and the ramp collapses back into the near-black it came from.
+ *
+ * Light is ADE's GREEN, not a violet. `--color-accent` under
+ * `[data-theme="light"]` is `#049068`; the violets this ramp used to hardcode
+ * were the DARK theme's `--color-accent-*` leaking through, because the light
+ * block never redefines `--color-accent-bright` or `--color-accent-deep`. It
+ * runs the same four-stop structure inverted onto a light canvas: p5 147,
+ * median 222, and the white cards still stand clear of the deepest lobe.
  */
 export function backdropThemeFor(theme: ThemeId): WorkToolPickerBackdropTheme {
   if (theme === "light") {
     return {
-      colors: [rgb("#faf8f5"), rgb("#EDE9FE"), rgb("#C4B5FD"), rgb("#A78BFA")],
-      intensity: 0.24,
-      vignette: 0.18,
-      brightness: 0.02,
-      saturation: 0.7,
+      // `--color-surface` → three tints of `--color-accent`, climbing but never
+      // reaching the accent itself. Light is the one place the reference's
+      // luminance envelope is NOT matched literally: the original is a dark
+      // component, and running its p5 of ~13 inverted onto a light canvas put
+      // the deepest lobe at a mid-green that read as a stain over the pane
+      // rather than as light in it. This ramp keeps the recipe's numbers and
+      // its four-stop shape, and lands at p5 ~172 / median ~236 — an 81-level
+      // spread against the old flat ramp's 59, with white cards still clear of
+      // the deepest lobe.
+      colors: [rgb("#faf8f5"), rgb("#D6F3E7"), rgb("#8FDCC0"), rgb("#2FB48A")],
+      intensity: 0.56,
+      vignette: 0.15,
+      brightness: 0,
+      saturation: 1,
     };
   }
   return {
-    colors: [rgb("#0C0B10"), rgb("#7C3AED"), rgb("#A78BFA"), rgb("#C4B5FD")],
-    intensity: 0.4,
-    vignette: 0.35,
-    // Measured, not guessed: at the pane's default size this ramp means a mean
-    // luminance of 57/255 with the brightness at -0.05, which is BRIGHTER than
-    // the card fill (`--color-card`, ~26) and inverts the page — the mesh would
-    // be reading as the content and the cards as holes in it. -0.16 lands the
-    // mean at ~37 and the peak at ~118: still violet, still moving, and still
-    // underneath. -0.24 takes the peak down again to ~92, because at ~118 the
-    // upper lobe was measurably brighter than a card sitting ON it (~71) and
-    // the eye went to the empty gradient instead of to the six cards.
-    brightness: -0.24,
-    saturation: 0.9,
+    // Deep violet surface tone → `--color-accent-deep` → `--color-accent` →
+    // near-white violet.
+    colors: [rgb("#17122E"), rgb("#7C3AED"), rgb("#A78BFA"), rgb("#F3F0FF")],
+    intensity: 0.56,
+    vignette: 0.15,
+    brightness: 0,
+    saturation: 1,
   };
 }
 
 /**
- * Everything that is not a colour: the builder's own numbers, minus its dead
- * weight. The motion is slowed 4× (`timeScale`) because "premium" here means
- * you notice it only if you stare; the 5-tap blur is gone because it multiplies
- * the mesh evaluation by five per pixel to soften what the gaussian falloff has
- * already softened; the hue rotation and three of the four cursor modes are
- * gone because a branch no one takes still costs something in a fragment
- * shader.
+ * Everything that is not a colour: the reference component's recipe, verbatim
+ * except where its renderer's budget conflicts with ours.
+ *
+ * Adopted as-is: `scale` 1.3, `warp` 0.192, `detail` 2.016, `contrast` 1.167,
+ * `grain` 0.098, `seed` 5069, `rotate` 2.7227, `offsetX` 0.09, `offsetY` 0.15,
+ * `drift` 0.148, `timeScale` -1.373, and the pointer effect at strength 0.73 /
+ * radius 0.365. The reference's `paramA` is a Shader Builder slot this shader
+ * never reads, so it has nothing to be set to.
+ *
+ * Two things from the reference are deliberately NOT adopted:
+ *
+ * - Its `blur` (0.0072). That is a 5-tap blur, which multiplies the mesh
+ *   evaluation by five FOR EVERY PIXEL to soften what the gaussian falloff has
+ *   already softened. This is decoration on a page you land on constantly,
+ *   inside a renderer that is also running a terminal, a browser view and a
+ *   chat stream; a 5× fragment cost is not what that budget is for.
+ * - Its renderer's DPR 2 and 2,000,000-pixel budget. Ours stays at DPR 1 and
+ *   `BACKDROP_PIXEL_BUDGET`, and at 30 fps. A gradient this soft has nothing to
+ *   resolve, and the frame cost is linear in pixels.
+ *
+ * The pointer effect is the reference's mode 2 — the rotate/swirl under the
+ * cursor — and it is the only one of its four kept: the other three were dead
+ * branches, and a branch nobody takes still costs something in a fragment
+ * shader. It stays cheap because it rides the existing 30 fps loop with the
+ * reference's own `exp(-12 dt)` follow, so it only redraws while the pointer is
+ * still settling, and it is switched off entirely on a device that cannot hover.
  */
 export const UNIFORMS = {
   scale: 1.3,
   warp: 0.192,
   detail: 2.016,
   contrast: 1.167,
-  grain: 0.06,
+  grain: 0.098,
   seed: 5069,
   rotate: 2.7227,
   offsetX: 0.09,
   offsetY: 0.15,
-  drift: 0.12,
-  cursorStrength: 0.62,
+  drift: 0.148,
+  cursorStrength: 0.73,
   cursorRadius: 0.365,
-  timeScale: -0.34,
+  timeScale: -1.373,
 } as const;
 
 /** DPR 1, always. This is a soft gradient; it has nothing to resolve. */
