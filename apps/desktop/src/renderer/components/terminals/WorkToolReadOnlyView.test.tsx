@@ -34,6 +34,7 @@ function laneState(overrides: Partial<WorkToolsLaneState> = {}): WorkToolsLaneSt
     },
     browserUnavailable: null,
     agentBrowserPresence: [],
+    macDesktop: null,
     appControl: {
       appName: "ADE Dev",
       status: "connected",

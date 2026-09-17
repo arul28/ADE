@@ -533,6 +533,7 @@ function workToolsState(overrides: Partial<WorkToolsLaneState> = {}): WorkToolsL
     browser: { activeTabId: "tab-1", tabs: [], latestObservation: null },
     browserUnavailable: null,
     agentBrowserPresence: [],
+    macDesktop: null,
     appControl: null,
     capturedAt: "2026-08-24T12:00:00Z",
     ...overrides,
