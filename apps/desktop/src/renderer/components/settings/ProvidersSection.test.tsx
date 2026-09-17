@@ -1452,6 +1452,39 @@ describe("ProvidersSection", () => {
     expect(screen.queryByText(/No sign-in methods or API key fields are available/)).toBeNull();
   });
 
+  it("treats environment-backed dynamic OpenCode credentials as externally managed", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProviders: [{
+        id: "zai",
+        name: "Z.AI",
+        connected: true,
+        modelCount: 16,
+        envVars: ["ZHIPU_API_KEY"],
+        credentialSource: "env",
+      }],
+    }));
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockResolvedValue({ methods: {} });
+
+    renderProvidersSection("opencode");
+
+    fireEvent.change(await screen.findByLabelText("Search all OpenCode providers"), {
+      target: { value: "Z.AI" },
+    });
+    const card = (await screen.findAllByLabelText("Open Z.AI"))[0];
+    await act(async () => {
+      card.click();
+    });
+
+    expect(screen.getByText(/Managed outside ADE/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Disconnect Z.AI" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Verify" })).toBeNull();
+    expect(screen.queryByLabelText("Add Z.AI key")).toBeNull();
+  });
+
   it("offers a retry when the initial OpenCode status probe fails", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();

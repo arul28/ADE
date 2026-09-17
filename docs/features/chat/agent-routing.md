@@ -185,12 +185,16 @@ host-advertised model metadata over their static compatibility catalogs.
 
 OpenCode's Settings catalog is intentionally dynamic. ADE reads the live
 OpenCode server's `provider.list()` and carries only each provider's advertised
-credential environment-variable names (never the provider's `key` field) to
-the renderer. A provider with an environment-backed API credential therefore
-gets an API-key editor even when OpenCode does not expose an OAuth plugin for
-it. OAuth methods still come from OpenCode's `/provider/auth` endpoint, and
-API-key writes go through OpenCode's `/auth/:providerID` endpoint before ADE
-mirrors the credential into its encrypted key store.
+credential environment-variable names (never the provider's `key` field) and a
+non-secret `env`/`config` source marker to the renderer. A provider with an
+environment-backed API credential therefore gets an API-key editor even when
+OpenCode does not expose an OAuth plugin for it, but ADE does not offer a
+disconnect action for a credential it cannot remove. OAuth methods still come
+from OpenCode's `/provider/auth` endpoint, and API-key writes go through
+OpenCode's `/auth/:providerID` endpoint before ADE mirrors the credential into
+its encrypted key store. ADE shows Verify only for providers with an explicit
+provider-native verifier; dynamic providers remain selectable without a false
+verification result.
 
 Results feed into the UI's `AiProviderConnectionStatus` /
 `AiRuntimeConnectionStatus` (see `providerConnectionStatus.ts`).

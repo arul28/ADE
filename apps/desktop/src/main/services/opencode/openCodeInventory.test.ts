@@ -313,6 +313,45 @@ describe("openCodeInventory", () => {
     expect(result.providers[1]).not.toHaveProperty("key");
   });
 
+  it("reports non-secret credential sources for dynamic providers", async () => {
+    const logger = { warn: vi.fn() } as any;
+    const originalEnv = process.env.ZHIPU_API_KEY;
+    process.env.ZHIPU_API_KEY = "test-zhipu-env-key";
+    try {
+      mockState.providerList.mockResolvedValueOnce({
+        data: {
+          connected: ["zai"],
+          all: [{ id: "zai", name: "Z.AI", env: ["ZHIPU_API_KEY"], models: {} }],
+        },
+      } as any);
+
+      const fromEnv = await probeOpenCodeProviderInventory({
+        projectRoot: "/repo",
+        projectConfig: { ai: {} },
+        logger,
+        force: true,
+      });
+      expect(fromEnv.providers[0]).toMatchObject({ id: "zai", connected: true, credentialSource: "env" });
+
+      mockState.providerList.mockResolvedValueOnce({
+        data: {
+          connected: ["zai"],
+          all: [{ id: "zai", name: "Z.AI", env: ["ZHIPU_API_KEY"], models: {} }],
+        },
+      } as any);
+      const fromConfig = await probeOpenCodeProviderInventory({
+        projectRoot: "/repo",
+        projectConfig: { ai: { apiKeys: { zai: "test-zhipu-config-key" } } },
+        logger,
+        force: true,
+      });
+      expect(fromConfig.providers[0]).toMatchObject({ id: "zai", connected: true, credentialSource: "config" });
+    } finally {
+      if (originalEnv === undefined) delete process.env.ZHIPU_API_KEY;
+      else process.env.ZHIPU_API_KEY = originalEnv;
+    }
+  });
+
   it("surfaces connected OpenRouter and OpenCode Go models in the picker catalog", async () => {
     const logger = { warn: vi.fn() } as any;
     mockState.providerList.mockResolvedValueOnce({

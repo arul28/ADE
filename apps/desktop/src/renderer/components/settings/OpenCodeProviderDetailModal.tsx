@@ -15,6 +15,10 @@ export type OpenCodeProviderDetail = {
   modelCount?: number;
   /** Non-secret environment variable names advertised by OpenCode. */
   envVars?: string[];
+  /** Non-secret source of an API credential visible to ADE. */
+  credentialSource?: ApiKeySource;
+  /** True only when ADE has a provider-native API-key verifier. */
+  verificationSupported?: boolean;
   /** Legacy singular field kept for ADE's curated provider rows. */
   envVar?: string;
   placeholder?: string;
@@ -71,9 +75,11 @@ export function OpenCodeProviderDetailModal({
   const supportsApi =
     provider.methods.some((m) => m.type === "api")
     || credentialEnvVars.length > 0;
+  const canVerify = provider.verificationSupported === true;
   // Connected OpenCode sessions (OAuth or key mirrored into OpenCode) must always
   // offer Disconnect — even when auth-method discovery failed and methods[] is empty.
-  const canDisconnect = provider.connected || keySource === "store";
+  const externallyManaged = keySource === "env" || keySource === "config";
+  const canDisconnect = !externallyManaged && (provider.connected || keySource === "store");
   const showOauthSection = oauthMethods.length > 0 || (provider.connected && !provider.hasKey);
   const [oauthOpen, setOauthOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -187,7 +193,9 @@ export function OpenCodeProviderDetailModal({
                     </div>
                   ) : provider.connected ? (
                     <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                      Connected in OpenCode. Sign-in methods could not be listed — you can still disconnect.
+                      {canDisconnect
+                        ? "Connected in OpenCode. Sign-in methods could not be listed — you can still disconnect."
+                        : "Connected by a credential managed outside ADE. Clear that env/config value to disconnect."}
                     </div>
                   ) : null}
                   {provider.connected ? (
@@ -282,13 +290,13 @@ export function OpenCodeProviderDetailModal({
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
                       {provider.hasKey ? (
                         <>
-                          {verifying ? (
+                          {canVerify && verifying ? (
                             <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info }}>Checking…</span>
-                          ) : verification?.ok ? (
+                          ) : canVerify && verification?.ok ? (
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.success }}>
                               <CheckCircle size={12} weight="fill" /> Verified
                             </span>
-                          ) : verification && !verification.ok ? (
+                          ) : canVerify && verification && !verification.ok ? (
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.danger }} title={verification.message}>
                               <XCircle size={12} weight="fill" /> Failed
                             </span>
@@ -297,9 +305,11 @@ export function OpenCodeProviderDetailModal({
                               From {keySource}
                             </span>
                           ) : null}
-                          <button type="button" style={outlineButton({ height: 28 })} disabled={busy || verifying} onClick={() => void onVerifyKey()}>
-                            Verify
-                          </button>
+                          {canVerify ? (
+                            <button type="button" style={outlineButton({ height: 28 })} disabled={busy || verifying} onClick={() => void onVerifyKey()}>
+                              Verify
+                            </button>
+                          ) : null}
                           {keySource === "store" || (!keySource && provider.hasKey) ? (
                             <>
                               <button type="button" style={outlineButton({ height: 28 })} disabled={busy} onClick={() => setEditing(true)}>

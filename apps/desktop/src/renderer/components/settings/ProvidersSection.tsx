@@ -406,12 +406,18 @@ export function ProvidersSection({
         name: patch.name ?? prev?.name ?? inventory?.name ?? apiSpec?.label ?? prettifyProviderId(id),
         methods,
         connected: patch.connected ?? prev?.connected ?? inventory?.connected === true,
-        hasKey: hasKeyFor(id),
+        hasKey: hasKeyFor(id) || Boolean(patch.credentialSource ?? prev?.credentialSource ?? inventory?.credentialSource),
         modelCount: patch.modelCount ?? prev?.modelCount ?? inventory?.modelCount,
         envVars: patch.envVars
           ?? prev?.envVars
           ?? (inventory?.envVars?.length ? inventory.envVars : undefined)
           ?? (apiSpec?.envVar ? [apiSpec.envVar] : undefined),
+        credentialSource: patch.credentialSource
+          ?? prev?.credentialSource
+          ?? inventory?.credentialSource,
+        verificationSupported: patch.verificationSupported
+          ?? prev?.verificationSupported
+          ?? (apiSpec ? true : undefined),
         envVar: patch.envVar
           ?? prev?.envVar
           ?? (inventory?.envVars?.length === 1 ? inventory.envVars[0] : undefined)
@@ -1114,7 +1120,8 @@ export function ProvidersSection({
       {detailProvider ? (
         <OpenCodeProviderDetailModal
           provider={detailProvider}
-          keySource={apiKeySources.get(detailProvider.id) ?? (storedProviders.includes(detailProvider.id) ? "store" : undefined)}
+          keySource={apiKeySources.get(detailProvider.id)
+            ?? (storedProviders.includes(detailProvider.id) ? "store" : detailProvider.credentialSource)}
           verification={verificationByProvider[detailProvider.id]}
           verifying={verifyingProvider === detailProvider.id}
           authMethodsError={authMethodsError}

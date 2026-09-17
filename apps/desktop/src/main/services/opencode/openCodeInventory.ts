@@ -39,6 +39,61 @@ function normalizeOpenCodeProviderEnvVars(value: unknown): string[] | undefined 
   return envVars.length > 0 ? envVars : undefined;
 }
 
+function hasConfiguredOpenCodeApiKey(
+  projectConfig: ProjectConfigFile | EffectiveProjectConfig,
+  providerId: string,
+): boolean {
+  const normalizedProviderId = providerId.trim().toLowerCase();
+  const configured = projectConfig.ai?.apiKeys ?? {};
+  if (Object.entries(configured).some(([id, key]) => (
+    id.trim().toLowerCase() === normalizedProviderId
+    && typeof key === "string"
+    && key.trim().length > 0
+  ))) {
+    return true;
+  }
+
+  // The normal OpenCode server preserves user-supplied config content. It is
+  // safe to inspect the shape here, but never carry the value across the
+  // status boundary.
+  const inheritedContent = process.env.OPENCODE_CONFIG_CONTENT?.trim();
+  if (!inheritedContent) return false;
+  try {
+    const parsed = JSON.parse(inheritedContent) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const provider = (parsed as Record<string, unknown>).provider;
+    if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
+    const entry = (provider as Record<string, unknown>)[providerId]
+      ?? (provider as Record<string, unknown>)[normalizedProviderId];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const options = (entry as Record<string, unknown>).options;
+    return Boolean(
+      options
+      && typeof options === "object"
+      && !Array.isArray(options)
+      && typeof (options as Record<string, unknown>).apiKey === "string"
+      && ((options as Record<string, unknown>).apiKey as string).trim().length > 0,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function resolveOpenCodeCredentialSource(
+  projectConfig: ProjectConfigFile | EffectiveProjectConfig,
+  providerId: string,
+  envVars: string[] | undefined,
+): OpenCodeProviderInfo["credentialSource"] {
+  if (hasConfiguredOpenCodeApiKey(projectConfig, providerId)) return "config";
+  if (envVars?.some((envVar) => {
+    const value = process.env[envVar];
+    return typeof value === "string" && value.trim().length > 0;
+  })) {
+    return "env";
+  }
+  return undefined;
+}
+
 type CacheEntry = {
   cachedAt: number;
   projectRoot: string;
@@ -119,6 +174,11 @@ function readPersistedInventoryFile(): PersistedInventoryFile {
                   Array.isArray(info.envVars)
                   && info.envVars.every((envVar) => typeof envVar === "string" && envVar.trim().length > 0)
                 )
+              )
+              && (
+                info.credentialSource === undefined
+                || info.credentialSource === "config"
+                || info.credentialSource === "env"
               );
           });
         }),
@@ -506,6 +566,7 @@ export async function probeOpenCodeProviderInventory(args: {
           models?: Record<string, Record<string, unknown>>;
         }) => {
           const envVars = normalizeOpenCodeProviderEnvVars(p.env);
+          const credentialSource = resolveOpenCodeCredentialSource(args.projectConfig, p.id, envVars);
           return {
             id: p.id,
             name: typeof p.name === "string" ? p.name : p.id,
@@ -515,6 +576,7 @@ export async function probeOpenCodeProviderInventory(args: {
               : Object.keys(p.models ?? {}).length,
             availableModelCount: availableProviderModelCounts.get(p.id) ?? 0,
             ...(envVars ? { envVars } : {}),
+            ...(credentialSource ? { credentialSource } : {}),
           };
         });
         inventoryCache = {

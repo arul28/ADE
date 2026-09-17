@@ -1604,6 +1604,8 @@ export type OpenCodeProviderSummary = {
   availableModelCount?: number;
   /** Environment variable names OpenCode associates with credentials. */
   envVars?: string[];
+  /** Non-secret source of an API credential visible to the ADE process. */
+  credentialSource?: "config" | "env";
 };
 
 export type PiAuthPromptKind = "text" | "secret" | "select" | "confirm" | "manual_code";
