@@ -2158,6 +2158,10 @@ export function AgentChatComposer({
       // inline handler degrades to queue rather than promoting the user into a
       // cancel they did not pick. A Cursor cloud session lands here. Reordering
       // a provider's modes so interrupt comes first would silently change that.
+      //
+      // One exception, by design: the CTO composer filters "queue" out of
+      // `modes` entirely, so interrupt is the only target left there — the CTO
+      // thread cannot stage a message for later.
       : activeTurnSendCapability.modes.find(activeTurnSendModeDispatchable) ?? "queue";
   // The split send affordance appears for any provider with at least one wired
   // atomic active-turn delivery handler. Everything else keeps the single queue

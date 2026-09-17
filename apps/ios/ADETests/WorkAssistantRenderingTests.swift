@@ -375,7 +375,7 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
     )
     XCTAssertEqual(
       workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true).modes,
-      [.interrupt]
+      [.inline, .interrupt]
     )
   }
 
@@ -398,7 +398,7 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
     )
     XCTAssertEqual(
       workChatActiveSendCapability(provider: "cursor-agent", liveRedirectOnly: true).modes,
-      [.interrupt]
+      [.inline, .interrupt]
     )
   }
 
@@ -448,12 +448,12 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   }
 
   /// The composer hides the picker for a single-mode provider, so the CTO on
-  /// Codex or Cursor gets a plain send button rather than a one-item menu,
-  /// while Claude keeps a real two-way choice.
+  /// Codex gets a plain send button rather than a one-item menu, while Claude
+  /// and Cursor each keep a real two-way choice.
   func testCtoPickerRemainsAChoiceOnlyWhereMoreThanOneModeSurvives() {
     XCTAssertEqual(workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true).modes.count, 2)
     XCTAssertEqual(workChatActiveSendCapability(provider: "codex", liveRedirectOnly: true).modes.count, 1)
-    XCTAssertEqual(workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true).modes.count, 1)
+    XCTAssertEqual(workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true).modes.count, 2)
   }
 
   // MARK: - Work-board move (chat side)

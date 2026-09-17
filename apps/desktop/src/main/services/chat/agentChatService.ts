@@ -45403,10 +45403,17 @@ export function createAgentChatService(args: {
     // is redirected into the live one instead. Its provider is constrained to
     // ones that can do that (`CTO_LIVE_REDIRECT_PROVIDERS`), so there is always
     // an atomic mode to fall back to.
+    //
+    // "First non-queue" is not enough on its own: a cloud Cursor run refuses
+    // every inline steer, and Cursor lists inline first. Picking it there would
+    // stage the message on the very queue this fallback exists to avoid, so the
+    // withheld mode is skipped and interrupt — which works on cloud — is taken.
     const dispatchMode = requestedDispatchMode
       ?? (managed.session.identityKey === "cto"
-        ? activeTurnDispatchModes(managed.session.provider).find((entry) => entry !== "queue") as
-            AgentChatDispatchSteerMode | undefined
+        ? activeTurnDispatchModes(managed.session.provider).find((entry) => (
+            entry !== "queue"
+            && !(entry === "inline" && cursorSessionRunsInCloud(managed.session))
+          )) as AgentChatDispatchSteerMode | undefined
         : undefined);
     // One guard against the canonical per-provider table, rather than the rules
     // restated here. Reject rather than silently downgrading the user's choice.

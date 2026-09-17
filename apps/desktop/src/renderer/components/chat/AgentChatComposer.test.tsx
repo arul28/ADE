@@ -744,6 +744,12 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Send during turn" })).toBeNull();
+    // The landing matters, not just the absence: the fallback must reach queue,
+    // never interrupt, or a downgrade would cancel the running agent.
+    const primary = screen.getByRole("button", { name: "Send after turn" });
+    expect(primary).toBeTruthy();
+    fireEvent.click(primary);
+    expect(onSendSteerInterrupt).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "More send options" }));
     expect(screen.queryByRole("menuitemradio", { name: /Send during turn/ })).toBeNull();
   });

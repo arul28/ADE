@@ -5483,16 +5483,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const slashComposerTrigger = activeComposerTrigger?.type === "slash" ? activeComposerTrigger : null;
   const slashRows = useMemo(() => (
     slashComposerTrigger
-      ? paletteCommands(`/${slashComposerTrigger.query}`, slashCommands, { provider: activeCommandProvider })
+      ? paletteCommands(`/${slashComposerTrigger.query}`, slashCommands, {
+        provider: activeCommandProvider,
+        inlineSteerWithheld: cursorSessionRunsInCloud(activeSession),
+      })
       : []
-  ), [activeCommandProvider, slashComposerTrigger, slashCommands]);
+  ), [activeCommandProvider, activeSession, slashComposerTrigger, slashCommands]);
   // Mid-sentence slash triggers complete into the draft on Enter instead of
   // submitting/running, mirroring the desktop command menu.
   const slashTriggerMidSentence = slashComposerTrigger != null
     && !composerTriggerSpansWholeDraft(prompt, slashComposerTrigger);
   const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
     if (!commandPaletteOpen) return [];
-    const commandItems = paletteCommands("", slashCommands, { provider: activeCommandProvider }).map((command) => ({
+    const commandItems = paletteCommands("", slashCommands, {
+      provider: activeCommandProvider,
+      inlineSteerWithheld: cursorSessionRunsInCloud(activeSession),
+    }).map((command) => ({
       key: `command:${command.name}`,
       kind: "command" as const,
       label: command.argumentHint ? `${command.name} ${command.argumentHint}` : command.name,

@@ -855,7 +855,10 @@ that could not work without it.
   interrupt: a mode the user did not pick must not cancel their running agent.
   The visible consequence is that a cloud Cursor chat defaults to *Send after
   turn* rather than the *Interrupt & continue* it defaulted to before Cursor
-  gained inline; interrupt is still one click away in the caret menu. Immediate
+  gained inline; interrupt is still one click away in the caret menu. The one
+  exception is the CTO identity composer, which filters queue out of the mode
+  list entirely — that thread cannot stage a message for later, so interrupt is
+  the only downgrade target left there. Immediate
   modes are a single atomic
   `steer({ dispatchMode })` call rather than queue-then-dispatch. The primary
   action disables on an empty draft, while the caret remains available so the

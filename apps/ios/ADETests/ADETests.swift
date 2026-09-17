@@ -14068,8 +14068,9 @@ final class ADETests: XCTestCase {
   }
 
   /// Guards the hand mirror of the desktop's `CTO_LIVE_REDIRECT_PROVIDERS`. It
-  /// is a separate list from the dispatch table above on purpose: Cursor has no
-  /// inline channel and is still eligible, through interrupt-and-resend.
+  /// is a separate list from the dispatch table above on purpose: no single
+  /// dispatch mode keys it. Codex is eligible without an interrupt channel, so
+  /// a list derived from either atomic mode would get a provider wrong.
   func testCtoLiveRedirectProvidersMirrorDesktopContract() {
     XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor"])
     for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent"] {
@@ -14078,8 +14079,8 @@ final class ADETests: XCTestCase {
     for provider in ["opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot", ""] {
       XCTAssertFalse(providerSupportsLiveRedirect(provider), "expected \(provider) to be rejected")
     }
-    XCTAssertFalse(WorkActiveSendCapability.forProvider("cursor").modes.contains(.inline))
-    XCTAssertTrue(providerSupportsLiveRedirect("cursor"))
+    XCTAssertFalse(WorkActiveSendCapability.forProvider("codex").modes.contains(.interrupt))
+    XCTAssertTrue(providerSupportsLiveRedirect("codex"))
   }
 
   func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {
@@ -26305,10 +26306,10 @@ final class ADETests: XCTestCase {
   }
 
   /// A remembered mode is only restorable when the chat's current provider can
-  /// honor it — Codex is queue-only, so a mode carried over from a Claude chat
-  /// has to fall back to that provider's default rather than being sent and
-  /// rejected by the host. Cursor stopped demonstrating this when it gained the
-  /// inline channel, so the case is stated against Codex.
+  /// honor it — Codex has no interrupt channel, so an interrupt carried over
+  /// from a Claude chat has to fall back to that provider's default rather than
+  /// being sent and rejected by the host. Cursor stopped demonstrating this
+  /// when it gained the inline channel, so the case is stated against Codex.
   func testRememberedSendModeFallsBackWhenProviderCannotHonorIt() {
     let codex = WorkActiveSendCapability.forProvider("codex")
     XCTAssertEqual(codex.modes, [.inline, .queue])
@@ -26318,7 +26319,7 @@ final class ADETests: XCTestCase {
     // And the wire value for an unhonorable mode is always nil, so nothing the
     // fallback misses can still reach the host.
     XCTAssertNil(
-      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: codex.atomicDispatchModes)
+      workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: codex.atomicDispatchModes)
     )
   }
 

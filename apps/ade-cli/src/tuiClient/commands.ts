@@ -332,11 +332,15 @@ export type PaletteCommand = {
 export function paletteCommands(
   query: string,
   userCommands: AgentChatSlashCommand[] = [],
-  options: { provider?: AgentChatProvider | null } = {},
+  options: { provider?: AgentChatProvider | null; inlineSteerWithheld?: boolean } = {},
 ): PaletteCommand[] {
   const normalizedQuery = query.trim().toLowerCase();
   const queryToken = normalizedQuery.replace(/^\//, "");
   const builtins = BUILTIN_COMMANDS
+    // `inlineSteerWithheld` is a session fact the provider cannot carry: a
+    // Cursor CLOUD run refuses every inline steer. Without it the palette
+    // offers `/steer send` on a chat where the hint line already hides it.
+    .filter((command) => !(options.inlineSteerWithheld && command.name === "/steer send"))
     .filter((command) => !command.providers?.length || (options.provider ? command.providers.includes(options.provider) : true))
     .map((command) => ({
       name: command.name,
