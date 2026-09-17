@@ -823,6 +823,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "press",
     "scroll",
     "drag",
+    "move",
     "wait",
     "screenshot",
     "startRecording",

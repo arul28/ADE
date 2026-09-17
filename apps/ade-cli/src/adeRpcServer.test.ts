@@ -7019,6 +7019,7 @@ describe("MAC_DESKTOP_LANE_BOUND_ACTIONS", () => {
       "claimWindow",
       "click",
       "drag",
+      "move",
       "observe",
       "open",
       "present",
