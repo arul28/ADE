@@ -27,10 +27,19 @@ const LAUNCH_TIMEOUT_MS = 60_000;
 const RECORDING_STOP_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 5_000;
 
-const asReply = (value: unknown): DesktopSeatReply =>
+/**
+ * The two reply normalizers, exported because the service reads the same
+ * replies this file produces.
+ *
+ * A helper that answered with a string, an array or nothing at all must become
+ * an empty object exactly once, in one place, or the two sides disagree about
+ * what "no reply" looks like.
+ */
+export const asReply = (value: unknown): DesktopSeatReply =>
   (value && typeof value === "object" && !Array.isArray(value) ? value as DesktopSeatReply : {});
 
-const asWindows = (value: unknown): MacDesktopWindow[] =>
+/** A driver field that should have been a window list, whatever it actually is. */
+export const asWindows = (value: unknown): MacDesktopWindow[] =>
   (Array.isArray(value) ? value as MacDesktopWindow[] : []);
 
 export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient): DesktopSeatProvider {

@@ -30,13 +30,22 @@ final class StreamByteServer {
         listener.newConnectionHandler = { [weak self] connection in
             self?.accept(connection)
         }
-        let ready = DispatchSemaphore(value: 0)
+        // Pumped, not blocked. `start` is called from a `stream.start` request,
+        // which is handled on the main thread like everything else here, so a
+        // semaphore wait would hold the health ping and every other lane behind
+        // a listener that is taking its time. The flag is set on the `NWListener`
+        // queue and read on the main thread, hence the lock around it.
+        let settled = SettledFlag()
         listener.stateUpdateHandler = { state in
-            if case .ready = state { ready.signal() }
-            if case .failed = state { ready.signal() }
+            switch state {
+            case .ready, .failed, .cancelled:
+                settled.set()
+            default:
+                break
+            }
         }
         listener.start(queue: queue)
-        _ = ready.wait(timeout: .now() + 5)
+        RunLoopPump.wait(until: { settled.isSet }, timeout: 5)
         guard let assigned = listener.port?.rawValue, assigned != 0 else {
             listener.cancel()
             throw CaptureError.failed("The stream server never got a loopback port.")
@@ -99,5 +108,25 @@ final class StreamByteServer {
         listener?.cancel()
         listener = nil
         port = 0
+    }
+}
+
+/// A one-way "it happened" shared between the `NWListener` queue and the main
+/// thread. Small enough to be its own type only because the alternative is a
+/// captured `var` plus a captured `NSLock`, which reads like a bug.
+private final class SettledFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
     }
 }

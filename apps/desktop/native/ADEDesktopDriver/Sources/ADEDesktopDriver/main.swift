@@ -39,10 +39,20 @@ final class DriverRuntime: NSObject {
     private let leases = InputLeaseStore()
 
     lazy var displays = VirtualDisplayHost(log: log)
-    lazy var windows = WindowControl(ownership: ownership, log: log, emit: emit)
+    lazy var windows: WindowControl = {
+        let control = WindowControl(ownership: ownership, log: log, emit: emit)
+        control.isGestureInFlight = { [weak self] in self?.gestures.isActive ?? false }
+        return control
+    }()
     lazy var accessibility = AccessibilityDriver(handles: handles, log: log)
     private lazy var capture = CaptureEngine(log: log, emit: emit)
     lazy var realInput = RealInput(leases: leases, log: log)
+
+    /// "A real gesture is holding the mouse button right now." Consulted by the
+    /// dispatcher below, set by the `drag` path in `InputCommands`, and read by
+    /// the window watcher so its 1-second sweep does not repark a window out
+    /// from under the pointer.
+    let gestures = GestureGate()
 
     private var lastActivity: [String: Date] = [:]
     private var recordingCaptions: [String: String] = [:]
@@ -177,6 +187,24 @@ final class DriverRuntime: NSObject {
             return
         }
         guard case .request(let request) = input else { return }
+        switch gestures.decide(request) {
+        case .proceed:
+            break
+        case .deferred:
+            // No reply yet, and that is the point: the caller waits out the
+            // gesture instead of racing it. `drainDeferred` answers it.
+            gestures.enqueue(request)
+            return
+        case .rejected(let error):
+            output.write(.reply(.failure(id: request.id, error: error)))
+            return
+        }
+        dispatch(request)
+    }
+
+    /// Handle one request and write its reply. Every request reaches this
+    /// exactly once, whether it arrived on the wire or out of the gesture queue.
+    private func dispatch(_ request: DriverRequest) {
         do {
             let result = try handle(request)
             output.write(.reply(.success(id: request.id, result: result)))
@@ -194,6 +222,23 @@ final class DriverRuntime: NSObject {
                     )
                 )
             )
+        }
+    }
+
+    /// Replays what the gesture held up.
+    ///
+    /// Posted to the run loop rather than called inline so it runs *after* the
+    /// drag's own reply has gone out, keeping replies in the order a client
+    /// would expect. One item at a time with a re-check between: a parked
+    /// request can itself be a drag, and the rest of the queue has to wait for
+    /// that one too.
+    func scheduleDeferredDrain() {
+        performOnMain(#selector(DriverRuntime.drainDeferred), with: nil)
+    }
+
+    @objc private func drainDeferred() {
+        while !gestures.isActive, let next = gestures.dequeue() {
+            dispatch(next)
         }
     }
 

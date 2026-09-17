@@ -80,15 +80,11 @@ export function createMacDesktopBridge(deps: MacDesktopBridgeDeps) {
         () => deps.invoke(channel, args) as Promise<R>,
       );
 
-  /** The same, for the two reads whose argument is optional. */
-  const callOptional = <A, R>(action: string, channel: string) =>
-    (args: A = {} as A, pin?: OpenProjectBinding | null): Promise<R> =>
-      deps.callAction<R>(
-        pin,
-        action,
-        { args: args as Record<string, unknown> },
-        () => deps.invoke(channel, args) as Promise<R>,
-      );
+  /** The same routed method, for the two reads whose argument is optional. */
+  const callOptional = <A, R>(action: string, channel: string) => {
+    const routed = call<A, R>(action, channel);
+    return (args: A = {} as A, pin?: OpenProjectBinding | null): Promise<R> => routed(args, pin);
+  };
 
   return {
     getStatus: callOptional<MacDesktopGetStatusArgs, MacDesktopStatus>("getStatus", IPC.macDesktopGetStatus),

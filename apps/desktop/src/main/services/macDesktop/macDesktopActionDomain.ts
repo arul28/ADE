@@ -59,47 +59,47 @@ class MacDesktopUnsupportedPlatformError extends Error {
   }
 }
 
-function macDesktopArgs(args: unknown): Record<string, unknown> {
+function objectArgs(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" && !Array.isArray(args)
     ? args as Record<string, unknown>
     : {};
 }
 
-function macDesktopRequiredLaneId(args: unknown, action: string): string {
-  const laneId = macDesktopArgs(args).laneId;
+function requiredLaneId(args: unknown, action: string): string {
+  const laneId = objectArgs(args).laneId;
   const trimmed = typeof laneId === "string" ? laneId.trim() : "";
   if (!trimmed) throw new Error(`macDesktop.${action} requires laneId.`);
   return trimmed;
 }
 
-function macDesktopOptionalLaneId(args: unknown): string | null {
-  const laneId = macDesktopArgs(args).laneId;
+function optionalLaneId(args: unknown): string | null {
+  const laneId = objectArgs(args).laneId;
   const trimmed = typeof laneId === "string" ? laneId.trim() : "";
   return trimmed.length ? trimmed : null;
 }
 
-function macDesktopOptionalString(args: unknown, key: string): string | null {
-  const value = macDesktopArgs(args)[key];
+function optionalString(args: unknown, key: string): string | null {
+  const value = objectArgs(args)[key];
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed.length ? trimmed : null;
 }
 
-function macDesktopRequiredString(args: unknown, key: string, action: string): string {
-  const value = macDesktopOptionalString(args, key);
+function requiredString(args: unknown, key: string, action: string): string {
+  const value = optionalString(args, key);
   if (!value) throw new Error(`macDesktop.${action} requires ${key}.`);
   return value;
 }
 
-function macDesktopOptionalNumber(args: unknown, key: string): number | null {
-  const value = macDesktopArgs(args)[key];
+function optionalNumber(args: unknown, key: string): number | null {
+  const value = objectArgs(args)[key];
   if (value == null || value === "") return null;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`macDesktop: ${key} must be a number.`);
   return parsed;
 }
 
-function macDesktopOptionalBoolean(args: unknown, key: string): boolean | null {
-  const value = macDesktopArgs(args)[key];
+function optionalBoolean(args: unknown, key: string): boolean | null {
+  const value = objectArgs(args)[key];
   if (value == null) return null;
   if (typeof value === "boolean") return value;
   if (value === "true") return true;
@@ -117,13 +117,13 @@ const MAC_DESKTOP_RESOLUTIONS = Object.keys(
   MAC_DESKTOP_RESOLUTION_PRESETS,
 ) as MacDesktopResolutionPreset[];
 
-function macDesktopEnum<T extends string>(
+function enumOf<T extends string>(
   args: unknown,
   key: string,
   valid: readonly T[],
   action: string,
 ): T | null {
-  const raw = macDesktopOptionalString(args, key);
+  const raw = optionalString(args, key);
   if (!raw) return null;
   const match = valid.find((entry) => entry === raw);
   if (!match) {
@@ -134,17 +134,17 @@ function macDesktopEnum<T extends string>(
   return match;
 }
 
-function macDesktopMode(args: unknown, action: string): MacDesktopInputMode | null {
-  return macDesktopEnum(args, "mode", MAC_DESKTOP_INPUT_MODES, action);
+function inputMode(args: unknown, action: string): MacDesktopInputMode | null {
+  return enumOf(args, "mode", MAC_DESKTOP_INPUT_MODES, action);
 }
 
 /** The handle/text/point trio every acting command resolves a target from. */
-function macDesktopTarget(source: unknown): MacDesktopTarget {
-  const handle = macDesktopOptionalString(source, "handle");
-  const text = macDesktopOptionalString(source, "text");
-  const x = macDesktopOptionalNumber(source, "x");
-  const y = macDesktopOptionalNumber(source, "y");
-  const windowId = macDesktopOptionalNumber(source, "windowId");
+function targetOf(source: unknown): MacDesktopTarget {
+  const handle = optionalString(source, "handle");
+  const text = optionalString(source, "text");
+  const x = optionalNumber(source, "x");
+  const y = optionalNumber(source, "y");
+  const windowId = optionalNumber(source, "windowId");
   return {
     ...(handle ? { handle } : {}),
     ...(text ? { text } : {}),
@@ -154,8 +154,8 @@ function macDesktopTarget(source: unknown): MacDesktopTarget {
   };
 }
 
-function macDesktopRequiredTarget(source: unknown, label: string, action: string): MacDesktopTarget {
-  const target = macDesktopTarget(source);
+function requiredTargetOf(source: unknown, label: string, action: string): MacDesktopTarget {
+  const target = targetOf(source);
   if (Object.keys(target).length === 0) {
     throw new Error(`macDesktop.${action} requires ${label} as handle, text, or x/y.`);
   }
@@ -180,7 +180,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
   };
   const gated = <T>(run: () => Promise<T>): Promise<T> => supported().then(run);
   const chatSessionId = (args: unknown): { chatSessionId?: string } => {
-    const value = macDesktopOptionalString(args, "chatSessionId");
+    const value = optionalString(args, "chatSessionId");
     return value ? { chatSessionId: value } : {};
   };
   /**
@@ -192,81 +192,81 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
    * the service still refuses an id that does not hold the lease.
    */
   const controllerId = (args: unknown): { controllerId?: string } => {
-    const value = macDesktopOptionalString(args, "controllerId");
+    const value = optionalString(args, "controllerId");
     return value ? { controllerId: value } : {};
   };
   return {
     getStatus: (args?: unknown) => service.getStatus({
-      laneId: macDesktopOptionalLaneId(args),
+      laneId: optionalLaneId(args),
       ...chatSessionId(args),
     }),
     start: (args?: unknown) => gated(() => service.start({
-      laneId: macDesktopRequiredLaneId(args, "start"),
-      resolution: macDesktopEnum(args, "resolution", MAC_DESKTOP_RESOLUTIONS, "start"),
-      laneName: macDesktopOptionalString(args, "laneName"),
+      laneId: requiredLaneId(args, "start"),
+      resolution: enumOf(args, "resolution", MAC_DESKTOP_RESOLUTIONS, "start"),
+      laneName: optionalString(args, "laneName"),
       ...chatSessionId(args),
     })),
     stop: (args?: unknown) => gated(() => service.stop({
-      laneId: macDesktopRequiredLaneId(args, "stop"),
+      laneId: requiredLaneId(args, "stop"),
       ...chatSessionId(args),
     })),
     listWindows: (args?: unknown) => gated(() => service.listWindows({
-      laneId: macDesktopOptionalLaneId(args),
+      laneId: optionalLaneId(args),
     })),
     open: (args?: unknown) => gated(() => {
-      const rawArgs = macDesktopArgs(args).args;
+      const rawArgs = objectArgs(args).args;
       return service.open({
-        laneId: macDesktopRequiredLaneId(args, "open"),
-        target: macDesktopRequiredString(args, "target", "open"),
+        laneId: requiredLaneId(args, "open"),
+        target: requiredString(args, "target", "open"),
         args: Array.isArray(rawArgs) ? rawArgs.map((entry) => String(entry)) : null,
         ...chatSessionId(args),
       });
     }),
     claimWindow: (args?: unknown) => gated(() => {
-      const windowId = macDesktopOptionalNumber(args, "windowId");
+      const windowId = optionalNumber(args, "windowId");
       if (windowId == null) throw new Error("macDesktop.claimWindow requires windowId.");
       return service.claimWindow({
-        laneId: macDesktopRequiredLaneId(args, "claimWindow"),
+        laneId: requiredLaneId(args, "claimWindow"),
         windowId,
         ...chatSessionId(args),
       });
     }),
     releaseWindow: (args?: unknown) => gated(() => service.releaseWindow({
-      laneId: macDesktopRequiredLaneId(args, "releaseWindow"),
-      windowId: macDesktopOptionalNumber(args, "windowId"),
+      laneId: requiredLaneId(args, "releaseWindow"),
+      windowId: optionalNumber(args, "windowId"),
     })),
     observe: (args?: unknown) => gated(() => service.observe({
-      laneId: macDesktopRequiredLaneId(args, "observe"),
-      windowId: macDesktopOptionalNumber(args, "windowId"),
-      map: macDesktopOptionalBoolean(args, "map"),
-      limit: macDesktopOptionalNumber(args, "limit"),
+      laneId: requiredLaneId(args, "observe"),
+      windowId: optionalNumber(args, "windowId"),
+      map: optionalBoolean(args, "map"),
+      limit: optionalNumber(args, "limit"),
       ...chatSessionId(args),
     })),
     click: (args?: unknown) => gated(() => service.click({
-      laneId: macDesktopRequiredLaneId(args, "click"),
-      ...macDesktopRequiredTarget(args, "a target", "click"),
-      mode: macDesktopMode(args, "click"),
-      button: macDesktopEnum(args, "button", ["left", "right"] as const, "click"),
-      count: macDesktopOptionalNumber(args, "count"),
+      laneId: requiredLaneId(args, "click"),
+      ...requiredTargetOf(args, "a target", "click"),
+      mode: inputMode(args, "click"),
+      button: enumOf(args, "button", ["left", "right"] as const, "click"),
+      count: optionalNumber(args, "count"),
       ...chatSessionId(args),
       ...controllerId(args),
     })),
     type: (args?: unknown) => gated(() => {
-      const text = macDesktopArgs(args).text;
+      const text = objectArgs(args).text;
       if (typeof text !== "string") throw new Error("macDesktop.type requires text.");
-      const target = macDesktopTarget(macDesktopArgs(args).target ?? {});
+      const target = targetOf(objectArgs(args).target ?? {});
       return service.type({
-        laneId: macDesktopRequiredLaneId(args, "type"),
+        laneId: requiredLaneId(args, "type"),
         text,
-        clear: macDesktopOptionalBoolean(args, "clear"),
-        mode: macDesktopMode(args, "type"),
+        clear: optionalBoolean(args, "clear"),
+        mode: inputMode(args, "type"),
         target: Object.keys(target).length ? target : null,
         ...chatSessionId(args),
         ...controllerId(args),
       });
     }),
     press: (args?: unknown) => gated(() => {
-      const modifiers = macDesktopArgs(args).modifiers;
+      const modifiers = objectArgs(args).modifiers;
       const valid = ["cmd", "shift", "option", "control"] as const;
       const parsed = Array.isArray(modifiers)
         ? modifiers.map((entry) => {
@@ -276,104 +276,104 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
         })
         : null;
       return service.press({
-        laneId: macDesktopRequiredLaneId(args, "press"),
-        key: macDesktopRequiredString(args, "key", "press"),
+        laneId: requiredLaneId(args, "press"),
+        key: requiredString(args, "key", "press"),
         modifiers: parsed,
-        mode: macDesktopMode(args, "press"),
+        mode: inputMode(args, "press"),
         ...chatSessionId(args),
         ...controllerId(args),
       });
     }),
     scroll: (args?: unknown) => gated(() => {
-      const direction = macDesktopEnum(args, "direction", MAC_DESKTOP_SCROLL_DIRECTIONS, "scroll");
+      const direction = enumOf(args, "direction", MAC_DESKTOP_SCROLL_DIRECTIONS, "scroll");
       if (!direction) throw new Error("macDesktop.scroll requires direction (up, down, left, right).");
       return service.scroll({
-        laneId: macDesktopRequiredLaneId(args, "scroll"),
-        ...macDesktopTarget(args),
+        laneId: requiredLaneId(args, "scroll"),
+        ...targetOf(args),
         direction,
-        amount: macDesktopOptionalNumber(args, "amount"),
-        mode: macDesktopMode(args, "scroll"),
+        amount: optionalNumber(args, "amount"),
+        mode: inputMode(args, "scroll"),
         ...chatSessionId(args),
         ...controllerId(args),
       });
     }),
     drag: (args?: unknown) => gated(() => service.drag({
-      laneId: macDesktopRequiredLaneId(args, "drag"),
-      from: macDesktopRequiredTarget(macDesktopArgs(args).from, "from", "drag"),
-      to: macDesktopRequiredTarget(macDesktopArgs(args).to, "to", "drag"),
-      durationMs: macDesktopOptionalNumber(args, "durationMs"),
-      mode: macDesktopMode(args, "drag"),
+      laneId: requiredLaneId(args, "drag"),
+      from: requiredTargetOf(objectArgs(args).from, "from", "drag"),
+      to: requiredTargetOf(objectArgs(args).to, "to", "drag"),
+      durationMs: optionalNumber(args, "durationMs"),
+      mode: inputMode(args, "drag"),
       ...chatSessionId(args),
       ...controllerId(args),
     })),
     wait: (args?: unknown) => gated(() => {
-      const text = macDesktopOptionalString(args, "text");
-      const gone = macDesktopOptionalString(args, "gone");
-      const windowTitle = macDesktopOptionalString(args, "windowTitle");
+      const text = optionalString(args, "text");
+      const gone = optionalString(args, "gone");
+      const windowTitle = optionalString(args, "windowTitle");
       if (!text && !gone && !windowTitle) {
         throw new Error("macDesktop.wait requires one of text, gone, or windowTitle.");
       }
       return service.wait({
-        laneId: macDesktopRequiredLaneId(args, "wait"),
+        laneId: requiredLaneId(args, "wait"),
         text,
         gone,
         windowTitle,
-        timeoutMs: macDesktopOptionalNumber(args, "timeoutMs"),
+        timeoutMs: optionalNumber(args, "timeoutMs"),
         ...chatSessionId(args),
       });
     }),
     screenshot: (args?: unknown) => gated(() => service.screenshot({
-      laneId: macDesktopRequiredLaneId(args, "screenshot"),
-      windowId: macDesktopOptionalNumber(args, "windowId"),
-      out: macDesktopOptionalString(args, "out"),
+      laneId: requiredLaneId(args, "screenshot"),
+      windowId: optionalNumber(args, "windowId"),
+      out: optionalString(args, "out"),
       ...chatSessionId(args),
     })),
     startRecording: (args?: unknown) => gated(() => service.startRecording({
-      laneId: macDesktopRequiredLaneId(args, "startRecording"),
-      caption: macDesktopOptionalString(args, "caption"),
-      fps: macDesktopOptionalNumber(args, "fps"),
+      laneId: requiredLaneId(args, "startRecording"),
+      caption: optionalString(args, "caption"),
+      fps: optionalNumber(args, "fps"),
       ...chatSessionId(args),
     })),
     stopRecording: (args?: unknown) => gated(() => service.stopRecording({
-      laneId: macDesktopRequiredLaneId(args, "stopRecording"),
+      laneId: requiredLaneId(args, "stopRecording"),
       ...chatSessionId(args),
     })),
     getStreamStatus: (args?: unknown) => gated(() => service.getStreamStatus({
-      laneId: macDesktopRequiredLaneId(args, "getStreamStatus"),
+      laneId: requiredLaneId(args, "getStreamStatus"),
     })),
     requestInputLease: (args?: unknown) => gated(() => service.requestInputLease({
-      laneId: macDesktopRequiredLaneId(args, "requestInputLease"),
-      chatSessionId: macDesktopRequiredString(args, "chatSessionId", "requestInputLease"),
-      reason: macDesktopOptionalString(args, "reason"),
+      laneId: requiredLaneId(args, "requestInputLease"),
+      chatSessionId: requiredString(args, "chatSessionId", "requestInputLease"),
+      reason: optionalString(args, "reason"),
     })),
     present: (args?: unknown) => gated(() => {
-      const destination = macDesktopEnum(args, "destination", ["main", "display"] as const, "present");
+      const destination = enumOf(args, "destination", ["main", "display"] as const, "present");
       if (!destination) throw new Error("macDesktop.present requires destination (main or display).");
-      return service.present({ laneId: macDesktopRequiredLaneId(args, "present"), destination });
+      return service.present({ laneId: requiredLaneId(args, "present"), destination });
     }),
     // CTO-only in `ADE_ACTION_CTO_ONLY`: the stream token and the human
     // takeover belong to a viewing client, not to a session-bound agent.
     startStream: (args?: unknown) => gated(() => service.startStream({
-      laneId: macDesktopRequiredLaneId(args, "startStream"),
-      fps: macDesktopOptionalNumber(args, "fps"),
-      idleFps: macDesktopOptionalNumber(args, "idleFps"),
+      laneId: requiredLaneId(args, "startStream"),
+      fps: optionalNumber(args, "fps"),
+      idleFps: optionalNumber(args, "idleFps"),
       ...chatSessionId(args),
     })),
     stopStream: (args?: unknown) => gated(() => service.stopStream({
-      laneId: macDesktopRequiredLaneId(args, "stopStream"),
+      laneId: requiredLaneId(args, "stopStream"),
     })),
     takeControl: (args?: unknown) => gated(() => service.takeControl({
-      laneId: macDesktopRequiredLaneId(args, "takeControl"),
-      controllerId: macDesktopRequiredString(args, "controllerId", "takeControl"),
-      controllerLabel: macDesktopOptionalString(args, "controllerLabel"),
+      laneId: requiredLaneId(args, "takeControl"),
+      controllerId: requiredString(args, "controllerId", "takeControl"),
+      controllerLabel: optionalString(args, "controllerLabel"),
     })),
     returnControl: (args?: unknown) => gated(() => service.returnControl({
-      laneId: macDesktopRequiredLaneId(args, "returnControl"),
-      controllerId: macDesktopRequiredString(args, "controllerId", "returnControl"),
+      laneId: requiredLaneId(args, "returnControl"),
+      controllerId: requiredString(args, "controllerId", "returnControl"),
     })),
     renewLease: (args?: unknown) => gated(() => service.renewLease({
-      laneId: macDesktopRequiredLaneId(args, "renewLease"),
-      holderId: macDesktopRequiredString(args, "holderId", "renewLease"),
+      laneId: requiredLaneId(args, "renewLease"),
+      holderId: requiredString(args, "holderId", "renewLease"),
     })),
   };
 }

@@ -5197,9 +5197,11 @@ describe("adeRpcServer", () => {
       chatSessionId: "chat-a",
     }));
 
-    // A run/step identity has no chat of its own, so it acts as nobody rather
-    // than as whoever it named.
+    // A run/step identity has no chat of its own and no lane to be pinned to,
+    // so an acting command is refused rather than run against whichever lane it
+    // named. The capability probe still answers.
     observe.mockClear();
+    getStatus.mockClear();
     const stepHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(stepHandler, { callerId: "step-1", role: "agent", runId: "run-1", stepId: "step-1" });
     const step = await callTool(stepHandler, "run_ade_action", {
@@ -5207,9 +5209,15 @@ describe("adeRpcServer", () => {
       action: "observe",
       args: { laneId: "lane-b", chatSessionId: "chat-b" },
     });
-    expect(step?.isError).toBeUndefined();
-    expect(observe).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-b" }));
-    expect(observe.mock.calls[0]?.[0]).not.toHaveProperty("chatSessionId");
+    expect(step.isError).toBe(true);
+    expect(observe).not.toHaveBeenCalled();
+    const stepStatus = await callTool(stepHandler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "getStatus",
+      args: { laneId: "lane-b" },
+    });
+    expect(stepStatus?.isError).toBeUndefined();
+    expect(getStatus).toHaveBeenCalled();
 
     // A user client keeps what it sent: the desktop renderer, the web client and
     // a paired phone each drive whichever lane's display their UI is showing.
@@ -5225,6 +5233,56 @@ describe("adeRpcServer", () => {
     expect(observe).toHaveBeenCalledWith(expect.objectContaining({
       laneId: "lane-b",
       chatSessionId: "chat-b",
+    }));
+  });
+
+  it("strips a caller-supplied controllerId and holderId from mac_desktop calls", async () => {
+    // `getStatus().lease.holderId` prints the human's takeover controller id to
+    // any caller that can read the lane. The service prefers `controllerId` over
+    // the chat id when it decides who is holding the input lease, so echoing the
+    // id back would have let an agent post real input as the user. Reading it
+    // stays possible; using it does not.
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const click = vi.fn(async (args: unknown) => args);
+    const getStatus = vi.fn(async () => ({ supported: true }));
+    fixture.runtime.macDesktopService = { click, getStatus } as any;
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+
+    const forged = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: {
+        laneId: "lane-a",
+        x: 10,
+        y: 10,
+        controllerId: "ade-window:human-takeover",
+        holderId: "ade-window:human-takeover",
+        mode: "real",
+      },
+    });
+    expect(forged?.isError).toBeUndefined();
+    const forwarded = click.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty("controllerId");
+    expect(forwarded).not.toHaveProperty("holderId");
+    expect(forwarded).toMatchObject({ laneId: "lane-a", chatSessionId: "chat-a" });
+
+    // A user client keeps both: the takeover itself is driven by a controller id.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const human = await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: { laneId: "lane-a", x: 10, y: 10, controllerId: "ade-window:human-takeover" },
+    });
+    expect(human?.isError).toBeUndefined();
+    expect(click).toHaveBeenLastCalledWith(expect.objectContaining({
+      controllerId: "ade-window:human-takeover",
     }));
   });
 

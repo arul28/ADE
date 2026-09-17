@@ -83,14 +83,33 @@ final class RealInput {
         }
     }
 
+    /// A drag, which is the only call here that spans time.
+    ///
+    /// Between the `mouseDown` and the `mouseUp` the window server believes a
+    /// button is held. The loop pumps the run loop between steps rather than
+    /// sleeping, so other lanes keep being served — which also means the world
+    /// can change underneath the gesture. Two things are therefore re-checked on
+    /// every step rather than once at the top: the lease (it can lapse, or be
+    /// handed to somebody else, mid-drag) and `verify`, which the caller uses to
+    /// assert the lane still owns a display and the point is still on it.
+    ///
+    /// A failed check does not just throw. Throwing with the button still down
+    /// would leave the whole machine in a held-button state that nothing later
+    /// clears, so the mouse comes up at the last point reached first, and the
+    /// error is raised after.
     func drag(
         laneId: String,
         holderId: String?,
         from: CGPoint,
         to: CGPoint,
-        durationMs: Int
+        durationMs: Int,
+        verify: (CGPoint) -> DriverError? = { _ in nil }
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
+        // Checked before the button goes down, so the common "that point is not
+        // on this lane's display" mistake never starts a gesture at all.
+        if let error = verify(from) { throw error }
+        if let error = verify(to) { throw error }
         let steps = max(2, min(60, durationMs / 16))
         guard let down = CGEvent(
             mouseEventSource: nil,
@@ -101,12 +120,25 @@ final class RealInput {
             throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a drag event.")
         }
         down.post(tap: .cghidEventTap)
+        var reached = from
         for step in 1...steps {
             let progress = CGFloat(step) / CGFloat(steps)
             let point = CGPoint(
                 x: from.x + (to.x - from.x) * progress,
                 y: from.y + (to.y - from.y) * progress
             )
+            do {
+                try authorize(laneId: laneId, holderId: holderId)
+            } catch {
+                releaseButton(at: reached)
+                log("drag on lane \(laneId) lost its lease mid-gesture; released the button")
+                throw error
+            }
+            if let error = verify(point) {
+                releaseButton(at: reached)
+                log("drag on lane \(laneId) left its display mid-gesture; released the button")
+                throw error
+            }
             if let moved = CGEvent(
                 mouseEventSource: nil,
                 mouseType: .leftMouseDragged,
@@ -114,6 +146,7 @@ final class RealInput {
                 mouseButton: .left
             ) {
                 moved.post(tap: .cghidEventTap)
+                reached = point
             }
             // Pumped rather than slept: a 5-second drag on one lane must not
             // hold the health ping and every other lane's request behind it.
@@ -123,14 +156,18 @@ final class RealInput {
                 timeout: Double(max(1, durationMs)) / 1000.0 / Double(steps)
             )
         }
-        if let up = CGEvent(
+        releaseButton(at: to)
+    }
+
+    /// The button must come up even when the drag is being abandoned.
+    private func releaseButton(at point: CGPoint) {
+        guard let up = CGEvent(
             mouseEventSource: nil,
             mouseType: .leftMouseUp,
-            mouseCursorPosition: to,
+            mouseCursorPosition: point,
             mouseButton: .left
-        ) {
-            up.post(tap: .cghidEventTap)
-        }
+        ) else { return }
+        up.post(tap: .cghidEventTap)
     }
 
     func key(

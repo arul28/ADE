@@ -77,11 +77,13 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/Permissions.swift` | Screen Recording and Accessibility, probed without ever prompting. The driver only reports; asking for the grant is the app's job. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PhysicalInput.swift` | Seconds since the last physical input, for the idle rate and the takeover check. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/InputLease.swift` | The lease the driver keeps for itself, and the refusal `RealInput` raises. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/GestureGate.swift` | While a real drag holds the mouse button, the ops that could corrupt it — any `input`, and this lane's `display.destroy`/`present`/`window.unpark` — are parked in order and replayed when the button comes up. `ping`, `observe`, `window.list` and capture keep answering. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion and the offscreen-fallback arithmetic. |
 | `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`, beside the notch helper. |
 | `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface a later Linux seat backend implements. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, window ownership, idle release, observation and input, events, and teardown. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, window ownership, idle release, the lease, events, and teardown. The observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the one `DesktopSeatProvider` implementation. One method per driver op; the only file that knows the op names. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopInput.ts` | The observation and input half: the one capture path, target→driver payload, who a call claims to be for the lease check, and the eight acting commands built on it. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The two writers of a movie file — the per-turn time-lapse and the captioned recording — serialized against the helper's one recorder per lane. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | The pending-input card that asks for real input, and the lease push that makes the helper's own refusal correct. |
@@ -196,6 +198,18 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
   detected as a coarse wall-clock jump on the idle sweep (a tick that arrives
   four intervals late) and the lease TTL is what actually guarantees the lease
   cannot stick — the jump detector only makes the release immediate.
+- **An agent cannot wear the human's holder id.** `getStatus().lease.holderId`
+  prints the takeover's controller id to anyone who can read the lane, and the
+  service prefers `controllerId` over the chat id when it decides who is
+  holding the lease. The RPC scope in `adeRpcServer.ts` therefore strips
+  `chatSessionId`, `controllerId` and `holderId` from every agent-shaped call
+  and re-fills the chat id from the caller's own session. Reading the holder id
+  stays possible; using it does not.
+- **An agent with no resolvable lane acts on nothing.** Accessibility-mode
+  input is behind no lease at all, so an orchestration step or a chat whose
+  session record is gone is refused every acting command rather than passed
+  through naming someone else's lane. `getStatus` and `listWindows` still
+  answer, because `getStatus` is the domain's capability probe.
 
 ## Streaming
 
@@ -270,6 +284,9 @@ screenshot with no `--out` stays in the computer-use scratch root.
   its process. `windows` re-enumerates; do not cache an id across a restart.
 - **Two chats in one lane can race to start.** `start` is idempotent and
   serialized per lane; the second caller receives the first caller's display.
+- **A stream outlives all but its last asker.** Two chats watching one lane are
+  both recorded as owners; the first to end drops out of the set and only an
+  empty set stops the encoder.
 - **`getStreamStatus` must stay redacted.** It is on the action allowlist, so an
   unredacted token would be printed into a durable agent transcript.
 - **The agent-facing prompt cost is one line.** The system prompt gains a single

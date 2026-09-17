@@ -13,9 +13,9 @@
  * protocol), and the settings surfaces already know how to render that health.
  *
  * Everything the service can ask for is named once, in {@link MAC_DESKTOP_DRIVER_OPS}.
- * The helper accepts both the camelCase spelling its Swift enum was born with
- * and the dotted spelling the feature doc uses; the dotted one is what goes on
- * the wire from here, because that is the spelling the doc and the CLI read.
+ * The op names are the dotted spelling the feature doc and the CLI use, and the
+ * helper accepts only that spelling — the camelCase names its Swift enum was
+ * born with are gone from both sides.
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -93,7 +93,6 @@ export type MacDesktopDriverClientDeps = {
   resolveExecutablePath: () => string | null;
   logger: Logger;
   platform?: NodeJS.Platform;
-  now?: () => number;
   requestTimeoutMs?: number;
   /** Test seam. Defaults to `child_process.spawn`. */
   spawnProcess?: typeof spawn;
@@ -116,7 +115,6 @@ type PendingRequest = {
 export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   const platform = deps.platform ?? process.platform;
   const spawnProcess = deps.spawnProcess ?? spawn;
-  const now = deps.now ?? (() => Date.now());
   const requestTimeoutMs = deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
   let child: ChildProcessWithoutNullStreams | null = null;

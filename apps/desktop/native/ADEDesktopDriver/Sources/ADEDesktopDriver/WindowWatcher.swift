@@ -138,6 +138,18 @@ extension WindowControl {
             }
         }
 
+        // Repark moves are skipped, not merely postponed by luck, while a real
+        // gesture is in flight: `setFrame` on a window the user's pointer is
+        // dragging fights the drag, and the escape counter would charge the
+        // window for a displacement the driver itself is causing. The gesture
+        // is bounded, so the next sweep a second later does the work.
+        guard !isGestureInFlight() else {
+            for laneId in touchedLanes {
+                emitWindowsChanged(laneId: laneId)
+            }
+            return
+        }
+
         for record in ownership.all {
             let windowId = CGWindowID(record.windowId)
             guard let placement = placement(forLane: record.laneId) else { continue }

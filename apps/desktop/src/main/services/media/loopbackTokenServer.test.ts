@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_CLIENT_BACKLOG_BYTES,
-  ZERO_CLIENT_GRACE_MS,
   answerLoopbackPreamble,
   bindLoopbackServer,
   openStreamBody,
@@ -146,11 +145,5 @@ describe("bindLoopbackServer", () => {
     } finally {
       server.close();
     }
-  });
-});
-
-describe("the shared grace period", () => {
-  it("is the one both servers wait before tearing an encoder down", () => {
-    expect(ZERO_CLIENT_GRACE_MS).toBe(3_000);
   });
 });

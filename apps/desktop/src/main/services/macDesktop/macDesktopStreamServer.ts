@@ -114,7 +114,8 @@ type LaneStream = {
   idleTimer: ReturnType<typeof setTimeout> | null;
 };
 
-const clampFps = (value: number | null | undefined, fallback: number): number => {
+/** The one FPS clamp: 1..60, rounded, with a fallback for a missing number. */
+export const clampFps = (value: number | null | undefined, fallback: number): number => {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.min(60, Math.round(value)));
 };

@@ -22,6 +22,7 @@ import {
 } from "../../../shared/types/macDesktop";
 import type { Logger } from "../logging/logger";
 import type { MacDesktopObservations } from "./macDesktopObservations";
+import { clampFps } from "./macDesktopStreamServer";
 
 /** The turn clip's rate. Low on purpose: it is a time-lapse, not a recording. */
 const TURN_CLIP_FPS = 4;
@@ -182,7 +183,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       // Same root as the turn clip: a captioned recording is played back in
       // the thread before it is ever filed as proof.
       const filePath = deps.observations.artifactPath(`mac-desktop-recording-${laneId}`, "mp4");
-      const fps = Math.max(1, Math.min(60, Math.round(args.fps ?? 15)));
+      const fps = clampFps(args.fps, 15);
       await provider.startRecording({ laneId, fps, filePath });
       const status: MacDesktopRecordingStatus = {
         laneId,

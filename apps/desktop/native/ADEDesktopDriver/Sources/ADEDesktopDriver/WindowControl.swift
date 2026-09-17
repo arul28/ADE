@@ -104,6 +104,15 @@ final class WindowControl {
     let log: (String) -> Void
     let emit: (DriverEvent) -> Void
 
+    /// "Is a real drag holding the mouse button right now?"
+    ///
+    /// Injected rather than reached for: the watcher's 1-second sweep runs on
+    /// the same run loop the drag loop pumps, so without this the sweep can
+    /// move a window — possibly the one under the pointer — in the middle of a
+    /// gesture. Set by `DriverRuntime`; defaults to "no" so the watcher is
+    /// still testable on its own.
+    var isGestureInFlight: () -> Bool = { false }
+
     private var originalFrames: [CGWindowID: CGRect] = [:]
     var reparkAttempts: [CGWindowID: Int] = [:]
     private var windowOrigins: [CGWindowID: String] = [:]

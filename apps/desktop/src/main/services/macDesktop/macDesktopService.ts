@@ -19,7 +19,6 @@ import {
   MAC_DESKTOP_DEFAULT_RESOLUTION,
   MAC_DESKTOP_IDLE_RELEASE_MS,
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
-  MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
   MAC_DESKTOP_RESOLUTION_PRESETS,
   macDesktopDisplayName,
   type MacDesktopActionResult,
@@ -29,10 +28,8 @@ import {
   type MacDesktopDisplay,
   type MacDesktopDisplayMode,
   type MacDesktopDragArgs,
-  type MacDesktopElement,
   type MacDesktopEventPayload,
   type MacDesktopGetStatusArgs,
-  type MacDesktopInputMode,
   type MacDesktopLeaseRequestArgs,
   type MacDesktopLeaseRequestResult,
   type MacDesktopLeaseState,
@@ -58,7 +55,6 @@ import {
   type MacDesktopStopResult,
   type MacDesktopStreamStatus,
   type MacDesktopTakeoverArgs,
-  type MacDesktopTarget,
   type MacDesktopTimeLapse,
   type MacDesktopTypeArgs,
   type MacDesktopWaitArgs,
@@ -82,8 +78,9 @@ import {
   MacDesktopOwnershipError,
 } from "./macDesktopOwnership";
 import { createMacDesktopObservations, MacDesktopObservationError } from "./macDesktopObservations";
+import { createMacDesktopInput } from "./macDesktopInput";
 import { createMacDesktopRecording } from "./macDesktopRecording";
-import { createMacVirtualDisplayProvider } from "./macDesktopSeatProvider";
+import { asWindows, createMacVirtualDisplayProvider } from "./macDesktopSeatProvider";
 import { createMacDesktopStreaming } from "./macDesktopStreaming";
 
 /** KV key for the lane display size. Read on every `start`. */
@@ -102,12 +99,6 @@ const IDLE_SWEEP_INTERVAL_MS = 30_000;
  * cannot stick — this only makes the release immediate instead of eventual.
  */
 const SLEEP_JUMP_FACTOR = 4;
-
-/** An observation asking for more than this is clamped. */
-const MAX_OBSERVATION_LIMIT = MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT;
-
-const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
-const MAX_WAIT_TIMEOUT_MS = 120_000;
 
 export class MacDesktopError extends Error {
   readonly code: string;
@@ -175,9 +166,6 @@ const asNumber = (value: unknown, fallback: number): number =>
 const asNullableString = (value: unknown): string | null =>
   (typeof value === "string" && value.trim().length ? value.trim() : null);
 
-const asWindows = (value: unknown): MacDesktopWindow[] =>
-  (Array.isArray(value) ? value as MacDesktopWindow[] : []);
-
 /**
  * What the runtime actually holds.
  *
@@ -221,9 +209,14 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   let disposed = false;
   let permissions: MacDesktopPermissions = { screenRecording: "unknown", accessibility: "unknown" };
   let displayMode: MacDesktopDisplayMode = isDarwin ? "virtual" : "unavailable";
-  let driver: MacDesktopDriverClient | null = null;
-  /** The one backend. Minted with the driver client it wraps. */
-  let provider: DesktopSeatProvider | null = null;
+  /**
+   * The driver process and the seat provider that wraps it.
+   *
+   * One handle rather than two nullables: they are minted together and cleared
+   * together, and every reader wanted both. Two fields meant every use site
+   * asserted one of them non-null off the other's check.
+   */
+  let backend: { client: MacDesktopDriverClient; provider: DesktopSeatProvider } | null = null;
   let driverEventUnsubscribe: (() => void) | null = null;
   let reconciled = false;
   const startLocks = new Map<string, Promise<MacDesktopStatus>>();
@@ -316,14 +309,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
    * itself is only used for what is not an operation on a seat — starting,
    * health, and the event stream.
    */
-  const ensureProvider = async (): Promise<DesktopSeatProvider> => {
-    await ensureDriver();
-    return provider!;
-  };
+  const ensureProvider = async (): Promise<DesktopSeatProvider> => (await ensureDriver()).provider;
 
   /** The backend only when it is already running: teardown must not start one. */
   const activeProvider = (): DesktopSeatProvider | null =>
-    (driver && driver.isRunning() ? provider : null);
+    (backend && backend.client.isRunning() ? backend.provider : null);
 
   const streaming = createMacDesktopStreaming({
     logger: deps.logger,
@@ -359,6 +349,21 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     ),
   });
   const recordings = recording.recordings;
+
+  const input = createMacDesktopInput({
+    now,
+    emit,
+    ensureProvider,
+    requireDisplay,
+    assertPermission,
+    observations,
+    ownership,
+    leases,
+    noteStreamActivity: (laneId) => streamServer.noteActivity(laneId),
+    noteTurnActivity: (laneId, chatSessionId) => recording.noteTurnActivity(laneId, chatSessionId),
+    toServiceError,
+    serviceError: (code, message) => new MacDesktopError(code, message),
+  });
 
   const leaseFlow = createMacDesktopLeaseFlow({
     logger: deps.logger,
@@ -462,7 +467,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     emit({ type: "permission-changed", permissions: merged });
     // A revoked grant is a health transition too: the card that says "grant
     // permission" is the only actionable thing left on this host.
-    if (driver) emit({ type: "driver-health", health: driver.getHealth() });
+    if (backend) emit({ type: "driver-health", health: backend.client.getHealth() });
   };
 
   const onDriverLost = (reason: string): void => {
@@ -479,11 +484,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     deps.logger.warn("mac_desktop.driver_lost", { reason });
   };
 
-  const ensureDriver = async (): Promise<MacDesktopDriverClient> => {
+  const ensureDriver = async (): Promise<{ client: MacDesktopDriverClient; provider: DesktopSeatProvider }> => {
     assertSupported();
     if (disposed) throw new MacDesktopError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The Mac Desktop service is disposed.");
-    if (!driver) {
-      driver = deps.createDriverClient
+    if (!backend) {
+      const client = deps.createDriverClient
         ? deps.createDriverClient({
           logger: deps.logger,
           platform,
@@ -497,17 +502,17 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           onHealthChanged: (health) => emit({ type: "driver-health", health }),
           onDriverLost,
         });
-      provider = createMacVirtualDisplayProvider(driver);
-      driverEventUnsubscribe = driver.onEvent((event) => handleDriverEvent(event));
+      backend = { client, provider: createMacVirtualDisplayProvider(client) };
+      driverEventUnsubscribe = client.onEvent((event) => handleDriverEvent(event));
     }
-    await driver.ensureStarted();
-    await refreshDriverHealth(driver, provider!);
-    return driver;
+    await backend.client.ensureStarted();
+    await refreshDriverHealth(backend.client, backend.provider);
+    return backend;
   };
 
   const refreshDriverHealth = async (client: MacDesktopDriverClient, seat: DesktopSeatProvider): Promise<void> => {
     try {
-      const reply = asRecord(await seat.health());
+      const reply = await seat.health();
       client.setVersion(asNullableString(reply.version));
       applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
       const mode = asNullableString(reply.displayMode);
@@ -544,7 +549,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
   const buildStatus = async (args: MacDesktopGetStatusArgs = {}): Promise<MacDesktopStatus> => {
     const laneId = args.laneId?.trim() || null;
-    const driverHealth = driver?.getHealth() ?? {
+    const driverHealth = backend?.client.getHealth() ?? {
       state: isDarwin ? "starting" as const : "unsupported" as const,
       title: isDarwin ? "Mac Desktop is starting" : "Mac Desktop needs macOS",
       message: isDarwin ? "ADE is preparing the native desktop driver." : MAC_DESKTOP_MACOS_ONLY_MESSAGE,
@@ -609,13 +614,13 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       || null;
     const preset = readResolution(args.resolution);
     const size = MAC_DESKTOP_RESOLUTION_PRESETS[preset];
-    const reply = asRecord(await seat.create({
+    const reply = await seat.create({
       laneId,
       name: macDesktopDisplayName(laneName),
       width: size.width,
       height: size.height,
       scale: 2,
-    })) as unknown as DriverDisplayReply;
+    }) as DriverDisplayReply;
     const display: MacDesktopDisplay = {
       laneId,
       displayId: asNumber(reply.displayId, 0),
@@ -657,7 +662,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       const seat = isDarwin ? activeProvider() : null;
       if (seat) {
         try {
-          const reply = asRecord(await seat.destroy({ laneId }));
+          const reply = await seat.destroy({ laneId });
           releasedWindows = asNumber(reply.releasedWindows, releasedWindows);
         } catch (error) {
           deps.logger.debug("mac_desktop.destroy_display_failed", {
@@ -727,217 +732,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   };
 
   // -------------------------------------------------------------------------
-  // Observation and input
-  // -------------------------------------------------------------------------
-
-  const observeInternal = async (args: MacDesktopObserveArgs & { caption?: string | null }): Promise<MacDesktopObservation> => {
-    const laneId = args.laneId.trim();
-    const display = requireDisplay(laneId);
-    const seat = await ensureProvider();
-    assertPermission("screenRecording");
-    const limit = Math.max(1, Math.min(MAX_OBSERVATION_LIMIT, Math.round(args.limit ?? MAX_OBSERVATION_LIMIT)));
-    // Frames go to the one root `workToolsStateService.readObservationPreview`
-    // will serve from, per lane, with the sidecar that binds the frame to its
-    // lane — a frame written anywhere else is a frame the phone cannot show.
-    const stem = `${now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const screenshotPath = observations.observationPath(laneId, stem, "png");
-    const mapPath = args.map ? observations.observationPath(laneId, `${stem}-map`, "png") : null;
-    const reply = asRecord(await seat.observe({
-      laneId,
-      windowId: args.windowId ?? null,
-      limit,
-      map: Boolean(args.map),
-      screenshotPath,
-      ...(mapPath ? { mapPath } : {}),
-      ...(args.caption ? { caption: args.caption } : {}),
-    }));
-    const elements = Array.isArray(reply.elements) ? reply.elements as MacDesktopElement[] : [];
-    const observation: MacDesktopObservation = {
-      id: asNullableString(reply.id) ?? `obs-${Math.random().toString(36).slice(2, 10)}`,
-      laneId,
-      capturedAt: asNullableString(reply.capturedAt) ?? new Date(now()).toISOString(),
-      screenshotPath: asNullableString(reply.screenshotPath) ?? screenshotPath,
-      mapPath: asNullableString(reply.mapPath),
-      display: {
-        width: asNumber(asRecord(reply.display).width, display.width),
-        height: asNumber(asRecord(reply.display).height, display.height),
-        scale: asNumber(asRecord(reply.display).scale, display.scale),
-      },
-      windows: asWindows(reply.windows),
-      elements,
-      elementCount: asNumber(reply.elementCount, elements.length),
-      truncated: reply.truncated === true || asNumber(reply.elementCount, elements.length) > elements.length,
-      caption: asNullableString(reply.caption) ?? args.caption?.trim() ?? null,
-    };
-    observations.writeObservationSidecar({
-      imagePath: observation.screenshotPath,
-      laneId,
-      capturedAt: observation.capturedAt,
-      caption: observation.caption,
-    });
-    if (observation.mapPath) {
-      observations.writeObservationSidecar({
-        imagePath: observation.mapPath,
-        laneId,
-        capturedAt: observation.capturedAt,
-        caption: observation.caption,
-      });
-    }
-    observations.remember(observation);
-    ownership.touchDisplay(laneId);
-    ownership.reconcileWindows(laneId, observation.windows);
-    emit({ type: "observation", laneId, observation });
-    return observation;
-  };
-
-  /**
-   * Turns a target into a driver payload.
-   *
-   * `handle` resolves locally, because only this process knows which
-   * observation a handle belongs to and a stale one must be refused before the
-   * driver is asked to click anything.
-   */
-  const resolveTarget = (laneId: string, target: MacDesktopTarget): {
-    payload: Record<string, unknown>;
-    element: MacDesktopElement | null;
-    needsReal: boolean;
-  } => {
-    const handle = target.handle?.trim();
-    if (handle) {
-      const { element } = observations.resolveHandle(laneId, handle);
-      return {
-        payload: { handle, index: element.index, windowId: element.windowId, pid: element.pid },
-        element,
-        needsReal: false,
-      };
-    }
-    const text = target.text?.trim();
-    if (text) {
-      return {
-        payload: { text, ...(target.windowId != null ? { windowId: target.windowId } : {}) },
-        element: null,
-        needsReal: false,
-      };
-    }
-    if (typeof target.x === "number" && typeof target.y === "number") {
-      return {
-        payload: { x: target.x, y: target.y, ...(target.windowId != null ? { windowId: target.windowId } : {}) },
-        element: null,
-        // A bare point has no element to act on, so it can only be delivered as
-        // a real pointer event.
-        needsReal: true,
-      };
-    }
-    if (target.windowId != null) {
-      return { payload: { windowId: target.windowId }, element: null, needsReal: false };
-    }
-    return { payload: {}, element: null, needsReal: false };
-  };
-
-  const leaseHolderId = (chatSessionId: string | null | undefined): string =>
-    chatSessionId?.trim() || "anonymous-agent";
-
-  /**
-   * Who this call claims to be, for the lease check.
-   *
-   * A human takeover holds the lease under the controller id the viewing client
-   * minted (`ade-window:<uuid>`), never under a chat session id — so a panel
-   * that sent only its `chatSessionId` was refused with
-   * `MAC_DESKTOP_USER_HAS_CONTROL` for the very input the user had taken
-   * control to perform. `controllerId` authorizes nothing by itself: an id that
-   * does not hold the lease is refused exactly as before.
-   */
-  const inputHolderId = (args: { controllerId?: string | null; chatSessionId?: string | null }): string =>
-    args.controllerId?.trim() || leaseHolderId(args.chatSessionId);
-
-  const assertRealInputAllowed = (laneId: string, holderId: string): void => {
-    const decision = leases.checkRealInput({ laneId, holderId });
-    if (decision.ok) return;
-    throw new MacDesktopError(decision.code, decision.message);
-  };
-
-  const runAction = async (args: {
-    laneId: string;
-    action: string;
-    command: string;
-    mode: MacDesktopInputMode;
-    payload: Record<string, unknown>;
-    resolved: MacDesktopElement | null;
-    chatSessionId?: string | null;
-    controllerId?: string | null;
-    caption: string;
-    target: Record<string, unknown> | null;
-  }): Promise<MacDesktopActionResult> => {
-    const laneId = args.laneId;
-    requireDisplay(laneId);
-    const seat = await ensureProvider();
-    // Both modes drive the accessibility API: `real` posts a `CGEvent` at a
-    // point this process resolved through that same tree.
-    assertPermission("accessibility");
-    const holderId = inputHolderId(args);
-    if (args.mode === "real") assertRealInputAllowed(laneId, holderId);
-    const startedAt = new Date(now()).toISOString();
-    const startedMs = now();
-    let resolvedIndex: number | null = null;
-    let failure: Error | null = null;
-    try {
-      const reply = asRecord(await seat.input({
-        laneId,
-        command: args.command,
-        mode: args.mode,
-        payload: args.payload,
-        // The helper keeps its own lease and refuses a `CGEvent` post rather
-        // than trusting its caller. Telling it which holder this process just
-        // authorized is what lets the two agree instead of racing.
-        ...(args.mode === "real" ? { lease: { holderId } } : {}),
-      }));
-      resolvedIndex = typeof reply.resolvedIndex === "number" ? reply.resolvedIndex : null;
-    } catch (error) {
-      failure = toServiceError(error);
-    }
-    streamServer.noteActivity(laneId);
-    ownership.touchDisplay(laneId);
-    recording.noteTurnActivity(laneId, args.chatSessionId);
-    if (failure) throw failure;
-    const observation = await observeInternal({
-      laneId,
-      chatSessionId: args.chatSessionId ?? null,
-      caption: args.caption,
-    });
-    const endedAt = new Date(now()).toISOString();
-    const resolved = args.resolved
-      ?? (resolvedIndex != null
-        ? observation.elements.find((element) => element.index === resolvedIndex) ?? null
-        : null);
-    return {
-      ok: true,
-      action: args.action,
-      mode: args.mode,
-      resolved,
-      observation,
-      trace: {
-        id: `${observation.id}:${args.action}`,
-        sessionId: args.chatSessionId?.trim() || null,
-        action: args.action,
-        status: "ok",
-        startedAt,
-        endedAt,
-        durationMs: Math.max(0, now() - startedMs),
-        before: { url: null, title: null },
-        after: { url: null, title: null },
-        target: args.target,
-        observationId: observation.id,
-        error: null,
-      },
-    };
-  };
-
-  const resolveMode = (
-    requested: MacDesktopInputMode | null | undefined,
-    needsReal: boolean,
-  ): MacDesktopInputMode => (needsReal ? "real" : requested ?? "accessibility");
-
-  // -------------------------------------------------------------------------
   // The API
   // -------------------------------------------------------------------------
 
@@ -947,7 +741,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // probe, or throw: a Windows desktop reads this to learn the tab is not
       // available here, and a read that throws cannot say so.
       if (!isDarwin) return await buildStatus(args);
-      if (!driver) {
+      if (!backend) {
         // Bring the helper up on the first read so the health card is real
         // rather than a permanent "starting". A failure to start is health,
         // not an exception.
@@ -956,8 +750,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
             error: error instanceof Error ? error.message : String(error),
           });
         });
-      } else if (driver.isRunning() && provider) {
-        await refreshDriverHealth(driver, provider);
+      } else if (backend.client.isRunning()) {
+        await refreshDriverHealth(backend.client, backend.provider);
       }
       return await buildStatus(args);
     },
@@ -1000,11 +794,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       requireDisplay(laneId);
       const seat = await ensureProvider();
       assertPermission("accessibility");
-      const reply = asRecord(await seat.launch({
+      const reply = await seat.launch({
         laneId,
         target: args.target,
         args: args.args ?? [],
-      }));
+      });
       const windows = asWindows(reply.windows);
       const bundleId = asNullableString(reply.bundleId);
       const pid = typeof reply.pid === "number" ? reply.pid : null;
@@ -1097,177 +891,42 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
     async observe(args: MacDesktopObserveArgs): Promise<MacDesktopObservation> {
       assertSupported();
-      return await observeInternal(args);
+      return await input.observe(args);
     },
 
     async click(args: MacDesktopClickArgs): Promise<MacDesktopActionResult> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      const target = resolveTarget(laneId, args);
-      const mode = resolveMode(args.mode, target.needsReal);
-      const label = target.element?.title ?? target.element?.label ?? args.text ?? "point";
-      return await runAction({
-        laneId,
-        action: "click",
-        command: "click",
-        mode,
-        payload: {
-          ...target.payload,
-          button: args.button ?? "left",
-          count: Math.max(1, Math.min(3, Math.round(args.count ?? 1))),
-        },
-        resolved: target.element,
-        chatSessionId: args.chatSessionId ?? null,
-        controllerId: args.controllerId ?? null,
-        caption: `click · ${label}`,
-        target: { ...target.payload },
-      });
+      return await input.click(args);
     },
 
     async type(args: MacDesktopTypeArgs): Promise<MacDesktopActionResult> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      const target = args.target ? resolveTarget(laneId, args.target) : { payload: {}, element: null, needsReal: false };
-      const mode = resolveMode(args.mode, target.needsReal);
-      return await runAction({
-        laneId,
-        action: "type",
-        command: "type",
-        mode,
-        payload: { ...target.payload, text: args.text, clear: args.clear === true },
-        resolved: target.element,
-        chatSessionId: args.chatSessionId ?? null,
-        controllerId: args.controllerId ?? null,
-        caption: `type · ${args.text.slice(0, 40)}`,
-        target: { ...target.payload },
-      });
+      return await input.type(args);
     },
 
     async press(args: MacDesktopPressArgs): Promise<MacDesktopActionResult> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      return await runAction({
-        laneId,
-        action: "press",
-        command: "press",
-        mode: args.mode ?? "accessibility",
-        payload: { key: args.key, modifiers: args.modifiers ?? [] },
-        resolved: null,
-        chatSessionId: args.chatSessionId ?? null,
-        controllerId: args.controllerId ?? null,
-        caption: `press · ${[...(args.modifiers ?? []), args.key].join("+")}`,
-        target: { key: args.key, modifiers: args.modifiers ?? [] },
-      });
+      return await input.press(args);
     },
 
     async scroll(args: MacDesktopScrollArgs): Promise<MacDesktopActionResult> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      const target = resolveTarget(laneId, args);
-      const mode = resolveMode(args.mode, target.needsReal);
-      return await runAction({
-        laneId,
-        action: "scroll",
-        command: "scroll",
-        mode,
-        payload: {
-          ...target.payload,
-          direction: args.direction,
-          amount: Math.max(1, Math.min(50, Math.round(args.amount ?? 3))),
-        },
-        resolved: target.element,
-        chatSessionId: args.chatSessionId ?? null,
-        controllerId: args.controllerId ?? null,
-        caption: `scroll · ${args.direction}`,
-        target: { ...target.payload, direction: args.direction },
-      });
+      return await input.scroll(args);
     },
 
     async drag(args: MacDesktopDragArgs): Promise<MacDesktopActionResult> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      const from = resolveTarget(laneId, args.from);
-      const to = resolveTarget(laneId, args.to);
-      // A drag has no accessibility action anywhere in AppKit, so it is always
-      // a real pointer sequence and always behind the lease.
-      return await runAction({
-        laneId,
-        action: "drag",
-        command: "drag",
-        mode: "real",
-        payload: {
-          from: from.payload,
-          to: to.payload,
-          durationMs: Math.max(0, Math.min(10_000, Math.round(args.durationMs ?? 500))),
-        },
-        resolved: from.element,
-        chatSessionId: args.chatSessionId ?? null,
-        controllerId: args.controllerId ?? null,
-        caption: "drag",
-        target: { from: from.payload, to: to.payload },
-      });
+      return await input.drag(args);
     },
 
     async wait(args: MacDesktopWaitArgs): Promise<MacDesktopWaitResult> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      requireDisplay(laneId);
-      const seat = await ensureProvider();
-      const timeoutMs = Math.max(0, Math.min(MAX_WAIT_TIMEOUT_MS, Math.round(args.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)));
-      const startedMs = now();
-      const reply = asRecord(await seat.input({
-        laneId,
-        command: "wait",
-        mode: "accessibility",
-        payload: {
-          text: args.text ?? null,
-          gone: args.gone ?? null,
-          windowTitle: args.windowTitle ?? null,
-          timeoutMs,
-        },
-        timeoutMs: timeoutMs + 5_000,
-      }));
-      const observation = await observeInternal({
-        laneId,
-        chatSessionId: args.chatSessionId ?? null,
-        caption: "wait",
-      });
-      const matchedIndex = typeof reply.resolvedIndex === "number" ? reply.resolvedIndex : null;
-      return {
-        // The driver answers `ok` itself: a `gone` or `windowTitle` wait
-        // succeeds with no element, so an index is evidence of a match rather
-        // than the definition of success.
-        ok: reply.ok === true,
-        waitedMs: Math.max(0, now() - startedMs),
-        matched: matchedIndex != null
-          ? observation.elements.find((element) => element.index === matchedIndex) ?? null
-          : null,
-        observation,
-      };
+      return await input.wait(args);
     },
 
     async screenshot(args: MacDesktopScreenshotArgs): Promise<MacDesktopScreenshotResult> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      const display = requireDisplay(laneId);
-      const seat = await ensureProvider();
-      assertPermission("screenRecording");
-      const filePath = args.out
-        ? await observations.resolveOutPath({ laneId, out: args.out })
-        : observations.scratchPath(`mac-desktop-${laneId}`, "png");
-      const reply = asRecord(await seat.screenshot({
-        laneId,
-        windowId: args.windowId ?? null,
-        path: filePath,
-      }));
-      ownership.touchDisplay(laneId);
-      return {
-        laneId,
-        filePath: asNullableString(reply.filePath) ?? filePath,
-        width: asNumber(reply.width, display.width),
-        height: asNumber(reply.height, display.height),
-        capturedAt: asNullableString(reply.capturedAt) ?? new Date(now()).toISOString(),
-      };
+      return await input.screenshot(args);
     },
 
     async startRecording(args: MacDesktopRecordStartArgs): Promise<MacDesktopRecordingStatus> {
@@ -1344,7 +1003,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       const laneId = args.laneId.trim();
       requireDisplay(laneId);
       const seat = await ensureProvider();
-      const reply = asRecord(await seat.present({ laneId, destination: args.destination }));
+      const reply = await seat.present({ laneId, destination: args.destination });
       ownership.touchDisplay(laneId);
       emit({ type: "windows-changed", laneId, windows: await listWindowsInternal(laneId) });
       return { moved: asNumber(reply.moved, 0) };
@@ -1413,9 +1072,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       streaming.dispose();
       driverEventUnsubscribe?.();
       driverEventUnsubscribe = null;
-      driver?.dispose();
-      driver = null;
-      provider = null;
+      backend?.client.dispose();
+      backend = null;
       ownership.clear();
       startLocks.clear();
       recording.clear();

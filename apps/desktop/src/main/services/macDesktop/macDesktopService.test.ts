@@ -315,6 +315,30 @@ describe("macDesktopService real input and the lease", () => {
     service.dispose();
   });
 
+  it("refuses a real click whose forged controllerId the RPC scope stripped", async () => {
+    // An agent can read the human's takeover holder id out of
+    // `getStatus().lease.holderId`. Echoing it back as `controllerId` would have
+    // made `inputHolderId` hand it the lease, so the RPC scope strips the field
+    // from an agent's call — and what arrives here is a real click with only a
+    // chat id, which the user's own takeover refuses.
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:human" });
+    const holderId = (await service.getStatus({ laneId: "lane-1" })).lease?.holderId;
+    expect(holderId).toBe("ade-window:human");
+
+    await expect(service.click({
+      laneId: "lane-1",
+      x: 10,
+      y: 10,
+      mode: "real",
+      chatSessionId: "chat-agent",
+    })).rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input)).toBe(false);
+    service.dispose();
+  });
+
   it("sends no lease on an accessibility action", async () => {
     const driver = createFakeDriver();
     const { service } = makeService({ driver });
@@ -434,6 +458,27 @@ describe("macDesktopService streaming", () => {
     await service.stopStream({ laneId: "lane-1" });
     const third = await service.startStream({ laneId: "lane-1" });
     expect(third.transport?.token).not.toBe(first.transport?.token);
+    service.dispose();
+  });
+
+  it("keeps a shared stream alive when one of its two chats ends", async () => {
+    // The idempotent arm used to hand back the live stream without recording
+    // who asked, so the first chat to end took down a stream the second chat
+    // was still watching.
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.startStream]: () => ({ port: 65_000, codec: "avc1.640032", width: 2560, height: 1440 }),
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.startStream({ laneId: "lane-1", chatSessionId: "chat-a" });
+    await service.startStream({ laneId: "lane-1", chatSessionId: "chat-b" });
+
+    await service.releaseIfOwnedBy("chat-a");
+    expect((await service.getStreamStatus({ laneId: "lane-1" })).running).toBe(true);
+
+    // The last asker leaving is what stops it.
+    await service.releaseIfOwnedBy("chat-b");
+    expect((await service.getStreamStatus({ laneId: "lane-1" })).running).toBe(false);
     service.dispose();
   });
 });

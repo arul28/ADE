@@ -19,6 +19,7 @@ import {
 } from "../../../shared/types/macDesktop";
 import type { Logger } from "../logging/logger";
 import {
+  clampFps,
   createMacDesktopStreamServer,
   type MacDesktopStreamTransportWithSecret,
 } from "./macDesktopStreamServer";
@@ -43,8 +44,23 @@ export type MacDesktopStreamingDeps = {
 };
 
 export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
-  /** laneId → chat that asked for the current stream, for the idle accounting. */
-  const streamOwners = new Map<string, string | null>();
+  /**
+   * laneId → every chat that asked for the current stream.
+   *
+   * A set rather than one owner: a second chat (or a reconnecting viewer) asking
+   * for a stream that is already up is handed the live one, and the first chat
+   * to end must not take the stream down under everyone else. `null` is the
+   * anonymous asker — a viewer with no chat session — and it is a member like
+   * any other so `stopOwnedBy` can never empty a set it is in.
+   */
+  const streamOwners = new Map<string, Set<string | null>>();
+
+  const addStreamOwner = (laneId: string, chatSessionId: string | null | undefined): void => {
+    const owner = chatSessionId?.trim() || null;
+    const owners = streamOwners.get(laneId);
+    if (owners) owners.add(owner);
+    else streamOwners.set(laneId, new Set([owner]));
+  };
   const streamServer = createMacDesktopStreamServer({
     logger: deps.logger,
     now: deps.now,
@@ -120,13 +136,16 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       // A reconnecting viewer asks again. Restarting would mint a second token
       // and cut off every client holding the first one, so the live stream and
       // its token are handed back unchanged; only a stopped stream mints one.
+      addStreamOwner(laneId, args.chatSessionId);
       deps.touchDisplay(laneId);
       return buildStreamStatus(laneId, { redacted: false, transport: running });
     }
     const provider = await deps.ensureProvider();
     deps.assertPermission("screenRecording");
-    const fps = Math.max(1, Math.min(60, Math.round(args.fps ?? MAC_DESKTOP_ACTIVE_FPS)));
-    const idleFps = Math.max(1, Math.min(fps, Math.round(args.idleFps ?? MAC_DESKTOP_IDLE_FPS)));
+    const fps = clampFps(args.fps, MAC_DESKTOP_ACTIVE_FPS);
+    // The idle rate is also capped by the active rate: idling faster than the
+    // stream runs is not a rate.
+    const idleFps = Math.min(fps, clampFps(args.idleFps, MAC_DESKTOP_IDLE_FPS));
     const reply = await provider.startStream({ laneId, fps });
     const sourcePort = typeof reply.port === "number" && Number.isFinite(reply.port) ? reply.port : 0;
     if (!sourcePort) {
@@ -141,7 +160,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       fps,
       idleFps,
     });
-    streamOwners.set(laneId, args.chatSessionId?.trim() || null);
+    addStreamOwner(laneId, args.chatSessionId);
     deps.touchDisplay(laneId);
     // The only call that hands out the token.
     const status = buildStreamStatus(laneId, { redacted: false, transport });
@@ -186,10 +205,17 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       streamOwners.delete(laneId);
     },
 
-    /** Stops every stream a closing chat asked for. */
+    /**
+     * Stops every stream whose LAST asker was this closing chat.
+     *
+     * A stream two chats asked for outlives the first of them: dropping the
+     * closing chat and stopping only on an empty set is what keeps the other
+     * viewer's picture alive.
+     */
     async stopOwnedBy(chatSessionId: string): Promise<void> {
-      for (const [laneId, owner] of [...streamOwners]) {
-        if (owner !== chatSessionId) continue;
+      for (const [laneId, owners] of [...streamOwners]) {
+        if (!owners.delete(chatSessionId)) continue;
+        if (owners.size) continue;
         await stopStream(laneId, "owner-chat-ended").catch(() => {
           // A stream we cannot stop is one the server's own teardown will.
         });

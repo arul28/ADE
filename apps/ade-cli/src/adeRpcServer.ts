@@ -2971,28 +2971,75 @@ function scopeWorkToolsAdeActionArgs(
  * caller's own session id (and dropped when the caller has none, e.g. a bare
  * run/step identity, so no foreign id survives).
  *
+ * `controllerId` and `holderId` are stripped for the same reason, and they are
+ * the sharper half of it. A human takeover holds the lease under a controller id
+ * the viewing client minted, and `getStatus().lease.holderId` prints that id to
+ * anyone who can read the lane's status — including an agent. `inputHolderId` in
+ * the service prefers `controllerId` over the chat id, so an agent that echoed
+ * back the holder id it just read would have posted real `CGEvent` input while
+ * wearing the human's takeover. The id stays in the status payload because the
+ * UI needs it to renew and return its own lease; stripping it on the way IN is
+ * what makes reading it useless.
+ *
  * `laneId` is pinned the same way `work_tools.getLaneState` pins it: a bound
- * agent's display is its own lane's display, whatever it asked for. Unlike
- * `work_tools` this does NOT deny an agent-shaped caller with no resolvable
- * lane — `getStatus` is the domain's capability probe and has to answer on every
- * host, and the acting commands all fail closed in the service anyway because a
- * lease they do not hold is refused there. What they must not do is fail closed
- * while wearing someone else's name, which is what the strip above prevents.
+ * agent's display is its own lane's display, whatever it asked for.
+ *
+ * An agent-shaped caller with NO resolvable lane — an orchestration step, an
+ * automation attempt, a chat whose session record is gone after a daemon
+ * restart — is DENIED every acting command rather than passed through unpinned.
+ * The accessibility-mode commands are the reason: only `real` mode is behind the
+ * lease in the service, so `click`/`type`/`press`/`scroll` in the default
+ * accessibility mode check no lease and no lane ownership at all, and an
+ * unpinned caller naming someone else's `laneId` would drive that lane's
+ * display. `getStatus` and `listWindows` still answer — `getStatus` is the
+ * domain's capability probe and has to work on every host.
  *
  * User clients keep what they sent: the desktop renderer, the web client and a
  * paired phone each drive whichever lane's display their UI is showing, and the
  * human's takeover holds the lease under a `controllerId`, not a chat id.
  */
+const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>([
+  "start",
+  "stop",
+  "open",
+  "claimWindow",
+  "releaseWindow",
+  "observe",
+  "click",
+  "type",
+  "press",
+  "scroll",
+  "drag",
+  "wait",
+  "screenshot",
+  "startRecording",
+  "stopRecording",
+  "requestInputLease",
+  "present",
+]);
+
 function scopeMacDesktopAdeActionArgs(
   runtime: AdeRuntime,
   session: SessionState,
   isUserClient: boolean,
+  action: string,
   macDesktopArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   if (isUserClient) return macDesktopArgs;
-  const { chatSessionId: _callerSupplied, ...rest } = macDesktopArgs;
+  const {
+    chatSessionId: _callerSupplied,
+    controllerId: _callerController,
+    holderId: _callerHolder,
+    ...rest
+  } = macDesktopArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  if (!sessionLaneId && MAC_DESKTOP_LANE_BOUND_ACTIONS.has(action)) {
+    scopeAccessDenied(
+      "mac_desktop actions need a resolvable lane for this caller",
+      `run_ade_action:mac_desktop.${action}`,
+    );
+  }
   return {
     ...rest,
     ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
@@ -4200,6 +4247,7 @@ async function runTool(args: {
         runtime,
         session,
         isUserClient,
+        action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
     } else if (domain === "work_tools" && (!callerIsCto || action === "setActiveTool")) {

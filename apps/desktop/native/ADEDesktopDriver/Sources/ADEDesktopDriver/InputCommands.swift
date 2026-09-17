@@ -198,12 +198,22 @@ extension DriverRuntime {
         case "drag":
             let from = try point("from")
             let to = try point("to")
+            // The gesture is announced *before* the button goes down and ended
+            // in a `defer`, so every exit — success, a lapsed lease, a thrown
+            // CGEvent failure — leaves the gate open and drains whatever piled
+            // up behind it.
+            try gestures.begin(laneId: laneId)
+            defer {
+                gestures.end()
+                scheduleDeferredDrain()
+            }
             try realInput.drag(
                 laneId: laneId,
                 holderId: holderId,
                 from: from,
                 to: to,
-                durationMs: payload["durationMs"]?.intValue ?? 300
+                durationMs: payload["durationMs"]?.intValue ?? 300,
+                verify: laneBoundsCheck(laneId: laneId)
             )
         case "press":
             try realInput.key(
@@ -221,6 +231,32 @@ extension DriverRuntime {
             )
         }
         return ["resolvedIndex": resolvedIndex]
+    }
+
+    /// "Is this point still somewhere this lane is allowed to drag?", re-asked
+    /// on every step of a gesture.
+    ///
+    /// Both halves can change mid-drag: `display.destroy` on another thread's
+    /// request clears the placement, and a caller can walk a drag off the edge
+    /// of its own display and onto the user's. A point of tolerance keeps a
+    /// drag that ends exactly on the boundary from failing on a rounding error.
+    private func laneBoundsCheck(laneId: String) -> (CGPoint) -> DriverError? {
+        { [weak self] point in
+            guard let self else { return nil }
+            guard let placement = self.windows.placement(forLane: laneId) else {
+                return DriverError(
+                    code: DriverErrorCode.noDisplay,
+                    message: "Lane \(laneId) no longer has a display to drag on."
+                )
+            }
+            guard placement.frame.insetBy(dx: -1, dy: -1).contains(point) else {
+                return DriverError(
+                    code: DriverErrorCode.invalidArgument,
+                    message: "A drag on lane \(laneId) may not leave that lane's display."
+                )
+            }
+            return nil
+        }
     }
 
     private func resolve(payload: [String: JSONValue]) throws -> (AXUIElement, ObservedElement) {
