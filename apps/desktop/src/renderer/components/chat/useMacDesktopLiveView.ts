@@ -33,8 +33,24 @@ import { setMacDesktopFrame } from "./macDesktopFrameStore";
  * there is nothing for a decoder to do about it but decode what arrives.
  */
 
-const RETRY_MS = 4_000;
-const RETRY_MAX_ATTEMPTS = 5;
+export const RETRY_MS = 4_000;
+export const RETRY_MAX_ATTEMPTS = 5;
+
+/**
+ * Whether the reader should try again, given what the last attempt did.
+ *
+ * Pure because it is the one rule worth stating on its own: only the error
+ * state retries, only a lane retries, and the budget is spent for good until
+ * something resets it — a fresh `restart()`, or an attempt that succeeded.
+ */
+export function shouldRetryLiveView(args: {
+  status: MacDesktopLiveView["status"];
+  laneId: string | null;
+  failures: number;
+}): boolean {
+  if (args.status !== "error" || !args.laneId) return false;
+  return args.failures < RETRY_MAX_ATTEMPTS;
+}
 
 /**
  * How often the last frame is copied into the shared store.
@@ -152,8 +168,8 @@ export function useMacDesktopLiveView(args: {
   /* ── Reconnect ───────────────────────────────────────────────────────── */
 
   useEffect(() => {
-    if (status !== "error" || !laneId) return;
-    if (resolveFailures >= RETRY_MAX_ATTEMPTS) return;
+    if (!laneId) return;
+    if (!shouldRetryLiveView({ status, laneId, failures: resolveFailures })) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {

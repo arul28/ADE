@@ -2,7 +2,36 @@ import { createServer, type Server } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { MAC_DESKTOP_STREAM_PATH } from "../../../shared/types/macDesktop";
+import {
+  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  IOS_VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/iosSimulator";
+import { encodeVideoRecord } from "../media/videoRecords";
+// The renderer's own reader, used as the assertion: a test that re-implements
+// the framing proves the test agrees with itself and nothing else.
+import { createIosSimVideoRecordParser } from "../../../renderer/components/chat/iosSimVideoRecords";
 import { createMacDesktopStreamServer } from "./macDesktopStreamServer";
+
+/** What the Swift driver actually writes: the config payload is a bare codec. */
+const driverConfigRecord = (codec: string): Buffer =>
+  Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, Buffer.from(codec, "utf8")));
+
+const driverAccessUnit = (payload: Buffer, keyframe: boolean): Buffer =>
+  Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, payload, { keyframe }));
+
+/** Reads the response body until `count` records have been parsed, or it ends. */
+async function readRecords(response: Response, count: number) {
+  const parser = createIosSimVideoRecordParser();
+  const reader = response.body!.getReader();
+  const records: ReturnType<typeof parser.push> = [];
+  while (records.length < count) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) records.push(...parser.push(value));
+  }
+  await reader.cancel().catch(() => {});
+  return records;
+}
 
 const logger = {
   debug: () => {},
@@ -56,22 +85,94 @@ describe("macDesktopStreamServer", () => {
     await wrongPath.arrayBuffer();
   });
 
-  it("streams the helper's bytes through to a reader holding the token", async () => {
-    const payload = Buffer.from("framed-access-unit");
-    const upstream = await startUpstream(payload);
+  it("rewrites the helper's bare-codec config into the record the renderer parses", async () => {
+    // The driver writes `avc1.640032` as the config payload; the renderer
+    // JSON.parses it. Forwarding it untouched is what produced "The video
+    // stream sent an unreadable configuration." in the panel.
+    const accessUnit = Buffer.from([0, 0, 0, 1, 0x65, 0xb8, 0x10]);
+    const upstream = await startUpstream(Buffer.concat([
+      driverConfigRecord("avc1.640032"),
+      driverAccessUnit(accessUnit, true),
+    ]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({
+      laneId: "lane-1",
+      sourcePort: upstream.port,
+      width: 1512,
+      height: 945,
+    });
+
+    const response = await fetch(transport.url);
+    expect(response.status).toBe(200);
+    const records = await readRecords(response, 2);
+    expect(records[0]).toEqual({
+      kind: "config",
+      codec: "avc1.640032",
+      width: 1512,
+      height: 945,
+      annexB: true,
+    });
+    expect(records[1]?.kind).toBe("access-unit");
+    expect(records[1]!.kind === "access-unit" && records[1]!.keyframe).toBe(true);
+    expect(Buffer.from((records[1] as { bytes: Uint8Array }).bytes)).toEqual(accessUnit);
+    // The codec the helper only learns at its first keyframe is now the
+    // server's too, so a status read reports it.
+    expect(server.metrics("lane-1")?.codec).toBe("avc1.640032");
+  });
+
+  it("sends one config per reader when the helper repeats it", async () => {
+    const upstream = await startUpstream(Buffer.concat([
+      driverConfigRecord("avc1.640032"),
+      driverConfigRecord("avc1.640032"),
+      driverAccessUnit(Buffer.from([1, 2, 3]), true),
+    ]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+
+    const records = await readRecords(await fetch(transport.url), 2);
+    // A second config record would make the renderer rebuild its decoder and
+    // wait for another keyframe.
+    expect(records.filter((record) => record.kind === "config")).toHaveLength(1);
+    expect(records[1]?.kind).toBe("access-unit");
+  });
+
+  it("passes a config the helper already wrote as JSON through unchanged", async () => {
+    const json = JSON.stringify({ codec: "avc1.42E01E", width: 800, height: 600, annexB: true });
+    const upstream = await startUpstream(Buffer.concat([
+      Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, Buffer.from(json, "utf8"))),
+      driverAccessUnit(Buffer.from([9]), true),
+    ]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port, width: 1, height: 2 });
+
+    const records = await readRecords(await fetch(transport.url), 1);
+    expect(records[0]).toEqual({
+      kind: "config",
+      codec: "avc1.42E01E",
+      width: 800,
+      height: 600,
+      annexB: true,
+    });
+  });
+
+  it("drops a reader when the helper's bytes are not framed at all", async () => {
+    const upstream = await startUpstream(Buffer.from("not-a-record-at-all"));
     cleanups.push(upstream.close);
     const server = createMacDesktopStreamServer({ logger });
     cleanups.push(() => server.dispose());
     const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
 
     const response = await fetch(transport.url);
-    expect(response.status).toBe(200);
-    const reader = response.body?.getReader();
-    expect(reader).toBeTruthy();
-    const first = await reader!.read();
-    expect(Buffer.from(first.value!).toString()).toBe("framed-access-unit");
-    expect(server.clientCount("lane-1")).toBe(1);
-    await reader!.cancel();
+    await response.body?.getReader().read().catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(server.clientCount("lane-1")).toBe(0);
+    expect(server.metrics("lane-1")?.lastError).toContain("not framed");
   });
 
   it("keeps the token — and the reader — when a second viewer starts the same lane", async () => {

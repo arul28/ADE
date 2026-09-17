@@ -114,7 +114,7 @@ export function H264VideoCanvas({
     const VideoDecoderCtor = scope.VideoDecoder;
     const EncodedVideoChunkCtor = scope.EncodedVideoChunk;
     if (!VideoDecoderCtor || !EncodedVideoChunkCtor) {
-      report("error", "This build cannot decode the simulator video stream.");
+      report("error", "This build cannot decode the video stream.");
       return;
     }
 
@@ -159,11 +159,11 @@ export function H264VideoCanvas({
         const response = await fetch(url, { signal: abort.signal, cache: "no-store" });
         if (!response.ok) {
           throw new Error(response.status === 403
-            ? "The simulator video stream refused this token."
-            : `The simulator video stream answered ${response.status}.`);
+            ? "The video stream refused this token."
+            : `The video stream answered ${response.status}.`);
         }
         const body = response.body;
-        if (!body) throw new Error("The simulator video stream sent no body.");
+        if (!body) throw new Error("The video stream sent no body.");
         const reader = body.getReader();
         const parser = createIosSimVideoRecordParser();
         let configured = false;

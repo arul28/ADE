@@ -8,10 +8,8 @@ import {
   safeEqual,
   writeWithBacklog,
 } from "../media/loopbackTokenServer";
+import { encodeVideoRecord } from "../media/videoRecords";
 import {
-  IOS_VIDEO_RECORD_FLAG_KEYFRAME,
-  IOS_VIDEO_RECORD_HEADER_BYTES,
-  IOS_VIDEO_RECORD_MAGIC,
   IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
   IOS_VIDEO_RECORD_TYPE_CONFIG,
   IOS_VIDEO_STREAM_PATH,
@@ -95,25 +93,10 @@ type StreamClient = {
   sentConfig: boolean;
 };
 
-/**
- * Builds one framed record. The reader needs the length before the payload
- * because a chunked HTTP body has no message boundaries of its own.
- */
-export function encodeVideoRecord(
-  type: number,
-  payload: Uint8Array,
-  options: { keyframe?: boolean } = {},
-): Uint8Array {
-  const record = new Uint8Array(IOS_VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
-  const view = new DataView(record.buffer);
-  view.setUint32(0, IOS_VIDEO_RECORD_MAGIC, false);
-  view.setUint8(4, type);
-  view.setUint8(5, options.keyframe ? IOS_VIDEO_RECORD_FLAG_KEYFRAME : 0);
-  view.setUint16(6, 0, false);
-  view.setUint32(8, payload.byteLength, false);
-  record.set(payload, IOS_VIDEO_RECORD_HEADER_BYTES);
-  return record;
-}
+/** The framing lives in `media/videoRecords.ts`, shared with the Mac Desktop
+ * server; re-exported here because this module's callers and tests know it by
+ * this name. */
+export { encodeVideoRecord };
 
 export function createIosVideoStreamServer(deps: IosVideoStreamServerDeps) {
   const now = deps.now ?? (() => Date.now());

@@ -156,11 +156,27 @@ export function pipeWithBacklog(
   },
   client: BacklogClient,
   response: ServerResponse,
-  handlers: { onDrop: (reason: "backlog") => void; onBytes?: (byteLength: number) => void },
+  handlers: {
+    onDrop: (reason: "backlog") => void;
+    onBytes?: (byteLength: number) => void;
+    /**
+     * Rewrites the upstream bytes before they reach the reader, and may emit
+     * none. The Mac Desktop server uses it to turn the helper's config record
+     * into the JSON one the renderer parses; a server that forwards untouched
+     * leaves it out.
+     */
+    transform?: (chunk: Buffer) => Uint8Array[];
+  },
 ): void {
   upstream.setNoDelay?.(true);
   upstream.on("data", (chunk: Buffer) => {
     handlers.onBytes?.(chunk.byteLength);
-    writeWithBacklog(client, response, chunk, handlers.onDrop);
+    if (!handlers.transform) {
+      writeWithBacklog(client, response, chunk, handlers.onDrop);
+      return;
+    }
+    for (const out of handlers.transform(chunk)) {
+      if (!writeWithBacklog(client, response, out, handlers.onDrop)) return;
+    }
   });
 }

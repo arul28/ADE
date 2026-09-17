@@ -34,6 +34,14 @@ import {
   safeEqual,
 } from "../media/loopbackTokenServer";
 import {
+  createVideoRecordSplitter,
+  encodeVideoRecord,
+  VideoRecordFramingError,
+} from "../media/videoRecords";
+import {
+  IOS_VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/iosSimulator";
+import {
   MAC_DESKTOP_ACTIVE_FPS,
   MAC_DESKTOP_IDLE_FPS,
   MAC_DESKTOP_IDLE_STREAM_AFTER_MS,
@@ -94,6 +102,54 @@ type LaneClient = {
   upstream: Socket;
   backlogBytes: number;
 };
+
+/**
+ * Rewrites the helper's config record into the one the renderer parses.
+ *
+ * The Swift driver writes the bare codec string — `avc1.640032`, an 11-byte
+ * payload — while the renderer's reader `JSON.parse`s the config payload, so
+ * forwarding the helper's bytes untouched produced a stream that arrived and
+ * then failed to configure a decoder. Rewriting here, rather than in the
+ * driver, also lets the config carry the display's width and height, which the
+ * encoder does not know and `stream.start` already told this process.
+ *
+ * Returns null when the payload names no codec at all; the caller drops the
+ * record rather than sending a config a decoder cannot use.
+ */
+export function normalizeConfigPayload(
+  payload: Buffer,
+  size: { width: number | null; height: number | null },
+): { json: Buffer; codec: string; width: number | null; height: number | null } | null {
+  const text = payload.toString("utf8").trim();
+  let codec = text;
+  let width = size.width;
+  let height = size.height;
+  if (text.startsWith("{")) {
+    let parsed: { codec?: unknown; width?: unknown; height?: unknown };
+    try {
+      parsed = JSON.parse(text) as typeof parsed;
+    } catch {
+      return null;
+    }
+    codec = typeof parsed.codec === "string" ? parsed.codec : "";
+    if (typeof parsed.width === "number") width = parsed.width;
+    if (typeof parsed.height === "number") height = parsed.height;
+  }
+  if (!codec) return null;
+  return {
+    json: Buffer.from(JSON.stringify({
+      codec,
+      width: width ?? null,
+      height: height ?? null,
+      // The driver emits Annex-B access units, same as the simulator encoder,
+      // so the decoder is configured without a `description`.
+      annexB: true,
+    })),
+    codec,
+    width,
+    height,
+  };
+}
 
 type LaneStream = {
   laneId: string;
@@ -216,9 +272,43 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
       lane.graceTimer = null;
     }
 
+    const splitter = createVideoRecordSplitter();
+    let sentConfig: string | null = null;
     pipeWithBacklog(upstream, client, response, {
       onBytes: (byteLength) => recordBytes(lane, byteLength),
       onDrop: (reason) => dropClient(lane, client, reason),
+      transform: (chunk) => {
+        let records;
+        try {
+          records = splitter.push(chunk);
+        } catch (error) {
+          lane.lastError = error instanceof VideoRecordFramingError
+            ? error.message
+            : error instanceof Error ? error.message : String(error);
+          dropClient(lane, client, "framing-error");
+          return [];
+        }
+        const out: Uint8Array[] = [];
+        for (const record of records) {
+          if (record.type !== IOS_VIDEO_RECORD_TYPE_CONFIG) {
+            out.push(record.raw);
+            continue;
+          }
+          const config = normalizeConfigPayload(record.payload, lane);
+          if (!config) continue;
+          lane.codec = config.codec;
+          lane.width = config.width;
+          lane.height = config.height;
+          const json = config.json.toString("utf8");
+          // The renderer tears its decoder down and rebuilds it on every config
+          // record, which costs a keyframe wait. The helper re-sends the same
+          // one on attach and on transition, so only a change is worth sending.
+          if (sentConfig === json) continue;
+          sentConfig = json;
+          out.push(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, config.json));
+        }
+        return out;
+      },
     });
     upstream.on("error", (error: Error) => {
       lane.lastError = error.message;

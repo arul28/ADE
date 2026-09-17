@@ -71,13 +71,13 @@ export function createIosSimVideoRecordParser(): {
         const view = new DataView(buffer.buffer, buffer.byteOffset + offset, IOS_VIDEO_RECORD_HEADER_BYTES);
         const magic = view.getUint32(0, false);
         if (magic !== IOS_VIDEO_RECORD_MAGIC) {
-          throw new IosSimVideoProtocolError("The simulator video stream is not framed as expected.");
+          throw new IosSimVideoProtocolError("The video stream is not framed as expected.");
         }
         const type = view.getUint8(4);
         const flags = view.getUint8(5);
         const length = view.getUint32(8, false);
         if (length > MAX_RECORD_BYTES) {
-          throw new IosSimVideoProtocolError(`The simulator video stream declared a ${length} byte record.`);
+          throw new IosSimVideoProtocolError(`The video stream declared a ${length} byte record.`);
         }
         const end = offset + IOS_VIDEO_RECORD_HEADER_BYTES + length;
         if (buffer.byteLength < end) break;
@@ -88,10 +88,10 @@ export function createIosSimVideoRecordParser(): {
           try {
             parsed = JSON.parse(text) as typeof parsed;
           } catch {
-            throw new IosSimVideoProtocolError("The simulator video stream sent an unreadable configuration.");
+            throw new IosSimVideoProtocolError("The video stream sent an unreadable configuration.");
           }
           if (typeof parsed.codec !== "string" || !parsed.codec) {
-            throw new IosSimVideoProtocolError("The simulator video stream sent no codec.");
+            throw new IosSimVideoProtocolError("The video stream sent no codec.");
           }
           records.push({
             kind: "config",
