@@ -338,6 +338,25 @@ window. This is why it is allowed without the input lease, while every post in
 `postToPid` calls into a `post(tap:)` would silently hand every accessibility
 caller the user's keyboard.
 
+### A new window is not drivable the instant it exists
+
+A window appears in `CGWindowListCopyWindowInfo` before its application has
+published it to the Accessibility API — measured at a few hundred milliseconds
+for a new TextEdit document. The pid watcher looks exactly in that gap, so the
+first AX lookup legitimately finds nothing.
+
+The driver retries the lookup on a bounded backoff (50/100/200/400/800 ms,
+~1.5 s total, in `WindowReadiness`) and then classifies what is left:
+
+- `AXIsProcessTrusted()` false → `MAC_DESKTOP_PERMISSION_REQUIRED`, a grant the
+  user has to give.
+- otherwise → `window_not_ready`, a `window-not-parked` event carrying
+  `reason: "not_ready"`, and the window stays on the watch list for the next
+  poll.
+
+Reporting the second as the first is the bug this exists to prevent: it sends
+somebody to System Settings to fix a permission that was never missing.
+
 ### Reconciliation is narrower than it sounds
 
 `display.reconcile` destroys displays *this process* created whose lane is not

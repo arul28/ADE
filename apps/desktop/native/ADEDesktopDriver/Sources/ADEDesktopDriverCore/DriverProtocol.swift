@@ -145,6 +145,11 @@ public enum DriverErrorCode {
     /// Helper-local faults. The service turns these into `MAC_DESKTOP_DRIVER_*`
     /// messages; they are separate so a bad line and a bad display are not the
     /// same incident in a log.
+    /// A window exists but has not published an accessibility element yet.
+    /// Deliberately not `permissionRequired`: a readiness race and a missing
+    /// grant look identical at the call site and must not read identically to
+    /// the user.
+    public static let windowNotReady = "window_not_ready"
     public static let unknownOp = "unknown_op"
     public static let protocolError = "protocol_error"
     public static let invalidArgument = "invalid_argument"

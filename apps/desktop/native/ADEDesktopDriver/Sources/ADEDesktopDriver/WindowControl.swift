@@ -253,6 +253,35 @@ final class WindowControl {
         return matching.count == 1 ? matching[0] : nil
     }
 
+    /// `axWindow`, but patient.
+    ///
+    /// A window appears in `CGWindowListCopyWindowInfo` before its application
+    /// has published it to the Accessibility API. The pid watcher looks exactly
+    /// in that gap — a new TextEdit document was seen roughly 200 ms before it
+    /// had an element — so a single failed lookup means "not yet", not "not
+    /// permitted". Retrying on `WindowReadiness.backoffMs` closes the race; the
+    /// failure that survives it is classified, so a slow app never produces a
+    /// permission error the user cannot act on.
+    func axWindowWhenReady(for window: DesktopWindow) -> Result<AXUIElement, WindowReadinessFailure> {
+        var attempt = 0
+        while let delay = WindowReadiness.delaySeconds(beforeAttempt: attempt) {
+            if delay > 0 {
+                // The run loop keeps turning: the app publishing the window is
+                // answering on the main thread too, and sleeping outright would
+                // starve the very work being waited for.
+                RunLoop.current.run(until: Date().addingTimeInterval(delay))
+            }
+            if let element = axWindow(for: window) {
+                if attempt > 0 {
+                    log("window \(window.id) became reachable on attempt \(attempt + 1)")
+                }
+                return .success(element)
+            }
+            attempt += 1
+        }
+        return .failure(WindowReadinessFailure.classify(isProcessTrusted: AXIsProcessTrusted()))
+    }
+
     static func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
@@ -325,13 +354,13 @@ final class WindowControl {
         reparkAttempts[windowId] = 0
         lock.unlock()
 
-        guard let element = axWindow(for: window) else {
+        let element: AXUIElement
+        switch axWindowWhenReady(for: window) {
+        case .success(let resolved):
+            element = resolved
+        case .failure(let failure):
             ownership.unpark(windowId: Int(windowId))
-            throw DriverError(
-                code: DriverErrorCode.permissionRequired,
-                message: "Window \(windowId) has no reachable accessibility element. "
-                    + "Grant Accessibility to ADE, or the window's app is not scriptable."
-            )
+            throw failure.driverError(windowId: Int(windowId))
         }
         let index = ownership.windows(forLane: laneId).count - 1
         let size = CGSize(
@@ -521,7 +550,39 @@ final class WindowControl {
                     _ = try park(laneId: laneId, windowId: window.id, origin: "ade_launched")
                     touchedLanes.insert(laneId)
                 } catch {
-                    log("could not park new window \(window.id) of pid \(pid): \(error)")
+                    let code = (error as? DriverError)?.code
+                    if code == DriverErrorCode.windowNotReady {
+                        // Not a failure, a "not yet". Forgetting the window here
+                        // is what makes the next poll try again: `known` is the
+                        // only record that this sweep already considered it.
+                        lock.lock()
+                        knownWindowsByPid[pid]?.remove(window.id)
+                        lock.unlock()
+                        emit(
+                            DriverEvent(
+                                event: "window-not-parked",
+                                fields: [
+                                    "laneId": .string(laneId),
+                                    "windowId": .int(Int(window.id)),
+                                    "reason": .string("not_ready"),
+                                ]
+                            )
+                        )
+                        log("window \(window.id) of pid \(pid) is not ready yet; retrying on the next poll")
+                    } else {
+                        emit(
+                            DriverEvent(
+                                event: "window-not-parked",
+                                fields: [
+                                    "laneId": .string(laneId),
+                                    "windowId": .int(Int(window.id)),
+                                    "reason": .string(code ?? "error"),
+                                    "message": .string((error as? DriverError)?.message ?? "\(error)"),
+                                ]
+                            )
+                        )
+                        log("could not park new window \(window.id) of pid \(pid): \(error)")
+                    }
                 }
             }
         }
@@ -670,8 +731,13 @@ final class WindowControl {
         let windowDeadline = Date().addingTimeInterval(3)
         while Date() < windowDeadline, parked.isEmpty {
             for window in listWindows(pid: pid) where window.laneId == nil {
-                if let result = try? park(laneId: laneId, windowId: window.id, origin: "ade_launched") {
-                    parked.append(result)
+                do {
+                    parked.append(try park(laneId: laneId, windowId: window.id, origin: "ade_launched"))
+                } catch {
+                    // A window that is not ready yet is the watcher's problem,
+                    // not the launch's: `launch` answers with what is parked so
+                    // far and `watching: true`, exactly as its result type says.
+                    log("launch could not park window \(window.id) yet: \(error)")
                 }
             }
             if parked.isEmpty {
