@@ -49,7 +49,7 @@ export function hasConfigKeyValue(config: ProjectConfigFile, key: keyof ProjectC
   return true;
 }
 
-export type CarryOverAiResult = {
+type CarryOverAiResult = {
   value: Record<string, unknown> | undefined;
   skipped: string[];
 };

@@ -6,7 +6,7 @@ import {
 import type {
   AccountSettingRecord,
   AccountSettingWrite,
-} from "../push/pushRelayClient";
+} from "../push/accountRelayRows";
 
 /**
  * The machine's copy of the account settings store.

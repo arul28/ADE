@@ -10,7 +10,7 @@ import type {
   AccountVaultItem,
   AccountVaultItemKind,
   AccountVaultWrite,
-} from "../push/pushRelayClient";
+} from "../push/accountRelayRows";
 
 /**
  * The machine's copy of the vault.
