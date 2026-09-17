@@ -5,6 +5,20 @@ export type ComputerUseArtifactKind =
   | "browser_verification"
   | "console_logs";
 
+/**
+ * What an artifact's `metadata.kind` tag says it is FOR.
+ *
+ * Distinct from `ComputerUseArtifactKind`, which says what the bytes are: a
+ * scene still is a `screenshot` like any other capture. `scene_still` is the
+ * picture a generated view left behind, filed through the broker only because
+ * the broker owns the bytes and the index that resolves them — nobody chose to
+ * keep it as evidence, so the proof drawer excludes it.
+ */
+export type ComputerUseArtifactMetadataKind = "scene_still";
+
+/** The one tag above, so the filer and every filter spell it the same way. */
+export const SCENE_STILL_METADATA_KIND: ComputerUseArtifactMetadataKind = "scene_still";
+
 export type ComputerUseArtifactOwnerKind =
   | "lane"
   | "chat_session"
@@ -145,6 +159,17 @@ export type ComputerUseArtifactListArgs = {
   ownerKind?: ComputerUseArtifactOwnerKind;
   ownerId?: string | null;
   kind?: ComputerUseArtifactKind | null;
+  /**
+   * Keep only artifacts whose `metadata.kind` is one of these. The scene-still
+   * index is the caller: it wants its own pictures and nothing else, and it
+   * must not be crowded out of a limit by ordinary proof.
+   */
+  metadataKinds?: ComputerUseArtifactMetadataKind[] | null;
+  /**
+   * Drop artifacts whose `metadata.kind` is one of these. Every proof surface
+   * passes `["scene_still"]` — see {@link ComputerUseArtifactMetadataKind}.
+   */
+  excludeMetadataKinds?: ComputerUseArtifactMetadataKind[] | null;
   limit?: number;
 };
 

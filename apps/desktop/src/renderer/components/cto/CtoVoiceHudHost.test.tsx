@@ -6,14 +6,19 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
 import { CTO_VOICE_INITIAL_STATE, type CtoVoiceStatePayload } from "../../../shared/types/ctoVoice";
 import { readCallStills, resetSceneStillsForTest } from "../chat/sceneStillStore";
+import {
+  postSceneMessage,
+  stubSceneCaptureBridge,
+  stubShellRect,
+} from "../chat/sceneStillTestHarness";
 import { CtoVoiceHudHost } from "./CtoVoiceHudHost";
 
 /**
  * A scene drawn during a call has exactly one chance to leave a picture: this
- * host is unmounted with the HUD the moment the call ends. These pin the
- * forwarding — the still reaches both the store the transcript card reads and
- * the call that writes the CTO's durable record — because the bug they replace
- * was a call whose only answer was a view and whose card showed nothing.
+ * host is unmounted with the HUD the moment the call ends. These pin what the
+ * still is filed WITH — the call id, which is how the finished call's card
+ * finds its pictures again — because the bug they replace was a call whose only
+ * answer was a view and whose card showed nothing.
  */
 
 let callState: CtoVoiceStatePayload = { ...CTO_VOICE_INITIAL_STATE, isCallOwner: true };
@@ -35,10 +40,9 @@ vi.mock("./CtoVoiceHud", () => ({
   CtoVoiceHud: ({ canvas }: { canvas: React.ReactNode }) => <div data-testid="hud">{canvas}</div>,
 }));
 
-const attachStill = vi.fn(async (_args: { still: { uri: string } }) => {});
+let bridge: ReturnType<typeof stubSceneCaptureBridge>;
 
 beforeEach(() => {
-  attachStill.mockClear();
   resetSceneStillsForTest();
   callState = {
     ...CTO_VOICE_INITIAL_STATE,
@@ -49,20 +53,14 @@ beforeEach(() => {
   };
   (globalThis as unknown as { URL: typeof URL }).URL.createObjectURL = vi.fn(() => "blob:scene-hud");
   (globalThis as unknown as { URL: typeof URL }).URL.revokeObjectURL = vi.fn();
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
-    x: 0, y: 0, top: 0, left: 0, width: 400, height: 200, bottom: 200, right: 400,
-  } as DOMRect);
-  (window as unknown as { ade?: unknown }).ade = {
-    scene: {
-      snapshot: vi.fn(async () => "data:image/png;base64,STILL"),
-      storeStill: vi.fn(async () => ({
-        uri: ".ade/artifacts/computer-use/call.png",
-        artifactId: "a7",
-        title: "Generated view",
-      })),
-    },
-    ctoVoice: { attachStill },
-  };
+  stubShellRect();
+  bridge = stubSceneCaptureBridge({
+    storeStill: async () => ({
+      uri: ".ade/artifacts/computer-use/call.png",
+      artifactId: "a7",
+      title: "Generated view",
+    }),
+  });
 });
 
 afterEach(() => {
@@ -73,24 +71,34 @@ afterEach(() => {
 });
 
 describe("CtoVoiceHudHost", () => {
-  it("keeps the still of a scene the call drew, on both sides of the HUD's lifetime", async () => {
+  it("files the still under the call, and keeps a copy for the card", async () => {
     render(<CtoVoiceHudHost />);
     const frame = await screen.findByTestId("chat-scene-frame");
-    for (const type of ["ready", "settled"]) {
-      window.dispatchEvent(new MessageEvent("message", {
-        source: (frame as HTMLIFrameElement).contentWindow,
-        data: { __adeScene: 1, type, payload: { height: 200 } },
-      }));
-    }
+    for (const type of ["ready", "settled"]) postSceneMessage(frame, type);
 
-    // The store is what the transcript card reads back...
+    // Filed WITH the call id: that is the durable half — the card that appears
+    // after the HUD is gone finds its pictures by asking for them.
+    await waitFor(() => expect(bridge.storeStill).toHaveBeenCalledTimes(1));
+    expect(bridge.storeStill.mock.calls[0]?.[0]).toMatchObject({
+      scopeKey: "call-7",
+      voiceCallId: "call-7",
+    });
+    // ...and a copy in this window, so the card does not wait for a round trip.
     await waitFor(() => expect(readCallStills("call-7")).toHaveLength(1));
     expect(readCallStills("call-7")[0]?.uri).toBe(".ade/artifacts/computer-use/call.png");
-    // ...and the call is what carries it into the CTO's record of the call.
-    await waitFor(() => expect(attachStill).toHaveBeenCalledTimes(1));
-    expect(attachStill.mock.calls[0]?.[0]).toEqual({
-      still: { uri: ".ade/artifacts/computer-use/call.png", artifactId: "a7", title: "Generated view" },
-    });
+  });
+
+  /**
+   * No call id is no identity to file under. A fallback scope key put every
+   * id-less scene on top of the same still.
+   */
+  it("stores nothing for a scene drawn outside a call", async () => {
+    callState = { ...callState, callId: null };
+    render(<CtoVoiceHudHost />);
+    const frame = await screen.findByTestId("chat-scene-frame");
+    for (const type of ["ready", "settled"]) postSceneMessage(frame, type);
+    await waitFor(() => expect(bridge.snapshot).toHaveBeenCalledTimes(1));
+    expect(bridge.storeStill).not.toHaveBeenCalled();
   });
 
   it("draws no canvas at all when the call has not drawn anything", () => {

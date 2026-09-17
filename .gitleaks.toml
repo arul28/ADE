@@ -25,6 +25,14 @@ regexes = [
   '''a3f2c1d4e5b60718293a4b5c6d7e8f90''',
   '''phc_abcdefgh12345678''',
   '''phx_personalkey123''',
+  # The machine key store's file NAME, "api-keys.v1.bin". A path segment, not a
+  # key: it appears as a literal in `apiKeyStore.ts` and its test, and gitleaks'
+  # generic-api-key rule fires on it because the surrounding identifier says
+  # KEY. A regex rather than commit-scoped fingerprints, because a fingerprint
+  # is `<commit>:<file>:<rule>:<line>` and every rebase of the lane that
+  # introduced these literals reassigns the commit — so the exception silently
+  # stopped applying exactly when the branch was refreshed.
+  '''api-keys\.v1\.bin''',
 ]
 paths = [
   '''\.env\.example$''',

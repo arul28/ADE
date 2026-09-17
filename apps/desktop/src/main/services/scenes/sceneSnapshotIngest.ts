@@ -4,6 +4,7 @@ import nodePath from "node:path";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { isPathInside } from "../shared/pathCompare";
+import { fileSceneStill } from "./sceneStillFiling";
 
 type ComputerUseArtifactBroker = NonNullable<AdeRuntime["computerUseArtifactBrokerService"]>;
 type AgentChatService = AdeRuntime["agentChatService"];
@@ -12,7 +13,19 @@ export type IngestSceneSnapshotArgs = {
   projectRoot: string;
   broker: ComputerUseArtifactBroker;
   agentChatService: AgentChatService | null;
-  args?: { path?: unknown; title?: unknown; sessionId?: unknown };
+  args?: {
+    path?: unknown;
+    title?: unknown;
+    sessionId?: unknown;
+    /**
+     * Present only for a scene STILL — the picture a settled view left behind,
+     * which is filed as an index rather than as proof. The desktop sends it on
+     * the still path and never on the Proof button's, so this one field is what
+     * tells the two apart on a runtime-backed build.
+     */
+    sceneScopeKey?: unknown;
+    voiceCallId?: unknown;
+  };
 };
 
 /**
@@ -97,6 +110,23 @@ export async function ingestSceneSnapshot({
   if (claimed && agentChatService) {
     const found = await agentChatService.getSessionSummary(claimed).catch(() => null);
     if (found) ownerSessionId = claimed;
+  }
+
+  const sceneScopeKey = typeof args?.sceneScopeKey === "string" ? args.sceneScopeKey.trim() : "";
+  if (sceneScopeKey) {
+    // A still, not proof. Same jail, same owner resolution, different record:
+    // tagged so the proof drawer excludes it, and bounded so a long chat's
+    // pictures cannot grow without limit. The filing rules live in one place
+    // rather than being repeated on each side of the runtime split.
+    const still = fileSceneStill({
+      broker,
+      path: resolved,
+      title,
+      ownerSessionId,
+      sceneScopeKey,
+      voiceCallId: typeof args?.voiceCallId === "string" ? args.voiceCallId : null,
+    });
+    return { filed: true, ownerSessionId, artifactId: still.artifactId };
   }
 
   const filed = broker.ingest({

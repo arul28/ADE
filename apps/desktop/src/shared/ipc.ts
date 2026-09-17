@@ -398,7 +398,6 @@ export const IPC = {
   ctoVoiceDeny: "cto-voice:deny",
   ctoVoiceAttachImage: "cto-voice:attach-image",
   /** Renderer → main: a still of a scene this call drew, for the call's card. */
-  ctoVoiceAttachStill: "cto-voice:attach-still",
   ctoVoiceHasKey: "cto-voice:has-key",
   /** Main → renderer: the whole call state, on every change. */
   ctoVoiceState: "cto-voice:state",

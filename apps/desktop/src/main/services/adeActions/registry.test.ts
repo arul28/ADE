@@ -109,7 +109,6 @@ describe("the cto_voice domain", () => {
       "cto_voice",
       services.cto_voice as Record<string, unknown>,
     )).toEqual([
-      "attachStill",
       "end",
       "getState",
       "hasKey",

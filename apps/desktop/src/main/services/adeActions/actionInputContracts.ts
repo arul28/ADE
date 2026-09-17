@@ -114,12 +114,6 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Attach a window the user captured to the call's next backend turn. The image reaches the CTO thread, never the voice model.",
       input: "object { ownerToken: string, pngBase64: string, note?: string }",
     },
-    attachStill: {
-      description:
-        "Keep a still of a scene the call drew, so the call's transcript card still shows a picture once the HUD is gone. Carries a record of "
-        + "bytes already filed in the project's artifact store, never image data and never a path this process would read.",
-      input: "object { ownerToken: string, still: { uri: string, artifactId?: string | null, title?: string } }",
-    },
   },
   account: {
     startLogin: {
@@ -646,7 +640,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description:
         "File a scene snapshot the desktop already wrote into this project's artifact store as proof. "
         + "CTO-only, and the path must already be inside `.ade/artifacts/computer-use`.",
-      input: "object { path: string, title?: string, sessionId?: string | null }",
+      input: "object { path: string, title?: string, sessionId?: string | null, sceneScopeKey?: string, voiceCallId?: string }",
       example: "ade --role cto actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{\"path\":\"/repo/.ade/artifacts/computer-use/scene.png\",\"title\":\"Merged pull requests\"}' --json",
     },
     readArtifactPreview: {

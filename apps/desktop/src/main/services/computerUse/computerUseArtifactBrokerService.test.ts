@@ -1160,4 +1160,67 @@ describe("computerUseArtifactBrokerService", () => {
       fs.rmSync(stagedPath, { force: true });
     }
   });
+
+  /**
+   * Some artifacts are filed for an index rather than for the proof drawer — a
+   * scene still is a picture the transcript shows inline. The filter has to run
+   * in the query, not over its result, or a page of stills pushes every proof
+   * row out of a drawer listing.
+   */
+  describe("filtering by metadata kind", () => {
+    function seed() {
+      const broker = createComputerUseArtifactBrokerService({
+        db,
+        projectId: "project-1",
+        projectRoot,
+        logger: createLogger(),
+      });
+      broker.ingest({
+        backend: { name: "cto", style: "manual" },
+        owners: [{ kind: "chat_session", id: "chat-1" }],
+        inputs: [{ kind: "browser_verification", title: "Real proof", text: "{}" }],
+      });
+      broker.ingest({
+        backend: { name: "scene", style: "manual" },
+        owners: [{ kind: "chat_session", id: "chat-1" }],
+        inputs: [{
+          kind: "browser_verification",
+          title: "A still",
+          text: "{}",
+          metadata: { kind: "scene_still", sceneScopeKey: "row-1" },
+        }],
+      });
+      return broker;
+    }
+
+    it("excludes a tagged kind and keeps every untagged artifact", () => {
+      const broker = seed();
+      const listed = broker.listArtifacts({
+        ownerKind: "chat_session",
+        ownerId: "chat-1",
+        excludeMetadataKinds: ["scene_still"],
+      });
+      // `not in` is unknown against a null extract, so an untagged artifact —
+      // which is nearly all of them — would vanish if the null were not spelled out.
+      expect(listed.map((artifact) => artifact.title)).toEqual(["Real proof"]);
+    });
+
+    it("keeps only a tagged kind when asked for one", () => {
+      const broker = seed();
+      const listed = broker.listArtifacts({
+        ownerKind: "chat_session",
+        ownerId: "chat-1",
+        metadataKinds: ["scene_still"],
+      });
+      expect(listed.map((artifact) => artifact.title)).toEqual(["A still"]);
+    });
+
+    it("applies the same filter to a read by id", () => {
+      const broker = seed();
+      const still = broker.listArtifacts({ metadataKinds: ["scene_still"] })[0]!;
+      expect(broker.listArtifacts({ artifactId: still.id })).toHaveLength(1);
+      expect(broker.listArtifacts({ artifactId: still.id, excludeMetadataKinds: ["scene_still"] }))
+        .toHaveLength(0);
+    });
+  });
 });

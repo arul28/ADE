@@ -111,7 +111,7 @@ export function spoken(fake: ReturnType<typeof createFakeSocket>): string[] {
  * The "still working" sentences and the note behind a confirmation are both
  * made of these.
  */
-export function systemNotes(fake: ReturnType<typeof createFakeSocket>): string[] {
+function systemNotes(fake: ReturnType<typeof createFakeSocket>): string[] {
   return fake.sent
     .filter((message) => {
       const item = message.item as { type?: unknown; role?: unknown } | undefined;

@@ -1,6 +1,9 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import type { SceneStillRecord } from "../../../shared/chatScene";
+import type { OpenProjectBinding } from "../../../shared/types/core";
+import { SCENE_STILL_METADATA_KIND } from "../../../shared/types";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 /**
  * Where a scene's picture lives once the scene itself has stopped.
@@ -12,17 +15,19 @@ import type { SceneStillRecord } from "../../../shared/chatScene";
  * away, and reopening the chat in a new window — so there is one index rather
  * than a cache per surface.
  *
- * Two layers, because they fail at different times. The in-memory map holds the
- * PNG data URL the capture produced, which is instant and costs no protocol
- * round trip; the persisted index holds the project-relative artifact uri,
- * which survives the window closing and is resolved back through
- * `ade-artifact://project/`. A still is written to both, and read from whichever
- * still has it.
+ * THIS MODULE IS A CACHE, NOT THE INDEX. The index is the artifact broker: main
+ * files every still as an artifact tagged `metadata.kind = "scene_still"`,
+ * carrying the scene's scope key and, for a scene drawn on a call, the call id.
+ * Durable renderer state duplicating that was a second source of truth which
+ * could not be pruned with the bytes, went stale the moment main deleted one,
+ * and was scoped to a window rather than to a project. So a reopened window
+ * asks the broker once per chat and fills these maps from the answer; the maps
+ * themselves live and die with the window.
  *
- * Keyed by the caller's `scopeKey` — the transcript row key, or the call id for
- * a scene drawn on a call. That key is what makes two byte-identical scenes at
- * different positions keep their own picture, and it is stable across a reopen
- * for exactly the same reason the row key is.
+ * Keyed by the caller's `scopeKey` — the per-block scene key for a transcript
+ * row, or the call id for a scene drawn on a call. That key is what makes two
+ * byte-identical scenes at different positions keep their own picture, and it
+ * is stable across a reopen because it is stored with the artifact.
  */
 
 export type SceneStill = {
@@ -32,54 +37,30 @@ export type SceneStill = {
   record: SceneStillRecord | null;
 };
 
-const STORAGE_KEY = "ade.scene.stills.v1";
-/**
- * How many stills the persisted index keeps.
- *
- * `localStorage` is a few megabytes for the whole origin and this index shares
- * it with everything else the renderer persists, so it is bounded by entry
- * count and pruned oldest-first. Only the uri is written — never the data URL —
- * which keeps an entry at a couple of hundred bytes and makes the bound about
- * rows rather than pixels.
- */
-const PERSISTED_LIMIT = 400;
-
 const stills = new Map<string, SceneStill>();
-const listeners = new Set<() => void>();
+/**
+ * The stills a voice call left behind, oldest first.
+ *
+ * Call scope is its own map rather than a second lookup over the scene one: a
+ * call draws several scenes over its length and the card wants all of them,
+ * while a transcript row wants exactly the one it drew.
+ */
+const callStills = new Map<string, SceneStillRecord[]>();
 
-function notify(): void {
-  listeners.forEach((listener) => listener());
+/**
+ * One listener set per map. A settling scene notifies every subscriber, and a
+ * transcript showing a long call's card re-rendered each of its tiles on every
+ * unrelated still in the chat.
+ */
+const sceneListeners = new Set<() => void>();
+const callListeners = new Set<() => void>();
+
+function notifyScenes(): void {
+  sceneListeners.forEach((listener) => listener());
 }
 
-function readPersisted(): Record<string, SceneStillRecord> {
-  if (typeof localStorage === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as Record<string, SceneStillRecord>;
-  } catch {
-    // A corrupt index is not worth a failed render; it is a cache.
-    return {};
-  }
-}
-
-function writePersisted(next: Record<string, SceneStillRecord>): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    const keys = Object.keys(next);
-    // Insertion order is the age order here: `JSON.parse` preserves it for
-    // string keys and every write appends. Dropping from the front therefore
-    // drops the oldest rows, which are the ones furthest up a transcript.
-    const trimmed = keys.length > PERSISTED_LIMIT
-      ? Object.fromEntries(keys.slice(keys.length - PERSISTED_LIMIT).map((key) => [key, next[key]!]))
-      : next;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
-  } catch {
-    // Quota, private mode, a disabled store: the in-memory half still works
-    // for this window, which is the case that matters most.
-  }
+function notifyCalls(): void {
+  callListeners.forEach((listener) => listener());
 }
 
 /** Remember a still. The data URL is this window's; the record is durable. */
@@ -94,128 +75,189 @@ export function rememberSceneStill(
     record: still.record ?? previous.record,
   };
   stills.set(scopeKey, next);
-  if (next.record) {
-    const persisted = readPersisted();
-    // Re-inserted rather than updated in place, so a still that was just taken
-    // counts as the newest entry for the trim above.
-    delete persisted[scopeKey];
-    persisted[scopeKey] = next.record;
-    writePersisted(persisted);
-  }
-  notify();
-}
-
-/** The still for a scene, or null. Reads the persisted index on a miss. */
-export function readSceneStill(scopeKey: string | null | undefined): SceneStill | null {
-  if (!scopeKey) return null;
-  const inMemory = stills.get(scopeKey);
-  if (inMemory && (inMemory.dataUrl || inMemory.record)) return inMemory;
-  const record = readPersisted()[scopeKey];
-  if (!record) return null;
-  // Promoted into memory so a scrolling transcript does not parse the index
-  // once per row per render.
-  const hydrated: SceneStill = { dataUrl: null, record };
-  stills.set(scopeKey, hydrated);
-  return hydrated;
+  notifyScenes();
 }
 
 /**
- * The stills a voice call left behind, oldest first.
+ * The still for a scene, or null.
  *
- * Call scope is its own index rather than a second lookup over the scene one:
- * a call draws several scenes over its length and the card wants all of them,
- * while a transcript row wants exactly the one it drew.
+ * Reads the map and nothing else — no parsing, no lazy fill — because this is
+ * a `useSyncExternalStore` snapshot: it runs on every render of every scene row
+ * and must return the same object until something actually changed.
  */
-const callStills = new Map<string, SceneStillRecord[]>();
-const CALL_STILLS_STORAGE_KEY = "ade.cto.callStills.v1";
-/** Stills kept per call. A long call draws a handful; a card shows a few. */
-const CALL_STILLS_LIMIT = 8;
-/** Calls kept in the persisted index, pruned oldest-first like the scene one. */
-const PERSISTED_CALL_LIMIT = 60;
-
-function readPersistedCalls(): Record<string, SceneStillRecord[]> {
-  if (typeof localStorage === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(CALL_STILLS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as Record<string, SceneStillRecord[]>;
-  } catch {
-    return {};
-  }
+export function readSceneStill(scopeKey: string | null | undefined): SceneStill | null {
+  if (!scopeKey) return null;
+  return stills.get(scopeKey) ?? null;
 }
 
 export function rememberCallStill(callId: string, record: SceneStillRecord): void {
   if (!callId || !record?.uri) return;
-  const existing = callStills.get(callId) ?? readPersistedCalls()[callId] ?? [];
+  const existing = callStills.get(callId) ?? [];
   // A call redraws the same scene as it talks, and each redraw settles into its
   // own still; the same uri twice is the same picture and is dropped.
   if (existing.some((entry) => entry.uri === record.uri)) return;
-  const next = [...existing, record].slice(-CALL_STILLS_LIMIT);
-  callStills.set(callId, next);
-  try {
-    const persisted = readPersistedCalls();
-    delete persisted[callId];
-    persisted[callId] = next;
-    const keys = Object.keys(persisted);
-    const trimmed = keys.length > PERSISTED_CALL_LIMIT
-      ? Object.fromEntries(keys.slice(keys.length - PERSISTED_CALL_LIMIT).map((key) => [key, persisted[key]!]))
-      : persisted;
-    localStorage?.setItem(CALL_STILLS_STORAGE_KEY, JSON.stringify(trimmed));
-  } catch {
-    // See `writePersisted`: the card still works in this window.
-  }
-  notify();
+  callStills.set(callId, [...existing, record]);
+  notifyCalls();
 }
 
 const NO_STILLS: SceneStillRecord[] = [];
 
 export function readCallStills(callId: string | null | undefined): SceneStillRecord[] {
   if (!callId) return NO_STILLS;
-  const inMemory = callStills.get(callId);
-  if (inMemory) return inMemory;
-  const persisted = readPersistedCalls()[callId];
-  if (!persisted?.length) return NO_STILLS;
-  callStills.set(callId, persisted);
-  return persisted;
+  return callStills.get(callId) ?? NO_STILLS;
 }
 
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
+/* ───────────────────────── the broker-backed index ───────────────────────── */
+
+/** Chats whose stills have been asked for. Value is the in-flight or done read. */
+const sessionReads = new Map<string, Promise<void>>();
+/** Chats whose read has finished — answered, failed, or had nothing to ask. */
+const settledSessions = new Set<string>();
+
+/**
+ * True once this chat's stills are known, so a caller can tell "no still" from
+ * "not asked yet".
+ *
+ * `SceneFrame` is why this exists: a settled row must decide whether to run the
+ * scene's code or show its picture, and deciding "run it" while the answer was
+ * still in flight would re-execute a generated view on every reopen — the one
+ * thing the still exists to prevent. A chat with no id has nothing to wait for.
+ */
+export function useSessionStillsReady(sessionId: string | null | undefined): boolean {
+  const owner = typeof sessionId === "string" ? sessionId.trim() : "";
+  const read = () => !owner || settledSessions.has(owner);
+  return useSyncExternalStore(subscribeScenes, read, read);
 }
 
-/** Re-render when this scene's still arrives. */
-export function useSceneStill(scopeKey: string | null | undefined): SceneStill | null {
+function readStringField(metadata: Record<string, unknown> | undefined, field: string): string {
+  const value = metadata?.[field];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Ask the broker for one chat's stills, once, and fill the maps above.
+ *
+ * Once per chat per window: the artifacts change only when this window takes a
+ * new still, and that path writes into the maps directly. A failed read is
+ * cached as "asked" too — a chat whose machine is unreachable must not have
+ * every scene row retry against it on every render.
+ */
+async function loadSessionStills(
+  sessionId: string | null | undefined,
+  pin: OpenProjectBinding | null,
+): Promise<void> {
+  const owner = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!owner) return;
+  const inFlight = sessionReads.get(owner);
+  if (inFlight) return inFlight;
+  const read = (async () => {
+    const list = window.ade?.computerUse?.listArtifacts;
+    if (typeof list !== "function") return;
+
+    const artifacts = await list(
+      {
+        ownerKind: "chat_session",
+        ownerId: owner,
+        // Only stills: a chat with a page of proof would otherwise return
+        // proof and no pictures, and every scene row would render empty.
+        metadataKinds: [SCENE_STILL_METADATA_KIND],
+        limit: 200,
+      },
+      pin,
+    ).catch(() => []);
+    // Newest first from the broker; a call's tiles read oldest first.
+    for (const artifact of [...artifacts].reverse()) {
+      const uri = typeof artifact?.uri === "string" ? artifact.uri.trim() : "";
+      if (!uri) continue;
+      const record: SceneStillRecord = {
+        uri,
+        artifactId: typeof artifact.id === "string" ? artifact.id : null,
+        title: readStringField(artifact.metadata, "sceneTitle") || artifact.title || "Generated view",
+      };
+      const scopeKey = readStringField(artifact.metadata, "sceneScopeKey");
+      // Never over a still this window took: that one has a data URL, which is
+      // the only picture available with no round trip at all.
+      if (scopeKey && !stills.get(scopeKey)) stills.set(scopeKey, { dataUrl: null, record });
+      const voiceCallId = readStringField(artifact.metadata, "voiceCallId");
+      if (voiceCallId) rememberCallStill(voiceCallId, record);
+    }
+  })().finally(() => {
+    settledSessions.add(owner);
+    notifyScenes();
+    notifyCalls();
+  });
+  sessionReads.set(owner, read);
+  return read;
+}
+
+function subscribeScenes(listener: () => void): () => void {
+  sceneListeners.add(listener);
+  return () => { sceneListeners.delete(listener); };
+}
+
+function subscribeCalls(listener: () => void): () => void {
+  callListeners.add(listener);
+  return () => { callListeners.delete(listener); };
+}
+
+/**
+ * The still this scene left behind, from this window or from the broker.
+ *
+ * The read is fired as an effect rather than during render because it is a
+ * round trip, and it is per chat rather than per scene because one query
+ * answers every row in the transcript.
+ */
+export function useSceneStillRecord(
+  sessionId: string | null | undefined,
+  scopeKey: string | null | undefined,
+): SceneStill | null {
+  const { pin } = useChatRuntimeScope();
+  useEffect(() => {
+    if (!scopeKey) return;
+    void loadSessionStills(sessionId, pin);
+  }, [sessionId, pin, scopeKey]);
   return useSyncExternalStore(
-    subscribe,
+    subscribeScenes,
     () => readSceneStill(scopeKey),
     () => readSceneStill(scopeKey),
   );
 }
 
 /** Re-render when a call's stills arrive — the card mounts before they do. */
-export function useCallStills(callId: string | null | undefined): SceneStillRecord[] {
+export function useCallStills(
+  sessionId: string | null | undefined,
+  callId: string | null | undefined,
+): SceneStillRecord[] {
+  const { pin } = useChatRuntimeScope();
+  useEffect(() => {
+    if (!callId) return;
+    void loadSessionStills(sessionId, pin);
+  }, [sessionId, pin, callId]);
   return useSyncExternalStore(
-    subscribe,
+    subscribeCalls,
     () => readCallStills(callId),
     () => readCallStills(callId),
   );
 }
 
 /**
- * Where a still's bytes can be shown from.
+ * Where a still's bytes can be shown from, without a round trip.
  *
- * The data URL first — it is already in memory and needs no protocol — then
- * the artifact uri, which only resolves in a local desktop window. A remote
- * project has no `ade-artifact://` handler, so a still taken on another machine
- * answers null and the caller shows nothing rather than a broken image.
+ * The data URL if the caller has one — it is already in memory — then the
+ * artifact uri, which only resolves through the `ade-artifact://` protocol in a
+ * LOCAL desktop window. A chat on another machine has no such handler and is
+ * answered null here; {@link useSceneStillSrc} is what turns that case into a
+ * real picture.
+ *
+ * The data URL is an argument rather than a field of the first one because the
+ * two sources are not the same kind of thing and sniffing a union for `dataUrl`
+ * made every caller's intent invisible at the call site.
  */
-export function sceneStillSrc(still: SceneStill | SceneStillRecord | null | undefined): string | null {
-  if (!still) return null;
-  if ("dataUrl" in still && still.dataUrl) return still.dataUrl;
-  const record = "record" in still ? still.record : still;
+export function sceneStillSrc(
+  record: SceneStillRecord | null | undefined,
+  dataUrl?: string | null,
+): string | null {
+  if (dataUrl) return dataUrl;
   const uri = record?.uri?.trim();
   if (!uri) return null;
   if (/^ade-artifact:\/\//i.test(uri)) return uri;
@@ -223,15 +265,52 @@ export function sceneStillSrc(still: SceneStill | SceneStillRecord | null | unde
   return `ade-artifact://project/${uri.split("/").map(encodeURIComponent).join("/")}`;
 }
 
+/**
+ * The picture a still can actually be drawn from, on any machine.
+ *
+ * Same path the proof drawer's tiles take, for the same reason: `ade-artifact://`
+ * is a local-window protocol, so a chat pinned to another machine resolved every
+ * still to a URL that could not load and drew a broken tile. Remote chats read
+ * the bytes back through the broker on the machine that holds them.
+ *
+ * The in-memory data URL stays the fast prefix — a scene that just settled in
+ * this window shows its own capture with no round trip at all.
+ */
+export function useSceneStillSrc(still: SceneStill | SceneStillRecord | null | undefined): string | null {
+  const scope = useChatRuntimeScope();
+  const resolved = still && "record" in still
+    ? still
+    : { dataUrl: null, record: (still as SceneStillRecord | null | undefined) ?? null };
+  const dataUrl = resolved.dataUrl;
+  const uri = resolved.record?.uri?.trim() || "";
+  const needsRuntimeRead = !dataUrl && Boolean(uri) && scope.isRemote;
+  const [preview, setPreview] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!needsRuntimeRead) {
+      setPreview(null);
+      return;
+    }
+    let cancelled = false;
+    const read = window.ade?.computerUse?.readArtifactPreview;
+    if (typeof read !== "function") return;
+    void read({ uri }, scope.pin)
+      .then((value) => { if (!cancelled) setPreview(typeof value === "string" ? value : null); })
+      // Nothing rather than a broken tile: the caller draws no image at all.
+      .catch(() => { if (!cancelled) setPreview(null); });
+    return () => { cancelled = true; };
+  }, [needsRuntimeRead, uri, scope.pin]);
+
+  if (dataUrl) return dataUrl;
+  if (needsRuntimeRead) return preview;
+  return sceneStillSrc(resolved.record, null);
+}
+
 /** Test seam: forget everything this window remembers. */
 export function resetSceneStillsForTest(): void {
   stills.clear();
   callStills.clear();
-  try {
-    localStorage?.removeItem(STORAGE_KEY);
-    localStorage?.removeItem(CALL_STILLS_STORAGE_KEY);
-  } catch {
-    /* no store to clear */
-  }
-  notify();
+  sessionReads.clear();
+  notifyScenes();
+  notifyCalls();
 }

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { OpenAiKeySheet } from "../settings/OpenAiKeySheet";
 import {
+  CTO_VOICE_CAPTURE_WAIT_MS,
   CTO_VOICE_MICROPHONE_BLOCK_TITLE,
   isVoiceCallLive,
   type CtoVoiceMicrophoneBlockKind,
@@ -31,13 +32,6 @@ import {
  */
 
 const START_FAILURE_TITLE = "ADE cannot start the call";
-
-/**
- * How long a live call may go without a microphone verdict before the sheet
- * stops waiting for one. Long enough for `getUserMedia` plus an OS permission
- * gate that answers immediately; short enough that it is not a hang.
- */
-const CAPTURE_WAIT_MS = 4_000;
 
 /**
  * Why a call could not start, in the user's terms.
@@ -239,7 +233,7 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
    */
   useEffect(() => {
     if (!live || captureReady || phase !== "connecting") return;
-    const timer = window.setTimeout(onClose, CAPTURE_WAIT_MS);
+    const timer = window.setTimeout(onClose, CTO_VOICE_CAPTURE_WAIT_MS);
     return () => window.clearTimeout(timer);
   }, [live, captureReady, phase, onClose]);
 

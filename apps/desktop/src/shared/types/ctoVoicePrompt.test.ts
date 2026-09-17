@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  buildCtoVoiceInstructions,
-  CTO_VOICE_FORBIDDEN_VIEW_PHRASES,
-} from "./ctoVoicePrompt";
+import { CTO_VOICE_FORBIDDEN_VIEW_PHRASES } from "../testFixtures/ctoVoicePhrases";
+import { buildCtoVoiceInstructions } from "./ctoVoicePrompt";
 
 /**
  * The session prompt IS the policy under the hybrid: it decides what the model
@@ -54,10 +52,8 @@ describe("buildCtoVoiceInstructions", () => {
   });
 
   /**
-   * The answer on the call of 2026-09-17 opened "You should see a picture
-   * beside the call that lays out the current state" — a whole sentence about
-   * something the user was already looking at. The view is furniture; what they
-   * asked for is what it says.
+   * The view is furniture: what the user asked for is what it says, never that
+   * there is something to look at.
    */
   it("never gives the user a word for the view they are already looking at", () => {
     for (const acknowledgeAloud of [true, false]) {

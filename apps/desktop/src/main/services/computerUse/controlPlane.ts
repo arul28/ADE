@@ -1,3 +1,4 @@
+import { SCENE_STILL_METADATA_KIND } from "../../../shared/types";
 import type {
   ComputerUseArtifactKind,
   ComputerUseArtifactOwner,
@@ -73,6 +74,13 @@ export function buildComputerUseOwnerSnapshot(args: {
   const artifacts = args.broker.listArtifacts({
     owner: args.owner,
     limit: args.limit ?? 50,
+    // This snapshot IS the proof drawer — its rows, its counts, its activity
+    // feed all come from this one list. A scene still is the picture a
+    // generated view left behind, shown inline in the transcript; the broker
+    // holds the record because it owns the bytes, not because anybody chose to
+    // keep it as evidence. Every settled scene filing a drawer row buried real
+    // proof under pictures nobody asked to save.
+    excludeMetadataKinds: [SCENE_STILL_METADATA_KIND],
   });
   const recentArtifacts = artifacts.slice(0, 5);
   const latestArtifact = recentArtifacts[0] ?? null;

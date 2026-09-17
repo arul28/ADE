@@ -5110,6 +5110,9 @@ app.whenReady().then(async () => {
         laneService,
         ctoStateService,
         agentChatService,
+        // The views a call drew: it reads its own stills back out of the store
+        // at hang-up, to name them in the durable record.
+        computerUseArtifactBrokerService,
         ctoMemoryService,
         // See the note at the other construction site: a live call owns the CTO
         // row's status line, because the generated one lands seconds late.

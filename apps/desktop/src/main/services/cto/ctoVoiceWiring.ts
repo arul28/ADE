@@ -6,10 +6,11 @@ import { IPC } from "../../../shared/ipc";
 import {
   CTO_VOICE_AUDIO_POLL_INTERVAL_MS,
   CTO_VOICE_INITIAL_STATE,
-  isCtoVoiceMicrophoneMessage,
+  CTO_VOICE_MICROPHONE_BLOCK_KINDS,
   isVoiceCallLive,
   type CtoVoiceAction,
   type CtoVoiceActionResult,
+  type CtoVoiceMicrophoneBlockKind,
   type CtoVoiceState,
 } from "../../../shared/types/ctoVoice";
 // Type-only, so it is erased at compile time and no import cycle exists at
@@ -214,7 +215,6 @@ function resolveTransport(host: CtoVoiceHost, senderId: number): CtoVoiceTranspo
     pullAudio: (args) => inProcess.pullAudio(args),
     resolveApproval: (args) => inProcess.resolveApproval(args),
     sendCapture: (args) => inProcess.sendCapture(args),
-    attachStill: (args) => inProcess.attachStill(args),
   };
   return {
     transport: {
@@ -412,6 +412,15 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
     slot: CallSlot,
     fallbackError: string | null,
     reason: CtoVoiceRouterEndReason,
+    /**
+     * What kind of failure `fallbackError` is, when the caller knew.
+     *
+     * Only the renderer's microphone raises one, and it travels rather than
+     * being recovered by comparing the sentence against every wording of every
+     * kind — a join that stops matching the first time one is reworded, and
+     * takes both the analytics outcome and the settings button with it.
+     */
+    failureKind: CtoVoiceMicrophoneBlockKind | null = null,
   ): Promise<void> => {
     // Logged before the re-entry guard: "end was asked for twice" is a fact
     // worth having, and the first caller is the one that decided.
@@ -429,12 +438,7 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
     slot.releaseOwner = null;
 
     try {
-      // The sentence is compared against OUR OWN constant, never parsed: the
-      // renderer's copy is the only thing that can produce it, and what crosses
-      // is the coarse kind, not the text.
-      const endKind = fallbackError && isCtoVoiceMicrophoneMessage(fallbackError)
-        ? "microphone_unavailable"
-        : undefined;
+      const endKind = failureKind ? "microphone_unavailable" : undefined;
       await slot.transport.call("end", {
         ownerToken: slot.token,
         ...(endKind ? { endKind } : {}),
@@ -470,6 +474,7 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
           // — the End button, a call replaced by a newer one — pass none, and
           // must end silently. A notice on a hang-up you performed is noise.
           error: error ?? fallbackError ?? null,
+          errorKind: failureKind,
         });
       }
     }
@@ -494,7 +499,7 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
       // WHY, and without this that sentence is lost and the call ends in
       // silence, which is exactly how a microphone that would not open looked
       // like nothing happening at all.
-      publishState(slot, { ...slot.lastState, error: fallbackError });
+      publishState(slot, { ...slot.lastState, error: fallbackError, errorKind: failureKind });
     }
 
     // Last, so everything above could still be delivered through it.
@@ -713,19 +718,27 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
     }
   }));
 
-  ipcMain.handle(IPC.ctoVoiceEnd, async (_event, arg: { reason?: unknown } = {}): Promise<void> => {
+  ipcMain.handle(IPC.ctoVoiceEnd, async (
+    _event,
+    arg: { reason?: unknown; errorKind?: unknown } = {},
+  ): Promise<void> => {
     // A reason only ever ADDS a sentence. The End button sends none, and a call
     // the user chose to end must stay `ended` with no error on it.
     const reason = typeof arg?.reason === "string" && arg.reason.trim().length
       ? arg.reason.trim()
       : null;
+    // Shape-checked, not trusted: it comes from a renderer and only ever
+    // decides which sentence gets a settings button beside it.
+    const errorKind = CTO_VOICE_MICROPHONE_BLOCK_KINDS.includes(
+      arg?.errorKind as CtoVoiceMicrophoneBlockKind,
+    ) ? arg.errorKind as CtoVoiceMicrophoneBlockKind : null;
     // `call` is read INSIDE the queue, not before it. A hang-up that lands
     // while a start is still queued read a null slot and quietly did nothing,
     // leaving the call the user had just cancelled to come up anyway.
     await serialize(async () => {
       const ending = call;
       if (!ending) return;
-      await endCall(ending, reason, "user_end");
+      await endCall(ending, reason, "user_end", errorKind);
     });
   });
 
@@ -792,25 +805,6 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
         note: typeof arg?.note === "string" ? arg.note : "",
       })
       .catch((error) => host.logger?.warn("cto_voice.capture_failed", { error: String(error) }));
-  });
-
-  /**
-   * Keep a still of a scene the running call drew.
-   *
-   * Not gated on call ownership, for the same reason `attachImage` is not: the
-   * window that draws the HUD is the window that can capture its frame, and on
-   * a machine with several ADE windows that need not be the one holding the
-   * microphone. What it carries is a record of bytes already filed, so there is
-   * nothing here a non-owning window could use to reach the socket.
-   */
-  ipcMain.handle(IPC.ctoVoiceAttachStill, async (_event, arg: { still?: unknown }): Promise<void> => {
-    const active = call;
-    if (!active) return;
-    const still = arg?.still as { uri?: unknown } | null | undefined;
-    if (!still || typeof still.uri !== "string" || !still.uri.trim().length) return;
-    await active.transport
-      .call("attachStill", { ownerToken: active.token, still })
-      .catch((error) => host.logger?.warn("cto_voice.still_failed", { error: String(error) }));
   });
 
   ipcMain.handle(IPC.ctoVoiceHasKey, async (event): Promise<boolean> => {

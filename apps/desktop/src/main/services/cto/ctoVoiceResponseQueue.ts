@@ -21,7 +21,18 @@ import { buildCtoVoiceSpeakInstructions } from "../../../shared/types/ctoVoicePr
  * the conversation in front of it, which is what a function result needs,
  * because it cannot relay an answer to a call it cannot see.
  */
-type CtoVoiceQueuedResponse = { kind: "ade"; text: string } | { kind: "model" };
+type CtoVoiceQueuedResponse =
+  | { kind: "ade"; text: string }
+  /**
+   * `timed` is whether this response is part of a turn the call is MEASURING.
+   *
+   * False for the "still working" sentences, which belong to no transcript: a
+   * counted one stamped the first-speak post on whichever timing record was
+   * open and then closed it on its own first chunk of audio, so a request the
+   * user was still waiting for was written down as answered by a sentence that
+   * said nothing.
+   */
+  | { kind: "model"; timed: boolean };
 
 export function createResponseQueue(deps: {
   send: (payload: Record<string, unknown>) => void;
@@ -53,6 +64,9 @@ export function createResponseQueue(deps: {
    * the user is asked nothing and the turn waits forever.
    */
   let inflight: CtoVoiceQueuedResponse | null = null;
+
+  /** Whether the entry in flight is one a turn's timing record may be closed by. */
+  let inflightTimed = true;
 
   /** True when the response in flight is one ADE created out-of-band. */
   let activeIsOurs = false;
@@ -86,6 +100,7 @@ export function createResponseQueue(deps: {
   const clearInflight = (): void => {
     active = false;
     inflight = null;
+    inflightTimed = true;
     // The id belongs to the response that just ended, and a cancel waiting for
     // an id that will never arrive would fire at whatever is next.
     activeId = null;
@@ -100,6 +115,7 @@ export function createResponseQueue(deps: {
     if (next === undefined) return;
     active = true;
     inflight = next;
+    inflightTimed = next.kind === "ade" || next.timed;
     if (next.kind === "ade") {
       pendingOurs = true;
       deps.send({
@@ -135,15 +151,39 @@ export function createResponseQueue(deps: {
       drain();
     },
 
-    /** Ask the model to speak for itself, with the conversation in front of it. */
-    requestModelResponse(): void {
-      deps.onQueued?.();
+    /**
+     * Ask the model to speak for itself, with the conversation in front of it.
+     *
+     * `timing: false` for a sentence that is not any turn's answer — see
+     * `CtoVoiceQueuedResponse`.
+     */
+    requestModelResponse(options: { timing?: boolean } = {}): void {
+      const timed = options.timing !== false;
+      if (timed) deps.onQueued?.();
       // A second one buys nothing: the model reads everything in the
       // conversation when it generates, so two would say the same thing twice.
-      if (queue.some((entry) => entry.kind === "model")) return;
-      queue.push({ kind: "model" });
+      const queued = queue.find((entry) => entry.kind === "model");
+      if (queued) {
+        // An untimed entry already waiting is upgraded rather than skipped: the
+        // one response that goes out will carry a real answer, and a turn whose
+        // answer rode out on it must still be measured.
+        if (timed && queued.kind === "model") queued.timed = true;
+        return;
+      }
+      queue.push({ kind: "model", timed });
       drain();
     },
+
+    /**
+     * True when audio arriving right now belongs to a response a turn's timing
+     * record may be closed by.
+     *
+     * True with nothing in flight: audio with no entry behind it is the
+     * SERVER's own response — the model answering the user for itself — which
+     * is most of a hybrid call and is exactly the case the hybrid's timing line
+     * exists to measure.
+     */
+    countsForTurnTiming: (): boolean => (inflight === null ? true : inflightTimed),
 
     /** The socket is open; anything queued before it was can go now. */
     drain,

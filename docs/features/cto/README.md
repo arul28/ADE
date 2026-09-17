@@ -32,7 +32,8 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 - `CtoPromptPreview.tsx` — renders the effective, layered system prompt (doctrine, continuity, memory guidance, environment knowledge, capabilities).
 - `useCtoModelOptions.ts` — loads the user's configured model IDs for the settings Model section, and owns `ctoModelSupportsLiveRedirect(descriptor)`, the `ModelPicker` filter both CTO pickers pass. It resolves eligibility through `resolveChatProviderForDescriptor` — the provider the model would actually launch on, never its registry family, because an OpenAI model that is not CLI-wrapped runs under OpenCode, which stages everything. `ctoSessionViewState.ts` — view-state helpers. `shared/designTokens.ts` + `shared/TimelineEntry.tsx` — shared class tokens and the session-history timeline row.
 - `CtoTalkButton.tsx` — **Talk**, in the `CtoPage` header. Always rendered, even with no OpenAI key stored: a feature nobody can find is a feature nobody enables, so pressing it with no key opens `OpenAiKeySheet` in a modal rather than reporting an error. `missing-key` is the one `start()` failure that gets a sheet instead of a message; everything else falls through to the HUD's failure pill.
-- `useCtoVoiceCall.ts` — the renderer half of a call, and a module-level store read through `useSyncExternalStore` so the HUD, the Talk button, and the capture host all see one call. It owns the microphone and the speaker and nothing else: `startCapture()` pulls PCM16 mono at `CTO_VOICE_SAMPLE_RATE` through a `ScriptProcessorNode` (deprecated, but the only node that works without shipping a separate worklet file) and `playVoiceChunk` queues output so consecutive deltas play gaplessly. `flushVoicePlayback()` closes the playback context outright, because a barge-in has to silence the speaker rather than relabel the pill. It reads `window.ade.ctoVoice` optionally at every call site and degrades to "voice unavailable" instead of throwing, the same shape `SceneFrame` uses for its own optional bridge. It also owns `CTO_VOICE_CAPTURE_EVENT` (`ade:cto-voice:attach-capture`) and the listener that turns a capture into a call attachment.
+- `useCtoVoiceCall.ts` — the renderer half of a call: a module-level store read through `useSyncExternalStore` so the HUD, the Talk button, and the capture host all see one call, plus the two hooks the surfaces read the device through. It reads `window.ade.ctoVoice` optionally at every call site and degrades to "voice unavailable" instead of throwing, the same shape `SceneFrame` uses for its own optional bridge. It also owns `CTO_VOICE_CAPTURE_EVENT` (`ade:cto-voice:attach-capture`) and the listener that turns a capture into a call attachment.
+- `ctoVoiceAudioDevice.ts` — the window's microphone and speaker, and nothing about the call: `startCtoCapture(pushAudio)` pulls PCM16 mono at `CTO_VOICE_SAMPLE_RATE` through a `ScriptProcessorNode` (deprecated, but the only node that works without shipping a separate worklet file) and `playVoiceChunk` queues output so consecutive deltas play gaplessly. `flushVoicePlayback()` closes the playback context outright, because a barge-in has to silence the speaker rather than relabel the pill. The refusal verdict and "is a device open" are **one** snapshot with one subscribe — they are the same fact from opposite ends, a verdict is set exactly when readiness is cleared, and the start sheet reads both.
 - `CtoVoiceHud.tsx` — the pill that grows a canvas, driven entirely by `CtoVoiceState` and fetching nothing. `PHASE_LABEL` maps every `CtoVoicePhase` to its word ("Working" for `thinking`, "Waiting on you" for `confirming`), `LevelMeter` breaks to a flat line and an accent flash on barge-in so an interrupt is something you *see* land, and `ConfirmationStrip` renders a destructive question in the danger colour with "tap to confirm" instead of "or just say yes".
 - `CtoVoiceHudHost.tsx` — mounts the HUD once and owns the visible timer. The main process owns the call, but the elapsed counter ticks locally so it counts smoothly between state pushes instead of jumping a second at a time. When the call has drawn something it wraps `state.sceneSource` in a `SceneFrame` with `live` set — the same component the transcript uses, so a view drawn during a call and a view drawn in a turn are the same sandbox (see [Chat › Scenes](../chat/README.md#scenes)).
 
@@ -560,6 +561,18 @@ Pending nudges are cleared when the answer comes back, when the request is
 cancelled or superseded, and on hang-up. The counter is per **request**, not per
 call: four slow requests are four separate silences.
 
+It is its own module, `ctoVoiceWorkingNudge.ts` — `createWorkingNudger({ now,
+log, enabled, canSpeakNow, think, requestModelResponse })` with `start()`,
+`stop()` and `noteAudioDeadline(ms)`. The call service holds one and tells it
+when a request begins and ends; the three counters and the timer left the call
+session with it.
+
+**A nudge is not a turn.** It asks for its response with `{ timing: false }`, so
+the response queue does not stamp the first-speak post on whichever turn-timing
+record is open and `countsForTurnTiming()` keeps its audio from closing that
+record as `spoken`. Counted, a seven-second sentence that said nothing closed
+out the record of the request the user was actually still waiting for.
+
 #### One voice, and it can draw
 
 `buildCtoVoiceInstructions` is the brief, and it is the only place the user's
@@ -605,7 +618,8 @@ too — *"Pulling up the lanes."*, never a sentence about what is about to
 appear.
 
 The rule is "never mention the view", which nothing can be checked against, so
-what is checked is `CTO_VOICE_FORBIDDEN_VIEW_PHRASES` (`ctoVoicePrompt.ts`):
+what is checked is `CTO_VOICE_FORBIDDEN_VIEW_PHRASES`
+(`shared/testFixtures/ctoVoicePhrases.ts`):
 the phrases the live answer actually used. Both the brief and the *visual* turn
 prompt are asserted to contain none of them, in either acknowledgement mode —
 one list rather than a copy per suite, because a phrase added to one copy would
@@ -635,11 +649,15 @@ the CTO how big the frame is, that it does not scroll, or that a scene is one
 idea rather than everything it happens to know. The contract now carries the
 layout rules as well:
 
-- **Size.** About 560 px wide and about 520 px tall, **no scrolling**, and
-  anything past the bottom edge is cut off and lost.
+- **Size.** `CTO_VOICE_SCENE_FRAME_WIDTH` × `CTO_VOICE_SCENE_FRAME_HEIGHT`
+  (380 × 320 today), **no scrolling**, and anything past the bottom edge is cut
+  off and lost. The numbers are constants in `shared/types/ctoVoice.ts` and are
+  interpolated into the contract: the first version wrote *560 × 520* into the
+  prose while the HUD rendered the frame inside a 420 px card clamped to 320 px,
+  so the CTO was laying out for a frame more than twice the real one.
 - **One idea.** Pick the single most useful view for the question that was
-  asked, not everything you know. At most one row of up to **4** stat tiles,
-  and at most **one** table or list of at most **6** rows — show the five that
+  asked, not everything you know. At most one row of up to **3** stat tiles,
+  and at most **one** table or list of at most **4** rows — show the three that
   matter and make the last row a muted `+N more`.
 - **Short labels, never prose in a cell.** Any cell holding a name carries a
   `max-width` plus `white-space: nowrap; overflow: hidden; text-overflow:
@@ -652,7 +670,7 @@ layout rules as well:
   timestamp.
 
 The example in the contract is what actually gets copied, so it obeys every one
-of those rules — three tiles, five rows, a `+5 more` and a footer — and a test
+of those rules — three tiles, three rows, a `+7 more` and a footer — and a test
 asserts that it does, by counting the tiles and the clamped name cells rather
 than by reading it.
 
@@ -866,7 +884,12 @@ The fix does not hide anything, because the turns are real turns and the tool ca
 
 A scene drawn on a call is rendered by `CtoVoiceHudHost`, which is unmounted with the HUD the moment the call ends — so a call whose whole answer was a picture left a card with no picture in it. The still is what fixes that, and it is taken *while the call is still running*: `SceneFrame` captures when the scene stops moving (see the chat feature doc, "The still"), not at the end of a turn that, for a HUD scene, never comes.
 
-The host forwards each still twice, because the two readers have different lifetimes. `rememberCallStill` puts the record in the renderer's call-stills index, which is what the transcript card reads back — collapsed it is one thumbnail beside the title, expanded it is a row of tiles with their titles above the folded rows. And `window.ade.ctoVoice.attachStill` hands the same record to the call, which keeps it (deduped by uri, bounded to the last eight) and passes it to `persistCall`, so `.ade/cto/calls/<id>.md` gets a **Views drawn** section listing each artifact by path. That record is what the CTO itself reads back later, and *"I drew them a chart"* is only useful if the chart can still be found.
+Each still is **filed once**, through the artifact broker, with `metadata: { kind: "scene_still", sceneScopeKey, sceneTitle, voiceCallId }` and the CTO chat session as its owner. Everything that needs it afterwards asks the store rather than being handed a second copy:
+
+- The renderer's call-stills index (`rememberCallStill`) keeps a window-local copy so the transcript card has its pictures without waiting for a round trip — collapsed it is one thumbnail beside the title, expanded it is a row of tiles with their titles above the folded rows.
+- At hang-up `persistCall` calls `findVoiceCallStills` (`main/services/scenes/sceneStills.ts`), which lists the session's artifacts and keeps the ones tagged with this call id, and writes them into `.ade/cto/calls/<id>.md` as a **Views drawn** section listing each artifact by path. That record is what the CTO itself reads back later, and *"I drew them a chart"* is only useful if the chart can still be found.
+
+There is no `cto_voice.attachStill` action, IPC channel or bridge method any more. The call state never carried the pictures — they were already in the store the whole time, and a second copy riding along for the length of the call was one more thing to keep in sync and to cap.
 
 What crosses these seams is always a **record**, never image bytes and never a path the main process would then read: the renderer stores the PNG first, through the jailed `scene.storeStill` route, and passes on the project-relative uri it got back. A still from another machine has no `ade-artifact://project/` handler to resolve it, so the card draws no tile rather than a broken image.
 
@@ -993,10 +1016,16 @@ be able to drain the audio out from under it or hang up its call.
 **A microphone that will not open says so.** The renderer owns the microphone,
 so when it cannot open one it is the renderer that hangs up — and the main
 process has nothing to blame, correctly. That is why this failure shipped
-silent: the HUD vanished and nothing said why. `end(reason?)` now carries a
-sentence from the bridge through `IPC.ctoVoiceEnd` to the router, which prefers
-it whenever the runtime's own terminal state carries no error, and publishes a
-corrected terminal even when the runtime's landed first. The End button passes
+silent: the HUD vanished and nothing said why. `end(reason?, errorKind?)` now carries a
+sentence **and its kind** from the bridge through `IPC.ctoVoiceEnd` to the
+router, which prefers it whenever the runtime's own terminal state carries no
+error, and publishes a corrected terminal even when the runtime's landed first.
+The kind lands on `CtoVoiceState.errorKind`, and it is what decides both the
+`microphone_unavailable` analytics outcome and whether the page notice gets an
+"Open sound settings" button beside the sentence. It travels rather than being
+recovered by comparing the sentence against every wording of every kind on every
+platform — a join between two stores that had to agree word for word, and that
+silently dropped the button the first time one was reworded. The End button passes
 no reason and stays `ended` with `error: null` — a notice on a hang-up you
 performed is noise — and the router has no blanket "The call ended." default:
 every involuntary teardown passes its own sentence at its call site.

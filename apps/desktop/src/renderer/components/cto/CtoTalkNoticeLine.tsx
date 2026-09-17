@@ -1,0 +1,64 @@
+import React from "react";
+
+import type { CtoVoiceMicrophoneBlockKind } from "../../../shared/types/ctoVoice";
+import { ctoMicrophoneSettingsAction, openCtoSettingsPane } from "./ctoMicrophoneFix";
+
+/**
+ * The failure line under the CTO header.
+ *
+ * Its own module because it is not part of the button: the button decides WHEN
+ * there is something to say, the page decides WHERE it is drawn — never beside
+ * the button, which wrapped "Talk" onto a second line — and this decides what
+ * it looks like and what can be pressed on it.
+ */
+
+/**
+ * A failure the page has to draw, and whether it has a settings fix.
+ *
+ * The kind rides along rather than the sentence alone because a microphone
+ * failure reaches this surface far more often than the sheet: the sheet closes
+ * as soon as the call goes live, and capture — which is what discovers there is
+ * no microphone — is only opened after that. The owner who pressed Talk with no
+ * microphone therefore read the sentence here, where there was nothing to press.
+ */
+export type CtoTalkNotice = {
+  message: string;
+  /** Set only when the sentence is a microphone verdict with a pane to open. */
+  microphone: CtoVoiceMicrophoneBlockKind | null;
+};
+
+/**
+ * The failure line under the CTO header, with the fix beside it.
+ *
+ * A component rather than markup inside the page because this is the surface a
+ * microphone failure actually lands on, so the button that opens the right OS
+ * pane has to be part of it — and has to be testable without standing up the
+ * whole CTO page.
+ */
+export function CtoTalkNoticeLine({ notice }: { notice: CtoTalkNotice }) {
+  const action = ctoMicrophoneSettingsAction(notice.microphone);
+  return (
+    <div
+      role="status"
+      className="flex items-center gap-2 border-t border-white/[0.05] px-4 py-1.5"
+    >
+      <p
+        data-testid="cto-talk-error"
+        className="min-w-0 flex-1 truncate text-[11px] leading-[1.5] text-amber-300/85"
+        title={notice.message}
+      >
+        {notice.message}
+      </p>
+      {action ? (
+        <button
+          type="button"
+          data-testid="cto-talk-open-mic-settings"
+          onClick={() => { void openCtoSettingsPane(action.paneId); }}
+          className="h-6 flex-shrink-0 rounded-md border border-white/[0.12] px-2 text-[11px] font-medium text-amber-200/90 transition-colors hover:bg-white/[0.05]"
+        >
+          {action.label}
+        </button>
+      ) : null}
+    </div>
+  );
+}

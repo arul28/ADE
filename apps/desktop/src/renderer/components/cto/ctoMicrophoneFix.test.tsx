@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { ctoVoiceMicrophoneMessage } from "../../../shared/types/ctoVoice";
-import { CtoTalkNoticeLine } from "./CtoTalkButton";
+import { CtoTalkNoticeLine } from "./CtoTalkNoticeLine";
 import { ctoMicrophoneSettingsAction } from "./ctoMicrophoneFix";
 
 /**

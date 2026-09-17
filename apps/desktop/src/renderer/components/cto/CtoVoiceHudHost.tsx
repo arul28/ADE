@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { SceneStillRecord } from "../../../shared/chatScene";
-import { isVoiceCallLive } from "../../../shared/types/ctoVoice";
+import { CTO_VOICE_SCENE_FRAME_HEIGHT, isVoiceCallLive } from "../../../shared/types/ctoVoice";
 import { rememberCallStill } from "../chat/sceneStillStore";
 import { SceneFrame } from "../chat/SceneFrame";
 import { CtoVoiceHud } from "./CtoVoiceHud";
@@ -47,9 +47,13 @@ export function CtoVoiceHudHost() {
    * ends, taking the frame — and anything it had not already captured — with
    * it. `SceneFrame` takes the still when the scene STOPS MOVING rather than at
    * the end of the turn, which is what makes a capture-before-unmount possible
-   * at all; here it is only forwarded, twice, because the two readers are not
-   * the same. The store is what the transcript card reads back, and the call is
-   * what writes it into the CTO's durable record of the call.
+   * at all.
+   *
+   * Filing is already done by then: the frame stores the still with this call's
+   * id on it, so the durable record is the artifact itself and the finished
+   * call's card finds its pictures by asking for them. This only keeps a copy
+   * in the window's cache, so the card that appears seconds later has the
+   * picture without waiting for a round trip.
    *
    * The call id is captured through a ref so the identity of this callback does
    * not change mid-scene and remount the frame under a running animation.
@@ -60,17 +64,19 @@ export function CtoVoiceHudHost() {
     const callId = callIdRef.current;
     if (!callId) return;
     rememberCallStill(callId, record);
-    void window.ade?.ctoVoice?.attachStill?.({ still: record });
   }, []);
 
   const canvas = useMemo(() => {
     if (!state.sceneSource) return null;
     return (
-      <div className="max-h-[320px] overflow-hidden">
+      <div className="overflow-hidden" style={{ maxHeight: CTO_VOICE_SCENE_FRAME_HEIGHT }}>
         <SceneFrame
           source={state.sceneSource}
           live
-          scopeKey={state.callId ?? "call"}
+          // No call id means no identity to file a still under — a fallback
+          // key would put every id-less scene on top of the same picture — so
+          // the scene draws and simply leaves nothing behind.
+          {...(state.callId ? { scopeKey: state.callId, voiceCallId: state.callId } : {})}
           onStill={keepStill}
         />
       </div>

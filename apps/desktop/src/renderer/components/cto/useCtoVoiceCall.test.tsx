@@ -11,13 +11,14 @@ import {
 } from "../../../shared/types/ctoVoice";
 import {
   flushVoicePlayback,
+  getCtoAudioDevice,
   noteLocalBargeIn,
   playVoiceChunk,
   resetLocalBargeIn,
-  subscribeVoiceState,
-  useCtoVoiceAudioOwner,
+  subscribeCtoAudioDevice,
   voicePlaybackActive,
-} from "./useCtoVoiceCall";
+} from "./ctoVoiceAudioDevice";
+import { subscribeVoiceState, useCtoVoiceAudioOwner } from "./useCtoVoiceCall";
 
 /**
  * A microphone that will not open must END the call and SAY so.
@@ -47,8 +48,9 @@ function installBridge(overrides: {
   audioInputs?: number;
   platform?: string;
 } = {}) {
-  // Typed with the parameter so the reason it carries can be asserted.
-  const end = vi.fn(async (_reason?: string) => {});
+  // Typed with the parameters so the reason AND the kind it carries can both
+  // be asserted: the kind is what decides whether the sentence gets a button.
+  const end = vi.fn(async (_reason?: string, _errorKind?: string) => {});
   (globalThis.window as unknown as { ade: unknown }).ade = {
     app: { runtimeTarget: { platform: overrides.platform ?? "darwin", arch: "arm64" } },
     transcription: {
@@ -106,7 +108,10 @@ describe("useCtoVoiceAudioOwner", () => {
     render(<AudioOwner state={liveOwner} />);
 
     await waitFor(() => expect(end).toHaveBeenCalled());
-    expect(end).toHaveBeenCalledWith(ctoVoiceMicrophoneMessage("in-use", "darwin"));
+    // The sentence AND the kind: the page notice puts a settings button beside
+    // some of these, and it reads the kind off the state rather than matching
+    // the sentence back against every wording of every kind.
+    expect(end).toHaveBeenCalledWith(ctoVoiceMicrophoneMessage("in-use", "darwin"), "in-use");
     expect(end.mock.calls[0]?.[0]).toBe("Another app is holding the microphone. Close it and try again.");
   });
 
@@ -227,6 +232,41 @@ const OUTPUT_CHUNK = btoa(String.fromCharCode(...new Uint8Array(2400 * 2)));
  * over the user for every millisecond of it. This side knows first, because it
  * is the side holding the speaker.
  */
+/**
+ * The verdict and "is a device open" are one fact from two ends.
+ *
+ * They were two stores with two subscriptions, set in lockstep at every call
+ * site — which is a pair that can be set out of step, and the start sheet reads
+ * both at once. One snapshot makes that impossible rather than careful.
+ */
+describe("the audio device snapshot", () => {
+  it("moves both halves together, and notifies once", async () => {
+    installBridge({
+      getUserMedia: () => Promise.reject(new DOMException("denied", "NotAllowedError")),
+    });
+    const seen: Array<{ failure: unknown; captureReady: boolean }> = [];
+    const release = subscribeCtoAudioDevice(() => {
+      const snapshot = getCtoAudioDevice();
+      seen.push({ failure: snapshot.failure, captureReady: snapshot.captureReady });
+    });
+
+    render(<AudioOwner state={liveOwner} />);
+    await waitFor(() => expect(getCtoAudioDevice().failure).not.toBeNull());
+
+    expect(getCtoAudioDevice()).toMatchObject({
+      captureReady: false,
+      failure: { kind: "os-denied" },
+    });
+    // One notification carried both, rather than one per store.
+    expect(seen.filter((snapshot) => snapshot.failure !== null)).toHaveLength(1);
+    // And the snapshot's identity is stable while nothing has changed, because
+    // `useSyncExternalStore` re-renders forever on a fresh object every read.
+    expect(getCtoAudioDevice()).toBe(getCtoAudioDevice());
+
+    release();
+  });
+});
+
 describe("local barge-in", () => {
   beforeEach(() => {
     installAudioContext();

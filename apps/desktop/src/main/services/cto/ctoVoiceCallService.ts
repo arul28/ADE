@@ -1,17 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 
-import type { SceneStillRecord } from "../../../shared/chatScene";
-
 import {
   CTO_VOICE_CAPTURE_DEFAULT_NOTE,
   CTO_VOICE_END_CALL_AUDIO_TAIL_MS,
   CTO_VOICE_INITIAL_STATE,
   CTO_VOICE_PREOPEN_AUDIO_LIMIT,
   CTO_VOICE_SAMPLE_RATE,
-  CTO_VOICE_WORKING_NUDGE_AFTER_MS,
-  CTO_VOICE_WORKING_NUDGE_EVERY_MS,
-  CTO_VOICE_WORKING_NUDGE_MAX,
   type CtoVoiceCaption,
   ctoVoiceEndpointUrl,
   type CtoVoiceName,
@@ -51,6 +46,7 @@ import {
   judgeVoiceTranscript,
 } from "./ctoVoiceMicMeter";
 import { createTranscriptBurstValve } from "./ctoVoiceTurnBurst";
+import { createWorkingNudger } from "./ctoVoiceWorkingNudge";
 import {
   createTurnTimingRecorder,
   type CtoVoiceTurnTiming,
@@ -258,8 +254,6 @@ export type CtoVoiceCallDeps = {
     endedAt: string;
     captions: CtoVoiceCaption[];
     costUsd: number;
-    /** Stills of the scenes the call drew, in the order they settled. */
-    stills: SceneStillRecord[];
   }) => Promise<void>;
   /**
    * Put the CTO in confirm-first mode for the life of the call.
@@ -388,17 +382,6 @@ type CallSession = {
   /** Cleared as soon as it is handed to a turn — one capture, one turn. */
   pendingImage: string | null;
   /**
-   * Stills of the scenes this call drew, in the order they settled.
-   *
-   * Collected here rather than in the HUD because the HUD is unmounted the
-   * moment the call ends, and the picture has to outlive it — a call whose only
-   * answer was a view left the transcript with a card that showed nothing at
-   * all. Records, not bytes: the pixels are already in the artifact store and
-   * carrying them through the call state would put megabytes in every pushed
-   * update.
-   */
-  stills: SceneStillRecord[];
-  /**
    * True once OpenAI has answered with a session, so the call is live.
    *
    * Three events can be the first to say so and only the first one counts —
@@ -437,18 +420,6 @@ type CallSession = {
    * one's `runBackendTurn` has actually returned.
    */
   askCtoRunning: boolean;
-  /** When the request running right now started. The clock a nudge is measured from. */
-  askStartedAtMs: number;
-  /**
-   * How many "still working" sentences the running request has produced, and
-   * when the last one went out.
-   *
-   * Per request rather than per call: a call with four slow requests in it is
-   * four separate silences, and a counter that survived one of them would leave
-   * the user listening to nothing for the rest of the call.
-   */
-  askNudges: number;
-  askLastNudgeAtMs: number;
   /** Requests waiting behind the running one, in the order they were asked. */
   askQueue: AskCtoJob[];
   /** True while `drainAskQueue` owns the loop, so nothing starts a second one. */
@@ -468,15 +439,6 @@ type CallSession = {
   connectionFailureKind: "rejected_key" | "connection_failed" | null;
 };
 
-/**
- * Stills one call keeps.
- *
- * A card is a row in a transcript, not a gallery: past a handful the thumbnails
- * are the card. The oldest go first, because the last thing the CTO drew is the
- * one the user was looking at when they hung up.
- */
-const CTO_VOICE_CALL_STILL_LIMIT = 8;
-
 function freshCallSession(): CallSession {
   return {
     socketOpen: false,
@@ -485,15 +447,11 @@ function freshCallSession(): CallSession {
     startedAtIso: "",
     utterance: { id: randomUUID(), text: "", open: false },
     pendingImage: null,
-    stills: [],
     sessionReady: false,
     activeResponseInterrupted: false,
     outputAudioDeadlineMs: 0,
     endAfterSpeech: false,
     askCtoRunning: false,
-    askStartedAtMs: 0,
-    askNudges: 0,
-    askLastNudgeAtMs: 0,
     askQueue: [],
     askDraining: false,
     exchanges: 0,
@@ -524,15 +482,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   let state: CtoVoiceState = { ...CTO_VOICE_INITIAL_STATE };
 
   let endAfterSpeechTimer: NodeJS.Timeout | null = null;
-
-  /**
-   * The next "still working" sentence, armed while an `ask_cto` runs.
-   *
-   * One timer that re-arms itself rather than an interval, because the wait is
-   * not fixed: it is measured from the last thing the user actually HEARD, so a
-   * turn that keeps talking never nudges at all. See `armWorkingNudge`.
-   */
-  let workingNudgeTimer: NodeJS.Timeout | null = null;
 
   /** Stops the `ask_cto` running right now. See `CallSession.askCtoRunning`. */
   let askCtoAbort: AbortController | null = null;
@@ -734,105 +683,24 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   };
 
   /**
-   * How long until the next "still working" sentence is due, in milliseconds.
-   *
-   * Negative or zero means now. The wait is measured from the last moment the
-   * user had something to LISTEN to rather than from when the request started:
-   * `outputAudioDeadlineMs` is when the audio handed to the renderer so far
-   * finishes playing, so an acknowledgement still in the speaker pushes the
-   * nudge out behind it instead of talking over it. One function, because the
-   * arming and the firing must not be able to disagree about when it is due.
+   * Company for a user waiting on a request they cannot see. See
+   * `ctoVoiceWorkingNudge` for the clock; this is only what it needs from the
+   * call around it.
    */
-  function workingNudgeDueInMs(session: CallSession): number {
-    const threshold = session.askNudges === 0
-      ? CTO_VOICE_WORKING_NUDGE_AFTER_MS
-      : CTO_VOICE_WORKING_NUDGE_EVERY_MS;
-    const quietSince = Math.max(
-      session.askStartedAtMs,
-      session.askLastNudgeAtMs,
-      session.outputAudioDeadlineMs,
-    );
-    return quietSince + threshold - now();
-  }
-
-  /** Nothing is waiting to be said about work any more. */
-  function clearWorkingNudge(): void {
-    if (!workingNudgeTimer) return;
-    clearTimeout(workingNudgeTimer);
-    workingNudgeTimer = null;
-  }
-
-  /**
-   * Arm the next "still working" sentence.
-   *
-   * `delayMs` is for a nudge that was DEFERRED rather than due — a question is
-   * open, or the user is mid-sentence — where re-deriving the wait would come
-   * back as zero and spin the timer.
-   */
-  function armWorkingNudge(session: CallSession, delayMs?: number): void {
-    clearWorkingNudge();
-    // The record this request belongs to, exactly as `drainAskQueue` guards: a
-    // timer left over from a request on the previous call must not speak on
-    // this one.
-    if (session !== call || !started || !session.askCtoRunning) return;
-    // The "Say what it's doing" setting, read live. Off means the user asked
-    // for silence while it works, and a nudge is the same promise as the
-    // acknowledgement: company, not information.
-    if (!deps.backchannelsEnabled()) return;
-    if (session.askNudges >= CTO_VOICE_WORKING_NUDGE_MAX) return;
-    const wait = delayMs ?? workingNudgeDueInMs(session);
-    workingNudgeTimer = setTimeout(() => {
-      workingNudgeTimer = null;
-      fireWorkingNudge(session);
-    }, Math.max(0, wait));
-    workingNudgeTimer.unref?.();
-  }
-
-  /**
-   * Say one short sentence, because the request is still running.
-   *
-   * In the conversation rather than out-of-band — the opposite of every other
-   * line ADE asks for. This one is NOT ADE's words: the model is asked to find
-   * its own, so it can vary them and stay in its own voice, and being in the
-   * conversation is also what lets the user talk over it.
-   */
-  function fireWorkingNudge(session: CallSession): void {
-    if (session !== call || !started || !session.askCtoRunning) return;
-    if (!deps.backchannelsEnabled()) return;
-    // A question ADE asked out loud is the only thing the user should be
-    // hearing about; and a nudge while they are mid-sentence is the call
-    // talking over them. Neither is a reason to give up on the nudge — the
-    // request is still running — so both wait out one more gap.
-    if (state.pendingConfirmation || session.utterance.open || responses.isActive()) {
-      armWorkingNudge(session, CTO_VOICE_WORKING_NUDGE_EVERY_MS);
-      return;
-    }
-    // Something was said inside the wait after all: the acknowledgement ran
-    // long, or the model answered something else. Re-arm rather than speak.
-    if (workingNudgeDueInMs(session) > 0) {
-      armWorkingNudge(session);
-      return;
-    }
-    const elapsedSeconds = Math.max(1, Math.round((now() - session.askStartedAtMs) / 1000));
-    session.askNudges += 1;
-    session.askLastNudgeAtMs = now();
-    logWithCall("cto_voice.working_nudge", {
-      nudge: session.askNudges,
-      elapsedSeconds,
-    });
-    // Everything it must NOT do is spelled out, because each one has a cost the
-    // user can hear: a repeat makes the call sound stuck, an invented result is
-    // a lie about work that has not finished, and a question hands the turn
-    // back to a user who is waiting rather than deciding.
-    think(
-      `The request you are working on is still running (about ${elapsedSeconds} seconds so far).`
-      + " Say one short, natural sentence to keep the user company — vary it, do not"
-      + " repeat yourself, do not invent results, and do not ask a question."
-      + " Say nothing about this note.",
-    );
-    responses.requestModelResponse();
-    armWorkingNudge(session);
-  }
+  const workingNudge = createWorkingNudger({
+    now: () => now(),
+    log: (event, meta) => logWithCall(event, meta),
+    enabled: () => deps.backchannelsEnabled(),
+    canSpeakNow: () =>
+      !state.pendingConfirmation && !call.utterance.open && !responses.isActive(),
+    think: (note) => think(note),
+    // NOT measured as a turn. A "still working" sentence belongs to no
+    // transcript: counted, it stamped the first-speak post on whichever record
+    // was open and then closed that record as `spoken` on its own first chunk
+    // of audio — so the request the user was actually waiting for was written
+    // down as answered by a sentence that said nothing.
+    requestModelResponse: () => responses.requestModelResponse({ timing: false }),
+  });
 
   /**
    * Take the next request off the queue and run it, until the queue is empty.
@@ -956,12 +824,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     const controller = new AbortController();
     askCtoAbort = controller;
     call.askCtoRunning = true;
-    // Per request, so each silence is measured on its own. Armed before the
-    // await, because the whole point is the wait the user is about to have.
-    call.askStartedAtMs = now();
-    call.askNudges = 0;
-    call.askLastNudgeAtMs = 0;
-    armWorkingNudge(call);
+    // Armed before the await, because the whole point is the wait the user is
+    // about to have.
+    workingNudge.start();
     // Only when nothing is coming out of the speaker: the model's own
     // acknowledgement is usually still playing, and `thinking` would take the
     // HUD off `speaking` while the user can still hear it.
@@ -1033,7 +898,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         // The answer is here, so there is nothing left to keep the user company
         // through. A nudge after it would be the call saying it is still
         // working over the top of the result.
-        clearWorkingNudge();
+        workingNudge.stop();
         if (state.phase === "thinking" && !call.askQueue.length) setPhase("listening");
       }
       // Last, and only for a turn nothing is waiting behind: a replaced turn's
@@ -1074,7 +939,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     askCtoAbort.abort();
     // The request the user was being kept company through is over as far as
     // they are concerned, whatever the turn does while it unwinds.
-    clearWorkingNudge();
+    workingNudge.stop();
     // The HUD moves now; the turn itself keeps unwinding on the CTO session and
     // clears `askCtoRunning` in its own `finally`, which is what the drain loop
     // waits for.
@@ -1587,10 +1452,18 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // by however much of it is still unplayed.
     call.outputAudioDeadlineMs = Math.max(call.outputAudioDeadlineMs, now())
       + ctoVoiceFrameDurationMs(delta);
+    // The same clock the "still working" sentences wait on: anything already in
+    // the speaker pushes the next one out behind it.
+    workingNudge.noteAudioDeadline(call.outputAudioDeadlineMs);
     // The last post, and the only one the user can actually hear. Written on
     // the FIRST chunk of the response this turn's answer was queued as; every
     // later chunk finds no record and writes nothing.
-    timings.markFirstAudio(now());
+    //
+    // Skipped for a response that was never counted as a turn's answer. The
+    // "still working" sentences are the only ones, and their audio closed
+    // whichever record was open as `spoken` — a request the user was still
+    // waiting for, logged as answered.
+    if (responses.countsForTurnTiming()) timings.markFirstAudio(now());
     deps.onOutputAudio?.(delta);
   }
 
@@ -1711,7 +1584,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // Teardown only. Everything that is merely per-call state is replaced
     // wholesale by the next `start`, so nothing here is a list to keep in sync.
     if (endAfterSpeechTimer) { clearTimeout(endAfterSpeechTimer); endAfterSpeechTimer = null; }
-    clearWorkingNudge();
+    workingNudge.stop();
     // A turn the hang-up landed in the middle of is still a measurement, and
     // the answer it was waiting for is about to be thrown away. Both slots: the
     // answer nobody heard, and the utterance nothing ran for.
@@ -1760,7 +1633,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         endedAt,
         captions: state.captions,
         costUsd: voiceCostUsd(elapsedMs),
-        stills: call.stills,
       });
     } catch (error) {
       deps.logger?.warn("cto_voice.persist_failed", { error: String(error) });
@@ -1985,19 +1857,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       if (!socket) return;
       call.pendingImage = args.pngBase64;
       think(args.note || CTO_VOICE_CAPTURE_DEFAULT_NOTE);
-    },
-
-    /**
-     * Keep the still of a scene this call drew.
-     *
-     * Deduped by uri and bounded, because a call redraws as it talks and each
-     * redraw settles into its own picture. The cap is the same one the card
-     * shows: a transcript row is not a gallery.
-     */
-    attachStill(still: SceneStillRecord) {
-      if (!still?.uri) return;
-      if (call.stills.some((entry) => entry.uri === still.uri)) return;
-      call.stills = [...call.stills, still].slice(-CTO_VOICE_CALL_STILL_LIMIT);
     },
 
     setMuted(muted: boolean) {

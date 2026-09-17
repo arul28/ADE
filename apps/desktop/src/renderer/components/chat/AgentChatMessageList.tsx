@@ -68,7 +68,7 @@ import { normalizePath } from "../../lib/pathUtils";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
-import { sceneStillSrc, useCallStills } from "./sceneStillStore";
+import { useCallStills, useSceneStillSrc } from "./sceneStillStore";
 import {
   CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
   splitChatOutputContextSegments,
@@ -2374,10 +2374,10 @@ type RenderEventOptions = NonNullable<Parameters<typeof renderEvent>[1]>;
 /**
  * One still from a call, or nothing.
  *
- * Nothing rather than a broken image: the bytes resolve through
- * `ade-artifact://project/`, which only exists in a local desktop window, so a
- * still taken on another machine has no src here and the card simply does not
- * draw a tile for it.
+ * Nothing rather than a broken image. A local window resolves the bytes through
+ * `ade-artifact://project/`; a chat pinned to another machine has no such
+ * handler, so the picture is read back through that machine's own broker — and
+ * if neither answers, the card draws no tile at all.
  */
 function VoiceCallStill({
   still,
@@ -2388,7 +2388,7 @@ function VoiceCallStill({
   className: string;
   testId: string;
 }) {
-  const src = sceneStillSrc(still);
+  const src = useSceneStillSrc(still);
   if (!src) return null;
   return <img src={src} alt={still.title} data-testid={testId} className={className} />;
 }
@@ -2413,7 +2413,7 @@ function VoiceCallGroupCard({
    * record of bytes in the project's artifact store — the same picture, from
    * the place that outlived the frame.
    */
-  const stills = useCallStills(event.callId);
+  const stills = useCallStills(options?.sessionId ?? null, event.callId);
   return (
     <ChatCard
       skin="rail"

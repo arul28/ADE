@@ -2332,6 +2332,9 @@ export async function createAdeRuntime(args: {
       laneService,
       ctoStateService,
       agentChatService,
+      // The views a call drew: it reads its own stills back out of the store
+      // at hang-up, to name them in the durable record.
+      computerUseArtifactBrokerService,
       ctoMemoryService,
       // The CTO row's status line during a call is written straight to the
       // session row: the generated one is always a turn behind on a call.

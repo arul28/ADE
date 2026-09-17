@@ -39,6 +39,31 @@
 
 export const SCENE_FENCE_LANGUAGE = "scene";
 
+/**
+ * The identity of ONE scene inside a message.
+ *
+ * A transcript row key is not enough on its own: a message may hold two scene
+ * fences, and both of them being handed the row key meant they shared a still —
+ * whichever settled last overwrote the other, and a reopened chat showed the
+ * same picture twice. The source hash is what separates them, the same way
+ * mosaic cards separate two answerable cards in one message.
+ *
+ * Stored with the still in main, so it must be derived identically on every
+ * mount: a pure function of the row key and the fence body, and nothing else.
+ */
+export function sceneScopeKeyFor(rowScopeKey: string, source: string): string {
+  return `${rowScopeKey}:${djb2Hash(source)}`;
+}
+
+/** djb2, base 36. Short, stable, and not a security boundary. */
+function djb2Hash(input: string): string {
+  let hash = 5381;
+  for (let index = 0; index < input.length; index += 1) {
+    hash = ((hash << 5) + hash + input.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
 export const SCENE_LIMITS = {
   /** Source bytes. Past this a scene is a document, not a view. */
   maxSourceBytes: 96_000,

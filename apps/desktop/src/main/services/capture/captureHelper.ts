@@ -536,9 +536,17 @@ export class CaptureHelper {
     }
   }
 
-  /** A capture that arrived too late still left a PNG behind. Remove it. */
+  /**
+   * A capture that arrived too late still left a PNG behind. Remove it.
+   *
+   * Through BOTH checks, like every other read of a helper-named path. The
+   * lexical one clears the name; a symlinked directory planted inside the
+   * capture directory has a clean name and a target anywhere on disk, and an
+   * unlink through it deletes a file that was never ADE's to touch.
+   */
   private discardOrphanedCapture(capturedPath: string): void {
-    const resolved = this.resolveInsideOutputDirectory(capturedPath);
+    const lexical = this.resolveInsideOutputDirectory(capturedPath);
+    const resolved = lexical ? this.canonicalizeInsideOutputDirectory(lexical) : null;
     if (!resolved) return;
     try {
       fs.rmSync(resolved, { force: true });

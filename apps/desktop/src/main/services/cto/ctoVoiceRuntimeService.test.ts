@@ -11,13 +11,18 @@ import { initApiKeyStore } from "../ai/apiKeyStore";
 import type { CtoVoiceSocket } from "./ctoVoiceCallService";
 import {
   CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+  CTO_VOICE_SCENE_FRAME_HEIGHT,
+  CTO_VOICE_SCENE_FRAME_WIDTH,
   CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW,
   CTO_VOICE_SPOKEN_TURN_FAILED,
   type CtoVoiceState,
   isVoiceCallLive,
 } from "../../../shared/types/ctoVoice";
-import { CTO_VOICE_FORBIDDEN_VIEW_PHRASES } from "../../../shared/types/ctoVoicePrompt";
-import { createCtoVoiceRuntimeService } from "./ctoVoiceRuntimeService";
+import { CTO_VOICE_FORBIDDEN_VIEW_PHRASES } from "../../../shared/testFixtures/ctoVoicePhrases";
+import {
+  createCtoVoiceRuntimeService,
+  type CtoVoiceRuntimeHost,
+} from "./ctoVoiceRuntimeService";
 import {
   buildVoiceSceneContract,
 } from "./ctoVoiceContext";
@@ -183,6 +188,52 @@ describe("createCtoVoiceRuntimeService", () => {
     const phases = pushedPhases(host);
     expect(phases.filter((phase) => phase === "ended")).toHaveLength(1);
     expect(voice.getState().phase).toBe("ended");
+  });
+
+  /**
+   * A call's durable record names the views it drew.
+   *
+   * The call used to be handed a copy of every still over IPC and carry it for
+   * its whole length. The bytes and the records were in the artifact store the
+   * entire time, so the record is written by reading them back at hang-up —
+   * which is also the only way a still filed after the last state push can
+   * reach it at all.
+   */
+  it("names the views it drew in the call record, read back out of the artifact store", async () => {
+    const fake = createFakeSocket();
+    const writeCallTranscript = vi.fn(async (_callId: string, _body: string) => undefined);
+    const listArtifacts = vi.fn(() => []);
+    const { host } = createVoiceRuntimeHost({
+      ctoMemoryService: { writeCallTranscript } as unknown as CtoVoiceRuntimeHost["ctoMemoryService"],
+      computerUseArtifactBrokerService: {
+        listArtifacts,
+      } as unknown as CtoVoiceRuntimeHost["computerUseArtifactBrokerService"],
+    });
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+
+    await voice.start({ ownerToken: "owner-1" });
+    fake.open();
+    const callId = voice.getState().callId;
+    // Filed by the renderer while the call ran, owned by the CTO session and
+    // tagged with this call.
+    listArtifacts.mockReturnValue([{
+      id: "art-1",
+      uri: ".ade/artifacts/computer-use/lanes.png",
+      title: "Generated view",
+      metadata: { kind: "scene_still", sceneScopeKey: callId, sceneTitle: "Lanes", voiceCallId: callId },
+    }] as never);
+
+    await voice.end({ ownerToken: "owner-1" });
+
+    expect(listArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerKind: "chat_session", ownerId: "session-1" }),
+    );
+    const written = String(writeCallTranscript.mock.calls[0]?.[1] ?? "");
+    expect(written).toContain("## Views drawn");
+    expect(written).toContain("- Lanes — .ade/artifacts/computer-use/lanes.png");
   });
 
   it("clears a dead call silently, so the next call's first word is its own", async () => {
@@ -604,17 +655,20 @@ function askCtoOnWire(fake: ReturnType<typeof createFakeSocket>, request: string
   });
 
   /**
-   * The scene of 2026-09-17 was real HTML and still useless: four tiles, a
-   * ten-row table of wrapping names and a second table of prose, clipped
-   * partway down by a frame that does not scroll. The turn says how big the
-   * frame is now, and what one scene is allowed to be.
+   * Real HTML is not enough on its own: a frame that does not scroll clips
+   * whatever did not fit, so the turn has to say how big the frame is and what
+   * one scene is allowed to be.
    */
-  it("tells the CTO how big the frame is and what one scene may hold", async () => {
+  it("tells the CTO the frame size the HUD actually renders, and what one scene may hold", async () => {
     const contract = buildVoiceSceneContract();
-    expect(contract).toContain("about 560px wide");
+    // The numbers the HUD renders at, not a pair written into the prose: the
+    // contract once claimed 560x520 for a frame drawn in a 420px card clamped
+    // to 320px, so the CTO laid out for more than twice the room it had.
+    expect(contract).toContain(`about ${CTO_VOICE_SCENE_FRAME_WIDTH}px wide`);
+    expect(contract).toContain(`about ${CTO_VOICE_SCENE_FRAME_HEIGHT}px tall`);
     expect(contract).toContain("does NOT scroll");
-    expect(contract).toContain("At most one row of up to 4 stat tiles");
-    expect(contract).toContain("at most ONE table or list of at most 6 rows");
+    expect(contract).toContain("At most one row of up to 3 stat tiles");
+    expect(contract).toContain("at most ONE table or list of at most 4 rows");
     expect(contract).toContain("+N more");
     expect(contract).toContain("text-overflow: ellipsis");
     expect(contract).toContain("never a sentence or a paragraph inside a cell");
@@ -627,16 +681,16 @@ function askCtoOnWire(fake: ReturnType<typeof createFakeSocket>, request: string
 
   /**
    * The example is what actually gets copied, so it has to obey every rule
-   * above it: three tiles, five rows and a "+N more", not the ten-row table the
-   * live call produced.
+   * above it: three tiles, three rows and a "+N more", never more rows than the
+   * rule it sits under allows.
    */
   it("shows an example that fits the rules it just gave", () => {
     const contract = buildVoiceSceneContract();
     const example = contract.slice(contract.indexOf('<!-- @scene title="Lanes" -->'));
     expect(example).toContain("<script>ade.ready();</script>");
     expect((example.match(/class="tile"/g) ?? []).length).toBe(3);
-    expect((example.match(/class="name"/g) ?? []).length).toBe(5);
-    expect(example).toContain('<td class="more" colspan="3">+5 more</td>');
+    expect((example.match(/class="name"/g) ?? []).length).toBe(3);
+    expect(example).toContain('<td class="more" colspan="3">+7 more</td>');
     expect(example).toContain('<div class="foot">');
     // Every name cell is clamped, because one long lane name is what pushed the
     // live table out of the frame.

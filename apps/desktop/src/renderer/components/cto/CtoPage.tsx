@@ -12,7 +12,8 @@ import type {
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { CtoTalkButton, CtoTalkNoticeLine, type CtoTalkNotice } from "./CtoTalkButton";
+import { CtoTalkButton } from "./CtoTalkButton";
+import { CtoTalkNoticeLine, type CtoTalkNotice } from "./CtoTalkNoticeLine";
 import { CtoSettingsPage } from "./CtoSettingsPage";
 import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";

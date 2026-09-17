@@ -2,14 +2,11 @@ import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Microphone } from "@phosphor-icons/react";
 
 import { CtoVoiceStartSheet } from "./CtoVoiceStartSheet";
-import {
-  isVoiceCallLive,
-  type CtoVoiceMicrophoneBlockKind,
-} from "../../../shared/types/ctoVoice";
+import { isVoiceCallLive } from "../../../shared/types/ctoVoice";
 import { COLORS } from "../lanes/laneDesignTokens";
-import { ctoMicrophoneSettingsAction, openCtoSettingsPane } from "./ctoMicrophoneFix";
+import type { CtoTalkNotice } from "./CtoTalkNoticeLine";
 import { getFocusableElements } from "../ui/dialogFocus";
-import { useCtoMicrophoneFailure, useCtoVoiceCall } from "./useCtoVoiceCall";
+import { useCtoVoiceCall } from "./useCtoVoiceCall";
 
 /**
  * "Talk to CTO".
@@ -196,57 +193,6 @@ function KeyDialog({
   );
 }
 
-/**
- * A failure the page has to draw, and whether it has a settings fix.
- *
- * The kind rides along rather than the sentence alone because a microphone
- * failure reaches this surface far more often than the sheet: the sheet closes
- * as soon as the call goes live, and capture — which is what discovers there is
- * no microphone — is only opened after that. The owner who pressed Talk with no
- * microphone therefore read the sentence here, where there was nothing to press.
- */
-export type CtoTalkNotice = {
-  message: string;
-  /** Set only when the sentence is a microphone verdict with a pane to open. */
-  microphone: CtoVoiceMicrophoneBlockKind | null;
-};
-
-/**
- * The failure line under the CTO header, with the fix beside it.
- *
- * A component rather than markup inside the page because this is the surface a
- * microphone failure actually lands on, so the button that opens the right OS
- * pane has to be part of it — and has to be testable without standing up the
- * whole CTO page.
- */
-export function CtoTalkNoticeLine({ notice }: { notice: CtoTalkNotice }) {
-  const action = ctoMicrophoneSettingsAction(notice.microphone);
-  return (
-    <div
-      role="status"
-      className="flex items-center gap-2 border-t border-white/[0.05] px-4 py-1.5"
-    >
-      <p
-        data-testid="cto-talk-error"
-        className="min-w-0 flex-1 truncate text-[11px] leading-[1.5] text-amber-300/85"
-        title={notice.message}
-      >
-        {notice.message}
-      </p>
-      {action ? (
-        <button
-          type="button"
-          data-testid="cto-talk-open-mic-settings"
-          onClick={() => { void openCtoSettingsPane(action.paneId); }}
-          className="h-6 flex-shrink-0 rounded-md border border-white/[0.12] px-2 text-[11px] font-medium text-amber-200/90 transition-colors hover:bg-white/[0.05]"
-        >
-          {action.label}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
 export type CtoTalkButtonProps = {
   /**
    * Where the failure line is drawn.
@@ -260,10 +206,17 @@ export type CtoTalkButtonProps = {
 
 export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
   const { state } = useCtoVoiceCall();
-  const microphoneFailure = useCtoMicrophoneFailure();
   useTalkStyle();
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+
+  // A call that fails after it starts (a refused socket, a dropped connection)
+  // reports through the call state, not the start result — and then the call
+  // ends, the HUD unmounts, and the reason went with it. The page kept no
+  // record, so a failed call looked like a button that did nothing.
+  //
+  // Latched rather than read live, because the service clears `error` on the
+  // way to `ended`: by the time there is room to show it, it is gone.
+  const [callFailure, setCallFailure] = useState<CtoTalkNotice | null>(null);
 
   // `isVoiceCallLive`, not "not idle": a failed call is over, and the old
   // check left this button disabled forever after one.
@@ -281,7 +234,9 @@ export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
    */
   const onClick = useCallback(() => {
     if (live || sheetOpen) return;
-    setNotice(null);
+    // The last call's failure is not this attempt's: the sheet is about to own
+    // whatever goes wrong next, and it shows its own.
+    setCallFailure(null);
     setSheetOpen(true);
   }, [live, sheetOpen]);
 
@@ -289,25 +244,21 @@ export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
   // is open and the call is not yet up.
   const starting = sheetOpen && !live;
 
-  // A call that fails after it starts (a refused socket, a dropped connection)
-  // reports through the call state, not the start result — and then the call
-  // ends, the HUD unmounts, and the reason went with it. The page kept no
-  // record, so a failed call looked like a button that did nothing.
-  //
-  // Latched rather than read live, because the service clears `error` on the
-  // way to `ended`: by the time there is room to show it, it is gone.
-  const [callFailure, setCallFailure] = useState<string | null>(null);
   useEffect(() => {
     // Only the window holding the microphone speaks for the call. Every window
     // mounts a HUD, and a failure is not news in the ones that did not call.
     if (!state.isCallOwner) return;
     if (state.error && (state.phase === "failed" || state.phase === "ended")) {
-      setCallFailure(state.error);
+      // The kind travels with the sentence on the state itself. It used to be
+      // recovered by comparing that sentence against the renderer's own
+      // microphone store — a join between two stores that had to agree word for
+      // word, and silently dropped the settings button when they did not.
+      setCallFailure({ message: state.error, microphone: state.errorKind ?? null });
       return;
     }
     // A new call is its own story; the last one's failure stops being current.
     if (isVoiceCallLive(state.phase)) setCallFailure(null);
-  }, [state.error, state.phase, state.isCallOwner]);
+  }, [state.error, state.errorKind, state.phase, state.isCallOwner]);
 
   // The only place the reason is drawn. The HUD says "Call failed" inside its
   // pill and stops there: a sentence trailing below the pill has no border to
@@ -315,18 +266,12 @@ export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
   // While the sheet is open it shows its own failures, with buttons that act
   // on them. A page notice saying the same thing behind the modal is how a
   // user learns to read neither.
-  const message = sheetOpen ? null : (notice ?? callFailure);
-  // The kind only rides along while the store still holds THIS sentence, so a
-  // latched line from an older call cannot inherit a button for a verdict that
-  // has since been cleared.
-  const microphone = message && microphoneFailure?.message === message
-    ? microphoneFailure.kind
-    : null;
+  const shown = sheetOpen ? null : callFailure;
 
   useEffect(() => {
-    onNotice?.(message ? { message, microphone } : null);
+    onNotice?.(shown);
     return () => onNotice?.(null);
-  }, [message, microphone, onNotice]);
+  }, [shown, onNotice]);
 
   return (
     <>

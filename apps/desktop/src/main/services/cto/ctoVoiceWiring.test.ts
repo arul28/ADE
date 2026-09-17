@@ -379,32 +379,6 @@ describe("a call the router has to end on its own", () => {
     );
   });
 
-  it("routes a scene still to the running call, and drops one with no artifact behind it", async () => {
-    // The renderer never names a path: it hands over the record of bytes it
-    // already filed through the jailed store route, and this side forwards it.
-    const seen: { action: string; args: Record<string, unknown> }[] = [];
-    const runtime = createFakeRuntimePool({
-      onAction: (request) => {
-        seen.push(request);
-        return request.action === "pullAudio" ? { ok: true, chunks: [], dropped: 0 } : { ok: true };
-      },
-    });
-    const ipc = createIpcMain();
-    registerCtoVoiceIpc(ipc.ipcMain, { getCtx: () => runtimeCtx(), getLocalRuntimePool: () => runtime.pool });
-
-    await ipc.invoke(IPC.ctoVoiceStart, undefined, 7);
-    runtime.emitState({ ...liveState(), callId: "call-still" });
-
-    const still = { uri: ".ade/artifacts/computer-use/a.png", artifactId: "a1", title: "PRs" };
-    await ipc.invoke(IPC.ctoVoiceAttachStill, { still });
-    await ipc.invoke(IPC.ctoVoiceAttachStill, { still: { uri: "   ", artifactId: null, title: "x" } });
-    await ipc.invoke(IPC.ctoVoiceAttachStill, {});
-
-    const sent = seen.filter((request) => request.action === "attachStill");
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.args.still).toEqual(still);
-  });
-
   it("keeps a deliberate hang-up silent, because the user already knows", async () => {
     // The HUD's End button sends no reason, and a call the user chose to end
     // has nothing to explain. A notice here would be noise.

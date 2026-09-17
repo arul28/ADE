@@ -2304,11 +2304,20 @@ declare global {
           dataUrl: string;
           title: string;
           sessionId?: string | null;
+          /**
+           * Identity of the scene this is a picture of. One still is kept per
+           * key — a scene that settles again supersedes its own picture — and
+           * it is how a reopened window finds the bytes back.
+           */
+          scopeKey?: string | null;
+          /** Set when the scene was drawn on a voice call; the call card reads by it. */
+          voiceCallId?: string | null;
         }) => Promise<import("../shared/chatScene").SceneStillRecord | null>;
       };
       computerUse: {
         listArtifacts: (
           args?: ComputerUseArtifactListArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<ComputerUseArtifactView[]>;
         getOwnerSnapshot: (
           args: ComputerUseOwnerSnapshotArgs,

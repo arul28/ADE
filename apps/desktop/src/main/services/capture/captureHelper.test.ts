@@ -99,12 +99,13 @@ function createHelper(overrides: Partial<{
   onShot: ReturnType<typeof vi.fn>;
   onFailure: ReturnType<typeof vi.fn>;
   selfPid: number;
+  outputDirectory: string;
 }> = {}) {
   const onShot = overrides.onShot ?? vi.fn();
   const onFailure = overrides.onFailure ?? vi.fn();
   const helper = new CaptureHelper({
     executablePath: "/tmp/ade-capture-helper",
-    outputDirectory: "/tmp/ade-capture",
+    outputDirectory: overrides.outputDirectory ?? "/tmp/ade-capture",
     logger,
     onShot,
     onFailure,
@@ -543,6 +544,52 @@ describe("CaptureHelper", () => {
       expect(rmSyncMock).toHaveBeenCalledWith("/tmp/ade-capture/late.png", { force: true });
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The same jail the delivery path uses, on the path the unlink will open.
+   *
+   * A late capture is discarded by deleting the file the helper named, and the
+   * lexical check clears only the NAME: a symlinked directory planted inside
+   * the capture directory has a clean name, and an unlink through it removes a
+   * file that was never ADE's to touch.
+   */
+  it("does not delete a late capture that reaches outside the directory through a link", async () => {
+    const realFs = await vi.importActual<typeof NodeFs>("node:fs");
+    const realOs = await vi.importActual<typeof NodeOs>("node:os");
+    const realPath = await vi.importActual<typeof NodePath>("node:path");
+
+    const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-late-"));
+    const outsideDir = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-elsewhere-"));
+    const secret = realPath.join(outsideDir, "secret.png");
+    realFs.writeFileSync(secret, "SECRETBYTES");
+    // A LINKED DIRECTORY, so the escape survives `path.resolve`: the name stays
+    // inside the capture directory and the file the unlink opens does not.
+    realFs.symlinkSync(outsideDir, realPath.join(root, "shed"));
+    const named = realPath.join(root, "shed", "secret.png");
+    realpathSyncMock.mockImplementation((filePath: unknown) => realFs.realpathSync(filePath as string));
+
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      spawnMock.mockReturnValue(child);
+      const { helper, onShot } = createHelper({ outputDirectory: root });
+      helper.updateSettings({ enabled: true });
+      child.emit("spawn");
+      child.stdout.write('{"type":"chord"}\n');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(9_000);
+
+      child.stdout.write(JSON.stringify({ type: "captured", path: named }) + "\n");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(onShot).not.toHaveBeenCalled();
+      expect(rmSyncMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      realFs.rmSync(root, { recursive: true, force: true });
+      realFs.rmSync(outsideDir, { recursive: true, force: true });
     }
   });
 

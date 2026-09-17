@@ -1166,7 +1166,6 @@ function buildCtoVoiceDomainService(runtime: AdeRuntime): OpaqueService | null {
     pullAudio: (args?: Parameters<typeof voice.pullAudio>[0]) => voice.pullAudio(args),
     resolveApproval: (args?: Parameters<typeof voice.resolveApproval>[0]) => voice.resolveApproval(args),
     sendCapture: (args?: Parameters<typeof voice.sendCapture>[0]) => voice.sendCapture(args),
-    attachStill: (args?: Parameters<typeof voice.attachStill>[0]) => voice.attachStill(args),
   } satisfies Record<CtoVoiceAction, (args?: never) => unknown>;
   return domain as unknown as OpaqueService;
 }

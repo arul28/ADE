@@ -256,6 +256,9 @@ describe("CtoPage settings", () => {
     // reason once the call is over and the HUD has unmounted.
     let push: ((state: Record<string, unknown>) => void) | null = null;
     const ade = globalThis.window.ade as Record<string, unknown>;
+    // The settings button is macOS and Windows only — there is no vetted pane
+    // URL on Linux — so the platform has to be a real one for it to appear.
+    ade.app = { ...(ade.app as Record<string, unknown> | undefined), runtimeTarget: { platform: "darwin", arch: "arm64" } };
     ade.ctoVoice = {
       start: vi.fn().mockResolvedValue({ ok: true }),
       end: vi.fn().mockResolvedValue(undefined),
@@ -309,6 +312,24 @@ describe("CtoPage settings", () => {
     // A new call is not the old call's failure.
     emit({ phase: "connecting" });
     expect(screen.queryByTestId("cto-talk-error")).toBeNull();
+
+    // A microphone verdict arrives with its KIND on the state, and the kind is
+    // what puts a button beside the sentence. It used to be recovered by
+    // matching the sentence against the renderer's own store word for word,
+    // which meant a reworded sentence silently lost the button.
+    emit({
+      phase: "failed",
+      error: "No microphone is connected to this Mac. Plug one in, or choose an input under macOS System Settings › Sound › Input.",
+      errorKind: "no-device",
+    });
+    expect(screen.getByTestId("cto-talk-error").textContent)
+      .toContain("No microphone is connected");
+    expect(screen.getByTestId("cto-talk-open-mic-settings")).toBeTruthy();
+
+    // And a failure with no kind gets the sentence and nothing to press.
+    emit({ phase: "connecting" });
+    emit({ phase: "failed", error: "The voice connection failed." });
+    expect(screen.queryByTestId("cto-talk-open-mic-settings")).toBeNull();
 
     emit({ phase: "idle" });
   });

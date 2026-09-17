@@ -97,6 +97,7 @@ import {
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
 import { rememberCallStill, resetSceneStillsForTest } from "./sceneStillStore";
+import { stubSceneCaptureBridge } from "./sceneStillTestHarness";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
@@ -6013,6 +6014,34 @@ describe("AgentChatMessageList voice calls", () => {
       const stills = screen.getByTestId("voice-call-stills");
       expect(stills.textContent).toContain("Red checks");
       expect(screen.getByTestId("voice-call-still")).toBeTruthy();
+    } finally {
+      resetSceneStillsForTest();
+    }
+  });
+
+  /**
+   * A reopened window has nothing in memory: the pictures come back from the
+   * artifact index, matched to this call by the id stored with them.
+   */
+  it("finds a finished call's views in the artifact index", async () => {
+    const bridge = stubSceneCaptureBridge({
+      artifacts: [{
+        id: "a1",
+        uri: ".ade/artifacts/computer-use/red-checks.png",
+        title: "Generated view",
+        metadata: { kind: "scene_still", voiceCallId: "call-1", sceneTitle: "Red checks" },
+      }],
+    });
+    try {
+      renderMessageList(callEvents, { sessionId: "chat-1" });
+      await waitFor(() => expect(screen.getByTestId("voice-call-still-thumb")).toBeTruthy());
+      expect(screen.getByTestId("voice-call-still-thumb").getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/computer-use/red-checks.png");
+      expect(bridge.listArtifacts.mock.calls[0]?.[0]).toMatchObject({
+        ownerKind: "chat_session",
+        ownerId: "chat-1",
+        metadataKinds: ["scene_still"],
+      });
     } finally {
       resetSceneStillsForTest();
     }

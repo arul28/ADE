@@ -921,6 +921,7 @@ import {
   decodeScenePngDataUrl,
   type SceneCaptureRect,
 } from "../scenes/sceneSnapshot";
+import { fileSceneStill, sceneStillFileLabel } from "../scenes/sceneStillFiling";
 import { SCENE_LIMITS, type SceneStillRecord } from "../../../shared/chatScene";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
@@ -9107,11 +9108,19 @@ export function registerIpc({
    * The same bytes and the same jail as the Proof button — `attachProof` and
    * this one write through `createComputerUseArtifactPath` into
    * `.ade/artifacts/computer-use/` and file through the same broker or the same
-   * CTO-only runtime action — and one deliberate difference: THE BYTES ARE
-   * NEVER DELETED HERE. Proof is a drawer record, so a record that could not be
-   * created makes the file pointless; a still is the picture itself, and the
-   * renderer is about to show it back from this path. A still that could not be
-   * filed is an unlisted image, which is exactly what the caller asked for.
+   * CTO-only runtime action — and two deliberate differences.
+   *
+   * THE BYTES ARE NEVER DELETED ON A FAILED FILING. Proof is a drawer record,
+   * so a record that could not be created makes the file pointless; a still is
+   * the picture itself, and the renderer is about to show it back from this
+   * path. A still that could not be filed is an unlisted image, which is
+   * exactly what the caller asked for.
+   *
+   * AND THE RECORD IS NOT PROOF. A still is a picture the transcript shows
+   * inline, so it is tagged `metadata.kind = "scene_still"` and excluded from
+   * every proof surface; the broker holds it because the broker owns the bytes
+   * and is the index the renderer looks the picture up in. `fileSceneStill`
+   * owns that tag and the two disk bounds that go with it.
    *
    * The renderer never names a path. It hands over a PNG data URL and gets back
    * a project-relative uri, so `ade-artifact://project/` can resolve it without
@@ -9121,7 +9130,15 @@ export function registerIpc({
     IPC.sceneStoreStill,
     async (
       _event,
-      arg: { dataUrl?: string | null; title?: string | null; sessionId?: string | null },
+      arg: {
+        dataUrl?: string | null;
+        title?: string | null;
+        sessionId?: string | null;
+        /** Identity of the scene the picture is of: one still per key. */
+        scopeKey?: string | null;
+        /** Set when the scene was drawn on a voice call. */
+        voiceCallId?: string | null;
+      },
     ): Promise<SceneStillRecord | null> => {
       try {
         const ctx = getCtx();
@@ -9130,7 +9147,16 @@ export function registerIpc({
         const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
         if (!bytes) return null;
         const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
-        const artifactPath = createComputerUseArtifactPath(projectRoot, title, "png");
+        const scopeKey = typeof arg?.scopeKey === "string" ? arg.scopeKey.trim() : "";
+        const voiceCallId = typeof arg?.voiceCallId === "string" ? arg.voiceCallId.trim() : "";
+        // The title reaches the FILE NAME here, and a scene titles itself: see
+        // `sceneStillFileLabel` for why that is clamped. The record keeps the
+        // whole title; the name on disk is a label.
+        const artifactPath = createComputerUseArtifactPath(
+          projectRoot,
+          sceneStillFileLabel(title),
+          "png",
+        );
         fs.writeFileSync(artifactPath, bytes);
         const record: SceneStillRecord = {
           uri: toProjectArtifactUri(projectRoot, artifactPath),
@@ -9139,24 +9165,20 @@ export function registerIpc({
         };
 
         // Filing is best effort and deliberately after the bytes are on disk:
-        // the still is already usable, and a drawer row that could not be
+        // the still is already usable, and an index row that could not be
         // written must not cost the user the picture.
         try {
           const broker = ctx.computerUseArtifactBrokerService;
           if (broker) {
             const sessionId = await resolveSceneProofOwner(ctx, arg?.sessionId);
-            const filed = broker.ingest({
-              backend: { name: "scene", style: "manual", toolName: "scene_still" },
-              ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
-              inputs: [{
-                kind: "screenshot",
-                title: record.title,
-                path: artifactPath,
-                mimeType: "image/png",
-                description: "Still of an agent-authored scene, taken when it stopped moving.",
-              }],
-            });
-            record.artifactId = filed.artifacts[0]?.id ?? null;
+            record.artifactId = fileSceneStill({
+              broker,
+              path: artifactPath,
+              title: record.title,
+              ownerSessionId: sessionId,
+              sceneScopeKey: scopeKey,
+              voiceCallId,
+            }).artifactId;
           } else if (localRuntimeConnectionPool) {
             // Runtime-backed build: this process owns neither the broker nor
             // the chat service, so the daemon repeats the jail and the owner
@@ -9168,6 +9190,10 @@ export function registerIpc({
                 path: artifactPath,
                 title,
                 sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : null,
+                // Present only here, never on the Proof button's call: it is
+                // what tells the daemon this is a still and not proof.
+                sceneScopeKey: scopeKey,
+                voiceCallId,
               },
             });
             const answered = (response.result as { artifactId?: unknown } | null)?.artifactId;

@@ -15,6 +15,7 @@ import type {
   ComputerUseArtifactKind,
   ComputerUseArtifactLink,
   ComputerUseArtifactListArgs,
+  ComputerUseArtifactMetadataKind,
   ComputerUseArtifactOwner,
   ComputerUseArtifactRecord,
   ComputerUseArtifactReviewArgs,
@@ -387,6 +388,61 @@ function normalizeInputKind(input: ComputerUseArtifactInput): ComputerUseArtifac
   if (normalized) return normalized;
   if (input.text) return "console_logs";
   return "browser_verification";
+}
+
+function normalizeMetadataKinds(
+  value: ComputerUseArtifactMetadataKind[] | null | undefined,
+): ComputerUseArtifactMetadataKind[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((entry): entry is ComputerUseArtifactMetadataKind =>
+    typeof entry === "string" && entry.length > 0))];
+}
+
+/**
+ * The `metadata.kind` half of a list query, as SQL.
+ *
+ * `json_extract` rather than a column: the tag lives in the metadata blob every
+ * artifact already carries, and a tag that only the filer and the filters read
+ * does not earn a migration. Null extracts (an artifact with no tag at all) are
+ * spelled out on the exclude side, because `not in` is unknown against null and
+ * would silently drop every untagged row — which is nearly all of them.
+ */
+function buildMetadataKindFilter(args: ComputerUseArtifactListArgs): {
+  sql: (prefix: string) => string;
+  params: string[];
+} {
+  const included = normalizeMetadataKinds(args.metadataKinds);
+  const excluded = normalizeMetadataKinds(args.excludeMetadataKinds);
+  const params: string[] = [...included, ...excluded];
+  return {
+    sql: (prefix: string) => {
+      const tag = `json_extract(${prefix}metadata_json, '$.kind')`;
+      const clauses: string[] = [];
+      if (included.length) {
+        clauses.push(`and ${tag} in (${included.map(() => "?").join(", ")})`);
+      }
+      if (excluded.length) {
+        clauses.push(`and (${tag} is null or ${tag} not in (${excluded.map(() => "?").join(", ")}))`);
+      }
+      return clauses.join("\n              ");
+    },
+    params,
+  };
+}
+
+/** The same filter in memory, for the single-record read that skips the query. */
+function matchesMetadataKindFilter(
+  record: ComputerUseArtifactRecord,
+  args: ComputerUseArtifactListArgs,
+): boolean {
+  const tag = isRecord(record.metadata) && typeof record.metadata.kind === "string"
+    ? record.metadata.kind
+    : null;
+  const included = normalizeMetadataKinds(args.metadataKinds);
+  if (included.length && (!tag || !included.includes(tag as ComputerUseArtifactMetadataKind))) return false;
+  const excluded = normalizeMetadataKinds(args.excludeMetadataKinds);
+  if (tag && excluded.includes(tag as ComputerUseArtifactMetadataKind)) return false;
+  return true;
 }
 
 export function createComputerUseArtifactBrokerService(args: {
@@ -1155,11 +1211,16 @@ export function createComputerUseArtifactBrokerService(args: {
       // maintenance may request up to the broken-record audit ceiling so it
       // can authorize a bounded batch without one lookup per artifact.
       const limit = Math.max(1, Math.min(2000, Math.floor(args.limit ?? 50)));
+      // The metadata-kind filters run IN THE QUERY, not over its result: they
+      // interact with `limit`, and filtering afterwards would let 50 scene
+      // stills push every proof row out of a drawer listing that then showed
+      // nothing.
+      const metadataFilter = buildMetadataKindFilter(args);
       let artifacts: ComputerUseArtifactRecord[] = [];
       const artifactId = toOptionalString(args.artifactId);
       if (artifactId) {
         const record = readArtifactById(artifactId);
-        artifacts = record ? [record] : [];
+        artifacts = record && matchesMetadataKindFilter(record, args) ? [record] : [];
       } else {
       const ownerKind = args.owner?.kind ?? args.ownerKind ?? null;
       const ownerId = args.owner?.id ?? toOptionalString(args.ownerId);
@@ -1179,12 +1240,21 @@ export function createComputerUseArtifactBrokerService(args: {
                 or (? = 'lane' and a.lane_id = ?)
               )
               ${args.kind ? "and a.artifact_kind = ?" : ""}
+              ${metadataFilter.sql("a.")}
             order by a.created_at desc
             limit ?
           `,
-          args.kind
-            ? [projectId, projectId, ownerKind, ownerId, ownerKind, ownerId, args.kind, limit]
-            : [projectId, projectId, ownerKind, ownerId, ownerKind, ownerId, limit],
+          [
+            projectId,
+            projectId,
+            ownerKind,
+            ownerId,
+            ownerKind,
+            ownerId,
+            ...(args.kind ? [args.kind] : []),
+            ...metadataFilter.params,
+            limit,
+          ],
         );
       } else {
         artifacts = readArtifactRows(
@@ -1193,10 +1263,11 @@ export function createComputerUseArtifactBrokerService(args: {
             from computer_use_artifacts
             where project_id = ?
               ${args.kind ? "and artifact_kind = ?" : ""}
+              ${metadataFilter.sql("")}
             order by created_at desc
             limit ?
           `,
-          args.kind ? [projectId, args.kind, limit] : [projectId, limit],
+          [projectId, ...(args.kind ? [args.kind] : []), ...metadataFilter.params, limit],
         );
       }
       }

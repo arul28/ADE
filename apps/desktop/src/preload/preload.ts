@@ -8,7 +8,11 @@ import { IPC } from "../shared/ipc";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
-import type { CtoVoiceBridge, CtoVoiceStatePayload } from "../shared/types/ctoVoice";
+import type {
+  CtoVoiceBridge,
+  CtoVoiceMicrophoneBlockKind,
+  CtoVoiceStatePayload,
+} from "../shared/types/ctoVoice";
 import type { SceneStillRecord } from "../shared/chatScene";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
@@ -7678,7 +7682,8 @@ const adeBridge = {
     start: () => ipcRenderer.invoke(IPC.ctoVoiceStart) as Promise<CtoVoiceActionResult>,
     // The reason travels with the hang-up: a call ended because the microphone
     // would not open has something to say, and the main process cannot know it.
-    end: (reason?: string) => ipcRenderer.invoke(IPC.ctoVoiceEnd, { reason }) as Promise<void>,
+    end: (reason?: string, errorKind?: CtoVoiceMicrophoneBlockKind) =>
+      ipcRenderer.invoke(IPC.ctoVoiceEnd, { reason, errorKind }) as Promise<void>,
     // `send`, not `invoke`: audio frames arrive about ten times a second for the
     // life of a call, and a round trip per frame would be pure overhead.
     pushAudio: (audio: string, level: number) => ipcRenderer.send(IPC.ctoVoicePushAudio, { audio, level }),
@@ -7687,8 +7692,6 @@ const adeBridge = {
     deny: (id: string) => ipcRenderer.invoke(IPC.ctoVoiceDeny, { id }) as Promise<void>,
     attachImage: (args: { pngBase64: string; note: string }) =>
       ipcRenderer.invoke(IPC.ctoVoiceAttachImage, args) as Promise<void>,
-    attachStill: (args: { still: SceneStillRecord }) =>
-      ipcRenderer.invoke(IPC.ctoVoiceAttachStill, args) as Promise<void>,
     hasKey: () => ipcRenderer.invoke(IPC.ctoVoiceHasKey) as Promise<boolean>,
     onState: (handler: (state: CtoVoiceStatePayload) => void) => {
       const listener = (_event: unknown, payload: unknown) => handler(payload as CtoVoiceStatePayload);
@@ -7724,7 +7727,13 @@ const adeBridge = {
       args: { dataUrl?: string | null; title: string; sessionId?: string | null },
     ): Promise<boolean> => ipcRenderer.invoke(IPC.sceneAttachProof, args),
     storeStill: (
-      args: { dataUrl: string; title: string; sessionId?: string | null },
+      args: {
+        dataUrl: string;
+        title: string;
+        sessionId?: string | null;
+        scopeKey?: string | null;
+        voiceCallId?: string | null;
+      },
     ): Promise<SceneStillRecord | null> => ipcRenderer.invoke(IPC.sceneStoreStill, args),
   },
   orchestration: createOrchestrationBridge({
@@ -7746,13 +7755,25 @@ const adeBridge = {
   computerUse: {
     listArtifacts: async (
       args: ComputerUseArtifactListArgs = {},
+      // Artifacts live on the machine that owns the chat, so a chat-scoped
+      // listing takes a pin for the same reason `getOwnerSnapshot` does.
+      // Omitted still means the project tab's bound machine, byte for byte
+      // what every existing caller gets.
+      pin?: OpenProjectBinding | null,
     ): Promise<ComputerUseArtifactView[]> =>
-      callProjectRuntimeActionOr(
-        "computer_use_artifacts",
-        "listArtifacts",
-        { args },
-        () => ipcRenderer.invoke(IPC.computerUseListArtifacts, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<ComputerUseArtifactView[]>(
+            pin,
+            "computer_use_artifacts",
+            "listArtifacts",
+            { args },
+          )
+        : callProjectRuntimeActionOr(
+            "computer_use_artifacts",
+            "listArtifacts",
+            { args },
+            () => ipcRenderer.invoke(IPC.computerUseListArtifacts, args),
+          ),
     getOwnerSnapshot: async (
       args: ComputerUseOwnerSnapshotArgs,
       pin?: OpenProjectBinding | null,

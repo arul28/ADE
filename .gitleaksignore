@@ -46,10 +46,5 @@ baa7a0bb4b5f4c3112680c37ab7572663bb87551:apps/desktop/vite.webclient.config.ts:g
 7ec89db49bbd5f9724915222008be6fc0b264682:apps/ade-cli/src/cli.test.ts:generic-api-key:11792
 7ec89db49bbd5f9724915222008be6fc0b264682:apps/ade-cli/src/cli.test.ts:generic-api-key:11808
 
-# The machine key store's file name, "api-keys.v1.bin", is a path segment, not
-# a key. It appears as a literal in the store and its test. Scoped to the one
-# lane commit that introduced the literals and its four findings.
-6fba93214a6c654786ff2dbe2ff7e1869d70df8b:apps/desktop/src/main/services/ai/apiKeyStore.test.ts:generic-api-key:469
-6fba93214a6c654786ff2dbe2ff7e1869d70df8b:apps/desktop/src/main/services/ai/apiKeyStore.test.ts:generic-api-key:470
-6fba93214a6c654786ff2dbe2ff7e1869d70df8b:apps/desktop/src/main/services/ai/apiKeyStore.test.ts:generic-api-key:530
-6fba93214a6c654786ff2dbe2ff7e1869d70df8b:apps/desktop/src/main/services/ai/apiKeyStore.ts:generic-api-key:577
+# The "api-keys.v1.bin" file-name false positive lives in `.gitleaks.toml`'s
+# allowlist regexes: a commit-scoped fingerprint does not survive a rebase.

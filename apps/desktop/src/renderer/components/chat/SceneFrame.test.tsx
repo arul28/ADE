@@ -4,9 +4,27 @@ import React from "react";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { MarkdownBlock } from "./chatMarkdownBlock";
 import { SceneFrame } from "./SceneFrame";
 import { readSceneStill, rememberSceneStill, resetSceneStillsForTest } from "./sceneStillStore";
+import {
+  postSceneMessage,
+  SCENE_STILL_DATA_URL,
+  stubSceneCaptureBridge,
+  stubShellRect,
+} from "./sceneStillTestHarness";
+
+/** A chat pinned to another machine: no local artifact protocol, ever. */
+const REMOTE_BINDING = {
+  kind: "remote" as const,
+  key: "remote:target-1:project-1",
+  targetId: "target-1",
+  runtimeName: "Remote",
+  projectId: "project-1",
+  rootPath: "/remote/project",
+  displayName: "Project",
+};
 
 const SCENE = [
   "```scene",
@@ -115,11 +133,6 @@ describe("SceneFrame", () => {
    * a still, and that same still is what the Proof button files.
    */
   describe("freezing a finished scene", () => {
-    function stubShellRect(rect: Partial<DOMRect>) {
-      const full = { x: 0, y: 0, top: 0, left: 0, width: 400, height: 200, bottom: 200, right: 400, ...rect };
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(full as DOMRect);
-    }
-
     afterEach(() => {
       vi.useRealTimers();
       vi.restoreAllMocks();
@@ -259,11 +272,6 @@ describe("SceneFrame", () => {
    * frame up", which leaves scrollback and every reopen with no picture at all.
    */
   describe("keeping a still of a settled scene", () => {
-    function stubShellRect(rect: Partial<DOMRect>) {
-      const full = { x: 0, y: 0, top: 0, left: 0, width: 400, height: 200, bottom: 200, right: 400, ...rect };
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(full as DOMRect);
-    }
-
     afterEach(() => {
       vi.useRealTimers();
       vi.restoreAllMocks();
@@ -272,29 +280,29 @@ describe("SceneFrame", () => {
     });
 
     async function renderSettlingScene(options: {
-      snapshot?: (rect: unknown) => Promise<string | null>;
-      storeStill?: (args: unknown) => Promise<unknown>;
+      snapshot?: () => Promise<string | null>;
+      storeStill?: (args: unknown) => Promise<{ uri: string; artifactId: string | null; title: string } | null>;
       scopeKey?: string;
+      voiceCallId?: string;
       onStill?: (record: { uri: string; artifactId: string | null; title: string }) => void;
     } = {}) {
-      const snapshot = options.snapshot ?? vi.fn(async () => "data:image/png;base64,STILL");
-      const storeStill = options.storeStill
-        ?? vi.fn(async () => ({ uri: ".ade/artifacts/computer-use/s.png", artifactId: "a1", title: "Generated view" }));
-      (window as unknown as { ade?: unknown }).ade = { scene: { snapshot, storeStill } };
+      const bridge = stubSceneCaptureBridge({
+        ...(options.snapshot ? { snapshot: options.snapshot } : {}),
+        ...(options.storeStill ? { storeStill: options.storeStill } : {}),
+      });
+      const { snapshot, storeStill } = bridge;
       const props = {
         source: '<div id="n">3</div>',
         live: true,
-        ...(options.scopeKey ? { scopeKey: options.scopeKey } : {}),
+        // Always keyed: a scene with no scope key is deliberately never
+        // stored, so a default-less harness would test the wrong path.
+        scopeKey: options.scopeKey ?? "row-default",
+        ...(options.voiceCallId ? { voiceCallId: options.voiceCallId } : {}),
         ...(options.onStill ? { onStill: options.onStill } : {}),
       };
       const { rerender } = render(<SceneFrame {...props} />);
       const frame = await screen.findByTestId("chat-scene-frame");
-      const post = (type: string) => window.dispatchEvent(
-        new MessageEvent("message", {
-          source: (frame as HTMLIFrameElement).contentWindow,
-          data: { __adeScene: 1, type, payload: { height: 200 } },
-        }),
-      );
+      const post = (type: string) => postSceneMessage(frame, type);
       act(() => { post("ready"); });
       await waitFor(() =>
         expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running"),
@@ -312,9 +320,7 @@ describe("SceneFrame", () => {
       expect(screen.getByTestId("chat-scene-frame")).toBeTruthy();
       expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running");
       await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(1));
-      expect((storeStill as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatchObject({
-        dataUrl: "data:image/png;base64,STILL",
-      });
+      expect(storeStill.mock.calls[0]?.[0]).toMatchObject({ dataUrl: SCENE_STILL_DATA_URL });
     });
 
     /**
@@ -334,7 +340,7 @@ describe("SceneFrame", () => {
       rerender(<SceneFrame {...props} live={false} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
       expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
-      expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src")).toBe("data:image/png;base64,STILL");
+      expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src")).toBe(SCENE_STILL_DATA_URL);
     });
 
     it("waits for a partly visible scene to come fully on screen before capturing", async () => {
@@ -435,6 +441,91 @@ describe("SceneFrame", () => {
       act(() => { screen.getByTestId("chat-scene-proof").click(); });
       await waitFor(() => expect(attachProof).toHaveBeenCalledTimes(1));
       expect(attachProof.mock.calls[0]?.[0]).toMatchObject({ dataUrl: "data:image/png;base64,STILL" });
+    });
+
+    /**
+     * The still's identity in main's index. Without it main cannot tell one
+     * scene's picture from another's, so it can neither supersede a redraw nor
+     * hand a finished call its own views back.
+     */
+    it("stores the still under the scene's own key and call", async () => {
+      stubShellRect({});
+      const { storeStill, settle } = await renderSettlingScene({
+        scopeKey: "row-4:zz",
+        voiceCallId: "call-9",
+      });
+      settle();
+      await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(1));
+      expect(storeStill.mock.calls[0]?.[0]).toMatchObject({
+        scopeKey: "row-4:zz",
+        voiceCallId: "call-9",
+      });
+    });
+
+    /**
+     * Two scene fences in one message used to share the transcript row key, so
+     * whichever settled last overwrote the other's picture and a reopened chat
+     * showed the same view twice.
+     */
+    it("gives two fences in one message their own stills", async () => {
+      stubShellRect({});
+      const bridge = stubSceneCaptureBridge();
+      const body = [
+        "```scene",
+        '<!-- @scene title="First" -->',
+        "<p>one</p>",
+        "```",
+        "",
+        "```scene",
+        '<!-- @scene title="Second" -->',
+        "<p>two</p>",
+        "```",
+      ].join("\n");
+      render(<MarkdownBlock markdown={body} mosaicScopeKey="row-7" sceneLive />);
+      const frames = await screen.findAllByTestId("chat-scene-frame");
+      expect(frames).toHaveLength(2);
+      act(() => {
+        for (const frame of frames) {
+          postSceneMessage(frame, "ready");
+          postSceneMessage(frame, "settled");
+        }
+      });
+      await waitFor(() => expect(bridge.storeStill).toHaveBeenCalledTimes(2));
+      const keys = bridge.storeStill.mock.calls.map((call) => (call[0] as { scopeKey: string }).scopeKey);
+      expect(new Set(keys).size).toBe(2);
+      for (const key of keys) expect(key.startsWith("row-7:")).toBe(true);
+    });
+
+    /**
+     * A chat on another machine has no `ade-artifact://` handler, so resolving
+     * a stored still to one drew a permanently broken tile. Remote chats read
+     * the bytes back through the machine that holds them.
+     */
+    it("reads a stored still back through the runtime for a remote chat", async () => {
+      const bridge = stubSceneCaptureBridge({
+        artifacts: [{
+          id: "a11",
+          uri: ".ade/artifacts/computer-use/remote.png",
+          title: "Generated view",
+          metadata: { kind: "scene_still", sceneScopeKey: "row-remote" },
+        }],
+        readArtifactPreview: async () => "data:image/png;base64,REMOTE",
+      });
+      render(
+        <ChatRuntimeScopeProvider
+          pin={REMOTE_BINDING}
+          binding={REMOTE_BINDING}
+          laneId={null}
+          sessionId="chat-remote"
+        >
+          <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-remote" />
+        </ChatRuntimeScopeProvider>,
+      );
+      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src"))
+        .toBe("data:image/png;base64,REMOTE"));
+      expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
+      expect(bridge.readArtifactPreview.mock.calls[0]?.[0])
+        .toMatchObject({ uri: ".ade/artifacts/computer-use/remote.png" });
     });
   });
 

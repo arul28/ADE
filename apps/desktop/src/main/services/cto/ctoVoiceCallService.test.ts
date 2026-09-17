@@ -624,42 +624,6 @@ describe("end_call", () => {
     }
   });
 
-  /**
-   * The views a call drew have to outlive it.
-   *
-   * The scene is rendered by the HUD, which is unmounted the instant the call
-   * ends, so the picture reaches the transcript card only if the call carried
-   * it — a card about a chart with no chart in it is what the owner reported.
-   */
-  it("carries the stills of the views it drew into the durable record", async () => {
-    vi.useFakeTimers();
-    try {
-      const persistCall = vi.fn(async () => {});
-      const harness = createService({ persistCall });
-      await openCall(harness);
-
-      harness.service.attachStill({ uri: ".ade/artifacts/computer-use/a.png", artifactId: "a1", title: "PRs" });
-      // The same view settling twice is the same picture.
-      harness.service.attachStill({ uri: ".ade/artifacts/computer-use/a.png", artifactId: "a1", title: "PRs" });
-      harness.service.attachStill({ uri: ".ade/artifacts/computer-use/b.png", artifactId: "a2", title: "Lanes" });
-      // A record with no artifact behind it is not a still.
-      harness.service.attachStill({ uri: "", artifactId: null, title: "nothing" });
-
-      endCallOnWire(harness);
-      await vi.advanceTimersByTimeAsync(CTO_VOICE_END_CALL_AUDIO_TAIL_MS + 1);
-
-      expect(persistCall).toHaveBeenCalledTimes(1);
-      const persisted = (persistCall as unknown as { mock: { calls: [{ stills: { uri: string }[] }][] } })
-        .mock.calls[0]![0].stills;
-      expect(persisted.map((still) => still.uri)).toEqual([
-        ".ade/artifacts/computer-use/a.png",
-        ".ade/artifacts/computer-use/b.png",
-      ]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("arms one hang-up however many times the model asks for it", async () => {
     vi.useFakeTimers();
     try {
@@ -1935,6 +1899,58 @@ describe("a create the server refused", () => {
     expect(JSON.stringify(sent[1])).toContain("Shall I open the PR?");
   });
 
+  /**
+   * A response that is not any turn's answer must not be measured as one.
+   *
+   * `onQueued` is the post a turn's audio leg is measured from, and
+   * `countsForTurnTiming` is what decides whether the audio that follows may
+   * close a record at all.
+   */
+  it("keeps a response nobody is waiting on out of the turn timing", () => {
+    const queued: string[] = [];
+    const sent: Array<Record<string, unknown>> = [];
+    const queue = createResponseQueue({
+      send: (payload) => sent.push(payload),
+      isOpen: () => true,
+      onQueued: () => queued.push("queued"),
+    });
+
+    queue.requestModelResponse({ timing: false });
+    expect(queued).toEqual([]);
+    expect(queue.countsForTurnTiming()).toBe(false);
+
+    queue.release();
+    // Nothing in flight is the SERVER's own response — the model answering for
+    // itself — which is exactly what the hybrid's timing line exists to measure.
+    expect(queue.countsForTurnTiming()).toBe(true);
+
+    queue.requestModelResponse();
+    expect(queued).toHaveLength(1);
+    expect(queue.countsForTurnTiming()).toBe(true);
+  });
+
+  /**
+   * One response says everything in the conversation, so a second is dropped.
+   * If the one that goes out is carrying a real answer, that answer's turn has
+   * to be measured — even though an untimed request got there first.
+   */
+  it("upgrades an untimed response already waiting when a real answer rides out on it", () => {
+    const queued: string[] = [];
+    const queue = createResponseQueue({
+      send: () => {},
+      // Closed, so both requests sit in the queue rather than draining.
+      isOpen: () => false,
+      onQueued: () => queued.push("queued"),
+    });
+
+    queue.requestModelResponse({ timing: false });
+    queue.requestModelResponse();
+    expect(queued).toHaveLength(1);
+
+    queue.drain();
+    expect(queue.countsForTurnTiming()).toBe(true);
+  });
+
   it("stops claiming the refusing response as ADE's own", () => {
     const { queue, sent } = createQueue();
     queue.speak("Shall I open the PR?");
@@ -1954,9 +1970,9 @@ describe("a create the server refused", () => {
 /**
  * A request that runs long, and the silence it used to leave behind.
  *
- * Measured on the call of 2026-09-17: an `ask_cto` for "what's going on,
- * visualize it" ran 36 seconds and the user heard nothing at all after the
- * acknowledgement. The nudge is company, not information — the model is asked
+ * A request can run for half a minute, and a call that goes quiet for that long
+ * reads as a call that dropped. The nudge is company, not information — the
+ * model is asked
  * to find its own sentence, in the conversation so it can be talked over, and
  * it is never told anything about the result it does not have yet.
  */
@@ -2036,6 +2052,64 @@ describe("a request that runs long", () => {
       expect(workingNudges(harness.fake)).toHaveLength(1);
       expect(functionOutputs(harness.fake))
         .toContainEqual({ status: "ok", answer: "Ten lanes, two dirty." });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * A nudge is not a turn, and must not be measured as one.
+   *
+   * The timing recorder holds the record of the transcript it has not run a
+   * turn for yet. A nudge asking for a response stamped the first-speak post on
+   * that record, and its first chunk of audio then closed it as `spoken` — so
+   * the request the user was STILL waiting for was written down as answered, by
+   * a sentence that said nothing, seconds before its real answer arrived.
+   */
+  it("leaves a waiting turn's timing record open, and lets that turn's own answer close it", async () => {
+    vi.useFakeTimers();
+    try {
+      const lines: Array<{ event: string; meta: Record<string, unknown> }> = [];
+      let release: (result: CtoVoiceBackendResult) => void = () => {};
+      const harness = createService({
+        logger: {
+          info: (event: string, meta?: unknown) => lines.push({
+            event,
+            meta: (meta ?? {}) as Record<string, unknown>,
+          }),
+          warn: () => {},
+        },
+        runBackendTurn: () => new Promise<CtoVoiceBackendResult>((resolve) => { release = resolve; }),
+      });
+      const timings = () => lines
+        .filter((line) => line.event === "cto_voice.turn_timing")
+        .map((line) => String(line.meta.outcome));
+      await openCall(harness);
+
+      askCto(harness, "what's going on", { callId: "call_a" });
+      await vi.advanceTimersByTimeAsync(0);
+      // The user says something else while it works. That opens a record of its
+      // own, waiting for whatever the model decides to do about it.
+      utter(harness, "and the pull requests");
+
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_WORKING_NUDGE_AFTER_MS);
+      expect(workingNudges(harness.fake)).toHaveLength(1);
+      // The nudge is spoken, and the user hears it.
+      harness.fake.receive({ type: "response.created", response: { id: "resp_nudge_1" } });
+      harness.fake.receive({ type: "response.output_audio.delta", delta: "AAAA" });
+      // Nothing is finished: two records are open and neither has an answer.
+      expect(timings()).toEqual([]);
+
+      harness.fake.receive({
+        type: "response.done",
+        response: { id: "resp_nudge_1", status: "completed", output: [] },
+      });
+      release({ spoken: "Ten lanes, two dirty." });
+      await vi.advanceTimersByTimeAsync(0);
+      harness.fake.receive({ type: "response.output_audio.delta", delta: "AAAA" });
+
+      // The running request's own answer is what closes its record.
+      expect(timings()).toEqual(["spoken"]);
     } finally {
       vi.useRealTimers();
     }

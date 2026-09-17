@@ -9,6 +9,7 @@ import {
   SCENE_LIMITS,
   SCENE_SETTLE_MAX_MS,
   SCENE_SETTLE_QUIET_MS,
+  sceneScopeKeyFor,
   summarizeSceneFence,
 } from "./chatScene";
 
@@ -205,5 +206,26 @@ describe("the settle watcher in the injected SDK", () => {
 
   it("caps the wait so a scene that never stops still produces a still", () => {
     expect(SCENE_SETTLE_MAX_MS).toBeGreaterThan(SCENE_SETTLE_QUIET_MS);
+  });
+
+  /**
+   * Two scene fences in one message used to share the transcript row key, so
+   * whichever settled last overwrote the other's still and a reopened chat drew
+   * the same picture twice.
+   */
+  describe("sceneScopeKeyFor", () => {
+    it("separates two fences in the same row", () => {
+      expect(sceneScopeKeyFor("row-1", "<p>a</p>")).not.toBe(sceneScopeKeyFor("row-1", "<p>b</p>"));
+    });
+
+    it("separates the same fence in two rows", () => {
+      expect(sceneScopeKeyFor("row-1", "<p>a</p>")).not.toBe(sceneScopeKeyFor("row-2", "<p>a</p>"));
+    });
+
+    /** Stored with the still in main, so every later mount must derive it again. */
+    it("is stable for the same row and body", () => {
+      expect(sceneScopeKeyFor("row-1", "<p>a</p>")).toBe(sceneScopeKeyFor("row-1", "<p>a</p>"));
+      expect(sceneScopeKeyFor("row-1", "<p>a</p>").startsWith("row-1:")).toBe(true);
+    });
   });
 });

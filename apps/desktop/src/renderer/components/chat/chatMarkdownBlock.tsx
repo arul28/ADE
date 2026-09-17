@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import { FileCode } from "@phosphor-icons/react";
 
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
-import { hasOpenSceneFence, SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
+import { hasOpenSceneFence, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import { useChatChromeTint } from "./chatAppearance";
@@ -222,7 +222,16 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       // Scenes are not gated on a render context: any agent may draw, and the
       // sandbox rather than the caller is what makes that safe.
       if (isBlock && language === SCENE_FENCE_LANGUAGE) {
-        return <SceneFrame source={text} scopeKey={mosaicScopeKey ?? undefined} live={sceneLive} streaming={sceneStreaming} />;
+        // Per FENCE, not per row: two scenes in one message are two pictures,
+        // and a shared key made them overwrite each other's still.
+        return (
+          <SceneFrame
+            source={text}
+            scopeKey={mosaicScopeKey ? sceneScopeKeyFor(mosaicScopeKey, text) : undefined}
+            live={sceneLive}
+            streaming={sceneStreaming}
+          />
+        );
       }
       return isBlock ? (
         <HighlightedCode code={text} language={language} />

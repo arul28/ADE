@@ -16,7 +16,12 @@ import {
 import { COLORS } from "../lanes/laneDesignTokens";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { HighlightedCode } from "./CodeHighlighter";
-import { rememberSceneStill, sceneStillSrc, useSceneStill } from "./sceneStillStore";
+import {
+  rememberSceneStill,
+  useSceneStillRecord,
+  useSceneStillSrc,
+  useSessionStillsReady,
+} from "./sceneStillStore";
 
 /**
  * Host for an agent-authored scene.
@@ -97,6 +102,12 @@ export type SceneFrameProps = {
    * than sharing one.
    */
   scopeKey?: string;
+  /**
+   * The call this scene was drawn on, when it was drawn on one. Stored with the
+   * still so the finished call's card can find its pictures again from the
+   * broker rather than from anything this window kept.
+   */
+  voiceCallId?: string;
   onEmit?: (name: string, payload: unknown) => void;
   /**
    * Called once, with the stored record, the first time this scene's still
@@ -124,7 +135,15 @@ function isSceneRectFullyVisible(rect: DOMRect): boolean {
   return rect.top >= 0 && rect.left >= 0 && rect.bottom <= viewportHeight && rect.right <= viewportWidth;
 }
 
-export function SceneFrame({ source, live = false, streaming = false, scopeKey, onEmit, onStill }: SceneFrameProps) {
+export function SceneFrame({
+  source,
+  live = false,
+  streaming = false,
+  scopeKey,
+  voiceCallId,
+  onEmit,
+  onStill,
+}: SceneFrameProps) {
   // Proof in ADE is chat-scoped, so a snapshot filed with no owner is an
   // artifact nobody can trace back to a conversation. Read from the chat scope
   // rather than taken as a prop: the value is session-constant, and threading
@@ -177,8 +196,13 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
    * The still this scene left behind on a previous mount, or in a previous
    * window. Present means the code has already run once and produced a picture.
    */
-  const storedStill = useSceneStill(scopeKey);
-  const storedStillSrc = useMemo(() => sceneStillSrc(storedStill), [storedStill]);
+  const storedStill = useSceneStillRecord(sessionId, scopeKey);
+  const storedStillSrc = useSceneStillSrc(storedStill);
+  /**
+   * Whether the answer above is final. The index lives in main now, so "no
+   * still" and "not asked yet" look identical for the first tick after a mount.
+   */
+  const storedStillReady = useSessionStillsReady(sessionId);
   /**
    * True when this mount should show the picture instead of running the code.
    *
@@ -189,16 +213,23 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
    * skips execution, and only when there is genuinely a picture to show.
    */
   const rehydrateRef = useRef<boolean | null>(null);
-  if (rehydrateRef.current === null) rehydrateRef.current = !live && Boolean(storedStillSrc);
+  // Undecided until the index has answered. A settled mount that guessed "no
+  // still" while the query was in flight would run the generated code again,
+  // which is the one thing the still exists to prevent; one placeholder tick is
+  // the price. A live mount never waits — it is going to run either way.
+  if (rehydrateRef.current === null && (live || storedStillReady || storedStill)) {
+    rehydrateRef.current = !live && Boolean(storedStill);
+  }
   const rehydrated = rehydrateRef.current === true;
+  const undecided = rehydrateRef.current === null;
 
   const theme = useMemo(readSceneTheme, []);
   // A fence that is still arriving draws nothing: one placeholder now beats a
   // frame that reloads on every tick.
   const doc = useMemo(() => {
-    if (failed || streaming || rehydrated) return null;
+    if (failed || streaming || rehydrated || undecided) return null;
     return buildSceneDocument({ html: parsed.html, title: parsed.title, theme, scopeKey });
-  }, [failed, streaming, rehydrated, parsed, theme, scopeKey]);
+  }, [failed, streaming, rehydrated, undecided, parsed, theme, scopeKey]);
 
   const [src, setSrc] = useState<string | null>(null);
 
@@ -362,8 +393,19 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
         // it (the browser preview) still keeps the in-memory picture above, so
         // scrollback in THIS session works either way.
         const store = window.ade?.scene?.storeStill;
-        if (typeof store !== "function") return;
-        const record = await store({ dataUrl, title, sessionId: sessionId ?? null }).catch(() => null);
+        // No scope key is no identity: main keys the stored still by it, and a
+        // still nothing can ever look up is bytes on disk with no reader.
+        if (typeof store !== "function" || !scopeKey) return;
+        const record = await store({
+          dataUrl,
+          title,
+          sessionId: sessionId ?? null,
+          // The scope key is the still's identity in the index: main keeps one
+          // still per key, so a scene that settles twice supersedes its own
+          // picture instead of leaving a trail of them on disk.
+          scopeKey: scopeKey ?? null,
+          voiceCallId: voiceCallId ?? null,
+        }).catch(() => null);
         if (cancelled || !record) return;
         if (scopeKey) rememberSceneStill(scopeKey, { record });
         onStillRef.current?.(record);
@@ -374,7 +416,7 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
         stillTakenRef.current = false;
       });
     return () => { cancelled = true; };
-  }, [settled, status, src, stillAttempt, scopeKey, failed, parsed, sessionId]);
+  }, [settled, status, src, stillAttempt, scopeKey, voiceCallId, failed, parsed, sessionId]);
 
   // Freeze: capture the frame's rect, then swap the image in and drop the frame
   // so nothing keeps executing in scrollback.
@@ -534,7 +576,7 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
    * mount or a previous window left on disk.
    */
   const pictureSrc = snapshot ?? still ?? storedStillSrc;
-  const showFrame = !rehydrated && (status !== "frozen" || !pictureSrc);
+  const showFrame = !rehydrated && !undecided && (status !== "frozen" || !pictureSrc);
 
   return (
     <div className="group/scene my-3" data-testid="chat-scene" data-scene-status={status}>

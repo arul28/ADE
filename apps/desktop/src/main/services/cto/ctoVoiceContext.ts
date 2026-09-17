@@ -1,4 +1,8 @@
 import { extractSceneFence, SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
+import {
+  CTO_VOICE_SCENE_FRAME_HEIGHT,
+  CTO_VOICE_SCENE_FRAME_WIDTH,
+} from "../../../shared/types/ctoVoice";
 import { CTO_VOICE_CONTEXT_MAX_CHARS } from "../../../shared/types/ctoVoicePrompt";
 
 /**
@@ -84,13 +88,14 @@ export function voiceRequestAsksForVisual(request: string): boolean {
  * readable at a glance. The skill itself stays the long form — a turn on a call
  * cannot be asked to go and read it.
  *
- * The layout half is here because of the call of 2026-09-17: the CTO drew real
- * HTML, which was the fix that had just landed, and what it drew was four stat
- * cards, a ten-row lane table with wrapping names, and a second table of prose
- * cells. The frame clipped partway down the first table, so the user got half a
- * view of something that was never going to fit. Nothing had told the CTO how
- * big the frame is, that it does not scroll, or that a scene is one idea rather
- * than everything it happens to know.
+ * The layout half is here because a scene is drawn into a small frame that does
+ * not scroll: the CTO has to be told how big the frame is, that anything past
+ * the bottom edge is lost, and that a scene is ONE idea rather than everything
+ * it happens to know. The size is interpolated from
+ * {@link CTO_VOICE_SCENE_FRAME_WIDTH} and {@link CTO_VOICE_SCENE_FRAME_HEIGHT}
+ * rather than written out, because a contract that names a size nothing renders
+ * at teaches a layout that cannot fit. See `docs/features/cto/README.md` for
+ * the call that produced these rules.
  */
 export function buildVoiceSceneContract(): string {
   return [
@@ -98,8 +103,8 @@ export function buildVoiceSceneContract(): string {
     `First line of the fence: <!-- @scene title="..." -->. Then your markup.`,
     "Style it with ADE's own CSS variables, already set on :root: --bg, --surface, --border, --fg, --fg-muted, --accent, --success, --warning, --danger, --font-sans, --font-mono.",
     "The frame has no network, no libraries, no remote fonts and no remote images: every value you are showing must be written into the markup, and any image must be a data: URL. Call ade.ready() when it is drawn.",
-    "SIZE: the frame is about 560px wide and about 520px tall. It does NOT scroll, and anything past the bottom edge is simply cut off and lost. Everything must fit inside that with room to spare.",
-    "ONE IDEA: pick the single most useful view for the question that was asked, not everything you know about it. At most one row of up to 4 stat tiles, and at most ONE table or list of at most 6 rows. If there are more rows than that, show the 5 that matter and make the last row a muted '+N more'.",
+    `SIZE: the frame is about ${CTO_VOICE_SCENE_FRAME_WIDTH}px wide and about ${CTO_VOICE_SCENE_FRAME_HEIGHT}px tall. It does NOT scroll, and anything past the bottom edge is simply cut off and lost. Everything must fit inside that with room to spare.`,
+    "ONE IDEA: pick the single most useful view for the question that was asked, not everything you know about it. At most one row of up to 3 stat tiles, and at most ONE table or list of at most 4 rows. If there are more rows than that, show the 3 that matter and make the last row a muted '+N more'.",
     "Short labels, and never a sentence or a paragraph inside a cell. Any cell holding a name carries a max-width plus white-space: nowrap; overflow: hidden; text-overflow: ellipsis, so one long name cannot push the table out of the frame.",
     "Colour only what needs attention — dirty, behind, failing, waiting — with --warning or --danger, and leave everything healthy in --fg-muted. A view where everything is coloured says nothing.",
     "Text in --font-sans; --font-mono only for numbers and ids. The title is a small uppercase label in --fg-muted, not a heading. Finish with one muted footer line carrying the timestamp.",
@@ -116,7 +121,7 @@ export function buildVoiceSceneContract(): string {
     "  table { width: 100%; border-collapse: collapse; }",
     "  th { text-align: left; font-weight: 500; color: var(--fg-muted); padding: 4px 8px; }",
     "  td { padding: 6px 8px; border-top: 1px solid var(--border); }",
-    "  .name { max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+    "  .name { max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
     "  .n { font-family: var(--font-mono); text-align: right; }",
     "  .warn { color: var(--warning); }",
     "  .calm, .more, .foot { color: var(--fg-muted); }",
@@ -133,9 +138,7 @@ export function buildVoiceSceneContract(): string {
     '  <tr><td class="name">cto-live-voice</td><td class="warn">dirty</td><td class="n">7</td></tr>',
     '  <tr><td class="name">mac-desktop</td><td class="warn">behind 4</td><td class="n">2</td></tr>',
     '  <tr><td class="name">browser-improve</td><td class="calm">clean</td><td class="n">1</td></tr>',
-    '  <tr><td class="name">plugin-platform</td><td class="calm">clean</td><td class="n">0</td></tr>',
-    '  <tr><td class="name">sdk-versic</td><td class="calm">clean</td><td class="n">0</td></tr>',
-    '  <tr><td class="more" colspan="3">+5 more</td></tr>',
+    '  <tr><td class="more" colspan="3">+7 more</td></tr>',
     "</tbody></table>",
     '<div class="foot">17 Sep 2026, 07:10</div>',
     "<script>ade.ready();</script>",

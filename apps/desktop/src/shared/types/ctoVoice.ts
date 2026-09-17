@@ -20,7 +20,6 @@
  * out loud, and that gate is a hold in code rather than a sentence in a prompt.
  */
 
-import type { SceneStillRecord } from "../chatScene";
 
 /**
  * The realtime model the call speaks with.
@@ -420,6 +419,21 @@ export type CtoVoiceMicrophoneBlockKind =
   /** A stream arrived with no usable track. Rare, and not the user's doing. */
   | "unavailable";
 
+/**
+ * Every kind above, as data.
+ *
+ * The union is the contract; this is what a value arriving over IPC is checked
+ * against, so a renderer cannot name a kind the surfaces do not have a sentence
+ * or a settings pane for.
+ */
+export const CTO_VOICE_MICROPHONE_BLOCK_KINDS: readonly CtoVoiceMicrophoneBlockKind[] = [
+  "os-denied",
+  "dev-build",
+  "no-device",
+  "in-use",
+  "unavailable",
+];
+
 /** The title every microphone failure is shown under. */
 export const CTO_VOICE_MICROPHONE_BLOCK_TITLE = "ADE cannot use the microphone";
 
@@ -490,23 +504,6 @@ export function ctoVoiceMicrophoneMessage(
 }
 
 /**
- * The sentence the router matches to recognise its own microphone hang-up.
- *
- * Every kind, because the renderer sends whichever one applied and the router
- * must classify all of them to the one coarse analytics outcome.
- */
-export function isCtoVoiceMicrophoneMessage(reason: string): boolean {
-  const kinds: CtoVoiceMicrophoneBlockKind[] =
-    ["os-denied", "dev-build", "no-device", "in-use", "unavailable"];
-  return kinds.some((kind) =>
-    reason === ctoVoiceMicrophoneMessage(kind, "darwin")
-    || reason === ctoVoiceMicrophoneMessage(kind, "win32")
-    // Linux too: its sentences are their own wording, and a hang-up carrying
-    // one is the same event as the other two.
-    || reason === ctoVoiceMicrophoneMessage(kind, "linux"));
-}
-
-/**
  * What every voice action answers with. No action throws across the bus: a
  * refusal is a value, carrying a machine code and one plain sentence.
  */
@@ -519,7 +516,7 @@ export type CtoVoiceActionResult = {
 };
 
 /**
- * The ten actions a call is driven by, as data.
+ * The nine actions a call is driven by, as data.
  *
  * Here rather than beside the service that implements them because the policy
  * tables consume it: this module imports nothing at runtime, and `ctoVoiceRuntimeService`
@@ -537,7 +534,6 @@ export const CTO_VOICE_ACTIONS = [
   "pullAudio",
   "resolveApproval",
   "sendCapture",
-  "attachStill",
 ] as const;
 
 export type CtoVoiceAction = (typeof CTO_VOICE_ACTIONS)[number];
@@ -558,22 +554,12 @@ export type CtoVoiceBridge = {
    * call with no notice at all: the runtime had nothing to blame, because the
    * hang-up came from this side.
    */
-  end: (reason?: string) => Promise<void>;
+  end: (reason?: string, errorKind?: CtoVoiceMicrophoneBlockKind) => Promise<void>;
   pushAudio: (audio: string, level: number) => void;
   setMuted: (muted: boolean) => Promise<void>;
   approve: (id: string) => Promise<void>;
   deny: (id: string) => Promise<void>;
   attachImage: (args: { pngBase64: string; note: string }) => Promise<void>;
-  /**
-   * Hand the call the still of a scene it drew.
-   *
-   * The renderer is the only side that can take it — the scene runs in a frame
-   * in this window — and the call is the only side that outlives the HUD. So
-   * the picture crosses once, as a record of bytes already on disk, and the
-   * call carries it into the transcript card the HUD unmount would otherwise
-   * take with it.
-   */
-  attachStill: (args: { still: SceneStillRecord }) => Promise<void>;
   hasKey: () => Promise<boolean>;
   onState: (handler: (state: CtoVoiceStatePayload) => void) => () => void;
   onAudio: (handler: (base64: string) => void) => () => void;
@@ -690,6 +676,17 @@ export type CtoVoiceState = {
   /** Scene source the call most recently drew, if any. */
   sceneSource: string | null;
   error: string | null;
+  /**
+   * What KIND of failure `error` is, when it is one with a kind.
+   *
+   * Only the microphone has one today, and it carries because the sentence
+   * alone cannot be acted on: "No microphone is connected" needs an "Open sound
+   * settings" button beside it and "Another app is holding the microphone" does
+   * not. It rides on the state rather than being recovered by comparing the
+   * sentence against every wording of every kind, which is a join that breaks
+   * silently the first time one of those sentences is reworded.
+   */
+  errorKind?: CtoVoiceMicrophoneBlockKind | null;
 };
 
 /**
@@ -718,6 +715,7 @@ export const CTO_VOICE_INITIAL_STATE: CtoVoiceState = {
   pendingConfirmation: null,
   sceneSource: null,
   error: null,
+  errorKind: null,
 };
 
 export function voiceCostUsd(elapsedMs: number): number {
@@ -750,11 +748,9 @@ export const CTO_VOICE_END_CALL_AUDIO_TAIL_MS = 450;
 /**
  * How long a request may run in silence before the call says something.
  *
- * Measured on the call of 2026-09-17: an `ask_cto` for "what's going on,
- * visualize it" ran 36 seconds — 7.8 of them before the CTO's first word — and
- * the user heard nothing at all after the acknowledgement. A call that goes
- * quiet for half a minute reads as a call that dropped, and the owner's words
- * for it were "long pauses while it's working".
+ * A request on the CTO thread can run for half a minute, and a call that goes
+ * quiet for that long reads as a call that dropped. See
+ * `docs/features/cto/README.md` for the call this was measured on.
  *
  * Seven seconds because that is roughly where a turn stops being a beat and
  * starts being a silence: the acknowledgement is usually still playing for the
@@ -781,3 +777,31 @@ export const CTO_VOICE_WORKING_NUDGE_EVERY_MS = 12_000;
  * a repeat or a guess about a result it has not been given.
  */
 export const CTO_VOICE_WORKING_NUDGE_MAX = 3;
+
+/**
+ * How big the frame a scene is drawn into actually is, in CSS pixels.
+ *
+ * The scene contract tells the CTO how much room it has, and a contract that
+ * names a size nothing renders at is worse than no size at all: it produced
+ * views laid out for a frame twice the real one, clipped partway down their
+ * first table. So the numbers live here, beside the state the HUD is driven by,
+ * and both the contract and the HUD read them rather than each carrying a
+ * literal of their own.
+ *
+ * The width is the inside of the HUD's 420px card, less its border and the
+ * scene body's own margin, rounded down — the CTO is being told what it can
+ * count on, not the largest number that has ever fitted. The height is the
+ * clamp the canvas is rendered under; past it the view is cut off and lost.
+ */
+export const CTO_VOICE_SCENE_FRAME_WIDTH = 380;
+export const CTO_VOICE_SCENE_FRAME_HEIGHT = 320;
+
+/**
+ * How long the start sheet stays open after a capture lands, so the user can
+ * read what happened before it closes itself.
+ *
+ * Shared rather than local to the sheet because it is part of the call's
+ * timing vocabulary, and the suites that drive the sheet must not hard-code a
+ * number the component can change underneath them.
+ */
+export const CTO_VOICE_CAPTURE_WAIT_MS = 4_000;
