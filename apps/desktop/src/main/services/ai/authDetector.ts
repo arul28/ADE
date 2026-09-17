@@ -4,7 +4,7 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { spawnAsync } from "../shared/utils";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -32,13 +32,14 @@ type CliName =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 /**
  * CLIs ADE reaches over the Agent Client Protocol. Their auth state is read
  * from disk, not from a spawn: see `inspectAcpCliCredentials`.
  */
-const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "copilot"] as const;
+const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 type AcpCliName = (typeof ACP_CLI_NAMES)[number];
 
 function isAcpCliName(cli: CliName): cli is AcpCliName {
@@ -118,6 +119,9 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
   kimi: [],
   grok: [],
   copilot: [],
+  // `devin auth status` is a real, non-interactive subcommand; the
+  // protocol-level handshake is still authoritative.
+  devin: [["auth", "status"], ["--version"]],
 };
 
 /**
@@ -161,6 +165,23 @@ async function inspectAcpCliCredentials(
   if (cli === "kimi") {
     const root = dir(env.KIMI_CODE_HOME, ".kimi-code");
     return { authenticated: await fileExists(path.join(root, "config.toml")), verified: false };
+  }
+
+  if (cli === "devin") {
+    // Devin reads WINDSURF_API_KEY first, then stored creds under
+    // ~/.config/devin (%APPDATA%\devin on Windows). There is no config-home
+    // env override, so probe the fixed location.
+    if (env.WINDSURF_API_KEY?.trim()) return { authenticated: true, verified: false };
+    const root = platform() === "win32"
+      ? path.join(env.APPDATA?.trim() || path.join(home, "AppData", "Roaming"), "devin")
+      : dir(env.XDG_CONFIG_HOME, ".config/devin");
+    const candidates = ["auth.json", "credentials.json", "credentials", "config.json"];
+    for (const name of candidates) {
+      if (await fileExists(path.join(root, name))) {
+        return { authenticated: true, verified: false };
+      }
+    }
+    return { authenticated: false, verified: false };
   }
 
   // Copilot's durable login is normally keychain/session-state backed, not a

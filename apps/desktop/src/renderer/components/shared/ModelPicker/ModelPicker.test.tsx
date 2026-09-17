@@ -2204,6 +2204,7 @@ describe("ModelPicker", () => {
         "provider:anthropic",
         "provider:openai",
         "provider:cursor",
+        "provider:devin",
         "provider:opencode",
         "provider:pi",
         "provider:github-copilot",

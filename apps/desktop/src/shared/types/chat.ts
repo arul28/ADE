@@ -16,7 +16,7 @@ import type { SubagentCapability } from "../subagentCapabilities";
 import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
 import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
-import type { CursorCloudServiceTier } from "./config";
+import type { CursorCloudServiceTier, DevinCloudMode } from "./config";
 
 export type AgentChatProvider =
   | "codex"
@@ -36,7 +36,7 @@ export type AgentChatProvider =
  * one session-config shape, so surfaces branch on this list instead of naming
  * the four providers again.
  */
-export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot"] as const;
+export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 export type AcpChatProvider = (typeof ACP_CHAT_PROVIDERS)[number];
 
 export function isAcpChatProvider(
@@ -2071,6 +2071,14 @@ export type AgentChatSession = {
   cursorRuntime?: AgentChatRuntime;
   /** Turn id at which the session was first promoted to cloud (renders the system bubble). */
   cursorPromotedTurnId?: string;
+  /** Durable Devin cloud session id once this session has been promoted to cloud. */
+  devinSessionId?: string;
+  /** Default runtime for new turns in this session (set on promotion). */
+  devinRuntime?: AgentChatRuntime;
+  /** Devin agent tier requested at create (`devin_mode`); null = Devin's default. */
+  devinMode?: DevinCloudMode | null;
+  /** Turn id at which the session was first promoted to cloud (renders the system bubble). */
+  devinPromotedTurnId?: string;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -2192,6 +2200,10 @@ export type AgentChatSessionSummary = {
   cursorCloudAgentId?: string;
   cursorRuntime?: AgentChatRuntime;
   cursorPromotedTurnId?: string;
+  devinSessionId?: string;
+  devinRuntime?: AgentChatRuntime;
+  devinMode?: DevinCloudMode | null;
+  devinPromotedTurnId?: string;
   identityKey?: AgentChatIdentityKey;
   /**
    * The spawning chat's identity, when it had one — `"cto"` for work the CTO
@@ -2617,7 +2629,8 @@ export type AgentChatModelCatalogRefreshProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 
@@ -3015,7 +3028,8 @@ export type AgentChatCliLaunchProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 /**
  * Launch a tracked CLI/terminal agent (not the in-process chat SDK) with one or

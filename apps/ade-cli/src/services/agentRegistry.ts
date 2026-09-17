@@ -242,6 +242,22 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
       /\bgh[_ ]token\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
     ],
   },
+  {
+    agent: "devin",
+    displayName: "Devin CLI",
+    binaryNames: ["devin"],
+    installCommand: "curl -fsSL https://cli.devin.ai/install.sh | bash",
+    authCommand: "devin auth login",
+    missingErrorPatterns: [
+      /\bdevin\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bspawn\s+devin\s+enoent\b/i,
+    ],
+    notAuthErrorPatterns: [
+      /\bdevin\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials|sign\s*in)\b/i,
+      /\brun\s+[`'"]?devin\s+auth\s+login[`'"]?/i,
+      /\bwindsurf[_ ]api[_ ]key\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
+    ],
+  },
 ];
 
 function descriptorMatchesPreferred(descriptor: AgentCliDescriptor, preferredAgent: string | null | undefined): boolean {

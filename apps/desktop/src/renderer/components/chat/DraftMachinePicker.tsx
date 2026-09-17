@@ -2,6 +2,7 @@ import { CaretDown, Check, CloudArrowUp, DesktopTower } from "@phosphor-icons/re
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { DevinLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import {
@@ -18,6 +19,8 @@ export type DraftMachineOption = {
    * this list because "where does this run" is one question, not two.
    */
   kind?: "machine" | "cloud";
+  /** Which provider's mark a cloud entry wears; generic cloud icon when unset. */
+  cloudProvider?: "cursor" | "devin";
   /** Set to render the row disabled with this sentence as its tooltip. */
   unavailableReason?: string | null;
 };
@@ -26,6 +29,9 @@ const MENU_WIDTH = 220;
 const CLOUD_VIOLET = "#A78BFA";
 
 function machineIcon(option: DraftMachineOption) {
+  if (option.kind === "cloud" && option.cloudProvider === "devin") {
+    return <DevinLogo size={12} className="shrink-0 rounded-[2px]" />;
+  }
   return option.kind === "cloud" ? (
     <CloudArrowUp size={12} weight="fill" className="shrink-0" style={{ color: CLOUD_VIOLET }} aria-hidden />
   ) : (

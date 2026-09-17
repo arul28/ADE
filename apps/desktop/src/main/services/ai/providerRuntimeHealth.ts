@@ -9,7 +9,8 @@ export type ProviderRuntimeHealthProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 export type ProviderRuntimeHealth = {
   provider: ProviderRuntimeHealthProvider;

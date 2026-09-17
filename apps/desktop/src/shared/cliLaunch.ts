@@ -40,7 +40,8 @@ export type CliProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 export type LaunchProfile = CliProvider | "shell";
 export type TrackedCliLaunchCommand = {
   command?: string;
@@ -165,6 +166,7 @@ export const LAUNCH_PROFILES = [
   "kimi",
   "grok",
   "copilot",
+  "devin",
   "shell",
 ] as const satisfies readonly LaunchProfile[];
 export const TRACKED_CLI_PERMISSION_MODES = AGENT_CHAT_PERMISSION_MODE_VALUES;
@@ -190,6 +192,7 @@ export const LAUNCH_PROFILE_TOOL_TYPE: Record<LaunchProfile, TerminalToolType> =
   kimi: "kimi",
   grok: "grok",
   copilot: "copilot",
+  devin: "devin",
   shell: "shell",
 };
 
@@ -205,6 +208,7 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   kimi: "Kimi Code CLI",
   grok: "Grok CLI",
   copilot: "GitHub Copilot CLI",
+  devin: "Devin CLI",
   shell: "Shell",
 };
 
@@ -363,6 +367,7 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   kimi: ["kimi", "kimi-chat"],
   grok: ["grok", "grok-chat"],
   copilot: ["copilot", "copilot-chat"],
+  devin: ["devin", "devin-chat"],
   shell: ["shell"],
 };
 
@@ -416,6 +421,14 @@ export function validateLaunchProfilePermissionMode(
   if (profile === "copilot") {
     if (mode === "auto" || mode === "config-toml") {
       throw new Error(`permissionMode ${mode} is not supported for GitHub Copilot CLI sessions.`);
+    }
+    return;
+  }
+  if (profile === "devin") {
+    // Devin's `--permission-mode` covers the whole ladder except a raw config
+    // passthrough: normal / accept-edits / smart / plan / bypass all map.
+    if (mode === "config-toml") {
+      throw new Error(`permissionMode ${mode} is not supported for Devin CLI sessions.`);
     }
     return;
   }
@@ -628,6 +641,7 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   if (provider === "kimi") return "kimi";
   if (provider === "grok") return "grok --no-alt-screen";
   if (provider === "copilot") return "copilot --no-alt-screen";
+  if (provider === "devin") return "devin";
   return "claude";
 }
 
@@ -1015,6 +1029,26 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
+  if (args.provider === "devin") {
+    const commandArgs: string[] = [
+      ...devinModelFlags(args.model),
+      ...permissionModeToDevinFlags(permissionMode),
+    ];
+    // `devin` is a native binary on every platform (no `.cmd` shim), and its
+    // documented initial-prompt spelling is `devin -- <prompt>` — argv is a
+    // safe transport for it on Windows too. Devin discovers AGENTS.md and
+    // `.agents/skills/` in the lane itself, so no prompt injection rides here.
+    if (initialPrompt) {
+      commandArgs.push("--", initialPrompt);
+    }
+    return {
+      command: "devin",
+      args: commandArgs,
+      startupCommand: commandArrayToLine(["devin", ...commandArgs], { platform: "linux" }),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+    };
+  }
+
   // Only the user's own text rides `--prompt`. OpenCode submits that value as a
   // real user message and renders it in the TUI, so the ADE preamble that used
   // to be prepended here was displayed to the user verbatim on every launch —
@@ -1290,6 +1324,10 @@ export function resolveCopilotCliModelForLaunch(model: string | null | undefined
   return stripRegistryPrefix(model, "github-copilot");
 }
 
+export function resolveDevinCliModelForLaunch(model: string | null | undefined): string | null {
+  return stripRegistryPrefix(model, "devin");
+}
+
 function qwenModelFlags(model: string | null | undefined): string[] {
   const resolved = resolveQwenCliModelForLaunch(model);
   return resolved ? ["-m", resolved] : [];
@@ -1307,6 +1345,11 @@ function grokModelFlags(model: string | null | undefined): string[] {
 
 function copilotModelFlags(model: string | null | undefined): string[] {
   const resolved = resolveCopilotCliModelForLaunch(model);
+  return resolved ? ["--model", resolved] : [];
+}
+
+function devinModelFlags(model: string | null | undefined): string[] {
+  const resolved = resolveDevinCliModelForLaunch(model);
   return resolved ? ["--model", resolved] : [];
 }
 
@@ -1389,6 +1432,24 @@ export function permissionModeToCopilotFlags(
   if (permissionMode === "edit") return ["--allow-tool=write"];
   if (permissionMode === "plan") return ["--deny-tool=write", "--deny-tool=shell"];
   return [];
+}
+
+/**
+ * Devin's `--permission-mode` accepts the mode names its `/mode` command
+ * documents: normal, accept-edits, smart, plan, bypass. ADE's `auto` maps to
+ * `smart` — a fast model auto-approves clearly-safe actions and prompts on
+ * anything else, the closest honest tier. `config-toml` is already rejected
+ * upstream because Devin has no raw-config passthrough.
+ */
+export function permissionModeToDevinFlags(
+  permissionMode: AgentChatPermissionMode | null | undefined,
+): string[] {
+  if (permissionMode == null) return [];
+  if (permissionMode === "full-auto") return ["--permission-mode", "bypass"];
+  if (permissionMode === "auto") return ["--permission-mode", "smart"];
+  if (permissionMode === "edit") return ["--permission-mode", "accept-edits"];
+  if (permissionMode === "plan") return ["--permission-mode", "plan"];
+  return ["--permission-mode", "normal"];
 }
 
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
@@ -1975,6 +2036,24 @@ export function buildTrackedCliResumeLaunchCommand(
       args: parts.slice(1),
       startupCommand: commandArrayToLine(parts, { platform: "linux" }),
       ...(prompt && !promptRidesInArgv ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
+    };
+  }
+
+  if (metadata.provider === "devin") {
+    const parts = [
+      "devin",
+      ...devinModelFlags(model),
+      ...permissionModeToDevinFlags(permissionMode),
+    ];
+    // `-r <id>` resumes a specific session; `-c` resumes the most recent one
+    // in the current directory. The same `--` argv prompt as a fresh launch.
+    if (targetId) parts.push("--resume", targetId);
+    else parts.push("--continue");
+    if (prompt) parts.push("--", prompt);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
     };
   }
 

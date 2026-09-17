@@ -3204,6 +3204,7 @@ const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProv
   "kimi",
   "grok",
   "copilot",
+  "devin",
 ]);
 
 function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatModelCatalogArgs {
@@ -3727,6 +3728,7 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
       || payload.provider === "kimi"
       || payload.provider === "grok"
       || payload.provider === "copilot"
+      || payload.provider === "devin"
         ? { activateRuntime: true }
         : {}
     ),

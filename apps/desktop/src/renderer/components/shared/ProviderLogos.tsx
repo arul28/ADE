@@ -27,6 +27,7 @@ import { lobeProviderIconSrc } from "../../lib/lobeProviderIconSrc";
 import { cn } from "../ui/cn";
 import droidMarkSrc from "../../assets/provider-logos/droid.svg";
 import piMarkSrc from "../../assets/provider-logos/pi.svg";
+import devinMarkSrc from "../../assets/provider-logos/devin.svg";
 
 type LogoProps = { size?: number; className?: string };
 
@@ -77,6 +78,10 @@ export function DroidLogo({ size = 16, className }: LogoProps) {
 
 export function PiLogo({ size = 16, className }: LogoProps) {
   return <LobeStaticMark src={piMarkSrc} size={size} className={className} />;
+}
+
+export function DevinLogo({ size = 16, className }: LogoProps) {
+  return <LobeStaticMark src={devinMarkSrc} size={size} className={cn("rounded-[3px]", className)} />;
 }
 
 function CursorSubscriptionModelMark({ providerModelId, size, className }: { providerModelId: string; size: number; className?: string }) {
@@ -174,6 +179,8 @@ export function ProviderLogo({
       return <DroidLogo size={size} className={className} />;
     case "pi":
       return <PiLogo size={size} className={className} />;
+    case "devin":
+      return <DevinLogo size={size} className={className} />;
     case "opencode":
       return <OpenCode.Avatar size={size} className={c} />;
     case "xai":

@@ -8,6 +8,7 @@
 
 import type { AcpDialect, AcpProviderId } from "../acpHostTypes";
 import { copilotDialect } from "./copilot";
+import { devinDialect } from "./devin";
 import { grokDialect } from "./grok";
 import { kimiDialect } from "./kimi";
 import { qwenDialect } from "./qwen";
@@ -17,13 +18,14 @@ export const ACP_DIALECTS: Record<AcpProviderId, AcpDialect> = {
   kimi: kimiDialect,
   grok: grokDialect,
   copilot: copilotDialect,
+  devin: devinDialect,
 };
 
 export function acpDialectFor(providerId: AcpProviderId): AcpDialect {
   return ACP_DIALECTS[providerId];
 }
 
-export { copilotDialect, grokDialect, kimiDialect, qwenDialect };
+export { copilotDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
 export { COPILOT_TUI_ONLY_COMMANDS, includeCopilotSlashCommand } from "./copilot";
 export {
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,

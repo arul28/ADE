@@ -2185,8 +2185,20 @@ export function createSessionService({
       });
     },
 
-    clearAttentionRequest(sessionId: string): boolean {
+    /**
+     * Clears the attention marker. When `expectedSource` is given the clear is
+     * conditional on the persisted source still matching — a newer request a
+     * different owner wrote in the meantime survives.
+     */
+    clearAttentionRequest(sessionId: string, expectedSource?: SessionAttentionSource): boolean {
       return mutateSessionMeta(sessionId, (id) => {
+        if (expectedSource) {
+          db.run(
+            "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ? and attention_source = ?",
+            [id, expectedSource],
+          );
+          return;
+        }
         db.run(
           "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ?",
           [id],

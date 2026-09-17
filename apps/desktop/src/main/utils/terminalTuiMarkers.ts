@@ -167,6 +167,7 @@ const PACKS: Record<TerminalResumeProvider, MarkerPack> = {
   kimi: ACP_PACK,
   grok: ACP_PACK,
   copilot: ACP_PACK,
+  devin: ACP_PACK,
 };
 
 export type TuiMarkerState = {

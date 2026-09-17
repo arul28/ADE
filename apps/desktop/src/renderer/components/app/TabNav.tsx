@@ -370,9 +370,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           </>
         ) : null}
 
-        {/* The fleet entry owns the same delayed, cached auth gate as the
-            top-bar control, so a disconnected Cursor integration leaves no
-            dead sidebar affordance. */}
+        {/* The fleet entries own the same delayed, cached auth gate as the
+            top-bar controls, so a disconnected integration leaves no dead
+            sidebar affordance. */}
         <CursorCloudQuickViewButton variant="sidebar-row" />
 
         {/* Spacer pushes settings to bottom */}
