@@ -1681,6 +1681,9 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
 
   const devinCloudOrgId = asString(value.devinCloudOrgId)?.trim();
   if (devinCloudOrgId) out.devinCloudOrgId = devinCloudOrgId;
+  // Explicit null is a reset — keep it so the merge doesn't resurrect the
+  // shared org value the user just cleared.
+  else if (value.devinCloudOrgId === null) out.devinCloudOrgId = null;
 
   const localProviders = coerceAiLocalProviders(value.localProviders);
   if (localProviders) out.localProviders = localProviders;

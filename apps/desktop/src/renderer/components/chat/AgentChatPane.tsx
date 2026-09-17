@@ -12389,6 +12389,7 @@ export function AgentChatPane({
             id: CURSOR_CLOUD_MACHINE_ID,
             name: "Cursor Cloud",
             kind: "cloud" as const,
+            cloudProvider: "cursor" as const,
             unavailableReason: cloudUnavailableReason,
           }]
         : []),
@@ -12397,6 +12398,7 @@ export function AgentChatPane({
             id: DEVIN_CLOUD_MACHINE_ID,
             name: "Devin Cloud",
             kind: "cloud" as const,
+            cloudProvider: "devin" as const,
             unavailableReason: devinUnavailableReason,
           }]
         : []),

@@ -53,6 +53,13 @@ function githubPullNumber(prUrl: string | null): string | null {
   return match ? match[1] : null;
 }
 
+/** `https://github.com/o/r/pull/123` → "https://github.com/o/r"; anything else → null. */
+function githubPullRepo(prUrl: string | null): string | null {
+  if (!prUrl) return null;
+  const match = /(github\.com\/[^/]+\/[^/]+)\/pull\/\d+/i.exec(prUrl.trim());
+  return match ? `https://${match[1]}` : null;
+}
+
 /**
  * Guard a remote-reported ref before it reaches git argv or importBranch.
  * A leading `-` would be parsed as an option by git (classic option
@@ -258,11 +265,20 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
     if (!session) throw new Error("Could not find this Devin session in your org.");
     if (session.isArchived) throw new Error("Unarchive this session before pulling it into a lane.");
 
-    const prNumber = githubPullNumber(session.pullRequests[0]?.prUrl ?? null);
+    const prUrl = session.pullRequests[0]?.prUrl ?? null;
+    const prNumber = githubPullNumber(prUrl);
     if (!prNumber) {
       throw new Error(
         "This session has not opened a GitHub pull request yet, so there is nothing to pull.",
       );
+    }
+
+    // PR numbers are repo-local and the fleet is org-wide: a session from a
+    // different repository must not merge this project's same-numbered PR.
+    const prRepoKey = repoMatchKey(githubPullRepo(prUrl));
+    const projectRepoKey = await originMatchKey();
+    if (!prRepoKey || !projectRepoKey || prRepoKey !== projectRepoKey) {
+      throw new Error("This session's pull request is not for this project's repository.");
     }
 
     const links = await deps.listDevinCloudSessionLinks().catch(() => [] as SessionLink[]);

@@ -43254,7 +43254,11 @@ export function createAgentChatService(args: {
       try {
         const bytes = await aiIntegrationService.downloadDevinCloudAttachment(attachment);
         if (!bytes?.length) continue;
-        const filePath = createComputerUseArtifactPath(projectRoot, `devin-${attachment.name}`, extension);
+        // Attachment names are remote-controlled — drop any path segments so
+        // a crafted name cannot redirect the write outside the artifact dir.
+        const baseName = attachment.name.split(/[\\/]/).pop() ?? "";
+        const safeName = baseName && baseName !== "." && baseName !== ".." ? baseName : "attachment";
+        const filePath = createComputerUseArtifactPath(projectRoot, `devin-${safeName}`, extension);
         fs.writeFileSync(filePath, bytes);
         broker.ingest({
           backend: { name: "devin", style: "external_cli" },
@@ -43357,6 +43361,20 @@ export function createAgentChatService(args: {
             first: 200,
           });
           items = page.items;
+          // Follow the cursor: without it a session past one page replays the
+          // first 200 rows on every poll and newer output never arrives.
+          const seenCursors = new Set<string>();
+          let cursor = page.endCursor?.trim() ?? "";
+          while (cursor && !seenCursors.has(cursor)) {
+            seenCursors.add(cursor);
+            const nextPage = await aiIntegrationService.listDevinCloudMessages({
+              devinSessionId,
+              first: 200,
+              after: cursor,
+            });
+            items.push(...nextPage.items);
+            cursor = nextPage.endCursor?.trim() ?? "";
+          }
         } catch (error) {
           logger.warn("agent_chat.devin_cloud_messages_failed", {
             sessionId: managed.session.id,
@@ -43392,8 +43410,10 @@ export function createAgentChatService(args: {
           );
         } else if (!needsYou && devinCloudAttentionRaised.delete(managed.session.id)) {
           // Only clear the marker this mirror raised — a user- or
-          // runtime-raised attention belongs to whoever raised it.
-          sessionService.clearAttentionRequest(managed.session.id);
+          // runtime-raised attention belongs to whoever raised it. The
+          // conditional clear also protects a newer provider_structured
+          // request another source wrote after this mirror's.
+          sessionService.clearAttentionRequest(managed.session.id, "provider_structured");
         }
       }
 
@@ -43435,7 +43455,14 @@ export function createAgentChatService(args: {
       if (emittedVisible) {
         flushBufferedReasoning(managed);
         flushBufferedText(managed);
-        if (!isDevinCloudSessionLive(liveStatus) && !devinCloudDoneAnnounced.has(managed.session.id)) {
+        if (liveStatus == null) {
+          // A TTL-skipped status read is not evidence of a terminal state —
+          // check once when fresh output arrived before deciding the turn
+          // ended, or a still-running session would emit `done` early.
+          remote = remote ?? await aiIntegrationService.getDevinCloudSession(devinSessionId).catch(() => null);
+          liveStatus = remote?.status ?? null;
+        }
+        if (liveStatus != null && !isDevinCloudSessionLive(liveStatus) && !devinCloudDoneAnnounced.has(managed.session.id)) {
           devinCloudDoneAnnounced.add(managed.session.id);
           emitChatEvent(managed, {
             type: "done",

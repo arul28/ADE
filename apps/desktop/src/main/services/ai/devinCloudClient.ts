@@ -45,6 +45,13 @@ type FetchLike = (
   text: () => Promise<string>;
   arrayBuffer?: () => Promise<ArrayBuffer>;
   headers?: { get(name: string): string | null };
+  body?: {
+    getReader(): {
+      read(): Promise<{ done: boolean; value?: Uint8Array }>;
+      cancel(reason?: unknown): Promise<void>;
+      releaseLock?(): void;
+    };
+  } | null;
 }>;
 
 export type DevinCloudClientArgs = {
@@ -545,7 +552,7 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
         },
         signal: controller.signal,
       });
-      if (!response.ok || !response.arrayBuffer) return null;
+      if (!response.ok) return null;
       const declared = Number(response.headers?.get("content-length") ?? "");
       if (Number.isFinite(declared) && declared > DEVIN_ATTACHMENT_MAX_BYTES) {
         args.logger?.warn?.("devin_cloud.attachment_too_large", {
@@ -554,6 +561,40 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
         });
         return null;
       }
+      // Stream the body and abort at the cap — Content-Length can be absent
+      // or wrong, so buffering first would let an oversized payload through.
+      const reader = response.body?.getReader?.();
+      if (reader) {
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value?.length) continue;
+            total += value.length;
+            if (total > DEVIN_ATTACHMENT_MAX_BYTES) {
+              await reader.cancel().catch(() => undefined);
+              args.logger?.warn?.("devin_cloud.attachment_too_large", {
+                attachmentId: attachment.attachmentId,
+                bytes: total,
+              });
+              return null;
+            }
+            chunks.push(value);
+          }
+        } finally {
+          reader.releaseLock?.();
+        }
+        const bytes = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return bytes;
+      }
+      if (!response.arrayBuffer) return null;
       const buffer = await response.arrayBuffer();
       if (buffer.byteLength > DEVIN_ATTACHMENT_MAX_BYTES) {
         args.logger?.warn?.("devin_cloud.attachment_too_large", {
