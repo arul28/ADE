@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  displayFrameToViewRect,
   displayPointToViewPoint,
   macDesktopContentBox,
   viewPointToDisplayPoint,
@@ -70,5 +71,34 @@ describe("viewPointToDisplayPoint", () => {
   it("drops a global point that is not on this display", () => {
     // A window on the user's real screen, not on the lane's.
     expect(displayPointToViewPoint({ x: 10, y: 10, rect, display })).toBeNull();
+  });
+});
+
+describe("displayFrameToViewRect", () => {
+  // 1600x900 display letterboxed into an 800x600 view: scale 0.5, 75px bars.
+  const display = { width: 1600, height: 900, origin: { x: 0, y: 0 } };
+  const rect = { left: 0, top: 0, width: 800, height: 600 };
+
+  it("places a window frame on the picture", () => {
+    expect(displayFrameToViewRect({ frame: { x: 200, y: 100, width: 400, height: 300 }, rect, display }))
+      .toEqual({ left: 100, top: 125, width: 200, height: 150 });
+  });
+
+  it("clips a window hanging off the display instead of dropping it", () => {
+    expect(displayFrameToViewRect({ frame: { x: -200, y: 0, width: 400, height: 200 }, rect, display }))
+      .toEqual({ left: 0, top: 75, width: 100, height: 100 });
+  });
+
+  it("is null for a frame that does not touch the picture at all", () => {
+    expect(displayFrameToViewRect({ frame: { x: 2000, y: 0, width: 100, height: 100 }, rect, display }))
+      .toBeNull();
+  });
+
+  it("follows a display origin that is not at zero", () => {
+    expect(displayFrameToViewRect({
+      frame: { x: 3000, y: 500, width: 160, height: 90 },
+      rect,
+      display: { width: 1600, height: 900, origin: { x: 3000, y: 500 } },
+    })).toEqual({ left: 0, top: 75, width: 80, height: 45 });
   });
 });

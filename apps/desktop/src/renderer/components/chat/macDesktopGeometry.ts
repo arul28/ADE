@@ -94,3 +94,36 @@ export function displayPointToViewPoint(args: {
 
 /** How long the agent's cursor glyph stays on screen after an action. */
 export const MAC_DESKTOP_CURSOR_FADE_MS = 3_000;
+
+/**
+ * A window's frame on the global plane to a rectangle inside the view.
+ *
+ * Used to draw a thin accent outline over one parked window while its card is
+ * selected in the rail. Clipped to the picture rather than dropped, because a
+ * window that hangs off the display's edge still has a visible part and an
+ * outline around the visible part is the truthful drawing. Returns null only
+ * when the frame does not intersect the picture at all.
+ */
+export function displayFrameToViewRect(args: {
+  frame: { x: number; y: number; width: number; height: number };
+  rect: ViewRect;
+  display: MacDesktopGeometryDisplay;
+}): { left: number; top: number; width: number; height: number } | null {
+  const box = macDesktopContentBox(args.rect, args.display);
+  if (!box) return null;
+  const left = (args.frame.x - args.display.origin.x) * box.scale;
+  const top = (args.frame.y - args.display.origin.y) * box.scale;
+  const right = left + args.frame.width * box.scale;
+  const bottom = top + args.frame.height * box.scale;
+  const clippedLeft = Math.max(0, Math.min(left, box.width));
+  const clippedTop = Math.max(0, Math.min(top, box.height));
+  const clippedRight = Math.max(0, Math.min(right, box.width));
+  const clippedBottom = Math.max(0, Math.min(bottom, box.height));
+  if (clippedRight <= clippedLeft || clippedBottom <= clippedTop) return null;
+  return {
+    left: box.offsetX + clippedLeft,
+    top: box.offsetY + clippedTop,
+    width: clippedRight - clippedLeft,
+    height: clippedBottom - clippedTop,
+  };
+}

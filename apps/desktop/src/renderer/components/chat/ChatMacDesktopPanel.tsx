@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowSquareIn,
   ArrowsInSimple,
   ArrowsOutSimple,
   CaretDown,
   Cursor,
+  Eye,
   Monitor,
+  SignOut,
   Record,
   Stop,
   WarningCircle,
@@ -23,13 +25,18 @@ import {
   WORK_TOOL_CHROME_META,
   WORK_TOOL_CHROME_ROW,
   WORK_TOOL_PRIMARY_BUTTON,
-  WORK_TOOL_SURFACE,
   WorkToolChromeButton,
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
 import { H264VideoCanvas } from "./H264VideoCanvas";
 import { macDesktopApi } from "./macDesktopApi";
-import { displayPointToViewPoint, macDesktopContentBox, viewPointToDisplayPoint } from "./macDesktopGeometry";
+import {
+  displayFrameToViewRect,
+  displayPointToViewPoint,
+  macDesktopContentBox,
+  viewPointToDisplayPoint,
+} from "./macDesktopGeometry";
+import { useMacDesktopFrame } from "./macDesktopFrameStore";
 import {
   createMacDesktopLeaseHeartbeat,
   macDesktopUserHasControl,
@@ -42,11 +49,14 @@ import { MacDesktopEmptyOverlay } from "./MacDesktopEmptyOverlay";
 import { macDesktopHasLease } from "./macDesktopClaimPicker.logic";
 import { macDesktopErrorText } from "./macDesktopErrorText";
 import {
-  macDesktopFooter,
+  macDesktopAppGlyph,
+  macDesktopIsWidePane,
   macDesktopParkedWindows,
   macDesktopPresentAction,
+  macDesktopRelativeTime,
   macDesktopStatusPill,
   macDesktopWindowLabel,
+  macDesktopWindowTitle,
 } from "./macDesktopStrip";
 
 /**
@@ -83,6 +93,110 @@ function macDesktopControllerId(): string {
   return controllerId;
 }
 
+
+/* ── The windows rail ───────────────────────────────────────────────────── */
+
+/**
+ * One parked window, as a card.
+ *
+ * The pane is a tall column and a 16:9 picture uses a third of it, so the space
+ * under the picture is where the lane's windows are named — a row per window
+ * with what it is, who holds it, and the two things you can do to it. The line
+ * this replaces ("TextEdit — Untitled", centred under 300px of empty pane) named
+ * the same windows and offered nothing.
+ *
+ * Memoised per window: a frame arriving, a lease renewing or the pane resizing
+ * re-renders the panel several times a second, and nothing on this card changes
+ * on any of them.
+ */
+type MacDesktopWindowCardProps = {
+  window: MacDesktopWindow;
+  owned: boolean;
+  selected: boolean;
+  busy: boolean;
+  onSelect: (windowId: number) => void;
+  onRelease: (windowId: number) => void;
+  /** Null when the surface cannot observe, which drops the action entirely. */
+  onFocus: ((windowId: number) => void) | null;
+};
+
+const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
+  window: entry,
+  owned,
+  selected,
+  busy,
+  onSelect,
+  onRelease,
+  onFocus,
+}: MacDesktopWindowCardProps) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      data-testid="mac-desktop-window-card"
+      data-window-id={entry.id}
+      onClick={() => onSelect(entry.id)}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onSelect(entry.id);
+      }}
+      className={cn(
+        "group flex w-full cursor-default items-center gap-2 rounded-[10px] px-2 py-1.5 text-left",
+        "transition-colors duration-[120ms] ease-out",
+        selected
+          ? "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_55%,transparent)]"
+          : "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_60%,transparent)] hover:bg-white/[0.04]",
+      )}
+    >
+      <span
+        aria-hidden
+        className="inline-flex size-7 shrink-0 items-center justify-center rounded-[7px] bg-white/[0.07] font-sans text-[10px] font-semibold tracking-[0.02em] text-fg/75"
+      >
+        {macDesktopAppGlyph(entry.appName)}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-[12px] text-fg/90" title={macDesktopWindowTitle(entry)}>
+          {macDesktopWindowTitle(entry)}
+        </span>
+        <span className="truncate text-[11px] text-muted-fg">{entry.appName}</span>
+      </span>
+      {owned ? <MacDesktopLeaseChip /> : null}
+      {onFocus ? (
+        <button
+          type="button"
+          aria-label={`Observe ${macDesktopWindowTitle(entry)}`}
+          title="Observe this window next"
+          disabled={busy}
+          data-testid="mac-desktop-window-focus"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-[6px] text-muted-fg transition-colors duration-[120ms] hover:bg-white/[0.06] hover:text-fg disabled:pointer-events-none disabled:opacity-40"
+          onClick={(event) => { event.stopPropagation(); onFocus(entry.id); }}
+        >
+          <Eye size={13} />
+        </button>
+      ) : null}
+      <button
+        type="button"
+        aria-label={`Release ${macDesktopWindowTitle(entry)}`}
+        title="Release back to your screen"
+        data-testid="mac-desktop-window-release"
+        className="inline-flex size-6 shrink-0 items-center justify-center rounded-[6px] text-muted-fg transition-colors duration-[120ms] hover:bg-white/[0.06] hover:text-fg"
+        onClick={(event) => { event.stopPropagation(); onRelease(entry.id); }}
+      >
+        <SignOut size={13} />
+      </button>
+    </div>
+  );
+});
+
+/** What the last observation event said, for the one line under the rail. */
+type MacDesktopLastObservation = {
+  caption: string | null;
+  at: number;
+  elementCount: number;
+};
+
 export type ChatMacDesktopPanelProps = {
   laneId: string;
   laneName?: string | null;
@@ -117,8 +231,14 @@ export function ChatMacDesktopPanel({
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [viewRect, setViewRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
+  /** The pane's own box, which decides stacked vs side by side. */
+  const [bodySize, setBodySize] = useState({ width: 0, height: 0 });
+  /** The window the rail is pointing at on the picture, if any. */
+  const [selectedWindowId, setSelectedWindowId] = useState<number | null>(null);
+  const [lastObservation, setLastObservation] = useState<MacDesktopLastObservation | null>(null);
 
   const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
 
@@ -169,6 +289,32 @@ export function ChatMacDesktopPanel({
     };
   }, [display?.displayId]);
 
+  /**
+   * The pane's box, measured the same way the picture's is.
+   *
+   * Separate from `viewRect` on purpose: that one is the stream surface, whose
+   * size is an OUTPUT of this decision, so reading the layout mode off it would
+   * be a loop that settles one frame late in one direction and oscillates in
+   * the other.
+   */
+  useEffect(() => {
+    const node = bodyRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const rect = node.getBoundingClientRect();
+      setBodySize((current) =>
+        current.width === rect.width && current.height === rect.height
+          ? current
+          : { width: rect.width, height: rect.height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [display?.displayId]);
+
+  const wide = macDesktopIsWidePane(bodySize.width, bodySize.height);
+
   const toDisplayPoint = useCallback((clientX: number, clientY: number) => {
     if (!display) return null;
     return viewPointToDisplayPoint({ clientX, clientY, rect: viewRect, display });
@@ -192,6 +338,29 @@ export function ChatMacDesktopPanel({
     () => (display ? macDesktopContentBox(viewRect, display) : null),
     [display, viewRect],
   );
+
+  /**
+   * The last thing the agent looked at, for the line under the rail.
+   *
+   * An event subscription, never a poll: the service already emits an
+   * `observation` for every look, and the only fields kept are the three the
+   * line prints. The picture itself comes from the frame store, which the live
+   * view fills, so this costs one small object per observation.
+   */
+  useEffect(() => {
+    const api = window.ade.macDesktop;
+    if (!api) return;
+    return api.onEvent((event) => {
+      if (event.type !== "observation" || event.laneId !== laneId) return;
+      setLastObservation({
+        caption: event.observation.caption,
+        at: Date.parse(event.observation.capturedAt) || Date.now(),
+        elementCount: event.observation.elementCount,
+      });
+    }, runtimePin);
+  }, [laneId, runtimePin]);
+
+  const lastFrame = useMacDesktopFrame(laneId);
 
   /* ── Takeover ────────────────────────────────────────────────────────── */
 
@@ -378,6 +547,41 @@ export function ChatMacDesktopPanel({
   }, [laneId, setStatusError]);
 
   /**
+   * Point the rail at one window, or stop pointing.
+   *
+   * Selection is a drawing, not a mode: the only thing it changes is a thin
+   * accent rectangle over that window's frame on the picture, which is the
+   * cheapest honest answer to "which one is that?" for two windows of one app.
+   */
+  const selectWindow = useCallback((windowId: number) => {
+    setSelectedWindowId((current) => (current === windowId ? null : windowId));
+  }, []);
+
+  /**
+   * Put one window's element tree into the next observation.
+   *
+   * `observe` with a `windowId` is the existing narrowing, so this is a real
+   * call rather than a new capability: the agent's next look at the screen comes
+   * back scoped to this window, and the observation event it emits is what
+   * updates the line under the rail.
+   */
+  const observeWindow = useCallback(async (windowId: number) => {
+    setBusy(true);
+    try {
+      await macDesktopApi().observe({ laneId, windowId, chatSessionId: sessionId }, pinRef.current);
+    } catch (error) {
+      setStatusError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
+    } finally {
+      setBusy(false);
+    }
+  }, [laneId, sessionId, setStatusError]);
+
+  /* Void-returning, stable identities, so a memoised card is not re-rendered
+     by a new closure every time a frame lands. */
+  const releaseWindowById = useCallback((windowId: number) => { void releaseWindow(windowId); }, [releaseWindow]);
+  const observeWindowById = useCallback((windowId: number) => { void observeWindow(windowId); }, [observeWindow]);
+
+  /**
    * Escape leaves the expanded screen.
    *
    * Capturing, and before the surface's own key handler: while the user holds
@@ -463,7 +667,14 @@ export function ChatMacDesktopPanel({
         ? { message: "Accessibility is off for ADE on the lane's Mac.", pane: "macos-accessibility" }
         : null;
   const pill = macDesktopStatusPill({ live: live.status, lease, iHaveControl });
-  const footer = macDesktopFooter(parkedWindows);
+  const selectedWindow = parkedWindows.find((entry) => entry.id === selectedWindowId) ?? null;
+  /* Where the selected window sits on the picture. A positioned div over the
+     canvas, never a second canvas: it moves when the pane resizes and when the
+     window moves, and a compositor layer is the whole cost. */
+  const selectedRect = selectedWindow
+    ? displayFrameToViewRect({ frame: selectedWindow.frame, rect: viewRect, display })
+    : null;
+  const canObserve = typeof window.ade.macDesktop?.observe === "function";
   const presentAction = macDesktopPresentAction({
     hostIsLocal: Boolean(status?.hostIsLocal),
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
@@ -634,7 +845,20 @@ export function ChatMacDesktopPanel({
         </p>
       ) : null}
 
-      {/* ── The screen ────────────────────────────────────────────────── */}
+      {/* ── The screen, and the windows on it ───────────────────────────
+
+          Stacked in the tall tools column the pane usually is, side by side
+          once it is appreciably wider than tall. The picture is pinned under
+          the strip at the display's own aspect ratio in both, which is what
+          removed the ~350px of empty pane that used to sit above a vertically
+          centred 16:9 image. */}
+      <div
+        ref={bodyRef}
+        data-testid="mac-desktop-body"
+        data-layout={wide ? "wide" : "stacked"}
+        className={cn("flex min-h-0 flex-1 gap-2", wide ? "flex-row" : "flex-col overflow-y-auto")}
+      >
+      <div className={cn("flex min-w-0 shrink-0 items-start", wide ? "h-full flex-1" : "w-full")}>
       <div
         ref={surfaceRef}
         role={iHaveControl ? "application" : undefined}
@@ -652,10 +876,17 @@ export function ChatMacDesktopPanel({
           that has not arrived yet is a line of text, which is a state, where a
           black rectangle was a defect.
         */
+        style={expanded ? undefined : { aspectRatio: `${display.width} / ${display.height}` }}
         className={cn(
           expanded
             ? "fixed inset-0 z-[1000] overflow-hidden bg-[color-mix(in_srgb,var(--color-surface)_92%,black)]"
-            : "relative min-h-0 flex-1 overflow-hidden bg-surface",
+            // Aspect-correct and pinned to the top of the pane: the picture
+            // owns exactly the box it fills, so there is no letterbox band for
+            // a border to frame and nothing above it to explain.
+            // `max-h-full` only bites in the side-by-side layout, where the
+            // column has a definite height; stacked, its parent's height is
+            // auto and the picture simply takes the width it is given.
+            : "relative w-full max-h-full overflow-hidden bg-surface",
           "flex items-center justify-center",
         )}
         onPointerDown={realInput.onPointerDown}
@@ -718,6 +949,20 @@ export function ChatMacDesktopPanel({
           />
         ) : null}
 
+        {selectedRect ? (
+          <span
+            aria-hidden
+            data-testid="mac-desktop-window-outline"
+            className="pointer-events-none absolute z-[9] rounded-[4px] shadow-[inset_0_0_0_2px_color-mix(in_srgb,var(--color-accent)_85%,transparent)]"
+            style={{
+              left: selectedRect.left,
+              top: selectedRect.top,
+              width: selectedRect.width,
+              height: selectedRect.height,
+            }}
+          />
+        ) : null}
+
         {cursorPoint ? (
           <span
             aria-hidden
@@ -763,15 +1008,64 @@ export function ChatMacDesktopPanel({
         ) : null}
       </div>
 
-      {/* ── Parked windows ──────────────────────────────────────────────
+      </div>
 
-          Only when there is something to name. An empty screen is answered on
-          the picture by the overlay card, so this line never carries filler. */}
-      {footer ? (
-        <p className="truncate px-1 text-[11px] text-muted-fg" data-testid="mac-desktop-parked">
-          {footer.text}
-        </p>
+      {/* ── The windows rail ────────────────────────────────────────────
+
+          One card per parked window, under the picture or beside it. Nothing
+          at all when the screen is empty — that case is answered ON the
+          picture by the overlay card, and a rail with a "nothing here" line
+          under an overlay that already says so is the same sentence twice. */}
+      {parkedWindows.length || lastObservation ? (
+        <div
+          data-testid="mac-desktop-rail"
+          className={cn(
+            "flex min-h-0 flex-col gap-1",
+            wide ? "w-[280px] max-w-[280px] shrink-0 overflow-y-auto" : "shrink-0",
+          )}
+        >
+          {parkedWindows.map((entry) => (
+            <MacDesktopWindowCard
+              key={entry.id}
+              window={entry}
+              owned={macDesktopHasLease(entry, laneId)}
+              selected={entry.id === selectedWindowId}
+              busy={busy}
+              onSelect={selectWindow}
+              onRelease={releaseWindowById}
+              onFocus={canObserve ? observeWindowById : null}
+            />
+          ))}
+
+          {/* ── Last observation ──────────────────────────────────────
+              One row: what the agent last did, when, how much it saw, and the
+              frame it saw it on when the live view has one to lend. */}
+          {lastObservation ? (
+            <div
+              className="mt-0.5 flex items-center gap-2 px-1 text-[11px] text-muted-fg"
+              data-testid="mac-desktop-last-observation"
+            >
+              {lastFrame ? (
+                <img
+                  src={lastFrame.dataUrl}
+                  alt=""
+                  aria-hidden
+                  className="h-7 w-[46px] shrink-0 rounded-[4px] object-cover opacity-80 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_60%,transparent)]"
+                />
+              ) : null}
+              <span className="min-w-0 flex-1 truncate" title={lastObservation.caption ?? undefined}>
+                {lastObservation.caption ?? "Looked at this screen"}
+              </span>
+              <span className="shrink-0 tabular-nums">
+                {macDesktopRelativeTime(lastObservation.at, Date.now())}
+                <span className="px-1 opacity-60">·</span>
+                {`${lastObservation.elementCount} elements`}
+              </span>
+            </div>
+          ) : null}
+        </div>
       ) : null}
+      </div>
 
       {/*
         ── A window that would not go ──────────────────────────────────

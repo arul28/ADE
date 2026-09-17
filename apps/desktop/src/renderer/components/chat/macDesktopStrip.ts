@@ -81,23 +81,61 @@ export function macDesktopParkedWindows(
   return windows.filter((entry) => entry.onDisplayId === displayId);
 }
 
-/** The label one window gets in the footer and in the dropdown. */
+/** The label one window gets in the strip's dropdown. */
 export function macDesktopWindowLabel(window: MacDesktopWindow): string {
-  return [window.appName, window.title].filter(Boolean).join(" — ");
+  return [window.appName, window.title].filter(Boolean).join(" \u2014 ");
 }
 
-export type MacDesktopFooter = { kind: "windows"; text: string };
+/**
+ * Side-by-side, or stacked.
+ *
+ * The pane is a tall narrow column most of the time, and a 16:9 picture in it
+ * leaves everything below the picture for the windows rail. Once the pane is
+ * appreciably wider than it is tall the same stacking wastes the width instead,
+ * so the rail moves to the right of the picture. The width floor is the second
+ * half of the rule: a 300x150 pane is "wide" by ratio alone and has no room for
+ * a 280px rail beside a picture.
+ */
+export const MAC_DESKTOP_WIDE_RATIO = 1.6;
+export const MAC_DESKTOP_WIDE_MIN_WIDTH = 560;
+
+export function macDesktopIsWidePane(width: number, height: number): boolean {
+  if (width < MAC_DESKTOP_WIDE_MIN_WIDTH || height <= 0) return false;
+  return width > height * MAC_DESKTOP_WIDE_RATIO;
+}
 
 /**
- * The line under the screen, or nothing at all.
+ * The two letters on a window card, when there is no app icon to draw.
  *
- * The empty case used to be a sentence with a CLI command and a "Claim…" link
- * in it, sitting under a live video of an empty screen — plain, repetitive and
- * in the wrong place. An empty screen now says what it is on the picture
- * itself ({@link MacDesktopEmptyOverlay}), so there is nothing left for this
- * line to say and it returns null instead of inventing filler.
+ * Words first ("Visual Studio Code" -> "VS"), because an app's initials are how
+ * its name is abbreviated everywhere else; a one-word name falls back to its
+ * first two characters ("Xcode" -> "XC") rather than a single lonely letter.
  */
-export function macDesktopFooter(parked: readonly MacDesktopWindow[]): MacDesktopFooter | null {
-  if (!parked.length) return null;
-  return { kind: "windows", text: parked.map(macDesktopWindowLabel).join(" \u00b7 ") };
+export function macDesktopAppGlyph(appName: string | null | undefined): string {
+  const words = (appName ?? "").trim().split(/[\s.\-_]+/).filter(Boolean);
+  if (!words.length) return "?";
+  if (words.length > 1) return (words[0]![0]! + words[1]![0]!).toUpperCase();
+  return words[0]!.slice(0, 2).toUpperCase();
+}
+
+/** The title a window card shows, which is never empty. */
+export function macDesktopWindowTitle(window: MacDesktopWindow): string {
+  const title = window.title?.trim();
+  return title?.length ? title : "Untitled window";
+}
+
+/**
+ * "just now" / "2m ago" for the last-observation line.
+ *
+ * Coarse on purpose: the line exists to say whether what is on the picture is
+ * what the agent last looked at, and a seconds-accurate clock there would be a
+ * timer running for a sentence nobody reads twice.
+ */
+export function macDesktopRelativeTime(at: number, now: number): string {
+  const seconds = Math.max(0, Math.round((now - at) / 1000));
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
 }
