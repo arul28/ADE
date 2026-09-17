@@ -201,6 +201,9 @@ describe("isRendererFrameNavigationAllowed", () => {
     for (const url of [
       options.rendererUrl,
       "file:///Applications/ADE.app/Contents/Resources/spec-preview.html",
+      // The same door on Windows: a packaged spec preview is a drive-letter
+      // file URL, and a scheme check has to let it through unchanged.
+      "file:///C:/Users/ada/AppData/Local/ADE/resources/spec-preview.html",
       "app://ade/spec.html",
       "ade-scene:scene-1",
       "blob:file:///abcd",

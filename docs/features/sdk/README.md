@@ -126,6 +126,8 @@ The SDK speaks the machine JSON-RPC surface, not desktop IPC.
 | `personalChats.streamEvents` | Cursor drain. Fallback when the runtime omits `pushEvents`. |
 | `runtime/info` | Capabilities, including `personalChats.mcpServers`. |
 
+**`BufferedEvent.category` is deliberately open.** The runtime is downloaded and can be newer than the SDK driving it, so a category this build has never heard of is an ordinary event, not a bug: the type is `KnownBufferedEventCategory | (string & {})`, listed for autocomplete rather than for exhaustiveness. `chatEnvelopeFromBufferedEvent` gates on `"runtime"` exactly, which is what keeps an unknown category from ever being mistaken for chat, and the drain fallback polls `personalChats.streamEvents` with no category filter so the cursor still advances past everything. `runtime` is the only category the SDK decodes: `pty` is terminal bytes it has no surface for, and `cto_voice` carries a live call's running transcript and is fail-closed to the `cto` role at the runtime — it never reaches an `agent`-role sidecar like this one (`apps/desktop/src/shared/runtimeEventPolicy.ts`).
+
 Create args the SDK actually sends:
 
 - `mcpServers` — caller-owned servers for this thread only.

@@ -17,6 +17,7 @@ import {
   captureSessionMetadataRegeneratedAnalytics,
 } from "./agentTurnProductAnalytics";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
+import { reportCaptureGesture } from "./captureGestureProductAnalytics";
 import {
   captureDailyUsageAnalytics,
   completedDailyUsageAnalyticsTarget,
@@ -1608,6 +1609,45 @@ describe("product analytics producers", () => {
       outcome: "completed",
       source: "runtime",
     })).toMatchObject({ provider: "pi" });
+  });
+
+  /**
+   * The capture gesture is a chord: a user whose screen recording permission is
+   * off can fire it four times in a row, and that is one product fact rather
+   * than four. The producer owns the per-outcome key and the minute window that
+   * makes it one — the policy layer above it counts events, not presses.
+   */
+  it("reports one capture gesture per outcome per minute, and nothing when analytics is off", () => {
+    const captures: Array<Record<string, unknown>> = [];
+    const service = {
+      captureInternal: (input: Record<string, unknown>) => { captures.push(input); },
+    } as unknown as ProductAnalyticsService;
+
+    reportCaptureGesture(service, "delivered");
+    reportCaptureGesture(service, "failed");
+    reportCaptureGesture(service, "too_large");
+
+    expect(captures.map((capture) => capture.dedupeKey)).toEqual([
+      "capture_gesture:delivered",
+      "capture_gesture:failed",
+      "capture_gesture:too_large",
+    ]);
+    for (const capture of captures) {
+      expect(capture.event).toBe("ade_feature_used");
+      expect(capture.surface).toBe("desktop");
+      expect(capture.minimumIntervalMs).toBe(60_000);
+      // No window, title, app, path, or image can ride along: the producer
+      // names every property it sends.
+      expect(Object.keys(capture.properties as Record<string, unknown>).sort())
+        .toEqual(["action", "feature", "outcome"]);
+      expect(capture.properties).toMatchObject({ feature: "cto", action: "capture_gesture" });
+    }
+
+    // A desktop built without analytics has no service at all, and the gesture
+    // still has to deliver its shot.
+    expect(() => { reportCaptureGesture(null, "delivered"); }).not.toThrow();
+    expect(() => { reportCaptureGesture(undefined, "failed"); }).not.toThrow();
+    expect(captures).toHaveLength(3);
   });
 
   it("keeps the settle-teardown properties through the sanitizer", () => {

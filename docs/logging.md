@@ -140,6 +140,26 @@ refuses a recycled pid, and `agent_chat.claude_subprocess_taskkill_failed` on
 Windows. They carry pids and session ids and no command lines, and none is a
 PostHog event.
 
+A CTO voice call and the capture gesture each write their own local structured
+line families, and neither is a PostHog event. `cto_voice.*` covers the call's
+whole life at the runtime that owns it: lifecycle (`start`, `call_end`,
+`end_call_scheduled`, `router_state`, `owner_went_quiet`), the delegation loop
+(`function_call`, `turn_failed`, `turn_interrupted`, `turn_timing`,
+`function_output_dropped`), the transcript gate (`transcript_accepted`,
+`transcript_rejected`, `transcript_valve_tripped` / `_cleared`), the bounded
+audio queues (`preopen_audio_dropped`, `output_audio_dropped`), and the ways a
+socket or a permission hold fails (`socket_error`, `socket_rejected`,
+`session_error`, `read_only_failed`, `confirm_mode_failed`). They carry call
+ids, coarse reasons, counts and durations. They never carry the transcript, the
+spoken words, the model's audio, or any part of the user's OpenAI key — the
+provider's own error text is classified into a house sentence before it is
+logged or read aloud. `capture.*` is the helper supervisor's equivalent
+(`helper_started`, `helper_spawn_failed`, `helper_exited`, `helper_error`,
+`helper_stderr`, `helper_invalid_output`, `helper_output_overflow`,
+`helper_path_outside_output_dir`, `chord_ignored`, `late_answer_dropped`); it
+records why a chord was refused or a shot never arrived and carries no window
+title, app name, or image.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map
@@ -149,7 +169,8 @@ Shared desktop/runtime boundary:
 - `apps/desktop/src/shared/types/productAnalytics.ts` defines the closed event, surface, status, and capture contracts.
 - `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts` owns property allowlists, coarse value normalization, internal-only events, and the global/per-event/per-minute budgets.
 - `apps/desktop/src/main/services/analytics/productAnalyticsService.ts` owns machine consent, installation identity, salted identifier hashing, persisted deduplication/quota state, and the bounded direct Capture API transport.
-- `apps/desktop/src/main/services/analytics/usageProductAnalyticsExporter.ts`, `dailyUsageAnalytics.ts`, and `agentTurnProductAnalytics.ts` are the durable-ledger, daily-aggregate, and work-session producers. Their focused coverage is consolidated in `productAnalyticsService.test.ts`.
+- `apps/desktop/src/main/services/analytics/usageProductAnalyticsExporter.ts`, `dailyUsageAnalytics.ts`, and `agentTurnProductAnalytics.ts` are the durable-ledger, daily-aggregate, and work-session producers. `agentTurnProductAnalytics.ts` also owns `captureChatHandoffReplayAnalytics`, the handoff-replay outcome described below. Their focused coverage is consolidated in `productAnalyticsService.test.ts`.
+- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` is the capture-gesture producer (`reportCaptureGesture`). It takes a `Pick<ProductAnalyticsService, "captureInternal">` rather than the service, so the one call site cannot reach anything else through it. The CTO voice call's single end-of-call event is emitted inline from `services/cto/ctoVoiceRuntimeService.ts`, the durable owner of a call and the only place that sees every way one can finish.
 - `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts`, and `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx` expose the safe renderer boundary and lifecycle producers. `ProductAnalyticsSection.tsx` is the desktop opt-out UI.
 
 Attached clients and native surfaces:

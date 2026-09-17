@@ -22,6 +22,16 @@
  * `ade_card` merging, localhost URL extraction, diff stats, and the
  * incremental `CollapseTranscriptContext` (this package re-collapses whole
  * histories; they are bounded by the host's `history()` window).
+ *
+ * Also deliberately dropped: the CTO voice-call fold (`voice_call_group`).
+ * ADE folds a consecutive run of rows sharing `provenance.voiceCallId` into one
+ * call card. That id is stamped only while a CTO voice turn is running, and a
+ * voice call belongs to the CTO's own thread — which an `@ade-dev/sdk` sidecar
+ * holds the `agent` role against and therefore never reads. Porting the fold
+ * would add a row kind that can never be produced here. If the id does somehow
+ * appear on an envelope, it rides through untouched: it is one more key under
+ * the provenance index signature, and the rows render individually, which is
+ * the honest reading of events this package cannot attribute to a call.
  */
 
 import type {

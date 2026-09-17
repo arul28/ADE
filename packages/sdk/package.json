@@ -1,6 +1,6 @@
 {
   "name": "@ade-dev/sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Typed Node/Electron-main client that owns a slim ADE runtime and exposes chat as durable named threads.",
   "license": "MIT",
   "type": "module",

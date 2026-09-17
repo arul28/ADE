@@ -761,6 +761,11 @@ ade --role cto actions run ai.piLoginCancel --input-json '{"providerId":"anthrop
 ade actions run ai.getMachineApiKeyStatus --input-json '{"provider":"openai"}' --json         # is a MACHINE-scoped provider key configured, and from the store or the environment; never the key itself
 ade --role cto actions run ai.storeMachineApiKey --input-json "$(jq -n --arg v "$OPENAI_API_KEY" '{provider:"openai",key:$v}')"   # keep the secret out of argv and shell history
 ade --role cto actions run ai.deleteMachineApiKey --input-json '{"provider":"openai"}' --json
+ade actions run cto_state.getThreadHealth --json                           # can the CTO thread take a turn, and is a rotation advised
+ade --role cto actions run cto_state.startFreshSession --json       # retire the CTO thread and open a clean one (CTO-only; memory and identity carry over)
+ade --role cto actions run cto_voice.getState --json                # phase, elapsed, captions, pending confirmation — a read; driving a call is the desktop window's job
+ade --role cto actions run cto_voice.hasKey --json                  # does this machine have an OpenAI key a call could bill to
+ade --role cto actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{"path":".../.ade/artifacts/computer-use/scene.png"}' --json
 ade cursor cloud agents list --text
 ade cursor cloud agents list --archived --limit 100 --text
 ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
@@ -883,6 +888,20 @@ move with the project: read them from `cto_state.getIdentity` and write them
 through `cto_state.updateIdentity` like any other identity field. There is no
 `ade cto` command; `cto_state` and `cto_memory` are reached through `ade actions
 run` only.
+
+Two `cto_state` actions are new and one pair is gone. `getThreadHealth` is a
+read — can the CTO thread take a turn, why not if it cannot, and is a rotation
+advised — and is open to every role like `getAttention`, because it answers a
+question about a badge and returns no content. `startFreshSession` retires the
+CTO thread and opens a clean one on the primary lane; it is CTO-only, because
+deciding a conversation is finished is the operator's call and an agent that
+could make it could quietly drop the context it was being supervised with.
+Nothing it touches is destructive: identity, memory, the daily log and the
+retired transcript all survive, and the outgoing thread is distilled into memory
+first. `cto_state.dismissOnboarding` and `cto_state.resetOnboarding` were removed
+with the surface they drove, so a script that still calls either now fails with
+an unknown-action error rather than a silent no-op; there is no replacement and
+none is needed — `getOnboardingState` and `completeOnboardingStep` remain.
 
 `ade tools` is deliberately not backed by a service action. The pinned-tool cache
 is a property of the machine's filesystem, not of a project runtime, so the

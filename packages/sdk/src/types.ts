@@ -364,6 +364,23 @@ export type AgentChatEventEnvelope = {
   timestamp: string;
   event: AgentChatEvent;
   sequence?: number;
+  /**
+   * Mirrors `AgentChatEventEnvelope["provenance"]` in ADE's `shared/types/chat.ts`,
+   * NARROWED on purpose: only the keys an SDK consumer can act on are named.
+   *
+   * ADE stamps more than this — orchestration routing (`targetKind`,
+   * `sourceSessionId`, `attemptId`, `stepKey`, `laneId`, `runId`), fork shape
+   * (`replayFork`), and the CTO voice call a turn belongs to (`voiceCallId`).
+   * Every one of those describes an ADE surface this package does not have: a
+   * sidecar drives its own thread with the `agent` role, so it is never the
+   * orchestrator reading routing keys, and never the CTO reading call keys.
+   * Naming them here would advertise surfaces that do not exist.
+   *
+   * The index signature is what makes that narrowing safe rather than lossy:
+   * the runtime is downloaded and can be newer than the SDK, so every key ADE
+   * stamps still arrives and still reads, typed `unknown`. Add a key to the
+   * named set only when this package grows a use for it.
+   */
   provenance?: {
     messageId?: string;
     providerMessageId?: string;

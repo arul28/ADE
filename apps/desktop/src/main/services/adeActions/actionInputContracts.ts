@@ -19,6 +19,22 @@ type AdeActionInputContractTable =
   & { cto_voice: Record<CtoVoiceAction, AdeActionInputContract> };
 
 const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
+  cto_state: {
+    getThreadHealth: {
+      description:
+        "Report whether the CTO thread can take a turn: the session id, the last turn failure, context occupancy, "
+        + "and whether a rotation is advised. Open to every role; never changes state.",
+      input: "none",
+      example: "ade actions run cto_state.getThreadHealth --json",
+    },
+    startFreshSession: {
+      description:
+        "Retire the CTO's live conversation into History and start a fresh one on the primary lane. "
+        + "Identity, memory and the daily log carry over; a hand-off note is written first. CTO-only.",
+      input: "none",
+      example: "ade --role cto actions run cto_state.startFreshSession --json",
+    },
+  },
   cto_memory: {
     recordDiscovery: {
       description:
@@ -625,7 +641,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         "File a scene snapshot the desktop already wrote into this project's artifact store as proof. "
         + "CTO-only, and the path must already be inside `.ade/artifacts/computer-use`.",
       input: "object { path: string, title?: string, sessionId?: string | null }",
-      example: "ade actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{\"path\":\"/repo/.ade/artifacts/computer-use/scene.png\",\"title\":\"Merged pull requests\"}' --json",
+      example: "ade --role cto actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{\"path\":\"/repo/.ade/artifacts/computer-use/scene.png\",\"title\":\"Merged pull requests\"}' --json",
     },
     readArtifactPreview: {
       description: "Read one artifact's bytes as a bounded preview, for artifacts small enough to inline.",

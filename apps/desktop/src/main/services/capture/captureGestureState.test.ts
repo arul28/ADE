@@ -9,6 +9,13 @@ import {
   parseCaptureHelperOutput,
   resolveCaptureHelperExecutablePath,
 } from "./captureGestureState";
+import { pickCaptureGestureWindow } from "./captureGestureTarget";
+import {
+  fitCaptureShotToAttachmentLimit,
+  MAX_CAPTURE_SHOT_HALVINGS,
+  type CaptureShotImage,
+} from "./captureShotFit";
+import type { CaptureGestureShot } from "../../../shared/types/captureGesture";
 
 describe("capture helper path resolution", () => {
   it("resolves packaged and development paths per platform", () => {
@@ -211,5 +218,138 @@ describe("attachment filename", () => {
   it("is sortable, padded and .png", () => {
     expect(captureAttachmentFilename(new Date(2026, 8, 13, 9, 5, 3)))
       .toBe("ade-capture-20260913-090503.png");
+  });
+});
+
+/* --- Where a capture is delivered (captureGestureTarget.ts). --- */
+
+/**
+ * The routing order is the whole contract, and it is an order rather than a
+ * rule: focused, then the window the user was last in, then any live window,
+ * and NEVER a new one. Each step exists because the step after it was wrong in
+ * practice, so each one is pinned here separately.
+ */
+describe("pickCaptureGestureWindow", () => {
+  const windows = [{ id: 1 }, { id: 2 }, { id: 3 }];
+
+  it("prefers the focused window", () => {
+    expect(
+      pickCaptureGestureWindow({ liveWindows: windows, focused: windows[2], lastFocusedId: 1 }),
+    ).toBe(windows[2]);
+  });
+
+  /**
+   * The case that matters: the gesture fires over ANOTHER app's window, so
+   * nothing of ADE's is focused. Falling straight to the first window would
+   * pick creation order — an arbitrary project, usually not the one the user
+   * was last in.
+   */
+  it("falls back to the window the user was last in, not the oldest one", () => {
+    expect(
+      pickCaptureGestureWindow({ liveWindows: windows, focused: null, lastFocusedId: 3 }),
+    ).toBe(windows[2]);
+  });
+
+  /**
+   * A focused window that is mid-teardown is not a target, and main.ts says so
+   * by passing `focused: null` — which must fall THROUGH to the remembered
+   * window rather than skipping to the oldest one. Same input shape as "no
+   * focused window at all", deliberately: the caller owns liveness (only
+   * Electron can answer it) and this function owns the order.
+   */
+  it("falls through to the last-focused window when the focused one is being torn down", () => {
+    const live = [{ id: 1 }, { id: 2 }];
+    expect(
+      pickCaptureGestureWindow({ liveWindows: live, focused: null, lastFocusedId: 2 }),
+    ).toBe(live[1]);
+  });
+
+  /** ...and the remembered window is only usable while it is still live. */
+  it("ignores a remembered window that is no longer in the live set", () => {
+    expect(
+      pickCaptureGestureWindow({ liveWindows: windows, focused: null, lastFocusedId: 99 }),
+    ).toBe(windows[0]);
+    expect(
+      pickCaptureGestureWindow({ liveWindows: windows, focused: null, lastFocusedId: null }),
+    ).toBe(windows[0]);
+  });
+
+  /** Never a new window: with nothing live there is nowhere to deliver. */
+  it("answers null rather than conjuring a window", () => {
+    expect(
+      pickCaptureGestureWindow({ liveWindows: [], focused: null, lastFocusedId: 3 }),
+    ).toBeNull();
+  });
+});
+
+/* --- Fitting a shot into an attachment (captureShotFit.ts). --- */
+
+/**
+ * A fake image whose PNG size is proportional to its area, which is the only
+ * property the loop reasons about. `resize` halves the width and the fake
+ * halves the height with it, exactly as Electron's aspect-preserving resize
+ * does — so one halving is a quarter of the bytes.
+ */
+function fakeImage(width: number, height: number, bytesPerPixel = 1): CaptureShotImage {
+  return {
+    getSize: () => ({ width, height }),
+    resize: ({ width: nextWidth }) =>
+      fakeImage(nextWidth, Math.max(1, Math.floor((height * nextWidth) / width)), bytesPerPixel),
+    toPNG: () => Buffer.alloc(width * height * bytesPerPixel, 1),
+  };
+}
+
+function shotOf(bytes: number): CaptureGestureShot {
+  return {
+    pngBase64: Buffer.alloc(bytes, 1).toString("base64"),
+    source: "chord",
+  } as CaptureGestureShot;
+}
+
+describe("fitCaptureShotToAttachmentLimit", () => {
+  it("passes a shot that already fits through untouched", () => {
+    const shot = shotOf(100);
+    expect(fitCaptureShotToAttachmentLimit(shot, { fromBuffer: () => fakeImage(10, 10) }, 1_000)).toBe(shot);
+  });
+
+  it("halves until it fits and keeps the rest of the shot", () => {
+    // 64×64 = 4096 bytes against a 1000-byte ceiling: two halvings (1024, 256).
+    const shot = shotOf(4096);
+    const fitted = fitCaptureShotToAttachmentLimit(
+      shot,
+      { fromBuffer: () => fakeImage(64, 64) },
+      1_000,
+    );
+    expect(fitted).not.toBeNull();
+    expect(Buffer.from(fitted!.pngBase64, "base64").byteLength).toBe(256);
+    expect(fitted!.source).toBe("chord");
+  });
+
+  /**
+   * The refusal is the point: a shot that reached the composer and then failed
+   * to stage made the gesture silently do nothing, so the loop has to end in a
+   * `too_large` the user can be told about rather than in a bad attachment.
+   */
+  it("gives up after MAX_CAPTURE_SHOT_HALVINGS halvings rather than shrinking forever", () => {
+    let resizes = 0;
+    const image = (width: number, height: number): CaptureShotImage => ({
+      getSize: () => ({ width, height }),
+      resize: ({ width: nextWidth }) => {
+        resizes += 1;
+        return image(nextWidth, Math.max(1, Math.floor((height * nextWidth) / width)));
+      },
+      toPNG: () => Buffer.alloc(width * height, 1),
+    });
+    // 4096×4096 against 1000 bytes never fits inside the allowed halvings.
+    expect(
+      fitCaptureShotToAttachmentLimit(shotOf(4096 * 4096), { fromBuffer: () => image(4096, 4096) }, 1_000),
+    ).toBeNull();
+    expect(resizes).toBe(MAX_CAPTURE_SHOT_HALVINGS);
+  });
+
+  it("stops rather than dividing a one-pixel image", () => {
+    expect(
+      fitCaptureShotToAttachmentLimit(shotOf(50), { fromBuffer: () => fakeImage(1, 1, 50) }, 10),
+    ).toBeNull();
   });
 });
