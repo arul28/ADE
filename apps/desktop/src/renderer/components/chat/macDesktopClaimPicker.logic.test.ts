@@ -51,6 +51,20 @@ describe("macDesktopClaimLocation", () => {
       laneNames: { "lane-b": "docs-fix" },
     })).toEqual({ kind: "other-lane", label: "ADE · docs-fix" });
   });
+
+  it("calls an unheld window on a real monitor the main display, not another lane", () => {
+    // The driver answers with the CoreGraphics id of whichever display holds
+    // the window, so the user's own monitor arrives as a number. Reading that
+    // as ADE ownership labelled every ordinary window "ADE · another lane".
+    const onTheUsersSecondMonitor = makeWindow({ laneId: null, onDisplayId: 77 });
+    expect(macDesktopClaimLocation(onTheUsersSecondMonitor, { laneId: LANE, displayId: DISPLAY }))
+      .toEqual({ kind: "main", label: "Main display" });
+  });
+
+  it("calls a window this lane released onto the desk the main display", () => {
+    const released = makeWindow({ laneId: LANE, onDisplayId: 77 });
+    expect(macDesktopClaimLocation(released, { laneId: LANE, displayId: DISPLAY }).kind).toBe("main");
+  });
 });
 
 describe("macDesktopHasLease", () => {

@@ -89,7 +89,16 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
       });
     }
     ownership.touchDisplay(laneId);
-    deps.emit({ type: "windows-changed", laneId, windows });
+    // Re-read rather than announcing `reply.windows`.
+    //
+    // `launch` answers with the windows the app had published by the time it
+    // returned, which for a cold app is none. The driver's watcher parks the
+    // real window a moment later and emits its own `windows-changed` — and
+    // this emit, landing after it with an empty list, overwrote it. The panel
+    // then sat on "Windows 0" with the app plainly visible in the stream until
+    // something else touched the list. The listing is cheap and this is the
+    // only site that had a stale one to hand.
+    deps.emit({ type: "windows-changed", laneId, windows: await listInternal(laneId) });
     return {
       laneId,
       pid,

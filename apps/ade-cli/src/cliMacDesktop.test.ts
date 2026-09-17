@@ -7,7 +7,14 @@ import {
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
   MAC_DESKTOP_USER_HAS_CONTROL_CODE,
 } from "../../desktop/src/shared/types/macDesktop";
-import { buildCliPlan, formatOutput, macDesktopErrorHint, parseCliArgs } from "./cli";
+import {
+  buildCliPlan,
+  formatOutput,
+  macDesktopErrorHint,
+  macDesktopRecordingDurationMs,
+  macDesktopSocketPlacementWarning,
+  parseCliArgs,
+} from "./cli";
 
 /**
  * `ade mac-desktop`: what argv produces, and what the text output says.
@@ -42,6 +49,13 @@ function actionName(built: ExecutePlan, key = "result"): string {
   const params = step?.params as { arguments?: { action?: string } };
   return params?.arguments?.action ?? "";
 }
+
+// Every lane-scoped subcommand needs a lane; the session environment is where
+// a real caller's comes from.
+beforeEach(() => {
+  process.env.ADE_LANE_ID = "lane-1";
+  process.env.ADE_CHAT_SESSION_ID = "chat-1";
+});
 
 describe("ade mac-desktop dispatch", () => {
   const previousLane = process.env.ADE_LANE_ID;
@@ -341,5 +355,178 @@ describe("ade mac-desktop text output", () => {
     // The follow-up observation rides along, so no second round trip is needed.
     expect(text).toContain('[0] AXStaticText "Welcome" (10,10)');
     expect(text).toContain("windows  (none parked)");
+  });
+});
+
+describe("ade mac-desktop misplaced --socket", () => {
+  it("warns when --socket follows the subcommand, where nothing parses it", () => {
+    // Only the GLOBAL prefix reads --socket, so this placement silently talks
+    // to the default brain instead of the one the caller named.
+    expect(macDesktopSocketPlacementWarning(["observe", "--socket", "/tmp/a.sock"]))
+      .toBe("Note: put --socket before the subcommand");
+    expect(macDesktopSocketPlacementWarning(["observe", "--socket=/tmp/a.sock"]))
+      .toBe("Note: put --socket before the subcommand");
+    expect(macDesktopSocketPlacementWarning(["observe", "--window", "91"])).toBeNull();
+  });
+
+  it("warns on stderr and still builds the plan", () => {
+    const written: string[] = [];
+    const original = process.stderr.write;
+    (process.stderr as { write: unknown }).write = ((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as never;
+    try {
+      expect(plan(["mac-desktop", "observe", "--socket", "/tmp/a.sock"]).label)
+        .toBe("mac-desktop observe");
+    } finally {
+      (process.stderr as { write: unknown }).write = original;
+    }
+    expect(written.join("")).toContain("Note: put --socket before the subcommand");
+  });
+});
+
+describe("mac-desktop recording duration", () => {
+  it("prefers a container-measured duration over the stop-time delta", () => {
+    // The driver's delta spans record start → finishWriting returned, which
+    // overshoots the clip by the warm-up plus the mux.
+    expect(macDesktopRecordingDurationMs({ durationMs: 21_400, containerDurationMs: 12_000 }))
+      .toBe(12_000);
+    expect(macDesktopRecordingDurationMs({ durationMs: 21_400 })).toBe(21_400);
+    expect(macDesktopRecordingDurationMs({ durationMs: null })).toBeNull();
+    expect(macDesktopRecordingDurationMs({})).toBeNull();
+  });
+
+  it("renders the recording status with the container duration", () => {
+    const text = formatOutput(
+      {
+        laneId: "lane-1",
+        running: false,
+        startedAt: "2026-09-17T10:00:00.000Z",
+        filePath: "/tmp/clip.mp4",
+        durationMs: 21_400,
+        containerDurationMs: 12_000,
+        caption: "Login works",
+      },
+      { text: true } as never,
+      "mac-desktop-recording",
+    );
+    expect(text).toContain("12.0s");
+    expect(text).not.toContain("21.4s");
+    expect(text).toContain("/tmp/clip.mp4");
+  });
+});
+
+describe("mac-desktop observe labels", () => {
+  const observation = {
+    observation: {
+      id: "obs-a1",
+      laneId: "lane-1",
+      screenshotPath: "/tmp/obs.png",
+      display: { width: 1200, height: 800, scale: 2 },
+      elementCount: 0,
+      truncated: false,
+      elements: [],
+      windows: [],
+    },
+  };
+
+  it("calls a whole-display observation's size `display`", () => {
+    const text = formatOutput(observation, { text: true } as never, "mac-desktop-observation");
+    expect(text).toMatch(/^display\s+1200x800$/m);
+  });
+
+  it("calls a --window observation's size `capture`, because it is a crop", () => {
+    const text = formatOutput(
+      observation,
+      { text: true } as never,
+      "mac-desktop-window-observation",
+    );
+    expect(text).toMatch(/^capture\s+1200x800$/m);
+    expect(text).not.toMatch(/^display\s/m);
+  });
+
+  it("routes `observe --window` to the crop formatter and plain observe to the display one", () => {
+    expect(plan(["mac-desktop", "observe"]).formatter).toBe("mac-desktop-observation");
+    expect(plan(["mac-desktop", "observe", "--window", "91"]).formatter)
+      .toBe("mac-desktop-window-observation");
+    // The window id still reaches the service — the formatter choice must not
+    // consume the flag the action needs.
+    expect(actionArgs(plan(["mac-desktop", "observe", "--window", "91"])))
+      .toMatchObject({ windowId: 91 });
+  });
+});
+
+describe("mac-desktop off-screen fallback", () => {
+  const status = (display: Record<string, unknown>) =>
+    formatOutput(
+      { platform: "darwin", supported: true, display, windows: [], lanes: [] },
+      { text: true } as never,
+      "mac-desktop-status",
+    );
+
+  it("reports no display id at all in offscreen-region mode", () => {
+    const text = status({
+      name: "ADE · lane one",
+      displayId: 0,
+      mode: "offscreen-region",
+      width: 2560,
+      height: 1440,
+    });
+    expect(text).toMatch(/^display id\s+—$/m);
+    expect(text).toContain("off-screen region of the main display");
+  });
+
+  it("still prints a real CoreGraphics id for a virtual display", () => {
+    const text = status({
+      name: "ADE · lane one",
+      displayId: 7,
+      mode: "virtual",
+      width: 2560,
+      height: 1440,
+    });
+    expect(text).toMatch(/^display id\s+7$/m);
+    expect(text).not.toContain("off-screen region");
+  });
+});
+
+describe("mac-desktop proof text output", () => {
+  it("prints id, caption, path, and owners for every filed entry", () => {
+    const built = plan(["mac-desktop", "proof", "--caption", "Login works"]);
+    expect(built.formatter).toBe("mac-desktop-proof");
+    const text = formatOutput(
+      {
+        artifacts: [
+          {
+            id: "art-1",
+            kind: "screenshot",
+            title: "Login works",
+            description: "Login works after the fix",
+            uri: "/proof/art-1.png",
+          },
+          { id: "art-2", kind: "screenshot", title: "Second", uri: "/proof/art-2.png" },
+        ],
+        links: [
+          { id: "l1", artifactId: "art-1", ownerKind: "lane", ownerId: "lane-1" },
+          { id: "l2", artifactId: "art-1", ownerKind: "chat_session", ownerId: "chat-1" },
+        ],
+        confirmation: "Filed 2 artifacts",
+      },
+      { text: true } as never,
+      "mac-desktop-proof",
+    );
+    expect(text).toMatch(/^id\s+art-1$/m);
+    // The caption, not the title: the caption is what the record is judged on.
+    expect(text).toMatch(/^caption\s+Login works after the fix$/m);
+    expect(text).toMatch(/^path\s+\/proof\/art-1\.png$/m);
+    expect(text).toMatch(/^owners\s+lane:lane-1, chat_session:chat-1$/m);
+    // An entry nobody linked says so rather than printing an empty column.
+    expect(text).toMatch(/^owners\s+\(none\)$/m);
+    expect(text).toContain("Filed 2 artifacts");
+  });
+
+  it("says so when the ingest returned no rows", () => {
+    const text = formatOutput({ artifacts: [], links: [] }, { text: true } as never, "mac-desktop-proof");
+    expect(text).toContain("(no artifact rows returned)");
   });
 });

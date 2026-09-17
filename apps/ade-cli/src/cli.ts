@@ -399,7 +399,10 @@ type FormatterId =
   | "mac-desktop-status"
   | "mac-desktop-windows"
   | "mac-desktop-observation"
+  | "mac-desktop-window-observation"
   | "mac-desktop-action"
+  | "mac-desktop-recording"
+  | "mac-desktop-proof"
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
@@ -11907,7 +11910,24 @@ function isMacDesktopHandleToken(value: string): boolean {
   return /^obs-[A-Za-z0-9_-]+:e:\d+$/.test(value);
 }
 
+/**
+ * `--socket` is a GLOBAL flag, and only the global prefix parses it.
+ *
+ * `ade mac-desktop observe --socket /tmp/other.sock` therefore reaches here as
+ * an ordinary subcommand argument, is ignored, and the command silently runs
+ * against the DEFAULT brain — a wrong answer that looks like a right one. The
+ * guard cannot fix the placement (the socket is chosen before the plan is
+ * built) but it can refuse to be silent about it.
+ */
+function macDesktopSocketPlacementWarning(args: string[]): string | null {
+  return args.some((token) => token === "--socket" || token.startsWith("--socket="))
+    ? "Note: put --socket before the subcommand"
+    : null;
+}
+
 function buildMacDesktopPlan(args: string[]): CliPlan {
+  const socketWarning = macDesktopSocketPlacementWarning(args);
+  if (socketWarning) process.stderr.write(`${socketWarning}\n`);
   const tail = takeArgsAfterTerminator(args, MAC_DESKTOP_VALUE_CARRIER_FLAGS) ?? [];
   const positionals = (rest: string[]): string[] => [
     ...standalonePositionals(rest, MAC_DESKTOP_VALUE_CARRIER_FLAGS),
@@ -12015,13 +12035,21 @@ function buildMacDesktopPlan(args: string[]): CliPlan {
       ...(tail.length ? { args: [...tail] } : {}),
     });
   }
-  if (sub === "observe" || sub === "snapshot")
-    return desktopAction("mac-desktop observe", "observe", {
+  if (sub === "observe" || sub === "snapshot") {
+    const observeArgs = {
       ...requireLane(),
       ...(windowId() == null ? {} : { windowId: windowId() }),
       ...(readFlag(args, ["--map", "--element-map", "--ui-map"]) ? { map: true } : {}),
       limit: readNumberOption(args, ["--limit"]),
-    }, "mac-desktop-observation");
+    };
+    // A windowed observe is a CROP, not the display, and only argv knows that.
+    return desktopAction(
+      "mac-desktop observe",
+      "observe",
+      observeArgs,
+      windowId() == null ? "mac-desktop-observation" : "mac-desktop-window-observation",
+    );
+  }
   if (sub === "click" || sub === "tap") {
     const x = readNumberOption(args, ["--x"]);
     const y = readNumberOption(args, ["--y"]);
@@ -12145,9 +12173,14 @@ function buildMacDesktopPlan(args: string[]): CliPlan {
         ...requireLane(),
         caption: readValue(args, ["--caption", "--description", "--desc"]),
         fps: readNumberOption(args, ["--fps"]),
-      });
+      }, "mac-desktop-recording");
     if (mode === "stop")
-      return desktopAction("mac-desktop record stop", "stopRecording", requireLane());
+      return desktopAction(
+        "mac-desktop record stop",
+        "stopRecording",
+        requireLane(),
+        "mac-desktop-recording",
+      );
     throw new CliUsageError(`Unknown mac-desktop record command: ${mode}. Use start or stop.`);
   }
   if (sub === "stream" || sub === "live" || sub === "stream-status")
@@ -12219,6 +12252,7 @@ function buildMacDesktopPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "mac-desktop proof",
+      formatter: "mac-desktop-proof",
       steps: [
         actionStep("screenshot", "mac_desktop", "screenshot", captureArgs),
         // Re-observe AFTER the capture so the state that is returned is the
@@ -25180,10 +25214,22 @@ function macDesktopWindowsFooter(windows: JsonObject[]): string[] {
   ];
 }
 
-function macDesktopObservationSections(observation: JsonObject): string[] {
+/**
+ * `true` when the observation covers one window rather than the whole display.
+ *
+ * `--window <id>` crops the capture to that window, so the WxH on the header
+ * is the window's size and calling it "display" told the caller the screen had
+ * changed resolution. The caller's own argv is the authority here — the
+ * observation record carries no window id — so the plan picks the formatter.
+ */
+function macDesktopObservationSections(
+  observation: JsonObject,
+  options: { windowCapture?: boolean } = {},
+): string[] {
   const elements = firstArray(observation, ["elements"]);
   const windows = firstArray(observation, ["windows"]);
   const display = firstRecord(observation, ["display"]);
+  const sizeLabel = options.windowCapture === true ? "capture" : "display";
   const header = renderKeyValues("ADE Mac Desktop observation", [
     ["observation", observation.id],
     ["lane", observation.laneId],
@@ -25191,7 +25237,7 @@ function macDesktopObservationSections(observation: JsonObject): string[] {
     ["image", observation.screenshotPath],
     ["element map", observation.mapPath],
     [
-      "display",
+      sizeLabel,
       display?.width && display?.height ? `${display.width}x${display.height}` : null,
     ],
     ["caption", observation.caption],
@@ -25220,10 +25266,37 @@ function macDesktopObservationSections(observation: JsonObject): string[] {
   return sections;
 }
 
-function formatMacDesktopObservation(value: unknown): string {
+function formatMacDesktopObservation(
+  value: unknown,
+  options: { windowCapture?: boolean } = {},
+): string {
   const result = isRecord(value) ? value : {};
   const observation = firstRecord(result, ["observation"]) ?? result;
-  return macDesktopObservationSections(observation).join("\n");
+  return macDesktopObservationSections(observation, options).join("\n");
+}
+
+/** The fail-closed fallback: no virtual display was created for this lane. */
+function macDesktopIsOffscreenRegion(
+  display: JsonObject | null,
+  status: JsonObject,
+): boolean {
+  return (asString(display?.mode) ?? asString(status.displayMode)) === "offscreen-region";
+}
+
+/**
+ * `7`, or `—` when there is no CoreGraphics display behind the lane.
+ *
+ * The service reports `displayId: 0` in `offscreen-region` mode today; `0` is a
+ * valid display id on macOS, so it is rendered as "none" rather than echoed.
+ */
+function macDesktopDisplayIdCell(
+  display: JsonObject | null,
+  status: JsonObject,
+): string | number | null {
+  const raw = display?.displayId;
+  if (typeof raw !== "number") return raw == null ? null : (raw as never);
+  if (macDesktopIsOffscreenRegion(display, status) || raw === 0) return "—";
+  return raw;
 }
 
 function formatMacDesktopStatus(value: unknown): string {
@@ -25246,7 +25319,11 @@ function formatMacDesktopStatus(value: unknown): string {
     ["accessibility", permissions?.accessibility],
     ["mode", display?.mode ?? status.displayMode],
     ["display", display?.name],
-    ["display id", display?.displayId],
+    // `offscreen-region` is the fallback where no CoreGraphics display was
+    // created at all: there is no id to report, and printing `0` read as a
+    // real display id (0 is the MAIN display's id on macOS) — the one thing
+    // this mode is emphatically NOT using. An em dash says "none".
+    ["display id", macDesktopDisplayIdCell(display, status)],
     [
       "size",
       display?.width && display?.height ? `${display.width}x${display.height}` : null,
@@ -25265,13 +25342,24 @@ function formatMacDesktopStatus(value: unknown): string {
   if (status.supported === true && !display) {
     sections.push("", "No display for this lane yet — run: ade mac-desktop start");
   }
+  if (macDesktopIsOffscreenRegion(display, status)) {
+    sections.push(
+      "",
+      "Windows are parked in an off-screen region of the main display — this Mac has no virtual display.",
+    );
+  }
   sections.push(...macDesktopWindowsFooter(windows));
   if (lanes.length) {
     sections.push(
       "",
       renderTable(
         ["lane", "display", "windows", "streaming"],
-        lanes.map((lane) => [lane.laneName ?? lane.laneId, lane.displayId, lane.windowCount, lane.streaming]),
+        lanes.map((lane) => [
+          lane.laneName ?? lane.laneId,
+          lane.displayId === 0 ? "—" : lane.displayId,
+          lane.windowCount,
+          lane.streaming,
+        ]),
         "(no lanes hold a display)",
       ),
     );
@@ -25330,6 +25418,84 @@ function formatMacDesktopAction(value: unknown): string {
   ]);
   if (!observation) return header;
   return [header, "", ...macDesktopObservationSections(observation)].join("\n");
+}
+
+/**
+ * How long the clip actually is.
+ *
+ * The container is the authority: the driver's own stop-time delta includes
+ * everything between `record start` and the moment `finishWriting` returned —
+ * stream warm-up before the first frame and up to fifteen seconds of muxing
+ * after the last one — so it reports a clip longer than the file plays. When
+ * the service hands back a container-measured duration, that wins.
+ */
+function macDesktopRecordingDurationMs(record: JsonObject): number | null {
+  for (const key of ["containerDurationMs", "clipDurationMs", "durationMs"]) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+/** `record start` / `record stop`: is it running, where is the file, how long. */
+function formatMacDesktopRecording(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const status = firstRecord(record, ["recording", "status"]) ?? record;
+  const durationMs = macDesktopRecordingDurationMs(status);
+  return renderKeyValues("ADE Mac Desktop recording", [
+    ["lane", status.laneId],
+    ["running", status.running],
+    ["started", status.startedAt],
+    ["file", status.filePath],
+    ["duration", durationMs == null ? null : `${(durationMs / 1000).toFixed(1)}s`],
+    ["caption", status.caption],
+    [
+      "filed",
+      status.running === true
+        ? null
+        : status.caption
+          ? "yes — a captioned recording goes to the proof drawer"
+          : "no — add --caption to file it as proof",
+    ],
+  ]);
+}
+
+/**
+ * `mac-desktop proof`: the record that was filed, per entry.
+ *
+ * Four facts make a proof record reviewable, and the shared `proof-filed`
+ * formatter printed only three of them — it showed the artifact's *title* and
+ * dropped the owners entirely, so a caller could not tell which lane or chat
+ * the capture had landed against, which is the exact thing `mac-desktop proof`
+ * takes pains to name explicitly.
+ */
+function formatMacDesktopProofFiled(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const artifacts = firstArray(record, ["artifacts"]);
+  const links = firstArray(record, ["links"]);
+  const ownersFor = (artifactId: unknown): string => {
+    const owners = links
+      .filter((link) => link.artifactId === artifactId)
+      .map((link) => `${asString(link.ownerKind) ?? "?"}:${asString(link.ownerId) ?? "?"}`);
+    return owners.length ? [...new Set(owners)].join(", ") : "(none)";
+  };
+  const sections = artifacts.map((artifact) =>
+    renderKeyValues("proof", [
+      ["id", artifact.id],
+      // The caption is what the record is judged on; the title is usually the
+      // same string and never the more specific one.
+      ["caption", artifact.description ?? artifact.title],
+      ["path", artifact.uri ?? artifact.path],
+      ["owners", ownersFor(artifact.id)],
+    ]),
+  );
+  const confirmation = asString(record.confirmation);
+  return [
+    artifacts.length
+      ? sections.join("\n\n")
+      : "proof\n(no artifact rows returned)",
+    ...(confirmation ? ["", confirmation] : []),
+  ].join("\n");
 }
 
 function formatBrowserObservation(value: unknown): string {
@@ -26253,8 +26419,14 @@ function formatTextOutput(
       return formatMacDesktopWindows(value);
     case "mac-desktop-observation":
       return formatMacDesktopObservation(value);
+    case "mac-desktop-window-observation":
+      return formatMacDesktopObservation(value, { windowCapture: true });
     case "mac-desktop-action":
       return formatMacDesktopAction(value);
+    case "mac-desktop-recording":
+      return formatMacDesktopRecording(value);
+    case "mac-desktop-proof":
+      return formatMacDesktopProofFiled(value);
     case "app-control-status":
       return formatAppControlStatus(value);
     case "app-control-snapshot":
@@ -28140,6 +28312,8 @@ export {
   iosSimulatorErrorHint,
   iosSimulatorSubcommandFromArgv,
   macDesktopErrorHint,
+  macDesktopRecordingDurationMs,
+  macDesktopSocketPlacementWarning,
   applySyncWebPairingFlags,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,

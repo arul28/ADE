@@ -29,7 +29,7 @@ import {
 } from "../terminals/workToolChrome";
 import { H264VideoCanvas } from "./H264VideoCanvas";
 import { macDesktopApi } from "./macDesktopApi";
-import { displayPointToViewPoint, viewPointToDisplayPoint } from "./macDesktopGeometry";
+import { displayPointToViewPoint, macDesktopContentBox, viewPointToDisplayPoint } from "./macDesktopGeometry";
 import {
   createMacDesktopLeaseHeartbeat,
   macDesktopUserHasControl,
@@ -40,6 +40,7 @@ import { useMacDesktopStatus } from "./useMacDesktopStatus";
 import { MacDesktopClaimPicker, MacDesktopLeaseChip } from "./MacDesktopClaimPicker";
 import { MacDesktopEmptyOverlay } from "./MacDesktopEmptyOverlay";
 import { macDesktopHasLease } from "./macDesktopClaimPicker.logic";
+import { macDesktopErrorText } from "./macDesktopErrorText";
 import {
   macDesktopFooter,
   macDesktopParkedWindows,
@@ -178,6 +179,20 @@ export function ChatMacDesktopPanel({
     return displayPointToViewPoint({ x: cursor.x, y: cursor.y, rect: viewRect, display });
   }, [cursor, display, viewRect]);
 
+  /**
+   * Where the picture actually is, so the frame can sit on it.
+   *
+   * A 16:9 desktop in a tall tools column left a third of the pane empty above
+   * the image and a third below it, inside a rounded border drawn around the
+   * whole pane — so the border framed the emptiness rather than the screen.
+   * The canvas still fills the surface and letterboxes itself; only the border,
+   * the radius and the takeover ring follow the image.
+   */
+  const contentBox = useMemo(
+    () => (display ? macDesktopContentBox(viewRect, display) : null),
+    [display, viewRect],
+  );
+
   /* ── Takeover ────────────────────────────────────────────────────────── */
 
   const returnControl = useCallback(async () => {
@@ -243,7 +258,7 @@ export function ChatMacDesktopPanel({
       );
       setStatus((current) => (current ? { ...current, lease: next } : current));
     } catch (error) {
-      setStatusError(error instanceof Error ? error.message : String(error));
+      setStatusError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
     } finally {
       setBusy(false);
     }
@@ -271,7 +286,7 @@ export function ChatMacDesktopPanel({
         : await macDesktopApi().startRecording({ laneId, chatSessionId: sessionId }, pinRef.current);
       setStatus((current) => (current ? { ...current, recording: next } : current));
     } catch (error) {
-      setStatusError(error instanceof Error ? error.message : String(error));
+      setStatusError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
     } finally {
       setBusy(false);
     }
@@ -283,7 +298,7 @@ export function ChatMacDesktopPanel({
       await macDesktopApi().present({ laneId, destination }, pinRef.current);
       await refreshStatus();
     } catch (error) {
-      setStatusError(error instanceof Error ? error.message : String(error));
+      setStatusError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
     } finally {
       setBusy(false);
     }
@@ -305,7 +320,7 @@ export function ChatMacDesktopPanel({
       const all = await macDesktopApi().listWindows({ laneId: null }, pinRef.current);
       setClaimable(all);
     } catch (error) {
-      setClaimError(error instanceof Error ? error.message : String(error));
+      setClaimError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
     } finally {
       setClaimableLoading(false);
     }
@@ -341,7 +356,7 @@ export function ChatMacDesktopPanel({
       await macDesktopApi().claimWindow({ laneId, windowId, chatSessionId: sessionId }, pinRef.current);
       await refreshStatus();
     } catch (error) {
-      setClaimError(error instanceof Error ? error.message : String(error));
+      setClaimError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
       throw error;
     } finally {
       setBusy(false);
@@ -358,7 +373,7 @@ export function ChatMacDesktopPanel({
     try {
       await macDesktopApi().releaseWindow({ laneId, windowId }, pinRef.current);
     } catch (error) {
-      setStatusError(error instanceof Error ? error.message : String(error));
+      setStatusError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
     }
   }, [laneId, setStatusError]);
 
@@ -489,12 +504,12 @@ export function ChatMacDesktopPanel({
           <button
             type="button"
             className={cn(WORK_TOOL_CHROME_CHIP, "max-w-[180px] truncate text-amber-300")}
-            title={realInput.inputError}
+            title={macDesktopErrorText(realInput.inputError) ?? undefined}
             data-testid="mac-desktop-input-error"
             onClick={realInput.clearInputError}
           >
             <WarningCircle size={11} />
-            {realInput.inputError}
+            {macDesktopErrorText(realInput.inputError)}
           </button>
         ) : null}
 
@@ -511,7 +526,11 @@ export function ChatMacDesktopPanel({
           </button>
           {windowsOpen ? (
             <div
-              className="absolute left-0 top-full z-50 mt-1 max-h-[280px] min-w-[240px] overflow-auto rounded-[10px] border border-border bg-surface p-1 shadow-float"
+              /* `max-w` in view units, not a fixed pixel cap: a window title is
+                 the only way to tell two windows of one app apart, and
+                 "TextEdit — Untit…" in a menu with room to spare was the pane
+                 refusing to say which one it holds. */
+              className="absolute left-0 top-full z-50 mt-1 max-h-[280px] w-max min-w-[240px] max-w-[min(420px,80vw)] overflow-auto rounded-[10px] border border-border bg-surface p-1 shadow-float"
               data-testid="mac-desktop-windows-menu"
             >
               {parkedWindows.length ? null : (
@@ -636,9 +655,8 @@ export function ChatMacDesktopPanel({
         className={cn(
           expanded
             ? "fixed inset-0 z-[1000] overflow-hidden bg-[color-mix(in_srgb,var(--color-surface)_92%,black)]"
-            : cn(WORK_TOOL_SURFACE, "bg-surface"),
+            : "relative min-h-0 flex-1 overflow-hidden bg-surface",
           "flex items-center justify-center",
-          iHaveControl && "shadow-[inset_0_0_0_2px_rgb(251_191_36_/_0.8)]",
         )}
         onPointerDown={realInput.onPointerDown}
         onPointerUp={realInput.onPointerUp}
@@ -660,7 +678,7 @@ export function ChatMacDesktopPanel({
             className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-[12px] text-muted-fg"
             data-testid="mac-desktop-surface-status"
           >
-            {live.error ?? (live.url ? "Starting display…" : "Connecting to the lane's screen…")}
+            {macDesktopErrorText(live.error) ?? (live.url ? "Starting display…" : "Connecting to the lane's screen…")}
           </p>
         ) : null}
         {live.url ? (
@@ -671,6 +689,32 @@ export function ChatMacDesktopPanel({
             onDimensions={live.onDimensions}
             onCanvas={live.onCanvas}
             className={live.status === "playing" ? undefined : "opacity-0"}
+          />
+        ) : null}
+
+        {/*
+          The frame, drawn on the picture rather than around the pane.
+
+          `pointer-events-none` on purpose: this is chrome, and every gesture
+          underneath it belongs to the surface, including the ones that land in
+          the letterbox and are refused there.
+        */}
+        {contentBox && contentBox.width > 0 ? (
+          <span
+            aria-hidden
+            data-testid="mac-desktop-frame"
+            className={cn(
+              "pointer-events-none absolute z-[9] rounded-[10px]",
+              iHaveControl
+                ? "shadow-[inset_0_0_0_2px_rgb(251_191_36_/_0.8)]"
+                : "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]",
+            )}
+            style={{
+              left: contentBox.offsetX,
+              top: contentBox.offsetY,
+              width: contentBox.width,
+              height: contentBox.height,
+            }}
           />
         ) : null}
 

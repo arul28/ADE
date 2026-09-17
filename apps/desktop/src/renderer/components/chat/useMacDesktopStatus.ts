@@ -9,6 +9,7 @@ import {
 } from "../../../shared/types/macDesktop";
 import { MAC_DESKTOP_CURSOR_FADE_MS } from "./macDesktopGeometry";
 import { captionMacDesktopFrame, clearMacDesktopFrame } from "./macDesktopFrameStore";
+import { macDesktopErrorText } from "./macDesktopErrorText";
 import { macDesktopApi } from "./macDesktopApi";
 
 /**
@@ -165,7 +166,7 @@ export function useMacDesktopStatus(args: {
         );
         if (!cancelled) setStatus(started);
       } catch (caught) {
-        if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
+        if (!cancelled) setError(macDesktopErrorText(caught instanceof Error ? caught.message : String(caught)));
       }
     })();
     return () => {

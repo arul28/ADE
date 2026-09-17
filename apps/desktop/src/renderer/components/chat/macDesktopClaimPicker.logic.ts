@@ -81,8 +81,14 @@ export function macDesktopClaimLocation(
   if (args.displayId != null && window.onDisplayId === args.displayId) {
     return { kind: "this-lane", label: "This lane's screen" };
   }
+  // A display id alone does not mean "a lane's screen": the driver answers with
+  // the CoreGraphics id of whatever display contains the window, so the user's
+  // own monitor comes back as a number too. Only a lane holder makes a window
+  // ADE's, and reading the id as ownership labelled every ordinary window on
+  // the Mac "ADE · another lane".
   const holder = window.laneId;
-  const name = holder ? args.laneNames?.[holder] ?? holder.slice(0, 8) : "another lane";
+  if (!holder || holder === args.laneId) return { kind: "main", label: "Main display" };
+  const name = args.laneNames?.[holder] ?? holder.slice(0, 8);
   return { kind: "other-lane", label: `ADE · ${name}` };
 }
 
