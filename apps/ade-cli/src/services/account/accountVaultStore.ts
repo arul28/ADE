@@ -336,9 +336,9 @@ export function createAccountVaultStore(args: {
       key: string,
       value: string,
       options?: { refreshOwner?: string | null },
-    ): void {
+    ): boolean {
       const refreshOwner = options?.refreshOwner ?? null;
-      cache.mutate((current, queue) => {
+      return cache.mutate((current, queue) => {
         current.rows[cacheKey(scope, kind, key)] = {
           value,
           updatedAt: new Date(now()).toISOString(),
@@ -349,8 +349,8 @@ export function createAccountVaultStore(args: {
       });
     },
 
-    remove(scope: string, kind: AccountVaultItemKind, key: string): void {
-      cache.mutate((current, queue) => {
+    remove(scope: string, kind: AccountVaultItemKind, key: string): boolean {
+      return cache.mutate((current, queue) => {
         delete current.rows[cacheKey(scope, kind, key)];
         queue({ scope, kind, key, value: null, deleted: true, refreshOwner: null });
       });

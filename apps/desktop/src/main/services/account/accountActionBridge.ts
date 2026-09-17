@@ -26,6 +26,13 @@ export type AccountActionBridgeOptions<TRow> = {
   logger?: { debug?(message: string, meta?: Record<string, unknown>): void };
   /** Decode one row and return null for an invalid wire value. */
   decodeRow: (value: unknown) => TRow | null;
+  /** The message returned when the store rejects a mutation. */
+  rejectedMessage?: string;
+};
+
+type CallOptions = {
+  /** Treat a bare false action result as a rejected write. */
+  rejectFalse?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -45,11 +52,17 @@ export function createAccountActionBridge<TRow>(options: AccountActionBridgeOpti
     unavailable: true,
     message: options.unavailableMessage,
   });
+  const rejected = <T>(): AccountStoreResult<T> => ({
+    ok: false,
+    rejected: true,
+    message: options.rejectedMessage ?? "The account store rejected this write because account ownership changed.",
+  });
 
   const call = async <T>(
     action: string,
     argsList: unknown[],
     decode: (raw: unknown) => T,
+    callOptions: CallOptions = {},
   ): Promise<AccountStoreResult<T>> => {
     try {
       const pool = options.getPool();
@@ -61,7 +74,9 @@ export function createAccountActionBridge<TRow>(options: AccountActionBridgeOpti
         action,
         argsList,
       });
-      return { ok: true, value: decode(unwrap(response?.result)) };
+      const raw = unwrap(response?.result);
+      if (callOptions.rejectFalse && raw === false) return rejected<T>();
+      return { ok: true, value: decode(raw) };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error ?? "");
       options.logger?.debug?.(`${options.domain}.call_failed`, { action, error: message });

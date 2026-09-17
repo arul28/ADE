@@ -4,6 +4,11 @@ import path from "node:path";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import {
+  deviceCredentialProvenance,
+  normalizeCredentialProvenance,
+  type CredentialProvenance,
+} from "../../../shared/types/credentialProvenance";
 import type {
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
@@ -37,9 +42,7 @@ type ProjectSecretIndexEntry = {
   updatedAt: string;
   valueLength: number;
   storage: ProjectSecretStorage;
-  source: "device" | "account";
-  accountUserId: string | null;
-};
+} & CredentialProvenance;
 
 type ProjectSecretIndex = {
   version: 1;
@@ -93,19 +96,13 @@ function parseIndex(raw: string | null): ProjectSecretIndex {
       const valueLength = Number.isSafeInteger(candidate.valueLength) && Number(candidate.valueLength) >= 0
         ? Number(candidate.valueLength)
         : 0;
+      const provenance = normalizeCredentialProvenance(candidate) ?? deviceCredentialProvenance();
       normalizedEntries[name] = {
         createdAt,
         updatedAt,
         valueLength,
         storage: normalizeStorage(candidate.storage),
-        source: candidate.source === "account" && typeof candidate.accountUserId === "string"
-          && candidate.accountUserId.trim().length > 0
-          ? "account"
-          : "device",
-        accountUserId: candidate.source === "account" && typeof candidate.accountUserId === "string"
-          && candidate.accountUserId.trim().length > 0
-          ? candidate.accountUserId.trim()
-          : null,
+        ...provenance,
       };
     }
     return { version: 1, entries: normalizedEntries };
@@ -481,7 +478,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
     },
 
     /** Provenance used by account migration; values are never returned here. */
-    getSecretProvenance(name: string): { source: "device" | "account"; accountUserId: string | null } | null {
+    getSecretProvenance(name: string): CredentialProvenance | null {
       const normalized = normalizeSecretName(name);
       const entry = readIndex().entries[normalized];
       return entry

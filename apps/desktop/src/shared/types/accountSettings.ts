@@ -22,11 +22,11 @@ export type AccountSettingRow = {
 };
 
 /**
- * Every account-settings call answers with one of these.
+ * Every account-settings call answers with one of these. A rejected write is
+ * distinct from an unavailable runtime so callers can keep it dirty for retry.
  *
- * `ok: false` is an ordinary answer, not an error: it means no brain was
- * reachable, and the caller's correct response is to keep its local copy and
- * try again later. Making unreachability a value rather than a rejection is
- * what keeps a theme change working on a train.
+ * `ok: false` is an ordinary answer, not an error: unavailable means no brain
+ * was reachable, while rejected means account ownership changed during the
+ * write. Both keep the local copy safe; the latter must also remain dirty.
  */
 export type AccountSettingsResult<T> = AccountStoreResult<T>;

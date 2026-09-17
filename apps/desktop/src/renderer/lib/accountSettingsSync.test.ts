@@ -114,16 +114,21 @@ const settle = async () => {
 
 let timers: Array<() => void>;
 
-function baseOptions(overrides: AccountSettingsSyncOptions<FakeState>) {
+type FakeSyncOverrides = Omit<AccountSettingsSyncOptions<FakeState>, "settings"> & {
+  settings?: readonly AccountSyncedSetting<FakeState>[];
+};
+
+function baseOptions(overrides: FakeSyncOverrides) {
+  const { settings = SETTINGS, ...rest } = overrides;
   return {
-    settings: SETTINGS,
+    settings,
     storage: createStorage(),
     setInterval: (fn: () => void) => {
       timers.push(fn);
       return timers.length - 1;
     },
     clearInterval: () => {},
-    ...overrides,
+    ...rest,
   } satisfies AccountSettingsSyncOptions<FakeState>;
 }
 
@@ -180,6 +185,37 @@ describe("accountSettingsSync (renderer)", () => {
     await settle();
     state.setTheme("light");
     expect(api.set).toHaveBeenCalledWith({ scope: "all", key: "theme", value: "light" });
+    stop();
+  });
+
+  it("A2: keeps the dirty key and local stamp when the account write is rejected", async () => {
+    const { store, state } = createStore({ theme: "dark" });
+    const storage = createStorage();
+    const api = createApi();
+    api.set.mockResolvedValueOnce({
+      ok: false as const,
+      rejected: true as const,
+      message: "ownership changed",
+    });
+    const stop = startAccountSettingsSync(
+      baseOptions({
+        store,
+        storage,
+        getApi: () => api,
+        isSignedIn: () => true,
+        now: () => Date.parse("2026-09-16T12:00:00.000Z"),
+      }),
+    );
+    await settle();
+
+    state.setTheme("light");
+    await settle();
+
+    expect(JSON.parse(storage.map.get("ade.accountSettings.dirty.v1") ?? "[]")).toContain(
+      "__signed-in__\u0000theme",
+    );
+    expect(JSON.parse(storage.map.get("ade.accountSettings.stamps.v1") ?? "{}"))
+      .toMatchObject({ "__signed-in__": { "all theme": "2026-09-16T12:00:00.000Z" } });
     stop();
   });
 

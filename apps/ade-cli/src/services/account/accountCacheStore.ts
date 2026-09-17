@@ -122,8 +122,6 @@ export type AccountCacheStore<
   TPending extends AccountCachePending,
 > = {
   readCache(): AccountCacheFile<TRow, TPending>;
-  persist(): void;
-  queue(write: Omit<TPending, "seq">): void;
   /** Apply a local mutation only while its owner and cache generation remain current. */
   mutate(mutator: (
     current: AccountCacheFile<TRow, TPending>,
@@ -203,6 +201,8 @@ export function createAccountCacheStore<
     }
     const loaded = isRecord(parsed) ? parsed : null;
     const loadedAccountUserId = loaded?.accountUserId;
+    const persistedOwnerChanged =
+      typeof loadedAccountUserId === "string" && loadedAccountUserId !== accountUserId;
     if (
       !loaded
       || loaded.version !== config.cacheVersion
@@ -213,6 +213,7 @@ export function createAccountCacheStore<
       )
       || (loadedAccountUserId ?? null) !== accountUserId
     ) {
+      if (persistedOwnerChanged) epoch += 1;
       cache = emptyCache(accountUserId);
       return cache;
     }
@@ -284,10 +285,6 @@ export function createAccountCacheStore<
     // replaying an older one would resurrect a value the user already replaced.
     current.pending = current.pending.filter((existing) => !config.pendingMatches(existing, write));
     current.pending.push(entry);
-  }
-
-  function queue(write: Omit<TPending, "seq">): void {
-    queueInto(readCache(), write);
   }
 
   function dropMutation(reason: "signed_out" | "owner_changed" | "epoch_changed"): void {
@@ -429,8 +426,6 @@ export function createAccountCacheStore<
 
   return {
     readCache,
-    persist,
-    queue,
     mutate,
     cachePath,
 

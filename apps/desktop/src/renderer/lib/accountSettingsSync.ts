@@ -131,7 +131,7 @@ export type AccountSettingsApi = {
   sync(): Promise<AccountSettingsResult<null>>;
 };
 
-export type AccountSettingsSyncOptions<State = AccountSyncedState> = {
+type AccountSettingsSyncOptionsBase<State> = {
   store: AccountSyncedStore<State>;
   /** Null whenever the bridge is missing — the web client, an older preload. */
   getApi: () => AccountSettingsApi | null | undefined;
@@ -150,6 +150,14 @@ export type AccountSettingsSyncOptions<State = AccountSyncedState> = {
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
 };
+
+export type AccountSettingsSyncOptions<State = AccountSyncedState> =
+  State extends AccountSyncedState
+    ? AccountSettingsSyncOptionsBase<State>
+    : AccountSettingsSyncOptionsBase<State> & {
+        /** Custom state registries must declare the settings they synchronize. */
+        settings: readonly AccountSyncedSetting<State>[];
+      };
 
 type Stamps = Record<string, string>;
 type StampsByUser = Record<string, Stamps>;
@@ -338,8 +346,8 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     }
   };
 
-  function markDirty(userId: string | null, key: string): void {
-    dirtyKeys.add(dirtyKey(userId, key));
+  function markDirtyKey(key: string): void {
+    dirtyKeys.add(key);
     persistDirtyKeys();
   }
 
@@ -353,20 +361,20 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     const scopeKey = scopeKeyFor(entry);
     const userIdAtQueue = accountUserId;
     if (!scopeKey || !api || !options.isSignedIn() || !userIdAtQueue) {
-      markDirty(userIdAtQueue, entry.key);
+      markDirtyKey(existingDirtyKey);
       return;
     }
     try {
       const generationAtQueue = identityGeneration;
       if (resolveAccountUserId() !== userIdAtQueue) {
-        markDirty(userIdAtQueue, entry.key);
+        markDirtyKey(existingDirtyKey);
         return;
       }
       // Calling set is the queue boundary. Do not move the stamp earlier: a
       // signed-out edit must remain dirty and must not suppress its next pull.
       const pending = api.set({ scope: scopeKey, key: entry.key, value });
       if (identityGeneration !== generationAtQueue || resolveAccountUserId() !== userIdAtQueue) {
-        markDirty(userIdAtQueue, entry.key);
+        markDirtyKey(existingDirtyKey);
         return;
       }
       stamps[stampKey(scopeKey, entry.key)] = new Date(now()).toISOString();
@@ -374,12 +382,12 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       persistStamps();
       persistDirtyKeys();
       void Promise.resolve(pending).then((result) => {
-        if (!result || result.ok !== true) markDirty(userIdAtQueue, entry.key);
+        if (!result || result.ok !== true) markDirtyKey(existingDirtyKey);
       }).catch(() => {
-        markDirty(userIdAtQueue, entry.key);
+        markDirtyKey(existingDirtyKey);
       });
     } catch {
-      markDirty(userIdAtQueue, entry.key);
+      markDirtyKey(existingDirtyKey);
     }
   }
 

@@ -214,9 +214,9 @@ export function createAccountSettingsStore(args: {
      * Record a change. Answers from the cache immediately; the upload is the
      * store's problem, not the caller's.
      */
-    set(scope: string, key: string, value: unknown): void {
+    set(scope: string, key: string, value: unknown): boolean {
       const changedAt = new Date(now()).toISOString();
-      cache.mutate((current, queue) => {
+      return cache.mutate((current, queue) => {
         current.rows[cacheKey(scope, key)] = {
           value,
           // Provisional until the relay stamps it. Marked with the local clock so
@@ -229,8 +229,8 @@ export function createAccountSettingsStore(args: {
       });
     },
 
-    remove(scope: string, key: string): void {
-      cache.mutate((current, queue) => {
+    remove(scope: string, key: string): boolean {
+      return cache.mutate((current, queue) => {
         delete current.rows[cacheKey(scope, key)];
         queue({
           scope,

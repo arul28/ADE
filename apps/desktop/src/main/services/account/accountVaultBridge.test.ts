@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  ACCOUNT_VAULT_REJECTED_MESSAGE,
   ACCOUNT_VAULT_UNAVAILABLE_MESSAGE,
   createAccountVaultBridge,
 } from "./accountVaultBridge";
@@ -80,6 +81,24 @@ describe("accountVaultBridge (main)", () => {
       domain: "account_vault",
       action: "sync",
       argsList: [],
+    });
+  });
+
+  it("A2: distinguishes a rejected write from an unavailable runtime", async () => {
+    const bridge = createAccountVaultBridge({
+      getPool: () => poolReturning({ domain: "account_vault", action: "set", result: false }),
+      getRootPath: () => "/repo",
+    });
+
+    expect(await bridge.set("all", "secret", "token", "value")).toEqual({
+      ok: false,
+      rejected: true,
+      message: ACCOUNT_VAULT_REJECTED_MESSAGE,
+    });
+    expect(await bridge.remove("all", "secret", "token")).toEqual({
+      ok: false,
+      rejected: true,
+      message: ACCOUNT_VAULT_REJECTED_MESSAGE,
     });
   });
 

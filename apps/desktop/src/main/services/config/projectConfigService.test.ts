@@ -5,7 +5,6 @@ import YAML from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createProjectConfigService, mergeAiConfig } from "./projectConfigService";
-import { createLaneTemplateService } from "../lanes/laneTemplateService";
 
 function makeDb() {
   const store = new Map<string, unknown>();
@@ -472,8 +471,9 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     laneOverlayPolicies: [
       { id: "evil-overlay", overrides: { envInit: { setupScript: { commands: ["sh -c evil"] } } } },
     ],
-    // Inert: safe to carry over.
+    // Display-only: safe to carry over.
     ui: { linearBatchLaunchDefaultPrompt: "Legacy prompt" },
+    // Automatic lifecycle behavior: must be skipped like other executable keys.
     git: { autoRebaseOnHeadChange: true },
     laneCleanup: { maxActiveLanes: 3 },
   };
@@ -509,15 +509,16 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     expect(snapshot.shared.ui).toBeUndefined();
   });
 
-  it("carries non-executable keys into local config and drops executable ones", () => {
+  it("A3: carries display-only keys and drops automatic behavior keys", () => {
     const { root, adeDir } = makeProjectFixture("config-carryover-import-");
     writeLegacySharedConfig(adeDir);
 
     const snapshot = makeService(root, adeDir).get();
 
     expect(snapshot.local.ui?.linearBatchLaunchDefaultPrompt).toBe("Legacy prompt");
-    expect(snapshot.local.laneCleanup?.maxActiveLanes).toBe(3);
-    expect(snapshot.effective.git.autoRebaseOnHeadChange).toBe(true);
+    expect(snapshot.local.laneCleanup).toBeUndefined();
+    expect(snapshot.local.git).toBeUndefined();
+    expect(snapshot.effective.git.autoRebaseOnHeadChange).not.toBe(true);
 
     const persisted = YAML.parse(fs.readFileSync(path.join(adeDir, "local.yaml"), "utf8")) as Record<string, any>;
     expect(persisted.testSuites).toEqual([]);
@@ -525,6 +526,8 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     expect(persisted.laneEnvInit).toBeUndefined();
     expect(persisted.laneTemplates).toBeUndefined();
     expect(persisted.defaultLaneTemplate).toBeUndefined();
+    expect(persisted.git).toBeUndefined();
+    expect(persisted.laneCleanup).toBeUndefined();
   });
 
   it("recursively carries only inert AI values and drops credential and command fields", () => {
@@ -641,8 +644,8 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     const lines = logger.info.mock.calls.filter(([event]: [string]) => event === "projectConfig.carryOver");
     expect(lines).toHaveLength(1);
     expect(lines[0][1]).toMatchObject({
-      importedKeys: ["git", "laneCleanup", "ui"],
-      importedCount: 3,
+      importedKeys: ["ui"],
+      importedCount: 1,
       skippedExecutableKeys: [
         "testSuites",
         "laneOverlayPolicies",
@@ -650,8 +653,10 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
         "laneEnvInit",
         "laneTemplates",
         "defaultLaneTemplate",
+        "git",
+        "laneCleanup",
       ],
-      skippedCount: 6,
+      skippedCount: 8,
       removed: true,
     });
   });

@@ -32,6 +32,8 @@ import {
 
 export const ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE =
   "ADE's background service isn't running on this computer, so account settings stay on this machine for now.";
+export const ACCOUNT_SETTINGS_REJECTED_MESSAGE =
+  "The account settings write was rejected because account ownership changed. It will be retried.";
 
 export type AccountSettingsActionPool = AccountActionPool;
 
@@ -71,6 +73,7 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
     getRootPath: options.getRootPath,
     logger: options.logger,
     decodeRow: toRow,
+    rejectedMessage: ACCOUNT_SETTINGS_REJECTED_MESSAGE,
   });
 
   return {
@@ -84,11 +87,11 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
     },
 
     async set(scope: string, key: string, value: unknown): Promise<AccountSettingsResult<null>> {
-      return await bridge.call("set", [scope, key, value], () => null);
+      return await bridge.call("set", [scope, key, value], () => null, { rejectFalse: true });
     },
 
     async remove(scope: string, key: string): Promise<AccountSettingsResult<null>> {
-      return await bridge.call("remove", [scope, key], () => null);
+      return await bridge.call("remove", [scope, key], () => null, { rejectFalse: true });
     },
 
     /** Flush this machine's queue and take what changed. */

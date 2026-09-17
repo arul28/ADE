@@ -7,6 +7,7 @@ import {
   runAccountMigration,
   type AccountMigrationSourceResult,
 } from "./accountMigration";
+import type { CredentialProvenance } from "../../../shared/types/credentialProvenance";
 
 type AccountMigrationLogger = {
   info?(message: string, meta?: Record<string, unknown>): void;
@@ -17,12 +18,12 @@ export type AccountMigrationContext = {
   project?: { rootPath?: string | null } | null;
   linearCredentialService?: {
     getRefreshToken(): string | null;
-    getRefreshTokenProvenance(): { source: string };
+    getRefreshTokenProvenance(): CredentialProvenance;
     hydrateFromVault(): Promise<void>;
   } | null;
   projectSecretService?: {
     list(): { secrets: Array<{ name: string; storage: string }> };
-    getSecretProvenance(name: string): { source: string } | null | undefined;
+    getSecretProvenance(name: string): CredentialProvenance | null | undefined;
     get(args: { name: string }): { value: string };
     hydrateFromVault(): Promise<void>;
   } | null;
@@ -232,5 +233,3 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
 
   return { start };
 }
-
-export type AccountMigrationRunner = ReturnType<typeof createAccountMigrationRunner>;

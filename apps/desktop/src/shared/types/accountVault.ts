@@ -18,5 +18,5 @@ export type AccountVaultItem = {
   updatedAt: string;
 };
 
-/** Every account-vault call answers with a value or an ordinary unavailable result. */
+/** Every account-vault call answers with a value or an ordinary failure result. */
 export type AccountVaultResult<T> = AccountStoreResult<T>;

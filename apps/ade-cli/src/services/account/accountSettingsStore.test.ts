@@ -233,6 +233,15 @@ describe("account settings store", () => {
     expect(makeStore().list()).toHaveLength(0);
   });
 
+  it("A1: rejects a mutation after discarding a persisted foreign cache", () => {
+    makeStore().set("all", "appearance.theme", "dark");
+    accountUserId = "user_grace";
+    const reopened = makeStore();
+
+    expect(reopened.set("all", "appearance.theme", "light")).toBe(false);
+    expect(reopened.get("all", "appearance.theme")).toBeUndefined();
+  });
+
   it("does nothing at all when signed out", async () => {
     accountUserId = null;
     const store = makeStore();
@@ -248,8 +257,8 @@ describe("account settings store", () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
     const store = makeStore({ logger });
 
-    store.set("all", "appearance.theme", "must-not-persist");
-    store.remove("all", "appearance.theme");
+    expect(store.set("all", "appearance.theme", "must-not-persist")).toBe(false);
+    expect(store.remove("all", "appearance.theme")).toBe(false);
 
     expect(fs.existsSync(store.cachePathForTests())).toBe(false);
     expect(logger.warn).toHaveBeenCalledTimes(2);
@@ -271,7 +280,7 @@ describe("account settings store", () => {
       logger,
     });
 
-    store.set("all", "appearance.theme", "must-not-persist");
+    expect(store.set("all", "appearance.theme", "must-not-persist")).toBe(false);
 
     expect(fs.existsSync(store.cachePathForTests())).toBe(false);
     expect(store.get("all", "appearance.theme")).toBeUndefined();

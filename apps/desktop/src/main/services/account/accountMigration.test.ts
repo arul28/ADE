@@ -96,7 +96,7 @@ describe("runAccountMigration", () => {
     expect(provider).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps a source pending until its local store is ready", async () => {
+  it("A2: keeps a source pending when a vault write is rejected", async () => {
     const receiptDir = makeReceiptDir();
     const provider = vi
       .fn()

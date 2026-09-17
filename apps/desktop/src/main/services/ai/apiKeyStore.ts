@@ -4,6 +4,11 @@ import { spawnSync } from "node:child_process";
 import type { SafeStorage } from "electron";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import {
+  deviceCredentialProvenance,
+  normalizeCredentialProvenance,
+  type CredentialProvenance,
+} from "../../../shared/types/credentialProvenance";
 import type { MachineApiKeySource, MachineApiKeyStatus } from "../../../shared/types/config";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
@@ -31,10 +36,7 @@ try {
 
 type StoredKeys = Record<string, string>;
 
-export type ApiKeyProvenance = {
-  source: "device" | "account";
-  accountUserId: string | null;
-};
+export type ApiKeyProvenance = CredentialProvenance;
 
 export type ApiKeyCredentialStore = SyncCredentialStore;
 
@@ -225,25 +227,12 @@ function normalizeProvider(provider: string): string {
   return provider.trim().toLowerCase();
 }
 
-function deviceProvenance(): ApiKeyProvenance {
-  return { source: "device", accountUserId: null };
-}
-
-function normalizeProvenance(value: unknown): ApiKeyProvenance | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (record.source === "device") return deviceProvenance();
-  if (record.source !== "account" || typeof record.accountUserId !== "string") return null;
-  const accountUserId = record.accountUserId.trim();
-  return accountUserId ? { source: "account", accountUserId } : null;
-}
-
 function normalizeProvenanceMap(value: unknown): Record<string, ApiKeyProvenance> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: Record<string, ApiKeyProvenance> = {};
   for (const [provider, raw] of Object.entries(value as Record<string, unknown>)) {
     const normalizedProvider = normalizeProvider(provider);
-    const normalized = normalizeProvenance(raw);
+    const normalized = normalizeCredentialProvenance(raw);
     if (normalizedProvider && normalized) out[normalizedProvider] = normalized;
   }
   return out;
@@ -441,7 +430,7 @@ function ensureProvenance(scope: ApiKeyScopeState, providers: Iterable<string>):
       // Existing stores predate provenance. Treat their values as device-only
       // so a later account cannot inherit account ownership; the value remains
       // eligible for this machine's one-time device migration.
-      scope.provenance[normalizedProvider] = deviceProvenance();
+      scope.provenance[normalizedProvider] = deviceCredentialProvenance();
       changed = true;
     }
   }
@@ -1031,7 +1020,7 @@ function storeApiKeyIn(
   const accountOwnerMatches = !getAccountUserId || accountUserId === currentUserId;
   const normalizedProvenance: ApiKeyProvenance = accountUserId && accountOwnerMatches
     ? { source: "account", accountUserId }
-    : deviceProvenance();
+    : deviceCredentialProvenance();
   if (scope.credentialStore) {
     if (normalizedProvenance.source === "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
     writeCredentialSecret(scope, credentialProviderKey(normalizedProvider), normalizedKey);
@@ -1088,7 +1077,7 @@ function getApiKeyIn(scope: ApiKeyScopeState, provider: string): string | null {
       store[normalizedProvider] = credentialValue;
       const index = readCredentialProviderIndex(scope);
       writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
-      setProvenance(scope, normalizedProvider, deviceProvenance());
+      setProvenance(scope, normalizedProvider, deviceCredentialProvenance());
       return credentialValue;
     }
     scope.missingCredentialProviders.add(normalizedProvider);
@@ -1103,10 +1092,10 @@ function getApiKeyIn(scope: ApiKeyScopeState, provider: string): string | null {
         writeCredentialSecret(scope, credentialProviderKey(normalizedProvider), keychainValue);
         const index = readCredentialProviderIndex(scope);
         writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
-        setProvenance(scope, normalizedProvider, deviceProvenance());
+        setProvenance(scope, normalizedProvider, deviceCredentialProvenance());
       } else if (canPersistEncryptedStore(scope)) {
         persistEncryptedStore(scope, store);
-        setProvenance(scope, normalizedProvider, deviceProvenance());
+        setProvenance(scope, normalizedProvider, deviceCredentialProvenance());
       }
       return keychainValue;
     }
@@ -1177,11 +1166,11 @@ export function listStoredProviders(): string[] {
 /** Return persisted origin metadata without exposing the credential itself. */
 export function getApiKeyProvenance(provider: string): ApiKeyProvenance {
   const normalizedProvider = normalizeProvider(provider);
-  if (!normalizedProvider.length) return deviceProvenance();
+  if (!normalizedProvider.length) return deviceCredentialProvenance();
   ensureStore(projectScope);
   purgeForeignAccountApiKeys(projectScope);
   const store = ensureStore(projectScope);
-  return ensureProvenance(projectScope, Object.keys(store))[normalizedProvider] ?? deviceProvenance();
+  return ensureProvenance(projectScope, Object.keys(store))[normalizedProvider] ?? deviceCredentialProvenance();
 }
 
 /** Remove account-hydrated provider keys while retaining device-origin keys. */

@@ -18,6 +18,8 @@ import {
 
 export const ACCOUNT_VAULT_UNAVAILABLE_MESSAGE =
   "ADE's background service isn't running on this computer, so account vault items stay on this machine for now.";
+export const ACCOUNT_VAULT_REJECTED_MESSAGE =
+  "The account vault write was rejected because account ownership changed. It will be retried.";
 
 export type AccountVaultActionPool = AccountActionPool;
 
@@ -61,6 +63,7 @@ export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {
     getRootPath: options.getRootPath,
     logger: options.logger,
     decodeRow: toItem,
+    rejectedMessage: ACCOUNT_VAULT_REJECTED_MESSAGE,
   });
 
   return {
@@ -78,11 +81,11 @@ export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {
     },
 
     async set(scope: string, kind: string, key: string, value: string): Promise<AccountVaultResult<null>> {
-      return await bridge.call("set", [scope, kind, key, value], () => null);
+      return await bridge.call("set", [scope, kind, key, value], () => null, { rejectFalse: true });
     },
 
     async remove(scope: string, kind: string, key: string): Promise<AccountVaultResult<null>> {
-      return await bridge.call("remove", [scope, kind, key], () => null);
+      return await bridge.call("remove", [scope, kind, key], () => null, { rejectFalse: true });
     },
 
     /** Flush this machine's queue and take what changed. */

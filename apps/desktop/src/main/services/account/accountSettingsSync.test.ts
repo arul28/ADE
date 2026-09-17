@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  ACCOUNT_SETTINGS_REJECTED_MESSAGE,
   ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE,
   createAccountSettingsSyncService,
 } from "./accountSettingsSync";
@@ -66,6 +67,24 @@ describe("accountSettingsSync (main)", () => {
       domain: "account_settings",
       action: "sync",
       argsList: [],
+    });
+  });
+
+  it("A2: distinguishes a rejected write from an unavailable runtime", async () => {
+    const service = createAccountSettingsSyncService({
+      getPool: () => poolReturning({ domain: "account_settings", action: "set", result: false }),
+      getRootPath: () => "/repo",
+    });
+
+    expect(await service.set("all", "theme", "light")).toEqual({
+      ok: false,
+      rejected: true,
+      message: ACCOUNT_SETTINGS_REJECTED_MESSAGE,
+    });
+    expect(await service.remove("all", "theme")).toEqual({
+      ok: false,
+      rejected: true,
+      message: ACCOUNT_SETTINGS_REJECTED_MESSAGE,
     });
   });
 

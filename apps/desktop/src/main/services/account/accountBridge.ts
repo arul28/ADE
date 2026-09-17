@@ -470,6 +470,16 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   >();
   const accountMachineNames = new Map<string, string>();
 
+  const purgeAccountCredentials = (): void => {
+    try {
+      options.purgeAccountCredentials?.();
+    } catch (error) {
+      options.logger?.warn("account.local_credentials_purge_failed", {
+        error: error instanceof Error ? error.message : String(error ?? ""),
+      });
+    }
+  };
+
   let accountLifecycleBound = false;
   const service = () => {
     const accountService = getSharedAccountAuthService({
@@ -484,25 +494,13 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       accountLifecycleBound = true;
       let lastUserId = accountService.getStatus().userId;
       accountService.onSignedOut?.(() => {
-        try {
-          options.purgeAccountCredentials?.();
-        } catch (error) {
-          options.logger?.warn("account.local_credentials_purge_failed", {
-            error: error instanceof Error ? error.message : String(error ?? ""),
-          });
-        }
+        purgeAccountCredentials();
         lastUserId = null;
       });
       accountService.onSignedIn?.(() => {
         const nextUserId = accountService.getStatus().userId;
         if (lastUserId && nextUserId && lastUserId !== nextUserId) {
-          try {
-            options.purgeAccountCredentials?.();
-          } catch (error) {
-            options.logger?.warn("account.local_credentials_purge_failed", {
-              error: error instanceof Error ? error.message : String(error ?? ""),
-            });
-          }
+          purgeAccountCredentials();
         }
         lastUserId = nextUserId;
       });

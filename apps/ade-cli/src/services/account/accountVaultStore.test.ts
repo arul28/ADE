@@ -335,8 +335,8 @@ describe("account vault store", () => {
       logger,
     });
 
-    store.set("all", "provider_key", "blocked", "must-not-persist");
-    store.remove("all", "provider_key", "blocked");
+    expect(store.set("all", "provider_key", "blocked", "must-not-persist")).toBe(false);
+    expect(store.remove("all", "provider_key", "blocked")).toBe(false);
 
     expect(fs.existsSync(store.cachePathForTests())).toBe(false);
     expect(logger.warn).toHaveBeenCalledTimes(2);
@@ -358,7 +358,7 @@ describe("account vault store", () => {
       logger,
     });
 
-    store.set("all", "provider_key", "blocked", "must-not-persist");
+    expect(store.set("all", "provider_key", "blocked", "must-not-persist")).toBe(false);
 
     expect(fs.existsSync(store.cachePathForTests())).toBe(false);
     expect(logger.warn).toHaveBeenCalledWith("account.vault_mutation_dropped", { reason: "owner_changed" });
