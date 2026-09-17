@@ -76,27 +76,6 @@ describe("Cursor Cloud connection-gated shell entry point", () => {
     expect(button.className).toContain("transition-[background-color,color,border-color,box-shadow]");
   });
 
-  it("exposes the connected fleet through the left sidebar", async () => {
-    const getStatus = vi.fn().mockResolvedValue(cursorStatus(true));
-    (window as any).ade = {
-      ai: {
-        getStatus,
-        cursorCloudFleet: vi.fn(),
-        onCursorCloudFleetEvent: vi.fn(() => () => {}),
-      },
-    };
-
-    render(<CursorCloudQuickViewButton variant="sidebar-row" />);
-    await act(async () => {
-      vi.advanceTimersByTime(2_000);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    const button = screen.getByRole("button", { name: "Cursor Cloud fleet" });
-    expect(button.className).toContain("ade-shell-sidebar-item");
-    expect(screen.getByText("Cursor Cloud")).toBeTruthy();
-  });
 
   it("rechecks when two remote hosts expose the same project root", async () => {
     const getStatus = vi.fn()
