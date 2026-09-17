@@ -370,6 +370,19 @@ function WorkAppControlTool({
   );
 }
 
+/**
+ * The lane's private macOS screen.
+ *
+ * Read-only on the hosted web client, which is all this unit builds. The
+ * Electron panel (`ChatMacDesktopPanel`, with the live stream and takeover)
+ * lands in the renderer unit and replaces the second branch here; until it
+ * does, the desktop shows the same description rather than an empty frame, so
+ * the tab is never a dead card.
+ */
+function WorkMacDesktopTool({ laneId }: WorkToolPanelProps) {
+  return <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />;
+}
+
 export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkToolPanelProps>> = {
   terminal: WorkTerminalTool,
   browser: WorkBrowserTool,
@@ -377,4 +390,5 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   files: WorkFilesTool,
   ios: WorkIosTool,
   "app-control": WorkAppControlTool,
+  "mac-desktop": WorkMacDesktopTool,
 };

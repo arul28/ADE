@@ -6381,6 +6381,72 @@ struct WorkToolsLaneState: Codable, Equatable {
   /// than the field, and empty is the normal state; both read as "nobody".
   var agentBrowserPresence: [WorkToolsAgentBrowserPresence]?
   var appControl: WorkToolsAppControlState?
+  /// The lane's macOS desktop seat. Nil from any host without the feature, and
+  /// `supported: false` from one that has it on a machine that cannot hold a
+  /// display; the sheet hides the card on both.
+  var macDesktop: WorkToolsMacDesktopState?
+}
+
+/// The lane's private macOS screen, as the phone sees it.
+///
+/// Read-only, like everything else in this mirror, and cut down further than
+/// the desktop's own state: the host sends a display, its windows, the lease,
+/// the stream summary and the last frame, and the phone renders exactly those.
+/// Anything that would need a pointer or a lease to be useful is deliberately
+/// not decoded, because there is no way to act on it from here.
+///
+/// A host with no Mac Desktop service at all omits the whole `macDesktop` key,
+/// and a host that has one but cannot hold a display sends `supported: false`.
+/// Both hide the tool.
+struct WorkToolsMacDesktopDisplay: Codable, Equatable {
+  var name: String
+  var width: Int
+  var height: Int
+  /// `virtual` | `offscreen-region` | `unavailable`, kept as a raw string so a
+  /// newer mode renders verbatim instead of failing to decode.
+  var mode: String
+}
+
+/// One window parked on the lane's display. The host also sends a pid, a frame
+/// and a bundle id; nothing on the phone can act on any of them, so only what
+/// is shown is decoded.
+struct WorkToolsMacDesktopWindow: Codable, Equatable, Identifiable {
+  var id: Int
+  var appName: String
+  var title: String?
+}
+
+/// Who is driving the lane's screen. `holder` is `agent` or `user`; an unknown
+/// value from a newer host reads as neither and falls back to the neutral line.
+struct WorkToolsMacDesktopLease: Codable, Equatable {
+  var holder: String
+  var holderLabel: String?
+}
+
+/// Whether frames are flowing, and how hard. Never carries the stream token —
+/// the host redacts it before this ever leaves the Mac.
+struct WorkToolsMacDesktopStream: Codable, Equatable {
+  var running: Bool
+  var idle: Bool
+}
+
+/// The newest frame captured on the lane's screen. `screenshotPath` is opaque
+/// and goes straight back to `workTools.readObservationPreview`, exactly like a
+/// `WorkToolsObservation.path`.
+struct WorkToolsMacDesktopObservation: Codable, Equatable {
+  var screenshotPath: String
+  var caption: String?
+}
+
+struct WorkToolsMacDesktopState: Codable, Equatable {
+  var supported: Bool
+  var display: WorkToolsMacDesktopDisplay?
+  /// Absent from a host that sends no list; both nil and empty read as "nothing
+  /// is parked here".
+  var windows: [WorkToolsMacDesktopWindow]?
+  var lease: WorkToolsMacDesktopLease?
+  var stream: WorkToolsMacDesktopStream?
+  var lastObservation: WorkToolsMacDesktopObservation?
 }
 
 struct WorkToolsObservationPreview: Codable, Equatable {

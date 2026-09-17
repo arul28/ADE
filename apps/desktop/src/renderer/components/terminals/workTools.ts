@@ -4,6 +4,7 @@ import {
   FolderOpen,
   GitBranch,
   Globe,
+  Monitor,
   Terminal,
   type Icon,
 } from "@phosphor-icons/react";
@@ -102,6 +103,13 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     color: "#a78bfa",
     hint: "Drive a desktop app",
   },
+  {
+    id: "mac-desktop",
+    label: "Mac Desktop",
+    icon: Monitor,
+    color: "#f472b6",
+    hint: "A private screen per lane",
+  },
 ];
 
 const WORK_TOOL_DEFINITIONS_BY_ID = new Map<WorkSidebarTab, WorkToolDefinition>(
@@ -168,8 +176,14 @@ const LOCAL_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["ios", "app-control"]);
  * read-only rather than a dead "Desktop app only" card. The iOS simulator is
  * absent from this set because there is nothing equivalent to report: its pane
  * is a live video stream and nothing else.
+ *
+ * Mac Desktop IS here, and for the browser's reason rather than the
+ * simulator's: the lane's screen leaves a describable trail — a display, a
+ * window list, a lease holder, a last frame — so a web client shows that
+ * instead of a dead card. Taking control from the web is a later lane; this
+ * surface offers no control at all.
  */
-const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control"]);
+const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control", "mac-desktop"]);
 
 /** True when this surface may only observe the tool, never operate it. */
 export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext): boolean {

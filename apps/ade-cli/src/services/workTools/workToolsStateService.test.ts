@@ -7,6 +7,10 @@ import type {
   BuiltInBrowserRuntimeStatus,
   BuiltInBrowserRuntimeTabStatus,
 } from "../../../../desktop/src/shared/types/builtInBrowserRuntimeStatus";
+import type {
+  MacDesktopEventPayload,
+  MacDesktopStatus,
+} from "../../../../desktop/src/shared/types/macDesktop";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import {
   createWorkToolsStateService,
@@ -587,6 +591,228 @@ describe("workToolsStateService", () => {
     expect(warn).not.toHaveBeenCalled();
     expect(debug).toHaveBeenCalledWith("work_tools.browser_status_unavailable", expect.anything());
     headless.dispose();
+  });
+
+  describe("mac desktop", () => {
+    function macStatus(
+      overrides: Partial<MacDesktopStatus> = {},
+    ): MacDesktopStatus {
+      return {
+        platform: "darwin",
+        supported: true,
+        unsupportedReason: null,
+        driver: { state: "running", title: "Running", message: "", recovery: null, version: "1.0.0" },
+        permissions: { screenRecording: "granted", accessibility: "granted" },
+        displayMode: "virtual",
+        display: {
+          laneId: "lane-1",
+          displayId: 7,
+          name: "ADE · lane",
+          mode: "virtual",
+          width: 2560,
+          height: 1440,
+          scale: 2,
+          origin: { x: 0, y: 0 },
+          createdAt: "2026-01-01T00:00:00.000Z",
+          windowCount: 1,
+          lastActivityAt: "2026-01-01T00:01:00.000Z",
+        },
+        windows: [],
+        lease: null,
+        stream: null,
+        recording: null,
+        lanes: [],
+        hostIsLocal: true,
+        ...overrides,
+      };
+    }
+
+    /** A stub service with the exact two-member shape the aggregator may hold. */
+    function macService(status: () => MacDesktopStatus) {
+      const listeners = new Set<(event: MacDesktopEventPayload) => void>();
+      return {
+        reader: {
+          getStatus: async () => status(),
+          subscribe(listener: (event: MacDesktopEventPayload) => void) {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+        },
+        emit(event: MacDesktopEventPayload) {
+          for (const listener of [...listeners]) listener(event);
+        },
+        get listenerCount() {
+          return listeners.size;
+        },
+      };
+    }
+
+    it("hides the tool entirely on a runtime with no mac desktop service", async () => {
+      const service = createWorkToolsStateService({ projectRoot });
+      const state = await service.getLaneState({ laneId: "lane-1" });
+      expect(state.macDesktop).toBeNull();
+      service.dispose();
+    });
+
+    it("reports supported:false on a host that cannot hold a display", async () => {
+      const mac = macService(() => macStatus({
+        platform: "win32",
+        supported: false,
+        unsupportedReason: "Mac Desktop runs on macOS only.",
+        displayMode: "unavailable",
+        display: null,
+        hostIsLocal: false,
+      }));
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      const state = await service.getLaneState({ laneId: "lane-1" });
+      expect(state.macDesktop?.supported).toBe(false);
+      expect(state.macDesktop?.display).toBeNull();
+      expect(state.macDesktop?.hostIsLocal).toBe(false);
+      service.dispose();
+    });
+
+    it("summarizes the lane's display, windows, lease and stream", async () => {
+      const mac = macService(() => macStatus({
+        windows: [{
+          id: 11,
+          pid: 42,
+          appName: "Safari",
+          bundleId: "com.apple.Safari",
+          title: "Example",
+          frame: { x: 0, y: 0, width: 800, height: 600 },
+          laneId: "lane-1",
+          origin: "ade_launched",
+          onDisplayId: 7,
+          minimized: false,
+          singleInstance: false,
+        }],
+        lease: {
+          laneId: "lane-1",
+          holder: "agent",
+          holderId: "chat-1",
+          holderLabel: "Fix the header",
+          grantedAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2026-01-01T00:01:00.000Z",
+        },
+        stream: { running: true, idle: false, fps: 30, bitrateKbps: 2000, lastError: null },
+      }));
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      const state = await service.getLaneState({ laneId: "lane-1" });
+      expect(state.macDesktop?.windows.map((window) => window.appName)).toEqual(["Safari"]);
+      expect(state.macDesktop?.lease?.holder).toBe("agent");
+      expect(state.macDesktop?.stream?.running).toBe(true);
+      expect(state.macDesktop?.permissions.screenRecording).toBe("granted");
+      service.dispose();
+    });
+
+    it("re-derives from the observation event rather than polling for frames", async () => {
+      const mac = macService(() => macStatus());
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      expect((await service.getLaneState({ laneId: "lane-1" })).macDesktop?.lastObservation).toBeNull();
+      mac.emit({
+        type: "observation",
+        laneId: "lane-1",
+        observation: {
+          id: "obs-1",
+          laneId: "lane-1",
+          capturedAt: "2026-01-02T00:00:00.000Z",
+          screenshotPath: "/tmp/mac/obs-1.png",
+          mapPath: null,
+          display: { width: 2560, height: 1440, scale: 2 },
+          windows: [],
+          elements: [],
+          elementCount: 0,
+          truncated: false,
+          caption: "click · Sign in",
+        },
+      });
+      const after = await service.getLaneState({ laneId: "lane-1" });
+      expect(after.macDesktop?.lastObservation).toEqual({
+        id: "obs-1",
+        capturedAt: "2026-01-02T00:00:00.000Z",
+        caption: "click · Sign in",
+        screenshotPath: "/tmp/mac/obs-1.png",
+      });
+      service.dispose();
+    });
+
+    it("tells clients to look again on every desktop event, and fans host-wide ones out", async () => {
+      vi.useFakeTimers();
+      const onStateChanged = vi.fn();
+      const mac = macService(() => macStatus());
+      const service = createWorkToolsStateService({
+        projectRoot,
+        macDesktopService: mac.reader,
+        onStateChanged,
+        debounceMs: 10,
+      });
+      await service.getLaneState({ laneId: "lane-1" });
+      await service.getLaneState({ laneId: "lane-2" });
+      mac.emit({ type: "lease-changed", laneId: "lane-1", lease: null });
+      vi.advanceTimersByTime(20);
+      expect(onStateChanged.mock.calls.map(([laneId]) => laneId)).toEqual(["lane-1"]);
+
+      onStateChanged.mockClear();
+      // A revoked grant changes every lane's answer at once.
+      mac.emit({
+        type: "permission-changed",
+        permissions: { screenRecording: "denied", accessibility: "granted" },
+      });
+      vi.advanceTimersByTime(20);
+      expect(onStateChanged.mock.calls.map(([laneId]) => laneId).sort()).toEqual(["lane-1", "lane-2"]);
+      service.dispose();
+    });
+
+    it("drops the last frame with the display it described", async () => {
+      const mac = macService(() => macStatus({ display: null }));
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      mac.emit({
+        type: "observation",
+        laneId: "lane-1",
+        observation: {
+          id: "obs-1",
+          laneId: "lane-1",
+          capturedAt: "2026-01-02T00:00:00.000Z",
+          screenshotPath: "/tmp/mac/obs-1.png",
+          mapPath: null,
+          display: { width: 2560, height: 1440, scale: 2 },
+          windows: [],
+          elements: [],
+          elementCount: 0,
+          truncated: false,
+          caption: null,
+        },
+      });
+      const state = await service.getLaneState({ laneId: "lane-1" });
+      expect(state.macDesktop?.lastObservation).toBeNull();
+      service.dispose();
+    });
+
+    it("reports the tool as absent when getStatus fails, and warns", async () => {
+      const warn = vi.fn();
+      const mac = macService(() => {
+        throw new Error("driver is gone");
+      });
+      const service = createWorkToolsStateService({
+        projectRoot,
+        macDesktopService: mac.reader,
+        logger: { warn, debug: vi.fn(), info: vi.fn(), error: vi.fn() } as unknown as Parameters<
+          typeof createWorkToolsStateService
+        >[0]["logger"],
+      });
+      const state = await service.getLaneState({ laneId: "lane-1" });
+      expect(state.macDesktop).toBeNull();
+      expect(warn).toHaveBeenCalledWith("work_tools.mac_desktop_status_failed", expect.anything());
+      service.dispose();
+    });
+
+    it("unsubscribes on dispose", async () => {
+      const mac = macService(() => macStatus());
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      expect(mac.listenerCount).toBe(1);
+      service.dispose();
+      expect(mac.listenerCount).toBe(0);
+    });
   });
 
   it("stops emitting after dispose", () => {

@@ -413,6 +413,134 @@ final class WorkToolsContractTests: XCTestCase {
     ["action": action, "policy": ["viewerAllowed": true] as [String: Any]]
   }
 
+  func testLaneStateDecodesTheMacDesktopSliceAndIgnoresFieldsThePhoneCannotUse() throws {
+    // Byte-for-byte the shape `workToolsStateService` sends for a lane holding a
+    // desktop, including the fields the phone deliberately does not decode
+    // (`permissions`, `hostIsLocal`, window frames, the observation id).
+    let data = Data(#"""
+    {
+      "laneId": "lane-1",
+      "activeTool": "mac-desktop",
+      "openTools": ["mac-desktop"],
+      "browser": null,
+      "browserUnavailable": "desktop_not_attached",
+      "appControl": null,
+      "macDesktop": {
+        "supported": true,
+        "display": {
+          "laneId": "lane-1",
+          "displayId": 7,
+          "name": "ADE · fix-header",
+          "mode": "virtual",
+          "width": 2560,
+          "height": 1440,
+          "scale": 2,
+          "origin": { "x": 0, "y": 0 },
+          "createdAt": "2026-09-16T10:00:00.000Z",
+          "windowCount": 1,
+          "lastActivityAt": "2026-09-16T10:01:00.000Z"
+        },
+        "windows": [
+          {
+            "id": 11,
+            "pid": 42,
+            "appName": "Safari",
+            "bundleId": "com.apple.Safari",
+            "title": "Example",
+            "frame": { "x": 0, "y": 0, "width": 800, "height": 600 },
+            "laneId": "lane-1",
+            "origin": "ade_launched",
+            "onDisplayId": 7,
+            "minimized": false,
+            "singleInstance": false
+          }
+        ],
+        "lease": {
+          "laneId": "lane-1",
+          "holder": "agent",
+          "holderId": "chat-7",
+          "holderLabel": "Fix the header",
+          "grantedAt": "2026-09-16T10:00:00.000Z",
+          "expiresAt": "2026-09-16T10:01:00.000Z"
+        },
+        "stream": {
+          "running": true,
+          "idle": false,
+          "fps": 30,
+          "bitrateKbps": 2000,
+          "lastError": null
+        },
+        "permissions": { "screenRecording": "granted", "accessibility": "granted" },
+        "lastObservation": {
+          "id": "obs-1",
+          "capturedAt": "2026-09-16T10:01:00.000Z",
+          "caption": "click · Sign in",
+          "screenshotPath": "/p/.ade/cache/mac-desktop-observations/lane-1/obs-1.png"
+        },
+        "hostIsLocal": true
+      },
+      "capturedAt": "2026-09-16T10:01:01.000Z"
+    }
+    """#.utf8)
+
+    let state = try JSONDecoder().decode(WorkToolsLaneState.self, from: data)
+    let macDesktop = try XCTUnwrap(state.macDesktop)
+    XCTAssertTrue(macDesktop.supported)
+    XCTAssertEqual(macDesktop.display?.name, "ADE · fix-header")
+    XCTAssertEqual(macDesktop.display?.width, 2560)
+    XCTAssertEqual(macDesktop.display?.mode, "virtual")
+    XCTAssertEqual(macDesktop.windows?.map(\.appName), ["Safari"])
+    XCTAssertEqual(macDesktop.windows?.first?.id, 11)
+    XCTAssertEqual(macDesktop.stream?.running, true)
+    XCTAssertEqual(macDesktop.stream?.idle, false)
+    XCTAssertEqual(
+      macDesktop.lastObservation?.screenshotPath,
+      "/p/.ade/cache/mac-desktop-observations/lane-1/obs-1.png")
+    XCTAssertEqual(macDesktopLeaseLine(macDesktop.lease), "Agent driving · Fix the header")
+    XCTAssertEqual(workToolsDisplayName("mac-desktop"), "Mac Desktop")
+  }
+
+  func testLaneStateWithoutMacDesktopHidesTheToolRatherThanFailingToDecode() throws {
+    // Every host built before this feature, and every non-Mac host, omits the
+    // key. A missing slice must read as absence, not as a decode failure that
+    // would blank the whole sheet.
+    let data = Data(#"""
+    {
+      "laneId": "lane-1",
+      "activeTool": null,
+      "browser": null,
+      "browserUnavailable": "desktop_not_attached",
+      "appControl": null
+    }
+    """#.utf8)
+    XCTAssertNil(try JSONDecoder().decode(WorkToolsLaneState.self, from: data).macDesktop)
+
+    // A Mac that has the service but cannot hold a display says so explicitly.
+    let unsupported = Data(#"""
+    {
+      "laneId": "lane-1",
+      "activeTool": null,
+      "browser": null,
+      "browserUnavailable": "desktop_not_attached",
+      "appControl": null,
+      "macDesktop": {
+        "supported": false,
+        "display": null,
+        "windows": [],
+        "lease": null,
+        "stream": null,
+        "permissions": { "screenRecording": "unknown", "accessibility": "unknown" },
+        "lastObservation": null,
+        "hostIsLocal": false
+      }
+    }
+    """#.utf8)
+    let state = try JSONDecoder().decode(WorkToolsLaneState.self, from: unsupported)
+    XCTAssertEqual(state.macDesktop?.supported, false)
+    XCTAssertNil(state.macDesktop?.display)
+    XCTAssertEqual(macDesktopLeaseLine(nil), "Nobody has taken control.")
+  }
+
   @MainActor
   private func withService(_ body: (SyncService) throws -> Void) throws {
     let baseURL = FileManager.default.temporaryDirectory

@@ -91,6 +91,15 @@ client.
 - **Non-Mac runtime.** `getStatus` answers `supported: false`. Every other
   method rejects with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`. The renderer hides the
   tab.
+- **Phone and hosted web client.** Both read the `macDesktop` slice of
+  `WorkToolsLaneState` (`apps/desktop/src/shared/types/workTools.ts`) and render
+  it read-only: the display, its parked windows, the lease line, the stream
+  state, and the last frame fetched through `workTools.readObservationPreview`.
+  There is no control surface — `WORK_TOOLS_CONTROL_HINT` says so. **Taking
+  control from the hosted web client is a follow-up lane**: takeover needs the
+  lease heartbeat and an input channel, and neither exists off the desktop
+  today. A missing `macDesktop` key, or `supported: false`, hides the tool
+  rather than drawing an empty pane.
 
 ## Ownership
 

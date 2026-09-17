@@ -3,9 +3,10 @@ import UIKit
 
 /// Read-only view of the Work tools pane running on the user's Mac.
 ///
-/// Three cards, in the order a user actually asks about them: what the desktop
+/// Four cards, in the order a user actually asks about them: what the desktop
 /// has open right now (with the last frame it captured), what the browser has
-/// in it, and what App Control is driving. There are no controls anywhere in
+/// in it, what App Control is driving, and — when this Mac can host one — the
+/// lane's own private screen. There are no controls anywhere in
 /// this sheet — the browser is a `WebContentsView` in ADE Desktop and App
 /// Control is a CDP socket to a local process; neither can be reached from a
 /// phone, so offering a button would be a lie.
@@ -80,6 +81,7 @@ struct WorkToolsSheet: View {
         activeToolCard
         browserCard
         appControlCard
+        macDesktopCard
         Text("Control from the desktop")
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
@@ -243,6 +245,68 @@ struct WorkToolsSheet: View {
     }
   }
 
+  /// The lane's private macOS screen.
+  ///
+  /// Absent entirely unless the host both has the feature and can host a
+  /// display, because a card that only ever says "not available here" is worse
+  /// than no card on every phone whose Mac will never grow one. Read-only like
+  /// the rest of the sheet: the lease is taken on the Mac, and the sheet's own
+  /// "Control from the desktop" line already says so.
+  @ViewBuilder
+  private var macDesktopCard: some View {
+    if let macDesktop = state?.macDesktop, macDesktop.supported {
+      ADEGlassSection(title: "Mac Desktop", subtitle: macDesktop.display?.name) {
+        if let display = macDesktop.display {
+          VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+              Text("\(display.width) × \(display.height)")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+              if let stream = macDesktop.stream, stream.running {
+                ADEGlassStatusBadge(
+                  text: stream.idle ? "Idle" : "Live",
+                  tint: stream.idle ? ADEColor.textMuted : ADEColor.accent
+                )
+              }
+              Spacer(minLength: 0)
+            }
+            Text(macDesktopLeaseLine(macDesktop.lease))
+              .font(.footnote)
+              .foregroundStyle(ADEColor.textSecondary)
+            let windows = macDesktop.windows ?? []
+            if windows.isEmpty {
+              Text("No windows are parked on this desktop.")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textMuted)
+            } else {
+              ForEach(windows) { window in
+                VStack(alignment: .leading, spacing: 1) {
+                  Text(window.appName)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(ADEColor.textPrimary)
+                    .lineLimit(1)
+                  if let title = window.title, !title.isEmpty {
+                    Text(title)
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textMuted)
+                      .lineLimit(1)
+                  }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+              }
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+          Text("This lane has no desktop running.")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+    }
+  }
+
   private var loadingState: some View {
     VStack(spacing: 12) {
       ProgressView()
@@ -301,10 +365,16 @@ struct WorkToolsSheet: View {
   /// otherwise whichever tool captured something.
   private var latestObservation: WorkToolsObservation? {
     guard let state else { return nil }
-    if state.activeTool == "app-control" {
-      return state.appControl?.latestObservation ?? state.browser?.latestObservation
+    let macDesktop = state.macDesktop?.lastObservation.map {
+      WorkToolsObservation(path: $0.screenshotPath, caption: $0.caption)
     }
-    return state.browser?.latestObservation ?? state.appControl?.latestObservation
+    if state.activeTool == "mac-desktop" {
+      return macDesktop ?? state.browser?.latestObservation ?? state.appControl?.latestObservation
+    }
+    if state.activeTool == "app-control" {
+      return state.appControl?.latestObservation ?? state.browser?.latestObservation ?? macDesktop
+    }
+    return state.browser?.latestObservation ?? state.appControl?.latestObservation ?? macDesktop
   }
 
   /// What the frame slot renders. Split out of the view so the one case that
@@ -529,5 +599,20 @@ func workToolsBrowserUnavailableMessage(_ reason: String?) -> String {
     return "Open the Browser tool on the desktop to see tabs here."
   default:
     return "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs."
+  }
+}
+
+/// Who has the lane's screen, in the sheet's one line.
+///
+/// Worded identically to the desktop's takeover strip so the two surfaces
+/// cannot describe one lease two ways. An unknown holder from a newer host
+/// falls back to the neutral sentence rather than guessing which side it is.
+func macDesktopLeaseLine(_ lease: WorkToolsMacDesktopLease?) -> String {
+  guard let lease else { return "Nobody has taken control." }
+  let label = lease.holderLabel.flatMap { $0.isEmpty ? nil : " · \($0)" } ?? ""
+  switch lease.holder {
+  case "user": return "You have control\(label)"
+  case "agent": return "Agent driving\(label)"
+  default: return "Nobody has taken control."
   }
 }

@@ -8,6 +8,11 @@ import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared
 // Electron-main module would pull `electron` into it.
 import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/shared/types/builtInBrowser";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
+import type {
+  MacDesktopEventPayload,
+  MacDesktopServiceApi,
+  MacDesktopStatus,
+} from "../../../../desktop/src/shared/types/macDesktop";
 import {
   isWorkToolId,
   type WorkToolId,
@@ -18,6 +23,7 @@ import {
   type WorkToolsSetActiveToolArgs,
   type WorkToolsBrowserState,
   type WorkToolsLaneState,
+  type WorkToolsMacDesktopState,
   type WorkToolsObservation,
   type WorkToolsObservationPreview,
 } from "../../../../desktop/src/shared/types/workTools";
@@ -47,6 +53,13 @@ import {
  *   but has never used its Browser pane is `"browser_pane_not_opened"`: both
  *   ordinary, both deliberately not answered out of another project's window
  *   collection, and worded apart because only the first means "open something".
+ * - `macDesktop` is **read in-process** from the runtime's own Mac Desktop
+ *   service, when it has one. It is never polled: the service pushes a
+ *   `MacDesktopEventPayload` on every edge that changes the lane's screen, and
+ *   each one schedules the same debounced `work_tools_state_changed` a tab
+ *   switch does, so a phone re-reads exactly when there is something new. A
+ *   runtime with no such service (any non-macOS host, and any host built before
+ *   it) reports `macDesktop: null`, which every client hides the tool on.
  * - `appControl` is **read in-process** from the daemon's own App Control
  *   service, which is why it survives a desktop that has quit.
  *
@@ -59,6 +72,13 @@ import {
 /** Roots the desktop writes observations into, relative to the project root. */
 const BROWSER_OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations");
 const APP_CONTROL_OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "app-control-observations");
+/**
+ * Where the Mac Desktop service writes its observation screenshots. Listed
+ * here so `readObservationPreview` serves a lane-desktop frame through the
+ * exact same path-checked route the browser's frames use — a second route
+ * would be a second place to get the containment check wrong.
+ */
+const MAC_DESKTOP_OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "mac-desktop-observations");
 
 /**
  * How deep to walk an observation root. The browser nests
@@ -92,6 +112,18 @@ export const WORK_TOOLS_STATE_EVENT_DEBOUNCE_MS = 250;
 export type WorkToolsBrowserStatusReader = () => Promise<BuiltInBrowserRuntimeStatus>;
 export type WorkToolsAppControlStatusReader = () => AppControlStatus | Promise<AppControlStatus>;
 
+/**
+ * The slice of the Mac Desktop service this aggregator is allowed to hold.
+ *
+ * Deliberately `Pick<…, "getStatus">` plus the subscription rather than the
+ * whole `MacDesktopServiceApi`: a read-only mirror must not be able to start a
+ * display, take a lease, or move a pointer, and the narrow type is what makes
+ * that a compile error rather than a code-review note.
+ */
+export type WorkToolsMacDesktopReader = Pick<MacDesktopServiceApi, "getStatus"> & {
+  subscribe(listener: (event: MacDesktopEventPayload) => void): () => void;
+};
+
 export type WorkToolsStateServiceArgs = {
   projectRoot: string;
   /**
@@ -102,6 +134,12 @@ export type WorkToolsStateServiceArgs = {
   getBrowserStatus?: WorkToolsBrowserStatusReader | null;
   /** The daemon's own App Control service, when it has one. */
   getAppControlStatus?: WorkToolsAppControlStatusReader | null;
+  /**
+   * The runtime's Mac Desktop service. Absent on every non-macOS host and on
+   * any build without it; absence reads as "the tool does not exist here", not
+   * as an error, exactly as `getBrowserStatus` does.
+   */
+  macDesktopService?: WorkToolsMacDesktopReader | null;
   /** Emits `work_tools_state_changed`. Already debounced when it fires. */
   onStateChanged?: (laneId: string) => void;
   debounceMs?: number;
@@ -371,6 +409,63 @@ function summarizeAgentPresence(
     });
 }
 
+/**
+ * The lane's macOS seat, cut down to what a client that cannot drive it needs.
+ *
+ * `lastObservation` deliberately does NOT come from `getStatus` — the status
+ * carries no observation, because an element tree is not status. It is kept
+ * from the `observation` event instead, which is the only place the newest
+ * frame is announced, and it is passed in rather than read here so this stays
+ * a pure function of two inputs.
+ */
+function summarizeMacDesktop(
+  status: MacDesktopStatus,
+  lastObservation: WorkToolsMacDesktopState["lastObservation"],
+): WorkToolsMacDesktopState {
+  return {
+    supported: status.supported,
+    display: status.display,
+    windows: status.windows,
+    lease: status.lease,
+    stream: status.stream,
+    permissions: status.permissions,
+    // A frame captured before the display went away describes a screen that no
+    // longer exists, so it leaves with the display rather than lingering.
+    lastObservation: status.display ? lastObservation : null,
+    hostIsLocal: status.hostIsLocal,
+  };
+}
+
+/**
+ * The lane an event is about, or null when it is about the whole host.
+ *
+ * `permission-changed` and `driver-health` are host-wide: a revoked Screen
+ * Recording grant changes every lane's answer at once, so they fan out to every
+ * lane this service has been asked about rather than naming one.
+ */
+function macDesktopEventLaneId(event: MacDesktopEventPayload): string | null {
+  switch (event.type) {
+    case "display-created":
+      return event.display.laneId;
+    case "display-destroyed":
+    case "windows-changed":
+    case "observation":
+    case "lease-changed":
+    case "lease-requested":
+      return event.laneId;
+    case "stream-started":
+    case "stream-status":
+    case "stream-stopped":
+    case "stream-error":
+    case "recording-changed":
+      return event.status.laneId;
+    case "time-lapse":
+      return event.timeLapse.laneId;
+    default:
+      return null;
+  }
+}
+
 function summarizeAppControl(status: AppControlStatus): WorkToolsAppControlState | null {
   const session = status.activeSession;
   if (!session) return null;
@@ -402,6 +497,19 @@ export function createWorkToolsStateService(
 
   const browserObservationRoot = path.join(projectRoot, BROWSER_OBSERVATION_CACHE_DIR);
   const appControlObservationRoot = path.join(projectRoot, APP_CONTROL_OBSERVATION_CACHE_DIR);
+  const macDesktopObservationRoot = path.join(projectRoot, MAC_DESKTOP_OBSERVATION_CACHE_DIR);
+  // Newest frame per lane, kept from the `observation` event. `getStatus` does
+  // not carry one, and re-scanning the cache directory on every state read
+  // would turn a poll into a filesystem crawl for a fact the service just told
+  // us. Cleared when the lane's display goes away.
+  const macDesktopObservationByLane = new Map<
+    string,
+    NonNullable<WorkToolsMacDesktopState["lastObservation"]>
+  >();
+  // Lanes this service has been asked about or told about, so a host-wide
+  // event (a revoked permission, a lost driver) can reach every client that
+  // has a view open rather than none.
+  const knownMacDesktopLanes = new Set<string>();
 
   const emitStateChanged = (laneId: string): void => {
     if (disposed) return;
@@ -475,6 +583,51 @@ export function createWorkToolsStateService(
     return appControl;
   };
 
+  const readMacDesktop = async (laneId: string): Promise<WorkToolsMacDesktopState | null> => {
+    const service = args.macDesktopService;
+    // No service at all: this host cannot host a lane screen, and the tool is
+    // hidden rather than drawn empty. Same shape of answer as a non-Mac host.
+    if (!service) return null;
+    knownMacDesktopLanes.add(laneId);
+    let status: MacDesktopStatus;
+    try {
+      status = await service.getStatus({ laneId });
+    } catch (error) {
+      // `getStatus` answers on every platform by contract, so a rejection here
+      // is a real fault rather than "not a Mac" — but it still renders as the
+      // tool being absent, so it is logged loudly enough to be findable.
+      args.logger?.warn("work_tools.mac_desktop_status_failed", {
+        err: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    return summarizeMacDesktop(status, macDesktopObservationByLane.get(laneId) ?? null);
+  };
+
+  // Push, never poll. Every edge the service announces is one a mirrored client
+  // would otherwise learn only on its next 3-4 second tick.
+  const unsubscribeMacDesktop = args.macDesktopService?.subscribe((event) => {
+    if (disposed) return;
+    if (event.type === "observation") {
+      const observation = event.observation;
+      macDesktopObservationByLane.set(event.laneId, {
+        id: observation.id,
+        capturedAt: observation.capturedAt,
+        caption: observation.caption,
+        screenshotPath: observation.screenshotPath,
+      });
+    } else if (event.type === "display-destroyed") {
+      macDesktopObservationByLane.delete(event.laneId);
+    }
+    const laneId = macDesktopEventLaneId(event);
+    if (laneId) {
+      knownMacDesktopLanes.add(laneId);
+      emitStateChanged(laneId);
+      return;
+    }
+    for (const known of knownMacDesktopLanes) emitStateChanged(known);
+  }) ?? null;
+
   return {
     noteAgentBrowserActivity(input) {
       const laneId = trimmedOrNull(input?.laneId);
@@ -542,9 +695,10 @@ export function createWorkToolsStateService(
     async getLaneState(input) {
       const laneId = requireLaneId(input?.laneId, "work_tools.getLaneState");
       const active = activeToolByLane.get(laneId) ?? null;
-      const [{ browser, unavailable, presence }, appControl] = await Promise.all([
+      const [{ browser, unavailable, presence }, appControl, macDesktop] = await Promise.all([
         readBrowser(laneId),
         readAppControl(laneId),
+        readMacDesktop(laneId),
       ]);
       return {
         laneId,
@@ -555,6 +709,7 @@ export function createWorkToolsStateService(
         browserUnavailable: unavailable,
         agentBrowserPresence: presence,
         appControl,
+        macDesktop,
         capturedAt: new Date().toISOString(),
       };
     },
@@ -566,7 +721,7 @@ export function createWorkToolsStateService(
       // crosses a trust boundary — a paired viewer could send any string. Both
       // observation roots are checked so neither becomes an arbitrary file read.
       let canonical: string | null = null;
-      for (const root of [browserObservationRoot, appControlObservationRoot]) {
+      for (const root of [browserObservationRoot, appControlObservationRoot, macDesktopObservationRoot]) {
         try {
           canonical = resolvePathWithinRoot(root, path.resolve(requested));
           break;
@@ -615,6 +770,9 @@ export function createWorkToolsStateService(
 
     dispose() {
       disposed = true;
+      unsubscribeMacDesktop?.();
+      macDesktopObservationByLane.clear();
+      knownMacDesktopLanes.clear();
       for (const timer of pendingEventTimers.values()) clearTimeout(timer);
       pendingEventTimers.clear();
       for (const entry of presenceWindowTimers.values()) clearTimeout(entry.timer);

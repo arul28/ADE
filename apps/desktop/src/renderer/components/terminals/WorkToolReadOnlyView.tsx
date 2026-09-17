@@ -28,7 +28,7 @@ import {
 export const WORK_TOOL_READ_ONLY_POLL_MS = 4_000;
 
 export type WorkToolReadOnlyViewProps = {
-  tool: "browser" | "app-control";
+  tool: "browser" | "app-control" | "mac-desktop";
   laneId: string | null;
 };
 
@@ -77,9 +77,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  const observation = tool === "browser"
-    ? state?.browser?.latestObservation ?? null
-    : state?.appControl?.latestObservation ?? null;
+  const observation = readOnlyObservation(tool, state);
   const observationPath = observation?.path ?? null;
 
   useEffect(() => {
@@ -119,9 +117,9 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-auto px-3 py-3">
-      {tool === "browser"
-        ? <BrowserSummary state={state} />
-        : <AppControlSummary state={state} />}
+      {tool === "browser" ? <BrowserSummary state={state} /> : null}
+      {tool === "app-control" ? <AppControlSummary state={state} /> : null}
+      {tool === "mac-desktop" ? <MacDesktopSummary state={state} /> : null}
       <ObservationFrame
         observation={observation}
         dataUrl={preview?.path === observationPath ? preview?.dataUrl ?? null : null}
@@ -129,6 +127,23 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
       <p className="text-[11px] text-muted-fg">{WORK_TOOLS_CONTROL_HINT}</p>
     </div>
   );
+}
+
+/**
+ * The frame this pane shows. Mac Desktop's lives on its own slice rather than
+ * on a `WorkToolsObservation`, because the desktop's observation carries an id
+ * and an element tree the browser's never had; the shape is flattened to the
+ * same three fields here so one `ObservationFrame` serves all three tools.
+ */
+function readOnlyObservation(
+  tool: WorkToolReadOnlyViewProps["tool"],
+  state: WorkToolsLaneState | null,
+): WorkToolsObservation | null {
+  if (tool === "browser") return state?.browser?.latestObservation ?? null;
+  if (tool === "app-control") return state?.appControl?.latestObservation ?? null;
+  const last = state?.macDesktop?.lastObservation ?? null;
+  if (!last) return null;
+  return { path: last.screenshotPath, capturedAt: last.capturedAt, caption: last.caption };
 }
 
 function ReadOnlyMessage({ message }: { message: string }): JSX.Element {
@@ -190,6 +205,50 @@ function AppControlSummary({ state }: { state: WorkToolsLaneState }): JSX.Elemen
       <div className="text-[11px] text-muted-fg">
         {appControl.status} · {appControl.driver}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The lane's private macOS screen, described. No control: the lease is taken on
+ * the Mac, and a web client that offered a "take over" button would be offering
+ * to move a pointer it has no way to move. Web takeover is a follow-up lane.
+ */
+function MacDesktopSummary({ state }: { state: WorkToolsLaneState }): JSX.Element {
+  const macDesktop = state.macDesktop;
+  if (!macDesktop || !macDesktop.supported) {
+    return <ReadOnlyMessage message="This machine can't host a lane desktop." />;
+  }
+  const display = macDesktop.display;
+  if (!display) {
+    return <p className="text-[12px] text-muted-fg">This lane has no desktop running.</p>;
+  }
+  const lease = macDesktop.lease;
+  // "Agent driving" vs "You have control" is the same sentence the desktop's
+  // strip shows, so the two surfaces cannot describe one lease two ways.
+  const leaseLine = lease
+    ? (lease.holder === "user"
+      ? `You have control${lease.holderLabel ? ` · ${lease.holderLabel}` : ""}`
+      : `Agent driving${lease.holderLabel ? ` · ${lease.holderLabel}` : ""}`)
+    : "Nobody has taken control.";
+  const stream = macDesktop.stream;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="rounded-md border border-border/60 px-2.5 py-2 text-[12px]">
+        <div className="flex items-center gap-1.5">
+          <span className="truncate font-medium">{display.name}</span>
+          {stream?.running ? <Badge label={stream.idle ? "Idle" : "Live"} /> : null}
+        </div>
+        <div className="text-[11px] text-muted-fg">
+          {display.width} × {display.height} · {display.mode}
+        </div>
+        <div className="text-[11px] text-muted-fg">{leaseLine}</div>
+      </div>
+      <p className="text-[11px] text-muted-fg">
+        {macDesktop.windows.length === 0
+          ? "No windows are parked on this desktop."
+          : macDesktop.windows.map((window) => window.appName).join(" · ")}
+      </p>
     </div>
   );
 }
