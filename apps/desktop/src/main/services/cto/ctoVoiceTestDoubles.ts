@@ -14,8 +14,6 @@ import type { CtoVoiceRuntimeHost } from "./ctoVoiceRuntimeService";
  * rather than in every suite that drives an event.
  */
 
-export type FakeVoiceSocket = ReturnType<typeof createFakeSocket>;
-
 /** A socket the test drives: records what was sent, replays what the API says. */
 export function createFakeSocket() {
   const sent: Array<Record<string, unknown>> = [];
@@ -49,19 +47,12 @@ export function pushedPhases(host: CtoVoiceRuntimeHost): string[] {
     String((event.payload as { state?: { phase?: unknown } }).state?.phase)) ?? [];
 }
 
-/** Every state the host's event buffer saw, in order. */
-export function pushedStates(host: CtoVoiceRuntimeHost): Array<Record<string, unknown>> {
-  return hostEvents.get(host)?.map((event) =>
-    (event.payload as { state: Record<string, unknown> }).state) ?? [];
-}
-
 /**
  * A stand-in for `Members` of one of the runtime's services.
  *
  * The member list is taken from the REAL service, so a method the call path
- * renames or drops breaks every double here at compile time — which the blanket
- * `as never` casts could never do, and which is what the header above used to
- * claim. Each member keeps its real parameter list.
+ * renames or drops breaks every double here at compile time. Each member keeps
+ * its real parameter list.
  *
  * What is deliberately not reproduced is the full RETURN shape. An
  * `AgentChatSession` carries sixty fields and a `LaneSummary` fourteen, and a

@@ -32,12 +32,19 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   // A Pi sign-in prompt answer is the credential itself when Pi asks for an
   // API key, so it must never reach a verbose IPC trace.
   [IPC.aiPiLoginSubmit]: new Set(["value"]),
-  // Both key-store channels carry the raw provider credential as `key`. These
-  // two entries are the ONLY thing redacting it: the generic guard below no
-  // longer treats a bare `key` as a secret, because it is the ordinary word
+  // All three key-store channels carry the raw provider credential as `key`.
+  // These entries are the ONLY thing redacting it: the generic guard below
+  // does not treat a bare `key` as a secret, because it is the ordinary word
   // for a lookup key on channels that carry nothing sensitive.
   [IPC.aiStoreApiKey]: new Set(["key"]),
   [IPC.aiStoreMachineApiKey]: new Set(["key"]),
+  [IPC.aiSetOpencodeProviderKey]: new Set(["key"]),
+  // A project secret's whole point is that its value never leaves the store in
+  // the clear. `value` is too ordinary a word for the generic guard, `content`
+  // is a whole .env file, and `secrets` is a list of name/value pairs.
+  [IPC.projectSecretsSet]: new Set(["value"]),
+  [IPC.projectSecretsPreviewEnvImport]: new Set(["content"]),
+  [IPC.projectSecretsImportEnv]: new Set(["secrets"]),
 };
 
 /**
@@ -50,11 +57,10 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
  * over-match as a substring.
  *
  * A bare `key` is deliberately NOT here. It reads as a credential and is one
- * on `aiStoreApiKey` / `aiStoreMachineApiKey` — both of which the channel map
- * above names outright — but it is also the ordinary word for a lookup key,
- * and the generic rule was blanking non-secret fields like
- * `projectSetRecentPinned { key, pinned }` out of every trace that was
- * supposed to explain them.
+ * on the key-store channels — which the channel map above names outright —
+ * but it is also the ordinary word for a lookup key
+ * (`projectSetRecentPinned { key, pinned }`), and blanking it generically
+ * empties the traces that exist to explain those calls.
  *
  * Lives here rather than in `registerIpc` so the contract has a test.
  */

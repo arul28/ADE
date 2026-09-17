@@ -20,8 +20,18 @@ import type { AgentChatSession } from "../../../shared/types/chat";
 
 type Managed = { id: string };
 
+/**
+ * The thread rotation creates, as the fields rotation actually touches.
+ *
+ * Same doctrine as `ServiceDouble` in the voice doubles: an `AgentChatSession`
+ * carries sixty fields and this module reads one of them, so the fixture is
+ * typed as a `Pick` — a rename breaks it — and widened exactly once, here,
+ * rather than as a bare cast at the use site.
+ */
+const NEW_SESSION: Pick<AgentChatSession, "id"> = { id: "session-new" };
+
 function makeDeps(overrides: Partial<IdentityThreadRotationDeps<Managed>> = {}) {
-  const session: AgentChatSession = { id: "session-new" } as AgentChatSession;
+  const session = NEW_SESSION as AgentChatSession;
   const deps: IdentityThreadRotationDeps<Managed> = {
     logger: { info: vi.fn(), warn: vi.fn() },
     nowIso: () => "2026-09-16T10:00:00.000Z",

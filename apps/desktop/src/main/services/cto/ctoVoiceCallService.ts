@@ -3,14 +3,10 @@ import { WebSocket } from "ws";
 
 import {
   CTO_VOICE_CAPTURE_DEFAULT_NOTE,
-  CTO_VOICE_DEFAULT,
   CTO_VOICE_END_CALL_AUDIO_TAIL_MS,
   CTO_VOICE_INITIAL_STATE,
   CTO_VOICE_PREOPEN_AUDIO_LIMIT,
   CTO_VOICE_SAMPLE_RATE,
-  CTO_VOICE_TRANSCRIBE_LANGUAGE,
-  CTO_VOICE_TRANSCRIBE_MODEL,
-  CTO_VOICE_TRANSCRIBE_PROMPT,
   CTO_VOICE_TURN_BURST_COOLDOWN_MS,
   CTO_VOICE_TURN_BURST_LIMIT,
   CTO_VOICE_TURN_BURST_WINDOW_MS,
@@ -24,9 +20,9 @@ import {
   voiceCostUsd,
 } from "../../../shared/types/ctoVoice";
 import { buildCtoVoiceInstructions } from "../../../shared/types/ctoVoicePrompt";
+import { buildCtoVoiceSessionUpdate } from "../../../shared/types/ctoVoiceSession";
 import {
   CTO_VOICE_ASK_QUEUE_LIMIT,
-  CTO_VOICE_REALTIME_TOOLS,
   CTO_VOICE_TOOL_APPROVE,
   CTO_VOICE_TOOL_ASK_CTO,
   CTO_VOICE_TOOL_CANCEL_WORK,
@@ -319,36 +315,184 @@ function defaultSocket(url: string, apiKey: string): CtoVoiceSocket {
   };
 }
 
-export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
-  let socket: CtoVoiceSocket | null = null;
+/** A request the model made, and the timing record it was accepted under. */
+type AskCtoJob = { callId: string; request: string; timing: CtoVoiceTurnTiming };
+
+/**
+ * Everything that belongs to ONE call and must not outlive it.
+ *
+ * One record rather than nineteen closure variables, because "reset for the
+ * next call" was two hand-written lists — one in `start`, one in `endCall` —
+ * that overlapped without agreeing. A variable missing from both is a fact
+ * about a finished call that the next one reads as its own, and every bug of
+ * that family has the same shape: the first barge-in of call two cancels a
+ * response from call one. `start` assigns a fresh record, so a field added
+ * here is reset by construction and there is no list to forget it from.
+ *
+ * What is deliberately NOT here is anything with a teardown of its own — the
+ * socket, the timers, the abort controller, the sub-modules — because those
+ * need `clearTimeout`/`abort`/`reset` called on them, not a new value.
+ */
+type CallSession = {
   /**
    * True only between `open` and the end of the socket's life.
    *
    * `ws` throws synchronously on `send` while the handshake is still in flight
    * ("WebSocket is not open: readyState 0 (CONNECTING)"), and the microphone
    * starts producing frames the moment the HUD mounts — which is the whole
-   * window between Talk being pressed and OpenAI answering. Every send below is
+   * window between Talk being pressed and OpenAI answering. Every send is
    * gated on this rather than on `socket` being non-null, because a socket that
    * exists is not a socket that will accept anything.
    */
-  let socketOpen = false;
+  socketOpen: boolean;
   /**
    * True while WE are closing the socket on purpose.
    *
    * `ws` reports a close of a still-CONNECTING socket as
    * "WebSocket was closed before the connection was established" — an error
    * that looks exactly like a connection that failed on its own. Describing it
-   * as one blamed OpenAI for a hang-up ADE asked for, which is how a call ended
-   * by the renderer 144 ms in came back as "The voice connection failed."
+   * as one blames OpenAI for a hang-up ADE asked for.
    */
-  let deliberateClose = false;
+  deliberateClose: boolean;
   /**
    * Mic frames captured before the session existed.
    *
    * Dropped rather than replayed past this bound: the first second of speech is
    * worth keeping, an unbounded queue against a socket that never opens is not.
    */
-  let pendingInputAudio: string[] = [];
+  pendingInputAudio: string[];
+  startedAtMs: number;
+  startedAtIso: string;
+  /**
+   * The utterance being transcribed right now.
+   *
+   * One record, because it is one thing. The id turns over when a NEW utterance
+   * OPENS — on `input_audio_buffer.speech_started` — and never when one
+   * finishes. A confirmation raised after the transcript closed would otherwise
+   * be bound to the id the user's NEXT reply carries, and the "same utterance"
+   * guard would reject every spoken yes forever.
+   *
+   * `text` survives completion for the same reason — a turn for this utterance
+   * may still be in flight — and is cleared when a turn consumes it or a new
+   * utterance opens, so a reply that never reached the CTO cannot glue onto the
+   * front of a later intent.
+   */
+  utterance: { id: string; text: string; open: boolean };
+  /** Cleared as soon as it is handed to a turn — one capture, one turn. */
+  pendingImage: string | null;
+  /**
+   * True once OpenAI has answered with a session, so the call is live.
+   *
+   * Three events can be the first to say so and only the first one counts —
+   * the clock the cost is billed from must not restart on `session.updated`.
+   */
+  sessionReady: boolean;
+  /** The context block for this call's first `session.update`. Refreshed later. */
+  sessionContext: string;
+  /**
+   * The user talked over the response that is generating right now.
+   *
+   * Read when its transcript arrives: a truncated response still reports the
+   * words it managed to say, and without this the call record claims that half
+   * sentence was the whole of what the CTO said.
+   */
+  activeResponseInterrupted: boolean;
+  /**
+   * When the audio handed to the renderer so far finishes playing, in wall
+   * clock.
+   *
+   * A playback clock rather than a byte count: chunks arrive faster than
+   * realtime, so the tail of a sentence is still unspoken long after its last
+   * chunk was emitted. Each chunk extends the later of "now" and the previous
+   * deadline by its own duration, which is exactly how the renderer's queue
+   * plays it.
+   */
+  outputAudioDeadlineMs: number;
+  /** The model called `end_call`; the call hangs up once its goodbye is heard. */
+  endAfterSpeech: boolean;
+  /**
+   * The `ask_cto` running right now.
+   *
+   * One at a time, because the CTO thread is one session: a second turn on it
+   * throws. What happens to a second request is the MODEL's call, carried on
+   * the tool's `mode` argument — `replace` stops the running one, `queue` waits
+   * for it — and the two are served by one serial drain loop, which is also
+   * what makes a replace safe: the next turn is only started after the aborted
+   * one's `runBackendTurn` has actually returned.
+   */
+  askCtoRunning: boolean;
+  /** Requests waiting behind the running one, in the order they were asked. */
+  askQueue: AskCtoJob[];
+  /** True while `drainAskQueue` owns the loop, so nothing starts a second one. */
+  askDraining: boolean;
+  /**
+   * When each accepted turn was accepted, inside the burst window.
+   *
+   * Trimmed to the window on every read, so this is bounded by the rate a
+   * transcript source can physically produce transcripts rather than by the
+   * length of the call.
+   */
+  acceptedTurnsAtMs: number[];
+  /** When the last transcript of any kind arrived — the cooldown is measured off it. */
+  lastTranscriptAtMs: number;
+  /** Set while the burst valve is shut. Nothing is accepted until quiet clears it. */
+  burstValveTripped: boolean;
+  /** Accepted user turns this call has had. The number the status line reports. */
+  exchanges: number;
+  /**
+   * When the server last said the user stopped talking.
+   *
+   * The first leg of the latency the user actually feels, and the only one
+   * nothing else records: the transcriber's own round trip. Reset per segment,
+   * so a transcript with no `speech_stopped` behind it reports no leg rather
+   * than one measured against a minute-old event.
+   */
+  speechStoppedAtMs: number;
+  /**
+   * Why the connection died, in two words rather than a sentence.
+   *
+   * The sentence the user reads names a provider and a settings pane; the
+   * product question is only "was the key refused, or could we not reach
+   * OpenAI at all". Recorded here because this is the one place the HTTP status
+   * exists. Survives `endCall` so the runtime can read it off a failed call,
+   * and is cleared by the NEXT `start`.
+   */
+  connectionFailureKind: "rejected_key" | "connection_failed" | null;
+  /** The connection already failed once; a later, vaguer arrival must not overwrite it. */
+  connectionFailed: boolean;
+};
+
+function freshCallSession(): CallSession {
+  return {
+    socketOpen: false,
+    deliberateClose: false,
+    pendingInputAudio: [],
+    startedAtMs: 0,
+    startedAtIso: "",
+    utterance: { id: randomUUID(), text: "", open: false },
+    pendingImage: null,
+    sessionReady: false,
+    sessionContext: "",
+    activeResponseInterrupted: false,
+    outputAudioDeadlineMs: 0,
+    endAfterSpeech: false,
+    askCtoRunning: false,
+    askQueue: [],
+    askDraining: false,
+    acceptedTurnsAtMs: [],
+    lastTranscriptAtMs: 0,
+    burstValveTripped: false,
+    exchanges: 0,
+    speechStoppedAtMs: 0,
+    connectionFailureKind: null,
+    connectionFailed: false,
+  };
+}
+
+export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
+  /** Everything that belongs to this one call, replaced wholesale by `start`. */
+  let call = freshCallSession();
+  let socket: CtoVoiceSocket | null = null;
   /**
    * True from the moment `start` commits to a call until `endCall` tears it
    * down — NOT "is the socket open".
@@ -364,85 +508,13 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   /** Detaches the approval watcher when the call ends. */
   let releaseApprovalWatch: (() => void) | null = null;
   let keepAlive: NodeJS.Timeout | null = null;
-  let startedAtMs = 0;
-  let startedAtIso = "";
 
   let state: CtoVoiceState = { ...CTO_VOICE_INITIAL_STATE };
 
-  /**
-   * The utterance being transcribed right now.
-   *
-   * One record, because it is one thing. The id turns over when a NEW utterance
-   * OPENS — on `input_audio_buffer.speech_started` — and never when one
-   * finishes. A confirmation raised after the transcript closed would otherwise
-   * be bound to the id the user's NEXT reply carries, and the "same utterance"
-   * guard would reject every spoken yes forever.
-   *
-   * `text` survives completion for the same reason — a turn for this utterance
-   * may still be in flight — and is cleared when a turn consumes it or a new
-   * utterance opens, so a reply that never reached the CTO cannot glue onto the
-   * front of a later intent.
-   */
-  let utterance = { id: randomUUID(), text: "", open: false };
-
-  /** Cleared as soon as it is handed to a turn — one capture, one turn. */
-  let pendingImage: string | null = null;
-
-  /**
-   * True once OpenAI has answered with a session, so the call is live.
-   *
-   * Three events can be the first to say so and only the first one counts —
-   * the clock the cost is billed from must not restart on `session.updated`.
-   */
-  let sessionReady = false;
-
-  /** The context block for this call's first `session.update`. Refreshed later. */
-  let sessionContext = "";
-
-  /**
-   * The user talked over the response that is generating right now.
-   *
-   * Read when its transcript arrives: a truncated response still reports the
-   * words it managed to say, and without this the call record claims that half
-   * sentence was the whole of what the CTO said.
-   */
-  let activeResponseInterrupted = false;
-
-  /**
-   * When the audio handed to the renderer so far finishes playing, in wall
-   * clock.
-   *
-   * A playback clock rather than a byte count: chunks arrive faster than
-   * realtime, so the tail of a sentence is still unspoken long after its last
-   * chunk was emitted. Each chunk extends the later of "now" and the previous
-   * deadline by its own duration, which is exactly how the renderer's queue
-   * plays it.
-   */
-  let outputAudioDeadlineMs = 0;
-
-  /** The model called `end_call`; the call hangs up once its goodbye is heard. */
-  let endAfterSpeech = false;
   let endAfterSpeechTimer: NodeJS.Timeout | null = null;
 
-  /**
-   * The `ask_cto` running right now, and the controller that stops it.
-   *
-   * One at a time, because the CTO thread is one session: a second turn on it
-   * throws. What happens to a second request is the MODEL's call, carried on
-   * the tool's `mode` argument — `replace` stops the running one, `queue` waits
-   * for it — and the two are served by one serial drain loop below, which is
-   * also what makes a replace safe: the next turn is only started after the
-   * aborted one's `runBackendTurn` has actually returned.
-   */
+  /** Stops the `ask_cto` running right now. See `CallSession.askCtoRunning`. */
   let askCtoAbort: AbortController | null = null;
-  let askCtoRunning = false;
-
-  /** A request the model made, and the timing record it was accepted under. */
-  type AskCtoJob = { callId: string; request: string; timing: CtoVoiceTurnTiming };
-  /** Requests waiting behind the running one, in the order they were asked. */
-  let askQueue: AskCtoJob[] = [];
-  /** True while `drainAskQueue` owns the loop, so nothing starts a second one. */
-  let askDraining = false;
 
   /**
    * Every function call in flight: dedupe, settle-order and the results that
@@ -471,31 +543,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   const mic = createMicMeter({ now: () => now() });
 
   /**
-   * When each accepted turn was accepted, inside the burst window.
-   *
-   * Trimmed to the window on every read, so this is bounded by the rate a
-   * transcript source can physically produce transcripts rather than by the
-   * length of the call.
-   */
-  let acceptedTurnsAtMs: number[] = [];
-  /** When the last transcript of any kind arrived — the cooldown is measured off it. */
-  let lastTranscriptAtMs = 0;
-  /** Set while the burst valve is shut. Nothing is accepted until quiet clears it. */
-  let burstValveTripped = false;
-  /** Accepted user turns this call has had. The number the status line reports. */
-  let exchanges = 0;
-
-  /**
-   * When the server last said the user stopped talking.
-   *
-   * The first leg of the latency the user actually feels, and the only one
-   * nothing else records: the transcriber's own round trip. Reset per segment,
-   * so a transcript with no `speech_stopped` behind it reports no leg rather
-   * than one measured against a minute-old event.
-   */
-  let speechStoppedAtMs = 0;
-
-  /**
    * How long each turn took, leg by leg. The two slots and the log line it
    * writes live in `ctoVoiceTurnTiming`; what stays here is the call id, which
    * is the only thing about a timing line that belongs to this call.
@@ -513,16 +560,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   const setPhase = (phase: CtoVoicePhase) => emit({ phase });
 
   /**
-   * Why the connection died, in two words rather than a sentence.
-   *
-   * The sentence the user reads names a provider and a settings pane; the
-   * product question is only "was the key refused, or could we not reach
-   * OpenAI at all". Recorded here because this is the one place the HTTP status
-   * exists.
-   */
-  let connectionFailureKind: "rejected_key" | "connection_failed" | null = null;
-  let connectionFailed = false;
-  /**
    * The connection died. Say which way, once.
    *
    * A rejected upgrade can reach us twice — through `unexpected-response` and
@@ -534,8 +571,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     deps.logger?.warn(event, {
       status: reason.status,
       code: reason.code,
-      ...(connectionFailed ? { suppressed: true } : {}),
-      ...(deliberateClose ? { deliberate: true } : {}),
+      ...(call.connectionFailed ? { suppressed: true } : {}),
+      ...(call.deliberateClose ? { deliberate: true } : {}),
       ...(failure.message ? { error: failure.message } : {}),
     });
     // Whatever explained the failure first knew the most. Tearing the socket
@@ -543,9 +580,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // established"), so the follow-on is logged for the trace and then does
     // nothing at all — and a close WE asked for is never a failure to begin
     // with, whether or not anything had failed before it.
-    if (deliberateClose || connectionFailed) return;
-    connectionFailed = true;
-    connectionFailureKind = reason.status === 401 || reason.status === 403
+    if (call.deliberateClose || call.connectionFailed) return;
+    call.connectionFailed = true;
+    call.connectionFailureKind = reason.status === 401 || reason.status === 403
       ? "rejected_key"
       : "connection_failed";
     emit({ phase: "failed", error: reason.message });
@@ -554,7 +591,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   const send = (payload: Record<string, unknown>) => {
     // Not "is there a socket" — "will it take this". A pre-open send throws,
     // and it used to throw once per microphone frame.
-    if (!socket || !socketOpen) return;
+    if (!socket || !call.socketOpen) return;
     try {
       socket.send(JSON.stringify(payload));
     } catch (error) {
@@ -567,7 +604,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     const caption: CtoVoiceCaption = {
       role,
       text: text.trim(),
-      atMs: now() - startedAtMs,
+      atMs: now() - call.startedAtMs,
       // Only when it is true: an absent flag is what every ordinary caption
       // carries, and a `false` on every one of them would be two hundred extra
       // fields in the persisted transcript to say nothing happened.
@@ -586,7 +623,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    */
   const responses = createResponseQueue({
     send: (payload) => send(payload),
-    isOpen: () => socketOpen,
+    isOpen: () => call.socketOpen,
     // The post the audio leg is measured from: the queue may hold this behind
     // another response, and that wait is part of what the user is waiting for.
     onQueued: () => timings.markFirstSpeak(),
@@ -627,10 +664,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * lanes" straight after creating the tenth is worse than one that asks.
    */
   const refreshSessionContext = async () => {
-    if (!deps.context || !socketOpen) return;
+    if (!deps.context || !call.socketOpen) return;
     try {
       const context = await deps.context();
-      if (!socketOpen) return;
+      if (!call.socketOpen) return;
       send({
         type: "session.update",
         event_id: randomUUID(),
@@ -662,16 +699,16 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * asked for, not when the turn it interrupts is over.
    */
   async function drainAskQueue(): Promise<void> {
-    if (askDraining || askCtoRunning) return;
-    askDraining = true;
+    if (call.askDraining || call.askCtoRunning) return;
+    call.askDraining = true;
     try {
       for (;;) {
-        const next = askQueue.shift();
+        const next = call.askQueue.shift();
         if (!next) return;
         await runAskCto(next);
       }
     } finally {
-      askDraining = false;
+      call.askDraining = false;
     }
   }
 
@@ -696,8 +733,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       return;
     }
 
-    if (!askCtoRunning) {
-      askQueue.push(job);
+    if (!call.askCtoRunning) {
+      call.askQueue.push(job);
       void drainAskQueue();
       return;
     }
@@ -705,7 +742,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // The cap is the conversation's, not the queue's: a third request stacked
     // behind two is one the user has stopped waiting for. Replace is capped the
     // same way — it is still a request that has to be answered in order.
-    if (askQueue.length >= CTO_VOICE_ASK_QUEUE_LIMIT) {
+    if (call.askQueue.length >= CTO_VOICE_ASK_QUEUE_LIMIT) {
       timings.close(job.timing, "refused");
       sendFunctionOutput(job.callId, {
         status: "busy",
@@ -719,11 +756,11 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // At the FRONT, then stop what is running: the drain loop owns the order,
       // so the correction is the very next thing to run and anything queued
       // behind it keeps its place.
-      askQueue.unshift(job);
+      call.askQueue.unshift(job);
       abortRunningAsk();
       return;
     }
-    askQueue.push(job);
+    call.askQueue.push(job);
   }
 
   /**
@@ -752,15 +789,15 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // replaced turn sees "not aborted" and answers over the live one.
     const controller = new AbortController();
     askCtoAbort = controller;
-    askCtoRunning = true;
+    call.askCtoRunning = true;
     // Only when nothing is coming out of the speaker: the model's own
     // acknowledgement is usually still playing, and `thinking` would take the
     // HUD off `speaking` while the user can still hear it.
     if (state.phase !== "speaking") setPhase("thinking");
 
     try {
-      const image = pendingImage;
-      pendingImage = null;
+      const image = call.pendingImage;
+      call.pendingImage = null;
       timing.turnStartedAtMs = now();
       const result = await deps.runBackendTurn({
         intent: request,
@@ -820,24 +857,24 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     } finally {
       if (askCtoAbort === controller) {
         askCtoAbort = null;
-        askCtoRunning = false;
-        if (state.phase === "thinking" && !askQueue.length) setPhase("listening");
+        call.askCtoRunning = false;
+        if (state.phase === "thinking" && !call.askQueue.length) setPhase("listening");
       }
       // Last, and only for a turn nothing is waiting behind: a replaced turn's
       // facts are older than the one that replaced it, and a refresh between
       // two queued turns is a session update the second one pays for twice.
-      if (!askQueue.length && !controller.signal.aborted) void refreshSessionContext();
+      if (!call.askQueue.length && !controller.signal.aborted) void refreshSessionContext();
     }
   }
 
   /** Abort the running `ask_cto`, if there is one. Returns whether there was. */
   function abortRunningAsk(): boolean {
-    if (!askCtoRunning || !askCtoAbort) return false;
+    if (!call.askCtoRunning || !askCtoAbort) return false;
     askCtoAbort.abort();
     // The HUD moves now; the turn itself keeps unwinding on the CTO session and
     // clears `askCtoRunning` in its own `finally`, which is what the drain loop
     // waits for.
-    if (state.phase === "thinking" && !askQueue.length) setPhase("listening");
+    if (state.phase === "thinking" && !call.askQueue.length) setPhase("listening");
     return true;
   }
 
@@ -850,8 +887,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * has just cancelled is noise.
    */
   function cancelRunningWork(): boolean {
-    const waiting = askQueue;
-    askQueue = [];
+    const waiting = call.askQueue;
+    call.askQueue = [];
     for (const job of waiting) {
       timings.close(job.timing, "cancelled");
       sendFunctionOutput(job.callId, { status: "cancelled", answer: "" }, false);
@@ -875,8 +912,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * already scheduled, must not arm two timers.
    */
   function scheduleEndAfterSpeech(): void {
-    if (!endAfterSpeech || endAfterSpeechTimer || !started) return;
-    const waitMs = Math.max(0, outputAudioDeadlineMs - now()) + CTO_VOICE_END_CALL_AUDIO_TAIL_MS;
+    if (!call.endAfterSpeech || endAfterSpeechTimer || !started) return;
+    const waitMs = Math.max(0, call.outputAudioDeadlineMs - now()) + CTO_VOICE_END_CALL_AUDIO_TAIL_MS;
     deps.logger?.info("cto_voice.end_call_scheduled", { callId: state.callId, waitMs });
     endAfterSpeechTimer = setTimeout(() => {
       endAfterSpeechTimer = null;
@@ -943,7 +980,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     }
 
     if (name === CTO_VOICE_TOOL_END_CALL) {
-      endAfterSpeech = true;
+      call.endAfterSpeech = true;
       // Answered so the conversation is not left holding an open call, and
       // deliberately without asking for a response: the goodbye is in the same
       // response this call arrived in, and a second one would talk over it.
@@ -1008,10 +1045,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * this has to run before `lastTranscriptAtMs` moves.
    */
   function readBurstValve(): boolean {
-    if (!burstValveTripped) return false;
-    if (now() - lastTranscriptAtMs < CTO_VOICE_TURN_BURST_COOLDOWN_MS) return true;
-    burstValveTripped = false;
-    acceptedTurnsAtMs = [];
+    if (!call.burstValveTripped) return false;
+    if (now() - call.lastTranscriptAtMs < CTO_VOICE_TURN_BURST_COOLDOWN_MS) return true;
+    call.burstValveTripped = false;
+    call.acceptedTurnsAtMs = [];
     deps.logger?.info("cto_voice.transcript_valve_cleared", { callId: state.callId });
     return false;
   }
@@ -1040,7 +1077,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     const confirmationRejection = pending
       ? (valveShut ? ("runaway" satisfies CtoVoiceTranscriptRejection) : judgeVoiceTranscript(final, reading))
       : null;
-    lastTranscriptAtMs = now();
+    call.lastTranscriptAtMs = now();
     // Whatever was part-heard is now either final or gone.
     if (state.pendingUserText !== null) emit({ pendingUserText: null });
     if (!ctoVoiceTranscriptHasSpeech(final)) {
@@ -1059,7 +1096,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // caption. The utterance is burned so a redelivered transcription cannot
       // try the same words again, and the meter starts clean so this segment's
       // silence cannot be counted towards the next one.
-      utterance = { id: utterance.id, text: "", open: false };
+      call.utterance = { id: call.utterance.id, text: "", open: false };
       mic.reset();
       // The barge-in this segment carried is over, even though its transcript
       // was nothing. Left true, the next one is not a false→true edge and the
@@ -1087,31 +1124,31 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // calling that "abandoned" is how a request the CTO answered twenty-five
     // seconds later was logged as thrown away.
     timings.open(
-      lastTranscriptAtMs,
-      speechStoppedAtMs ? Math.round(lastTranscriptAtMs - speechStoppedAtMs) : null,
+      call.lastTranscriptAtMs,
+      call.speechStoppedAtMs ? Math.round(call.lastTranscriptAtMs - call.speechStoppedAtMs) : null,
     );
-    speechStoppedAtMs = 0;
+    call.speechStoppedAtMs = 0;
 
-    exchanges += 1;
-    acceptedTurnsAtMs = [...acceptedTurnsAtMs, lastTranscriptAtMs]
-      .filter((at) => lastTranscriptAtMs - at < CTO_VOICE_TURN_BURST_WINDOW_MS);
-    if (acceptedTurnsAtMs.length > CTO_VOICE_TURN_BURST_LIMIT) {
-      burstValveTripped = true;
+    call.exchanges += 1;
+    call.acceptedTurnsAtMs = [...call.acceptedTurnsAtMs, call.lastTranscriptAtMs]
+      .filter((at) => call.lastTranscriptAtMs - at < CTO_VOICE_TURN_BURST_WINDOW_MS);
+    if (call.acceptedTurnsAtMs.length > CTO_VOICE_TURN_BURST_LIMIT) {
+      call.burstValveTripped = true;
       deps.logger?.info("cto_voice.transcript_valve_tripped", {
         callId: state.callId,
-        accepted: acceptedTurnsAtMs.length,
+        accepted: call.acceptedTurnsAtMs.length,
         windowMs: CTO_VOICE_TURN_BURST_WINDOW_MS,
       });
     }
     mic.reset();
     try {
-      deps.onExchange?.({ exchanges, live: true });
+      deps.onExchange?.({ exchanges: call.exchanges, live: true });
     } catch (error) {
       deps.logger?.warn("cto_voice.exchange_report_failed", { error: String(error) });
     }
 
-    utterance.text = final;
-    utterance.open = false;
+    call.utterance.text = final;
+    call.utterance.open = false;
     addCaption("user", final);
     emit({ interrupted: false });
 
@@ -1133,7 +1170,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       }
       const outcome = resolveSpokenConfirmation({
         confirmation: pending,
-        utteranceId: utterance.id,
+        utteranceId: call.utterance.id,
         text: final,
         nowMs: now(),
       });
@@ -1157,16 +1194,16 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * the moment the call is live; the rest are ignored.
    */
   const onSessionReady = () => {
-    if (sessionReady) return;
-    sessionReady = true;
-    startedAtMs = now();
-    startedAtIso = new Date(now()).toISOString();
+    if (call.sessionReady) return;
+    call.sessionReady = true;
+    call.startedAtMs = now();
+    call.startedAtIso = new Date(now()).toISOString();
     setPhase("listening");
   };
 
   /** A response ended, however it ended: completed, failed or cancelled. */
-  const onResponseSettled = (event: Record<string, unknown>) => {
-    const response = (event.response ?? {}) as Record<string, unknown>;
+  const onResponseSettled = (event: CtoVoiceSettledEvent) => {
+    const response = event.response ?? {};
     // The conversation has caught up: every call it was still writing is now
     // written, so anything that was waiting on one can go. Queued while the
     // lock is still held, so the release below drains it in one go.
@@ -1177,13 +1214,65 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // Only once nothing else is queued: an acknowledgement and the answer
     // behind it are one stretch of speaking, not two.
     if (!responses.isActive() && state.phase === "speaking") {
-      setPhase(askCtoRunning ? "thinking" : "listening");
+      setPhase(call.askCtoRunning ? "thinking" : "listening");
     }
     // Last: the model's turn is over, and what it asked for is in its output.
     handleResponseFunctionCalls(response);
     // Including a goodbye asked for a beat earlier, whose audio is now all
     // generated and only waiting to be heard.
     scheduleEndAfterSpeech();
+  };
+
+  /**
+   * What this service reads off each event it has an opinion about, by `type`.
+   *
+   * Every field is optional and most are checked at runtime anyway, because
+   * this is a wire: a surface that omits `transcript` or names a response
+   * without an `id` is not a bug in the socket, it is a different spelling of
+   * the same event. What the map buys is the OTHER half — a handler whose
+   * parameter names the event it was registered under, so a field read in the
+   * wrong handler is a typecheck failure rather than `undefined` at 3 a.m.
+   */
+  type CtoVoiceResponseShape = {
+    id?: unknown;
+    status?: unknown;
+    output?: unknown;
+  };
+  type CtoVoiceSettledEvent = { response?: CtoVoiceResponseShape };
+  type CtoVoiceTranscriptEvent = { transcript?: unknown };
+  type CtoVoiceAudioDeltaEvent = { delta?: unknown };
+
+  type CtoVoiceServerEvent = {
+    "session.created": unknown;
+    "session.updated": unknown;
+    "conversation.created": unknown;
+    "input_audio_buffer.speech_started": unknown;
+    "input_audio_buffer.speech_stopped": unknown;
+    "conversation.item.input_audio_transcription.delta": CtoVoiceAudioDeltaEvent;
+    "conversation.item.input_audio_transcription.completed": CtoVoiceTranscriptEvent;
+    "conversation.item.input_audio_transcription.failed": { error?: { message?: unknown } };
+    "response.output_audio.delta": CtoVoiceAudioDeltaEvent;
+    "response.audio.delta": CtoVoiceAudioDeltaEvent;
+    "response.created": { response?: CtoVoiceResponseShape };
+    "response.output_audio_transcript.delta": unknown;
+    "response.audio_transcript.delta": unknown;
+    "response.output_audio_transcript.done": CtoVoiceTranscriptEvent;
+    "response.audio_transcript.done": CtoVoiceTranscriptEvent;
+    "response.done": CtoVoiceSettledEvent;
+    "response.failed": CtoVoiceSettledEvent;
+    "response.cancelled": CtoVoiceSettledEvent;
+    "response.function_call_arguments.done": {
+      call_id?: unknown;
+      response_id?: unknown;
+      name?: unknown;
+      arguments?: unknown;
+    };
+    error: {
+      error?: { message?: unknown; code?: unknown; type?: unknown };
+      message?: unknown;
+      code?: unknown;
+      type?: unknown;
+    };
   };
 
   /**
@@ -1195,7 +1284,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * condition that has to be read to find that out. An event with no entry here
    * is one this service has no opinion about.
    */
-  const eventHandlers: Record<string, (event: Record<string, unknown>) => void> = {
+  const eventHandlers: { [K in keyof CtoVoiceServerEvent]?: (event: CtoVoiceServerEvent[K]) => void } = {
     "session.created": onSessionReady,
     "session.updated": onSessionReady,
     "conversation.created": onSessionReady,
@@ -1203,7 +1292,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     "input_audio_buffer.speech_started": () => {
       // A new utterance supersedes the last finished one, so a transcript
       // nobody asked the CTO about cannot be picked up minutes later.
-      utterance = { id: randomUUID(), text: "", open: true };
+      call.utterance = { id: randomUUID(), text: "", open: true };
       const talkingOver = responses.isActive()
         || state.phase === "speaking"
         || state.phase === "thinking";
@@ -1219,7 +1308,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       responses.stopSpeaking();
       // Whatever it manages to transcribe was cut off mid-sentence, and the
       // caption it produces has to say so.
-      activeResponseInterrupted = true;
+      call.activeResponseInterrupted = true;
       // A question the CTO asked keeps its card on screen: the turn behind it is
       // parked inside `canUseTool` waiting for exactly this reply.
       if (state.pendingConfirmation) return;
@@ -1228,37 +1317,38 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // loud — and killing the turn for it would make the call unusable. Work
       // stops two ways and only two: `cancel_work`, and a new `ask_cto`
       // superseding it.
-      emit({ interrupted: true, phase: askCtoRunning ? "thinking" : "listening" });
+      emit({ interrupted: true, phase: call.askCtoRunning ? "thinking" : "listening" });
     },
 
     // Recorded, not acted on. The segment is judged from the microphone's own
     // frames, so this event decides nothing — but it is the moment the user
     // stopped talking, and the wait from here to a transcript is the one leg of
     // the latency that belongs entirely to OpenAI.
-    "input_audio_buffer.speech_stopped": () => { speechStoppedAtMs = now(); },
+    "input_audio_buffer.speech_stopped": () => { call.speechStoppedAtMs = now(); },
 
     "conversation.item.input_audio_transcription.delta": (event) => {
-      if (!utterance.open) {
-        utterance = { id: randomUUID(), text: "", open: true };
+      if (!call.utterance.open) {
+        call.utterance = { id: randomUUID(), text: "", open: true };
       }
-      utterance.text += String(event.delta ?? "");
+      call.utterance.text += String(event.delta ?? "");
       // Shown as it arrives. A final transcript can land seconds after the
       // words, and a HUD that stays empty until it does has the user repeating
       // themselves. Some surfaces deliver a transcript as one `.completed` with
       // no deltas at all, and then this simply never fires — the captions are
       // unchanged.
-      const partial = utterance.text.trim();
+      const partial = call.utterance.text.trim();
       if (partial.length) emit({ pendingUserText: partial });
     },
 
     "conversation.item.input_audio_transcription.completed": (event) => {
-      handleUserTranscript(String(event.transcript ?? utterance.text));
+      handleUserTranscript(String(event.transcript ?? call.utterance.text));
     },
 
     "conversation.item.input_audio_transcription.failed": (event) => {
-      const failure = (event.error ?? {}) as Record<string, unknown>;
-      deps.logger?.warn("cto_voice.transcription_failed", { error: failure.message ?? null });
-      utterance = { id: randomUUID(), text: "", open: false };
+      deps.logger?.warn("cto_voice.transcription_failed", {
+        error: event.error?.message ?? null,
+      });
+      call.utterance = { id: randomUUID(), text: "", open: false };
       if (state.pendingUserText !== null) emit({ pendingUserText: null });
       // The barge-in this segment carried is over, however badly. Left true, the
       // next one is not an edge and the runtime keeps its stale audio queued.
@@ -1276,8 +1366,8 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     "response.audio.delta": (event) => { onOutputAudioDelta(event); },
 
     "response.created": (event) => {
-      activeResponseInterrupted = false;
-      const created = (event.response ?? {}) as Record<string, unknown>;
+      call.activeResponseInterrupted = false;
+      const created = event.response ?? {};
       responses.noteCreated(
         typeof created.id === "string" && created.id.length ? created.id : null,
       );
@@ -1287,10 +1377,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     "response.audio_transcript.delta": () => { setPhase("speaking"); },
 
     "response.output_audio_transcript.done": (event) => {
-      addCaption("assistant", String(event.transcript ?? ""), activeResponseInterrupted);
+      addCaption("assistant", String(event.transcript ?? ""), call.activeResponseInterrupted);
     },
     "response.audio_transcript.done": (event) => {
-      addCaption("assistant", String(event.transcript ?? ""), activeResponseInterrupted);
+      addCaption("assistant", String(event.transcript ?? ""), call.activeResponseInterrupted);
     },
 
     "response.done": onResponseSettled,
@@ -1316,7 +1406,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     },
 
     error: (event) => {
-      const failure = (event.error ?? event) as Record<string, unknown>;
+      const failure = event.error ?? event;
       const rawMessage = typeof failure.message === "string" ? failure.message : "";
       const reason = describeCtoVoiceServerError(failure);
       deps.logger?.warn("cto_voice.session_error", {
@@ -1346,22 +1436,22 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // The session is over — a refused key does not recover — so this is the
       // same terminal event a rejected upgrade is, and takes the same latch so
       // the close that follows cannot overwrite it with a generic sentence.
-      if (connectionFailed) return;
-      connectionFailed = true;
-      connectionFailureKind = "rejected_key";
+      if (call.connectionFailed) return;
+      call.connectionFailed = true;
+      call.connectionFailureKind = "rejected_key";
       emit({ phase: "failed", error: reason.message });
       void endCall("session_error");
     },
   };
 
   /** One chunk of the model's voice, under either of its two event names. */
-  function onOutputAudioDelta(event: Record<string, unknown>) {
+  function onOutputAudioDelta(event: CtoVoiceAudioDeltaEvent) {
     const delta = typeof event.delta === "string" ? event.delta : null;
     if (!delta) return;
     // The playback clock the hang-up waits on: chunks arrive faster than
     // realtime, so the end of the queue is later than the last chunk's arrival
     // by however much of it is still unplayed.
-    outputAudioDeadlineMs = Math.max(outputAudioDeadlineMs, now())
+    call.outputAudioDeadlineMs = Math.max(call.outputAudioDeadlineMs, now())
       + ctoVoiceFrameDurationMs(delta);
     // The last post, and the only one the user can actually hear. Written on
     // the FIRST chunk of the response this turn's answer was queued as; every
@@ -1386,7 +1476,12 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     const type = typeof event.type === "string" ? event.type : "";
     // `hasOwn`, not a bare lookup: the type comes off the wire, and `toString`
     // would otherwise reach `Object.prototype`'s own member and call it.
-    if (Object.hasOwn(eventHandlers, type)) eventHandlers[type]!(event);
+    if (!Object.hasOwn(eventHandlers, type)) return;
+    // The ONE cast in the dispatch, and the only place it belongs: this is
+    // where an untyped string off the wire becomes a key of the map. Every
+    // handler past it is typed against the event it was registered under.
+    const key = type as keyof CtoVoiceServerEvent;
+    (eventHandlers[key] as ((event: unknown) => void) | undefined)?.(event);
   }
 
   /**
@@ -1403,7 +1498,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       id: randomUUID(),
       toolName: args.toolName,
       prompt: args.prompt,
-      utteranceId: utterance.id,
+      utteranceId: call.utterance.id,
       nowMs: now(),
       approvalItemId: args.itemId,
       ...(args.destructive === undefined ? {} : { destructive: args.destructive }),
@@ -1476,35 +1571,32 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       callId: state.callId,
       phase: state.phase,
       started,
-      socketOpen,
+      socketOpen: call.socketOpen,
     });
     if (!started) return;
     started = false;
+    // Teardown only. Everything that is merely per-call state is replaced
+    // wholesale by the next `start`, so nothing here is a list to keep in sync.
     if (endAfterSpeechTimer) { clearTimeout(endAfterSpeechTimer); endAfterSpeechTimer = null; }
-    endAfterSpeech = false;
     // A turn the hang-up landed in the middle of is still a measurement, and
-    // the queue below is about to throw away the answer it was waiting for.
-    // Both slots: the answer nobody heard, and the utterance nothing ran for.
+    // the answer it was waiting for is about to be thrown away. Both slots: the
+    // answer nobody heard, and the utterance nothing ran for.
     timings.closeAll("call_ended");
-    for (const job of askQueue) timings.close(job.timing, "call_ended");
-    askQueue = [];
+    for (const job of call.askQueue) timings.close(job.timing, "call_ended");
     const closing = socket;
     socket = null;
-    socketOpen = false;
-    pendingInputAudio = [];
+    // Not "for the next call" — for the rest of THIS teardown: no send may go
+    // out at a socket that is closing, and the close below must be read as ours.
+    call.socketOpen = false;
     functionCalls.dropPendingOutputs();
-    // The response bookkeeping belongs to the call that opened it. Left behind,
-    // the active response id names a response on a socket that is gone and the
-    // next call's first barge-in cancels a stranger.
     responses.reset();
     askCtoAbort?.abort();
     askCtoAbort = null;
-    askCtoRunning = false;
     if (keepAlive) { clearInterval(keepAlive); keepAlive = null; }
     releaseApprovalWatch?.();
     releaseApprovalWatch = null;
     // Set before the close, because `ws` reports it synchronously.
-    deliberateClose = true;
+    call.deliberateClose = true;
     try { closing?.close(); } catch { /* already gone */ }
 
     // Restore full-auto first: a call that ended must not leave the CTO asking
@@ -1516,14 +1608,14 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     }
 
     const endedAt = new Date(now()).toISOString();
-    const elapsedMs = startedAtMs ? now() - startedAtMs : 0;
+    const elapsedMs = call.startedAtMs ? now() - call.startedAtMs : 0;
 
     // The durable write happens whatever else failed. A call the user had is a
     // call the CTO must remember.
     try {
       await deps.persistCall({
         callId: state.callId ?? randomUUID(),
-        startedAt: startedAtIso || endedAt,
+        startedAt: call.startedAtIso || endedAt,
         endedAt,
         captions: state.captions,
         costUsd: voiceCostUsd(elapsedMs),
@@ -1536,7 +1628,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // is how many exchanges it actually had. Reported after the durable write so
     // a persist that throws cannot leave the line reading "Voice call" forever.
     try {
-      deps.onExchange?.({ exchanges, live: false });
+      deps.onExchange?.({ exchanges: call.exchanges, live: false });
     } catch (error) {
       deps.logger?.warn("cto_voice.exchange_report_failed", { error: String(error) });
     }
@@ -1554,7 +1646,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     getState: () => state,
 
     /** The coarse reason the connection failed, if it did. Never a sentence. */
-    getConnectionFailureKind: () => connectionFailureKind,
+    getConnectionFailureKind: () => call.connectionFailureKind,
 
     raiseApproval,
 
@@ -1570,34 +1662,18 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // by `endCall`, including the read-only hold taken just below.
       started = true;
 
-      // A second call on the same service must not inherit the first one's
-      // half-open utterance or its unsent transcript.
-      utterance = { id: randomUUID(), text: "", open: false };
-      pendingImage = null;
-      // A second call on this service must be able to fail in its own words.
-      connectionFailed = false;
-      connectionFailureKind = null;
-      socketOpen = false;
-      deliberateClose = false;
-      pendingInputAudio = [];
-      sessionReady = false;
-      // A second call on this service starts with no opinion about a response:
-      // one of these left set made the first barge-in cancel a response the
-      // SERVER created, which races its own truncation.
+      // A second call on this service inherits NOTHING from the first: not its
+      // half-open utterance, not its opinion about a response, not the failure
+      // it died of. One assignment rather than a list, so a field added to
+      // `CallSession` is reset here by construction.
+      call = freshCallSession();
+      // The sub-modules keep their own state and are reset rather than replaced:
+      // a response id left behind makes the first barge-in cancel a response the
+      // SERVER created, and a previous call's burst must not shut this one's gate.
       responses.reset();
-      askCtoRunning = false;
       functionCalls.reset();
       resolvedConfirmations.clear();
-      // A second call on this service starts with an empty microphone record and
-      // an open gate: the previous call's burst must not shut this one's.
       mic.reset();
-      outputAudioDeadlineMs = 0;
-      endAfterSpeech = false;
-      activeResponseInterrupted = false;
-      acceptedTurnsAtMs = [];
-      lastTranscriptAtMs = 0;
-      burstValveTripped = false;
-      exchanges = 0;
 
       const callId = randomUUID();
       emit({
@@ -1634,9 +1710,9 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // instructions land is said by a stranger. A context that cannot be built
       // is a call that asks the CTO more often, not a call that fails.
       try {
-        sessionContext = deps.context ? await deps.context() : "";
+        call.sessionContext = deps.context ? await deps.context() : "";
       } catch (error) {
-        sessionContext = "";
+        call.sessionContext = "";
         deps.logger?.warn("cto_voice.context_failed", { error: String(error) });
       }
 
@@ -1658,73 +1734,30 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
         // Without this the late handler arms a 10 Hz interval that nothing will
         // ever clear, once per abandoned call.
         if (socket !== attached) return;
-        socketOpen = true;
-        // The one event that decides what kind of call this is. Server turn
-        // detection now DOES create the model's responses: it is the
-        // conversational front, and it answers from the context block in the
-        // instructions. What it may not do is invent a project fact — that is
-        // what `ask_cto` is for, and the instructions say so.
+        call.socketOpen = true;
         send({
-          type: "session.update",
+          ...buildCtoVoiceSessionUpdate({
+            ctoName: deps.ctoName(),
+            projectName: deps.projectName(),
+            context: call.sessionContext,
+            acknowledgeAloud: deps.backchannelsEnabled(),
+            ...(deps.voice ? { voice: deps.voice() } : {}),
+          }),
           event_id: randomUUID(),
-          session: {
-            type: "realtime",
-            instructions: buildCtoVoiceInstructions({
-              ctoName: deps.ctoName(),
-              projectName: deps.projectName(),
-              context: sessionContext,
-              acknowledgeAloud: deps.backchannelsEnabled(),
-            }),
-            // The seam, as five functions. `auto` because the whole design is
-            // the model deciding which side of the line a sentence falls on.
-            tools: CTO_VOICE_REALTIME_TOOLS,
-            tool_choice: "auto",
-            output_modalities: ["audio"],
-            audio: {
-              input: {
-                format: { type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE },
-                turn_detection: {
-                  type: "server_vad",
-                  create_response: true,
-                  // The server truncates its own response the moment it hears
-                  // speech, which is a round trip sooner than ADE could. ADE
-                  // still cancels the responses IT created out-of-band, which
-                  // this does not cover: they are not in the conversation.
-                  interrupt_response: true,
-                },
-                // Not on by default. No longer what drives a turn — the model
-                // hears the audio itself — but still what the captions, the
-                // saved transcript and the spoken yes/no parser are made of.
-                // The language is named rather than guessed: an unnamed short
-                // utterance is how a call ended up with a phantom "好" in it.
-                transcription: {
-                  model: CTO_VOICE_TRANSCRIBE_MODEL,
-                  language: CTO_VOICE_TRANSCRIBE_LANGUAGE,
-                  // Both, because measured against the live API neither one is
-                  // sufficient on its own — see `CTO_VOICE_TRANSCRIBE_PROMPT`.
-                  prompt: CTO_VOICE_TRANSCRIBE_PROMPT,
-                },
-              },
-              output: {
-                format: { type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE },
-                voice: deps.voice?.() ?? CTO_VOICE_DEFAULT,
-              },
-            },
-          },
         });
 
         // A real microphone never stops. Without a continuous stream the session
         // stalls mid-sentence, so silence goes out whenever the user is muted.
         // Whatever the microphone produced while the handshake was in flight,
         // in order and after the session config it belongs to.
-        const buffered = pendingInputAudio;
-        pendingInputAudio = [];
+        const buffered = call.pendingInputAudio;
+        call.pendingInputAudio = [];
         for (const chunk of buffered) {
           send({ type: "input_audio_buffer.append", audio: chunk });
         }
 
         keepAlive = setInterval(() => {
-          if (!socket || !socketOpen || !state.muted) return;
+          if (!socket || !call.socketOpen || !state.muted) return;
           const silence = Buffer.alloc(Math.floor(CTO_VOICE_SAMPLE_RATE * 0.1) * 2);
           send({ type: "input_audio_buffer.append", audio: silence.toString("base64") });
         }, 100);
@@ -1771,13 +1804,13 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       // against a call that had already ended.
       try {
         if (!socket || state.muted) return;
-        if (!socketOpen) {
+        if (!call.socketOpen) {
           // The session does not exist yet. Hold the audio for the open
           // handler to flush, bounded so a socket that never opens cannot grow
           // the process.
-          pendingInputAudio.push(base64);
-          if (pendingInputAudio.length > CTO_VOICE_PREOPEN_AUDIO_LIMIT) {
-            pendingInputAudio.splice(0, pendingInputAudio.length - CTO_VOICE_PREOPEN_AUDIO_LIMIT);
+          call.pendingInputAudio.push(base64);
+          if (call.pendingInputAudio.length > CTO_VOICE_PREOPEN_AUDIO_LIMIT) {
+            call.pendingInputAudio.splice(0, call.pendingInputAudio.length - CTO_VOICE_PREOPEN_AUDIO_LIMIT);
           }
         } else {
           send({ type: "input_audio_buffer.append", audio: base64 });
@@ -1810,7 +1843,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     attachImage(args: { pngBase64: string; note: string }) {
       // The capture can wait for the socket; `think` cannot be sent before it.
       if (!socket) return;
-      pendingImage = args.pngBase64;
+      call.pendingImage = args.pngBase64;
       think(args.note || CTO_VOICE_CAPTURE_DEFAULT_NOTE);
     },
 

@@ -15,6 +15,7 @@ import {
   type CtoVoiceState,
 } from "../../../shared/types/ctoVoice";
 import type { AppContext } from "../ipc/registerIpc";
+import { tick } from "./ctoVoiceCallHarness";
 import { createFakeRuntimePool } from "./ctoVoiceTestDoubles";
 import { registerCtoVoiceIpc } from "./ctoVoiceWiring";
 
@@ -270,13 +271,13 @@ describe("a call the router has to end on its own", () => {
     registerCtoVoiceIpc(ipc.ipcMain, { getCtx: () => runtimeCtx(), getLocalRuntimePool: () => runtime.pool });
 
     const starting = ipc.invoke(IPC.ctoVoiceStart, undefined, 7);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
     ownerSend().mockClear();
 
     // The previous call's teardown, with somebody else's id — and with none.
     runtime.emitState({ ...CTO_VOICE_INITIAL_STATE, callId: "older-call", phase: "ended", error: "gone" });
     runtime.emitState({ ...CTO_VOICE_INITIAL_STATE, phase: "ended" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
 
     // Not shown to anyone, and above all not acted on.
     expect(statesSentToOwner()).toEqual([]);
@@ -307,7 +308,7 @@ describe("a call the router has to end on its own", () => {
     runtime.emitState({ ...liveState(), callId: "mine" });
     ownerSend().mockClear();
     runtime.emitState({ ...CTO_VOICE_INITIAL_STATE, callId: "not-mine", phase: "ended" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
 
     expect(statesSentToOwner()).toEqual([]);
     expect(runtime.actions).not.toContain("end");
@@ -334,7 +335,7 @@ describe("a call the router has to end on its own", () => {
           phase: "failed",
           error: "OpenAI rejected this key. Check it under CTO settings, Voice.",
         });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
 
     const sent = statesSentToOwner();
     expect(sent.map((state) => state.phase)).toEqual(["failed", "ended"]);
@@ -466,7 +467,7 @@ describe("a call the router has to end on its own", () => {
     } finally {
       vi.useRealTimers();
     }
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
 
     expect(pushes).toHaveLength(1);
     expect(pushes[0]?.chunks).toEqual(["AAAA", "BBBB", "CCCC"]);
@@ -499,7 +500,7 @@ describe("a call the router has to end on its own", () => {
     } finally {
       vi.useRealTimers();
     }
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
 
     expect(pushes).toHaveLength(1);
     // The unmetered frame gets what every frame used to get, so a renderer that
@@ -539,7 +540,7 @@ describe("a call the router has to end on its own", () => {
       vi.useRealTimers();
     }
     // Let the serialized teardown finish on real timers.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
 
     const terminal = statesSentToOwner().at(-1);
     expect(terminal?.phase).toBe("ended");
@@ -564,7 +565,7 @@ describe("a call the router has to end on its own", () => {
     ownerSend().mockClear();
     // The brain recycled: no terminal event is coming, so one has to be made.
     runtime.endStream();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
 
     const terminal = statesSentToOwner().at(-1);
     expect(terminal?.phase).toBe("ended");
@@ -597,7 +598,7 @@ describe("a call the router has to end on its own", () => {
     ownerSend().mockClear();
 
     const ending = ipc.invoke(IPC.ctoVoiceEnd);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
     // Mid-teardown, the runtime says why it failed.
     runtime.emitState({ ...CTO_VOICE_INITIAL_STATE, phase: "failed", error: "OpenAI rejected this key." });
     // The subscription must still be live at this point.
@@ -618,7 +619,7 @@ describe("a call the router has to end on its own", () => {
     // live phase here would put the HUD on screen again, counting.
     ownerSend().mockClear();
     runtime.emitState(liveState());
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
     expect(statesSentToOwner()).toEqual([]);
     // And Talk works again, because the slot was retired rather than wedged.
     expect(await ipc.invoke(IPC.ctoVoiceStart, undefined, 7)).toEqual({ ok: true });
@@ -678,7 +679,7 @@ describe("which window may drive a call", () => {
     registerCtoVoiceIpc(ipc.ipcMain, { getCtx: () => runtimeCtx(), getLocalRuntimePool: () => runtime.pool });
 
     const starting = ipc.invoke(IPC.ctoVoiceStart, undefined, 7);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
     const ending = ipc.invoke(IPC.ctoVoiceEnd, undefined, 7);
     rel.fn?.({ ok: true });
     await starting;

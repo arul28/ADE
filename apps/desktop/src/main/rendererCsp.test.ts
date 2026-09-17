@@ -189,7 +189,7 @@ describe("isRendererFrameNavigationAllowed", () => {
     devServerUrl: "http://localhost:5173",
   };
 
-  it("allows every source the packaged frame-src names", () => {
+  it("allows every scheme the CSP's frame-src names, in both modes", () => {
     const packagedFrameSrc = buildRendererCspPolicy(false)
       .split("; ")
       .find((directive) => directive.startsWith("frame-src "));
@@ -202,14 +202,18 @@ describe("isRendererFrameNavigationAllowed", () => {
       options.rendererUrl,
       "file:///Applications/ADE.app/Contents/Resources/spec-preview.html",
       "app://ade/spec.html",
-      "http://localhost:7654/stream",
-      "http://127.0.0.1:7654/stream",
       "ade-scene:scene-1",
       "blob:file:///abcd",
       "about:blank",
       "about:srcdoc",
     ]) {
-      expect([url, isRendererFrameNavigationAllowed(url, options)]).toEqual([url, true]);
+      for (const devServerUrl of [options.devServerUrl, null]) {
+        expect([
+          url,
+          devServerUrl,
+          isRendererFrameNavigationAllowed(url, { rendererUrl: options.rendererUrl, devServerUrl }),
+        ]).toEqual([url, devServerUrl, true]);
+      }
     }
   });
 
@@ -225,15 +229,29 @@ describe("isRendererFrameNavigationAllowed", () => {
     }
   });
 
-  it("allows the dev server only while one is configured", () => {
-    expect(isRendererFrameNavigationAllowed("http://localhost:5173/work", options)).toBe(true);
-    expect(
-      isRendererFrameNavigationAllowed("http://localhost:5173/work", {
-        rendererUrl: options.rendererUrl,
-        devServerUrl: null,
-      }),
-      // Still allowed, but as a local http source rather than as the dev server.
-    ).toBe(true);
+  /**
+   * `frame-src` carries `http://localhost:*` in BOTH modes because the local
+   * sources are one shared string, but nothing in a packaged renderer frames
+   * an http URL. This door is deliberately tighter than the header: without a
+   * dev server, a scene cannot navigate itself at whatever local server the
+   * user happens to be running.
+   */
+  it("allows local http frames only while a dev server is configured", () => {
+    for (const url of [
+      "http://localhost:5173/work",
+      "http://localhost:7654/stream",
+      "http://127.0.0.1:7654/stream",
+    ]) {
+      expect([url, isRendererFrameNavigationAllowed(url, options)]).toEqual([url, true]);
+      expect([
+        url,
+        isRendererFrameNavigationAllowed(url, {
+          rendererUrl: options.rendererUrl,
+          devServerUrl: null,
+        }),
+      ]).toEqual([url, false]);
+    }
+
     expect(
       isRendererFrameNavigationAllowed("https://vite.example/work", {
         rendererUrl: options.rendererUrl,

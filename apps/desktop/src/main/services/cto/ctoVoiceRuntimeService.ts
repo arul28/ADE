@@ -32,6 +32,7 @@ import {
   splitSpokenSceneAnswer,
   voiceRequestAsksForVisual,
 } from "./ctoVoiceContext";
+import { createOutputAudioQueue } from "./ctoVoiceOutputAudio";
 import { getMachineApiKey } from "../ai/apiKeyStore";
 import { beginIdentityConfirmHold } from "../chat/identitySessionPolicy";
 import {
@@ -203,8 +204,7 @@ export function createCtoVoiceRuntimeService(
   let ownerWatchdog: NodeJS.Timeout | null = null;
   let state: CtoVoiceState = { ...CTO_VOICE_INITIAL_STATE };
   /** Output PCM waiting for the owner to drain it. Never event-buffered. */
-  let outputAudio: string[] = [];
-  let droppedAudio = 0;
+  const outputAudio = createOutputAudioQueue(CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT);
   /** The CTO session this call is driving, once confirm mode is on. */
   let callSessionId: string | null = null;
   /**
@@ -298,7 +298,7 @@ export function createCtoVoiceRuntimeService(
     // playback graph; this is the other half, and without it the next pull
     // hands back up to twenty seconds of the answer the user just stopped.
     // Not counted as dropped audio: these chunks were cancelled, not lost.
-    if (next.interrupted && !wasInterrupted) outputAudio = [];
+    if (next.interrupted && !wasInterrupted) outputAudio.clear();
     // Before the suppression check: a call cleared by a later one still ended,
     // and its outcome is the same product fact whether anyone was listening.
     if (!isVoiceCallLive(next.phase)) reportCallEnded(next);
@@ -732,13 +732,7 @@ export function createCtoVoiceRuntimeService(
       },
 
       onState: (next: CtoVoiceState) => publish(next),
-      onOutputAudio: (base64: string) => {
-        outputAudio.push(base64);
-        while (outputAudio.length > CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT) {
-          outputAudio.shift();
-          droppedAudio += 1;
-        }
-      },
+      onOutputAudio: (base64: string) => outputAudio.push(base64),
       // Adapted rather than passed through: the runtime `Logger` takes a
       // `Record<string, unknown>` meta and the call service declares `unknown`,
       // which do not assign to each other under strict function types.
@@ -779,8 +773,7 @@ export function createCtoVoiceRuntimeService(
     const silent = reason === "replaced" || reason === "dispose";
     service = null;
     ownerToken = null;
-    outputAudio = [];
-    droppedAudio = 0;
+    outputAudio.reset();
     callSessionId = null;
     if (!ending) return;
     suppressPublish = silent;
@@ -896,8 +889,7 @@ export function createCtoVoiceRuntimeService(
           host.logger?.warn("cto_voice.preflight_failed", { error: String(error) });
         }
 
-        outputAudio = [];
-        droppedAudio = 0;
+        outputAudio.reset();
         endKind = null;
         ownerToken = token;
         service = createCtoVoiceCallService(buildCallDeps(agentChatService, ctoStateService, apiKey));
@@ -990,11 +982,7 @@ export function createCtoVoiceRuntimeService(
     pullAudio(args?: { ownerToken?: string }): CtoVoicePullAudioResult {
       const token = readOwnerToken(args);
       if (!touchOwner(token)) return { ...NOT_OWNER, chunks: [], dropped: 0 };
-      const chunks = outputAudio;
-      const dropped = droppedAudio;
-      outputAudio = [];
-      droppedAudio = 0;
-      return { ok: true, chunks, dropped };
+      return { ok: true, ...outputAudio.drain() };
     },
 
     async resolveApproval(args?: {

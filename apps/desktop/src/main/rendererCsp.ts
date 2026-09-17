@@ -43,28 +43,30 @@ export function shouldApplyRendererCsp(
 }
 
 /**
- * The schemes `frame-src` allows outright, as data rather than as a string.
+ * The non-http schemes `frame-src` allows in BOTH modes, as data rather than
+ * as a string. `buildRendererCspPolicy` interpolates this list into
+ * `frame-src`; `isRendererFrameNavigationAllowed` iterates it.
  *
  * `main.ts`'s `will-frame-navigate` handler is the SECOND door on this same
- * allowlist, and the two must not drift: a source listed here and missing there
- * is a frame that renders in dev and is blocked in a packaged build. That is
- * not hypothetical — the handler first shipped without `file:` and `app:`, and
- * the packaged spec previews (`SpecPreviewCard`, `PlanMarkdown`, both framing a
- * `bundleAssetFileUrl`) would have gone blank.
- *
- * The union of both modes, deliberately: `frame-src` is `'self' file: app:`
- * packaged and `'self' http://localhost:* http://127.0.0.1:*` in dev, plus the
- * same local sources and `ade-scene: blob: about:` in both. A navigation check
- * that has to answer before it knows which build it is in takes the union; the
- * CSP itself stays mode-specific, and it is the header the browser enforces.
+ * allowlist, and the two must not drift: a source the CSP names and the
+ * handler does not is a frame the browser would render and the handler
+ * cancels. One literal, two readers, so there is nothing to keep in sync.
  */
-const FRAME_NAVIGATION_SCHEMES = ["ade-scene:", "blob:", "about:", "file:", "app:"] as const;
+export const FRAME_SRC_EXTRA_SCHEMES = ["ade-scene:", "blob:", "about:"] as const;
+
+/**
+ * The schemes only a packaged build serves its own renderer over. The packaged
+ * spec previews (`SpecPreviewCard`, `PlanMarkdown`) frame a `bundleAssetFileUrl`,
+ * so the navigation door must name them even though the dev CSP does not.
+ */
+export const PACKAGED_FRAME_SCHEMES = ["file:", "app:"] as const;
 
 /**
  * May a SUBFRAME navigate to this URL?
  *
  * Pure so it can be tested without a window. `rendererUrl` is ADE's own
- * document (`'self'`); `devServerUrl` is the Vite origin when there is one.
+ * document (`'self'`); `devServerUrl` is the Vite origin when there is one,
+ * and its presence is also what makes this a dev build.
  */
 export function isRendererFrameNavigationAllowed(
   url: string,
@@ -72,10 +74,14 @@ export function isRendererFrameNavigationAllowed(
 ): boolean {
   if (!url) return false;
   if (url === options.rendererUrl) return true;
-  if (FRAME_NAVIGATION_SCHEMES.some((scheme) => url.startsWith(scheme))) return true;
-  if (options.devServerUrl && url.startsWith(options.devServerUrl)) return true;
-  // `http://localhost:*` / `http://127.0.0.1:*`, matching the CSP's local
-  // sources — http only, because the CSP names no https local source.
+  if (FRAME_SRC_EXTRA_SCHEMES.some((scheme) => url.startsWith(scheme))) return true;
+  if (PACKAGED_FRAME_SCHEMES.some((scheme) => url.startsWith(scheme))) return true;
+  if (!options.devServerUrl) return false;
+  if (url.startsWith(options.devServerUrl)) return true;
+  // Other local http ports, and ONLY while a dev server is configured. A
+  // packaged renderer frames nothing over http, so leaving the door open there
+  // would let a scene navigate itself at any local server the user is running.
+  // http only, because the CSP names no https local source.
   try {
     const parsed = new URL(url);
     return parsed.protocol === "http:"
@@ -118,8 +124,7 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // `blob:` in frame-src is a DELIBERATE widening, recorded here rather than
   // only in the component that needs it. It is SceneFrame's fallback for when
   // `scene.prepare` is unavailable (the hosted web client, a browser preview,
-  // a main process that answered null); without it a failed prepare renders a
-  // blank frame with no error anywhere instead of degrading to a working one.
+  // a main process that answered null).
   // It is safe for one reason and only that reason: every scene frame carries
   // `sandbox="allow-scripts"` WITHOUT `allow-same-origin`, so a blob frame gets
   // an opaque origin exactly as the custom scheme does, and a blob URL is only
@@ -128,7 +133,7 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // where it would mean something else entirely. Removing `allow-same-origin`
   // from that sandbox attribute is what would make this line dangerous, which
   // is why SceneFrame.test.tsx asserts the pair can never appear together.
-  const cspFrameSources = `${cspSources}${cspLocalSources} ade-scene: blob: about:`;
+  const cspFrameSources = `${cspSources}${cspLocalSources} ${FRAME_SRC_EXTRA_SCHEMES.join(" ")}`;
   const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
   return [
     `default-src ${cspSources}`,

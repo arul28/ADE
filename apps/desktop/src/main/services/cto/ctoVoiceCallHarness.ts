@@ -29,7 +29,7 @@ export function createService(overrides: Partial<Parameters<typeof createCtoVoic
   return { service, fake, states, latest: () => states[states.length - 1] };
 }
 
-/** Ten milliseconds of silence is enough to let every queued microtask run. */
+/** One macrotask of silence, which is enough to let every queued microtask run. */
 export const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Bring a call up to the point where OpenAI has answered with a session. */

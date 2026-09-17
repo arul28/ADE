@@ -1,7 +1,4 @@
-import {
-  REMOTE_RUNTIME_EVENT_CATEGORIES,
-  type RemoteRuntimeEventCategory,
-} from "./types/remoteRuntime";
+import type { RemoteRuntimeEventCategory } from "./types/remoteRuntime";
 
 /* ─────────────────────── the cto_voice visibility rule ─────────────────────── */
 
@@ -23,17 +20,14 @@ import {
  *
  * A POLICY module rather than a line in the type file: this is behaviour, not
  * shape, and every helper here takes the caller's role flag so a call site
- * cannot express half the rule. The first version left the `!callerIsCto`
- * half to the callers, and all four of them hand-wrote it — which is exactly
- * the drift the module exists to prevent.
+ * cannot express half the rule — a call site that hand-writes the
+ * `!callerIsCto` half is exactly the drift this module exists to prevent.
+ *
+ * `satisfies` rather than a runtime check: the category type is derived from
+ * `REMOTE_RUNTIME_EVENT_CATEGORIES`, so renaming the category there fails the
+ * typecheck here rather than throwing at module load.
  */
-export const VOICE_RUNTIME_EVENT_CATEGORY: RemoteRuntimeEventCategory = "cto_voice";
-
-// The tuple is imported, not re-listed: a category renamed there must not
-// leave this file pointing at a string nothing publishes any more.
-if (!(REMOTE_RUNTIME_EVENT_CATEGORIES as readonly string[]).includes(VOICE_RUNTIME_EVENT_CATEGORY)) {
-  throw new Error("VOICE_RUNTIME_EVENT_CATEGORY is not a runtime event category.");
-}
+export const VOICE_RUNTIME_EVENT_CATEGORY = "cto_voice" satisfies RemoteRuntimeEventCategory;
 
 /** True when this event must be withheld from this caller. */
 export function hidesVoiceEvent(event: { category: string }, callerIsCto: boolean): boolean {
@@ -57,11 +51,17 @@ export function voiceCategoryRefusalMessage(method: string): string {
   return `${method} category ${VOICE_RUNTIME_EVENT_CATEGORY} requires the cto role.`;
 }
 
-/** The filtering half: strip voice state out of an uncategorised batch. */
+/**
+ * The filtering half: strip voice state out of an uncategorised batch.
+ *
+ * The CTO's own batch is returned as the SAME array, not a copy — this sits on
+ * the hot drain path of every event poll, and copying a thousand-event batch
+ * for the one caller who is allowed all of it buys nothing.
+ */
 export function withoutVoiceEvents<T extends { category: string }>(
   events: readonly T[],
   callerIsCto: boolean,
-): T[] {
-  if (callerIsCto) return [...events];
+): readonly T[] {
+  if (callerIsCto) return events;
   return events.filter((event) => !hidesVoiceEvent(event, callerIsCto));
 }

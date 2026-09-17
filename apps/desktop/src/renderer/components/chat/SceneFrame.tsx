@@ -253,12 +253,11 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
         setStatus("frozen");
         return;
       }
-      // Re-check, never freeze blind. The earlier version armed a one-shot
-      // listener and then froze on the NEXT scroll whatever the rect said, so
-      // the transcript's own auto-scroll — which fires constantly and usually
-      // leaves the scene no more visible than before — left a live iframe
-      // mounted in scrollback. Nothing here changes state unless the scene is
-      // genuinely visible or the deadline has passed.
+      // Re-check, never freeze blind. The transcript's own auto-scroll fires
+      // constantly and usually leaves the scene no more visible than before, so
+      // freezing on the next scroll whatever the rect says would leave a live
+      // iframe mounted in scrollback. Nothing here changes state unless the
+      // scene is genuinely visible or the deadline has passed.
       const retry = () => {
         if (cancelled) return;
         const current = shellRef.current?.getBoundingClientRect();

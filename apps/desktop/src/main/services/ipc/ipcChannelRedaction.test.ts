@@ -30,14 +30,44 @@ describe("ipc channel redaction", () => {
   // field-name guard matched `apikey` but not `key` — so a verbose IPC trace
   // wrote the user's OpenAI key into the log file verbatim. These two map
   // entries are now the only thing redacting it, so this test is the gate.
-  it("redacts the raw provider credential on both key-store channels", () => {
-    for (const channel of [IPC.aiStoreApiKey, IPC.aiStoreMachineApiKey]) {
+  it("redacts the raw provider credential on every key-store channel", () => {
+    for (const channel of [
+      IPC.aiStoreApiKey,
+      IPC.aiStoreMachineApiKey,
+      IPC.aiSetOpencodeProviderKey,
+    ]) {
       const [redacted] = redactIpcArgsForChannel(channel, [
-        { provider: "openai", key: "sk-proj-not-a-real-key" },
+        { provider: "openai", providerId: "openai", key: "sk-proj-not-a-real-key" },
       ]) as Array<Record<string, unknown>>;
       expect(redacted.key).toBe("[redacted]");
       expect(JSON.stringify(redacted)).not.toContain("sk-proj-not-a-real-key");
       expect(redacted.provider).toBe("openai");
+    }
+  });
+
+  // A project secret's value is the secret. `value`, a whole `.env` file's
+  // `content`, and a list of name/value pairs are all too ordinary a shape for
+  // the generic field-name guard to catch, so the map is the only gate.
+  it("redacts project secret values on every channel that carries one", () => {
+    const [set] = redactIpcArgsForChannel(IPC.projectSecretsSet, [
+      { name: "STRIPE_KEY", value: "sk_live_not_a_real_secret" },
+    ]) as Array<Record<string, unknown>>;
+    expect(set.value).toBe("[redacted]");
+    expect(set.name).toBe("STRIPE_KEY");
+
+    const [preview] = redactIpcArgsForChannel(IPC.projectSecretsPreviewEnvImport, [
+      { fileName: ".env.local", content: "STRIPE_KEY=sk_live_not_a_real_secret" },
+    ]) as Array<Record<string, unknown>>;
+    expect(preview.content).toBe("[redacted]");
+    expect(preview.fileName).toBe(".env.local");
+
+    const [imported] = redactIpcArgsForChannel(IPC.projectSecretsImportEnv, [
+      { secrets: [{ name: "STRIPE_KEY", value: "sk_live_not_a_real_secret" }] },
+    ]) as Array<Record<string, unknown>>;
+    expect(imported.secrets).toBe("[redacted]");
+
+    for (const redacted of [set, preview, imported]) {
+      expect(JSON.stringify(redacted)).not.toContain("sk_live_not_a_real_secret");
     }
   });
 

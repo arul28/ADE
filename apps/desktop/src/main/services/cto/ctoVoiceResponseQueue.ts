@@ -23,7 +23,6 @@ import { buildCtoVoiceSpeakInstructions } from "../../../shared/types/ctoVoicePr
  */
 type CtoVoiceQueuedResponse = { kind: "ade"; text: string } | { kind: "model" };
 
-export type CtoVoiceResponseQueue = ReturnType<typeof createResponseQueue>;
 
 export function createResponseQueue(deps: {
   send: (payload: Record<string, unknown>) => void;

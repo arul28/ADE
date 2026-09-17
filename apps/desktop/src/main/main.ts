@@ -1107,11 +1107,12 @@ async function createWindow(args: {
    * context may go and is the first door; this is the second, because a
    * `frame-src` widened for some unrelated reason must not silently reopen it.
    *
-   * Main frames keep the stricter rule above. Subframes get the CSP's own
-   * allowlist restated, and it is restated from the SAME source set the CSP is
-   * built from (`isRendererFrameNavigationAllowed`) rather than hand-copied —
-   * a hand-copied list that missed `file:` and `app:` would have blocked the
-   * packaged spec previews, which are `file://` frames.
+   * Main frames keep the stricter rule above. Subframes are answered by
+   * `isRendererFrameNavigationAllowed`, which iterates the same
+   * `FRAME_SRC_EXTRA_SCHEMES` / `PACKAGED_FRAME_SCHEMES` literals the CSP's
+   * `frame-src` is built from, so there is no hand-copied list to drift. It is
+   * tighter than `frame-src` in one place on purpose: local http is allowed
+   * only while a dev server is configured.
    */
   win.webContents.on("will-frame-navigate", (event) => {
     if (event.isMainFrame) return;

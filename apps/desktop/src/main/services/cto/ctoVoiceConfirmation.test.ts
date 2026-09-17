@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildConfirmation,
   classifySpokenReply,
   resolveSpokenConfirmation,
 } from "./ctoVoiceConfirmation";
+import type { CtoVoiceApprovalNotice } from "./ctoVoiceCallService";
+import { askCto, createService, hearMic, openCall, spoken, tick, utter } from "./ctoVoiceCallHarness";
 
 import {
   describeVoiceApproval,
@@ -288,4 +290,275 @@ describe("isDestructiveVoiceCommand", () => {
       'mcp__ade__run_ade_action {"domain":"lane","action":"list"}',
     )).toBe(false);
   });
+});
+
+/**
+ * The whole point of the call being able to act.
+ *
+ * The CTO's turn parks inside `canUseTool` when it reaches a tool that
+ * writes. Nothing comes back through `runBackendTurn` to say so, so the call
+ * learns about it from the chat's own approval event — and a spoken yes has
+ * to reach that waiter, or the user hears "doing that now" and nothing runs.
+ */
+describe("acting on a call", () => {
+  function createCallWithApprovals(
+    overrides: Parameters<typeof createService>[0] = {},
+  ) {
+    // The service's own notice type, so a field added to an approval breaks
+    // these tests rather than being quietly dropped by a narrower shape.
+    let raise: ((notice: CtoVoiceApprovalNotice) => void) | null = null;
+    const resolved: Array<{ itemId: string; approved: boolean }> = [];
+    let watcherReleased = false;
+    const harness = createService({
+      watchApprovals: (onApproval) => {
+        raise = onApproval;
+        return () => { watcherReleased = true; };
+      },
+      resolveApproval: async (args) => { resolved.push(args); },
+      ...overrides,
+    });
+    return {
+      ...harness,
+      resolved,
+      raise: (notice: CtoVoiceApprovalNotice) => raise?.(notice),
+      wasWatcherReleased: () => watcherReleased,
+    };
+  }
+
+  it("asks out loud, then lets the blocked turn through on a spoken yes", async () => {
+    // The real sequence: the turn is still running — parked inside
+    // `canUseTool` — when the approval is raised, so it has not returned an
+    // answer and the question is the only thing ADE has said.
+    let releaseBackend: () => void = () => {};
+    const harness = createCallWithApprovals({
+      runBackendTurn: async () => {
+        await new Promise<void>((resolve) => { releaseBackend = resolve; });
+        return { spoken: "Opened it." };
+      },
+    });
+    await openCall(harness);
+    askCto(harness, "open a pr for the sync lane");
+    await tick();
+
+    harness.raise({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request for ade/sync-fix?" });
+    expect(harness.latest().phase).toBe("confirming");
+    expect(harness.latest().pendingConfirmation?.prompt).toContain("pull request");
+    // The user has to HEAR the question, not find it in the chat.
+    expect(spoken(harness.fake).join("\n")).toContain("pull request");
+
+    utter(harness, "yes");
+    await tick();
+
+    expect(harness.latest().pendingConfirmation).toBeNull();
+    expect(harness.resolved).toEqual([{ itemId: "item-1", approved: true }]);
+    releaseBackend();
+  });
+
+  /**
+   * Answering out loud while the CTO is still reading the question is the
+   * ordinary case, not an edge one. The audio has to stop — but the turn
+   * behind it is the one parked on this very approval, and aborting it would
+   * kill the work the "yes" exists to release.
+   */
+  it("does not abandon the parked turn when the user answers over the question", async () => {
+    const seenSignal: { current: AbortSignal | null } = { current: null };
+    let releaseBackend: () => void = () => {};
+    const harness = createCallWithApprovals({
+      runBackendTurn: async ({ signal }: { signal: AbortSignal }) => {
+        seenSignal.current = signal;
+        await new Promise<void>((resolve) => { releaseBackend = resolve; });
+        return { spoken: "Opened it." };
+      },
+    });
+    await openCall(harness);
+    askCto(harness, "open a pr for the sync lane");
+    await tick();
+
+    harness.raise({ itemId: "item-9", toolName: "openPr", prompt: "Open a pull request?" });
+    harness.fake.receive({ type: "response.created", response: { id: "resp_q" } });
+
+    // Talking over the question: the audio stops, the card stays, the turn lives.
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    expect(harness.fake.typesSent()).toContain("response.cancel");
+    expect(seenSignal.current?.aborted).toBe(false);
+    expect(harness.latest().phase).toBe("confirming");
+    expect(harness.latest().pendingConfirmation?.id).toBeTruthy();
+
+    // Spoken over ADE's own voice and still accepted: a segment that carries
+    // real energy is a barge-in, not the microphone hearing the CTO.
+    hearMic(harness);
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "yes",
+    });
+    await tick();
+    expect(harness.resolved).toEqual([{ itemId: "item-9", approved: true }]);
+    releaseBackend();
+  });
+
+  it("turns the tool away on a spoken no", async () => {
+    const harness = createCallWithApprovals();
+    await openCall(harness);
+    utter(harness, "clean up the branch");
+    await tick();
+
+    harness.raise({ itemId: "item-2", toolName: "openPr", prompt: "Open a pull request?" });
+    utter(harness, "no, don't");
+    await tick();
+
+    expect(harness.latest().pendingConfirmation).toBeNull();
+    expect(harness.resolved).toEqual([{ itemId: "item-2", approved: false }]);
+  });
+
+  it("will not let a voice approve a force-push, however clearly it is said", async () => {
+    const harness = createCallWithApprovals();
+    await openCall(harness);
+    utter(harness, "force push it");
+    await tick();
+
+    harness.raise({ itemId: "item-3", toolName: "gitForcePush", prompt: "Force-push ade/sync-fix?" });
+    expect(harness.latest().pendingConfirmation?.destructive).toBe(true);
+
+    utter(harness, "yes do it");
+    await tick();
+
+    // Still waiting on a tap, and nothing was released.
+    expect(harness.latest().pendingConfirmation?.id).toBeTruthy();
+    expect(harness.resolved).toEqual([]);
+
+    // The card is the only way through.
+    harness.service.approve(harness.latest().pendingConfirmation!.id);
+    await tick();
+    expect(harness.resolved).toEqual([{ itemId: "item-3", approved: true }]);
+  });
+
+  it("stops watching the chat when the call ends", async () => {
+    const harness = createCallWithApprovals();
+    await openCall(harness);
+    expect(harness.wasWatcherReleased()).toBe(false);
+    await harness.service.end();
+    expect(harness.wasWatcherReleased()).toBe(true);
+  });
+});
+
+it("marks a history-rewriting tool destructive, so voice cannot approve it", async () => {
+  const harness = createService();
+  await openCall(harness);
+  harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+  harness.service.raiseApproval({ itemId: "item-1", toolName: "gitForcePush", prompt: "Force-push ade/sync-fix?" });
+  expect(harness.latest().pendingConfirmation?.destructive).toBe(true);
+});
+
+
+it("restores the CTO's mode when the call is ended before its socket opens", async () => {
+  // The renderer opens the microphone as soon as the phase is `connecting`,
+  // and a denied microphone hangs up immediately. Tearing down on the socket
+  // alone missed that window and left the CTO unable to write for the life of
+  // the process.
+  const readOnly: boolean[] = [];
+  const { service, fake } = createService({
+    setCallConfirmMode: async (value: boolean) => { readOnly.push(value); },
+  });
+  await service.start();
+  // No `fake.open()`: the socket exists but has never opened.
+  await service.end();
+  expect(readOnly).toEqual([true, false]);
+  fake.open();
+});
+
+it("refuses to open a socket for a call that was ended while connecting", async () => {
+  let ended = false;
+  const { service } = createService({
+    setCallConfirmMode: async (value: boolean) => {
+      // Hang up from inside the await `start` is blocked on.
+      if (value && !ended) { ended = true; await service.end(); }
+    },
+  });
+  const result = await service.start();
+  expect(result.ok).toBe(false);
+});
+
+it("writes the call down even when nothing else went right", async () => {
+  const persistCall = vi.fn<[{ captions: unknown[] }], Promise<void>>(async () => {});
+  const harness = createService({ persistCall });
+  await openCall(harness);
+  utter(harness, "hello");
+  await harness.service.end();
+  expect(persistCall).toHaveBeenCalledTimes(1);
+  expect(persistCall.mock.calls[0]?.[0]?.captions.length).toBe(1);
+});
+
+it("captions what the CTO said from the response transcript", async () => {
+  const harness = createService();
+  await openCall(harness);
+  harness.fake.receive({ type: "response.output_audio_transcript.delta", delta: "Three" });
+  expect(harness.latest().phase).toBe("speaking");
+  harness.fake.receive({
+    type: "response.output_audio_transcript.done",
+    transcript: "Three merged yesterday.",
+  });
+  harness.fake.receive({ type: "response.done", response: { status: "completed" } });
+  expect(harness.latest().captions.at(-1))
+    .toMatchObject({ role: "assistant", text: "Three merged yesterday." });
+  expect(harness.latest().phase).toBe("listening");
+});
+
+/**
+ * The realtime model cannot read an image. The only place a captured window
+ * can actually be looked at is the CTO thread behind `ask_cto`.
+ */
+it("sends a captured image to the backend, not to the voice model", async () => {
+  const seen: Array<string | null | undefined> = [];
+  const harness = createService({
+    runBackendTurn: async ({ imageBase64 }) => { seen.push(imageBase64); return { spoken: "ok" }; },
+  });
+  await openCall(harness);
+
+  harness.service.attachImage({ pngBase64: "PNGDATA", note: "the CI run" });
+  // The model is told it happened, and told in the silent channel: a
+  // conversation item, with no response asked for, so nothing is read out.
+  const item = harness.fake.lastOfType("conversation.item.create") as Record<string, any>;
+  expect(item.item.role).toBe("system");
+  expect(JSON.stringify(item.item.content)).toContain("the CI run");
+  expect(JSON.stringify(harness.fake.sent)).not.toContain("PNGDATA");
+
+  askCto(harness, "what is this showing", { callId: "call_1" });
+  await tick();
+  expect(seen).toEqual(["PNGDATA"]);
+
+  // One capture, one turn: it must not ride along on the next one too.
+  askCto(harness, "and the one before it", { callId: "call_2" });
+  await tick();
+  expect(seen).toEqual(["PNGDATA", null]);
+});
+
+it("hands output audio straight to the renderer", async () => {
+  const chunks: string[] = [];
+  const harness = createService({ onOutputAudio: (b64) => chunks.push(b64) });
+  await openCall(harness);
+  harness.fake.receive({ type: "response.output_audio.delta", delta: "AAAB" });
+  // The same event under the name the older surface still uses for it.
+  harness.fake.receive({ type: "response.audio.delta", delta: "AAAC" });
+  expect(chunks).toEqual(["AAAB", "AAAC"]);
+});
+
+/**
+ * The safety property of the whole feature. A call shares the CTO's one
+ * session and there is no per-turn permission argument, so the only place the
+ * guarantee can live is a window held open for the call. If this test ever
+ * goes red, a spoken sentence can reach a tool that writes.
+ */
+it("puts the CTO in confirm-first mode for the life of the call, and restores it after", async () => {
+  const calls: boolean[] = [];
+  const harness = createService({ setCallConfirmMode: async (v: boolean) => { calls.push(v); } });
+
+  await harness.service.start();
+  // Read-only is on BEFORE the socket exists — no audio may be in flight
+  // while the CTO can still write.
+  expect(calls).toEqual([true]);
+
+  harness.fake.open();
+  harness.fake.receive({ type: "session.created", session: { id: "sess_1" } });
+  await harness.service.end();
+  expect(calls).toEqual([true, false]);
 });

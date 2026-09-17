@@ -14,8 +14,6 @@ import { randomUUID } from "node:crypto";
  * Nothing here knows about tools, phases or the CTO: it is given a `call_id`
  * and a result and it decides WHEN the result may go on the wire.
  */
-export type CtoVoiceFunctionCallLedger = ReturnType<typeof createFunctionCallLedger>;
-
 export function createFunctionCallLedger(deps: {
   send: (payload: Record<string, unknown>) => void;
   /** Ask the model to speak about a result it is worth hearing about. */
