@@ -492,6 +492,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   const functionCalls = createFunctionCallLedger({
     send: (payload) => send(payload),
     requestModelResponse: () => responses.requestModelResponse(),
+    log: (event, meta) => deps.logger?.info(event, { callId: state.callId, ...meta }),
   });
 
   /**
@@ -531,12 +532,14 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
   /**
    * How long each turn took, leg by leg. The two slots and the log line it
-   * writes live in `ctoVoiceTurnTiming`; what stays here is the call id, which
-   * is the only thing about a timing line that belongs to this call.
+   * writes live in `ctoVoiceTurnTiming`; what stays here is the call id, read
+   * when a record OPENS rather than when it is written — a turn that unwinds
+   * after the next call has started would otherwise be filed under that call.
    */
   const timings = createTurnTimingRecorder({
     now: () => now(),
-    log: (line) => deps.logger?.info("cto_voice.turn_timing", { callId: state.callId, ...line }),
+    callId: () => state.callId,
+    log: (line) => deps.logger?.info("cto_voice.turn_timing", line),
   });
 
   const emit = (patch: Partial<CtoVoiceState>) => {
@@ -774,8 +777,15 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
     // The call is over. `endCall` aborts the running turn and empties the
     // queue, but the loop that owns them is still unwinding, and a job it had
-    // already taken would otherwise run a full CTO turn after hang-up.
-    if (!started) return;
+    // already taken would otherwise run a full CTO turn after hang-up. The
+    // record goes with it, or the turn is one the log cannot account for.
+    // Belt and braces: `endCall` closes every queued record itself, so nothing
+    // reaches here today — but the sibling branches all close theirs, and a
+    // return that quietly drops one is how that stops being true.
+    if (!started) {
+      timings.close(timing, "call_ended");
+      return;
+    }
 
     // Held locally, not read back off the module binding. By the time this
     // turn's await settles, `askCtoAbort` names the controller of whatever
@@ -949,10 +959,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   /**
    * What each of the model's function calls does, by the tool's name.
    *
-   * A table keyed by the tool constants rather than five `if (name === …)` in a
-   * row, because the names are a closed list and this is the shape of one: a
-   * tool added to `CTO_VOICE_REALTIME_TOOLS` with nothing here is a missing key
-   * rather than a branch that was never written.
+   * A table keyed by the tool constants, because the names are a closed list
+   * and this is the shape of one: a tool added to `CTO_VOICE_REALTIME_TOOLS`
+   * with nothing here is a missing key rather than a branch that was never
+   * written.
    */
   const toolHandlers: Record<string, (callId: string, argumentsJson: string) => void> = {
     [CTO_VOICE_TOOL_ASK_CTO]: (callId, argumentsJson) => {
@@ -1076,15 +1086,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // made on these frames.
     const reading = mic.read();
     const pending = state.pendingConfirmation;
-    // Judged ONLY when there is a question open. Everywhere else the meter has
-    // no vote: the model already answered whatever it heard, and a caption the
-    // meter vetoed is a sentence the user watched disappear.
-    // Read whether or not anything is pending, so a call that never asked a
-    // question still lets quiet reopen the valve.
-    const valveShut = burstValve.isShut();
-    const confirmationRejection = pending
-      ? (valveShut ? ("runaway" satisfies CtoVoiceTranscriptRejection) : judgeVoiceTranscript(final, reading))
-      : null;
     const acceptedAtMs = now();
     // Whatever was part-heard is now either final or gone.
     if (state.pendingUserText !== null) emit({ pendingUserText: null });
@@ -1112,6 +1113,19 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       if (state.interrupted) emit({ interrupted: false });
       return;
     }
+
+    // Read whether or not anything is pending, so a call that never asked a
+    // question still lets quiet reopen the valve — but only for a transcript
+    // with words in it. `isShut` is also where the quiet clock restarts, so
+    // reading it above the empty-transcript return let a source that emits
+    // nothing but silence hold its own cooldown open forever.
+    const valveShut = burstValve.isShut();
+    // Judged ONLY when there is a question open. Everywhere else the meter has
+    // no vote: the model already answered whatever it heard, and a caption the
+    // meter vetoed is a sentence the user watched disappear.
+    const confirmationRejection = pending
+      ? (valveShut ? ("runaway" satisfies CtoVoiceTranscriptRejection) : judgeVoiceTranscript(final, reading))
+      : null;
 
     // The other half of the ledger. Only rejections were ever logged, so an
     // accepted phantom was invisible: the gate looked silent whether it was
@@ -1229,11 +1243,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   /**
    * What each event from the session does, by its `type`.
    *
-   * A table rather than twenty `if (type === …)` comparisons in a row, because
-   * several of these arrive under two names — the GA spelling and the older
-   * one — and an alias is then two keys sharing one handler rather than a
-   * condition that has to be read to find that out. An event with no entry here
-   * is one this service has no opinion about.
+   * A table, because several of these arrive under two names — the GA spelling
+   * and the older one — and an alias is then two keys sharing one handler
+   * rather than a condition that has to be read to find that out. An event with
+   * no entry here is one this service has no opinion about.
    */
   const eventHandlers: { [K in keyof CtoVoiceServerEvent]?: (event: CtoVoiceServerEvent[K]) => void } = {
     "session.created": onSessionReady,
@@ -1420,8 +1433,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
       return;
     }
     const type = typeof event.type === "string" ? event.type : "";
-    // `hasOwn`, not a bare lookup: the type comes off the wire, and `toString`
-    // would otherwise reach `Object.prototype`'s own member and call it.
+    // `hasOwn` for the same reason as the tool dispatch above.
     if (!Object.hasOwn(eventHandlers, type)) return;
     // The ONE cast in the dispatch, and the only place it belongs: this is
     // where an untyped string off the wire becomes a key of the map. Every

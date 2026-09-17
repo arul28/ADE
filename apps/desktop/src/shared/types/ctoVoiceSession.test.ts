@@ -44,7 +44,19 @@ describe("buildCtoVoiceSessionUpdate", () => {
     const update = buildCtoVoiceSessionUpdate(args);
 
     expect(update.session.tools).toBe(CTO_VOICE_REALTIME_TOOLS);
+    // Written out rather than derived: a list checked against itself passes
+    // however the list changes, and this one is the whole seam.
+    expect(update.session.tools.map((tool) => tool.name)).toEqual([
+      "ask_cto",
+      "cancel_work",
+      "approve_pending_action",
+      "deny_pending_action",
+      "end_call",
+    ]);
     expect(update.session.tool_choice).toBe("auto");
+    // The Realtime session shape, not the Responses one: a stray `responses`
+    // key is how this update gets rejected wholesale.
+    expect(JSON.stringify(update.session)).not.toContain("responses");
     expect(update.session.output_modalities).toEqual(["audio"]);
   });
 

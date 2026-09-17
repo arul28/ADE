@@ -5,6 +5,7 @@ import {
   CTO_VOICE_TURN_BURST_LIMIT,
   CTO_VOICE_TURN_BURST_WINDOW_MS,
 } from "../../../shared/types/ctoVoice";
+import { createService, openCall, utter } from "./ctoVoiceCallHarness";
 import { createTranscriptBurstValve } from "./ctoVoiceTurnBurst";
 
 /**
@@ -94,5 +95,39 @@ describe("the transcript burst valve", () => {
     valve.reset();
 
     expect(valve.isShut()).toBe(false);
+  });
+
+  /**
+   * Quiet is measured off the last transcript, and an empty transcript is not
+   * one: a transcriber that keeps emitting silence would otherwise restart the
+   * cooldown on every hiccup and latch the gate shut for the rest of the call —
+   * with no spoken yes able to answer a permission question again.
+   */
+  it("does not let empty transcripts hold the cooldown open", async () => {
+    let clock = 1_000;
+    const events: string[] = [];
+    const harness = createService({
+      now: () => clock,
+      logger: {
+        info: (event: string) => events.push(event),
+        warn: () => {},
+      },
+    });
+    await openCall(harness);
+
+    for (let turn = 0; turn <= CTO_VOICE_TURN_BURST_LIMIT; turn += 1) {
+      utter(harness, `turn ${turn}`);
+      clock += 10;
+    }
+    expect(events).toContain("cto_voice.transcript_valve_tripped");
+
+    // Half the cooldown of quiet, one transcript with nothing in it, then the
+    // rest of the cooldown. The silence is still silence.
+    clock += CTO_VOICE_TURN_BURST_COOLDOWN_MS / 2;
+    utter(harness, "...");
+    clock += CTO_VOICE_TURN_BURST_COOLDOWN_MS / 2 + 10;
+    utter(harness, "yes");
+
+    expect(events).toContain("cto_voice.transcript_valve_cleared");
   });
 });

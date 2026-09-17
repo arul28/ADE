@@ -10,7 +10,7 @@
  * typecheck failure rather than `undefined` at 3 a.m.
  */
 
-export type CtoVoiceResponseShape = {
+type CtoVoiceResponseShape = {
   id?: unknown;
   status?: unknown;
   output?: unknown;

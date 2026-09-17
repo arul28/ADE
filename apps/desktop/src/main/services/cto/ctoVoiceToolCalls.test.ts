@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { askCto, createService, functionOutputs, openCall, tick } from "./ctoVoiceCallHarness";
+import type { CtoVoiceBackendResult } from "./ctoVoiceCallService";
 
 /**
  * The ledger of function calls a session has in flight.
@@ -55,6 +56,34 @@ describe("a call the model made", () => {
     askCto(harness, "how many lanes", { callId: "call_1" });
     await tick();
     expect(seen).toEqual(["how many lanes"]);
+  });
+
+  /**
+   * A turn can outlive the call it was asked on: the user hangs up, the CTO
+   * session keeps unwinding, and by the time it does the user has called back
+   * and the socket is a DIFFERENT realtime session. Its `superseded` answer
+   * still names the old call id, which the new session never wrote — and an
+   * output naming an unknown `call_id` is refused, taking the new call with it.
+   */
+  it("does not answer a call id the new session never heard of", async () => {
+    const turn: { finish?: (result: CtoVoiceBackendResult) => void } = {};
+    const harness = createService({
+      runBackendTurn: () => new Promise<CtoVoiceBackendResult>((resolve) => { turn.finish = resolve; }),
+    });
+    await openCall(harness);
+    askCto(harness, "what merged yesterday", { callId: "call_old" });
+    await tick();
+
+    await harness.service.end("owner_end");
+    await harness.service.start();
+    harness.fake.open();
+    harness.fake.receive({ type: "session.created", session: { id: "sess_2" } });
+    const answeredOnTheOldCall = functionOutputs(harness.fake).length;
+
+    turn.finish?.({ spoken: "Three merged yesterday." });
+    await tick();
+
+    expect(functionOutputs(harness.fake)).toHaveLength(answeredOnTheOldCall);
   });
 });
 
@@ -114,4 +143,3 @@ describe("a response that finished without naming itself", () => {
     expect(functionOutputs(harness.fake)).toHaveLength(1);
   });
 });
-

@@ -16,6 +16,14 @@
 
 /** One turn's latency, filled in as the turn passes each post. */
 export type CtoVoiceTurnTiming = {
+  /**
+   * The call this record was opened on.
+   *
+   * Carried rather than read at write time: a turn can unwind after hang-up,
+   * and by then the next call has its own id — which labelled the slow turn
+   * that ended call one as call two's.
+   */
+  callId: string | null;
   speechStoppedToTranscriptMs: number | null;
   acceptedAtMs: number;
   turnStartedAtMs: number | null;
@@ -27,6 +35,8 @@ export type CtoVoiceTurnTiming = {
 
 export function createTurnTimingRecorder(deps: {
   now: () => number;
+  /** The call a record opened right now belongs to. */
+  callId: () => string | null;
   /** One finished record, as the fields the log line carries. */
   log: (line: Record<string, unknown>) => void;
 }) {
@@ -66,6 +76,7 @@ export function createTurnTimingRecorder(deps: {
     acceptedAtMs: number,
     speechStoppedToTranscriptMs: number | null,
   ): CtoVoiceTurnTiming => ({
+    callId: deps.callId(),
     speechStoppedToTranscriptMs,
     acceptedAtMs,
     turnStartedAtMs: null,
@@ -89,6 +100,7 @@ export function createTurnTimingRecorder(deps: {
     const since = (from: number | null, to: number | null): number | null =>
       from === null || to === null ? null : Math.round(to - from);
     deps.log({
+      callId: timing.callId,
       outcome,
       speechStoppedToTranscriptMs: timing.speechStoppedToTranscriptMs,
       acceptToTurnStartMs: since(timing.acceptedAtMs, timing.turnStartedAtMs),

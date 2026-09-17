@@ -18,6 +18,7 @@ export function createFunctionCallLedger(deps: {
   send: (payload: Record<string, unknown>) => void;
   /** Ask the model to speak about a result it is worth hearing about. */
   requestModelResponse: () => void;
+  log?: (event: string, meta?: Record<string, unknown>) => void;
 }) {
   /**
    * Calls already dispatched, by `call_id`.
@@ -94,6 +95,15 @@ export function createFunctionCallLedger(deps: {
      * have the model narrate a question the user has already moved past.
      */
     answer(callId: string, output: Record<string, unknown>, speakResult = true): void {
+      // Only a call THIS session claimed. A turn that unwinds after hang-up
+      // answers the call id it was dispatched with, and by then `reset` has
+      // run and the socket is a different realtime session: an output naming a
+      // call id that session never wrote is refused by the server, which tears
+      // down the new call over work that belonged to the old one.
+      if (!handled.has(callId)) {
+        deps.log?.("cto_voice.function_output_dropped", { callId });
+        return;
+      }
       // Never while the response that MADE this call is still generating. An
       // output naming a `call_id` the conversation has not finished writing is
       // refused, and that is exactly the case for a call dispatched off

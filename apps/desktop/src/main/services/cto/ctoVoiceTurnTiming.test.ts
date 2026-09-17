@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { askCto, createService, hearMic, openCall, tick, utter } from "./ctoVoiceCallHarness";
+import { createTurnTimingRecorder } from "./ctoVoiceTurnTiming";
 
 /**
  * How long one voice turn took, leg by leg.
@@ -168,5 +169,30 @@ describe("a turn's timing record", () => {
       .map((line) => String(line.meta.outcome));
     expect(outcomes).toContain("superseded");
     expect(outcomes).not.toContain("abandoned");
+  });
+
+  /**
+   * The last leg of a turn arrives after the turn is over, and a turn can be
+   * still unwinding when the user calls back. Reading the call id at WRITE time
+   * filed the slow turn that ended call one under call two, which is the one
+   * thing that makes these lines unreadable: the call you are investigating
+   * shows a turn that never happened on it.
+   */
+  it("files a record under the call it was opened on, not the call it is written on", () => {
+    const lines: Array<Record<string, unknown>> = [];
+    let callId = "call-1";
+    const timings = createTurnTimingRecorder({
+      now: () => 1_000,
+      callId: () => callId,
+      log: (line) => lines.push(line),
+    });
+
+    timings.open(1_000);
+    const timing = timings.take();
+    callId = "call-2";
+    timings.close(timing, "superseded");
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].callId).toBe("call-1");
   });
 });
