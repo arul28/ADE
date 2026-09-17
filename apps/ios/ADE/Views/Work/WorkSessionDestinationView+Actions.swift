@@ -104,15 +104,26 @@ extension WorkSessionDestinationView {
             dispatchMode: atomicDispatchMode
           )
         } catch where workChatErrorIndicatesUnsupportedDispatchMode(error) {
-          // An older host rejects a mode this client offers. Stage the message
-          // rather than failing the send outright.
-          updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
-          delivery = try await syncService.steerChatSession(
-            sessionId: sessionId,
-            text: text,
-            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-            dispatchMode: nil
-          )
+          // An older host rejects a mode this client offers. On a normal chat,
+          // omit the mode so the message stages instead of failing the send.
+          // On the CTO surface queue is not offered: omitting the mode would
+          // auto-route to interrupt, cancelling the running agent for a tap
+          // that said Send during turn. Fail instead and keep the draft.
+          if workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: liveRedirectOnlySends) {
+            updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+            delivery = try await syncService.steerChatSession(
+              sessionId: sessionId,
+              text: text,
+              attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+              dispatchMode: nil
+            )
+          } else {
+            ADEHaptics.error()
+            localEchoMessages.removeAll { $0.id == echoId }
+            WorkPendingUploadPreviewStore.shared.release(pendingUploadRefs)
+            errorMessage = "This computer’s ADE cannot send during the turn. Update it, or pick Interrupt & continue."
+            return false
+          }
         }
       } else {
         do {

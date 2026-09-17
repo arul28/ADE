@@ -3193,7 +3193,10 @@ private struct WorkChatComposerDraftInput: View {
     workChatActiveSendCapability(
       provider: chatSummary.provider,
       liveRedirectOnly: liveRedirectOnlySends,
-      runsInCloud: chatSummary.cursorCloudAgentId?.isEmpty == false
+      runsInCloud: workChatCursorSessionRunsInCloud(
+        provider: chatSummary.provider,
+        cursorCloudAgentId: chatSummary.cursorCloudAgentId
+      )
     )
   }
 

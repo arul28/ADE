@@ -12156,11 +12156,11 @@ export function AgentChatPane({
     });
   }, [
     cursorCloudMode,
+    cursorRuntime,
     draftLaunchConfigScopeKey,
     isPersistentIdentitySurface,
     patchSessionSummary,
     refreshSessions,
-    selectedSession?.cursorRuntime,
     selectedSessionId,
     sessionMutationKind,
     setFastModeState,

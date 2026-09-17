@@ -41938,10 +41938,11 @@ export function createAgentChatService(args: {
    *
    * Every refusal states its own reason at the guard that applies it.
    *
-   * Ownership transfer is the only thing this reports. Whether the runtime
-   * survived the await is the caller's problem: `steer()` re-checks before it
-   * stages, and `dispatchSteer` does not need to because it only mutates the
-   * queue it was handed.
+   * After the await, a recycled runtime is a refusal here — not the caller's
+   * problem. Recycle copies `pendingSteers` onto the replacement; claiming
+   * delivery on the dying run would emit `inline` and drop the only surviving
+   * copy. `steer()` then restages onto that replacement; `dispatchSteer` leaves
+   * the copied row staged.
    */
   const tryCursorInlineSteer = async (
     managed: ManagedChatSession,
@@ -41970,6 +41971,13 @@ export function createAgentChatService(args: {
 
     const outcome = await cursorSdkSteerText(managed, runtime, row.text);
     if (outcome !== "complete_delivered") return false;
+
+    // Recycle during the await copies `pendingSteers` onto a replacement
+    // runtime and kills this one. An ack from the dying run is not ownership
+    // on the session that remains: treat it as a refusal so the caller keeps
+    // (or restages) the only surviving copy. Emitting `inline` here would also
+    // retire the chip for a message the replacement turn never saw.
+    if (managed.runtime !== runtime) return false;
 
     // The run took the text, so the caller's bookkeeping runs even if the
     // session closed meanwhile. Skipping it there would leave a delivered row

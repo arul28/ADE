@@ -13958,6 +13958,12 @@ final class ADETests: XCTestCase {
       ),
       [.inline, .interrupt]
     )
+    var cursorCloudSummary = makeAgentChatSessionSummary(provider: "cursor", status: "active")
+    cursorCloudSummary.cursorCloudAgentId = "cloud-agent-1"
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
+      [.interrupt]
+    )
     XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil), [])
   }
 
@@ -14099,6 +14105,12 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(workChatErrorIndicatesUnsupportedDispatchMode(
       NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Session is disposed."])
     ))
+    XCTAssertTrue(workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: false))
+    XCTAssertFalse(workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: true))
+    XCTAssertTrue(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: "agent-1"))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: nil))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: ""))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "claude", cursorCloudAgentId: "agent-1"))
   }
 
   func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {

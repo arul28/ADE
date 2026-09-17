@@ -116,6 +116,8 @@ const mockState = vi.hoisted(() => ({
   cursorSteerError: null as Error | null,
   /** Runs inside the mocked `Run.steer()`, before it answers. */
   onCursorSteer: null as null | (() => void),
+  /** When set, the mocked `Run.steer()` waits on this before answering. */
+  cursorSteerGate: null as Promise<void> | null,
   cursorSdkAgentIdForNextAcquire: null as string | null,
   cursorSdkCloudRequests: [] as Array<{ type: string; payload: Record<string, unknown> }>,
   cursorSdkCloudResponses: new Map<string, unknown>(),
@@ -916,6 +918,7 @@ vi.mock("./cursorSdkPool", () => ({
         // real shape of `revert_to_followup`: the turn refuses because it just
         // finished.
         mockState.onCursorSteer?.();
+        if (mockState.cursorSteerGate) await mockState.cursorSteerGate;
         if (mockState.cursorSteerError) throw mockState.cursorSteerError;
         return { outcome: mockState.cursorSteerOutcome };
       }),
@@ -2339,6 +2342,7 @@ beforeEach(() => {
   mockState.cursorSteerOutcome = "complete_delivered";
   mockState.cursorSteerError = null;
   mockState.onCursorSteer = null;
+  mockState.cursorSteerGate = null;
   mockState.cursorSdkAgentIdForNextAcquire = null;
   mockState.cursorSdkCloudRequests = [];
   mockState.cursorSdkCloudResponses = new Map<string, unknown>();
@@ -23507,6 +23511,52 @@ describe("createAgentChatService", () => {
         expect(mockState.cursorSdkSendCalls).toHaveLength(1);
         expect(events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(true);
+      });
+
+      it("does not treat a recycled run's steer ack as delivery of a staged row", async () => {
+        // Recycle copies `pendingSteers` onto the replacement and kills this
+        // run. An ack from the dying run is not ownership on the session that
+        // remains — reporting dispatched would drop the only surviving copy.
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Keep me once." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        let releaseSteer = () => {};
+        mockState.cursorSteerGate = new Promise<void>((resolve) => { releaseSteer = resolve; });
+        const dispatching = service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        await tripCursorSdkSilenceWatchAndRecycle();
+        releaseSteer();
+        const result = await dispatching;
+
+        expect(result.dispatchedAt).toBeNull();
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
+      });
+
+      it("does not treat a recycled run's steer ack as inline on a fresh send", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        let releaseSteer = () => {};
+        mockState.cursorSteerGate = new Promise<void>((resolve) => { releaseSteer = resolve; });
+        const sending = service.steer({
+          sessionId: session.id,
+          text: "Keep me once.",
+          dispatchMode: "inline",
+        });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        await tripCursorSdkSilenceWatchAndRecycle();
+        releaseSteer();
+        const result = await sending;
+        expect(result.queued).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
       });
 
       it("leaves a promoted row staged when the turn refuses it", async () => {

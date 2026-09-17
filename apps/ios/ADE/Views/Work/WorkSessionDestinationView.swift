@@ -97,7 +97,9 @@ func workChatBlocksManualCompactSend(
 /// the desktop's `ACTIVE_TURN_DISPATCH_MODES` — rather than restated here, so
 /// the staged strip and the composer's split send button can never disagree.
 /// Claude and Cursor can both fold a staged row into the live turn or interrupt
-/// with it; everything else has nothing to promote into and keeps the plain
+/// with it. A Cursor **Cloud** session withholds `.inline` — `Run.steer` refuses
+/// every call there — so the staged strip matches the composer's split send
+/// button. Everything else has nothing to promote into and keeps the plain
 /// staged row.
 func workChatManualSteerDispatchModes(
   session: TerminalSessionSummary?,
@@ -105,7 +107,22 @@ func workChatManualSteerDispatchModes(
 ) -> [WorkActiveSendMode] {
   let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType)
   guard let provider else { return [] }
-  return WorkActiveSendCapability.forProvider(provider).atomicDispatchModes
+  // iOS models have no `cursorRuntime`; leftover agent id is treated as cloud.
+  // Desktop's `cursorSessionRunsInCloud` can pin `cursorRuntime: "local"` over
+  // a leftover id — that override is not representable here.
+  let runsInCloud = workChatCursorSessionRunsInCloud(
+    provider: provider,
+    cursorCloudAgentId: summary?.cursorCloudAgentId ?? session?.cursorCloudAgentId
+  )
+  return WorkActiveSendCapability.forProvider(provider)
+    .withholdingInlineIfNeeded(runsInCloud: runsInCloud, provider: provider)
+    .atomicDispatchModes
+}
+
+/// iOS half of desktop `cursorSessionRunsInCloud`, as far as the models allow.
+func workChatCursorSessionRunsInCloud(provider: String?, cursorCloudAgentId: String?) -> Bool {
+  guard providerFamilyKey(provider ?? "") == "cursor" else { return false }
+  return cursorCloudAgentId?.isEmpty == false
 }
 
 /// The `dispatchMode` that rides `chat.steer` itself, so a busy host dispatches
@@ -227,6 +244,14 @@ func workChatErrorIndicatesActiveTurn(_ error: Error) -> Bool {
 func workChatErrorIndicatesUnsupportedDispatchMode(_ error: Error) -> Bool {
   let message = (error as NSError).localizedDescription.lowercased()
   return message.contains("active-turn dispatch mode")
+}
+
+/// True when a rejected `dispatchMode` should be retried as a staged send.
+///
+/// The CTO surface does not offer queue, so omitting the mode would auto-route
+/// to interrupt — a cancel the user did not pick. Fail that send instead.
+func workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: Bool) -> Bool {
+  !liveRedirectOnly
 }
 
 func workTranscriptEntryIdentity(_ entry: AgentChatTranscriptEntry) -> String {
@@ -1177,7 +1202,7 @@ struct WorkSessionDestinationView: View {
     guard syncService.supportsChatRemoteAction("chat.dispatchSteer", sessionId: sessionId) else {
       return []
     }
-    return workChatManualSteerDispatchModes(session: session, summary: chatSummary)
+    return workChatManualSteerDispatchModes(session: session, summary: composerChatSummary ?? chatSummary)
   }
 
   /// Lane id the header menu acts on. Resolved against the loaded lane list so
