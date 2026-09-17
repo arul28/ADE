@@ -8,22 +8,23 @@ import {
 import { buildCtoVoiceInstructions } from "./ctoVoicePrompt";
 import { CTO_VOICE_REALTIME_TOOLS } from "./ctoVoiceTools";
 
-/**
- * The one event that decides what kind of call this is.
- *
- * Every wire fact about a session — the turn-detection flags, the tool list,
- * the audio formats, the transcription model and the voice — is here rather
- * than inline in the socket's `open` handler, so the shape can be asserted
- * without opening a socket. The call service adds the `event_id` and sends it;
- * nothing else about the payload is decided there.
- */
-export function buildCtoVoiceSessionUpdate(args: {
+/** What both payloads need in order to write the session prompt. */
+type CtoVoiceInstructionsArgs = {
   ctoName: string;
   projectName: string;
   context: string;
   acknowledgeAloud: boolean;
-  voice?: string;
-}) {
+};
+
+/**
+ * The instructions-only `session.update`.
+ *
+ * Exported because the call re-sends exactly this after every completed
+ * `ask_cto` — the facts in the context block are the ones a turn is most likely
+ * to have just changed — and a second, hand-built copy of the payload in the
+ * call service is how the two spellings of one event drift apart.
+ */
+export function buildCtoVoiceInstructionsUpdate(args: CtoVoiceInstructionsArgs) {
   return {
     type: "session.update",
     session: {
@@ -34,6 +35,27 @@ export function buildCtoVoiceSessionUpdate(args: {
         context: args.context,
         acknowledgeAloud: args.acknowledgeAloud,
       }),
+    },
+  };
+}
+
+/**
+ * The one event that decides what kind of call this is.
+ *
+ * Every wire fact about a session — the turn-detection flags, the tool list,
+ * the audio formats, the transcription model and the voice — is here rather
+ * than inline in the socket's `open` handler, so the shape can be asserted
+ * without opening a socket. The call service adds the `event_id` and sends it;
+ * nothing else about the payload is decided there.
+ */
+export function buildCtoVoiceSessionUpdate(args: CtoVoiceInstructionsArgs & { voice?: string }) {
+  // The first `session.update` is the instructions one plus everything a
+  // session also needs, so the prompt half is written in exactly one place.
+  const instructions = buildCtoVoiceInstructionsUpdate(args);
+  return {
+    ...instructions,
+    session: {
+      ...instructions.session,
       // The seam, as five functions. `auto` because the whole design is the
       // model deciding which side of the line a sentence falls on.
       tools: CTO_VOICE_REALTIME_TOOLS,

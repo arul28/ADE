@@ -13,8 +13,8 @@ describe("buildCtoVoiceInstructions", () => {
   it("introduces the model as the CTO, not as an assistant", () => {
     const prompt = buildCtoVoiceInstructions(base);
     expect(prompt).toContain("You are Ada, the CTO of ADE");
-    // The one identity claim a call must never make. The old build's calls came
-    // back with "I'm ChatGPT, your chatty, helpful voice buddy".
+    // The one identity claim a call must never make. Calls came back with
+    // "I'm ChatGPT, your chatty, helpful voice buddy".
     expect(prompt).toContain("never ChatGPT");
   });
 
@@ -25,10 +25,10 @@ describe("buildCtoVoiceInstructions", () => {
   });
 
   /**
-   * The brief is the only place the user's illusion can be broken from, and on
-   * the live call of 2026-09-16 it was broken three times in one call: "I'll
-   * hand it to the system that can actually do that work". The user is talking
-   * to the CTO, and the CTO does not have colleagues.
+   * The brief is the only place the user's illusion can be broken from, and it
+   * was broken three times in one call: "I'll hand it to the system that can
+   * actually do that work". The user is talking to the CTO, and the CTO does
+   * not have colleagues.
    */
   it("never gives the user a word for the seam", () => {
     for (const acknowledgeAloud of [true, false]) {
@@ -62,9 +62,9 @@ describe("buildCtoVoiceInstructions", () => {
   });
 
   /**
-   * "How are you?" came back as an identity spiel on the call of 2026-09-16,
-   * and the model volunteered that "the hand-off from the retired thread was
-   * thin" — a note about its own machinery nobody had asked for.
+   * "How are you?" came back as an identity spiel, and the model volunteered
+   * that "the hand-off from the retired thread was thin" — a note about its own
+   * machinery nobody had asked for.
    */
   it("answers the question that was asked, at the length it deserves", () => {
     const prompt = buildCtoVoiceInstructions(base);

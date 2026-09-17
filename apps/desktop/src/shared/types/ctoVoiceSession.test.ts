@@ -7,7 +7,10 @@ import {
   CTO_VOICE_TRANSCRIBE_MODEL,
   CTO_VOICE_TRANSCRIBE_PROMPT,
 } from "./ctoVoice";
-import { buildCtoVoiceSessionUpdate } from "./ctoVoiceSession";
+import {
+  buildCtoVoiceInstructionsUpdate,
+  buildCtoVoiceSessionUpdate,
+} from "./ctoVoiceSession";
 import { CTO_VOICE_REALTIME_TOOLS } from "./ctoVoiceTools";
 
 const args = {
@@ -87,5 +90,24 @@ describe("buildCtoVoiceSessionUpdate", () => {
     expect(update.session.instructions).toContain("ADE");
     expect(update.session.instructions).toContain("Three lanes are open.");
     expect(update).not.toHaveProperty("event_id");
+  });
+});
+
+/**
+ * The call re-sends the prompt on its own after every completed `ask_cto` — a
+ * model answering "nine lanes" straight after creating the tenth is worse than
+ * one that asks. It is the same builder rather than a second hand-built copy,
+ * because two spellings of one event drift.
+ */
+describe("buildCtoVoiceInstructionsUpdate", () => {
+  it("is the session update's prompt half and nothing else", () => {
+    const update = buildCtoVoiceInstructionsUpdate(args);
+
+    expect(update.type).toBe("session.update");
+    expect(update.session.type).toBe("realtime");
+    expect(update.session.instructions)
+      .toBe(buildCtoVoiceSessionUpdate(args).session.instructions);
+    // No tools, no audio, no voice: a refresh must not re-declare the session.
+    expect(Object.keys(update.session)).toEqual(["type", "instructions"]);
   });
 });

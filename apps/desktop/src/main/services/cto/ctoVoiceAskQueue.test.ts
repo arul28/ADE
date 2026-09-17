@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { createFakeSocket } from "./ctoVoiceTestDoubles";
 import {
   askCto,
   callTool,
@@ -15,10 +16,10 @@ import {
 /**
  * Two requests at once, and who decides what happens to the first.
  *
- * On the live call of 2026-09-16 both requests were lost: the second one's
- * `runSessionTurn` was attempted before the first had been interrupted, threw
- * "Session already has an active background turn", and the abort landed three
- * milliseconds later. The user heard that the CTO could not be reached, twice.
+ * Both used to be lost: the second one's `runSessionTurn` was attempted before
+ * the first had been interrupted, threw "Session already has an active
+ * background turn", and the abort landed three milliseconds later. The user
+ * heard that the CTO could not be reached, twice.
  */
 describe("two requests at once", () => {
   /**
@@ -166,7 +167,81 @@ describe("two requests at once", () => {
     expect(functionOutputs(harness.fake)).toContainEqual({ status: "cancelled" });
   });
 
+  /**
+   * Hang-up stops the queue, not just the turn that is running.
+   *
+   * The drain loop reads the queue again the moment the aborted turn unwinds,
+   * which is after the call is over: a request left there is a full CTO turn —
+   * its own session, its own tools — run for a call the user has hung up.
+   */
+  it("a queued request does not run after hang-up", async () => {
+    const harness = createSerialHarness();
+    await openCall(harness);
 
+    askCto(harness, "A one", { callId: "call_a" });
+    await tick();
+    askCto(harness, "B two", { callId: "call_b", mode: "queue" });
+    await tick();
+    expect(harness.events).toEqual(["start:A"]);
+
+    await harness.service.end("owner_end");
+    // The aborted turn unwinds AFTER the call ended, which is where the loop
+    // picks the queue back up.
+    await harness.finish("A");
+
+    expect(harness.events).toEqual(["start:A", "end:A"]);
+  });
+
+  /**
+   * A new call does not inherit the last one's drain loop.
+   *
+   * The loop's "I own this" flag lives on the per-call record, so a new call
+   * clears it while the old loop is still awaiting an aborted turn. The new
+   * call then starts a loop of its own, the old one wakes up on the new call's
+   * queue, and two turns run on the one CTO session.
+   */
+  it("a new call does not start a second drain loop", async () => {
+    const events: string[] = [];
+    const release = new Map<string, () => void>();
+    const sockets = [createFakeSocket(), createFakeSocket()];
+    let index = 0;
+    const harness = createService({
+      backchannelsEnabled: () => false,
+      createWebSocket: () => sockets[index]!.socket,
+      runBackendTurn: async ({ intent, signal }) => {
+        const name = intent.split(" ")[0] ?? intent;
+        events.push(`start:${name}`);
+        await new Promise<void>((resolve) => release.set(name, resolve));
+        events.push(`end:${name}`);
+        if (signal.aborted) return { spoken: "", status: "interrupted" as const };
+        return { spoken: `${name} answer` };
+      },
+    });
+    const first = { ...harness, fake: sockets[0]! };
+    await openCall(first);
+    askCto(first, "A one", { callId: "call_a" });
+    await tick();
+    await harness.service.end("owner_end");
+
+    index = 1;
+    const second = { ...harness, fake: sockets[1]! };
+    await openCall(second);
+    askCto(second, "B two", { callId: "call_b" });
+    await tick();
+    askCto(second, "C three", { callId: "call_c", mode: "queue" });
+    await tick();
+    expect(events).toEqual(["start:A", "start:B"]);
+
+    // The first call's loop wakes up here, with the second call's queue in
+    // front of it and that call's own turn still running.
+    release.get("A")?.();
+    await tick();
+
+    expect(events).toEqual(["start:A", "start:B", "end:A"]);
+    release.get("B")?.();
+    await tick();
+    await harness.service.end("owner_end");
+  });
 });
 
 it("accepts a spoken yes from the utterance after the question", async () => {

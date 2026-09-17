@@ -50,6 +50,18 @@ export function createTurnTimingRecorder(deps: {
    */
   let speaking: CtoVoiceTurnTiming | null = null;
 
+  /**
+   * When the server last said the user stopped talking.
+   *
+   * The first leg of the latency the user actually feels, and the only one
+   * nothing else records: the transcriber's own round trip. It lives here
+   * rather than on the call because it is a leg of a record and nothing else,
+   * and it is spent on the next `open` — so a transcript with no
+   * `speech_stopped` behind it reports no leg rather than one measured against
+   * a minute-old event.
+   */
+  let speechStoppedAtMs = 0;
+
   const blank = (
     acceptedAtMs: number,
     speechStoppedToTranscriptMs: number | null,
@@ -89,13 +101,23 @@ export function createTurnTimingRecorder(deps: {
   };
 
   return {
+    /** The server heard the user stop talking. One leg starts here. */
+    noteSpeechStopped(atMs: number): void {
+      speechStoppedAtMs = atMs;
+    },
+
     /**
      * A transcript was accepted. Any record still waiting for a turn is one
      * nothing ever ran for, and is written out as abandoned.
      */
-    open(acceptedAtMs: number, speechStoppedToTranscriptMs: number | null): void {
+    open(acceptedAtMs: number): void {
       if (pending) write(pending, "abandoned", null);
-      pending = blank(acceptedAtMs, speechStoppedToTranscriptMs);
+      pending = blank(
+        acceptedAtMs,
+        speechStoppedAtMs ? Math.round(acceptedAtMs - speechStoppedAtMs) : null,
+      );
+      // Spent: one `speech_stopped` measures one transcript.
+      speechStoppedAtMs = 0;
     },
 
     /**
@@ -155,6 +177,9 @@ export function createTurnTimingRecorder(deps: {
       speaking = null;
       if (pending) write(pending, outcome, null);
       pending = null;
+      // The next call's first transcript must not be measured against the last
+      // call's last word.
+      speechStoppedAtMs = 0;
     },
   };
 }

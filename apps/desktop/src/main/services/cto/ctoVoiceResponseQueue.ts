@@ -23,7 +23,6 @@ import { buildCtoVoiceSpeakInstructions } from "../../../shared/types/ctoVoicePr
  */
 type CtoVoiceQueuedResponse = { kind: "ade"; text: string } | { kind: "model" };
 
-
 export function createResponseQueue(deps: {
   send: (payload: Record<string, unknown>) => void;
   /** Not "is there a socket" — "will it take this". A pre-open send throws. */

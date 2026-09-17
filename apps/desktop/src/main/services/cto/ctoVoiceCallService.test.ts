@@ -4,12 +4,10 @@ import {
   CTO_VOICE_END_CALL_AUDIO_TAIL_MS,
   CTO_VOICE_MODEL,
   CTO_VOICE_SAMPLE_RATE,
-  CTO_VOICE_TRANSCRIBE_LANGUAGE,
-  CTO_VOICE_TRANSCRIBE_MODEL,
-  CTO_VOICE_TRANSCRIBE_PROMPT,
   ctoVoiceStatusLine,
   ctoVoiceTranscriptHasSpeech,
 } from "../../../shared/types/ctoVoice";
+import { buildCtoVoiceSessionUpdate } from "../../../shared/types/ctoVoiceSession";
 import { createFakeSocket } from "./ctoVoiceTestDoubles";
 import {
   askCto,
@@ -44,15 +42,13 @@ describe("createCtoVoiceCallService", () => {
   });
 
   /**
-   * The event that decides whether this is a CTO call or a chat with a
-   * stranger. The model composes its own speech now — it has to, or a call
-   * cannot be a conversation — so what keeps it honest is the tool list and
-   * the instruction that
-   * goes with it: it may answer from its context and it may not invent a
-   * project fact. If `tools` ever goes missing from this event, the model has
-   * no way to reach the CTO at all and will answer everything itself.
+   * What the payload IS belongs to `ctoVoiceSession.test.ts`. What the CALL
+   * owns is that the built event is what reaches the wire the moment the socket
+   * opens — stamped with an id, and carrying what this service was asked for
+   * its context block and its voice. Anything the model says before its
+   * instructions land is said by a stranger.
    */
-  it("configures the session as a conversational front with one seam to the CTO", async () => {
+  it("sends the built session update the moment the socket opens", async () => {
     const harness = createService({
       voice: () => "cedar",
       context: async () => "Who you are\n- Name: Ada",
@@ -60,41 +56,16 @@ describe("createCtoVoiceCallService", () => {
     await harness.service.start();
     harness.fake.open();
 
-    const update = harness.fake.lastOfType("session.update") as Record<string, any>;
-    expect(update).toBeTruthy();
-    expect(update.session.type).toBe("realtime");
-    expect(update.session.output_modalities).toEqual(["audio"]);
-    expect(update.session.audio.input.turn_detection).toEqual({
-      type: "server_vad",
-      create_response: true,
-      interrupt_response: true,
+    expect(harness.fake.lastOfType("session.update")).toEqual({
+      ...buildCtoVoiceSessionUpdate({
+        ctoName: "CTO",
+        projectName: "ADE",
+        context: "Who you are\n- Name: Ada",
+        acknowledgeAloud: true,
+        voice: "cedar",
+      }),
+      event_id: expect.any(String),
     });
-    // The five functions, and nothing else: everything a call can DO happens on
-    // the other side of `ask_cto`.
-    expect(update.session.tool_choice).toBe("auto");
-    // Written out rather than compared to a constant: a list checked against
-    // itself agrees with any change, including one that takes a tool away.
-    expect((update.session.tools as Array<{ name: string }>).map((tool) => tool.name))
-      .toEqual(["ask_cto", "cancel_work", "approve_pending_action", "deny_pending_action", "end_call"]);
-    // The context block rides in the session prompt, so the model can answer
-    // "who are you" without a round trip through the CTO thread.
-    expect(String(update.session.instructions)).toContain("- Name: Ada");
-    // Without transcription there are no captions and no spoken yes/no, and
-    // without a language the transcriber guesses per utterance — which is how a
-    // phantom "好" reached the CTO and came back as a reply in Chinese.
-    expect(update.session.audio.input.transcription).toEqual({
-      model: CTO_VOICE_TRANSCRIBE_MODEL,
-      language: CTO_VOICE_TRANSCRIBE_LANGUAGE,
-      prompt: CTO_VOICE_TRANSCRIBE_PROMPT,
-    });
-    expect(update.session.audio.input.format)
-      .toEqual({ type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE });
-    expect(update.session.audio.output.format)
-      .toEqual({ type: "audio/pcm", rate: CTO_VOICE_SAMPLE_RATE });
-    expect(update.session.audio.output.voice).toBe("cedar");
-    // Nothing in the session names a backend model — that is what keeps the
-    // CTO's own thinking on whatever plan it already runs on.
-    expect(JSON.stringify(update.session)).not.toContain("responses");
   });
 
   it("starts the clock when OpenAI answers with a session", async () => {
