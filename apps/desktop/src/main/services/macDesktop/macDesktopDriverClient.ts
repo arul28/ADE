@@ -60,6 +60,15 @@ export const MAC_DESKTOP_DRIVER_OPS = {
   stopRecording: "record.stop",
 } as const;
 
+/**
+ * The driver's "not while the mouse button is down" refusal code.
+ *
+ * Named here beside the op table because it is the other half of the same
+ * cross-process contract: the one driver failure the Node side retries instead
+ * of surfacing, matched on code rather than on message.
+ */
+export const MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE = "gesture_in_flight" as const;
+
 export type MacDesktopDriverOp = (typeof MAC_DESKTOP_DRIVER_OPS)[keyof typeof MAC_DESKTOP_DRIVER_OPS];
 
 /** Restarts inside the unstable window before the helper is declared dead. */

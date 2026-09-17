@@ -663,16 +663,21 @@ function listMatches(expected: string[] | undefined, actual: string[] | undefine
  * between rules, and obviously not a chat to anyone reading a status payload.
  */
 export function scopeAutomationAdeActionArgs(domain: string, resolvedArgs: unknown, ruleId: string): void {
+  const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
   if (domain === "chat") {
-    const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
     for (const candidate of candidates) {
       if (isRecord(candidate) && isRecord(candidate.metadata)) {
         stripHostAuthoredMessageProvenance(candidate.metadata);
       }
     }
   } else if (domain === "mac_desktop") {
-    const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
-    const syntheticSessionId = `automation:${ruleId.trim() || "unknown"}`;
+    // No fallback id: two rules sharing one synthetic holder share one lease,
+    // so a blank rule id is a bug to surface, not a value to invent.
+    const trimmedRuleId = ruleId.trim();
+    if (!trimmedRuleId) {
+      throw new Error("scopeAutomationAdeActionArgs requires a rule id to scope mac_desktop args.");
+    }
+    const syntheticSessionId = `automation:${trimmedRuleId}`;
     for (const candidate of candidates) {
       if (!isRecord(candidate)) continue;
       delete candidate.controllerId;
@@ -3037,9 +3042,8 @@ export function createAutomationService({
       }
     }
 
-    scopeAutomationAdeActionArgs(domain, resolvedArgs, ruleId);
-
     try {
+      scopeAutomationAdeActionArgs(domain, resolvedArgs, ruleId);
       const callable = fn as (...a: unknown[]) => unknown;
       const result = Array.isArray(resolvedArgs)
         ? await callable(...resolvedArgs)

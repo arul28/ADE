@@ -41,12 +41,6 @@ extension DriverRuntime {
     /// from an index: a `gone` or `windowTitle` wait succeeds with no element,
     /// so "matched something" and "the wait was satisfied" are two facts.
     private func waitFor(laneId: String, payload: [String: JSONValue]) throws -> [String: JSONValue] {
-        // The gate lets `wait` through rather than parking it, but "not parked"
-        // is not "safe to run": this call is nested inside the drag's own
-        // run-loop pump, so polling here would hold the pressed button for the
-        // whole timeout. Refuse, and let the Node client retry against its own
-        // deadline once the button is up.
-        if let refusal = gestures.waitRefusal() { throw refusal }
         guard let condition = WaitCondition(
             text: payload["text"]?.stringValue,
             gone: payload["gone"]?.stringValue,
@@ -58,6 +52,14 @@ extension DriverRuntime {
                 message: "wait needs one of \"text\", \"gone\", or \"windowTitle\"."
             )
         }
+        // The gate lets `wait` through rather than parking it, but "not parked"
+        // is not "safe to run": this call is nested inside the drag's own
+        // run-loop pump, so polling here would hold the pressed button for the
+        // whole timeout. Refuse, and let the Node client retry against its own
+        // deadline once the button is up. Checked *after* the argument guard so
+        // a malformed wait is told it is malformed rather than being handed a
+        // retryable refusal it would spin on until its deadline.
+        if let refusal = gestures.waitRefusal() { throw refusal }
         let deadline = Date().addingTimeInterval(Double(condition.timeoutMs) / 1000)
         var outcome = WaitOutcome.pending
         repeat {

@@ -32,6 +32,8 @@ import {
   type MacDesktopWaitArgs,
   type MacDesktopWaitResult,
 } from "../../../shared/types/macDesktop";
+import { sleep } from "../shared/utils";
+import { MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE } from "./macDesktopDriverClient";
 import type { MacDesktopLeaseRegistry } from "./macDesktopLease";
 import type { MacDesktopObservations } from "./macDesktopObservations";
 import type { MacDesktopOwnershipRegistry } from "./macDesktopOwnership";
@@ -43,8 +45,6 @@ const MAX_OBSERVATION_LIMIT = MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT;
 /** How long a refused `wait` sits out a real gesture before asking again. */
 const GESTURE_RETRY_DELAY_MS = 250;
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
-
 /**
  * The driver's "not while the mouse button is down" refusal for `wait`.
  *
@@ -53,8 +53,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeo
  * it ends on its own.
  */
 const isGestureInFlight = (error: unknown): boolean =>
-  typeof (error as { code?: unknown } | null)?.code === "string"
-  && (error as { code: string }).code === "gesture_in_flight";
+  asRecord(error).code === MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE;
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const MAX_WAIT_TIMEOUT_MS = 120_000;

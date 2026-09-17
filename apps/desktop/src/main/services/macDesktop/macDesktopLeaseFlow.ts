@@ -10,6 +10,9 @@
  * gates and the prompt are passed in.
  */
 
+import {
+  MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+} from "../../../shared/types/macDesktop";
 import type {
   DesktopSeatProvider,
   MacDesktopEventPayload,
@@ -81,7 +84,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       const chatSessionId = args.chatSessionId.trim();
       deps.requireDisplay(laneId);
       if (!chatSessionId) {
-        return { granted: false, code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED", lease: null };
+        return { granted: false, code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, lease: null };
       }
       const grantNow = (): MacDesktopLeaseRequestResult => {
         const decision = deps.leases.grantToAgent({
@@ -100,29 +103,45 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       // silent re-grant rather than a second card in the user's face.
       if (deps.leases.isChatApproved(laneId, chatSessionId)) return grantNow();
 
+      // An automation's synthetic holder (`automation:<ruleId>`) is not a chat,
+      // so there is nobody to show a card to: asking would throw "chat not
+      // found" *after* a `lease-requested` event had already told the UI a card
+      // was coming. Refuse before emitting anything.
+      if (chatSessionId.startsWith("automation:") || !deps.requestChatInput) {
+        return { granted: false, code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, lease: null };
+      }
       const reason = args.reason?.trim() || "drive this display with real pointer and keyboard input";
       deps.emit({ type: "lease-requested", laneId, chatSessionId, reason: args.reason?.trim() ?? null });
-      if (!deps.requestChatInput) {
-        return { granted: false, code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED", lease: null };
+      let response: Awaited<ReturnType<MacDesktopRequestChatInput>>;
+      try {
+        response = await deps.requestChatInput({
+          chatSessionId,
+          title: "Real input on the lane's display",
+          body: `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this Mac.`,
+          questions: [{
+            id: "mac_desktop_input_lease",
+            header: "Real input",
+            question: `Allow this chat to use real pointer and keyboard input on its Mac Desktop display? (${reason})`,
+            options: [
+              { label: "Allow", value: "allow", recommended: true },
+              { label: "Don't allow", value: "deny" },
+            ],
+            allowsFreeform: true,
+          }],
+          providerMetadata: { macDesktopInputLease: true, laneId },
+          eventDescription: `Allow real input on the Mac Desktop display for ${reason}?`,
+          eventDetail: { macDesktopInputLease: true, laneId },
+        });
+      } catch (error) {
+        // The chat could be gone by the time the lease is asked for. A missing
+        // chat is not an approval, and it is not a crash either: it is the same
+        // "nobody said yes" the decline path returns.
+        deps.logger.warn("mac_desktop.lease_prompt_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { granted: false, code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, lease: null };
       }
-      const response = await deps.requestChatInput({
-        chatSessionId,
-        title: "Real input on the lane's display",
-        body: `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this Mac.`,
-        questions: [{
-          id: "mac_desktop_input_lease",
-          header: "Real input",
-          question: `Allow this chat to use real pointer and keyboard input on its Mac Desktop display? (${reason})`,
-          options: [
-            { label: "Allow", value: "allow", recommended: true },
-            { label: "Don't allow", value: "deny" },
-          ],
-          allowsFreeform: true,
-        }],
-        providerMetadata: { macDesktopInputLease: true, laneId },
-        eventDescription: `Allow real input on the Mac Desktop display for ${reason}?`,
-        eventDetail: { macDesktopInputLease: true, laneId },
-      });
       const answer = [
         ...(response.answers?.mac_desktop_input_lease ?? []),
         response.responseText ?? "",
@@ -133,7 +152,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
         || answer.includes("don't allow")
         || answer.includes("do not allow");
       if (denied || (!answer.includes("allow") && response.decision !== "accept")) {
-        return { granted: false, code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED", lease: null };
+        return { granted: false, code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, lease: null };
       }
       deps.leases.approveChat(laneId, chatSessionId);
       return grantNow();

@@ -3327,14 +3327,10 @@ describe("scopeAutomationAdeActionArgs", () => {
     expect(args[0]).toEqual({ laneId: "lane-1", chatSessionId: "automation:rule-2" });
   });
 
-  it("gives each rule its own synthetic session so two rules cannot share a lease", () => {
-    const first: Record<string, unknown> = { laneId: "lane-1" };
-    const second: Record<string, unknown> = { laneId: "lane-1" };
-    scopeAutomationAdeActionArgs("mac_desktop", first, "rule-a");
-    scopeAutomationAdeActionArgs("mac_desktop", second, "rule-b");
-    expect(first.chatSessionId).toBe("automation:rule-a");
-    expect(second.chatSessionId).toBe("automation:rule-b");
-    expect(first.chatSessionId).not.toBe(second.chatSessionId);
+  it("refuses to scope mac_desktop args without a rule id", () => {
+    // A fallback id would put every unnamed rule on one shared lease holder.
+    expect(() => scopeAutomationAdeActionArgs("mac_desktop", { laneId: "lane-1" }, "  "))
+      .toThrow(/rule id/);
   });
 
   it("leaves other domains' args untouched", () => {

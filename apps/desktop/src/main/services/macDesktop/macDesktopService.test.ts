@@ -4,7 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MAC_DESKTOP_IDLE_RELEASE_MS, type MacDesktopEventPayload } from "../../../shared/types/macDesktop";
-import { MAC_DESKTOP_DRIVER_OPS, type MacDesktopDriverClient } from "./macDesktopDriverClient";
+import {
+  MAC_DESKTOP_DRIVER_OPS,
+  MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE,
+  type MacDesktopDriverClient,
+} from "./macDesktopDriverClient";
 import { createMacDesktopService } from "./macDesktopService";
 
 const logger = {
@@ -271,6 +275,52 @@ describe("macDesktopService lease", () => {
     service.dispose();
   });
 
+  it("refuses an automation's synthetic holder without emitting a request card", async () => {
+    const driver = createFakeDriver();
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-test-"));
+    let asked = 0;
+    const service = createMacDesktopService({
+      projectRoot,
+      logger,
+      platform: "darwin",
+      createDriverClient: () => driver as unknown as MacDesktopDriverClient,
+      // `automation:<ruleId>` is not a chat id, so the real host throws
+      // "chat not found" here.
+      requestChatInput: async () => {
+        asked += 1;
+        throw new Error("chat not found");
+      },
+    });
+    const seen: MacDesktopEventPayload[] = [];
+    const unsubscribe = service.subscribe((event) => seen.push(event));
+    await service.start({ laneId: "lane-1" });
+    const result = await service.requestInputLease({ laneId: "lane-1", chatSessionId: "automation:rule-1" });
+    expect(result.granted).toBe(false);
+    expect(result.code).toBe("MAC_DESKTOP_INPUT_LEASE_REQUIRED");
+    expect(asked).toBe(0);
+    // No card was promised, so none is left dangling in the UI.
+    expect(seen.some((event) => event.type === "lease-requested")).toBe(false);
+    unsubscribe();
+    service.dispose();
+  });
+
+  it("a chat that vanished mid-prompt grants nothing instead of throwing", async () => {
+    const driver = createFakeDriver();
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-test-"));
+    const service = createMacDesktopService({
+      projectRoot,
+      logger,
+      platform: "darwin",
+      createDriverClient: () => driver as unknown as MacDesktopDriverClient,
+      requestChatInput: async () => { throw new Error("chat not found"); },
+    });
+    await service.start({ laneId: "lane-1" });
+    const result = await service.requestInputLease({ laneId: "lane-1", chatSessionId: "chat-gone" });
+    expect(result.granted).toBe(false);
+    expect(result.code).toBe("MAC_DESKTOP_INPUT_LEASE_REQUIRED");
+    service.dispose();
+  });
+
   it("releaseIfOwnedBy drops the chat's lease", async () => {
     const driver = createFakeDriver();
     const { service } = makeService({ driver });
@@ -354,7 +404,7 @@ describe("macDesktopService wait and the gesture gate", () => {
         if (refusals < 2) {
           refusals += 1;
           const error = new Error("a real gesture is in flight") as Error & { code: string };
-          error.code = "gesture_in_flight";
+          error.code = MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE;
           throw error;
         }
         return { ok: true, resolvedIndex: 4 };
@@ -383,7 +433,7 @@ describe("macDesktopService wait and the gesture gate", () => {
     const driver = createFakeDriver({
       [MAC_DESKTOP_DRIVER_OPS.input]: () => {
         const error = new Error("a real gesture is in flight") as Error & { code: string };
-        error.code = "gesture_in_flight";
+        error.code = MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE;
         throw error;
       },
     });
