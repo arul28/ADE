@@ -34,7 +34,6 @@ import type { GitHubStatus } from "../../../shared/types";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { readStoredProjectSettingsRoute } from "./projectRouteStorage";
 import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
-import { DevinCloudQuickViewButton } from "./DevinCloudQuickViewButton";
 
 type TabNavItem = {
   to: string;
@@ -374,7 +373,6 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
         {/* The fleet entries own the same delayed, cached auth gate as the
             top-bar controls, so a disconnected integration leaves no dead
             sidebar affordance. */}
-        <DevinCloudQuickViewButton variant="sidebar-row" />
         <CursorCloudQuickViewButton variant="sidebar-row" />
 
         {/* Spacer pushes settings to bottom */}

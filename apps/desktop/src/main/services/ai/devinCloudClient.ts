@@ -44,6 +44,7 @@ type FetchLike = (
   json: () => Promise<unknown>;
   text: () => Promise<string>;
   arrayBuffer?: () => Promise<ArrayBuffer>;
+  headers?: { get(name: string): string | null };
 }>;
 
 export type DevinCloudClientArgs = {
@@ -54,6 +55,9 @@ export type DevinCloudClientArgs = {
   fetchImpl?: FetchLike;
   timeoutMs?: number;
 };
+
+/** Proof sync buffers attachments in memory — refuse files past this cap. */
+export const DEVIN_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024;
 
 export class DevinCloudApiError extends Error {
   readonly status: number;
@@ -80,10 +84,30 @@ function readNumber(value: unknown): number | null {
   if (typeof value === "string") {
     const parsed = Number(value);
     if (Number.isFinite(parsed)) return parsed;
-    const millis = Date.parse(value);
-    if (Number.isFinite(millis)) return Math.floor(millis / 1000);
   }
   return null;
+}
+
+/**
+ * Epoch-millisecond timestamp parser for created_at/updated_at fields. ISO
+ * strings parse to millis directly; bare numbers are treated as seconds when
+ * they are implausibly small for a millisecond reading.
+ */
+function readTimestamp(value: unknown): number | null {
+  if (typeof value === "string") {
+    const millis = Date.parse(value);
+    if (Number.isFinite(millis)) return millis;
+  }
+  const numeric = readNumber(value);
+  if (numeric == null) return null;
+  return numeric < 1e12 ? Math.round(numeric * 1000) : Math.round(numeric);
+}
+
+export class DevinCloudResponseError extends Error {
+  constructor(path: string) {
+    super(`Devin API returned an unreadable response for ${path}.`);
+    this.name = "DevinCloudResponseError";
+  }
 }
 
 /**
@@ -172,8 +196,8 @@ function normalizeV3Session(record: Record<string, unknown>): DevinCloudSessionS
     repos: Array.isArray(record.repos)
       ? record.repos.filter((t): t is string => typeof t === "string")
       : [],
-    createdAt: readNumber(record.created_at),
-    updatedAt: readNumber(record.updated_at),
+    createdAt: readTimestamp(record.created_at),
+    updatedAt: readTimestamp(record.updated_at),
     devinMode: (mode ?? null) as DevinCloudMode | null,
     acusConsumed: readNumber(record.acus_consumed),
     userId: readString(record.user_id),
@@ -196,8 +220,8 @@ function normalizeV1SessionSummary(record: Record<string, unknown>): DevinCloudS
     pullRequests: pr ? [{ prUrl: pr, prState: null }] : [],
     tags: Array.isArray(record.tags) ? record.tags.filter((t): t is string => typeof t === "string") : [],
     repos: [],
-    createdAt: readNumber(record.created_at),
-    updatedAt: readNumber(record.updated_at),
+    createdAt: readTimestamp(record.created_at),
+    updatedAt: readTimestamp(record.updated_at),
     devinMode: null,
     acusConsumed: null,
     userId: readString(record.requesting_user_email),
@@ -215,7 +239,7 @@ function normalizeV3Message(record: Record<string, unknown>): DevinCloudMessage 
     eventId,
     source: source === "user" ? "user" : "devin",
     message: record.message as string,
-    createdAt: readNumber(record.created_at) ?? 0,
+    createdAt: readTimestamp(record.created_at) ?? 0,
   };
 }
 
@@ -228,7 +252,7 @@ function normalizeV1Message(record: Record<string, unknown>): DevinCloudMessage 
     eventId,
     source: type.startsWith("user") || type === "initial_user_message" ? "user" : "devin",
     message,
-    createdAt: readNumber(record.timestamp) ?? 0,
+    createdAt: readTimestamp(record.timestamp) ?? 0,
   };
 }
 
@@ -288,7 +312,10 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       try {
         return JSON.parse(text) as T;
       } catch {
-        return undefined as T;
+        // A 2xx body that is not JSON means a proxy or upstream answered in
+        // Devin's place — reporting it as an empty page would silently turn
+        // malformed responses into empty fleets and accepted credentials.
+        throw new DevinCloudResponseError(path);
       }
     } finally {
       clearTimeout(timer);
@@ -519,7 +546,22 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
         signal: controller.signal,
       });
       if (!response.ok || !response.arrayBuffer) return null;
+      const declared = Number(response.headers?.get("content-length") ?? "");
+      if (Number.isFinite(declared) && declared > DEVIN_ATTACHMENT_MAX_BYTES) {
+        args.logger?.warn?.("devin_cloud.attachment_too_large", {
+          attachmentId: attachment.attachmentId,
+          bytes: declared,
+        });
+        return null;
+      }
       const buffer = await response.arrayBuffer();
+      if (buffer.byteLength > DEVIN_ATTACHMENT_MAX_BYTES) {
+        args.logger?.warn?.("devin_cloud.attachment_too_large", {
+          attachmentId: attachment.attachmentId,
+          bytes: buffer.byteLength,
+        });
+        return null;
+      }
       return new Uint8Array(buffer);
     } catch {
       return null;
@@ -593,17 +635,28 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
   /** Verify the credential: v3 lists orgs, v1 lists one session page. */
   const verify = async (): Promise<{ orgName: string | null }> => {
     if (authMode === "v1") {
-      await request<unknown>("/v1/sessions?limit=1");
+      const page = await request<unknown>("/v1/sessions?limit=1");
+      if (!isRecord(page) || !Array.isArray(page.sessions)) {
+        throw new Error("Devin rejected this token — the sessions endpoint did not answer as expected.");
+      }
       return { orgName: null };
     }
     const page = await request<unknown>(
       "/v3/enterprise/organizations?qs=" + encodeURIComponent(JSON.stringify({ first: 50 })),
     );
-    const items = isRecord(page) && Array.isArray(page.items) ? page.items : [];
-    const first = items.find(isRecord);
-    const name = first ? readString(first.org_name) ?? readString(first.name) : null;
-    const id = first ? readString(first.org_id) ?? readString(first.id) : null;
-    if (id && !cachedOrgId) cachedOrgId = id;
+    if (!isRecord(page) || !Array.isArray(page.items)) {
+      throw new Error("Devin rejected this token — the organizations endpoint did not answer as expected.");
+    }
+    const first = page.items.find(isRecord);
+    if (!first) {
+      throw new Error("This Devin token works but no organizations are visible to it.");
+    }
+    const name = readString(first.org_name) ?? readString(first.name);
+    const id = readString(first.org_id) ?? readString(first.id);
+    if (!id) {
+      throw new Error("Could not determine your Devin org. Add your org id (org-...) in Settings > Devin.");
+    }
+    if (!cachedOrgId) cachedOrgId = id;
     return { orgName: name };
   };
 

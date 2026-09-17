@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, CaretRight, CircleNotch, CloudArrowUp, Cube, Desktop, DeviceMobile, Diamond, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
+import { ArrowLeft, CaretRight, CircleNotch, CloudArrowUp, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -217,6 +217,7 @@ import { derivePendingInputRequests, resolvePendingInputs, type DerivedPendingIn
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
@@ -13483,7 +13484,7 @@ export function AgentChatPane({
               );
             }}
           >
-            <Diamond size={11} weight="fill" className="text-sky-200" />
+            <DevinLogo size={11} className="rounded-[2px]" />
             <span>Devin Cloud</span>
           </button>
         ) : null}

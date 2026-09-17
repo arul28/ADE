@@ -2116,7 +2116,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     getCursorCloudFleet: (args?: { includeArchived?: boolean; limit?: number }) =>
       requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").getFleet({
-        includeArchived: args?.includeArchived === true,
+        includeArchived: args?.includeArchived !== false,
         ...(args?.limit !== undefined ? { limit: args.limit } : {}),
       }),
     resolveCursorCloudAgentLane: (args?: { agentId?: string }) =>

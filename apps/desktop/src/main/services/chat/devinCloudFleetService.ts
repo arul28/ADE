@@ -216,22 +216,16 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
     }
   };
 
-  const resolvePullTargetLane = async (args: {
+  const findPullTargetLane = async (args: {
     linkedLaneId: string | null;
     branch: string;
-  }): Promise<{ lane: LaneSummary; created: boolean }> => {
+  }): Promise<LaneSummary | null> => {
     const lanes = await deps.laneService.list({ includeArchived: false, includeStatus: false });
     if (args.linkedLaneId) {
       const linked = lanes.find((lane) => lane.id === args.linkedLaneId);
-      if (linked) return { lane: linked, created: false };
+      if (linked) return linked;
     }
-    const byBranch = lanes.find((lane) => (lane.branchRef ?? "").trim() === args.branch);
-    if (byBranch) return { lane: byBranch, created: false };
-    const created = await deps.laneService.importBranch({
-      branchRef: args.branch,
-      name: args.branch,
-    });
-    return { lane: created, created: true };
+    return lanes.find((lane) => (lane.branchRef ?? "").trim() === args.branch) ?? null;
   };
 
   const assertCleanWorktree = async (worktreePath: string, laneName: string): Promise<void> => {
@@ -250,9 +244,11 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
    * Fetch a Devin session's PR head into a lane.
    *
    * Devin's API exposes `pull_requests[].pr_url` but never a branch name, so
-   * the branch arrives as a GitHub `refs/pull/<n>/head` fetch. For a new lane
-   * the fetch writes `refs/heads/devin/<id>` directly; for an existing lane
-   * it lands on FETCH_HEAD and merges with the dirty-worktree refusal.
+   * the branch arrives as a GitHub `refs/pull/<n>/head` fetch. The fetch has
+   * to come first either way: for a new lane it materializes
+   * `refs/heads/devin/<id>` so `importBranch` has a real ref to check out,
+   * and for an existing lane it lands on that lane's own FETCH_HEAD (each
+   * worktree keeps its own) before the dirty-worktree-guarded merge.
    */
   const pullIntoLane = async (devinSessionId: string): Promise<DevinCloudPullIntoLaneResult> => {
     const id = devinSessionId.trim();
@@ -274,35 +270,63 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
     const laneIdFromTag = devinCloudAdeLaneId(session.tags);
     const safeBranch = safeBranchRef(devinBranchFor(id));
 
-    const { lane, created } = await resolvePullTargetLane({
+    let lane = await findPullTargetLane({
       linkedLaneId: link?.laneId ?? laneIdFromTag,
       branch: safeBranch,
     });
+    let created = false;
 
-    await assertCleanWorktree(lane.worktreePath, lane.name);
-
-    const fetchResult = await runGit(
-      ["fetch", "origin", `+refs/pull/${prNumber}/head`],
-      { cwd: projectRoot, timeoutMs: 60_000 },
-    );
-    if (fetchResult.exitCode !== 0) {
-      throw new Error(
-        `Could not fetch the session's PR head (refs/pull/${prNumber}/head): ${fetchResult.stderr.trim() || "fetch failed"}`,
+    if (!lane) {
+      // Materialize the PR head as a local branch first — importBranch only
+      // resolves refs that already exist.
+      const fetchResult = await runGit(
+        ["fetch", "origin", `+refs/pull/${prNumber}/head:refs/heads/${safeBranch}`],
+        { cwd: projectRoot, timeoutMs: 60_000 },
       );
-    }
+      if (fetchResult.exitCode !== 0) {
+        throw new Error(
+          `Could not fetch the session's PR head (refs/pull/${prNumber}/head): ${fetchResult.stderr.trim() || "fetch failed"}`,
+        );
+      }
+      try {
+        lane = await deps.laneService.importBranch({
+          branchRef: safeBranch,
+          name: safeBranch,
+        });
+        created = true;
+      } catch (error) {
+        await runGit(["update-ref", "-d", `refs/heads/${safeBranch}`], {
+          cwd: projectRoot,
+          timeoutMs: 15_000,
+        }).catch(() => undefined);
+        throw error;
+      }
+    } else {
+      await assertCleanWorktree(lane.worktreePath, lane.name);
 
-    const mergeResult = await runGit(["merge", "--no-edit", "FETCH_HEAD"], {
-      cwd: lane.worktreePath,
-      timeoutMs: 60_000,
-    });
-    if (mergeResult.exitCode !== 0) {
-      await runGit(["merge", "--abort"], {
+      const fetchResult = await runGit(
+        ["fetch", "origin", `+refs/pull/${prNumber}/head`],
+        { cwd: lane.worktreePath, timeoutMs: 60_000 },
+      );
+      if (fetchResult.exitCode !== 0) {
+        throw new Error(
+          `Could not fetch the session's PR head (refs/pull/${prNumber}/head): ${fetchResult.stderr.trim() || "fetch failed"}`,
+        );
+      }
+
+      const mergeResult = await runGit(["merge", "--no-edit", "FETCH_HEAD"], {
         cwd: lane.worktreePath,
-        timeoutMs: 30_000,
-      }).catch(() => undefined);
-      throw new Error(
-        `Merging the session's PR head into '${lane.branchRef}' conflicted; the merge was aborted. Resolve it manually in the lane worktree.`,
-      );
+        timeoutMs: 60_000,
+      });
+      if (mergeResult.exitCode !== 0) {
+        await runGit(["merge", "--abort"], {
+          cwd: lane.worktreePath,
+          timeoutMs: 30_000,
+        }).catch(() => undefined);
+        throw new Error(
+          `Merging the session's PR head into '${lane.branchRef}' conflicted; the merge was aborted. Resolve it manually in the lane worktree.`,
+        );
+      }
     }
 
     let sessionId: string | null = null;

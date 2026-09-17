@@ -15,7 +15,6 @@ import type {
 import devinMark from "../../assets/provider-logos/devin.svg";
 import { openExternalUrl } from "../../lib/openExternal";
 import {
-  DEVIN_BLUE,
   devinCloudErrorMessage,
   devinCloudRepoLabel,
   formatDevinCloudAge,
@@ -394,12 +393,7 @@ export function DevinCloudFleetModal({
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3.5 py-2" style={{ background: "rgba(37,99,235,0.055)" }}>
           <div className="flex min-w-0 items-center gap-2.5">
-            <span
-              className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md"
-              style={{ background: "rgba(37,99,235,0.14)", color: DEVIN_BLUE }}
-            >
-              <img src={devinMark} alt="" className="h-4 w-4" />
-            </span>
+            <img src={devinMark} alt="" className="h-6 w-6 shrink-0 rounded-md" />
             <div className="min-w-0 leading-tight">
               <div className="truncate text-[12.5px] font-medium text-fg/92">Devin Cloud</div>
               <div className="truncate text-[10.5px] text-fg/45">
@@ -521,12 +515,7 @@ export function DevinCloudFleetModal({
             </div>
           ) : entries.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
-              <span
-                className="grid h-10 w-10 place-items-center overflow-hidden rounded-xl"
-                style={{ background: "rgba(37,99,235,0.10)", color: DEVIN_BLUE }}
-              >
-                <img src={devinMark} alt="" className="h-5 w-5" />
-              </span>
+              <img src={devinMark} alt="" className="h-10 w-10 rounded-xl" />
               <div className="text-[13px] font-medium text-fg/80">No Devin sessions</div>
               <div className="max-w-[380px] text-[11.5px] leading-relaxed text-fg/45">
                 Sessions you launch from a chat composer with Devin Cloud — and anything

@@ -5110,6 +5110,7 @@ const CHAT_SESSION_TOOL_TYPES = [
   "kimi-chat",
   "grok-chat",
   "copilot-chat",
+  "devin-chat",
 ] satisfies TerminalToolType[];
 type ChatSessionToolType = (typeof CHAT_SESSION_TOOL_TYPES)[number];
 
@@ -5139,6 +5140,7 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
   if (toolType === "kimi" || toolType === "kimi-chat") return "kimi";
   if (toolType === "grok" || toolType === "grok-chat") return "grok";
   if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
+  if (toolType === "devin" || toolType === "devin-chat") return "devin";
   return "codex";
 }
 
@@ -5152,6 +5154,7 @@ function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
   if (provider === "kimi") return "kimi-chat";
   if (provider === "grok") return "grok-chat";
   if (provider === "copilot") return "copilot-chat";
+  if (provider === "devin") return "devin-chat";
   return "codex-chat";
 }
 
@@ -43168,6 +43171,8 @@ export function createAgentChatService(args: {
   const devinCloudSyncedAttachmentIds = new Map<string, Set<string>>();
   /** Sessions whose needs-you marker this mirror raised (so it can clear it without touching others'). */
   const devinCloudAttentionRaised = new Set<string>();
+  /** ADE sessions with a Devin cloud REST send in flight — the busy flag a runtime-less chat cannot carry. */
+  const devinCloudSendInFlight = new Set<string>();
 
   const forgetDevinCloudHydrationState = (sessionId: string): void => {
     devinCloudHydratedEventIds.delete(sessionId);
@@ -43238,9 +43243,14 @@ export function createAgentChatService(args: {
     for (const attachment of attachments) {
       if (attachment.source !== "devin") continue;
       if (seen.has(attachment.attachmentId)) continue;
-      seen.add(attachment.attachmentId);
       const extension = attachment.name.toLowerCase().split(".").pop() ?? "";
-      if (!DEVIN_PROOF_IMPORTABLE_EXTENSIONS.has(extension)) continue;
+      // Unsupported types never change — mark them seen immediately, but a
+      // supported type only counts as synced once ingest actually succeeds,
+      // so a transient download or write failure retries on the next tick.
+      if (!DEVIN_PROOF_IMPORTABLE_EXTENSIONS.has(extension)) {
+        seen.add(attachment.attachmentId);
+        continue;
+      }
       try {
         const bytes = await aiIntegrationService.downloadDevinCloudAttachment(attachment);
         if (!bytes?.length) continue;
@@ -43257,6 +43267,7 @@ export function createAgentChatService(args: {
           }],
           owners: [{ kind: "chat_session", id: managed.session.id }],
         });
+        seen.add(attachment.attachmentId);
       } catch (error) {
         logger.warn("agent_chat.devin_cloud_attachment_sync_failed", {
           sessionId: managed.session.id,
@@ -43528,6 +43539,29 @@ export function createAgentChatService(args: {
         }
       }
     }
+    if (!managed) {
+      // A link created before this process started is invisible in
+      // managedSessions; check persisted state before minting a duplicate
+      // chat for the same Devin session.
+      try {
+        const rows = sessionService.list({
+          limit: 500,
+          toolTypes: CHAT_SESSION_TOOL_TYPES,
+        });
+        for (const row of rows) {
+          if (!isChatToolType(row.toolType)) continue;
+          const persisted = readPersistedState(row.id);
+          if (normalizeDevinSessionId(persisted?.devinSessionId ?? "") !== trimmedDevin) continue;
+          managed = ensureManagedSession(row.id);
+          break;
+        }
+      } catch (error) {
+        logger.warn("agent_chat.devin_cloud_link_lookup_failed", {
+          devinSessionId: trimmedDevin,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     const existedBefore = Boolean(managed);
     if (!managed) {
@@ -43593,8 +43627,15 @@ export function createAgentChatService(args: {
     if (!getDevinCloudApiKey()) {
       throw new Error("Devin Cloud requires a Devin API token. Add one in Settings > AI Providers or set DEVIN_API_KEY.");
     }
-    const validation = validateSessionReadyForTurn(managed);
-    if (!validation.ready) throw new Error(validation.reason);
+    // Cloud-linked chats carry no local runtime — sends go over REST — so the
+    // shared readiness gate would reject every turn on "No runtime
+    // initialized". The cloud check keeps the parts that still apply:
+    // disposal, pending input, and one send at a time.
+    if (managed.closed) throw new Error("Session is disposed");
+    if (hasLivePendingInput(managed)) throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+    if (devinCloudSendInFlight.has(managed.session.id)) {
+      throw new Error("Turn already active");
+    }
 
     const turnId = args.turnId ?? randomUUID();
     const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
@@ -43615,6 +43656,7 @@ export function createAgentChatService(args: {
       turnStatus: "started",
       turnId,
     });
+    devinCloudSendInFlight.add(managed.session.id);
     try {
       await aiIntegrationService.sendDevinCloudMessage({
         devinSessionId,
@@ -43634,16 +43676,22 @@ export function createAgentChatService(args: {
         runtime: "cloud",
         terminalReason: error instanceof Error ? error.message : String(error),
       });
+      markSessionIdleWithFreshCache(managed);
       persistChatState(managed);
       throw error;
+    } finally {
+      devinCloudSendInFlight.delete(managed.session.id);
     }
     // The user_message emitted above already carries this text's fingerprint,
-    // so the next poll's copy of it dedupes silently.
+    // so the next poll's copy of it dedupes silently. The local turn ends at
+    // REST delivery — the remote turn's life is tracked by the mirror, not by
+    // this session's active flag.
     emitChatEvent(managed, {
       type: "status",
       turnStatus: "completed",
       turnId,
     });
+    markSessionIdleWithFreshCache(managed);
     persistChatState(managed);
   };
 

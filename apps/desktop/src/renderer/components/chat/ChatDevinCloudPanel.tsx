@@ -2,7 +2,6 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import {
   ArrowSquareOut,
   ArrowsClockwise,
-  CloudArrowUp,
   Desktop,
 } from "@phosphor-icons/react";
 
@@ -14,7 +13,6 @@ import type {
 } from "../../../shared/types";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
 import {
-  DEVIN_BLUE,
   devinCloudErrorMessage,
   devinCloudModeLabel,
   devinCloudRepoLabel,
@@ -23,6 +21,7 @@ import {
   repoMatchKey,
 } from "../../lib/devinCloudUtils";
 import { cn } from "../ui/cn";
+import { DevinLogo } from "../shared/ProviderLogos";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
 const TERMINAL_STATUSES: ReadonlySet<DevinCloudFleetStatus> = new Set([
@@ -209,7 +208,7 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <CloudArrowUp size={14} weight="fill" style={{ color: DEVIN_BLUE }} />
+          <DevinLogo size={14} className="rounded-[3px]" />
           <span className="font-sans text-[12px] font-medium text-fg/80">Devin Cloud sessions</span>
           {refreshing ? (
             <ArrowsClockwise size={10} weight="bold" className="animate-spin text-fg/30" />

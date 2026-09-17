@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Diamond } from "@phosphor-icons/react";
 
 import type { DevinCloudAuthStatus } from "../../../shared/types";
+import devinMark from "../../assets/provider-logos/devin.svg";
 import { useAppStore } from "../../state/appStore";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-import { DEVIN_BLUE } from "../../lib/devinCloudUtils";
 import { DevinCloudFleetModal } from "./DevinCloudFleetModal";
 
 // Keep the entry point on the same visibility cadence as Linear and Cursor.
@@ -78,7 +77,7 @@ export function DevinCloudQuickViewButton({
   variant = "icon",
   onMenuActivate,
 }: {
-  variant?: "icon" | "menu-row" | "sidebar-row";
+  variant?: "icon" | "menu-row";
   onMenuActivate?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
@@ -210,13 +209,14 @@ export function DevinCloudQuickViewButton({
     onMenuActivate?.();
   };
 
-  const iconSize = variant === "menu-row" ? 12 : variant === "sidebar-row" ? 15 : 12;
+  const iconSize = variant === "menu-row" ? 12 : 13;
   const icon = (
-    <Diamond
-      size={iconSize}
-      weight="fill"
-      style={{ color: DEVIN_BLUE }}
+    <img
+      src={devinMark}
+      alt=""
       aria-hidden
+      className="rounded-[3px]"
+      style={{ width: iconSize, height: iconSize }}
     />
   );
 
@@ -233,22 +233,13 @@ export function DevinCloudQuickViewButton({
         data-state={open ? "open" : undefined}
         className={variant === "menu-row"
           ? HEADER_STATUS_MENU_ROW_CLASS
-          : variant === "sidebar-row"
-            ? `ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100${open ? " bg-white/[0.08]" : ""}`
-            : "ade-shell-control relative inline-flex h-[20px] w-[20px] items-center justify-center transition-[background-color,color,border-color,box-shadow] duration-150"}
+          : "ade-shell-control relative inline-flex h-[20px] w-[20px] items-center justify-center transition-[background-color,color,border-color,box-shadow] duration-150"}
         style={{
           WebkitAppRegion: "no-drag",
-          color: open ? "#93C5FD" : undefined,
         } as React.CSSProperties}
         onClick={handleToggle}
       >
-        {variant === "sidebar-row" ? (
-          <span className="ade-shell-sidebar-icon-slot flex shrink-0 items-center justify-center">
-            {icon}
-          </span>
-        ) : (
-          icon
-        )}
+        {icon}
         {variant !== "icon" ? <span className="ade-tab-label min-w-0 flex-1 truncate">Devin Cloud</span> : null}
       </button>
       {open ? createPortal(

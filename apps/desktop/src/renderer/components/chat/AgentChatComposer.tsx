@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, Diamond, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -130,7 +130,7 @@ import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { VoiceDictationButton } from "./VoiceDictationButton";
-import { ProviderLogo } from "../shared/ProviderLogos";
+import { ProviderLogo, DevinLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
@@ -6123,7 +6123,7 @@ export function AgentChatComposer({
                   ? [{
                       id: "devin-cloud-panel",
                       label: devinCloudPaneOpen ? "Close Devin Cloud sessions" : "Open Devin Cloud sessions",
-                      icon: <Diamond size={14} weight={devinCloudPaneOpen ? "fill" : "regular"} />,
+                      icon: <DevinLogo size={14} />,
                       active: devinCloudPaneOpen,
                       onSelect: onToggleDevinCloudPanel,
                     }]
