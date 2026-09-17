@@ -602,7 +602,7 @@ describe("ModelPicker", () => {
   it("gives every row one line of detail under the name", async () => {
     const user = userEvent.setup();
     render(
-      <ModelPicker value={SONNET.id} onChange={vi.fn()} surfaceKey="test" models={[SONNET, OPUS]} />,
+      <ModelPicker value={SONNET.id} onChange={vi.fn()} models={[SONNET, OPUS]} />,
     );
     await user.click(screen.getByRole("button", { name: /Select model/i }));
 
@@ -618,7 +618,7 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={OPENCODE_MODEL.id}
         onChange={vi.fn()}
-        surfaceKey="test"
+        
         models={[OPENCODE_MODEL]}
       />,
     );
@@ -635,7 +635,7 @@ describe("ModelPicker", () => {
     // the provider entirely.
     const routeless: ModelDescriptor = { ...PI_MODEL, providerRoute: "openai-responses" };
     render(
-      <ModelPicker value={routeless.id} onChange={vi.fn()} surfaceKey="test" models={[routeless]} />,
+      <ModelPicker value={routeless.id} onChange={vi.fn()} models={[routeless]} />,
     );
     await user.click(screen.getByRole("button", { name: /Select model/i }));
 
