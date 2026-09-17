@@ -32,6 +32,7 @@ import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/ut
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../desktop/src/shared/types/computerUseArtifacts";
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
@@ -5091,6 +5092,10 @@ async function runTool(args: {
           ownerKind: owner.kind,
           ownerId: owner.id,
           kind,
+          // Proof only. A scene still is the picture a generated view left
+          // behind and is already shown inline in the transcript that drew it;
+          // an agent reading this list is asking what evidence exists.
+          ...PROOF_LISTING_ARTIFACT_FILTER,
           limit,
         })) {
           artifacts.set(artifact.id, artifact);
@@ -5116,6 +5121,8 @@ async function runTool(args: {
         ownerKind: requestedOwnerKind as any,
         ownerId: requestedOwnerId,
         kind: asOptionalTrimmedString(toolArgs.kind) as any,
+        // Same exclusion as the scoped branch above, for the same reason.
+        ...PROOF_LISTING_ARTIFACT_FILTER,
         limit: asNumber(toolArgs.limit, 50),
       }),
     };

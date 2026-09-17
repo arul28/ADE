@@ -4,7 +4,7 @@ import nodePath from "node:path";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { isPathInside } from "../shared/pathCompare";
-import { fileSceneStill } from "./sceneStillFiling";
+import { fileSceneStill } from "./sceneStills";
 
 type ComputerUseArtifactBroker = NonNullable<AdeRuntime["computerUseArtifactBrokerService"]>;
 type AgentChatService = AdeRuntime["agentChatService"];
@@ -13,6 +13,16 @@ export type IngestSceneSnapshotArgs = {
   projectRoot: string;
   broker: ComputerUseArtifactBroker;
   agentChatService: AgentChatService | null;
+  /**
+   * The chat a LIVE call is running on, asked by call id.
+   *
+   * A scene drawn on a call is filed from the voice HUD, which is mounted at
+   * the shell of a desktop window and sits outside every chat scope — so the
+   * caller often cannot name the owning chat, and when it can it is still a
+   * renderer. This is the side that owns the call, so it answers from the call
+   * itself. Null for any id that is not the call that is actually up.
+   */
+  resolveVoiceCallSessionId?: ((callId: string) => string | null) | null;
   args?: {
     path?: unknown;
     title?: unknown;
@@ -51,6 +61,7 @@ export async function ingestSceneSnapshot({
   projectRoot,
   broker,
   agentChatService,
+  resolveVoiceCallSessionId,
   args,
 }: IngestSceneSnapshotArgs): Promise<{
   filed: boolean;
@@ -64,6 +75,14 @@ export async function ingestSceneSnapshot({
 }> {
   const rawPath = typeof args?.path === "string" ? args.path.trim() : "";
   if (!rawPath) throw new Error("path is required.");
+  // The PRESENCE of a scope key is what tells a still from the Proof button,
+  // so a blank one is not a still with no identity — it is a still that would
+  // be filed as evidence. Refused rather than guessed at, which is the same
+  // answer the in-process path gives before it writes any bytes at all.
+  if (args?.sceneScopeKey !== undefined
+    && !(typeof args.sceneScopeKey === "string" && args.sceneScopeKey.trim().length)) {
+    throw new Error("A scene still needs a scene scope key.");
+  }
   const artifactsRoot = nodePath.resolve(
     nodePath.join(resolveAdeLayout(projectRoot).artifactsDir, "computer-use"),
   );
@@ -112,6 +131,14 @@ export async function ingestSceneSnapshot({
     if (found) ownerSessionId = claimed;
   }
 
+  const voiceCallId = typeof args?.voiceCallId === "string" ? args.voiceCallId.trim() : "";
+  // Second, and only second: a caller that named a chat this project knows has
+  // already been believed. This covers the caller that could not name one —
+  // the voice HUD, which draws outside every chat scope — by asking the call.
+  if (!ownerSessionId && voiceCallId && resolveVoiceCallSessionId) {
+    ownerSessionId = resolveVoiceCallSessionId(voiceCallId);
+  }
+
   const sceneScopeKey = typeof args?.sceneScopeKey === "string" ? args.sceneScopeKey.trim() : "";
   if (sceneScopeKey) {
     // A still, not proof. Same jail, same owner resolution, different record:
@@ -124,7 +151,7 @@ export async function ingestSceneSnapshot({
       title,
       ownerSessionId,
       sceneScopeKey,
-      voiceCallId: typeof args?.voiceCallId === "string" ? args.voiceCallId : null,
+      voiceCallId,
     });
     return { filed: true, ownerSessionId, artifactId: still.artifactId };
   }

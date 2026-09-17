@@ -11,6 +11,7 @@ import {
   rememberSceneStill,
   resetSceneStillsForTest,
   sceneStillSrc,
+  useSessionStillsReady,
   useCallStills,
   useSceneStillRecord,
 } from "./sceneStillStore";
@@ -55,6 +56,12 @@ afterEach(() => {
 function SceneProbe({ sessionId, scopeKey }: { sessionId: string | null; scopeKey: string }) {
   const still = useSceneStillRecord(sessionId, scopeKey);
   return <div data-testid="probe">{still?.record?.uri ?? "none"}</div>;
+}
+
+/** Whether the chat's stills are KNOWN yet, which is the reset seam's business. */
+function ReadyProbe({ sessionId, scopeKey }: { sessionId: string | null; scopeKey: string }) {
+  useSceneStillRecord(sessionId, scopeKey);
+  return <div data-testid="probe">{useSessionStillsReady(sessionId) ? "ready" : "waiting"}</div>;
 }
 
 function CallProbe({ sessionId, callId }: { sessionId: string | null; callId: string }) {
@@ -122,7 +129,7 @@ describe("scene stills", () => {
       expect(bridge.listArtifacts.mock.calls[0]?.[0]).toMatchObject({
         ownerKind: "chat_session",
         ownerId: "chat-1",
-        metadataKinds: ["scene_still"],
+        metadataKind: "scene_still",
       });
     });
 
@@ -150,6 +157,38 @@ describe("scene stills", () => {
       });
       render(<CallProbe sessionId="chat-3" callId="call-7" />);
       await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("First,Second"));
+    });
+
+    /**
+     * The reset seam has to forget the ANSWER as well as the question.
+     *
+     * `settledSessions` left behind meant the next suite's first render saw a
+     * chat whose stills were already "known" to be none — so a component that
+     * should have waited for the broker decided not to, without anyone having
+     * asked it anything.
+     */
+    it("forgets that a chat was already asked when the seam is reset", async () => {
+      const first = stubSceneCaptureBridge({
+        artifacts: [stillArtifact({
+          id: "a5",
+          uri: ".ade/artifacts/computer-use/reset.png",
+          sceneScopeKey: "row-reset",
+        })],
+      });
+      const view = render(<ReadyProbe sessionId="chat-reset" scopeKey="row-reset" />);
+      await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("ready"));
+      expect(first.listArtifacts).toHaveBeenCalledTimes(1);
+
+      view.unmount();
+      resetSceneStillsForTest();
+
+      // A read that never answers, so "ready" can only come from a stale set.
+      const second = stubSceneCaptureBridge({});
+      (window as unknown as { ade: { computerUse: { listArtifacts: unknown } } })
+        .ade.computerUse.listArtifacts = vi.fn(() => new Promise(() => {}));
+      render(<ReadyProbe sessionId="chat-reset" scopeKey="row-reset" />);
+      await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("waiting"));
+      expect(second.listArtifacts).not.toHaveBeenCalled();
     });
 
     /** A picture this window captured beats the same row read back off disk. */

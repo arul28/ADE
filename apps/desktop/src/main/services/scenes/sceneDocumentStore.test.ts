@@ -272,4 +272,70 @@ describe("ingesting a scene snapshot", () => {
     expect(stranger).toEqual({ filed: true, ownerSessionId: null, artifactId: null });
     expect(filed.at(-1)?.owners).toBeUndefined();
   });
+
+  /**
+   * The one caller that genuinely cannot name its chat: the voice HUD is
+   * mounted at the shell, outside every chat scope. This side owns the call,
+   * so it answers from the call itself rather than filing the picture unowned
+   * — which is what skipped both disk bounds and emptied the finished call's
+   * "Views drawn" section.
+   */
+  it("resolves a call still's owner from the live call when the caller named none", async () => {
+    const { projectRoot, artifactsRoot, filed } = createFixture();
+    const shot = writePng(artifactsRoot, "scene-call.png");
+    // An owned still is a pruned still — both bounds are scoped to the owner —
+    // so this fixture has to answer the read the bounds are held with.
+    const broker = {
+      ingest: (payload: Ingested) => { filed.push(payload); },
+      listArtifacts: () => [],
+      deleteArtifacts: () => ({ deleted: [], missing: [], failed: [] }),
+    } as never;
+
+    const result = await ingestSceneSnapshot({
+      projectRoot,
+      broker,
+      agentChatService: null,
+      resolveVoiceCallSessionId: (callId) => (callId === "call-9" ? "cto-session-1" : null),
+      args: { path: shot, sceneScopeKey: "call-9", voiceCallId: "call-9" },
+    });
+
+    expect(result.ownerSessionId).toBe("cto-session-1");
+    expect(filed.at(-1)?.owners).toEqual([{ kind: "chat_session", id: "cto-session-1" }]);
+    expect(filed.at(-1)?.inputs[0]?.metadata).toMatchObject({
+      kind: "scene_still",
+      sceneScopeKey: "call-9",
+      voiceCallId: "call-9",
+    });
+
+    // A call that is not the one that is up gets nothing: the id comes from a
+    // renderer, and this is the check that makes it safe to read.
+    const stale = await ingestSceneSnapshot({
+      projectRoot,
+      broker,
+      agentChatService: null,
+      resolveVoiceCallSessionId: (callId) => (callId === "call-9" ? "cto-session-1" : null),
+      args: { path: shot, sceneScopeKey: "call-1", voiceCallId: "call-1" },
+    });
+    expect(stale.ownerSessionId).toBeNull();
+    expect(filed.at(-1)?.owners).toBeUndefined();
+  });
+
+  /**
+   * The PRESENCE of a scope key is what tells a still from the Proof button on
+   * this side, so a blank one is not an anonymous still — it is a still about
+   * to be filed as evidence. The desktop refuses the same call before it
+   * writes any bytes; this is the other half of that agreement.
+   */
+  it("refuses a still whose scope key is blank rather than filing it as proof", async () => {
+    const { projectRoot, artifactsRoot, filed, broker } = createFixture();
+    const shot = writePng(artifactsRoot, "scene-blank.png");
+
+    await expect(ingestSceneSnapshot({
+      projectRoot,
+      broker,
+      agentChatService: null,
+      args: { path: shot, sceneScopeKey: "   ", voiceCallId: "call-9" },
+    })).rejects.toThrow(/scene scope key/);
+    expect(filed).toHaveLength(0);
+  });
 });

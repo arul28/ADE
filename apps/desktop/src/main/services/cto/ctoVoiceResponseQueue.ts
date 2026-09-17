@@ -65,9 +65,6 @@ export function createResponseQueue(deps: {
    */
   let inflight: CtoVoiceQueuedResponse | null = null;
 
-  /** Whether the entry in flight is one a turn's timing record may be closed by. */
-  let inflightTimed = true;
-
   /** True when the response in flight is one ADE created out-of-band. */
   let activeIsOurs = false;
   /** Set on the send, read on `response.created`: the two are a round trip apart. */
@@ -100,7 +97,6 @@ export function createResponseQueue(deps: {
   const clearInflight = (): void => {
     active = false;
     inflight = null;
-    inflightTimed = true;
     // The id belongs to the response that just ended, and a cancel waiting for
     // an id that will never arrive would fire at whatever is next.
     activeId = null;
@@ -115,7 +111,6 @@ export function createResponseQueue(deps: {
     if (next === undefined) return;
     active = true;
     inflight = next;
-    inflightTimed = next.kind === "ade" || next.timed;
     if (next.kind === "ade") {
       pendingOurs = true;
       deps.send({
@@ -162,12 +157,15 @@ export function createResponseQueue(deps: {
       if (timed) deps.onQueued?.();
       // A second one buys nothing: the model reads everything in the
       // conversation when it generates, so two would say the same thing twice.
-      const queued = queue.find((entry) => entry.kind === "model");
+      const queued = queue.find(
+        (entry): entry is Extract<CtoVoiceQueuedResponse, { kind: "model" }> =>
+          entry.kind === "model",
+      );
       if (queued) {
         // An untimed entry already waiting is upgraded rather than skipped: the
         // one response that goes out will carry a real answer, and a turn whose
         // answer rode out on it must still be measured.
-        if (timed && queued.kind === "model") queued.timed = true;
+        if (timed) queued.timed = true;
         return;
       }
       queue.push({ kind: "model", timed });
@@ -183,7 +181,12 @@ export function createResponseQueue(deps: {
      * is most of a hybrid call and is exactly the case the hybrid's timing line
      * exists to measure.
      */
-    countsForTurnTiming: (): boolean => (inflight === null ? true : inflightTimed),
+    // Read off the entry in flight rather than mirrored into a flag beside it:
+    // the entry already carries the answer, and a second copy is one more thing
+    // for a teardown to forget to clear.
+    countsForTurnTiming: (): boolean => (
+      inflight === null || inflight.kind === "ade" || inflight.timed
+    ),
 
     /** The socket is open; anything queued before it was can go now. */
     drain,

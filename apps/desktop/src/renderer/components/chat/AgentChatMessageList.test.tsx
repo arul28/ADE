@@ -6040,7 +6040,7 @@ describe("AgentChatMessageList voice calls", () => {
       expect(bridge.listArtifacts.mock.calls[0]?.[0]).toMatchObject({
         ownerKind: "chat_session",
         ownerId: "chat-1",
-        metadataKinds: ["scene_still"],
+        metadataKind: "scene_still",
       });
     } finally {
       resetSceneStillsForTest();

@@ -56,7 +56,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import type { SceneStillRecord } from "../../../shared/chatScene";
+import { sceneRowIdentity, type SceneStillRecord } from "../../../shared/chatScene";
 import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
@@ -2388,7 +2388,10 @@ function VoiceCallStill({
   className: string;
   testId: string;
 }) {
-  const src = useSceneStillSrc(still);
+  // Wrapped at the call site: a call's record has no in-memory data URL of its
+  // own, and a hook that sniffed a union for one made every caller's intent
+  // invisible at the point it was written.
+  const src = useSceneStillSrc({ dataUrl: null, record: still });
   if (!src) return null;
   return <img src={src} alt={still.title} data-testid={testId} className={className} />;
 }
@@ -2827,6 +2830,12 @@ function renderEvent(
             onOpenWorkspacePath={options?.onOpenWorkspacePath}
             mosaic={options?.mosaic}
             mosaicScopeKey={envelope.key}
+            // NOT the render key. A scene's still is filed on disk under this
+            // and looked up again on every reopen, and the render key carries
+            // the event's index in the events array — so prepending an older
+            // page moved it, the lookup missed, and the scene ran again and
+            // filed a second picture. See `sceneRowIdentity`.
+            sceneScopeKey={sceneRowIdentity(event, envelope.key)}
             // This row's OWN turn, not the session's. `sessionTurnActive` is
             // true for every row in the transcript while any turn runs, so a
             // scene drawn three turns ago came back to life — and re-executed

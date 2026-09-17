@@ -160,18 +160,35 @@ export type ComputerUseArtifactListArgs = {
   ownerId?: string | null;
   kind?: ComputerUseArtifactKind | null;
   /**
-   * Keep only artifacts whose `metadata.kind` is one of these. The scene-still
-   * index is the caller: it wants its own pictures and nothing else, and it
-   * must not be crowded out of a limit by ordinary proof.
+   * Keep only artifacts with this `metadata.kind`. The scene-still index is the
+   * caller: it wants its own pictures and nothing else, and it must not be
+   * crowded out of a limit by ordinary proof.
+   *
+   * Scalar, like `kind` above and for the same reason: the tag is one value per
+   * artifact, and a list over a one-member union bought nothing but a
+   * normalizer and a cast at every call site.
    */
-  metadataKinds?: ComputerUseArtifactMetadataKind[] | null;
+  metadataKind?: ComputerUseArtifactMetadataKind | null;
   /**
-   * Drop artifacts whose `metadata.kind` is one of these. Every proof surface
-   * passes `["scene_still"]` — see {@link ComputerUseArtifactMetadataKind}.
+   * Drop artifacts with this `metadata.kind`. Every proof surface passes
+   * `"scene_still"` — see {@link PROOF_LISTING_ARTIFACT_FILTER}.
    */
-  excludeMetadataKinds?: ComputerUseArtifactMetadataKind[] | null;
+  excludeMetadataKind?: ComputerUseArtifactMetadataKind | null;
   limit?: number;
 };
+
+/**
+ * What a PROOF listing asks for: everything except the scene stills.
+ *
+ * One object rather than the literal repeated at every listing surface. A
+ * surface that forgets it shows the user pictures a generated view left behind
+ * as though someone had chosen to keep them as evidence, and the drawer, the
+ * CTO's own tools, the agent RPC and search would each have had to remember
+ * separately.
+ */
+export const PROOF_LISTING_ARTIFACT_FILTER: {
+  readonly excludeMetadataKind: ComputerUseArtifactMetadataKind;
+} = { excludeMetadataKind: SCENE_STILL_METADATA_KIND };
 
 export type ComputerUseArtifactDeleteArgs = {
   artifactId?: string | null;

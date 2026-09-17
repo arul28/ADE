@@ -21,6 +21,7 @@ import type {
   TestRunSummary,
   TestSuiteDefinition,
 } from "../../../../shared/types";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../../shared/types";
 import type { IssueTracker } from "../../cto/issueTracker";
 import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
@@ -2311,6 +2312,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           kind: kind ?? null,
           ownerKind: ownerKind ?? undefined,
           ownerId: ownerId ?? undefined,
+          // This tool lists PROOF. A scene still is the picture a generated
+          // view left behind — the CTO drew it itself, moments ago — so
+          // offering it back as evidence is the CTO citing its own drawing.
+          ...PROOF_LISTING_ARTIFACT_FILTER,
           limit,
         });
         return {

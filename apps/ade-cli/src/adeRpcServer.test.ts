@@ -1431,6 +1431,11 @@ describe("adeRpcServer", () => {
 
     const listed = await callTool(handler, "list_computer_use_artifacts", {});
     expect(listed.structuredContent.artifacts).toEqual([owned]);
+    // This tool lists PROOF. A scene still is the picture a generated view left
+    // behind, already shown inline in the transcript that drew it, so it is not
+    // an answer to "what evidence exists".
+    expect(fixture.runtime.computerUseArtifactBrokerService.listArtifacts)
+      .toHaveBeenCalledWith(expect.objectContaining({ excludeMetadataKind: "scene_still" }));
 
     const foreignList = await callTool(handler, "list_computer_use_artifacts", {
       ownerKind: "chat_session",
@@ -1513,6 +1518,9 @@ describe("adeRpcServer", () => {
 
     const listed = await callTool(standaloneHandler, "list_computer_use_artifacts", {});
     expect(listed.structuredContent.artifacts).toEqual(artifacts);
+    // Same exclusion on the project-wide branch as on the scoped one.
+    expect(standaloneFixture.runtime.computerUseArtifactBrokerService.listArtifacts)
+      .toHaveBeenCalledWith(expect.objectContaining({ excludeMetadataKind: "scene_still" }));
 
     await callTool(standaloneHandler, "delete_computer_use_artifacts", {
       artifactId: "proof-2",

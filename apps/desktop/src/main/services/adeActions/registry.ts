@@ -1216,11 +1216,18 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
       path?: unknown;
       title?: unknown;
       sessionId?: unknown;
-    }): Promise<{ filed: boolean; ownerSessionId: string | null }> =>
+      sceneScopeKey?: unknown;
+      voiceCallId?: unknown;
+    }): Promise<{ filed: boolean; ownerSessionId: string | null; artifactId: string | null }> =>
       ingestSceneSnapshot({
         projectRoot: runtime.projectRoot,
         broker,
         agentChatService: runtime.agentChatService ?? null,
+        // The call brain lives in THIS process on a runtime-backed build, so
+        // this is the side that can say which chat a live call is on — the
+        // desktop HUD that files the still cannot.
+        resolveVoiceCallSessionId: (callId) =>
+          runtime.ctoVoiceCallService?.getCallSessionId(callId) ?? null,
         args,
       }),
   };

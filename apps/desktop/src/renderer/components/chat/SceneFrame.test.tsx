@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { MarkdownBlock } from "./chatMarkdownBlock";
-import { SceneFrame } from "./SceneFrame";
+import { SceneFrame, SCENE_STILL_INDEX_WAIT_MS } from "./SceneFrame";
 import { readSceneStill, rememberSceneStill, resetSceneStillsForTest } from "./sceneStillStore";
 import {
   postSceneMessage,
@@ -526,6 +526,76 @@ describe("SceneFrame", () => {
       expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
       expect(bridge.readArtifactPreview.mock.calls[0]?.[0])
         .toMatchObject({ uri: ".ade/artifacts/computer-use/remote.png" });
+    });
+  });
+
+  /**
+   * What a SETTLED mount does while it does not yet know whether it has a
+   * picture. Getting this wrong is visible either way: decide too early and a
+   * generated view re-runs on every reopen, decide too late — or never — and
+   * the user reads a blank box where a chart was.
+   */
+  describe("deciding whether to run or to show a picture", () => {
+    beforeEach(() => {
+      stubShellRect();
+      stubSceneCaptureBridge();
+    });
+
+    /**
+     * Reasoning and plan-approval bodies render markdown with no scope key at
+     * all. The index is keyed BY that key, so there was never an answer coming
+     * — and the latch waited for one forever, leaving a permanently blank box.
+     */
+    it("runs a settled scene immediately when there is no scope key to look up", async () => {
+      render(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
+    });
+
+    /**
+     * A record is not a picture. A still whose bytes cannot be resolved on this
+     * machine draws nothing, and latching on the record alone rehydrated to an
+     * empty frame that never ran and never showed anything.
+     */
+    it("runs the scene when the stored still resolves to no picture at all", async () => {
+      rememberSceneStill("row-unresolvable", {
+        // Absolute paths never resolve through `ade-artifact://project/`.
+        record: { uri: "/somewhere/else/old.png", artifactId: "a12", title: "Merged PRs" },
+      });
+      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-unresolvable" />);
+      expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
+      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
+    });
+
+    /**
+     * The index read is an IPC round trip whose only bound is the 30 s call
+     * budget on a remote chat, and every settled scene in the transcript sat on
+     * a placeholder for all of it. Past the local deadline the mount runs the
+     * scene; a picture that arrives afterwards still replaces the frozen frame.
+     */
+    it("stops waiting for a slow index and runs the scene", async () => {
+      vi.useFakeTimers();
+      try {
+        stubSceneCaptureBridge({});
+        // Never answers: the read is in flight for the whole test.
+        (window as unknown as { ade: { computerUse: { listArtifacts: unknown } } })
+          .ade.computerUse.listArtifacts = vi.fn(() => new Promise(() => {}));
+        render(
+          <ChatRuntimeScopeProvider
+            pin={REMOTE_BINDING}
+            binding={REMOTE_BINDING}
+            laneId={null}
+            sessionId="chat-slow"
+          >
+            <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-slow" />
+          </ChatRuntimeScopeProvider>,
+        );
+        expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(SCENE_STILL_INDEX_WAIT_MS + 50); });
+        expect(screen.getByTestId("chat-scene-frame")).toBeTruthy();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

@@ -48,6 +48,7 @@ beforeEach(() => {
     ...CTO_VOICE_INITIAL_STATE,
     phase: "listening",
     callId: "call-7",
+    sessionId: "cto-session-1",
     sceneSource: '<div id="n">3</div>',
     isCallOwner: true,
   };
@@ -82,6 +83,12 @@ describe("CtoVoiceHudHost", () => {
     expect(bridge.storeStill.mock.calls[0]?.[0]).toMatchObject({
       scopeKey: "call-7",
       voiceCallId: "call-7",
+      // The OWNER, and the reason the call state carries a session id at all.
+      // This host is mounted at the shell, outside every `ChatRuntimeScope`,
+      // so the frame's own scope answers null: the still was filed with no
+      // owner, which skips both disk bounds and leaves the finished call's
+      // "Views drawn" section — an owner query — with nothing to find.
+      sessionId: "cto-session-1",
     });
     // ...and a copy in this window, so the card does not wait for a round trip.
     await waitFor(() => expect(readCallStills("call-7")).toHaveLength(1));

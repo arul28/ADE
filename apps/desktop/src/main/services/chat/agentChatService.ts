@@ -454,6 +454,7 @@ import type {
   SessionLinearIssueLink,
   CursorCloudServiceTier,
 } from "../../../shared/types";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import {
   applyClaudePlanModeTransition as applyClaudePlanModeTransitionShared,
   isSessionInPlanMode,
@@ -19987,6 +19988,9 @@ export function createAgentChatService(args: {
     if (artifactBroker) {
       services.listProofArtifacts = async (args): Promise<OrchestrationLeadReadResult> => {
         const artifacts = artifactBroker.listArtifacts({
+          // Proof only: a scene still is a picture the transcript already
+          // shows inline, not something anyone chose to keep as evidence.
+          ...PROOF_LISTING_ARTIFACT_FILTER,
           ...(args.limit ? { limit: args.limit } : {}),
         });
         return { ok: true, artifacts };

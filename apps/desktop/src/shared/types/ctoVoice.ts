@@ -20,7 +20,6 @@
  * out loud, and that gate is a hold in code rather than a sentence in a prompt.
  */
 
-
 /**
  * The realtime model the call speaks with.
  *
@@ -434,6 +433,18 @@ export const CTO_VOICE_MICROPHONE_BLOCK_KINDS: readonly CtoVoiceMicrophoneBlockK
   "unavailable",
 ];
 
+/**
+ * Narrow an unknown to one of the kinds above.
+ *
+ * Here rather than at the IPC edge because the union and the list are here: the
+ * edge was casting an unknown to the union just to ask the list whether it was
+ * one, which type-checks whatever it is handed.
+ */
+export function isCtoVoiceMicrophoneBlockKind(value: unknown): value is CtoVoiceMicrophoneBlockKind {
+  return typeof value === "string"
+    && (CTO_VOICE_MICROPHONE_BLOCK_KINDS as readonly string[]).includes(value);
+}
+
 /** The title every microphone failure is shown under. */
 export const CTO_VOICE_MICROPHONE_BLOCK_TITLE = "ADE cannot use the microphone";
 
@@ -614,7 +625,6 @@ export type CtoVoiceConfirmation = {
 /** A spoken yes is only honoured inside this window after the CTO asked. */
 export const CTO_VOICE_SPOKEN_CONFIRM_WINDOW_MS = 20_000;
 
-
 /**
  * What a mid-call capture says when the user sent no note of their own.
  *
@@ -675,6 +685,16 @@ export type CtoVoiceState = {
   pendingConfirmation: CtoVoiceConfirmation | null;
   /** Scene source the call most recently drew, if any. */
   sceneSource: string | null;
+  /**
+   * The CTO chat session this call is running on.
+   *
+   * On the state because the HUD is mounted at the shell, OUTSIDE any chat
+   * scope: a scene drawn on a call had no session to be owned by, so its still
+   * was filed with no owner — which skips both disk bounds and makes the
+   * call's own "Views drawn" section, an owner query, come back empty. Null
+   * whenever no call is up, or when the session could not be resolved.
+   */
+  sessionId: string | null;
   error: string | null;
   /**
    * What KIND of failure `error` is, when it is one with a kind.
@@ -686,7 +706,7 @@ export type CtoVoiceState = {
    * sentence against every wording of every kind, which is a join that breaks
    * silently the first time one of those sentences is reworded.
    */
-  errorKind?: CtoVoiceMicrophoneBlockKind | null;
+  errorKind: CtoVoiceMicrophoneBlockKind | null;
 };
 
 /**
@@ -714,6 +734,7 @@ export const CTO_VOICE_INITIAL_STATE: CtoVoiceState = {
   pendingUserText: null,
   pendingConfirmation: null,
   sceneSource: null,
+  sessionId: null,
   error: null,
   errorKind: null,
 };
@@ -732,7 +753,6 @@ export function formatVoiceElapsed(elapsedMs: number): string {
 export function formatVoiceCost(elapsedMs: number): string {
   return `$${voiceCostUsd(elapsedMs).toFixed(2)}`;
 }
-
 
 /**
  * How long after the last queued audio the call waits before hanging up.
@@ -797,8 +817,14 @@ export const CTO_VOICE_SCENE_FRAME_WIDTH = 380;
 export const CTO_VOICE_SCENE_FRAME_HEIGHT = 320;
 
 /**
- * How long the start sheet stays open after a capture lands, so the user can
- * read what happened before it closes itself.
+ * How long the start sheet waits for a capture verdict that has not arrived.
+ *
+ * Once the call is live the sheet waits on the capture device: `captureReady`
+ * closes it, and only the HUD host can ever set that. So this is the deadline
+ * on a verdict that never comes — a build with no HUD host, or a window that
+ * is not the call owner — not a delay after one arrives. A verdict either way
+ * closes the sheet immediately; this stops a spinner from sitting over a call
+ * the user is already having.
  *
  * Shared rather than local to the sheet because it is part of the call's
  * timing vocabulary, and the suites that drive the sheet must not hard-code a

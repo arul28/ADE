@@ -75,13 +75,22 @@ export function CtoVoiceHudHost() {
           live
           // No call id means no identity to file a still under — a fallback
           // key would put every id-less scene on top of the same picture — so
-          // the scene draws and simply leaves nothing behind.
-          {...(state.callId ? { scopeKey: state.callId, voiceCallId: state.callId } : {})}
+          // the scene draws and simply leaves nothing behind. Null, not an
+          // absent prop: the frame already refuses a still with no scope key,
+          // and a conditional spread said the same thing twice.
+          scopeKey={state.callId}
+          voiceCallId={state.callId}
+          // This host is mounted at the SHELL, outside every chat scope, so
+          // the frame has no ambient session to own the pictures it files.
+          // Without this every call still was filed unowned: both disk bounds
+          // skipped, and the call's own "Views drawn" section — an owner query
+          // — came back empty.
+          ownerSessionId={state.sessionId}
           onStill={keepStill}
         />
       </div>
     );
-  }, [state.sceneSource, state.callId, keepStill]);
+  }, [state.sceneSource, state.callId, state.sessionId, keepStill]);
 
   return (
     <CtoVoiceHud

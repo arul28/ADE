@@ -1,4 +1,4 @@
-import { SCENE_STILL_METADATA_KIND } from "../../../shared/types";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import type {
   ComputerUseArtifactKind,
   ComputerUseArtifactOwner,
@@ -80,7 +80,7 @@ export function buildComputerUseOwnerSnapshot(args: {
     // holds the record because it owns the bytes, not because anybody chose to
     // keep it as evidence. Every settled scene filing a drawer row buried real
     // proof under pictures nobody asked to save.
-    excludeMetadataKinds: [SCENE_STILL_METADATA_KIND],
+    ...PROOF_LISTING_ARTIFACT_FILTER,
   });
   const recentArtifacts = artifacts.slice(0, 5);
   const latestArtifact = recentArtifacts[0] ?? null;

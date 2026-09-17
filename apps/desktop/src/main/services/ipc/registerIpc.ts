@@ -921,7 +921,7 @@ import {
   decodeScenePngDataUrl,
   type SceneCaptureRect,
 } from "../scenes/sceneSnapshot";
-import { fileSceneStill, sceneStillFileLabel } from "../scenes/sceneStillFiling";
+import { fileSceneStill, sceneStillFileLabel } from "../scenes/sceneStills";
 import { SCENE_LIMITS, type SceneStillRecord } from "../../../shared/chatScene";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
@@ -9149,6 +9149,13 @@ export function registerIpc({
         const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
         const scopeKey = typeof arg?.scopeKey === "string" ? arg.scopeKey.trim() : "";
         const voiceCallId = typeof arg?.voiceCallId === "string" ? arg.voiceCallId.trim() : "";
+        // No scope key is no identity, and the two sides disagreed about what
+        // to do with one: in process it filed an index row nothing could ever
+        // look up, and over the runtime action the missing key is exactly what
+        // marks a call as the PROOF button — so the same still landed in the
+        // drawer as evidence. Refused here, before any bytes are written, so
+        // neither side has to guess.
+        if (!scopeKey) return null;
         // The title reaches the FILE NAME here, and a scene titles itself: see
         // `sceneStillFileLabel` for why that is clamped. The record keeps the
         // whole title; the name on disk is a label.
@@ -9169,8 +9176,16 @@ export function registerIpc({
         // written must not cost the user the picture.
         try {
           const broker = ctx.computerUseArtifactBrokerService;
+          // A scene drawn on a CALL is filed from the HUD, which is mounted at
+          // the shell and outside every chat scope — so the renderer may not
+          // know the owning chat, and when it does it is still a renderer. The
+          // call id is resolved against the call that is actually up, on this
+          // side, and only after the renderer's own claim has failed the same
+          // ownership check every other filing goes through.
           if (broker) {
-            const sessionId = await resolveSceneProofOwner(ctx, arg?.sessionId);
+            const sessionId = (await resolveSceneProofOwner(ctx, arg?.sessionId))
+              ?? ctx.ctoVoiceCallService?.getCallSessionId(voiceCallId)
+              ?? null;
             record.artifactId = fileSceneStill({
               broker,
               path: artifactPath,
@@ -9193,6 +9208,9 @@ export function registerIpc({
                 // Present only here, never on the Proof button's call: it is
                 // what tells the daemon this is a still and not proof.
                 sceneScopeKey: scopeKey,
+                // The daemon owns the call on a runtime-backed build, so it
+                // resolves the owner from this id the same way the branch
+                // above does — the renderer's claim is checked, never trusted.
                 voiceCallId,
               },
             });

@@ -4,12 +4,15 @@ import type { CtoVoiceMicrophoneBlockKind } from "../../../shared/types/ctoVoice
 import { ctoMicrophoneSettingsAction, openCtoSettingsPane } from "./ctoMicrophoneFix";
 
 /**
- * The failure line under the CTO header.
+ * The failure line under the CTO header, with the fix beside it.
  *
  * Its own module because it is not part of the button: the button decides WHEN
  * there is something to say, the page decides WHERE it is drawn — never beside
  * the button, which wrapped "Talk" onto a second line — and this decides what
- * it looks like and what can be pressed on it.
+ * it looks like and what can be pressed on it. That last part is why it is a
+ * component and not markup inside the page: this is the surface a microphone
+ * failure actually lands on, so the button that opens the right OS pane has to
+ * be part of it, and has to be testable without standing up the whole CTO page.
  */
 
 /**
@@ -27,14 +30,6 @@ export type CtoTalkNotice = {
   microphone: CtoVoiceMicrophoneBlockKind | null;
 };
 
-/**
- * The failure line under the CTO header, with the fix beside it.
- *
- * A component rather than markup inside the page because this is the surface a
- * microphone failure actually lands on, so the button that opens the right OS
- * pane has to be part of it — and has to be testable without standing up the
- * whole CTO page.
- */
 export function CtoTalkNoticeLine({ notice }: { notice: CtoTalkNotice }) {
   const action = ctoMicrophoneSettingsAction(notice.microphone);
   return (

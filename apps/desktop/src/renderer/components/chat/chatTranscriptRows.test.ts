@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
+import { sceneRowIdentity, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { prependOlderChatHistoryPage } from "./chatHistoryWindow";
 import {
   collapseChatTranscriptEvents,
@@ -29,6 +30,53 @@ function groupEvents(events: AgentChatEventEnvelope[]) {
 }
 
 describe("chatTranscriptRows", () => {
+  /**
+   * A scene's still is a FILE, named by the key derived here, looked up again
+   * on every reopen.
+   *
+   * The render key cannot be that name. It carries the event's index in the
+   * events array, so scrolling back one page — which prepends older events and
+   * shifts every index — renamed the scene. The lookup missed, the generated
+   * code ran again, and a second still was filed on disk. Every reopen did it
+   * again.
+   */
+  it("names a scene by message identity, so a prepended older page cannot move it", () => {
+    const base = { sessionId: "session-1", timestamp: "2026-09-17T10:00:00.000Z" };
+    const source = "<p>lanes</p>";
+    const sceneEvent = {
+      type: "text" as const,
+      text: "Here is the chart.",
+      messageId: "msg-scene",
+      turnId: "turn-2",
+    };
+    const windowed: AgentChatEventEnvelope[] = [
+      { ...base, sequence: 4, event: { type: "user_message", text: "draw me the lanes" } },
+      { ...base, sequence: 5, event: sceneEvent },
+    ];
+    const withOlderPage: AgentChatEventEnvelope[] = [
+      { ...base, sequence: 1, event: { type: "user_message", text: "an earlier question" } },
+      { ...base, sequence: 2, event: { type: "text", text: "an earlier answer", messageId: "msg-old" } },
+      ...windowed,
+    ];
+
+    const sceneRowIn = (events: AgentChatEventEnvelope[]) => {
+      const row = collapseChatTranscriptEvents(events)
+        .find((candidate) => candidate.event.type === "text"
+          && candidate.event.messageId === "msg-scene");
+      if (!row || row.event.type !== "text") throw new Error("the scene row went missing");
+      return { key: row.key, event: row.event };
+    };
+
+    const before = sceneRowIn(windowed);
+    const after = sceneRowIn(withOlderPage);
+
+    // The hazard itself: the same message, two render keys.
+    expect(before.key).not.toBe(after.key);
+    // And the still's name, which must not move with it.
+    expect(sceneScopeKeyFor(sceneRowIdentity(after.event, after.key), source))
+      .toBe(sceneScopeKeyFor(sceneRowIdentity(before.event, before.key), source));
+  });
+
   it("collapses duplicate semantic failures for the same turn without hiding distinct errors", () => {
     const base = {
       sessionId: "session-1",

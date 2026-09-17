@@ -308,7 +308,12 @@ export function createCtoVoiceRuntimeService(
     });
   };
 
-  const publish = (next: CtoVoiceState): void => {
+  const publish = (incoming: CtoVoiceState): void => {
+    // The call service knows the socket, not the chat. Stamped here because
+    // this is the only place that holds both, and the HUD — mounted at the
+    // shell, outside every chat scope — has no other way to learn which
+    // session owns the stills the scenes it draws leave behind.
+    const next: CtoVoiceState = { ...incoming, sessionId: callStillsSessionId };
     const wasInterrupted = state.interrupted;
     state = next;
     // The renderer flushes its own playback graph on a barge-in; this is the
@@ -395,10 +400,14 @@ export function createCtoVoiceRuntimeService(
       try {
         const laneId = await resolvePrimaryLaneId();
         const session = await agentChatService.ensureIdentitySession({ identityKey: "cto", laneId });
+        // The three ids stay distinct — they are cleared at three different
+        // moments, which is the whole reason there are three of them — but
+        // they are all set from this one session and only when confirm mode is
+        // being taken, so they are set together.
         callSessionId = confirmFirst ? session.id : null;
-        if (confirmFirst) statusLineSessionId = session.id;
-        if (confirmFirst) callStillsSessionId = session.id;
         if (confirmFirst) {
+          statusLineSessionId = session.id;
+          callStillsSessionId = session.id;
           // Narrow first, release second: the gate is never open between them.
           const scoped = beginIdentityConfirmHold(session.id);
           releaseConfirmHold?.();
@@ -850,6 +859,22 @@ export function createCtoVoiceRuntimeService(
     /** The current call state. Free to read: every window renders the HUD. */
     getState(): CtoVoiceState {
       return state;
+    },
+
+    /**
+     * The chat session a LIVE call is bound to, asked by call id.
+     *
+     * The still path is the caller. A scene drawn on a call is filed from the
+     * HUD, which sits outside every chat scope, so the owner cannot be read
+     * off the renderer's scope and must not simply be believed when the
+     * renderer names one. Asked by call id and answered only for the call that
+     * is actually up, so a stale or invented id gets null rather than the
+     * current call's session.
+     */
+    getCallSessionId(callId: string | null | undefined): string | null {
+      const id = typeof callId === "string" ? callId.trim() : "";
+      if (!id || state.callId !== id) return null;
+      return callStillsSessionId;
     },
 
     /** True when this machine has an OpenAI key a call could bill to. */

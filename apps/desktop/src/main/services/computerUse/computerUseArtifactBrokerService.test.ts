@@ -494,6 +494,36 @@ describe("computerUseArtifactBrokerService", () => {
     expect(fs.existsSync(filePath)).toBe(false);
   });
 
+  /**
+   * The reference set is read ONCE per call now, not re-scanned per id, so the
+   * one thing that has to keep holding is that a batch which removes the last
+   * reference still unlinks the bytes — the earlier deletes in the same call
+   * have to be struck off the set as they happen.
+   */
+  it("unlinks bytes a single batch removes the last reference to", () => {
+    const canonicalProjectRoot = fs.realpathSync(projectRoot);
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot: canonicalProjectRoot,
+      logger: createLogger(),
+    });
+    const first = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      inputs: [{ kind: "console_logs", title: "Batched notes", text: "hello" }],
+    }).artifacts[0]!;
+    const filePath = path.join(canonicalProjectRoot, first.uri);
+    const second = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      inputs: [{ kind: "console_logs", title: "Batched notes again", path: filePath }],
+    }).artifacts[0]!;
+
+    const result = broker.deleteArtifacts({ artifactIds: [first.id, second.id] });
+
+    expect(result.deleted.map((row) => row.fileRemoved)).toEqual([false, true]);
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
   it("keeps shared stored bytes when surviving records use an equivalent URI spelling", () => {
     const canonicalProjectRoot = fs.realpathSync(projectRoot);
     const broker = createComputerUseArtifactBrokerService({
@@ -1198,7 +1228,7 @@ describe("computerUseArtifactBrokerService", () => {
       const listed = broker.listArtifacts({
         ownerKind: "chat_session",
         ownerId: "chat-1",
-        excludeMetadataKinds: ["scene_still"],
+        excludeMetadataKind: "scene_still",
       });
       // `not in` is unknown against a null extract, so an untagged artifact —
       // which is nearly all of them — would vanish if the null were not spelled out.
@@ -1210,16 +1240,37 @@ describe("computerUseArtifactBrokerService", () => {
       const listed = broker.listArtifacts({
         ownerKind: "chat_session",
         ownerId: "chat-1",
-        metadataKinds: ["scene_still"],
+        metadataKind: "scene_still",
       });
       expect(listed.map((artifact) => artifact.title)).toEqual(["A still"]);
     });
 
+    /**
+     * `json_extract` RAISES on a malformed blob rather than answering null, and
+     * this table is CRR-replicated: one bad row from any peer took the whole
+     * listing down — and the proof drawer reads through it on every open.
+     */
+    it("survives a row whose metadata blob is not JSON at all", () => {
+      const broker = seed();
+      db.run("update computer_use_artifacts set metadata_json = '' where title = ?", ["Real proof"]);
+
+      expect(broker.listArtifacts({
+        ownerKind: "chat_session",
+        ownerId: "chat-1",
+        excludeMetadataKind: "scene_still",
+      }).map((artifact) => artifact.title)).toEqual(["Real proof"]);
+      expect(broker.listArtifacts({
+        ownerKind: "chat_session",
+        ownerId: "chat-1",
+        metadataKind: "scene_still",
+      }).map((artifact) => artifact.title)).toEqual(["A still"]);
+    });
+
     it("applies the same filter to a read by id", () => {
       const broker = seed();
-      const still = broker.listArtifacts({ metadataKinds: ["scene_still"] })[0]!;
+      const still = broker.listArtifacts({ metadataKind: "scene_still" })[0]!;
       expect(broker.listArtifacts({ artifactId: still.id })).toHaveLength(1);
-      expect(broker.listArtifacts({ artifactId: still.id, excludeMetadataKinds: ["scene_still"] }))
+      expect(broker.listArtifacts({ artifactId: still.id, excludeMetadataKind: "scene_still" }))
         .toHaveLength(0);
     });
   });

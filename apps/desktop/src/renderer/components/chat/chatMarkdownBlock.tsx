@@ -122,6 +122,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   onOpenWorkspacePath,
   mosaic,
   mosaicScopeKey,
+  sceneScopeKey,
   sceneLive,
 }: {
   markdown: string;
@@ -136,12 +137,28 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   /** Stable transcript-row key scoping mosaic answered state per message. */
   mosaicScopeKey?: string;
   /**
+   * What names the ROW a scene in this body belongs to, on disk.
+   *
+   * Separate from `mosaicScopeKey` because the two need different things from
+   * a key. Mosaic answers live in this window and die with it, so the render
+   * key is fine; a scene's still is a file in the project, looked up again on
+   * every reopen, and the render key moves when the transcript is rebuilt from
+   * a different window of events. See `sceneRowIdentity`. Falls back to the
+   * mosaic key for callers that have no better answer.
+   */
+  sceneScopeKey?: string;
+  /**
    * True while the turn that produced this body is still streaming. A scene
    * runs only while its own turn is live; afterwards it is snapshotted so
    * scrollback never re-executes generated code.
    */
   sceneLive?: boolean;
 }) {
+  // The scene key falls back to the mosaic one so a caller with only a row key
+  // — the tests, and any surface that renders markdown without a transcript
+  // behind it — keeps working; the transcript itself passes the stable one.
+  const sceneRowScope = sceneScopeKey ?? mosaicScopeKey;
+
   // This component knows both halves of "still arriving", so it answers the
   // question once instead of handing the frame two flags to combine. Fence
   // state is read over the WHOLE body — settled prose plus the growing tail —
@@ -227,7 +244,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         return (
           <SceneFrame
             source={text}
-            scopeKey={mosaicScopeKey ? sceneScopeKeyFor(mosaicScopeKey, text) : undefined}
+            scopeKey={sceneRowScope ? sceneScopeKeyFor(sceneRowScope, text) : undefined}
             live={sceneLive}
             streaming={sceneStreaming}
           />
@@ -279,7 +296,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming]);
+  }), [mosaic, mosaicScopeKey, sceneRowScope, neu, openWorkspacePath, sceneLive, sceneStreaming]);
 
   return (
     <div

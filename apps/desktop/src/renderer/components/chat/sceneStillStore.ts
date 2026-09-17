@@ -160,7 +160,7 @@ async function loadSessionStills(
         ownerId: owner,
         // Only stills: a chat with a page of proof would otherwise return
         // proof and no pictures, and every scene row would render empty.
-        metadataKinds: [SCENE_STILL_METADATA_KIND],
+        metadataKind: SCENE_STILL_METADATA_KIND,
         limit: 200,
       },
       pin,
@@ -243,6 +243,10 @@ export function useCallStills(
 /**
  * Where a still's bytes can be shown from, without a round trip.
  *
+ * Exported for {@link useSceneStillSrc} and for the one caller that has a bare
+ * record and no hook to call from — the tests that assert the uri arithmetic
+ * directly, which is the part of this worth pinning on its own.
+ *
  * The data URL if the caller has one — it is already in memory — then the
  * artifact uri, which only resolves through the `ade-artifact://` protocol in a
  * LOCAL desktop window. A chat on another machine has no such handler and is
@@ -276,13 +280,10 @@ export function sceneStillSrc(
  * The in-memory data URL stays the fast prefix — a scene that just settled in
  * this window shows its own capture with no round trip at all.
  */
-export function useSceneStillSrc(still: SceneStill | SceneStillRecord | null | undefined): string | null {
+export function useSceneStillSrc(still: SceneStill | null | undefined): string | null {
   const scope = useChatRuntimeScope();
-  const resolved = still && "record" in still
-    ? still
-    : { dataUrl: null, record: (still as SceneStillRecord | null | undefined) ?? null };
-  const dataUrl = resolved.dataUrl;
-  const uri = resolved.record?.uri?.trim() || "";
+  const dataUrl = still?.dataUrl ?? null;
+  const uri = still?.record?.uri?.trim() || "";
   const needsRuntimeRead = !dataUrl && Boolean(uri) && scope.isRemote;
   const [preview, setPreview] = useState<string | null>(null);
 
@@ -303,7 +304,7 @@ export function useSceneStillSrc(still: SceneStill | SceneStillRecord | null | u
 
   if (dataUrl) return dataUrl;
   if (needsRuntimeRead) return preview;
-  return sceneStillSrc(resolved.record, null);
+  return sceneStillSrc(still?.record ?? null, null);
 }
 
 /** Test seam: forget everything this window remembers. */
@@ -311,6 +312,10 @@ export function resetSceneStillsForTest(): void {
   stills.clear();
   callStills.clear();
   sessionReads.clear();
+  // Cleared with the reads it mirrors. Left behind, the next test's first
+  // render saw a chat whose stills were already "known" to be none, so a suite
+  // that never asked the broker anything still decided not to wait for it.
+  settledSessions.clear();
   notifyScenes();
   notifyCalls();
 }

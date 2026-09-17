@@ -6,7 +6,7 @@ import { IPC } from "../../../shared/ipc";
 import {
   CTO_VOICE_AUDIO_POLL_INTERVAL_MS,
   CTO_VOICE_INITIAL_STATE,
-  CTO_VOICE_MICROPHONE_BLOCK_KINDS,
+  isCtoVoiceMicrophoneBlockKind,
   isVoiceCallLive,
   type CtoVoiceAction,
   type CtoVoiceActionResult,
@@ -729,9 +729,7 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
       : null;
     // Shape-checked, not trusted: it comes from a renderer and only ever
     // decides which sentence gets a settings button beside it.
-    const errorKind = CTO_VOICE_MICROPHONE_BLOCK_KINDS.includes(
-      arg?.errorKind as CtoVoiceMicrophoneBlockKind,
-    ) ? arg.errorKind as CtoVoiceMicrophoneBlockKind : null;
+    const errorKind = isCtoVoiceMicrophoneBlockKind(arg?.errorKind) ? arg.errorKind : null;
     // `call` is read INSIDE the queue, not before it. A hang-up that lands
     // while a start is still queued read a null slot and quietly did nothing,
     // leaving the call the user had just cancelled to come up anyway.

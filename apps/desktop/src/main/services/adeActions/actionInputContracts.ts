@@ -626,7 +626,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   computer_use_artifacts: {
     listArtifacts: {
       description: "List computer-use proof artifacts (screenshots, recordings, traces, logs) across the project.",
-      input: "object { kind?, ownerKind?, ownerId?, artifactId?, limit? }",
+      input: "object { kind?, ownerKind?, ownerId?, artifactId?, metadataKind?, excludeMetadataKind?, limit? }",
       example: "ade actions run computer_use_artifacts.listArtifacts --input-json '{\"kind\":\"screenshot\",\"limit\":20}' --json",
     },
     ingest: {

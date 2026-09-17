@@ -42,17 +42,50 @@ export const SCENE_FENCE_LANGUAGE = "scene";
 /**
  * The identity of ONE scene inside a message.
  *
- * A transcript row key is not enough on its own: a message may hold two scene
- * fences, and both of them being handed the row key meant they shared a still —
- * whichever settled last overwrote the other, and a reopened chat showed the
- * same picture twice. The source hash is what separates them, the same way
- * mosaic cards separate two answerable cards in one message.
+ * A row identity is not enough on its own: a message may hold two scene
+ * fences, and both of them being handed the row's identity meant they shared a
+ * still — whichever settled last overwrote the other, and a reopened chat
+ * showed the same picture twice. The source hash is what separates them, the
+ * same way mosaic cards separate two answerable cards in one message.
  *
  * Stored with the still in main, so it must be derived identically on every
- * mount: a pure function of the row key and the fence body, and nothing else.
+ * mount: a pure function of the row identity and the fence body, and nothing
+ * else. Pass {@link sceneRowIdentity}, not a transcript render key — see it for
+ * why the render key is not stable enough to be a still's name on disk.
  */
-export function sceneScopeKeyFor(rowScopeKey: string, source: string): string {
-  return `${rowScopeKey}:${djb2Hash(source)}`;
+export function sceneScopeKeyFor(rowIdentity: string, source: string): string {
+  return `${rowIdentity}:${djb2Hash(source)}`;
+}
+
+/**
+ * What identifies the ROW a scene was drawn in, across every rebuild of the
+ * transcript.
+ *
+ * The render key cannot do this job. It embeds the event's index in the events
+ * array, so the same message gets a different key the moment anything is
+ * inserted before it — an older page prepended by scroll-back, a front trim, a
+ * reopened chat that replayed a different window. The still had been filed
+ * under the old key, the lookup on the next mount missed it, the scene ran
+ * again and filed a SECOND still, and it did that on every reopen.
+ *
+ * `messageId` is the provider's own name for the message and is what survives
+ * all of that. `turnId` + `itemId` is the same fact assembled from two fields,
+ * for providers that name items but not messages. The row key is the last
+ * resort and is honest about what it costs: a row with no stable identity of
+ * any kind — today, a text event carrying none of the three — keeps the old
+ * behaviour of re-running and re-filing rather than sharing a key with a
+ * neighbour, which would be worse.
+ */
+export function sceneRowIdentity(
+  event: { messageId?: string | null; turnId?: string | null; itemId?: string | null },
+  rowKey: string,
+): string {
+  const messageId = event.messageId?.trim();
+  if (messageId) return `message:${messageId}`;
+  const turnId = event.turnId?.trim();
+  const itemId = event.itemId?.trim();
+  if (turnId && itemId) return `item:${turnId}:${itemId}`;
+  return rowKey;
 }
 
 /** djb2, base 36. Short, stable, and not a security boundary. */
