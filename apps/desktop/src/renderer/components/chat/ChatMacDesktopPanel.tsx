@@ -21,6 +21,7 @@ import type {
 } from "../../../shared/types/macDesktop";
 import type { SystemSettingsPaneId } from "../../../shared/types/systemSettings";
 import { cn } from "../ui/cn";
+import { MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import {
   WORK_TOOL_CHROME_CHIP,
   WORK_TOOL_CHROME_META,
@@ -46,7 +47,19 @@ import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
 import { useMacDesktopRealInput } from "./useMacDesktopRealInput";
 import { useMacDesktopStatus } from "./useMacDesktopStatus";
 import { MacDesktopClaimPicker, MacDesktopLeaseChip } from "./MacDesktopClaimPicker";
-import { MacDesktopEmptyOverlay } from "./MacDesktopEmptyOverlay";
+import {
+  MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS,
+  MacDesktopTakeoverCursor,
+} from "./MacDesktopTakeoverCursor";
+import {
+  MAC_DESKTOP_LIST_HEADER,
+  MAC_DESKTOP_LIST_META,
+  MAC_DESKTOP_LIST_ROW,
+  MAC_DESKTOP_LIST_TITLE,
+  MacDesktopMinimizedBadge,
+  MacDesktopRowAction,
+  MacDesktopWindowGlyph,
+} from "./macDesktopWindowList";
 import { macDesktopHasLease } from "./macDesktopClaimPicker.logic";
 import { macDesktopErrorText } from "./macDesktopErrorText";
 import {
@@ -56,7 +69,6 @@ import {
   macDesktopPresentAction,
   macDesktopRelativeTime,
   macDesktopStatusPill,
-  macDesktopWindowLabel,
   macDesktopWindowTitle,
 } from "./macDesktopStrip";
 
@@ -76,6 +88,17 @@ import {
  * explicitly — `status.hostIsLocal` gates "Bring to my screen", and a permission
  * grant can only be opened on the Mac that needs it.
  */
+
+/**
+ * How long full screen keeps its floating strip up with nothing happening.
+ *
+ * Two seconds: long enough to read the status and reach the button you just
+ * revealed, short enough that a screen you are only watching is unobstructed.
+ */
+export const MAC_DESKTOP_CHROME_IDLE_MS = 2000;
+
+/** How close to the top of the picture the pointer has to come to bring it back. */
+export const MAC_DESKTOP_CHROME_EDGE_PX = 72;
 
 /**
  * This window's identity as a lease controller.
@@ -227,9 +250,20 @@ export function ChatMacDesktopPanel({
   const [claimable, setClaimable] = useState<MacDesktopWindow[]>([]);
   const [claimableLoading, setClaimableLoading] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
-  /** The empty-screen card, until this person waves it away for this mount. */
-  const [emptyDismissed, setEmptyDismissed] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  /**
+   * Whether full screen is currently showing its floating strip.
+   *
+   * Full screen used to REMOVE the chrome: the pane's one row is drawn above
+   * the picture, the expanded picture is `fixed inset-0` over the whole app,
+   * and so the status, the window list and the button that got you here all
+   * disappeared with no way back but Escape — which is not discoverable and is
+   * also forwarded to the lane's Mac while you hold the lease. The chrome is
+   * kept, floated over the picture, and it fades out on its own after
+   * {@link MAC_DESKTOP_CHROME_IDLE_MS} so the screen is unobstructed while you
+   * watch it. Pointing anywhere near the top edge brings it back.
+   */
+  const [chromeVisible, setChromeVisible] = useState(true);
   const [busy, setBusy] = useState(false);
   const [viewRect, setViewRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
   /** The pane's own box, which decides stacked vs side by side. */
@@ -502,17 +536,6 @@ export function ChatMacDesktopPanel({
   }, [pickerOpen, refreshClaimable]);
 
   /**
-   * A dismissal lasts until the screen is used, not forever.
-   *
-   * Waving the card away says "not now"; parking a window and then releasing it
-   * is a new empty screen, and the person who arrives at it should be offered
-   * the same two buttons rather than a blank pane with a silent history.
-   */
-  useEffect(() => {
-    if (parkedWindows.length) setEmptyDismissed(false);
-  }, [parkedWindows.length]);
-
-  /**
    * Adopt one window onto this lane's screen.
    *
    * The failure is reported INSIDE the picker rather than replacing the
@@ -531,12 +554,6 @@ export function ChatMacDesktopPanel({
     } finally {
       setBusy(false);
     }
-  }, [laneId, refreshStatus, sessionId]);
-
-  /** `open` on the lane's Mac, from the empty card's inline input. */
-  const openApp = useCallback(async (target: string) => {
-    await macDesktopApi().open({ laneId, target, chatSessionId: sessionId }, pinRef.current);
-    await refreshStatus();
   }, [laneId, refreshStatus, sessionId]);
 
   const releaseWindow = useCallback(async (windowId: number) => {
@@ -601,6 +618,44 @@ export function ChatMacDesktopPanel({
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [expanded]);
+
+  /**
+   * Show the floating strip, and start its clock.
+   *
+   * ONE timer, in a ref, so the effects below and the surface's pointer move
+   * cannot each be holding a deadline for the same strip — two timers is how a
+   * bar hides itself half a second after you moved the mouse to reach it.
+   */
+  const chromeTimerRef = useRef<number | null>(null);
+  const clearChromeTimer = useCallback(() => {
+    if (chromeTimerRef.current != null) window.clearTimeout(chromeTimerRef.current);
+    chromeTimerRef.current = null;
+  }, []);
+  const showChrome = useCallback((hold = false) => {
+    setChromeVisible(true);
+    clearChromeTimer();
+    // `hold` is the Windows menu being open: a menu that closed itself two
+    // seconds after you opened it would be the same defect in a smaller box.
+    if (hold) return;
+    chromeTimerRef.current = window.setTimeout(() => setChromeVisible(false), MAC_DESKTOP_CHROME_IDLE_MS);
+  }, [clearChromeTimer]);
+
+  /*
+    Entering full screen shows the strip first — you have just pressed a button,
+    and arriving at a picture with no chrome at all is the state this replaces.
+    Leaving it puts the chrome back unconditionally, because the pane's own row
+    is always visible and must never be left in a faded state.
+  */
+  useEffect(() => {
+    if (!expanded) {
+      clearChromeTimer();
+      setChromeVisible(true);
+      return;
+    }
+    showChrome(windowsOpen);
+  }, [clearChromeTimer, expanded, showChrome, windowsOpen]);
+
+  useEffect(() => () => clearChromeTimer(), [clearChromeTimer]);
 
   /**
    * The one remediation button, routed through the app-level opener.
@@ -690,6 +745,151 @@ export function ChatMacDesktopPanel({
       || String(notParkedNewest.windowId)
     : null;
 
+  /* ── The three controls the strip and full screen both carry ──────────
+     Built here, once, and rendered in whichever of the two rows is on screen:
+     the pane's 40px chrome row, or the bar floating over the expanded picture.
+     Two copies of this JSX is how the expanded view ended up with no way back
+     in the first place. */
+
+  const statusChip = (
+    <span
+      className={cn(
+        WORK_TOOL_CHROME_META,
+        "inline-flex min-w-0 shrink items-center gap-1.5 whitespace-nowrap px-1",
+      )}
+      data-testid="mac-desktop-live-chip"
+    >
+      <span
+        className={cn(
+          "size-[6px] shrink-0 rounded-full",
+          pill.tone === "live" ? "bg-emerald-400" : pill.tone === "error" ? "bg-rose-400/85" : "bg-amber-400",
+        )}
+      />
+      <span className="truncate">
+        {pill.label}
+        <span className="px-1 opacity-60">·</span>
+        {pill.detail}
+      </span>
+    </span>
+  );
+
+  const expandButton = (
+    <WorkToolChromeButton
+      label={expanded ? "Exit full screen" : "Full screen"}
+      shortcut={expanded ? "Esc" : undefined}
+      onClick={() => setExpanded((open) => !open)}
+      active={expanded}
+      testId="mac-desktop-expand"
+    >
+      {expanded ? <ArrowsInSimple size={16} /> : <ArrowsOutSimple size={16} />}
+    </WorkToolChromeButton>
+  );
+
+  /**
+   * "Windows N", and the menu behind it.
+   *
+   * The menu is where an empty screen is answered now. The card that used to
+   * float over the picture said the same thing much louder — a headline, a
+   * paragraph and a text field asking for an app name — on top of the one
+   * thing the pane exists to show. An empty screen is a fact about the window
+   * list, so it is stated in the window list, and the chip wears a dot so the
+   * menu is worth opening.
+   */
+  const windowsChip = (
+    <div className="shrink-0">
+      <button
+        type="button"
+        className={cn(WORK_TOOL_CHROME_CHIP, "shrink-0 whitespace-nowrap")}
+        aria-expanded={windowsOpen}
+        data-testid="mac-desktop-windows-toggle"
+        onClick={() => setWindowsOpen((open) => !open)}
+      >
+        Windows
+        <span className="tabular-nums">{parkedWindows.length}</span>
+        {parkedWindows.length === 0 ? (
+          <span
+            aria-hidden
+            data-testid="mac-desktop-windows-dot"
+            className="size-[5px] shrink-0 rounded-full bg-[color-mix(in_srgb,var(--color-accent)_70%,transparent)]"
+          />
+        ) : null}
+        <CaretDown size={10} />
+      </button>
+      {windowsOpen ? (
+        <div
+          /* `max-w` in view units, not a fixed pixel cap: a window title is
+             the only way to tell two windows of one app apart, and
+             "TextEdit — Untit…" in a menu with room to spare was the pane
+             refusing to say which one it holds. */
+          className={cn(
+            MENU_SURFACE_CLASS,
+            /* Narrow enough to fit the pane, which is the only box that
+               matters: the tools pane can be ~240px wide, an overflow-hidden
+               ancestor clips anything wider, and both a right-anchored menu
+               (clipped on the pane's left edge, "ADE lease" reading "DE
+               lease") and a 420px left-anchored one (clipped on the right,
+               losing the app and Release columns) were cut in half. The
+               window title truncates instead. */
+            /* Positioned against the STRIP ROW, not the chip: the chip sits
+               near the left of a tools pane that can be 240px wide, and an
+               overflow-hidden ancestor clips anything that leaves the pane —
+               a left-anchored menu lost its app and Release columns off the
+               right edge, a right-anchored one lost "ADE lease" off the left.
+               Spanning the row is the only width that is always available. */
+            "absolute inset-x-0 top-full z-50 mt-1 max-h-[280px] overflow-auto",
+          )}
+          data-testid="mac-desktop-windows-menu"
+        >
+          {parkedWindows.length ? (
+            <p className={MAC_DESKTOP_LIST_HEADER}>
+              <span className="min-w-0 flex-1 truncate">On this screen</span>
+              <span className="shrink-0 tabular-nums text-muted-fg/60">{parkedWindows.length}</span>
+            </p>
+          ) : (
+            <p className="px-2 py-1.5 text-[11.5px] text-muted-fg" data-testid="mac-desktop-windows-empty">
+              No windows on this screen
+            </p>
+          )}
+          {parkedWindows.map((entry) => (
+            <div key={entry.id} className={MAC_DESKTOP_LIST_ROW} data-testid="mac-desktop-windows-row">
+              <MacDesktopWindowGlyph />
+              <span className={MAC_DESKTOP_LIST_TITLE} title={macDesktopWindowTitle(entry)}>
+                {macDesktopWindowTitle(entry)}
+              </span>
+              {entry.minimized ? <MacDesktopMinimizedBadge /> : null}
+              {/* Ownership, stated where the window is listed: a lane can be
+                  watching a window it does not hold, and the chip is the
+                  only place that difference is visible. */}
+              {macDesktopHasLease(entry, laneId) ? <MacDesktopLeaseChip /> : null}
+              <span className={MAC_DESKTOP_LIST_META} title={entry.appName}>{entry.appName}</span>
+              <MacDesktopRowAction
+                label="Release"
+                testId="mac-desktop-windows-release"
+                title={`Release “${macDesktopWindowTitle(entry)}” back to your screen`}
+                onClick={() => void releaseWindow(entry.id)}
+              />
+            </div>
+          ))}
+          {/* The one way into the picker from the strip. The dropdown used
+              to inline a second list of every claimable window, which made
+              a menu that answered two questions badly. */}
+          <button
+            type="button"
+            className={cn(
+              MAC_DESKTOP_LIST_ROW,
+              "mt-0.5 border-t border-white/[0.06] text-[12px] text-fg/85 hover:bg-white/[0.05]",
+            )}
+            data-testid="mac-desktop-claim-another"
+            onClick={() => { setWindowsOpen(false); setPickerOpen(true); }}
+          >
+            <ArrowSquareIn size={13} className="shrink-0 text-muted-fg/70" />
+            {parkedWindows.length ? "Claim another…" : "Claim a window…"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-2" data-testid="mac-desktop-panel">
       {/* ── Strip ─────────────────────────────────────────────────────────
@@ -698,26 +898,9 @@ export function ChatMacDesktopPanel({
           the left, icon buttons on the right, and nothing in between that can
           grow. `flex-nowrap` is the guarantee; `min-w-0` + `truncate` on the
           status pill is what it spends when the pane gets narrow. */}
-      <div className={cn(WORK_TOOL_CHROME_ROW, "flex-nowrap gap-1")}>
-        <span
-          className={cn(
-            WORK_TOOL_CHROME_META,
-            "inline-flex min-w-0 shrink items-center gap-1.5 whitespace-nowrap px-1",
-          )}
-          data-testid="mac-desktop-live-chip"
-        >
-          <span
-            className={cn(
-              "size-[6px] shrink-0 rounded-full",
-              pill.tone === "live" ? "bg-emerald-400" : pill.tone === "error" ? "bg-rose-400/85" : "bg-amber-400",
-            )}
-          />
-          <span className="truncate">
-            {pill.label}
-            <span className="px-1 opacity-60">·</span>
-            {pill.detail}
-          </span>
-        </span>
+      {expanded ? null : (
+      <div className={cn(WORK_TOOL_CHROME_ROW, "relative flex-nowrap gap-1")}>
+        {statusChip}
 
         {realInput.inputError ? (
           <button
@@ -732,60 +915,7 @@ export function ChatMacDesktopPanel({
           </button>
         ) : null}
 
-        <div className="relative shrink-0">
-          <button
-            type="button"
-            className={cn(WORK_TOOL_CHROME_CHIP, "shrink-0 whitespace-nowrap")}
-            aria-expanded={windowsOpen}
-            data-testid="mac-desktop-windows-toggle"
-            onClick={() => setWindowsOpen((open) => !open)}
-          >
-            Windows {parkedWindows.length}
-            <CaretDown size={10} />
-          </button>
-          {windowsOpen ? (
-            <div
-              /* `max-w` in view units, not a fixed pixel cap: a window title is
-                 the only way to tell two windows of one app apart, and
-                 "TextEdit — Untit…" in a menu with room to spare was the pane
-                 refusing to say which one it holds. */
-              className="absolute left-0 top-full z-50 mt-1 max-h-[280px] w-max min-w-[240px] max-w-[min(420px,80vw)] overflow-auto rounded-[10px] border border-border bg-surface p-1 shadow-float"
-              data-testid="mac-desktop-windows-menu"
-            >
-              {parkedWindows.length ? null : (
-                <p className="px-2 py-1.5 text-[11px] text-muted-fg">Nothing on this lane's screen yet.</p>
-              )}
-              {parkedWindows.map((entry) => (
-                <div key={entry.id} className="flex items-center gap-2 px-2 py-1.5 text-[12px]">
-                  <span className="min-w-0 flex-1 truncate">{macDesktopWindowLabel(entry)}</span>
-                  {/* Ownership, stated where the window is listed: a lane can be
-                      watching a window it does not hold, and the chip is the
-                      only place that difference is visible. */}
-                  {macDesktopHasLease(entry, laneId) ? <MacDesktopLeaseChip /> : null}
-                  <button
-                    type="button"
-                    className="shrink-0 text-muted-fg hover:text-fg"
-                    onClick={() => void releaseWindow(entry.id)}
-                  >
-                    Release
-                  </button>
-                </div>
-              ))}
-              {/* The one way into the picker from the strip. The dropdown used
-                  to inline a second list of every claimable window, which made
-                  a menu that answered two questions badly. */}
-              <button
-                type="button"
-                className="mt-0.5 flex w-full items-center gap-2 rounded-[7px] border-t border-border/50 px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.06]"
-                data-testid="mac-desktop-claim-another"
-                onClick={() => { setWindowsOpen(false); setPickerOpen(true); }}
-              >
-                <ArrowSquareIn size={12} className="shrink-0 text-muted-fg" />
-                Claim another…
-              </button>
-            </div>
-          ) : null}
-        </div>
+        {windowsChip}
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <WorkToolChromeButton
@@ -798,14 +928,7 @@ export function ChatMacDesktopPanel({
             {recording?.running ? <Stop size={16} weight="fill" /> : <Record size={16} weight="fill" />}
           </WorkToolChromeButton>
 
-          <WorkToolChromeButton
-            label={expanded ? "Exit full screen" : "Full screen"}
-            onClick={() => setExpanded((open) => !open)}
-            active={expanded}
-            testId="mac-desktop-expand"
-          >
-            {expanded ? <ArrowsInSimple size={16} /> : <ArrowsOutSimple size={16} />}
-          </WorkToolChromeButton>
+          {expandButton}
 
           {presentAction ? (
             <WorkToolChromeButton
@@ -829,6 +952,7 @@ export function ChatMacDesktopPanel({
           </WorkToolChromeButton>
         </div>
       </div>
+      )}
 
       {/* ── One-line permission state ─────────────────────────────────── */}
       {blockedPermission ? (
@@ -896,9 +1020,29 @@ export function ChatMacDesktopPanel({
             // auto and the picture simply takes the width it is given.
             : "relative w-full max-h-full overflow-hidden bg-surface",
           "flex items-center justify-center",
+          // While the user is driving, the pointer they see is the one drawn
+          // at the lane's Mac coordinates, not this machine's arrow.
+          iHaveControl && MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS,
         )}
         onPointerDown={realInput.onPointerDown}
         onPointerUp={realInput.onPointerUp}
+        onPointerLeave={realInput.onPointerLeave}
+        /*
+          Full screen's one discovery gesture.
+
+          The band is the top 72px of the picture, measured against the
+          surface's own box rather than the viewport: a person driving an app
+          over there moves the pointer constantly, and a bar that reappeared on
+          any movement would sit over the menu bar of whatever they are using.
+          Passive — it reads a coordinate and never calls `preventDefault`, so
+          it cannot interfere with the input the surface forwards.
+        */
+        onPointerMove={(event) => {
+          realInput.onPointerMove(event);
+          if (!expanded) return;
+          const top = event.currentTarget.getBoundingClientRect().top;
+          if (event.clientY - top <= MAC_DESKTOP_CHROME_EDGE_PX) showChrome(windowsOpen);
+        }}
         onWheel={realInput.onWheel}
         onKeyDown={realInput.onKeyDown}
         onContextMenu={(event) => {
@@ -971,6 +1115,13 @@ export function ChatMacDesktopPanel({
           />
         ) : null}
 
+        <MacDesktopTakeoverCursor
+          feed={realInput.cursorFeed}
+          rect={viewRect}
+          display={display}
+          active={iHaveControl}
+        />
+
         {cursorPoint ? (
           <span
             aria-hidden
@@ -983,20 +1134,45 @@ export function ChatMacDesktopPanel({
         ) : null}
 
         {/*
-          Nothing parked: a card ON the picture, not a line under it.
+          ── Full screen's floating strip ───────────────────────────────
 
-          Gated on a display that is actually up and a stream that is not still
-          erroring, so the card never argues with "Connecting to the lane's
-          screen…" underneath it. It disappears on its own the moment a window
-          parks, because `parkedWindows` is what renders it.
+          The pane's chrome row is not rendered while this is up, so this is
+          the only copy of these controls in the tree and a test cannot match
+          two of anything. It carries exactly what full screen needs: what the
+          stream is doing, the window list, and the way out. Recording and
+          takeover stay on the pane's row — full screen is for watching.
+
+          `stopPropagation` on the pointer events, not `pointer-events-none`
+          on a wrapper: the surface under this forwards every pointer press to
+          the lane's Mac while the user holds the lease, and a click meant for
+          "exit full screen" must not also be a click over there.
         */}
-        {!parkedWindows.length && !emptyDismissed && !pickerOpen ? (
-          <MacDesktopEmptyOverlay
-            busy={busy}
-            onClaim={() => setPickerOpen(true)}
-            onOpenApp={openApp}
-            onDismiss={() => setEmptyDismissed(true)}
-          />
+        {expanded ? (
+          <div
+            data-testid="mac-desktop-fullscreen-chrome"
+            data-visible={chromeVisible ? "true" : "false"}
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={(event) => event.stopPropagation()}
+            onPointerMove={() => showChrome(windowsOpen)}
+            className={cn(
+              // Top-RIGHT rather than centred: the expanded picture's
+              // containing block is the pane, not the window (an ancestor
+              // carries a backdrop filter), so a centred bar lands wherever
+              // that box happens to be. An edge is the one anchor that is the
+              // same in both.
+              "absolute right-3 top-3 z-30 flex min-w-[300px] items-center gap-1 rounded-[10px] px-1.5",
+              // The Windows menu is positioned against this bar, so it is the
+              // bar that has to be the positioning context.
+              "relative",
+              "border border-white/[0.08] bg-[color-mix(in_srgb,var(--color-surface-overlay)_88%,transparent)]",
+              "shadow-float backdrop-blur-md transition-opacity duration-200 ease-out",
+              chromeVisible ? "opacity-100" : "pointer-events-none opacity-0",
+            )}
+          >
+            {statusChip}
+            {windowsChip}
+            {expandButton}
+          </div>
         ) : null}
 
         {iHaveControl ? (

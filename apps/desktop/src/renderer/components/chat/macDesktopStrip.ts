@@ -81,11 +81,6 @@ export function macDesktopParkedWindows(
   return windows.filter((entry) => entry.onDisplayId === displayId);
 }
 
-/** The label one window gets in the strip's dropdown. */
-export function macDesktopWindowLabel(window: MacDesktopWindow): string {
-  return [window.appName, window.title].filter(Boolean).join(" \u2014 ");
-}
-
 /**
  * Side-by-side, or stacked.
  *

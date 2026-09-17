@@ -108,7 +108,11 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "Mac Desktop",
     icon: Monitor,
     color: "#f472b6",
-    hint: "A private screen per lane",
+    // Only ever seen while the host's capability answer is still in flight or
+    // unreachable: on a Mac host the card's line is the lane's own screen
+    // state (`useMacDesktopToolStatus`). Phrased as the same instruction it
+    // will resolve to, so the card does not change its mind a beat later.
+    hint: "Start Mac Desktop for this lane",
   },
 ];
 

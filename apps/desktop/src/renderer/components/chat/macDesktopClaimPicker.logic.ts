@@ -9,8 +9,8 @@
  *
  * Deliberately NOT here: app icons. The service returns a `bundleId` and
  * nothing else, and inventing an icon channel for a picker that opens for two
- * seconds is a worse trade than a neutral glyph, so rows carry the bundle id
- * and the renderer draws the app's initials.
+ * seconds is a worse trade than a neutral glyph, so a row carries the bundle id
+ * and the list draws one small window mark (`macDesktopWindowList`).
  */
 
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
@@ -77,6 +77,21 @@ export function macDesktopClaimIsUntitled(window: MacDesktopWindow): boolean {
   const title = window.title?.trim() ?? "";
   if (!title.length) return true;
   return title.toLowerCase() === window.appName.trim().toLowerCase();
+}
+
+/**
+ * Whether the window server gave this entry a name at all.
+ *
+ * Deliberately NOT `!macDesktopClaimIsUntitled`: that one also calls a window
+ * named after its app untitled, which is a LABELLING judgement ("Activity
+ * Monitor" under a header that already says Activity Monitor is the app name
+ * twice). Using it to decide which of an app's entries are scratch surfaces
+ * was the bug — Activity Monitor, Music and Grok Bot name their real window
+ * after themselves, so the app read as "has no titled window", its nameless
+ * menu-bar strips were kept, and each app appeared twice.
+ */
+function macDesktopClaimHasName(window: MacDesktopWindow): boolean {
+  return Boolean(window.title?.trim().length);
 }
 
 /**
@@ -204,14 +219,14 @@ export function macDesktopClaimVisibleWindows(
   const candidates = windows.filter((window) => !macDesktopClaimIsSelf(window));
   const appsWithTitledWindow = new Set(
     candidates
-      .filter((window) => !macDesktopClaimIsUntitled(window))
+      .filter((window) => macDesktopClaimHasName(window))
       .map((window) => window.bundleId ?? window.appName),
   );
   const seen = new Set<string>();
   const kept: MacDesktopWindow[] = [];
   for (const window of candidates) {
     const appKey = window.bundleId ?? window.appName;
-    if (macDesktopClaimIsUntitled(window) && appsWithTitledWindow.has(appKey)) continue;
+    if (!macDesktopClaimHasName(window) && appsWithTitledWindow.has(appKey)) continue;
     const { x, y, width, height } = window.frame;
     const identity = [
       window.pid,
@@ -291,10 +306,3 @@ export function macDesktopClaimNextIndex(
   return -1;
 }
 
-/** Two letters for the neutral app glyph, from the app name. */
-export function macDesktopAppInitials(appName: string): string {
-  const words = appName.trim().split(/[\s_-]+/).filter(Boolean);
-  if (!words.length) return "?";
-  if (words.length === 1) return words[0]!.slice(0, 2).toUpperCase();
-  return `${words[0]![0]!}${words[1]![0]!}`.toUpperCase();
-}

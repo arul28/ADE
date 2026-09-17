@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowClockwise,
-  ArrowSquareIn,
   CircleNotch,
   Lock,
   MagnifyingGlass,
@@ -12,13 +11,22 @@ import {
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import { cn } from "../ui/cn";
 import { getFocusableElements } from "../ui/dialogFocus";
+import { macDesktopErrorText } from "./macDesktopErrorText";
 import {
-  macDesktopAppInitials,
   macDesktopClaimFlatRows,
   macDesktopClaimGroups,
   macDesktopClaimNextIndex,
   type MacDesktopClaimRow,
 } from "./macDesktopClaimPicker.logic";
+import {
+  MAC_DESKTOP_LIST_HEADER,
+  MAC_DESKTOP_LIST_META,
+  MAC_DESKTOP_LIST_ROW,
+  MAC_DESKTOP_LIST_TITLE,
+  MacDesktopMinimizedBadge,
+  MacDesktopRowAction,
+  MacDesktopWindowGlyph,
+} from "./macDesktopWindowList";
 
 /**
  * "Claim a window" — the whole Mac's windows, one click from this lane's screen.
@@ -81,6 +89,11 @@ export function MacDesktopClaimPicker({
     try {
       await onClaim(row.window.id);
       onClose();
+    } catch {
+      // Swallowed HERE and nowhere else: `onClaim` reports the failure into
+      // this dialog's own `error` prop before it rethrows, so the person is
+      // already being told. Letting it out of a `void claim(row)` click
+      // handler only produced an unhandled rejection in the console.
     } finally {
       setClaiming(null);
     }
@@ -201,8 +214,14 @@ export function MacDesktopClaimPicker({
         </header>
 
         <div ref={listRef} className="min-h-0 overflow-auto p-1.5" role="listbox" aria-label="Open windows">
+          {/* One clean line. `macDesktopErrorText` here too, and not only at the
+              caller: a picker that is handed a raw rejection anywhere — a
+              claim this dialog made itself, a refresh that failed — must not be
+              the surface that prints "Error invoking remote method…". */}
           {error ? (
-            <p className="px-2 py-3 text-[12px] text-amber-300" data-testid="mac-desktop-claim-error">{error}</p>
+            <p className="px-2 py-3 text-[12px] text-amber-300" data-testid="mac-desktop-claim-error">
+              {macDesktopErrorText(error)}
+            </p>
           ) : null}
           {!error && !rows.length ? (
             <p className="px-2 py-6 text-center text-[12px] text-muted-fg" data-testid="mac-desktop-claim-empty">
@@ -213,64 +232,74 @@ export function MacDesktopClaimPicker({
                   : "Nothing else is open on this Mac."}
             </p>
           ) : null}
-          {groups.map((group) => (
-            <section key={group.key} className="pb-1">
-              <p className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-fg/80">
-                {group.appName}
+          {/*
+            App name as a header row with a count, one line per window under it.
+
+            The row is a `div` and the action a real `<button>` inside it: the
+            previous row WAS the button, so "Claim" could only ever be an icon
+            (a button cannot contain a button) and the whole row was one target
+            whatever you were pointing at.
+          */}
+          {groups.map((group, groupIndex) => (
+            <section
+              key={group.key}
+              className={cn("pb-0.5", groupIndex > 0 && "mt-0.5 border-t border-white/[0.06] pt-0.5")}
+            >
+              <p className={MAC_DESKTOP_LIST_HEADER} data-testid="mac-desktop-claim-group">
+                <span className="min-w-0 flex-1 truncate">{group.appName}</span>
+                <span className="shrink-0 tabular-nums text-muted-fg/60">{group.rows.length}</span>
               </p>
               {group.rows.map((row) => {
                 const index = rows.indexOf(row);
                 const isActive = index === active;
                 const spinning = claiming === row.window.id;
                 return (
-                  <button
+                  <div
                     key={row.window.id}
-                    type="button"
                     role="option"
                     aria-selected={isActive}
                     aria-disabled={row.disabled || undefined}
-                    disabled={row.disabled || claiming != null}
                     data-active={isActive ? "true" : undefined}
                     data-testid="mac-desktop-claim-row"
                     title={row.disabledReason ?? `Move “${row.title}” onto this lane's screen`}
                     onMouseEnter={() => { if (!row.disabled) setActive(index); }}
                     onClick={() => void claim(row)}
                     className={cn(
-                      "flex w-full items-center gap-2.5 rounded-[9px] px-2 py-1.5 text-left",
-                      "transition-colors duration-[120ms] ease-out",
+                      MAC_DESKTOP_LIST_ROW,
                       isActive && !row.disabled ? "bg-white/[0.07]" : "bg-transparent",
-                      row.disabled ? "opacity-45" : "hover:bg-white/[0.07]",
+                      row.disabled ? "opacity-45" : "cursor-pointer hover:bg-white/[0.05]",
                     )}
                   >
-                    {/* The neutral app glyph: the service hands out a bundle id
-                        and no icon, and a picker is not worth a new channel. */}
-                    <span
-                      aria-hidden
-                      className="inline-flex size-7 shrink-0 items-center justify-center rounded-[7px] bg-white/[0.07] text-[10px] font-semibold tracking-[0.02em] text-fg/70"
-                    >
-                      {macDesktopAppInitials(row.appName)}
+                    <MacDesktopWindowGlyph />
+                    <span className={MAC_DESKTOP_LIST_TITLE}>
+                      {row.untitled ? "Untitled window" : row.title}
                     </span>
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-[12.5px] text-fg/90">{row.title}</span>
-                      <span className="flex items-center gap-1 truncate text-[11px] text-muted-fg">
-                        {row.disabled && row.disabledReason?.startsWith("held by") ? (
-                          <Lock size={10} className="shrink-0" />
-                        ) : null}
-                        {row.disabled && row.disabledReason
-                          ? row.disabledReason
-                          : row.untitled
-                            ? `Untitled window · ${row.location.label}`
-                            : row.location.label}
-                        {row.minimized ? " · minimized" : ""}
-                      </span>
-                    </span>
+                    {row.minimized ? <MacDesktopMinimizedBadge /> : null}
                     {row.hasLease ? <MacDesktopLeaseChip /> : null}
+                    <span className={MAC_DESKTOP_LIST_META}>
+                      {row.disabled && row.disabledReason ? (
+                        <span className="inline-flex items-center gap-1">
+                          {row.disabledReason.startsWith("held by") ? <Lock size={10} className="shrink-0" /> : null}
+                          {row.disabledReason}
+                        </span>
+                      ) : row.location.label}
+                    </span>
                     {spinning ? (
-                      <CircleNotch size={13} className="shrink-0 animate-spin text-muted-fg" data-testid="mac-desktop-claim-spinner" />
-                    ) : row.disabled ? null : (
-                      <ArrowSquareIn size={13} className="shrink-0 text-muted-fg" />
+                      <CircleNotch
+                        size={13}
+                        className="mx-1.5 shrink-0 animate-spin text-muted-fg"
+                        data-testid="mac-desktop-claim-spinner"
+                      />
+                    ) : (
+                      <MacDesktopRowAction
+                        label="Claim"
+                        testId="mac-desktop-claim-action"
+                        title={row.disabledReason ?? `Move “${row.title}” onto this lane's screen`}
+                        disabled={row.disabled || claiming != null}
+                        onClick={() => void claim(row)}
+                      />
                     )}
-                  </button>
+                  </div>
                 );
               })}
             </section>

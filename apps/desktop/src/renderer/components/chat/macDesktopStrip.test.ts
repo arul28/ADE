@@ -8,7 +8,6 @@ import {
   macDesktopPresentAction,
   macDesktopRelativeTime,
   macDesktopStatusPill,
-  macDesktopWindowLabel,
   macDesktopWindowTitle,
 } from "./macDesktopStrip";
 
@@ -81,13 +80,6 @@ describe("macDesktopParkedWindows", () => {
     const elsewhere = makeWindow({ id: 3, laneId: "lane", onDisplayId: 32 });
     expect(macDesktopParkedWindows([parked, elsewhere, makeWindow()], 31)).toEqual([parked]);
     expect(macDesktopParkedWindows([parked], null)).toEqual([]);
-  });
-});
-
-describe("macDesktopWindowLabel", () => {
-  it("joins the app and the window, and drops a missing title", () => {
-    expect(macDesktopWindowLabel(makeWindow())).toBe("Xcode — ADE.xcodeproj");
-    expect(macDesktopWindowLabel(makeWindow({ title: null }))).toBe("Xcode");
   });
 });
 

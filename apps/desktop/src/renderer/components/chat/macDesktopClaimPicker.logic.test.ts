@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import {
-  macDesktopAppInitials,
   macDesktopClaimDisabled,
   macDesktopClaimFlatRows,
   macDesktopClaimGroups,
+  macDesktopClaimIsUntitled,
   macDesktopClaimLocation,
   macDesktopClaimNextIndex,
   macDesktopClaimRow,
@@ -158,14 +158,6 @@ describe("macDesktopClaimNextIndex", () => {
   });
 });
 
-describe("macDesktopAppInitials", () => {
-  it("takes one letter per word, two from a single word", () => {
-    expect(macDesktopAppInitials("Visual Studio Code")).toBe("VS");
-    expect(macDesktopAppInitials("Safari")).toBe("SA");
-    expect(macDesktopAppInitials("")).toBe("?");
-  });
-});
-
 describe("macDesktopClaimVisibleWindows", () => {
   it("hides ADE's own windows, dev build and shipped build alike", () => {
     const shipped = makeWindow({ id: 10, appName: "ADE", bundleId: "com.ade.desktop", title: "Work" });
@@ -190,10 +182,31 @@ describe("macDesktopClaimVisibleWindows", () => {
     expect(macDesktopClaimVisibleWindows([document, ...services]).map((w) => w.id)).toEqual([1]);
   });
 
-  it("treats a window titled after its app as untitled", () => {
+  it("keeps a window titled after its app — it is a window, not a scratch surface", () => {
+    // The rule that drops an app's extra rows asks whether the window server
+    // NAMED the entry, not whether the name is interesting. Reading a window
+    // called "Activity Monitor" as untitled made its app look like it had no
+    // titled window at all, so its nameless menu-bar strips were kept too and
+    // the picker listed Activity Monitor, Music and Grok Bot twice each —
+    // once as the real window, once as "Untitled window · minimized".
     const titled = makeWindow({ id: 1, appName: "TextEdit", bundleId: "com.apple.TextEdit", title: "Notes.txt" });
     const selfNamed = makeWindow({ id: 2, appName: "TextEdit", bundleId: "com.apple.TextEdit", title: "TextEdit" });
-    expect(macDesktopClaimVisibleWindows([titled, selfNamed]).map((w) => w.id)).toEqual([1]);
+    const strip = makeWindow({
+      id: 3,
+      appName: "TextEdit",
+      bundleId: "com.apple.TextEdit",
+      title: null,
+      minimized: true,
+      frame: { x: 0, y: 0, width: 5120, height: 30 },
+    });
+    expect(macDesktopClaimVisibleWindows([titled, selfNamed, strip]).map((w) => w.id)).toEqual([1, 2]);
+  });
+
+  it("still calls a self-named window untitled in the row it draws", () => {
+    // The LABEL rule is unchanged: the app name is already the group header,
+    // so the row under it does not print it a second time.
+    const selfNamed = makeWindow({ id: 2, appName: "TextEdit", bundleId: "com.apple.TextEdit", title: "TextEdit" });
+    expect(macDesktopClaimIsUntitled(selfNamed)).toBe(true);
   });
 
   it("keeps the untitled rows of an app that has no titled window at all", () => {
