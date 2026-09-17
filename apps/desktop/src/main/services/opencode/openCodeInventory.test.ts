@@ -869,6 +869,15 @@ describe("openCode inventory persistence", () => {
     expect(loadPersistedOpenCodeInventory("/repo")).toEqual(providers);
   });
 
+  it("does not persist ephemeral credential source metadata", () => {
+    persistOpenCodeInventory("/repo", [{ ...providers[0], credentialSource: "env" }, providers[1]]);
+    __setOpenCodeInventoryPersistencePathForTests(cacheFile);
+
+    expect(loadPersistedOpenCodeInventory("/repo")).toEqual(providers);
+    const saved = JSON.parse(fs.readFileSync(cacheFile, "utf8")) as Record<string, { providers: Array<Record<string, unknown>> }>;
+    expect(saved["/repo"].providers[0]).not.toHaveProperty("credentialSource");
+  });
+
   it("keeps provider lists isolated per project root", () => {
     persistOpenCodeInventory("/repo", providers);
     __setOpenCodeInventoryPersistencePathForTests(cacheFile);

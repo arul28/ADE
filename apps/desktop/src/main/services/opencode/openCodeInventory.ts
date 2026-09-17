@@ -119,6 +119,11 @@ const probeInFlightMap = new Map<string, Promise<OpenCodeInventoryResult>>();
 
 type PersistedInventoryFile = Record<string, { providers: OpenCodeProviderInfo[]; savedAt: number }>;
 
+function stripEphemeralCredentialSource(provider: OpenCodeProviderInfo): OpenCodeProviderInfo {
+  const { credentialSource: _credentialSource, ...stable } = provider;
+  return stable;
+}
+
 type ElectronLikeApp = { app?: { getPath(name: string): string } };
 
 let persistPathOverride: string | null = null;
@@ -150,37 +155,44 @@ function readPersistedInventoryFile(): PersistedInventoryFile {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       persistedInventoryMemo = {};
     } else {
+      const validEntries = Object.entries(parsed).filter(([, entry]) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+        const record = entry as Record<string, unknown>;
+        if (typeof record.savedAt !== "number" || !Number.isFinite(record.savedAt)) return false;
+        if (!Array.isArray(record.providers)) return false;
+        return record.providers.every((provider) => {
+          if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
+          const info = provider as Record<string, unknown>;
+          return typeof info.id === "string"
+            && typeof info.name === "string"
+            && typeof info.connected === "boolean"
+            && typeof info.modelCount === "number"
+            && Number.isFinite(info.modelCount)
+            && (
+              info.availableModelCount === undefined
+              || (typeof info.availableModelCount === "number" && Number.isFinite(info.availableModelCount))
+            )
+            && (
+              info.envVars === undefined
+              || (
+                Array.isArray(info.envVars)
+                && info.envVars.every((envVar) => typeof envVar === "string" && envVar.trim().length > 0)
+              )
+            )
+            && (
+              info.credentialSource === undefined
+              || info.credentialSource === "config"
+              || info.credentialSource === "env"
+            );
+        });
+      });
       persistedInventoryMemo = Object.fromEntries(
-        Object.entries(parsed).filter(([, entry]) => {
-          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-          const record = entry as Record<string, unknown>;
-          if (typeof record.savedAt !== "number" || !Number.isFinite(record.savedAt)) return false;
-          if (!Array.isArray(record.providers)) return false;
-          return record.providers.every((provider) => {
-            if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
-            const info = provider as Record<string, unknown>;
-            return typeof info.id === "string"
-              && typeof info.name === "string"
-              && typeof info.connected === "boolean"
-              && typeof info.modelCount === "number"
-              && Number.isFinite(info.modelCount)
-              && (
-                info.availableModelCount === undefined
-                || (typeof info.availableModelCount === "number" && Number.isFinite(info.availableModelCount))
-              )
-              && (
-                info.envVars === undefined
-                || (
-                  Array.isArray(info.envVars)
-                  && info.envVars.every((envVar) => typeof envVar === "string" && envVar.trim().length > 0)
-                )
-              )
-              && (
-                info.credentialSource === undefined
-                || info.credentialSource === "config"
-                || info.credentialSource === "env"
-              );
-          });
+        validEntries.map(([projectRoot, entry]) => {
+          const record = entry as { providers: OpenCodeProviderInfo[]; savedAt: number };
+          return [projectRoot, {
+            savedAt: record.savedAt,
+            providers: record.providers.map(stripEphemeralCredentialSource),
+          }];
         }),
       ) as PersistedInventoryFile;
     }
@@ -194,7 +206,10 @@ function readPersistedInventoryFile(): PersistedInventoryFile {
 export function persistOpenCodeInventory(projectRoot: string, providers: OpenCodeProviderInfo[]): void {
   try {
     const all = { ...readPersistedInventoryFile() };
-    all[projectRoot] = { providers, savedAt: Date.now() };
+    all[projectRoot] = {
+      providers: providers.map(stripEphemeralCredentialSource),
+      savedAt: Date.now(),
+    };
     persistedInventoryMemo = all;
     const filePath = resolvePersistedInventoryPath();
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
