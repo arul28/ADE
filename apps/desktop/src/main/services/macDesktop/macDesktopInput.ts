@@ -40,6 +40,22 @@ import { asNullableString, asNumber, asRecord, asWindows } from "./macDesktopSea
 /** An observation asking for more than this is clamped. */
 const MAX_OBSERVATION_LIMIT = MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT;
 
+/** How long a refused `wait` sits out a real gesture before asking again. */
+const GESTURE_RETRY_DELAY_MS = 250;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+/**
+ * The driver's "not while the mouse button is down" refusal for `wait`.
+ *
+ * Matched on the code rather than the message: it is the one driver failure
+ * that is worth retrying instead of surfacing, because the gesture that caused
+ * it ends on its own.
+ */
+const isGestureInFlight = (error: unknown): boolean =>
+  typeof (error as { code?: unknown } | null)?.code === "string"
+  && (error as { code: string }).code === "gesture_in_flight";
+
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const MAX_WAIT_TIMEOUT_MS = 120_000;
 
@@ -392,18 +408,44 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       const seat = await deps.ensureProvider();
       const timeoutMs = Math.max(0, Math.min(MAX_WAIT_TIMEOUT_MS, Math.round(args.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)));
       const startedMs = now();
-      const reply = await seat.input({
-        laneId,
-        command: "wait",
-        mode: "accessibility",
-        payload: {
-          text: args.text ?? null,
-          gone: args.gone ?? null,
-          windowTitle: args.windowTitle ?? null,
-          timeoutMs,
-        },
-        timeoutMs: timeoutMs + 5_000,
-      });
+      const deadlineMs = startedMs + timeoutMs;
+      // The driver refuses a `wait` outright while a real gesture holds the
+      // mouse button: the request would be handled on the main thread nested
+      // inside the drag's own run-loop pump, so polling there would keep the
+      // button down for the whole timeout. A gesture is a bounded, human-scale
+      // thing, so the right answer is to come back — but only until this wait's
+      // own deadline, which is the one clock the caller agreed to.
+      let reply: Awaited<ReturnType<typeof seat.input>> = { ok: false };
+      while (true) {
+        const remainingMs = Math.max(0, deadlineMs - now());
+        try {
+          reply = await seat.input({
+            laneId,
+            command: "wait",
+            mode: "accessibility",
+            payload: {
+              text: args.text ?? null,
+              gone: args.gone ?? null,
+              windowTitle: args.windowTitle ?? null,
+              timeoutMs: remainingMs,
+            },
+            timeoutMs: remainingMs + 5_000,
+          });
+          break;
+        } catch (error) {
+          if (!isGestureInFlight(error)) throw error;
+          const untilDeadlineMs = deadlineMs - now();
+          if (untilDeadlineMs <= 0) {
+            // Out of time while the gesture was still running. This is the same
+            // answer an unmatched poll gives, because it is the same fact: the
+            // condition did not become true inside the window the caller asked
+            // for.
+            reply = { ok: false };
+            break;
+          }
+          await sleep(Math.min(GESTURE_RETRY_DELAY_MS, untilDeadlineMs));
+        }
+      }
       const observation = await observeInternal({
         laneId,
         chatSessionId: args.chatSessionId ?? null,

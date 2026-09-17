@@ -335,6 +335,91 @@ describe("macDesktopService real input and the lease", () => {
   });
 });
 
+describe("macDesktopService wait and the gesture gate", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries a wait the driver refused mid-gesture, until it can poll", async () => {
+    let refusals = 0;
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.input]: () => {
+        // The driver will not poll while a real drag holds the mouse button:
+        // the wait would run nested inside the drag's run-loop pump and keep
+        // the button down for its whole timeout.
+        if (refusals < 2) {
+          refusals += 1;
+          const error = new Error("a real gesture is in flight") as Error & { code: string };
+          error.code = "gesture_in_flight";
+          throw error;
+        }
+        return { ok: true, resolvedIndex: 4 };
+      },
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+
+    const pending = service.wait({ laneId: "lane-1", text: "Done", timeoutMs: 10_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await pending;
+
+    expect(result.ok).toBe(true);
+    expect(refusals).toBe(2);
+    const waits = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input);
+    expect(waits).toHaveLength(3);
+    // Each retry is charged against the caller's own deadline, not given a
+    // fresh one: the third attempt asks for what is left of the ten seconds.
+    const remaining = waits.map((call) => (call.payload.payload as { timeoutMs: number }).timeoutMs);
+    expect(remaining[0]).toBe(10_000);
+    expect(remaining[2]).toBeLessThan(10_000);
+    service.dispose();
+  });
+
+  it("stops retrying at the caller's deadline and answers like an unmatched wait", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.input]: () => {
+        const error = new Error("a real gesture is in flight") as Error & { code: string };
+        error.code = "gesture_in_flight";
+        throw error;
+      },
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+
+    const pending = service.wait({ laneId: "lane-1", text: "Done", timeoutMs: 600 });
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await pending;
+
+    // The same answer an unmatched poll gives, because it is the same fact.
+    expect(result.ok).toBe(false);
+    expect(result.matched).toBeNull();
+    expect(result.waitedMs).toBeGreaterThanOrEqual(600);
+    // Bounded by the deadline, not by the gesture: it stopped asking.
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input).length)
+      .toBeLessThanOrEqual(4);
+    service.dispose();
+  });
+
+  it("surfaces any other driver failure instead of retrying it", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.input]: () => {
+        const error = new Error("no display") as Error & { code: string };
+        error.code = "MAC_DESKTOP_NO_DISPLAY";
+        throw error;
+      },
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await expect(service.wait({ laneId: "lane-1", text: "Done", timeoutMs: 1_000 }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_NO_DISPLAY" });
+    service.dispose();
+  });
+});
+
 describe("macDesktopService recordings", () => {
   it("a user recording stops the turn clip first — one lane, one writer", async () => {
     const driver = createFakeDriver();

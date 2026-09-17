@@ -7034,12 +7034,8 @@ describe("MAC_DESKTOP_LANE_BOUND_ACTIONS", () => {
       "type",
       "wait",
     ]);
-    // The reads answer without a lane; the CTO-only viewing trio is gated by role.
-    for (const read of ["getStatus", "listWindows", "getStreamStatus"]) {
-      expect(MAC_DESKTOP_LANE_BOUND_ACTIONS.has(read), read).toBe(false);
-    }
-    for (const ctoOnly of ["startStream", "stopStream", "takeControl", "returnControl", "renewLease"]) {
-      expect(MAC_DESKTOP_LANE_BOUND_ACTIONS.has(ctoOnly), ctoOnly).toBe(false);
-    }
+    // Everything absent from that list is either a read that answers without a
+    // lane (`getStatus`, `listWindows`, `getStreamStatus`) or one of the
+    // CTO-only viewing actions gated by role — the pin above is what says so.
   });
 });

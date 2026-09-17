@@ -3020,8 +3020,10 @@ export const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>(
  * lease in the service, so `click`/`type`/`press`/`scroll` in the default
  * accessibility mode check no lease and no lane ownership at all, and an
  * unpinned caller naming someone else's `laneId` would drive that lane's
- * display. `getStatus` and `listWindows` still answer — `getStatus` is the
- * domain's capability probe and has to work on every host.
+ * display. The reads in `MAC_DESKTOP_READ_ONLY_ACTIONS` — `getStatus`,
+ * `listWindows` and `getStreamStatus` — still answer: `getStatus` is the
+ * domain's capability probe and has to work on every host, and the other two
+ * observe without driving anything.
  *
  * User clients keep what they sent: the desktop renderer, the web client and a
  * paired phone each drive whichever lane's display their UI is showing, and the

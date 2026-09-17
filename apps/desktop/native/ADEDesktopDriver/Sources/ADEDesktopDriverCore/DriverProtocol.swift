@@ -155,6 +155,15 @@ public enum DriverErrorCode {
     /// of run. Distinct from `internal_error` because nothing went wrong in the
     /// driver: the world simply moved on.
     public static let deferredExpired = "deferred_expired"
+    /// A `wait` arrived while a real gesture was holding the mouse button.
+    ///
+    /// `wait` is deliberately not deferred — it would sit in the queue for up
+    /// to two minutes and hold everything parked behind it — but it is also not
+    /// safe to run: every request is dispatched on the main thread, nested
+    /// inside the drag's own run-loop pump, so a wait that polls would keep the
+    /// button held for its whole timeout. Refusing immediately hands the retry
+    /// decision to the caller, which is the only side that knows its deadline.
+    public static let gestureInFlight = "gesture_in_flight"
     public static let unknownOp = "unknown_op"
     public static let protocolError = "protocol_error"
     public static let invalidArgument = "invalid_argument"

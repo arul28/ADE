@@ -67,9 +67,9 @@ final class GestureGateTests: XCTestCase {
         }
     }
 
-    /// `input {command:"wait"}` posts no events, and it blocks for up to 120 s.
-    /// Parking it would hold everything behind it past the client's timeout for
-    /// no safety gain at all.
+    /// `input {command:"wait"}` blocks for up to 120 s. Parking it would hold
+    /// everything behind it past the client's timeout, so it is let through the
+    /// gate — and refused at its own call site instead (see `waitRefusal`).
     func testWaitInputProceedsDuringAGesture() throws {
         let gate = try gate(activeOn: "lane-a")
         XCTAssertEqual(
@@ -84,6 +84,21 @@ final class GestureGateTests: XCTestCase {
             gate.decide(request("input", ["laneId": .string("lane-a"), "command": .string("click")])),
             .deferred
         )
+    }
+
+    /// The other half of the `wait` rule: it is not parked, but it must not
+    /// poll either. Every request is dispatched on the main thread, nested
+    /// inside the drag's own run-loop pump, so a wait that polled would hold
+    /// the pressed button for its whole timeout. It is refused immediately with
+    /// a code the Node client can retry on.
+    func testWaitIsRefusedWhileAGestureHoldsTheButton() throws {
+        let gate = try gate(activeOn: "lane-a")
+        let refusal = try XCTUnwrap(gate.waitRefusal())
+        XCTAssertEqual(refusal.code, DriverErrorCode.gestureInFlight)
+        XCTAssertTrue(refusal.message.contains("lane-a"))
+        // And the moment the button is up, the same wait is free to poll.
+        gate.end()
+        XCTAssertNil(gate.waitRefusal())
     }
 
     /// A parked request that outlived the caller is answered, not replayed.

@@ -634,14 +634,6 @@ function listMatches(expected: string[] | undefined, actual: string[] | undefine
 }
 
 /**
- * Decide whether an incoming trigger event (context + lane metadata) matches a
- * rule's filter. Pure — no closure state, safe to use outside the service.
- * Semantics:
- *   - `labels[]` is a subset check (rule.labels ⊆ event.labels).
- *   - `titleRegex` / `bodyRegex` are case-insensitive; invalid patterns drop the match.
- *   - `authors[]` prefers `trigger.issue.author` / `trigger.pr.author` over `trigger.author`.
- */
-/**
  * Strip the fields an automation's `ade-action` config is not a trusted author
  * of, before the resolved args reach an in-process domain service.
  *
@@ -660,30 +652,44 @@ function listMatches(expected: string[] | undefined, actual: string[] | undefine
  * anyone who can read the lane's status. `inputHolderId` in the service prefers
  * `controllerId` over the chat id, so a rule carrying a copied controller/holder
  * id would post real `CGEvent` input while wearing the human's takeover.
- * `chatSessionId` goes with them: the RPC path pins it to the caller's own
- * session, and an unattended automation has no chat identity to pin, so any
- * value it carries is borrowed.
+ *
+ * `chatSessionId` is not dropped but *replaced*: the RPC path pins it to the
+ * caller's own session, and an unattended automation has no chat identity to
+ * pin, so any value it carries is borrowed. Emptying it is not free either —
+ * `inputHolderId` falls back to one shared `anonymous-agent`, which collapses
+ * every rule on the host into a single lease holder that can steal and renew
+ * each other's input. A synthetic `automation:<ruleId>` is the honest answer:
+ * stable across a rule's runs (so its own retry keeps its lease), distinct
+ * between rules, and obviously not a chat to anyone reading a status payload.
  */
-export function scopeAutomationAdeActionArgs(domain: string, resolvedArgs: unknown): void {
-  const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
+export function scopeAutomationAdeActionArgs(domain: string, resolvedArgs: unknown, ruleId: string): void {
   if (domain === "chat") {
+    const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
     for (const candidate of candidates) {
       if (isRecord(candidate) && isRecord(candidate.metadata)) {
         stripHostAuthoredMessageProvenance(candidate.metadata);
       }
     }
-    return;
-  }
-  if (domain === "mac_desktop") {
+  } else if (domain === "mac_desktop") {
+    const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
+    const syntheticSessionId = `automation:${ruleId.trim() || "unknown"}`;
     for (const candidate of candidates) {
       if (!isRecord(candidate)) continue;
       delete candidate.controllerId;
       delete candidate.holderId;
-      delete candidate.chatSessionId;
+      candidate.chatSessionId = syntheticSessionId;
     }
   }
 }
 
+/**
+ * Decide whether an incoming trigger event (context + lane metadata) matches a
+ * rule's filter. Pure — no closure state, safe to use outside the service.
+ * Semantics:
+ *   - `labels[]` is a subset check (rule.labels ⊆ event.labels).
+ *   - `titleRegex` / `bodyRegex` are case-insensitive; invalid patterns drop the match.
+ *   - `authors[]` prefers `trigger.issue.author` / `trigger.pr.author` over `trigger.author`.
+ */
 export function triggerMatches(
   ruleTrigger: AutomationTrigger,
   trigger: TriggerContext,
@@ -2996,6 +3002,9 @@ export function createAutomationService({
   const dispatchAdeAction = async (
     config: RunAdeActionConfig,
     trigger: TriggerContext,
+    /** The rule is the only stable identity an unattended action has; it is
+     * what `scopeAutomationAdeActionArgs` hands the domain in place of a chat. */
+    ruleId: string,
   ): Promise<{ status: AutomationActionStatus; output?: string }> => {
     if (!adeActionRegistryRef) {
       return { status: "failed", output: "ADE action registry is not available in this process." };
@@ -3028,7 +3037,7 @@ export function createAutomationService({
       }
     }
 
-    scopeAutomationAdeActionArgs(domain, resolvedArgs);
+    scopeAutomationAdeActionArgs(domain, resolvedArgs, ruleId);
 
     try {
       const callable = fn as (...a: unknown[]) => unknown;
@@ -3162,7 +3171,7 @@ export function createAutomationService({
       if (!config) {
         return { status: "failed", output: "ade-action action is missing adeAction config." };
       }
-      return await dispatchAdeAction(config, trigger);
+      return await dispatchAdeAction(config, trigger, rule.id);
     }
     if (action.type === "handoff") {
       // Same call the ADE action registry allowlists as `chat.handoffSession`;
