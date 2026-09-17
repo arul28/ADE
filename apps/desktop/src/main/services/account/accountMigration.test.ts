@@ -312,6 +312,7 @@ describe("runAccountMigration", () => {
       set: vi.fn(async () => ({ ok: true as const, value: null })),
     };
     const runner = createAccountMigrationRunner({
+      getAccountMigrationGeneration: () => 0,
       accountBridge: {
         status: () => signedInStatus("user-1"),
       },

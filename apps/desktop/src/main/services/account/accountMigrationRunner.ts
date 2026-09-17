@@ -43,7 +43,7 @@ export type AccountMigrationRunnerOptions = {
   getLogger: () => AccountMigrationLogger;
   getReceiptDir?: () => string;
   /** Bumped by the account lifecycle whenever its vault ownership is purged. */
-  getAccountMigrationGeneration?: () => number;
+  getAccountMigrationGeneration: () => number;
 };
 
 export function getOpenAccountContexts<T extends AccountMigrationContext>(
@@ -209,7 +209,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     try {
       ownerToken = {
         userId,
-        generation: options.getAccountMigrationGeneration?.() ?? 0,
+        generation: options.getAccountMigrationGeneration(),
       };
     } catch {
       return false;
@@ -219,7 +219,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
         const current = options.accountBridge.status();
         return current.signedIn
           && (current.userId?.trim() || null) === ownerToken.userId
-          && (options.getAccountMigrationGeneration?.() ?? 0) === ownerToken.generation;
+          && (options.getAccountMigrationGeneration()) === ownerToken.generation;
       } catch {
         return false;
       }
