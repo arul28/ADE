@@ -277,7 +277,7 @@ describe("resolveCursorCwdFromSlug", () => {
     const cwd = path.join(root, "Projects", "my-cool.app", ".ade", "worktrees", "lane-with-hyphen");
     fs.mkdirSync(cwd, { recursive: true });
     try {
-      // Cursor's rule, verbatim from @cursor/sdk 1.0.23: every non-alphanumeric
+      // Cursor's rule, verbatim from @cursor/sdk 1.0.31: every non-alphanumeric
       // character becomes `-`, runs collapse, ends are trimmed. The previous
       // fixture only replaced `/` and `.`, so on Windows it built a slug
       // containing `C:\…` — a string Cursor could never write, which made this

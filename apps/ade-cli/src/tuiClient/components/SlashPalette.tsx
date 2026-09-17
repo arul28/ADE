@@ -129,6 +129,7 @@ export function SlashPalette({
   userCommands,
   selectedIndex,
   provider,
+  inlineSteerWithheld,
   width,
   maxRows,
 }: {
@@ -136,10 +137,12 @@ export function SlashPalette({
   userCommands: AgentChatSlashCommand[];
   selectedIndex: number;
   provider?: AgentChatProvider | null;
+  /** See `paletteCommands`: a session fact the provider cannot carry. */
+  inlineSteerWithheld?: boolean;
   width?: number;
   maxRows?: number;
 }) {
-  const rows = paletteCommands(query, userCommands, { provider });
+  const rows = paletteCommands(query, userCommands, { provider, inlineSteerWithheld });
   if (!query.startsWith("/")) return null;
   const paletteWidth = clampPaletteWidth(width);
   const visibleRows = slashPaletteVisibleRows(maxRows);

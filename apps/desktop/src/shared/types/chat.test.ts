@@ -8,6 +8,7 @@ import {
   legacyPermissionModeFromDroidPermissionMode,
   activeTurnDispatchModes,
   activeTurnInterruptContinues,
+  cursorSessionRunsInCloud,
   defaultActiveTurnDispatchMode,
   inferAttachmentType,
   isHeicAttachment,
@@ -36,12 +37,13 @@ describe("Droid permission vocabulary", () => {
 });
 
 describe("active-turn dispatch modes", () => {
-  it("is the one table every surface reads: Claude all three, Codex inline-only, Cursor no inline, others queue-only", () => {
+  it("is the one table every surface reads: Claude and Cursor all three, Codex inline-only, others queue-only", () => {
     expect(activeTurnDispatchModes("claude")).toEqual(["inline", "queue", "interrupt"]);
     // Codex's app-server takes `turn/steer` into the running turn — the service
     // has always sent it; the table was the thing that never said so.
     expect(activeTurnDispatchModes("codex")).toEqual(["inline", "queue"]);
-    expect(activeTurnDispatchModes("cursor")).toEqual(["interrupt", "queue"]);
+    // Cursor gained inline with `Run.steer()` in @cursor/sdk 1.0.31.
+    expect(activeTurnDispatchModes("cursor")).toEqual(["inline", "queue", "interrupt"]);
     for (const provider of ["opencode", "droid", "pi", "qwen", "unknown-provider", undefined]) {
       expect(activeTurnDispatchModes(provider)).toEqual(["queue"]);
     }
@@ -50,8 +52,21 @@ describe("active-turn dispatch modes", () => {
   it("defaults to the first mode in menu order", () => {
     expect(defaultActiveTurnDispatchMode("claude")).toBe("inline");
     expect(defaultActiveTurnDispatchMode("codex")).toBe("inline");
-    expect(defaultActiveTurnDispatchMode("cursor")).toBe("interrupt");
+    expect(defaultActiveTurnDispatchMode("cursor")).toBe("inline");
     expect(defaultActiveTurnDispatchMode("droid")).toBe("queue");
+  });
+
+  it("reads a Cursor session as cloud from either field, and never for another provider", () => {
+    // The legacy branch is the one that silently regresses: `cursorRuntime` is
+    // only ever written as "cloud", so a session promoted before that field
+    // existed carries nothing but `cursorCloudAgentId`.
+    expect(cursorSessionRunsInCloud({ provider: "cursor", cursorRuntime: "cloud" })).toBe(true);
+    expect(cursorSessionRunsInCloud({ provider: "cursor", cursorCloudAgentId: "agent-1" })).toBe(true);
+    expect(cursorSessionRunsInCloud({ provider: "cursor", cursorRuntime: "local", cursorCloudAgentId: "agent-1" })).toBe(false);
+    expect(cursorSessionRunsInCloud({ provider: "cursor" })).toBe(false);
+    // A cloud agent id on another provider means something else entirely.
+    expect(cursorSessionRunsInCloud({ provider: "claude", cursorCloudAgentId: "agent-1" })).toBe(false);
+    expect(cursorSessionRunsInCloud(null)).toBe(false);
   });
 
   it("says which providers' interrupt continues the same thread, so all three surfaces label it alike", () => {
@@ -62,15 +77,16 @@ describe("active-turn dispatch modes", () => {
     expect(activeTurnInterruptContinues(undefined)).toBe(false);
   });
 
-  it("rejects an inline dispatch on Cursor rather than downgrading it", () => {
+  it("accepts both atomic modes on Cursor and only inline on Codex", () => {
     expect(supportsActiveTurnDispatchMode("cursor", "interrupt")).toBe(true);
-    expect(supportsActiveTurnDispatchMode("cursor", "inline")).toBe(false);
+    expect(supportsActiveTurnDispatchMode("cursor", "inline")).toBe(true);
     // Codex gained inline, not interrupt: there is no cancel-and-resend.
     expect(supportsActiveTurnDispatchMode("codex", "inline")).toBe(true);
     expect(supportsActiveTurnDispatchMode("codex", "interrupt")).toBe(false);
-    // The host rejection the renderer and TUI both surface verbatim.
-    expect(unsupportedActiveTurnDispatchModeMessage("cursor", "inline"))
-      .toBe("Cursor sessions support only the \"interrupt\" active-turn dispatch mode.");
+    // The host rejection the renderer and TUI both show verbatim. Cursor now
+    // names both modes, so the sentence pluralises.
+    expect(unsupportedActiveTurnDispatchModeMessage("cursor", "nonsense"))
+      .toBe("Cursor sessions support only the \"inline\" and \"interrupt\" active-turn dispatch modes.");
     expect(unsupportedActiveTurnDispatchModeMessage("codex", "interrupt"))
       .toBe("Codex sessions support only the \"inline\" active-turn dispatch mode.");
     expect(unsupportedActiveTurnDispatchModeMessage("droid", "interrupt"))
@@ -91,16 +107,16 @@ describe("CTO live-redirect providers", () => {
   });
 
   it("is its own contract, not a read of the composer's dispatch table", () => {
-    // Cursor qualifies through interrupt-and-resend and has no "inline" at all,
-    // so anything derived from `ACTIVE_TURN_DISPATCH_MODES` would have had to
-    // pick a mode to key off and would have got Cursor or Codex wrong. Keeping
-    // them separate is what stops a composer-menu edit from quietly changing
-    // who is allowed to be the CTO.
-    const inlineCapable = Object.entries(ACTIVE_TURN_DISPATCH_MODES)
-      .filter(([, modes]) => modes?.includes("inline"))
+    // No single dispatch mode keys this list. Codex redirects a live turn but
+    // has no "interrupt" — it folds a `turn/steer` request in and cannot cancel
+    // and resend — so a derivation keyed off either atomic mode would get one
+    // provider wrong. Keeping this list a literal is what stops a composer-menu
+    // edit from quietly changing who is allowed to be the CTO.
+    const interruptCapable = Object.entries(ACTIVE_TURN_DISPATCH_MODES)
+      .filter(([, modes]) => modes?.includes("interrupt"))
       .map(([provider]) => provider);
-    expect(inlineCapable).not.toContain("cursor");
-    expect(providerSupportsLiveRedirect("cursor")).toBe(true);
+    expect(interruptCapable).not.toContain("codex");
+    expect(providerSupportsLiveRedirect("codex")).toBe(true);
   });
 });
 

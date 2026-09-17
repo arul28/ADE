@@ -108,6 +108,16 @@ const mockState = vi.hoisted(() => ({
   cursorSdkSendCalls: [] as Array<Record<string, unknown>>,
   cursorSdkPolicyUpdates: [] as Array<Record<string, unknown>>,
   cursorSdkPooled: null as any,
+  /** Text pushed through `Run.steer()`, in call order. */
+  cursorSdkSteerCalls: [] as string[],
+  /** What the mocked `Run.steer()` reports back. */
+  cursorSteerOutcome: "complete_delivered" as "complete_delivered" | "revert_to_followup" | "unsupported",
+  /** Set to make the mocked `Run.steer()` throw, standing in for a dead worker. */
+  cursorSteerError: null as Error | null,
+  /** Runs inside the mocked `Run.steer()`, before it answers. */
+  onCursorSteer: null as null | (() => void),
+  /** When set, the mocked `Run.steer()` waits on this before answering. */
+  cursorSteerGate: null as Promise<void> | null,
   cursorSdkAgentIdForNextAcquire: null as string | null,
   cursorSdkCloudRequests: [] as Array<{ type: string; payload: Record<string, unknown> }>,
   cursorSdkCloudResponses: new Map<string, unknown>(),
@@ -138,7 +148,59 @@ const mockState = vi.hoisted(() => ({
       queueMicrotask(emitResponse);
     }
   },
+  releaseCursorSendPrompt: null as (() => void) | null,
+  releaseCursorSteer: null as (() => void) | null,
+  cursorSendParks: [] as Array<() => void>,
+  cursorSteerParks: [] as Array<() => void>,
 }));
+
+/**
+ * Park a Cursor `sendPrompt` on a promise whose resolver lives on
+ * `mockState`, so `afterEach` can settle it. A never-resolving
+ * `new Promise(() => {})` left a live turn hanging; later tests then
+ * hit Vitest's 20s `testTimeout` instead of a `waitFor` assertion.
+ *
+ * Nested parks (a recycle that re-stalls send 3 while send 1 is still
+ * open) must not settle the earlier one. `afterEach` drains the whole
+ * stack.
+ */
+function parkCursorSend(): () => void {
+  let resolveGate = () => {};
+  mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
+    resolveGate = resolve;
+  });
+  const release = () => {
+    resolveGate();
+    if (mockState.cursorSendPromptGate) mockState.cursorSendPromptGate = null;
+    const idx = mockState.cursorSendParks.indexOf(release);
+    if (idx >= 0) mockState.cursorSendParks.splice(idx, 1);
+  };
+  mockState.cursorSendParks.push(release);
+  mockState.releaseCursorSendPrompt = () => {
+    const parks = mockState.cursorSendParks.splice(0);
+    for (const park of parks) park();
+  };
+  return release;
+}
+
+function parkCursorSteer(): () => void {
+  let resolveGate = () => {};
+  mockState.cursorSteerGate = new Promise<void>((resolve) => {
+    resolveGate = resolve;
+  });
+  const release = () => {
+    resolveGate();
+    if (mockState.cursorSteerGate) mockState.cursorSteerGate = null;
+    const idx = mockState.cursorSteerParks.indexOf(release);
+    if (idx >= 0) mockState.cursorSteerParks.splice(idx, 1);
+  };
+  mockState.cursorSteerParks.push(release);
+  mockState.releaseCursorSteer = () => {
+    const parks = mockState.cursorSteerParks.splice(0);
+    for (const park of parks) park();
+  };
+  return release;
+}
 
 // ---------------------------------------------------------------------------
 // vi.mock — external dependencies
@@ -901,6 +963,16 @@ vi.mock("./cursorSdkPool", () => ({
       }),
       cancel: vi.fn(async () => {
         mockState.onCursorCancel?.();
+      }),
+      steer: vi.fn(async (text: string) => {
+        mockState.cursorSdkSteerCalls.push(text);
+        // Lets a test end the live turn from inside the steer call, which is the
+        // real shape of `revert_to_followup`: the turn refuses because it just
+        // finished.
+        mockState.onCursorSteer?.();
+        if (mockState.cursorSteerGate) await mockState.cursorSteerGate;
+        if (mockState.cursorSteerError) throw mockState.cursorSteerError;
+        return { outcome: mockState.cursorSteerOutcome };
       }),
       dispose: vi.fn(),
     };
@@ -2318,9 +2390,18 @@ beforeEach(() => {
   mockState.cursorSdkSendCalls = [];
   mockState.cursorSdkPolicyUpdates = [];
   mockState.cursorSdkPooled = null;
+  mockState.cursorSdkSteerCalls = [];
+  mockState.cursorSteerOutcome = "complete_delivered";
+  mockState.cursorSteerError = null;
+  mockState.onCursorSteer = null;
+  mockState.releaseCursorSteer = null;
+  mockState.cursorSteerParks = [];
+  mockState.cursorSteerGate = null;
   mockState.cursorSdkAgentIdForNextAcquire = null;
   mockState.cursorSdkCloudRequests = [];
   mockState.cursorSdkCloudResponses = new Map<string, unknown>();
+  mockState.releaseCursorSendPrompt = null;
+  mockState.cursorSendParks = [];
   mockState.cursorSendPromptGate = null;
   mockState.cursorSendPromptError = null;
   mockState.cursorSendPromptResult = null;
@@ -2372,15 +2453,28 @@ beforeEach(() => {
   replaceDynamicOpenCodeModelDescriptors([]);
 });
 
-afterEach(() => {
-  // Never-resolving send gates from a timed-out Cursor recycle test must not
-  // keep a real watchdog alive into the next case. Resolve whatever we can
-  // and drop the hook before restoring the clock.
+afterEach(async () => {
+  // Never-resolving send/steer parks from a stalled Cursor turn must settle
+  // here. Nulling the gate ref does not unblock an in-flight `await` of the
+  // old promise, which left later tests (the durable-metadata compaction case
+  // in particular) hanging until Vitest's 20s `testTimeout`.
+  //
+  // Restore the real clock first so the drained send settles on the real
+  // event loop. Releasing a park while fake timers are still installed lets
+  // the turn's success/fail tail run on a warped clock and leak into the
+  // next test (the recycle-copy cancel notice becomes "turn failed").
+  vi.useRealTimers();
+  mockState.cursorSendPromptError = null;
+  mockState.cursorSteerError = null;
+  mockState.cursorSteerOutcome = "complete_delivered";
+  mockState.releaseCursorSendPrompt?.();
+  mockState.releaseCursorSteer?.();
+  await new Promise<void>((resolve) => { pumpRealSetImmediate(resolve); });
+  await new Promise<void>((resolve) => { pumpRealSetImmediate(resolve); });
+  await Promise.resolve();
   mockState.onCursorSendPrompt = null;
   mockState.onCursorCancel = null;
-  mockState.cursorSendPromptError = null;
   mockState.droidPromptError = null;
-  vi.useRealTimers();
   vi.restoreAllMocks();
   // `vi.restoreAllMocks()` does not reset factory-created `vi.fn` mocks.
   // Reinstall the default so mode-specific approval tests cannot leak it.
@@ -18448,10 +18542,7 @@ describe("createAgentChatService", () => {
 
     it("preserves lifecycle markers when a Cursor user steer is rejected by a full queue", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
-      let finishTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
-        finishTurn = resolve;
-      });
+      const finishTurn = parkCursorSend();
       const { service, sessionService } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -21857,8 +21948,7 @@ describe("createAgentChatService", () => {
     it("reports active Cursor SDK turns so project switching does not close the chat runtime", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
-      let finishTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+      const finishTurn = parkCursorSend();
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       });
@@ -22038,8 +22128,7 @@ describe("createAgentChatService", () => {
 
     it("expires the abandoned run on the first Cursor send after settlement, and only that one", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
-      let releaseStuckTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseStuckTurn = resolve; });
+      const releaseStuckTurn = parkCursorSend();
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -22574,7 +22663,7 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Turn that goes silent.",
@@ -22605,10 +22694,14 @@ describe("createAgentChatService", () => {
     });
 
     /**
-     * Cursor "interrupt & continue". The Cursor SDK has no mid-run message
-     * API, so the redirect can only be cancel + resend on the same agent —
-     * these cover that the cancel happens, the resend lands on the same
-     * thread, and nothing the user already queued is thrown away.
+     * Cursor "interrupt & continue". Unlike Claude's interrupt, and unlike
+     * Cursor's own inline steer, this one cancels the run and resends on the
+     * same agent — these cover that the cancel happens, the resend lands on the
+     * same thread, and nothing the user already queued is thrown away.
+     *
+     * The inline-steer block further down uses its own `startStalledCursorTurn`:
+     * it needs a turn that never settles and a way to end it on demand, while
+     * this one needs the cancel plumbing that drives the redirect.
      */
     const startBusyCursorSession = async (events: AgentChatEventEnvelope[]) => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
@@ -22621,8 +22714,7 @@ describe("createAgentChatService", () => {
         model: "composer-2",
         modelId: "cursor/composer-2",
       });
-      let releaseTurn: (() => void) | null = null;
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      const releaseTurn = parkCursorSend();
       void service.sendMessage({
         sessionId: session.id,
         text: "Original turn.",
@@ -22713,7 +22805,11 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");
     });
 
-    it("routes messageSession kind auto on Cursor through interrupt-and-continue", async () => {
+    it("routes messageSession kind auto on Cursor through the inline steer", async () => {
+      // "auto" reads `defaultActiveTurnDispatchMode`, which is the first entry
+      // in the canonical table. Cursor's first entry became "inline" when
+      // @cursor/sdk 1.0.31 added `Run.steer()`, so auto now folds the message
+      // into the live run instead of cancelling it.
       const events: AgentChatEventEnvelope[] = [];
       const { service, session } = await startBusyCursorSession(events);
 
@@ -22724,13 +22820,14 @@ describe("createAgentChatService", () => {
       });
 
       expect(result.routedAction).toBe("steer");
-      await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
-      });
-      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
-        .toContain("Do this instead.");
+      expect(mockState.cursorSdkSteerCalls).toEqual(["Do this instead."]);
+      // The live turn takes the text, so no second turn starts and the first
+      // one is never interrupted.
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
       expect(events.some((event) =>
-        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(true);
     });
 
     it("keeps messageSession kind queue on Cursor queued instead of interrupting", async () => {
@@ -22820,12 +22917,6 @@ describe("createAgentChatService", () => {
           event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
       });
 
-      await expect(service.dispatchSteer({
-        sessionId: session.id,
-        steerId: staged.steerId,
-        mode: "inline",
-      })).rejects.toThrow(/only the "interrupt" active-turn dispatch mode/);
-
       await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
 
       await vi.waitFor(() => {
@@ -22839,7 +22930,7 @@ describe("createAgentChatService", () => {
         && event.event.message.includes("Delivering"))).toBe(true);
     });
 
-    it("rejects an inline steer dispatch on Cursor instead of silently downgrading it", async () => {
+    it("accepts an inline steer dispatch on Cursor now that the SDK has a steer channel", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const { service } = createService({ onEvent: () => {} });
       const session = await service.createSession({
@@ -22849,11 +22940,13 @@ describe("createAgentChatService", () => {
         modelId: "cursor/composer-2",
       });
 
+      // The table guard no longer refuses the mode. With no live turn the
+      // message simply becomes an ordinary send rather than an error.
       await expect(service.steer({
         sessionId: session.id,
         text: "Fold this into the live run.",
         dispatchMode: "inline",
-      })).rejects.toThrow(/only the "interrupt" active-turn dispatch mode/);
+      })).resolves.toMatchObject({ queued: false });
     });
 
     // Regression (quality A2): the redirect rebuilds the send from scratch, so
@@ -23031,7 +23124,7 @@ describe("createAgentChatService", () => {
       try {
         // Neither attempt ever answers, so the steer is carried onto attempt 2's
         // runtime and then abandoned again when that one is recycled too.
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Both attempts go silent.",
@@ -23081,7 +23174,7 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Silent run the user stops.",
@@ -23127,7 +23220,7 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Both attempts go silent.",
@@ -23182,13 +23275,13 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         // Send 3 is the delivered steer's own turn: it goes silent too, so its
         // nested recycle detaches managed.runtime while the outer wrapper is
         // still holding the carried steer — the false-cancel window.
         mockState.onCursorSendPrompt = () => {
           if (mockState.cursorSdkSendCalls.length !== 3) return;
-          mockState.cursorSendPromptGate = new Promise<void>(() => {});
+          parkCursorSend();
           // The gate is read synchronously right after this hook, so clearing
           // it on a microtask stalls only send 3 and lets its re-send run free.
           queueMicrotask(() => { mockState.cursorSendPromptGate = null; });
@@ -23233,12 +23326,331 @@ describe("createAgentChatService", () => {
       }
     });
 
+    describe("Cursor inline steer", () => {
+      // `pumpUntil` drives fake timers, and every test here parks a turn that
+      // never settles on its own.
+      // The file-level afterEach already restores the clock.
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => {
+        // Parks drain in the file-level afterEach, after the real clock is
+        // restored. Draining here would settle the stalled send on the fake
+        // clock this block installed.
+        vi.useRealTimers();
+      });
+
+      /** A Cursor session parked on a turn that never finishes on its own. */
+      const startStalledCursorTurn = async (events: AgentChatEventEnvelope[]) => {
+        process.env.CURSOR_API_KEY = "cursor-test-key";
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "cursor",
+          model: "composer-2",
+          modelId: "cursor/composer-2",
+        });
+        const endTurn = parkCursorSend();
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "A turn that keeps running.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+        // `endTurn` lets the turn finish. Without calling it the runtime stays
+        // busy for the whole test, which is what every case below wants except
+        // the two that prove a stranded row still goes out.
+        return { service, session, endTurn };
+      };
+
+      const noticeTexts = (events: AgentChatEventEnvelope[]) => events
+        .filter((event) => event.event.type === "system_notice")
+        .map((event) => (event.event.type === "system_notice" ? event.event.message : ""));
+
+      it("folds the message into the live run when the turn accepts it", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+
+        await service.steer({
+          sessionId: session.id,
+          text: "Do this instead.",
+          dispatchMode: "inline",
+        });
+
+        expect(mockState.cursorSdkSteerCalls).toEqual(["Do this instead."]);
+        // The steered text belongs to the live turn, so it must not start one.
+        expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+        const inline = events.filter((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline");
+        expect(inline).toHaveLength(1);
+        // Nothing is left staged, so no chip survives the send.
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(false);
+      });
+
+      it("queues the message and explains why when the turn refuses it", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const { service, session } = await startStalledCursorTurn(events);
+
+        await service.steer({
+          sessionId: session.id,
+          text: "Too late for this one.",
+          dispatchMode: "inline",
+        });
+
+        expect(mockState.cursorSdkSteerCalls).toEqual(["Too late for this one."]);
+        // The text is never lost: it falls back to the ordinary staged queue.
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+        expect(noticeTexts(events).some((text) => text.includes("send as a new message"))).toBe(true);
+      });
+
+      it("keeps the staged chip alive on the fallback notice", async () => {
+        // The renderer retires a chip when a notice names its steer AND the text
+        // matches /cancelled|delivering/i. The fallback leaves the message
+        // queued, so its wording must fail that test or the user loses sight of
+        // a message still waiting to send.
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const { service, session } = await startStalledCursorTurn(events);
+
+        await service.steer({
+          sessionId: session.id,
+          text: "Still mine.",
+          dispatchMode: "inline",
+        });
+
+        const fallback = events.find((event) =>
+          event.event.type === "system_notice" && event.event.message.includes("send as a new message"));
+        expect(fallback).toBeTruthy();
+        const message = fallback?.event.type === "system_notice" ? fallback.event.message : "";
+        expect(/cancelled|delivering/i.test(message)).toBe(false);
+      });
+
+      it("never offers an attachment-bearing message to the text-only steer channel", async () => {
+        // `Run.steer(text)` has no image channel and no file blocks. Sending the
+        // bare text would drop the files while the transcript row still claimed
+        // they went. The staged queue delivers them intact.
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+
+        const imagePath = path.join(tmpRoot, "cursor-inline-steer.png");
+        fs.writeFileSync(imagePath, "fake-image-bytes");
+        await service.steer({
+          sessionId: session.id,
+          text: "Look at this screenshot.",
+          dispatchMode: "inline",
+          attachments: [{ path: imagePath, type: "image" }],
+        });
+
+        // The steer channel is never even asked, so the notice must not blame
+        // the agent for a refusal ADE made itself.
+        expect(mockState.cursorSdkSteerCalls).toEqual([]);
+        const notice = noticeTexts(events).find((text) => text.includes("send as a new message"));
+        expect(notice).toBeTruthy();
+        expect(notice).not.toMatch(/cursor/i);
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      it("does not promise a new message when the queue is full and drops it", async () => {
+        // The fallback notice says the message will send. Emitting it before the
+        // queue-full guard would pair that promise with "Steer dropped".
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const { service, session } = await startStalledCursorTurn(events);
+
+        // Fill until the host itself reports the queue full, so the private cap's
+        // value never leaks in here and a change to it cannot quietly stop this
+        // test from reaching the branch it exists for.
+        let filler = 0;
+        while ((await service.steer({ sessionId: session.id, text: `filler ${filler}` })).reason !== "queue_full") {
+          filler += 1;
+          if (filler > 100) throw new Error("queue never reported full");
+        }
+        const result = await service.steer({
+          sessionId: session.id,
+          text: "One too many.",
+          dispatchMode: "inline",
+        });
+
+        expect(result.reason).toBe("queue_full");
+        const texts = noticeTexts(events);
+        expect(texts.some((text) => text.includes("queue is full"))).toBe(true);
+        expect(texts.some((text) => text.includes("send as a new message"))).toBe(false);
+      });
+
+      it("queues the message rather than losing it when the steer call throws", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerError = new Error("Cursor SDK steer failed: worker gone");
+        const { service, session } = await startStalledCursorTurn(events);
+
+        // A dead worker must not take the user's typed text down with it.
+        await service.steer({
+          sessionId: session.id,
+          text: "Survives a dead worker.",
+          dispatchMode: "inline",
+        });
+
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      it("sends a stranded row when the refusal is the turn ending", async () => {
+        // The whole reason `drainCursorQueueHeadIfIdle` exists. Cursor drains its
+        // queue at one place only: the end of a turn. When the steer is refused
+        // BECAUSE that turn just ended, the boundary already decided not to
+        // drain (the queue was empty then), so without the flush this row waits
+        // for the user to send something unrelated.
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const { service, session, endTurn } = await startStalledCursorTurn(events);
+        mockState.onCursorSteer = () => {
+          mockState.cursorSendPromptGate = null;
+          endTurn();
+        };
+
+        await service.steer({
+          sessionId: session.id,
+          text: "Stranded without the flush.",
+          dispatchMode: "inline",
+        });
+
+        // Send 2 is the stranded row going out on its own, with no further user
+        // action. Before the flush existed this stayed at 1.
+        await pumpUntil("stranded row delivered", () => mockState.cursorSdkSendCalls.length >= 2);
+        expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+          .toContain("Stranded without the flush.");
+      });
+
+      it("refuses to edit or cancel a row while its dispatch is in flight", async () => {
+        // The inline dispatch keeps the row in `pendingSteers` across the SDK
+        // await and sends the text it read at call time. An edit landing in that
+        // window would put text in the transcript the agent never received, and
+        // a cancel would clear the chip for a message already on its way.
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Do not mutate me." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        // `onCursorSteer` runs INSIDE the mocked steer, which is exactly the
+        // window the guard protects.
+        const attempts: Promise<unknown>[] = [];
+        mockState.onCursorSteer = () => {
+          attempts.push(
+            service.editSteer({ sessionId: session.id, steerId: staged.steerId, text: "edited" })
+              .then(() => "edit-allowed", (error: Error) => error.message),
+            service.cancelSteer({ sessionId: session.id, steerId: staged.steerId })
+              .then(() => "cancel-allowed", (error: Error) => error.message),
+          );
+        };
+
+        await service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+        const outcomes = await Promise.all(attempts);
+        expect(outcomes).toHaveLength(2);
+        for (const outcome of outcomes) {
+          expect(String(outcome)).toMatch(/already being dispatched/);
+        }
+        // The delivered text is the text that was staged, not the attempted edit.
+        expect(mockState.cursorSdkSteerCalls).toEqual(["Do not mutate me."]);
+      });
+
+      it("promotes an already staged row into the live run", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+
+        const staged = await service.steer({ sessionId: session.id, text: "Staged first." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        const result = await service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+
+        expect(result.dispatchedAt).toBeTypeOf("number");
+        expect(mockState.cursorSdkSteerCalls).toEqual(["Staged first."]);
+        expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(true);
+      });
+
+      it("does not treat a recycled run's steer ack as delivery of a staged row", async () => {
+        // Recycle copies `pendingSteers` onto the replacement and kills this
+        // run. An ack from the dying run is not ownership on the session that
+        // remains — reporting dispatched would drop the only surviving copy.
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Keep me once." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        const releaseSteer = parkCursorSteer();
+        const dispatching = service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        await tripCursorSdkSilenceWatchAndRecycle();
+        releaseSteer();
+        const result = await dispatching;
+
+        expect(result.dispatchedAt).toBeNull();
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
+      });
+
+      it("does not treat a recycled run's steer ack as inline on a fresh send", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const releaseSteer = parkCursorSteer();
+        const sending = service.steer({
+          sessionId: session.id,
+          text: "Keep me once.",
+          dispatchMode: "inline",
+        });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        await tripCursorSdkSilenceWatchAndRecycle();
+        releaseSteer();
+        const result = await sending;
+        expect(result.queued).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
+      });
+
+      it("leaves a promoted row staged when the turn refuses it", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+
+        const staged = await service.steer({ sessionId: session.id, text: "Stays staged." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+        mockState.cursorSteerOutcome = "revert_to_followup";
+
+        const result = await service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+
+        // Not dispatched, so the row keeps its place and the turn boundary
+        // still owns delivering it.
+        expect(result.dispatchedAt).toBeNull();
+        expect(noticeTexts(events).some((text) => text.includes("send as a new message"))).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
+      });
+    });
+
     it("cancels a carried Cursor steer with recycle copy when the re-send cannot start", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
-      mockState.cursorSendPromptError = new Error("Cursor SDK send failed: [internal] write ECANCELED");
-      // Attempt 2 cannot rebuild a runtime, so the carried steer can never be
-      // delivered — the chip must still clear, with an honest reason.
-      mockState.cursorAcquireErrorOnCall = 2;
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -23250,34 +23662,42 @@ describe("createAgentChatService", () => {
         modelId: "cursor/composer-2",
       });
 
-      let releaseTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
-      void service.sendMessage({
-        sessionId: session.id,
-        text: "Turn that dies.",
-      }, { awaitDispatch: true }).catch(() => undefined);
-      await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(1);
-        expect(String(mockState.cursorSdkSendCalls[0]?.promptText ?? "")).toContain("Turn that dies.");
-      });
-      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
-      await service.steer({ sessionId: session.id, text: "Queued during the outage." });
-      releaseTurn();
+      vi.useFakeTimers();
+      try {
+        // Keep the first send parked. Completing it with a throw is racy with
+        // leftover Cursor inline parks: the catch path then cancels the steer
+        // as "current turn failed" instead of carrying it through recycle.
+        parkCursorSend();
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Turn that dies.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+        await service.steer({ sessionId: session.id, text: "Queued during the outage." });
+        await pumpUntil("queued steer", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
-      await vi.waitFor(() => {
-        expect(events.some((event) =>
-          event.sessionId === session.id && event.event.type === "done")).toBe(true);
-      });
+        // Fail the *next* acquire, armed immediately before recycle so a
+        // leftover acquire from the previous test cannot consume the slot.
+        mockState.cursorAcquireErrorOnCall = mockState.cursorSdkAcquireCalls.length + 1;
+        await tripCursorSdkSilenceWatchAndRecycle();
+        await pumpUntil("carried steer cancelled", () => events.some((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("recycled the Cursor thread")));
 
-      const cancelNotices = events.filter((event) =>
-        event.event.type === "system_notice"
-        && typeof event.event.steerId === "string"
-        && event.event.message.includes("cancelled"));
-      expect(cancelNotices).toHaveLength(1);
-      expect(cancelNotices[0]?.event).toMatchObject({
-        type: "system_notice",
-        message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
-      });
+        const cancelNotices = events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("cancelled"));
+        expect(cancelNotices).toHaveLength(1);
+        expect(cancelNotices[0]?.event).toMatchObject({
+          type: "system_notice",
+          message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("rotates onto a fresh Cursor agent after a restart when the previous thread was abandoned", async () => {
@@ -23294,7 +23714,7 @@ describe("createAgentChatService", () => {
       try {
         // Both attempts go silent, so the terminal path recycles the rotated
         // agent too and arms a rotation for whatever comes next.
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Both attempts go silent.",
@@ -23432,8 +23852,7 @@ describe("createAgentChatService", () => {
 
     it("still expires the abandoned run when the runtime is evicted between settle and the next send", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
-      let releaseStuckTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseStuckTurn = resolve; });
+      const releaseStuckTurn = parkCursorSend();
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -23540,7 +23959,7 @@ describe("createAgentChatService", () => {
       vi.useFakeTimers();
       try {
         // The wedged thread: the send never settles and no worker event lands.
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Second Cursor turn.",
@@ -23590,7 +24009,7 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Both attempts go silent.",
@@ -50357,10 +50776,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       throw previewError;
     });
 
-    let releaseGate: () => void = () => {};
-    mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
-    });
+    const releaseGate = parkCursorSend();
 
     const pendingTurn = service.sendMessage({
       sessionId: session.id,
@@ -50616,10 +51032,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       cursorModeId: "agent",
     });
 
-    let releaseGate: () => void = () => {};
-    mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
-    });
+    const releaseGate = parkCursorSend();
     const pendingTurn = service.sendMessage({
       sessionId: session.id,
       text: "Keep this Cursor turn open while I switch modes.",
@@ -50660,10 +51073,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       cursorModeId: "agent",
     });
 
-    let releaseGate: () => void = () => {};
-    mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
-    });
+    const releaseGate = parkCursorSend();
     const firstPrompt = "Keep this Cursor turn open while I switch models.";
     const matchingFirstPromptCalls = () => mockState.cursorSdkSendCalls.filter((call) =>
       String(call.promptText ?? "").includes(firstPrompt)

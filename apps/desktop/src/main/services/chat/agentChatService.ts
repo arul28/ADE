@@ -313,6 +313,7 @@ import type {
   AgentChatRecoverContinuityArgs,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerMode,
+  ActiveTurnSendMode,
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
   AgentChatCancelDispatchedSteerArgs,
@@ -481,6 +482,7 @@ import {
   defaultActiveTurnDispatchMode,
   providerSupportsLiveRedirect,
   supportsActiveTurnDispatchMode,
+  cursorSessionRunsInCloud,
   unsupportedActiveTurnDispatchModeMessage,
   waitingOnYouDescription,
   type AcpChatProvider,
@@ -918,6 +920,7 @@ import {
   type CursorSdkHookDecision,
   type CursorSdkHookRequest,
   type CursorSdkPermissionPolicy,
+  type CursorSdkSteerOutcome,
 } from "./cursorSdkProtocol";
 import { workerPathImagesFromAttachments, type WorkerIpcImage } from "./workerAttachmentImages";
 import { presentChatFailure, isSandboxUnsupportedFailureText } from "../../../shared/chatErrorPresentation";
@@ -5941,6 +5944,17 @@ type CursorSdkRecycleReason = "silent_run" | "transport_error" | "stale_token";
 const settledSteerIds = new WeakMap<ManagedChatSession, Set<string>>();
 
 /**
+ * True while an explicit dispatch owns this staged row.
+ *
+ * Only Claude and Cursor track in-flight dispatches, and only Cursor holds the
+ * row in `pendingSteers` across a network await — which is the window where an
+ * edit or a cancel would contradict what the agent already received.
+ */
+function isSteerDispatchInFlight(runtime: ChatRuntime, steerId: string): boolean {
+  return "dispatchingSteerIds" in runtime && runtime.dispatchingSteerIds.has(steerId);
+}
+
+/**
  * Records `steerId` as settled and reports whether this caller is the first to
  * do so. Only the first caller should emit the notice.
  */
@@ -6111,6 +6125,10 @@ const CURSOR_SDK_VISIBLE_OUTPUT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "command",
   "subagent_started",
   "subagent_result",
+  // Cursor's `updateTodos` maps to these instead of a raw tool row, so a turn
+  // whose only output was a plan still counts as having produced something.
+  "todo_update",
+  "plan",
 ]);
 
 /**
@@ -41805,6 +41823,250 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Push text into the live local Cursor run through `Run.steer()`.
+   *
+   * Never throws. Only `complete_delivered` transfers ownership to the turn;
+   * every other result — the turn refused it, the run has no steer channel, or
+   * the worker call failed — leaves the caller responsible for sending it
+   * another way. A thrown error here would lose a message the user already
+   * typed, which is a worse failure than a late delivery.
+   *
+   * Deliberately NOT bounded by a timeout, which is the opposite of what the
+   * usual "never await the pool unbounded" rule would suggest. Verified against
+   * the 1.0.31 bundle: `Run.steer()` submits the injection to the agent BEFORE
+   * it waits for the ack, and when the server answers `queued` the SDK maps
+   * that to `confirm_steering`, CLEARS its own 15s ack timer, and waits for the
+   * turn to actually consume or drop the message. On a long turn that wait is
+   * long — and correct, because the message really is sitting in that turn.
+   *
+   * So a timeout here cannot be made safe at any value. Firing while the
+   * injection is accepted makes the caller queue a second copy that the turn
+   * then also delivers: the user's message goes twice. Firing when it was never
+   * accepted gains nothing the SDK's own 15s timer does not already give.
+   *
+   * The await is bounded in practice by the turn itself: the SDK wraps each run
+   * in a `finally` that resolves every outstanding injection waiter with
+   * `revert_to_followup`, so a `confirm_steering` that never delivers still
+   * settles when the turn ends. A dead worker settles it too — the pool's
+   * `child.on("exit")` rejects every pending request, which lands in the catch
+   * below. What is left is a run that never ends at all, and that turn is
+   * already hung with or without this call; the user's Stop aborts it and the
+   * SDK's `finally` then drains the waiters.
+   */
+  const cursorSdkSteerText = async (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    text: string,
+  ): Promise<CursorSdkSteerOutcome> => {
+    try {
+      const { outcome } = await runtime.sdk.steer(text);
+      logger.info("agent_chat.cursor_sdk_steer", {
+        sessionId: managed.session.id,
+        turnId: runtime.activeTurnId,
+        outcome,
+      });
+      return outcome;
+    } catch (error) {
+      logger.warn("agent_chat.cursor_sdk_steer_failed", {
+        sessionId: managed.session.id,
+        turnId: runtime.activeTurnId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "revert_to_followup";
+    }
+  };
+
+  /**
+   * One line explaining that an inline send became an ordinary message.
+   *
+   * Carries no `steerId`, matching every other non-resolving notice. The chip is
+   * retired by a steerId-bearing notice whose text matches the renderer's
+   * `/cancelled|delivering/i` test (`AgentChatPane.tsx`), which this wording
+   * fails either way — the message is still queued and its chip must stay.
+   *
+   * The wording names no culprit on purpose. Most refusals are ADE's own —
+   * attachments, per-message overrides, a cloud run, no live turn — and the
+   * steer channel is never even consulted for them. Saying "Cursor didn't take
+   * it" would be false on the most common path of all: attaching a file during a
+   * live turn. The consequence is identical either way, so the line states only
+   * that.
+   */
+  const emitCursorInlineSteerFallbackNotice = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: "This message couldn't go into the running turn, so it will send as a new message.",
+      turnId: runtime.activeTurnId ?? undefined,
+    });
+  };
+
+  /**
+   * Show one staged Cursor row in the transcript as queued.
+   *
+   * Used by the staging path and by the drain's restore-on-throw, so the two
+   * cannot describe the same row differently — they already had, with `text`
+   * holding submitted text in one and visible text in the other.
+   */
+  const emitQueuedCursorSteerRow = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    row: QueuedSteer,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: row.displayText ?? row.text,
+      ...(row.attachments.length ? { attachments: row.attachments } : {}),
+      ...(row.contextAttachments.length ? { contextAttachments: row.contextAttachments } : {}),
+      ...(row.metadata ? { metadata: row.metadata } : {}),
+      steerId: row.steerId,
+      turnId: runtime.activeTurnId ?? undefined,
+      deliveryState: "queued",
+    });
+  };
+
+  /**
+   * Try to fold one message into the live Cursor run. True only when the run
+   * took ownership of it; the caller owns every other outcome.
+   *
+   * Both inline dispatch paths — a fresh send during a turn, and the promotion
+   * of an already staged row — go through here, so the refusal rules and the
+   * transcript row cannot drift apart. `onDelivered` carries the bookkeeping
+   * that differs between them, the same shape `dispatchClaudeSteerMessage` uses.
+   *
+   * Every refusal states its own reason at the guard that applies it.
+   *
+   * After the await, a recycled runtime is a refusal here — not the caller's
+   * problem. Recycle copies `pendingSteers` onto the replacement; claiming
+   * delivery on the dying run would emit `inline` and drop the only surviving
+   * copy. `steer()` then restages onto that replacement; `dispatchSteer` leaves
+   * the copied row staged.
+   */
+  const tryCursorInlineSteer = async (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    row: QueuedSteer,
+    onDelivered?: () => void,
+  ): Promise<boolean> => {
+    if (row.attachments.length || row.contextAttachments.length || row.resolvedAttachments.length) {
+      return false;
+    }
+    // Per-message overrides cannot ride a text-only channel either. No caller
+    // pairs them with an inline dispatch today; this keeps the next one from
+    // losing them silently.
+    if (row.reasoningEffort != null || row.executionMode || row.interactionMode) {
+      return false;
+    }
+    // Gated here, not only in the renderer: a cloud run refuses every steer, and
+    // the CLI, the TUI, iOS and `messageSession` auto-routing all reach this
+    // path without the renderer's check.
+    //
+    // NOT covered by a unit test: reaching it needs a promoted cloud session
+    // running a stalled cloud turn, which the local-turn harness cannot build.
+    // Verified by review of every caller instead.
+    if (cursorSessionRunsInCloud(managed.session)) return false;
+    if (managed.closed || managed.runtime !== runtime || !runtime.busy) return false;
+
+    const outcome = await cursorSdkSteerText(managed, runtime, row.text);
+    if (outcome !== "complete_delivered") return false;
+
+    // Recycle during the await copies `pendingSteers` onto a replacement
+    // runtime and kills this one. An ack from the dying run is not ownership
+    // on the session that remains: treat it as a refusal so the caller keeps
+    // (or restages) the only surviving copy. Emitting `inline` here would also
+    // retire the chip for a message the replacement turn never saw.
+    if (managed.runtime !== runtime) return false;
+
+    // The run took the text, so the caller's bookkeeping runs even if the
+    // session closed meanwhile. Skipping it there would leave a delivered row
+    // on `pendingSteers`, which `persistChatState` carries forward — the
+    // message would be sent again on reopen.
+    onDelivered?.();
+    if (managed.closed) return true;
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: row.text,
+      ...(row.displayText && row.displayText !== row.text ? { displayText: row.displayText } : {}),
+      ...(row.metadata ? { metadata: row.metadata } : {}),
+      steerId: row.steerId,
+      turnId: runtime.activeTurnId ?? undefined,
+      deliveryState: "inline",
+    });
+    persistChatState(managed);
+    return true;
+  };
+
+  /**
+   * Send the queue's head when a refused inline steer leaves a row stranded.
+   *
+   * Returns the steerId it drained, or null when it declined — wrong runtime,
+   * a live turn, a dispatch already in flight, an empty queue, or a throw.
+   *
+   * Cursor drains `pendingSteers` at exactly one place: the end of a live turn
+   * (`shouldDeliverQueuedSteer`). There is no idle reader. So a row that lands
+   * on the queue AFTER that boundary has already passed — which is the common
+   * shape of `revert_to_followup`, since the turn refusing the message is often
+   * the turn ending — would wait for the user to send something else.
+   *
+   * Runs only when this runtime is still the session's and is genuinely idle.
+   *
+   * That does not make it mutually exclusive with the boundary drain — the
+   * boundary shifts its row and then awaits prompt building before the turn sets
+   * `busy`, so both can be in flight at once. It is still safe: the shift is
+   * synchronous, so two drains always take two DIFFERENT rows. The worst case is
+   * two queued messages going out closer together than usual, never the same
+   * message twice and never a message lost.
+   */
+  const drainCursorQueueHeadIfIdle = async (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+  ): Promise<string | null> => {
+    if (managed.closed || managed.runtime !== runtime) return null;
+    if (runtime.busy || runtime.activeTurnId || runtime.dispatchingSteerIds.size) return null;
+    // `deliverNextQueuedSteer` shifts the head, so the row has to be read first.
+    const head = runtime.pendingSteers[0];
+    if (!head) return null;
+    try {
+      return (await deliverNextQueuedSteer(managed, runtime)) ? head.steerId : null;
+    } catch (error) {
+      // `deliverNextQueuedSteer` shifts the row, settles it and emits
+      // "Delivering your queued message..." BEFORE it dispatches, and it does
+      // not restore on a throw. Without this the message is gone: off the queue,
+      // chip retired, transcript claiming delivery, and only a log line left.
+      // This call site reaches states the turn boundary never does — an expired
+      // token, pending input, a concurrent drain — so it has to put the row back.
+      //
+      // NOT covered by a test: every failure the harness can inject into a
+      // Cursor send is absorbed by the turn's own recycle-and-retry path, so
+      // `deliverNextQueuedSteer` never throws out to here. Reaching it needs a
+      // failure before the turn starts, which the harness cannot stage against a
+      // live runtime. Kept because the cost of being wrong is a lost message.
+      // Re-checked because a recycle can detach this runtime while the delivery
+      // is in flight. Restoring onto a detached array persists nothing and no
+      // drain can reach it, while the re-emitted bubble would show the user a
+      // message the failed turn already printed.
+      if (
+        !managed.closed
+        && managed.runtime === runtime
+        && !runtime.pendingSteers.some((entry) => entry.steerId === head.steerId)
+      ) {
+        runtime.pendingSteers.unshift(head);
+        reopenSteerSettlement(managed, head.steerId);
+        emitQueuedCursorSteerRow(managed, runtime, head);
+        persistChatState(managed);
+      }
+      logger.warn("agent_chat.cursor_sdk_idle_queue_drain_failed", {
+        sessionId: managed.session.id,
+        steerId: head.steerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  /**
    * Last resort for steers lifted off a recycled runtime that will never be
    * delivered — the re-send was interrupted or could not start. They are
    * already detached from every runtime, so this only has to clear the chip
@@ -45160,10 +45422,17 @@ export function createAgentChatService(args: {
     // is redirected into the live one instead. Its provider is constrained to
     // ones that can do that (`CTO_LIVE_REDIRECT_PROVIDERS`), so there is always
     // an atomic mode to fall back to.
+    //
+    // "First non-queue" is not enough on its own: a cloud Cursor run refuses
+    // every inline steer, and Cursor lists inline first. Picking it there would
+    // stage the message on the very queue this fallback exists to avoid, so the
+    // withheld mode is skipped and interrupt — which works on cloud — is taken.
     const dispatchMode = requestedDispatchMode
       ?? (managed.session.identityKey === "cto"
-        ? activeTurnDispatchModes(managed.session.provider).find((entry) => entry !== "queue") as
-            AgentChatDispatchSteerMode | undefined
+        ? activeTurnDispatchModes(managed.session.provider).find((entry) => (
+            entry !== "queue"
+            && !(entry === "inline" && cursorSessionRunsInCloud(managed.session))
+          )) as AgentChatDispatchSteerMode | undefined
         : undefined);
     // One guard against the canonical per-provider table, rather than the rules
     // restated here. Reject rather than silently downgrading the user's choice.
@@ -45273,7 +45542,9 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "cursor") {
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
-        const rt = managed.runtime;
+        // Reassignable: a refused inline steer can discover that a recycle
+        // rotated the runtime, and the message must be staged on the live one.
+        let rt = managed.runtime;
         // Interrupt & continue: stop the live run, wait for it to settle, then
         // resend on the same agent. Nothing is staged, so this never enters the
         // pending-steer queue.
@@ -45307,6 +45578,70 @@ export function createAgentChatService(args: {
         if (!preparedSteer) {
           return { steerId, queued: false };
         }
+        // Inline: fold the message into the live run. Only a delivered outcome
+        // returns here; every other outcome falls through to the staging code
+        // below, so the message is queued exactly as it would have been without
+        // an inline attempt. Nothing is lost and nothing is sent twice.
+        // Built once: the same row is offered to the live run and, if refused,
+        // staged as-is. Two literals would drift, and they already had.
+        const queuedRow: QueuedSteer = {
+          steerId,
+          uuid: randomUUID(),
+          text: preparedSteer.submittedText,
+          ...(preparedSteer.visibleText !== preparedSteer.submittedText
+            ? { displayText: preparedSteer.visibleText }
+            : {}),
+          attachments: preparedSteer.attachments,
+          contextAttachments: preparedSteer.contextAttachments,
+          resolvedAttachments: preparedSteer.resolvedAttachments,
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          ...(reasoningEffort != null ? { reasoningEffort } : {}),
+          ...(executionMode ? { executionMode } : {}),
+          ...(interactionMode ? { interactionMode } : {}),
+        };
+        let inlineRefused = false;
+        if (dispatchMode === "inline") {
+          const delivered = await tryCursorInlineSteer(
+            managed,
+            rt,
+            queuedRow,
+            () => {
+              preparedSteer.onDispatched?.();
+              options?.onAcceptedDispatch?.();
+              // Deliberately NOT persistDeliveredLaneDirectiveKey. The inline
+              // channel sends `submittedText`, not the composed `promptText`
+              // that carries the lane-worktree directive, so recording it as
+              // delivered would suppress it on the next real send and leave the
+              // agent never told which worktree it is in.
+              // `dispatchClaudeSteerMessage` omits it for the same reason.
+            },
+          );
+          if (delivered) return { steerId, queued: false };
+          inlineRefused = true;
+          // `tryCursorInlineSteer` awaits the worker, so the runtime can be
+          // recycled while the steer is in flight. Staging onto a detached
+          // runtime's array strands the message where nothing drains it.
+          // A closed session has no runtime and no owner: `executePreparedSendMessage`
+          // would call `ensureCursorSdkRuntime` BEFORE it validates, acquiring a
+          // fresh pooled worker that nothing will ever release, because the
+          // managed session is already out of the registry. On Windows that
+          // leaked db handle also blocks the runtime directory cleanup.
+          if (managed.closed) return { steerId, queued: false };
+          if (managed.runtime !== rt) {
+            const current = managed.runtime;
+            // A recycle re-sends carried steers on the rotated agent, so a BUSY
+            // replacement is the normal post-recycle state. Staging onto it
+            // reaches the right queue and the right drain; sending would throw
+            // "Turn already active" and lose the message entirely.
+            if (current?.kind === "cursor" && current.busy) {
+              rt = current;
+            } else {
+              preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
+              await executePreparedSendMessage(preparedSteer);
+              return { steerId, queued: false };
+            }
+          }
+        }
         if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
           logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
           emitChatEvent(managed, {
@@ -45317,29 +45652,11 @@ export function createAgentChatService(args: {
           });
           return { steerId, queued: false, reason: "queue_full" };
         }
-        rt.pendingSteers.push({
-          steerId,
-          uuid: randomUUID(),
-          text: preparedSteer.submittedText,
-          ...(preparedSteer.visibleText !== preparedSteer.submittedText ? { displayText: preparedSteer.visibleText } : {}),
-          attachments: preparedSteer.attachments,
-          contextAttachments: preparedSteer.contextAttachments,
-          resolvedAttachments: preparedSteer.resolvedAttachments,
-          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
-          ...(reasoningEffort != null ? { reasoningEffort } : {}),
-          ...(executionMode ? { executionMode } : {}),
-          ...(interactionMode ? { interactionMode } : {}),
-        });
-        emitChatEvent(managed, {
-          type: "user_message",
-          text: preparedSteer.visibleText,
-          ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
-          ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
-          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
-          steerId,
-          turnId: rt.activeTurnId ?? undefined,
-          deliveryState: "queued",
-        });
+        // Emitted only once the message is genuinely going to be queued. Above
+        // the queue-full guard it would promise a delivery that never happens.
+        if (inlineRefused) emitCursorInlineSteerFallbackNotice(managed, rt);
+        rt.pendingSteers.push(queuedRow);
+        emitQueuedCursorSteerRow(managed, rt, queuedRow);
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
@@ -45348,7 +45665,11 @@ export function createAgentChatService(args: {
           turnId: rt.activeTurnId ?? undefined,
         });
         persistChatState(managed);
-        return { steerId, queued: true };
+        // `queued` has to follow what the drain actually did: reporting a
+        // message as queued after it went out as its own turn is the same lie
+        // `dispatchSteer` takes care to avoid.
+        const flushed = inlineRefused ? await drainCursorQueueHeadIfIdle(managed, rt) : null;
+        return { steerId, queued: flushed !== steerId };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -45919,12 +46240,31 @@ export function createAgentChatService(args: {
       ((normalizedKind === "auto" || (normalizedKind === "wake" && !wakeNeedsQueue))
         && activeTarget);
     if (steerTarget) {
-      const dispatchMode = isSpawnCompletion
-        && supportsActiveTurnDispatchMode(managed.session.provider, "inline")
-        ? "inline" as const
-        : normalizedKind === "auto" || ctoIdentityTarget
-          ? defaultActiveTurnDispatchMode(managed.session.provider)
+      // A Cursor CLOUD run refuses every steer, so its table default ("inline")
+      // would degrade to a queued message on every mid-turn send. Interrupt is
+      // what auto meant there before inline existed, and it still works — but a
+      // spawn notification never earns a cancel of the running cloud agent, so
+      // that case queues instead.
+      //
+      // The renderer makes the opposite choice for the same session: it
+      // downgrades to queue rather than promote a person into a cancel they did
+      // not pick (see `AgentChatPane`). A programmatic caller has no menu to
+      // fall back to, so this path keeps the behavior it had before inline.
+      const cursorCloud = cursorSessionRunsInCloud(managed.session);
+      const usesProviderDefault = normalizedKind === "auto" || ctoIdentityTarget;
+      let dispatchMode: ActiveTurnSendMode;
+      if (isSpawnCompletion) {
+        dispatchMode = !cursorCloud
+          && supportsActiveTurnDispatchMode(managed.session.provider, "inline")
+          ? "inline"
           : "queue";
+      } else if (!usesProviderDefault) {
+        dispatchMode = "queue";
+      } else if (cursorCloud) {
+        dispatchMode = "interrupt";
+      } else {
+        dispatchMode = defaultActiveTurnDispatchMode(managed.session.provider);
+      }
       const result = await steerWithOptions({
         sessionId,
         text,
@@ -46165,11 +46505,10 @@ export function createAgentChatService(args: {
       // Both runtimes that track in-flight dispatches splice the row out of the
       // queue before the dispatch completes, so without this the user would be
       // told the message is "no longer queued" while it is in fact being sent.
-      if (
-        requireQueued
-        && (runtime.kind === "claude" || runtime.kind === "cursor")
-        && runtime.dispatchingSteerIds.has(steerId)
-      ) {
+      // Not gated on `requireQueued`: the desktop Remove action omits it, and a
+      // cancel that reports success for a message already on its way is wrong
+      // whichever caller asked for it.
+      if (isSteerDispatchInFlight(runtime, steerId)) {
         throw new Error("This message is already being dispatched.");
       }
       const idx = queue.findIndex((s) => s.steerId === steerId);
@@ -46225,6 +46564,12 @@ export function createAgentChatService(args: {
 
     const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
     if (idx === -1) throw new Error("This message is no longer queued.");
+    // An inline dispatch holds the row in `pendingSteers` across the SDK await
+    // and sends the text it read at call time. Editing it mid-flight would make
+    // the transcript show text the agent never received.
+    if (isSteerDispatchInFlight(runtime, steerId)) {
+      throw new Error("This message is already being dispatched.");
+    }
 
     if (!trimmed.length) {
       const [removed] = runtime.pendingSteers.splice(idx, 1);
@@ -46266,8 +46611,7 @@ export function createAgentChatService(args: {
     assertContinuityDispatchAllowed(managed);
     // One guard against the canonical per-provider table (shared/types/chat.ts)
     // instead of a per-provider ladder: queue-only providers reject both modes
-    // here, Cursor rejects "inline" and takes "interrupt", Codex takes
-    // "inline" only.
+    // here, and Codex takes "inline" only.
     if (!supportsActiveTurnDispatchMode(managed.session.provider, mode)) {
       throw new Error(unsupportedActiveTurnDispatchModeMessage(managed.session.provider, mode));
     }
@@ -46276,12 +46620,62 @@ export function createAgentChatService(args: {
     }
     const runtime = managed.runtime;
     if (!runtime) return { dispatchedAt: null };
-    // Cursor: a staged row can be promoted to the interrupt-and-continue
-    // redirect. There is no inline channel to promote it into.
+    // Cursor: a staged row can be promoted into the live run (inline) or into
+    // the interrupt-and-continue redirect.
     if (runtime.kind === "cursor") {
       const cursorQueue = runtime.pendingSteers;
       const cursorIdx = cursorQueue.findIndex((s) => s.steerId === steerId);
       if (cursorIdx === -1) return { dispatchedAt: null };
+      // Inline: fold the staged row into the live run without cancelling it.
+      // The row only leaves the queue on a delivered outcome; any other outcome
+      // leaves it staged and its chip visible, so the turn boundary still
+      // delivers it. That keeps this promotion safe to retry.
+      if (mode === "inline") {
+        if (runtime.dispatchingSteerIds.has(steerId)) {
+          throw new Error("This queued Cursor message is already being dispatched.");
+        }
+        const staged = cursorQueue[cursorIdx];
+        // Held across the whole attempt so the turn boundary cannot drain this
+        // row underneath the steer. Released in `finally`, before the flush
+        // below, because `drainCursorQueueHeadIfIdle` refuses to run while any
+        // dispatch is marked in flight.
+        runtime.dispatchingSteerIds.add(steerId);
+        let delivered: boolean;
+        try {
+          delivered = await tryCursorInlineSteer(
+            managed,
+            runtime,
+            staged,
+            () => {
+              // Re-find the row: the turn boundary may have drained the queue
+              // while the steer was in flight, and splicing a stale index would
+              // evict a different message.
+              const acceptedIdx = cursorQueue.findIndex((entry) => entry.steerId === steerId);
+              if (acceptedIdx >= 0) cursorQueue.splice(acceptedIdx, 1);
+              claimSteerSettlement(managed, steerId);
+            },
+          );
+        } finally {
+          runtime.dispatchingSteerIds.delete(steerId);
+        }
+        if (delivered) return { dispatchedAt: Date.now() };
+        emitCursorInlineSteerFallbackNotice(managed, runtime);
+        persistChatState(managed);
+        // The row is still staged and Cursor only drains at a turn boundary. If
+        // that boundary already passed while the steer was in flight, nothing
+        // would ever pick this row up.
+        const flushed = await drainCursorQueueHeadIfIdle(managed, runtime);
+        // Reported as dispatched when the flush sent THIS row: telling the
+        // caller otherwise would have the TUI and iOS show a queued status for a
+        // message already on its way.
+        //
+        // Reaching the non-null branch needs the turn boundary to fire while
+        // this dispatch holds `dispatchingSteerIds` — the boundary then declines
+        // and the flush below inherits the row. That interleaving is real but
+        // not reproducible on demand, so it carries no test; the `null` branch
+        // is covered.
+        return flushed === steerId ? { dispatchedAt: Date.now() } : { dispatchedAt: null };
+      }
       const [promoted] = cursorQueue.splice(cursorIdx, 1);
       claimSteerSettlement(managed, steerId);
       // The staged row is resolved by this notice; without it the chip would

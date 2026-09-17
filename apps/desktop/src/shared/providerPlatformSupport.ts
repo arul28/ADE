@@ -8,7 +8,7 @@
 
 /**
  * `@cursor/sdk` publishes its native runtime as optional platform packages.
- * As of `@cursor/sdk@1.0.23` those are `darwin-arm64`, `darwin-x64`,
+ * As of `@cursor/sdk@1.0.31` those are `darwin-arm64`, `darwin-x64`,
  * `linux-arm64`, `linux-x64` and `win32-x64` — there is no `win32-arm64`.
  * ADE's Cursor provider is built entirely on that SDK, so on Windows on ARM the
  * provider cannot load at all: every chat, model discovery and auth probe would

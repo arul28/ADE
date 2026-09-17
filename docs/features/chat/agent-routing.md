@@ -797,22 +797,58 @@ window) — the same replay staged when a wedged thread is recycled.
 actually happens, and so cross-machine fork excludes it (there is no provider
 artifact to transport).
 
-Cursor is one of two non-Claude providers that can take a message *during*
-a live turn, and it is the one that takes it by stopping. (Codex is the other,
-and the mirror case: its app-server folds a `turn/steer` request into the
-running turn, so `ACTIVE_TURN_DISPATCH_MODES` gives it `inline` and `queue` but
-no `interrupt`.) The Cursor SDK has no mid-run message API, so
-`ACTIVE_TURN_DISPATCH_MODES` (`shared/types/chat.ts`) gives Cursor `interrupt`
-and `queue` but no `inline`: the redirect stops the run, waits for the turn to
-settle, and sends the message as the next turn on the same agent, which keeps
-the thread because the SDK's local agent store holds it. That is what
-`activeTurnInterruptContinues` records, and why every surface labels Cursor's
-affordance "Interrupt & continue" rather than "Interrupt & send". Because that
-stop exists only to resend, it runs in `stop_only` mode with
+Cursor and Codex are the two non-Claude providers that can take a message
+*during* a live turn, and they take it differently from each other. Codex's
+app-server folds a `turn/steer` request into the running turn, so
+`ACTIVE_TURN_DISPATCH_MODES` gives it `inline` and `queue` but no `interrupt` —
+there is no cancel-and-resend. `@cursor/sdk` 1.0.31 added `Run.steer(text)`,
+which folds a message into the live local run, so the same table gives Cursor
+all three modes Claude has — read the table for the list rather than restating
+it here. What Cursor does *not* share is the meaning of its interrupt: it stops
+the run, waits for the turn to settle, and sends the message as the next turn on
+the same agent, which keeps the thread because the SDK's local agent store holds
+it. That is what `activeTurnInterruptContinues` records, and why every surface
+labels Cursor's affordance "Interrupt & continue" rather than "Interrupt &
+send". Because that stop exists only to resend, it runs in `stop_only` mode with
 `preserveQueuedSteersOnInterrupt` armed on the Cursor runtime until the
 interrupted turn's own tail consumes it, so messages the user had already staged
 ride through the redirect instead of being cleared. `interrupt-replace` on
 OpenCode, Pi and Droid keeps its `stop_and_clear` contract.
+
+Inline is a *local*-run capability. A Cursor **Cloud** run implements
+`Run.steer` but refuses every call, so an inline send there would always degrade
+to an ordinary follow-up message. The dispatch table stays keyed by provider — a
+session-shaped rule cannot live in a provider-keyed record — so the carve-out is
+the exported helper `cursorSessionRunsInCloud(session)` beside it, and every
+surface that knows the session reads that one derivation: `agentChatService`,
+the desktop `AgentChatPane`, and the `ade code` TUI's `/steer` advert. It checks
+`cursorRuntime` **and** `cursorCloudAgentId` because a session promoted before
+`cursorRuntime` existed carries only the agent id.
+
+Two consequences worth stating rather than discovering:
+
+- A cloud Cursor chat's default send-during-turn mode is **Send after turn**,
+  not the **Interrupt & continue** it was before Cursor gained inline. The
+  renderer withholds the inline handler for a cloud session, and an unwired
+  inline pick downgrades to queue — never to interrupt, because a downgrade must
+  not promote someone into cancelling the running agent. Interrupt stays one
+  click away in the send menu.
+- Programmatic delivery makes the opposite choice. `chat.messageSession` kind
+  `auto` on a cloud Cursor session routes to `interrupt`, which is what `auto`
+  meant there before inline existed. A programmatic caller has no menu to fall
+  back to, so that path keeps its previous behaviour.
+
+The service never throws for a refused inline steer. `tryCursorInlineSteer`
+declines up front for attachments, per-message overrides, a cloud session, or a
+dead runtime, and otherwise asks the worker; only a `complete_delivered` outcome
+transfers ownership of the message to the turn (`CursorSdkSteerOutcome` in
+`cursorSdkProtocol.ts` — `revert_to_followup` is the SDK's refusal and
+`unsupported` is ADE's diagnostics-only third value, treated identically). Every
+other outcome stages the row exactly as a queued send would have, emits one
+"couldn't go into the running turn" notice, and — because Cursor drains
+`pendingSteers` only at a turn boundary — runs `drainCursorQueueHeadIfIdle` so a
+row that landed after that boundary already passed is not left waiting for the
+user to send something else.
 
 ### The permission ladder
 

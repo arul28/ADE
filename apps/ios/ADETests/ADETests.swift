@@ -13935,10 +13935,10 @@ final class ADETests: XCTestCase {
     let runningTerminal = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")
     XCTAssertTrue(workChatShouldSteerActiveTurn(session: runningTerminal, summary: nil))
 
-    // Claude can promote a staged row either way. Codex folds a `turn/steer`
+    // Claude can promote a staged row either way, and so can Cursor since
+    // `Run.steer()` arrived in @cursor/sdk 1.0.31. Codex folds a `turn/steer`
     // request into the running turn, so it promotes inline but never
-    // interrupts. Cursor's SDK has no mid-run message API, so it gets interrupt
-    // only. `atomicDispatchModes` drops `.queue`, which is staging, not a
+    // interrupts. `atomicDispatchModes` drops `.queue`, which is staging, not a
     // promotion target.
     let claudeSummary = makeAgentChatSessionSummary(provider: "claude", status: "active")
     XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: claudeSummary), [.inline, .interrupt])
@@ -13956,6 +13956,12 @@ final class ADETests: XCTestCase {
         session: makeTerminalSessionSummary(toolType: "cursor"),
         summary: nil
       ),
+      [.inline, .interrupt]
+    )
+    var cursorCloudSummary = makeAgentChatSessionSummary(provider: "cursor", status: "active")
+    cursorCloudSummary.cursorCloudAgentId = "cloud-agent-1"
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
       [.interrupt]
     )
     XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil), [])
@@ -13979,14 +13985,17 @@ final class ADETests: XCTestCase {
     // Queue is the absence of an atomic dispatch, not a third wire value.
     XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .queue, dispatchModes: claudeModes))
 
-    // Cursor has no inline channel; asking for one must not put a value the host
-    // would reject on the wire.
+    // Cursor honors both atomic modes now, so neither one may be dropped on the
+    // way to the host.
     let cursorModes = WorkActiveSendCapability.forProvider("cursor").atomicDispatchModes
     XCTAssertEqual(
       workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: cursorModes),
       "interrupt"
     )
-    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursorModes))
+    XCTAssertEqual(
+      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursorModes),
+      "inline"
+    )
 
     // Codex is the mirror of Cursor: it has inline and no interrupt.
     let codexModes = WorkActiveSendCapability.forProvider("codex").atomicDispatchModes
@@ -14036,15 +14045,17 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(claude.interruptContinues)
 
     let cursor = WorkActiveSendCapability.forProvider("cursor")
-    XCTAssertEqual(cursor.modes, [.interrupt, .queue])
-    XCTAssertEqual(cursor.defaultMode, .interrupt)
+    XCTAssertEqual(cursor.modes, [.inline, .queue, .interrupt])
+    XCTAssertEqual(cursor.defaultMode, .inline)
+    // Cursor keeps its own interrupt meaning even though it now shares Claude's
+    // mode list: it cancels the run and resends on the same thread.
     XCTAssertTrue(cursor.interruptContinues)
     XCTAssertEqual(cursor.agentLabel, "Cursor")
 
     // Family collapse: a labelled variant must not fall through to queue-only.
     XCTAssertEqual(WorkActiveSendCapability.forProvider("claude-code").modes, [.inline, .queue, .interrupt])
     XCTAssertEqual(WorkActiveSendCapability.forProvider("anthropic").modes, [.inline, .queue, .interrupt])
-    XCTAssertEqual(WorkActiveSendCapability.forProvider("cursor-agent").modes, [.interrupt, .queue])
+    XCTAssertEqual(WorkActiveSendCapability.forProvider("cursor-agent").modes, [.inline, .queue, .interrupt])
 
     // Codex accepts `turn/steer` into the running turn, so it has inline — and
     // no cancel-and-resend, so it must not offer interrupt.
@@ -14063,8 +14074,9 @@ final class ADETests: XCTestCase {
   }
 
   /// Guards the hand mirror of the desktop's `CTO_LIVE_REDIRECT_PROVIDERS`. It
-  /// is a separate list from the dispatch table above on purpose: Cursor has no
-  /// inline channel and is still eligible, through interrupt-and-resend.
+  /// is a separate list from the dispatch table above on purpose: no single
+  /// dispatch mode keys it. Codex is eligible without an interrupt channel, so
+  /// a list derived from either atomic mode would get a provider wrong.
   func testCtoLiveRedirectProvidersMirrorDesktopContract() {
     XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor"])
     for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent"] {
@@ -14073,8 +14085,32 @@ final class ADETests: XCTestCase {
     for provider in ["opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot", ""] {
       XCTAssertFalse(providerSupportsLiveRedirect(provider), "expected \(provider) to be rejected")
     }
-    XCTAssertFalse(WorkActiveSendCapability.forProvider("cursor").modes.contains(.inline))
-    XCTAssertTrue(providerSupportsLiveRedirect("cursor"))
+    XCTAssertFalse(WorkActiveSendCapability.forProvider("codex").modes.contains(.interrupt))
+    XCTAssertTrue(providerSupportsLiveRedirect("codex"))
+  }
+
+  /// A host older than this client advertises `chat.dispatchSteer` but still
+  /// rejects Cursor's `"inline"`. The send must stage rather than fail, so the
+  /// predicate that routes it has to match the host's real rejection sentence.
+  func testUnsupportedDispatchModeErrorIsRecognisedFromTheHostWording() {
+    let hostSentence = "Cursor sessions support only the \"interrupt\" active-turn dispatch mode."
+    XCTAssertTrue(workChatErrorIndicatesUnsupportedDispatchMode(
+      NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: hostSentence])
+    ))
+    let queueOnlySentence = "Droid sessions don't support the \"inline\" active-turn dispatch mode; it can only be staged for the next turn."
+    XCTAssertTrue(workChatErrorIndicatesUnsupportedDispatchMode(
+      NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: queueOnlySentence])
+    ))
+    // An unrelated failure must not be swallowed into the staging fallback.
+    XCTAssertFalse(workChatErrorIndicatesUnsupportedDispatchMode(
+      NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Session is disposed."])
+    ))
+    XCTAssertTrue(workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: false))
+    XCTAssertFalse(workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: true))
+    XCTAssertTrue(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: "agent-1"))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: nil))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: ""))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "claude", cursorCloudAgentId: "agent-1"))
   }
 
   func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {
@@ -26300,14 +26336,11 @@ final class ADETests: XCTestCase {
   }
 
   /// A remembered mode is only restorable when the chat's current provider can
-  /// honor it — Cursor has no inline channel, so a mode carried over from a
-  /// Claude chat has to fall back to that provider's default rather than being
-  /// sent and rejected by the host.
+  /// honor it — Codex has no interrupt channel, so an interrupt carried over
+  /// from a Claude chat has to fall back to that provider's default rather than
+  /// being sent and rejected by the host. Cursor stopped demonstrating this
+  /// when it gained the inline channel, so the case is stated against Codex.
   func testRememberedSendModeFallsBackWhenProviderCannotHonorIt() {
-    let cursor = WorkActiveSendCapability.forProvider("cursor")
-    XCTAssertFalse(cursor.modes.contains(.inline))
-    XCTAssertEqual(cursor.defaultMode, .interrupt)
-
     let codex = WorkActiveSendCapability.forProvider("codex")
     XCTAssertEqual(codex.modes, [.inline, .queue])
     XCTAssertFalse(codex.modes.contains(.interrupt))
@@ -26316,7 +26349,7 @@ final class ADETests: XCTestCase {
     // And the wire value for an unhonorable mode is always nil, so nothing the
     // fallback misses can still reach the host.
     XCTAssertNil(
-      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursor.atomicDispatchModes)
+      workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: codex.atomicDispatchModes)
     )
   }
 

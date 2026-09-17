@@ -1706,6 +1706,23 @@ describe("steer helpers", () => {
     ]);
   });
 
+  it("reports a dispatch the host did not make, in both shapes it can answer with", async () => {
+    // `dispatchSteer` answers WITHOUT throwing when the live run refused the
+    // message (`dispatchedAt: null`), and a durably queued command answers with
+    // an ack envelope carrying no `dispatchedAt` at all. The TUI must read both
+    // as "still queued" rather than as a delivery.
+    const replies: unknown[] = [{ dispatchedAt: null }, { queued: true, commandId: "cmd-1" }];
+    const connection = {
+      action: async () => replies.shift(),
+    } as unknown as AdeCodeConnection;
+
+    const refused = await dispatchSteerMessage(connection, "chat-1", "steer-1", "inline");
+    expect(refused?.dispatchedAt == null).toBe(true);
+
+    const durablyQueued = await dispatchSteerMessage(connection, "chat-1", "steer-1", "inline");
+    expect(durablyQueued?.dispatchedAt == null).toBe(true);
+  });
+
   it("routes stalled-turn recovery through the shared Codex chat action", async () => {
     const calls: Array<{ domain: string; action: string; args: Record<string, unknown> }> = [];
     const connection = {

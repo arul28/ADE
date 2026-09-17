@@ -448,17 +448,25 @@ explicit `force` / `refresh-stale` calls trigger a runtime probe.
 `chat.dispatchSteer` takes `{ sessionId, steerId, mode: "inline" | "interrupt" }`
 and returns `{ ok, dispatchedAt }`. Which modes a session accepts comes from the
 canonical `ACTIVE_TURN_DISPATCH_MODES` table in
-`apps/desktop/src/shared/types/chat.ts` (Claude: `inline` + `interrupt`; Cursor:
-`interrupt` only; every other provider: neither), and a mode the provider cannot
-honor is rejected with the shared `unsupportedActiveTurnDispatchModeMessage`
-text rather than silently downgraded. On Claude the staged message is pushed
-through the live input stream with `priority: "next" | "now"` and
-`shouldQuery: true`; interrupt mode redirects the current model request without
-closing the query or stopping its background work, and the queued row is removed
-only after the input pump accepts the message. On Cursor there is no live input
-stream, so `"interrupt"` promotes the staged row to the interrupt-and-continue
-redirect — stop the run, wait for it to settle, resend on the same agent
-thread — and the row is restored to the queue if that redirect throws.
+`apps/desktop/src/shared/types/chat.ts` — read the table rather than a copy of
+it here — and a mode the provider cannot honor is rejected with the shared
+`unsupportedActiveTurnDispatchModeMessage` text rather than silently
+downgraded. On Claude the staged message is pushed through the live input stream
+with `priority: "next" | "now"` and `shouldQuery: true`; interrupt mode
+redirects the current model request without closing the query or stopping its
+background work, and the queued row is removed only after the input pump accepts
+the message. On Cursor `"interrupt"` promotes the staged row to the
+interrupt-and-continue redirect — stop the run, wait for it to settle, resend on
+the same agent thread — and the row is restored to the queue if that redirect
+throws, while `"inline"` offers it to the live local run through `Run.steer()`.
+
+A remote caller must read `dispatchedAt` rather than treat a non-throwing reply
+as delivery. An inline dispatch the run refuses — a Cursor Cloud session, a row
+carrying attachments or per-message overrides, a turn that declined, a build
+with no steer channel — answers `{ dispatchedAt: null }` **without** throwing
+and leaves the row staged, and a durably queued command answers with an ack
+envelope that carries no `dispatchedAt` key at all. The `ade code` TUI and the
+iOS staged strip both keep their queued display in either case.
 `chat.cancelDispatchedSteer` returns `{ ok, cancelled }`; the current public
 SDK cannot cancel an already pushed priority message, so `cancelled` is false.
 The iOS companion uses

@@ -428,13 +428,12 @@ describe("commands", () => {
 
   it("offers each /steer dispatch command exactly where the provider accepts that mode", () => {
     // Gating is derived from ACTIVE_TURN_DISPATCH_MODES, not restated: Claude
-    // takes inline + interrupt, Codex only inline, Cursor only interrupt, and
+    // takes inline + interrupt, Cursor both too, Codex only inline, and
     // everything else stages.
     const steerRows = (provider: string) => paletteCommands("/steer", [], { provider })
       .map((row) => row.name);
     expect(steerRows("claude")).toEqual(expect.arrayContaining(["/steer send", "/steer interrupt"]));
-    expect(steerRows("cursor")).toContain("/steer interrupt");
-    expect(steerRows("cursor")).not.toContain("/steer send");
+    expect(steerRows("cursor")).toEqual(expect.arrayContaining(["/steer send", "/steer interrupt"]));
     expect(steerRows("codex")).toContain("/steer send");
     expect(steerRows("codex")).not.toContain("/steer interrupt");
     for (const provider of ["droid", "opencode"]) {
@@ -443,6 +442,19 @@ describe("commands", () => {
       // The provider-agnostic staging commands stay available everywhere.
       expect(steerRows(provider)).toEqual(expect.arrayContaining(["/steer edit", "/steer cancel"]));
     }
+  });
+
+  it("withholds /steer send when the session cannot honor an inline steer", () => {
+    // A Cursor CLOUD run refuses every inline steer. The provider alone cannot
+    // say so, so the caller passes the session fact; without it the palette
+    // advertises a command the hint line already hides.
+    const withheld = paletteCommands("/steer", [], { provider: "cursor", inlineSteerWithheld: true })
+      .map((row) => row.name);
+    expect(withheld).not.toContain("/steer send");
+    expect(withheld).toContain("/steer interrupt");
+    // The same session on a local run keeps it.
+    expect(paletteCommands("/steer", [], { provider: "cursor" }).map((row) => row.name))
+      .toContain("/steer send");
   });
 
   it("filters provider-specific ADE commands outside supported chats", () => {

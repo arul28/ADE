@@ -14635,14 +14635,26 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func dispatchChatSteer(sessionId: String, steerId: String, mode: String) async throws {
+  /// Returns true only when the host reports it actually dispatched the row.
+  ///
+  /// `chat.dispatchSteer` answers `{ dispatchedAt: null }` WITHOUT throwing when
+  /// the running turn refused the message — a Cursor inline dispatch that the
+  /// live run declines leaves the row staged. Treating a non-throwing reply as
+  /// delivery would mark a still-queued message as sent.
+  ///
+  /// A durably queued command (no `dispatchedAt` key at all, because the machine
+  /// has not answered yet) reads as not-dispatched, which is the safe side: the
+  /// row keeps its queued display until reconciliation says otherwise.
+  func dispatchChatSteer(sessionId: String, steerId: String, mode: String) async throws -> Bool {
     let scope = chatCommandScope(for: sessionId)
-    _ = try await sendChatCommand(
+    let result = try await sendChatCommand(
       action: chatActionName("chat.dispatchSteer", sessionId: sessionId),
       payload: AgentChatDispatchSteerRequest(sessionId: sessionId, steerId: steerId, mode: mode),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
+    guard let record = result as? [String: Any] else { return false }
+    return record["dispatchedAt"] != nil && !(record["dispatchedAt"] is NSNull)
   }
 
   func cancelDispatchedChatSteer(sessionId: String, steerId: String) async throws {

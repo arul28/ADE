@@ -62,6 +62,7 @@ import {
   isUnsupportedAgentChatRecoveryActionError,
   providerForkReplaysTranscript,
   supportsActiveTurnDispatchMode,
+  cursorSessionRunsInCloud,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { isSteeringPendingRequest } from "../../../shared/pendingInputAnswers";
@@ -4096,8 +4097,23 @@ export function AgentChatPane({
   // here.
   const activeTurnInterruptSupported =
     supportsActiveTurnDispatchMode(selectedSession?.provider, "interrupt");
+  // Whether sends go to the local agent or to a promoted Cursor Cloud agent.
+  // Derived purely from session state — the previous renderer-side override
+  // (split-send chevron) was removed when launches were funneled through the
+  // dedicated cloud composer surface.
+  const cursorRuntime: "local" | "cloud" = cursorSessionRunsInCloud(selectedSession) ? "cloud" : "local";
+  // `Run.steer()` is a local-run API, so a cloud run refuses every inline
+  // steer. Withholding the handler downgrades the composer to queue through the
+  // same path an unwired handler already takes.
+  //
+  // Consequence, stated rather than discovered: a cloud Cursor chat's default
+  // send-during-turn mode is "Send after turn", not the "Interrupt & continue"
+  // it was before Cursor gained inline. That is deliberate — the downgrade
+  // refuses to promote anyone into interrupt, which cancels the running agent.
+  // Interrupt is still one click away in the send menu.
   const activeTurnInlineSupported =
-    supportsActiveTurnDispatchMode(selectedSession?.provider, "inline");
+    supportsActiveTurnDispatchMode(selectedSession?.provider, "inline")
+    && cursorRuntime === "local";
   // Which machine is THIS chat on, and what does its lane look like there. One
   // derivation, shared with the panel/drawer subtree through
   // `ChatRuntimeScopeProvider` below, so the pane and its tools cannot disagree.
@@ -5940,11 +5956,6 @@ export function AgentChatPane({
     cursorCloudMode,
     onSwitchModel: applyCursorCloudModelSwitch,
   });
-  // Runtime tracks whether sends go to the local agent or to a promoted Cursor Cloud agent. The
-  // value is derived purely from session state — the previous renderer-side override (split-send
-  // chevron) was removed when launches were funneled through the dedicated cloud composer surface.
-  const cursorRuntime: "local" | "cloud" = selectedSession?.cursorRuntime
-    ?? (selectedSession?.cursorCloudAgentId ? "cloud" : "local");
   const handoffAvailableModelIds = useMemo(() => {
     const merged = new Set<string>(availableModelIds);
     for (const id of runtimeCatalogModelIds(modelCatalogScopeKey)) merged.add(id);
@@ -12118,7 +12129,9 @@ export function AgentChatPane({
   ]);
 
   const handleCursorCloudServiceTierChange = useCallback((tier: CursorCloudServiceTier | null) => {
-    if (!cursorCloudMode && selectedSession?.cursorRuntime !== "cloud") return;
+    // The derived value, not the raw field: a session promoted before
+    // `cursorRuntime` existed carries only `cursorCloudAgentId`.
+    if (!cursorCloudMode && cursorRuntime !== "cloud") return;
     setCursorCloudServiceTier(tier);
     setFastModeState(tier === "fast");
     if (!selectedSessionId) {
@@ -12143,11 +12156,11 @@ export function AgentChatPane({
     });
   }, [
     cursorCloudMode,
+    cursorRuntime,
     draftLaunchConfigScopeKey,
     isPersistentIdentitySurface,
     patchSessionSummary,
     refreshSessions,
-    selectedSession?.cursorRuntime,
     selectedSessionId,
     sessionMutationKind,
     setFastModeState,

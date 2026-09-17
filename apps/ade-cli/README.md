@@ -597,7 +597,7 @@ ade chat resume-now session-id --text                        # alias `resume`: s
 ade actions run chat.updateSession --input-json '{"sessionId":"session-id","autoContinueAtUsageLimit":true}'   # the desktop pill's "Turn on" / "Try again": re-arm auto-resume after it was paused or opted out (false turns it off)
 ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
-ade chat steer session-id --text "active-turn context" --dispatch interrupt   # atomic active-turn delivery: inline | interrupt; omit to stage for the next turn (Claude takes both, Cursor takes interrupt)
+ade chat steer session-id --text "active-turn context" --dispatch interrupt   # atomic active-turn delivery: inline | interrupt; omit to stage for the next turn (Claude and Cursor take both; a Cursor cloud run declines inline and stages)
 ade chat note "testing desktop auth fallback"               # update Work status (aim for 6 words or fewer; truncated past 72 characters); add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
 ade session show session-id --text                          # status + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back

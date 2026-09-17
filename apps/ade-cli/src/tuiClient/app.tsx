@@ -17,6 +17,7 @@ import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSk
 import {
   activeTurnInterruptContinues,
   supportsActiveTurnDispatchMode,
+  cursorSessionRunsInCloud,
   unsupportedActiveTurnDispatchModeMessage,
 } from "../../../desktop/src/shared/types/chat";
 import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
@@ -5482,16 +5483,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const slashComposerTrigger = activeComposerTrigger?.type === "slash" ? activeComposerTrigger : null;
   const slashRows = useMemo(() => (
     slashComposerTrigger
-      ? paletteCommands(`/${slashComposerTrigger.query}`, slashCommands, { provider: activeCommandProvider })
+      ? paletteCommands(`/${slashComposerTrigger.query}`, slashCommands, {
+        provider: activeCommandProvider,
+        inlineSteerWithheld: cursorSessionRunsInCloud(activeSession),
+      })
       : []
-  ), [activeCommandProvider, slashComposerTrigger, slashCommands]);
+  ), [activeCommandProvider, activeSession, slashComposerTrigger, slashCommands]);
   // Mid-sentence slash triggers complete into the draft on Enter instead of
   // submitting/running, mirroring the desktop command menu.
   const slashTriggerMidSentence = slashComposerTrigger != null
     && !composerTriggerSpansWholeDraft(prompt, slashComposerTrigger);
   const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
     if (!commandPaletteOpen) return [];
-    const commandItems = paletteCommands("", slashCommands, { provider: activeCommandProvider }).map((command) => ({
+    const commandItems = paletteCommands("", slashCommands, {
+      provider: activeCommandProvider,
+      inlineSteerWithheld: cursorSessionRunsInCloud(activeSession),
+    }).map((command) => ({
       key: `command:${command.name}`,
       kind: "command" as const,
       label: command.argumentHint ? `${command.name} ${command.argumentHint}` : command.name,
@@ -5539,7 +5546,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
     }
     return [...localItems, ...searchItems];
-  }, [activeCommandProvider, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, paletteSearchResults, slashCommands]);
+  }, [activeCommandProvider, activeSession, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, paletteSearchResults, slashCommands]);
   useEffect(() => {
     if (!commandPaletteOpen) return;
     setCommandPaletteIndex((index) => Math.max(0, Math.min(index, Math.max(0, commandPaletteItems.length - 1))));
@@ -11208,11 +11215,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (name === "/steer") {
       // Which dispatch commands this pane advertises comes off the canonical
       // per-provider table (desktop shared/types/chat.ts), the same source the
-      // /steer commands and the desktop staged strip read — Claude offers both,
-      // Cursor only the interrupt, everything else stages until the turn ends.
+      // /steer commands and the desktop staged strip read — Claude and Cursor
+      // both offer the two atomic modes, everything else stages until the turn
+      // ends.
       const steerProvider = activeSession?.provider;
+      // A Cursor CLOUD run refuses every inline steer, so advertising
+      // "/steer send" there would offer a command that always falls back to the
+      // queue. The table stays per-provider; only this advert knows the session.
+      const steerRunsInCloud = cursorSessionRunsInCloud(activeSession);
       const dispatchHint = [
-        supportsActiveTurnDispatchMode(steerProvider, "inline") ? "/steer send" : null,
+        supportsActiveTurnDispatchMode(steerProvider, "inline") && !steerRunsInCloud ? "/steer send" : null,
         supportsActiveTurnDispatchMode(steerProvider, "interrupt") ? "/steer interrupt" : null,
       ].filter((entry): entry is string => entry != null);
       const hintLine = pendingSteers.length
@@ -12726,15 +12738,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // it continues rather than starting something new — same wording the
         // desktop composer and iOS use, off the same shared fact.
         const interruptContinues = activeTurnInterruptContinues(provider);
-        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, mode);
-        addNotice(
-          mode === "inline"
-            ? `Sent staged message into the active ${agentLabel} turn.`
-            : interruptContinues
-              ? `Interrupting ${agentLabel} and continuing with the staged message.`
-              : `Interrupting ${agentLabel} to run the staged message.`,
-          "info",
-        );
+        // Read the result rather than treating a non-throwing call as delivery.
+        // BOTH modes can answer `dispatchedAt: null` without throwing: an inline
+        // steer the live run refused, and either mode aimed at a row that has
+        // already left the queue (no runtime, or no match in `pendingSteers`).
+        // Claiming delivery there contradicts the host's own notice on the
+        // inline path, and invents an interrupt that never happened on the
+        // other. iOS reads the same flag for both modes.
+        const dispatched = await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, mode);
+        // Names no culprit, for the same reason the host's notice does not: most
+        // refusals are ADE's own (attachments, a cloud run, no live turn) and the
+        // agent is never asked.
+        const notDispatched = dispatched?.dispatchedAt == null;
+        const inlineNotice = notDispatched
+          ? "The message couldn't go into the running turn; it is still queued."
+          : `Sent staged message into the active ${agentLabel} turn.`;
+        const interruptNotice = notDispatched
+          ? "The staged message couldn't be promoted into the running turn; it is still queued."
+          : interruptContinues
+            ? `Interrupting ${agentLabel} and continuing with the staged message.`
+            : `Interrupting ${agentLabel} to run the staged message.`;
+        addNotice(mode === "inline" ? inlineNotice : interruptNotice, "info");
         await refreshState();
         return;
       }
@@ -18224,6 +18248,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               userCommands={slashCommands}
               selectedIndex={slashIndex}
               provider={activeCommandProvider}
+              inlineSteerWithheld={cursorSessionRunsInCloud(activeSession)}
               width={paletteOverlayWidth}
               maxRows={slashPaletteHeightBudget}
             />
