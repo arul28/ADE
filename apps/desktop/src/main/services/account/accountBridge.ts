@@ -421,6 +421,8 @@ function toAccountStatus(
 
 export type AccountBridge = {
   status(): AdeAccountStatus;
+  /** Current migration owner generation; see purgeAccountCredentials. */
+  getMigrationGeneration(): number;
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(sessionId: string): Promise<AdeAccountLoginPoll>;
   cancelLogin(sessionId: string): void;
@@ -470,7 +472,13 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   >();
   const accountMachineNames = new Map<string, string>();
 
+  // Bumped on every purge (sign-out or a switch to another user) so a
+  // migration captured under the previous owner abandons itself instead of
+  // writing into the next one's vault. The runner compares this on every
+  // vault write and before recording its receipt.
+  let migrationGeneration = 0;
   const purgeAccountCredentials = (): void => {
+    migrationGeneration += 1;
     try {
       options.purgeAccountCredentials?.();
     } catch (error) {
@@ -574,6 +582,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   let autoRepairAttempted = false;
 
   const bridge: AccountBridge = {
+    getMigrationGeneration: () => migrationGeneration,
     status: () => {
       const accountService = service();
       // Read the state alongside the status: `signedIn: false` with an

@@ -213,8 +213,9 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
 
   const startAccountMigration = (): void => {
     if (!accountMigrationRunner || migrationStarted || !accountStoreUserId()) return;
-    migrationStarted = true;
-    accountMigrationRunner.start();
+    // `start()` declines while a previous owner's run is still winding down;
+    // leave the flag clear so the next ready tick tries again for this user.
+    migrationStarted = accountMigrationRunner.start();
   };
 
   if (accountMigrationRunner && accountVaultStore) {

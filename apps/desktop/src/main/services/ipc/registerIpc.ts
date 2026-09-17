@@ -11109,6 +11109,7 @@ export function registerIpc({
 
   const accountMigrationRunner = createAccountMigrationRunner({
     accountBridge,
+    getAccountMigrationGeneration: () => accountBridge.getMigrationGeneration(),
     accountVaultBridge,
     getContexts: () => getResourceUsageContexts?.() ?? [getCtx()],
     getLogger: () => getCtx().logger,

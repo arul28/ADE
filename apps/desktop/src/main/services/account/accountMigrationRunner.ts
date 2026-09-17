@@ -196,15 +196,15 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
 
   let accountMigrationInFlight: Promise<void> | null = null;
 
-  const start = (): void => {
+  const start = (): boolean => {
     let status: ReturnType<AccountBridge["status"]>;
     try {
       status = options.accountBridge.status();
     } catch {
-      return;
+      return false;
     }
     const userId = status.userId?.trim() || null;
-    if (!status.signedIn || !userId || accountMigrationInFlight) return;
+    if (!status.signedIn || !userId || accountMigrationInFlight) return false;
     let ownerToken: AccountMigrationOwnerToken;
     try {
       ownerToken = {
@@ -212,7 +212,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
         generation: options.getAccountMigrationGeneration?.() ?? 0,
       };
     } catch {
-      return;
+      return false;
     }
     const isCurrent = (): boolean => {
       try {
@@ -284,6 +284,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
       .finally(() => {
         accountMigrationInFlight = null;
       });
+    return true;
   };
 
   return { start };

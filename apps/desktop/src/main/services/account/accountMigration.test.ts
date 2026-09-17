@@ -179,6 +179,47 @@ describe("runAccountMigration", () => {
     expect(fs.existsSync(path.join(receiptDir, "account-migration.json"))).toBe(false);
   });
 
+  it("start() declines while a previous owner's run is still in flight, so the lifecycle retries", async () => {
+    const receiptDir = makeReceiptDir();
+    let releaseVaultWrite: () => void = () => {};
+    const vaultWriteGate = new Promise<void>((resolve) => {
+      releaseVaultWrite = resolve;
+    });
+    const vault = {
+      list: vi.fn(async () => ({ ok: true as const, value: [] })),
+      get: vi.fn(async () => ({ ok: true as const, value: null })),
+      set: vi.fn(async () => {
+        await vaultWriteGate;
+        return { ok: true as const, value: null };
+      }),
+    };
+    const runner = createAccountMigrationRunner({
+      accountBridge: { status: () => signedInStatus("user-a") },
+      accountVaultBridge: vault,
+      getContexts: () => [{
+        project: { rootPath: makeReceiptDir() },
+        projectSecretService: {
+          list: () => ({ secrets: [{ name: "s", storage: "account" }] }),
+          getSecretProvenance: () => ({ source: "device" as const, accountUserId: null }),
+          get: () => ({ value: "v" }),
+          hydrateFromVault: vi.fn(async () => {}),
+        },
+      }],
+      getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
+      getReceiptDir: () => receiptDir,
+      getAccountMigrationGeneration: () => 0,
+    });
+
+    expect(runner.start()).toBe(true);
+    // A second caller (an account switch, a later ready tick) must be told
+    // nothing began, so it can try again once this run winds down.
+    expect(runner.start()).toBe(false);
+    releaseVaultWrite();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runner.start()).toBe(true);
+  });
+
   it("does not record project-secret migration complete while a project scope is unresolved", async () => {
     const receiptDir = makeReceiptDir();
     const projectSecrets = vi.fn(() => ({ moved: 0, skipped: 0, complete: false }));
