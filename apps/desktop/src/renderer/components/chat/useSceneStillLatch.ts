@@ -83,6 +83,19 @@ export function useSceneStillLatch({
   ) {
     rehydrateRef.current = !live && (hasPicture || pictureComing);
   }
+  // A preview that came back EMPTY is an answer, not a wait.
+  //
+  // `pictureComing` is the promise that bytes are on their way, and a mount
+  // that latched on it stops running the scene forever. When the read fails —
+  // a rejected cross-machine call, a host with no preview route, a non-string
+  // answer — that promise is broken: no picture, nothing in flight, and the
+  // row stayed a blank box that never drew and never retried. One re-decision
+  // is allowed, back to the local behaviour: run the scene. The read itself
+  // retries on the next mount, since the effect behind it is remounted with
+  // the row.
+  if (rehydrateRef.current === true && !hasPicture && !pictureComing) {
+    rehydrateRef.current = false;
+  }
   const undecided = rehydrateRef.current === null;
 
   /**

@@ -1030,9 +1030,9 @@ export function createComputerUseArtifactBrokerService(args: {
     // Three columns, not a whole record: the only question is how many rows
     // point at each path, and hydrating every file-backed artifact in the
     // project — metadata blob included — to count them was the expensive part.
-    for (const candidate of db.all<{ uri: string | null; storage_kind: string | null }>(
+    for (const candidate of db.all<{ uri: string | null }>(
       `
-        select uri, storage_kind
+        select uri
         from computer_use_artifacts
         where project_id = ?
           and storage_kind = 'file'
@@ -1040,7 +1040,10 @@ export function createComputerUseArtifactBrokerService(args: {
       [projectId],
     )) {
       const candidatePath = resolveArtifactFilePath({
-        storageKind: (candidate.storage_kind ?? "file") as ComputerUseArtifactRecord["storageKind"],
+        // The query already filters `storage_kind = 'file'`, so the literal is
+        // the value every row has; reading the column back only to cast it
+        // invited a default that could disagree with the where clause.
+        storageKind: "file",
         uri: candidate.uri ?? "",
       });
       if (!candidatePath) continue;

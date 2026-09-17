@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { MarkdownBlock } from "./chatMarkdownBlock";
 import { SceneFrame } from "./SceneFrame";
+import { SCENE_SETTLE_MAX_MS, SCENE_SETTLE_QUIET_MS } from "../../../shared/chatScene";
 import { SCENE_STILL_INDEX_WAIT_MS } from "./useSceneStillLatch";
 import { readSceneStill, rememberSceneStill, resetSceneStillsForTest } from "./sceneStillStore";
 import {
@@ -497,6 +498,50 @@ describe("SceneFrame", () => {
     });
 
     /**
+     * The host's own settle deadline belongs to ONE document.
+     *
+     * Its timer read the current src at fire time but was armed on `status`
+     * alone, and `status` stays `running` across a source swap — so a deadline
+     * left over from a view that never settled outlived it and stamped the NEW
+     * document settled a few hundred ms after it mounted, capturing a
+     * barely-painted view and burning the one-still latch on that picture.
+     */
+    it("re-arms the settle deadline for each document a frame is handed", async () => {
+      stubShellRect({});
+      vi.useFakeTimers();
+      try {
+        const bridge = stubSceneCaptureBridge();
+        const props = {
+          source: '<div id="n">3</div>',
+          live: true,
+          scopeKey: "view-deadline-a",
+          voiceCallId: null,
+        };
+        const { rerender } = render(<SceneFrame {...props} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        act(() => { postSceneMessage(screen.getByTestId("chat-scene-frame"), "ready"); });
+
+        // Almost the whole wait, with this view never reporting a settle.
+        const deadline = SCENE_SETTLE_MAX_MS + SCENE_SETTLE_QUIET_MS;
+        await act(async () => { await vi.advanceTimersByTimeAsync(deadline - 300); });
+        expect(bridge.snapshot).not.toHaveBeenCalled();
+
+        // The same frame, a new document — exactly what the HUD does mid-call.
+        rerender(<SceneFrame {...props} source={"<p>second view</p>"} scopeKey="view-deadline-b" />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+        // The first view's deadline has passed; it must not speak for this one.
+        expect(bridge.snapshot).not.toHaveBeenCalled();
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(deadline); });
+        expect(bridge.snapshot).toHaveBeenCalledTimes(1);
+        expect((bridge.storeStill.mock.calls[0]?.[0] as { scopeKey: string }).scopeKey)
+          .toBe("view-deadline-b");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    /**
      * Two scene fences in one message used to share the transcript row key, so
      * whichever settled last overwrote the other's picture and a reopened chat
      * showed the same view twice.
@@ -596,6 +641,45 @@ describe("SceneFrame", () => {
         record: { uri: "/somewhere/else/old.png", artifactId: "a12", title: "Merged PRs" },
       });
       render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-unresolvable" voiceCallId={null} />);
+      expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
+      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
+    });
+
+    /**
+     * A FAILED preview read is an answer, not a slow one.
+     *
+     * The latch waits on a record's bytes however long they take, which is
+     * right while they are in flight — but when the read rejects (an
+     * unreachable machine, a deleted file, a host with no preview route) no
+     * bytes are ever coming. The mount stayed latched on a picture that did
+     * not exist: a permanently blank row that never ran the scene and never
+     * retried. It now falls back to the local behaviour and runs the code.
+     */
+    it("runs the scene when the stored still's preview read fails", async () => {
+      stubSceneCaptureBridge({
+        artifacts: [{
+          id: "a21",
+          uri: ".ade/artifacts/computer-use/gone.png",
+          title: "Generated view",
+          metadata: { kind: "scene_still", sceneScopeKey: "row-failed-preview" },
+        }],
+        readArtifactPreview: async () => { throw new Error("runtime unreachable"); },
+      });
+      render(
+        <ChatRuntimeScopeProvider
+          pin={REMOTE_BINDING}
+          binding={REMOTE_BINDING}
+          laneId={null}
+          sessionId="chat-failed-preview"
+        >
+          <SceneFrame
+            source={'<div id="n">3</div>'}
+            live={false}
+            scopeKey="row-failed-preview"
+            voiceCallId={null}
+          />
+        </ChatRuntimeScopeProvider>,
+      );
       expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
       expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
     });

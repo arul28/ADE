@@ -225,7 +225,15 @@ export function SceneFrame({
   }, [failed, streaming, rehydrated, undecided, parsed, theme, scopeKey]);
 
   const [src, setSrc] = useState<string | null>(null);
-  srcRef.current = src;
+  // Written in an effect rather than during render: a render can be thrown
+  // away (StrictMode, a suspended or abandoned commit) and the ref would then
+  // name a document the frame was never handed. `useEffect` and not
+  // `useLayoutEffect` is enough because the only reader is the `message`
+  // handler below, and a frame's postMessage cannot arrive before the commit
+  // that gave it its `src`.
+  useEffect(() => {
+    srcRef.current = src;
+  }, [src]);
   /** True only for a settle this document reported; see {@link settledSrc}. */
   const settled = settledSrc !== null && settledSrc === src;
 
@@ -320,15 +328,22 @@ export function SceneFrame({
    * the same deadline independently and calls it settled when it passes. One
    * quiet window longer than the frame's own cap, so a frame that IS going to
    * report gets to do it first and the two do not race.
+   *
+   * Armed PER DOCUMENT, and it stamps the document it was armed for. The voice
+   * HUD swaps the source on one mounted frame, and `status` stays `running`
+   * across the swap — so a deadline left over from a view that never settled
+   * survived it and stamped the NEW document settled almost immediately,
+   * capturing a barely-painted view and burning the one-still latch on it.
    */
   useEffect(() => {
-    if (status !== "running" || settled || rehydrated) return;
+    if (status !== "running" || settled || rehydrated || !src) return;
+    const armedSrc = src;
     const timer = window.setTimeout(
-      () => setSettledSrc(srcRef.current),
+      () => setSettledSrc(armedSrc),
       SCENE_SETTLE_MAX_MS + SCENE_SETTLE_QUIET_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [status, settled, rehydrated]);
+  }, [status, settled, rehydrated, src]);
 
   /**
    * Take the still.
@@ -502,10 +517,25 @@ export function SceneFrame({
     return () => { cancelled = true; };
   }, [live, src, status, freezeAttempt, still]);
 
+  /** True while the latch says "picture", so a release can be told from a mount. */
+  const wasRehydratedRef = useRef(false);
   // A rehydrated scene never mounts a frame, so nothing will ever promote it
   // out of `loading`; it is a picture from the first paint and says so.
+  //
+  // The latch can also let go again — its picture failed to resolve, so it
+  // falls back to running the scene — and `frozen` left over from the
+  // rehydrate would gate the freeze effect off and caption a live frame as
+  // frozen. A release puts the status back where a fresh mount starts.
   useEffect(() => {
-    if (rehydrated) setStatus("frozen");
+    if (rehydrated) {
+      wasRehydratedRef.current = true;
+      setStatus("frozen");
+      return;
+    }
+    if (wasRehydratedRef.current) {
+      wasRehydratedRef.current = false;
+      setStatus("loading");
+    }
   }, [rehydrated]);
 
   const fileProof = useCallback(() => {
