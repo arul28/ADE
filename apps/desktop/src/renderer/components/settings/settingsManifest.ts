@@ -215,7 +215,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // window's pixels, and the setting drives a native helper that only the
     // desktop main process can run.
     web: "hidden",
-    showScopeChip: true,
     group: "Screen capture",
   },
   {
@@ -512,7 +511,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "openai-api-key",
     scope: "machine",
     web: "hidden",
-    showScopeChip: true,
     group: "Connections",
   },
   {

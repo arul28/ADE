@@ -164,6 +164,10 @@ describe("apiKeyStore", () => {
 
     process.env = { ...originalEnv, ADE_API_KEY_STORE_FORCE_KEYCHAIN: "1" };
     delete process.env.ADE_API_KEY_STORE_DISABLE_KEYCHAIN;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+    delete process.env.CURSOR_API_KEY;
     setPlatform("darwin");
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-api-key-store-"));
   });
@@ -628,6 +632,7 @@ describe("apiKeyStore machine scope", () => {
       ADE_API_KEY_STORE_DISABLE_KEYCHAIN: "1",
     };
     delete process.env.OPENAI_API_KEY;
+    delete process.env.CURSOR_API_KEY;
     setPlatform("darwin");
   });
 

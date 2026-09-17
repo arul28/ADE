@@ -25,6 +25,7 @@ import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { DictationSection } from "../settings/DictationSection";
 import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
 import { KeepAwakeSection } from "../settings/KeepAwakeSection";
+import { CaptureGestureSection } from "../settings/CaptureGestureSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
@@ -250,6 +251,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["general.project"], render: () => <ProjectSection /> },
     { entryIds: ["general.ade-cli"], render: () => <AdeCliSection /> },
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection /> },
+    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection /> },
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection /> },
     { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection /> },
     { entryIds: ["general.diagnostics-sharing"], render: () => <DiagnosticsSharingSection /> },

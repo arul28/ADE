@@ -409,12 +409,14 @@ function persistProvenance(
 ): void {
   if (scope.credentialStore) {
     writeCredentialSecret(scope, CREDENTIAL_PROVIDER_PROVENANCE_KEY, JSON.stringify(next));
+    noteStoreWriteCommitted(scope);
     return;
   }
   const target = provenancePath(scope);
   if (!target || !isSecureStorageAvailable()) return;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   writeFileAtomic(target, safeStorage!.encryptString(JSON.stringify(next)), { mode: 0o600 });
+  noteStoreWriteCommitted(scope);
 }
 
 function ensureProvenance(scope: ApiKeyScopeState, providers: Iterable<string>): Record<string, ApiKeyProvenance> {
@@ -732,17 +734,19 @@ function ensureStore(scope: ApiKeyScopeState): StoredKeys {
   return scope.cache;
 }
 
-function purgeForeignAccountApiKeys(scope: ApiKeyScopeState): Set<string> {
+function purgeApiKeysMatching(
+  scope: ApiKeyScopeState,
+  predicate: (value: ApiKeyProvenance) => boolean,
+): Set<string> {
   const store = ensureStore(scope);
   const metadata = ensureProvenance(scope, Object.keys(store));
-  const currentUserId = getAccountUserId?.()?.trim() || null;
-  const foreign = Object.entries(metadata)
-    .filter(([, value]) => value.source === "account" && value.accountUserId !== currentUserId)
+  const matched = Object.entries(metadata)
+    .filter(([, value]) => predicate(value))
     .map(([provider]) => provider);
-  if (!foreign.length) return new Set();
+  if (!matched.length) return new Set();
 
   const nextStore = { ...store };
-  for (const provider of foreign) {
+  for (const provider of matched) {
     delete nextStore[provider];
     if (scope.credentialStore) deleteCredentialSecret(scope, credentialProviderKey(provider));
     delete metadata[provider];
@@ -751,14 +755,22 @@ function purgeForeignAccountApiKeys(scope: ApiKeyScopeState): Set<string> {
   }
   if (scope.credentialStore) {
     const index = readCredentialProviderIndex(scope);
-    writeCredentialProviderIndex(scope, index.providers.filter((provider) => !foreign.includes(provider)));
+    writeCredentialProviderIndex(scope, index.providers.filter((provider) => !matched.includes(provider)));
   } else if (canPersistEncryptedStore(scope)) {
     persistEncryptedStore(scope, nextStore);
-    for (const provider of foreign) deleteMacosKeychainSecretBestEffort(scope, provider);
+    for (const provider of matched) deleteMacosKeychainSecretBestEffort(scope, provider);
   }
   scope.cache = nextStore;
   persistProvenance(scope, metadata);
-  return new Set(foreign);
+  return new Set(matched);
+}
+
+function purgeForeignAccountApiKeys(scope: ApiKeyScopeState): Set<string> {
+  const currentUserId = getAccountUserId?.()?.trim() || null;
+  return purgeApiKeysMatching(
+    scope,
+    (value) => value.source === "account" && value.accountUserId !== currentUserId,
+  );
 }
 
 function persistEncryptedStore(scope: ApiKeyScopeState, nextStore: StoredKeys = scope.cache ?? {}): void {
@@ -868,7 +880,6 @@ function createMachineScopeState(): ApiKeyScopeState {
     // a process that already cached the store.
     watchedPaths: [
       storePath,
-      `${storePath}${PROVENANCE_FILE_SUFFIX}`,
       legacyStorePath,
       path.join(secretsDir, "credentials.json.enc"),
       path.join(secretsDir, "credentials.safe.enc"),
@@ -1175,30 +1186,7 @@ export function getApiKeyProvenance(provider: string): ApiKeyProvenance {
 
 /** Remove account-hydrated provider keys while retaining device-origin keys. */
 export function purgeAccountApiKeys(): void {
-  const store = ensureStore(projectScope);
-  const metadata = ensureProvenance(projectScope, Object.keys(store));
-  const accountProviders = Object.entries(metadata)
-    .filter(([, value]) => value.source === "account")
-    .map(([provider]) => provider);
-  if (!accountProviders.length) return;
-
-  const nextStore = { ...store };
-  for (const provider of accountProviders) {
-    delete nextStore[provider];
-    if (projectScope.credentialStore) deleteCredentialSecret(projectScope, credentialProviderKey(provider));
-    delete metadata[provider];
-    projectScope.missingCredentialProviders.add(provider);
-    projectScope.missingMacosKeychainProviders.add(provider);
-  }
-  if (projectScope.credentialStore) {
-    const index = readCredentialProviderIndex(projectScope);
-    writeCredentialProviderIndex(projectScope, index.providers.filter((provider) => !accountProviders.includes(provider)));
-  } else if (canPersistEncryptedStore(projectScope)) {
-    persistEncryptedStore(projectScope, nextStore);
-    for (const provider of accountProviders) deleteMacosKeychainSecretBestEffort(projectScope, provider);
-  }
-  projectScope.cache = nextStore;
-  persistProvenance(projectScope, metadata);
+  purgeApiKeysMatching(projectScope, (value) => value.source === "account");
 }
 
 /**
