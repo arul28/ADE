@@ -213,9 +213,38 @@ App Control also carries the same agent action model as the built-in browser: `a
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 
+## Mac Desktop
+
+A third, newer surface sits beside these: **Mac Desktop** gives each lane its
+own macOS virtual display, parks that lane's windows on it, and drives them
+through the Accessibility API — window-scoped, so the user's real screen and
+real pointer are untouched. It is macOS-only on the runtime host and is driven
+by `ade mac-desktop` (aliases `desk` / `mac-desk`; `ade desktop` is the app
+launcher) plus the `mac_desktop` action domain.
+
+It changes nothing about the two responsibilities above:
+
+- **Codex Computer Use is unchanged.** The signed OpenAI helper stays the
+  canonical `computer_use` MCP server, app- and window-scoped, and keeps working
+  on a parked window. ADE cannot embed a signed OpenAI binary, so it ships its
+  own driver instead. Ghost OS remains optional and user-installed.
+- **Proof goes through this broker.** `ade mac-desktop proof --caption "…"` is
+  the only Mac Desktop call that files a record; a bare
+  `ade mac-desktop screenshot` writes scratch and returns a path, the same
+  capture-is-not-proof rule as `ade browser` and `ade ios-sim`. Records are
+  ingested through `ingest_computer_use_artifacts` with
+  `backendName: "ade-mac-desktop"` and `backendStyle: "manual"`, and owners
+  resolve the usual way (lane, calling chat, and the lane's primary PR as a
+  `github_pr` owner). There is no second ingestion path, and `mac_desktop` is
+  not on the ingest surface.
+
+See [`../mac-desktop/README.md`](../mac-desktop/README.md) for the display,
+ownership, lease, and streaming model.
+
 ## Cross-links
 
 - [`../proof.md`](../proof.md) — `ade proof` CLI and the drawer UI contract.
+- [`../mac-desktop/README.md`](../mac-desktop/README.md) — the per-lane macOS virtual display and its `ade mac-desktop` surface.
 - [`../automations/README.md`](../automations/README.md) — automations that dispatch agent work rely on the agent's own `ade proof` calls; no automation-level proof policy exists.
 
 ## Detail docs

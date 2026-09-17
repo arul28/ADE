@@ -318,6 +318,35 @@ Additional exposure rules:
   (A `linearTools.ts` module did hide them by returning an empty tool set; it
   had no caller and was deleted.)
 
+## Mac Desktop tool and its prompt line
+
+`mac-desktop` is a Work tools pane tool (`WORK_TOOL_IDS` in
+`apps/desktop/src/shared/types/workTools.ts`), not a model-callable tool: an
+agent drives it through the `ade mac-desktop` CLI and the `mac_desktop` action
+domain, the same way it drives `ade browser` and `ade ios-sim`.
+
+Gating:
+
+- **Runtime host only.** The lane's runtime host must be macOS. Off macOS the
+  service answers `supported: false` and every other method rejects with
+  `MAC_DESKTOP_UNSUPPORTED_PLATFORM`; the tool is hidden rather than drawn
+  empty. A null `macDesktop` slice (an older host, or one built without the
+  service) hides it the same way.
+- **Any client, Mac-hosted lane.** A Windows or Linux desktop, the hosted web
+  client, and the phone all render the tool for a lane whose runtime host is a
+  Mac, read-only, because the display lives on that Mac.
+
+The agent-facing prompt cost is exactly one line.
+`buildMacDesktopDirective` (`ai/tools/macDesktopPrompt.ts`) returns
+`MAC_DESKTOP_PROMPT_LINE` only when the lane state says `enabled: true` — it has
+a display, or the tool is granted — and `null` otherwise. `composeLaunchDirectives`
+in `agentChatService.ts` drops the null, so a lane with the tool off produces a
+byte-identical system prompt to one built before the feature existed. Personal
+chats never get the line. The line itself points at `ade mac-desktop` and the
+bundled **ade-desktop** skill rather than restating the surface.
+
+See [Mac Desktop](../mac-desktop/README.md).
+
 ## Fragile and tricky wiring
 
 - **System-prompt name-detection.** `buildCodingAgentSystemPrompt` branches on
@@ -354,6 +383,8 @@ Additional exposure rules:
 ## Related docs
 
 - [Chat README](README.md) -- the service that provisions tools.
+- [Mac Desktop](../mac-desktop/README.md) -- the per-lane macOS screen the
+  `mac-desktop` tool shows and `ade mac-desktop` drives.
 - [Agents Tool Registration](../agents/tool-registration.md) -- ADE CLI
   action registration and the private ADE RPC bridge used by the desktop app.
 </content>

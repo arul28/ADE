@@ -5,8 +5,9 @@ after the lane, parks the lane's windows on it, and drives those windows through
 the Accessibility API. The user's real display and the real pointer stay
 untouched.
 
-The Work tools pane shows that screen live, the `ade desktop` command family
-drives it, and screenshots and recordings reach the proof drawer through the
+The Work tools pane shows that screen live, the `ade mac-desktop` command family
+drives it (aliases `ade mac-desk` and `ade desk`; `ade desktop` stays the app
+launcher), and screenshots and recordings reach the proof drawer through the
 existing computer-use artifact broker.
 
 The feature is macOS-only on the **runtime host**. A Windows desktop, a Linux
@@ -66,13 +67,23 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/CaptureEngine.swift` | ScreenCaptureKit screenshots plus the VideoToolbox H.264 stream and recording. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RealInput.swift` | `CGEvent` pointer and keyboard posts. Refuses every call without a lease. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/CursorOverlay.swift` | The fake cursor the human sees. The real pointer never moves. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/main.swift` | The NDJSON loop and the op dispatcher. stdout is protocol; every log line goes to stderr. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/ObjCDynamic.swift` | The Objective-C runtime calls the private display classes need: `objc_msgSend` by `dlsym`, and KVC that probes the setter first. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/Permissions.swift` | Screen Recording and Accessibility, probed without prompting; `permissions.request` is the one that prompts. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PhysicalInput.swift` | Seconds since the last physical input, for the idle rate and the takeover check. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/InputLease.swift` | The lease the driver keeps for itself, and the refusal `RealInput` raises. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion and the offscreen-fallback arithmetic. |
+| `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`, beside the notch helper. |
 | `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface a later Linux seat backend implements. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, window ownership, the input lease, idle release, events, and teardown. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopDriverClient.ts` | The NDJSON client for the helper, with restart backoff and health. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopStreamServer.ts` | The token-guarded loopback HTTP endpoint that serves H.264 access units. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopObservations.ts` | Observation storage, the numbered element map image, and the sidecar that binds a frame to a lane. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopLease.ts` | The input-lease state machine: agent grant per chat, user takeover, heartbeat renewal, TTL expiry, and the three refusal codes. Pure, injectable clock. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopOwnership.ts` | Lane→display, window→lane, window origin, the single-instance rule, and `ade_launched` pid bookkeeping. Pure. |
+| `apps/desktop/src/main/services/attention/attentionNotchHelper.ts` | `resolveMacDesktopDriverBinary` lives beside the notch resolver: both binaries come from the same `resources/native` directory, and it also answers in the daemon, which has no Electron `app`. |
 | `apps/ade-cli/src/bootstrap.ts` | Creates the service next to `iosSimulatorService` and `appControlService`. |
-| `apps/ade-cli/src/cli.ts` | The `ade desktop` command family. |
+| `apps/ade-cli/src/cli.ts` | The `ade mac-desktop` command family. |
 | `apps/desktop/src/renderer/components/chat/ChatMacDesktopPanel.tsx` | The Work tools pane tool. |
 | `apps/desktop/src/renderer/components/chat/useMacDesktopLiveView.ts` | The live view, its low-power idle rate, and its reconnect budget. |
 | `apps/desktop/resources/agent-skills/ade-desktop/SKILL.md` | The bundled agent skill. |
@@ -108,12 +119,12 @@ display.
 
 A window joins the lane's display in one of two ways.
 
-1. **ADE launched it.** `ade desktop open <app|path|url>` starts the app, and
+1. **ADE launched it.** `ade mac-desktop open <app|path|url>` starts the app, and
    the driver watches that pid for new windows and parks each one. An
    App Control session and an iOS Simulator session owned by a chat in the lane
    park the same way.
-2. **Somebody claimed it.** `ade desktop claim --window <id>` moves an existing
-   window onto the lane's display. `ade desktop release --window <id>` puts it
+2. **Somebody claimed it.** `ade mac-desktop claim --window <id>` moves an existing
+   window onto the lane's display. `ade mac-desktop release --window <id>` puts it
    back where it came from.
 
 A window that moves itself off the display is re-parked once per move, with a
@@ -172,8 +183,8 @@ poller.
 
 ## Proof
 
-Proof stays intentional. A bare `ade desktop screenshot` writes a scratch file
-and returns its path. Only `ade desktop proof --caption "<text>"` files a record,
+Proof stays intentional. A bare `ade mac-desktop screenshot` writes a scratch file
+and returns its path. Only `ade mac-desktop proof --caption "<text>"` files a record,
 and it re-observes after the capture so the returned state is the state that was
 filed.
 
@@ -185,8 +196,25 @@ as a `github_pr` owner with the existing `published_to` relation. There is no
 second ingestion path.
 
 A turn that used the desktop also gets a short time-lapse clip in the thread. It
-is built from frames the recorder already holds, it is context rather than
-proof, and it never files a record.
+is context rather than proof and never files a record.
+
+**How the clip is actually made.** There is no frame assembler in the runtime —
+no ffmpeg, no encoder — so stitching kept stills was not a cheap path, it was a
+missing one. The clip is instead the helper's own recording at 4 fps: the
+service opens it on the turn's first desktop action (`beginTurn`) and closes it
+in `noteTurnEnded`. A user-started `record start` wins: one lane has one writer,
+and the reviewer-facing capture is the one that matters, so a turn that overlaps
+a real recording produces no clip. Action frames are still counted, capped at
+one a second and 120 total, and that count is what `frameCount` reports.
+
+**Where the files live.** Observation frames and element maps go to
+`.ade/cache/mac-desktop-observations/<laneId>/`, with a `<name>.json` sidecar
+carrying `ownerLaneId` — that is the one root `workToolsStateService.readObservationPreview`
+serves from, so a frame written anywhere else is invisible to the phone and the
+hosted web client. Recordings and turn clips go to the computer-use artifact
+store under `.ade/artifacts`, because the thread plays them through
+`ade-artifact://` and main serves that scheme only from inside that root. A bare
+screenshot with no `--out` stays in the computer-use scratch root.
 
 ## Gotchas and fragile areas
 
@@ -215,6 +243,94 @@ proof, and it never files a record.
 - **The agent-facing prompt cost is one line.** The system prompt gains a single
   line, and only when the lane has a display. A lane with the tool off pays
   nothing.
+
+## The native helper, as built
+
+The helper is `apps/desktop/native/ADEDesktopDriver`, a SwiftPM package laid out
+like `ADEAttentionNotch`: a pure `ADEDesktopDriverCore` library holding the wire
+types and the rules that must be testable without a window server, and an
+`ade-desktop-driver` executable holding everything that touches AppKit.
+
+### The wire
+
+One JSON object per line over stdin/stdout. `DriverProtocol.swift` carries the
+full op table in its doc comment — read that file and you know the wire.
+
+Ops accept **two spellings**: the camelCase name (`createDisplay`) and the
+grouped one the rest of this document uses (`display.create`). Both resolve to
+the same case through `DriverOp(wireName:)`, and `health` also answers to
+`ping`. That is not indecision; the doc, the CLI and the service were written in
+parallel, and accepting both cost less than a migration.
+
+A request carrying an `id` is always answered. An unknown op is
+`ok:false, code:"unknown_op"` — never silence, never a crash — because a newer
+Node talking to an older helper is a normal state during an update.
+
+### Build, sign, bundle
+
+`npm --prefix apps/desktop run build:mac-native` builds both native helpers;
+`build:desktop-driver` builds this one alone. It materializes a universal
+(arm64 + x86_64) binary at `apps/desktop/resources/native/ade-desktop-driver`,
+which `build.mac.extraResources` copies to `Contents/Resources/native/` and
+`validate-mac-artifacts.mjs` then asserts exists, is executable, and carries
+both architectures — the same three assertions the notch helper gets. The
+release workflow picks all of this up because every `dist:mac:*` script now runs
+`build:mac-native` where it used to run `build:notch`.
+
+The Node side finds it with `resolveMacDesktopDriverBinary` in
+`apps/desktop/src/main/services/attention/attentionNotchHelper.ts`, beside the
+notch's resolver: both binaries are produced by one build step into one
+directory, and two resolvers in two files drift the first time that directory
+moves. It returns `null` off macOS rather than throwing, because `getStatus`
+answers on every platform.
+
+`swift test --package-path apps/desktop/native/ADEDesktopDriver`
+(`npm run test:desktop-driver`) runs the unit suite. The one test that creates a
+real virtual display is skipped unless `ADE_DESKTOP_DRIVER_LIVE_TESTS=1`.
+
+### What the private API actually does, measured on macOS 27
+
+`CGVirtualDisplay` and its three companions are all present on macOS 27
+(Darwin 27) and a display created through them appears in
+`CGGetActiveDisplayList` within a few hundred milliseconds.
+
+Two behaviours differ from what the names suggest, and the driver reports rather
+than assumes:
+
+- **`maxPixelsWide`/`maxPixelsHigh` decide the display's *point* size**, not its
+  pixel buffer. A descriptor capped at 2560 comes up as a 2560-point display
+  whatever `CGVirtualDisplayMode` was initialised with. So the cap is set to the
+  requested working size and the mode matches it.
+- **`hiDPI = 1` did not produce a 2x backing scale** on this release. A lane that
+  asks for `scale: 2` gets the working area it asked for at whatever scale the
+  window server gave, and the `scale` in the reply is *measured* from
+  `CGDisplayCopyDisplayMode` rather than echoed from the request. Nothing
+  downstream should assume the requested scale came true.
+
+If any of the four classes goes missing, or `applySettings:` refuses, the driver
+answers `displayMode: "offscreen-region"` with a reason and parks windows past
+the main display's visible frame. It never reports `virtual` for a display it
+did not get.
+
+### Keyboard without a lease
+
+`AccessibilityDriver` types by setting `kAXValueAttribute` where the element has
+one. Where it does not — a canvas, a terminal view, some Electron text areas —
+it falls back to `CGEvent` keyboard events posted with **`CGEventPostToPid`**.
+That is process-targeted: the event goes to one application's event queue and
+never enters the window server's global stream, so it cannot land in the user's
+window. This is why it is allowed without the input lease, while every post in
+`RealInput.swift` (`CGEvent.post(tap:)`, global) is not. Turning one of those
+`postToPid` calls into a `post(tap:)` would silently hand every accessibility
+caller the user's keyboard.
+
+### Reconciliation is narrower than it sounds
+
+`display.reconcile` destroys displays *this process* created whose lane is not
+in the live set. There is nothing else it could do: a `CGVirtualDisplay` dies
+with the process that created it, so a crashed previous run leaks nothing for a
+later run to sweep. The service's start-up reconciliation is therefore about
+this run's own bookkeeping, not about orphans on disk.
 
 ## Not in scope
 

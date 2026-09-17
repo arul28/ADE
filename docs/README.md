@@ -53,6 +53,7 @@ docs/
     ├── ios-simulator/                     # chat-side iOS Simulator drawer + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
+    ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade mac-desktop`
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── personal-chats/                    # machine-owned projectless AI conversations
     ├── sdk/                               # embeddable @ade-dev/sdk + @ade-dev/chat-ui sidecar

@@ -24,6 +24,7 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/desktop/src/main/services/chat/` | `docs/features/chat/` | `ade-perf-work` |
 | `apps/desktop/src/main/services/automations/` | `docs/features/automations/` | — |
 | `apps/desktop/src/main/services/computerUse/` | `docs/features/computer-use/` | — |
+| `apps/desktop/src/main/services/macDesktop/`, `apps/desktop/native/ADEDesktopDriver/` (keywords: mac desktop, virtual display, desktop seat, `ade mac-desktop`, accessibility driver, window parking, input lease) | `docs/features/mac-desktop/README.md` + `docs/features/computer-use/` | — |
 | `apps/desktop/src/main/services/deeplinks/` | `docs/features/deeplinks/` | — |
 | `apps/desktop/src/main/services/orchestration/` | `docs/features/agents/` (orchestrator) | — |
 | `apps/desktop/src/main/services/conflicts/` | `docs/features/conflicts/` | — |
@@ -78,7 +79,7 @@ of these paths starts Windows-aware rather than discovering it in `/quality`.
 | `**/pathCompare.ts`, `renderer/lib/pathUtils.ts`, `services/projects/machineLayout.ts`, any new path construction or comparison | `docs/development/windows-support.md` |
 | `services/runtime/**`, `localIpcListenOptions.ts`, local IPC / socket / named-pipe endpoints | `docs/development/windows-support.md` |
 | `services/credentials/**`, `safeStorage`/DPAPI/Keychain callers | `docs/development/windows-support.md` |
-| `services/computerUse/**`, `services/appControl/**`, `renderer/lib/platform.ts`, any platform capability gate | `WINDOWS_PORT.md` |
+| `services/computerUse/**`, `services/appControl/**`, `services/macDesktop/**`, `renderer/lib/platform.ts`, any platform capability gate | `WINDOWS_PORT.md` |
 | `.github/workflows/**` (Windows jobs), `scripts/package-channel.mjs`, packaging/native artifacts | `docs/development/windows-release-proof.md` |
 | Release, signing, installer, updater feed (`latest.yml`) | `docs/playbooks/windows-signed-release.md` + `docs/development/windows-release-proof.md` |
 
