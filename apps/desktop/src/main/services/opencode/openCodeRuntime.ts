@@ -810,7 +810,7 @@ export function __resetOpenCodeRuntimeDiagnosticsForTests(): void {
  * The incremental text an older OpenCode may have attached to
  * `message.part.updated`.
  *
- * 1.18.21 does not send one: `Session.updatePart` publishes `{ sessionID, part,
+ * 1.18.31 does not send one: `Session.updatePart` publishes `{ sessionID, part,
  * time }` and routes incremental text to the separate `message.part.delta`
  * event, which is why the field is absent from the current SDK types. Callers
  * already reconstruct the delta by diffing against the text they last saw, so

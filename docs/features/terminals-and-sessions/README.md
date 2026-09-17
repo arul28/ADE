@@ -2384,7 +2384,7 @@ per-request system channel.
   entries land in the same assembled system block as `AGENTS.md`, after the base
   prompt, and never appear in the transcript. Config layers union this key rather
   than overwrite it, so ADE's entry is appended to the user's own instruction
-  files instead of replacing them (verified against opencode 1.18.21).
+  files instead of replacing them (verified against opencode 1.18.31).
 
 `openCodeAdeInstructions.ts` writes the file to `.ade/cache/opencode-instructions/`
 keyed by lane worktree. Two other placements are wrong: the lane worktree is the

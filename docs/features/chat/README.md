@@ -3120,7 +3120,7 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   now). Do **not** move to `@opencode-ai/sdk-next`: that is the 2.0 beta's
   Effect-native in-process embedding architecture, which would host OpenCode
   inside ADE instead of talking to a separately managed server.
-- **`permission.updated` is gone from OpenCode, but not from ADE.** 1.18.21
+- **`permission.updated` is gone from OpenCode, but not from ADE.** 1.18.31
   publishes only `permission.asked` / `permission.replied`, so the legacy event
   is absent from the v2 union. ADE still handles it through an explicit runtime
   guard rather than a union case, because `resolveOpenCodeBinaryPath` falls back

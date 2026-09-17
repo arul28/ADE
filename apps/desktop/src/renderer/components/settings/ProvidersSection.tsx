@@ -406,15 +406,33 @@ export function ProvidersSection({
         name: patch.name ?? prev?.name ?? inventory?.name ?? apiSpec?.label ?? prettifyProviderId(id),
         methods,
         connected: patch.connected ?? prev?.connected ?? inventory?.connected === true,
-        hasKey: hasKeyFor(id),
+        hasKey: hasKeyFor(id) || Boolean(patch.credentialSource ?? prev?.credentialSource ?? inventory?.credentialSource),
         modelCount: patch.modelCount ?? prev?.modelCount ?? inventory?.modelCount,
-        envVar: patch.envVar ?? prev?.envVar ?? apiSpec?.envVar,
+        envVars: patch.envVars
+          ?? prev?.envVars
+          ?? (inventory?.envVars?.length ? inventory.envVars : undefined)
+          ?? (apiSpec?.envVar ? [apiSpec.envVar] : undefined),
+        credentialSource: patch.credentialSource
+          ?? prev?.credentialSource
+          ?? inventory?.credentialSource,
+        verificationSupported: patch.verificationSupported
+          ?? prev?.verificationSupported
+          ?? (apiSpec ? true : undefined),
+        envVar: patch.envVar
+          ?? prev?.envVar
+          ?? (inventory?.envVars?.length === 1 ? inventory.envVars[0] : undefined)
+          ?? apiSpec?.envVar,
         placeholder: patch.placeholder ?? prev?.placeholder ?? apiSpec?.placeholder,
       });
     };
 
     for (const p of opencodeProviders) {
-      upsert(p.id, { name: p.name, modelCount: p.modelCount, connected: p.connected });
+      upsert(p.id, {
+        name: p.name,
+        modelCount: p.modelCount,
+        connected: p.connected,
+        envVars: p.envVars,
+      });
     }
     for (const [id, methods] of Object.entries(authMethods ?? {})) {
       upsert(id, { methods });
@@ -423,6 +441,7 @@ export function ProvidersSection({
       upsert(api.provider, {
         name: api.label,
         envVar: api.envVar,
+        envVars: [api.envVar],
         placeholder: api.placeholder,
       });
     }
@@ -431,6 +450,7 @@ export function ProvidersSection({
     upsert(KIMI_PROVIDER_ID, {
       name: "Kimi for Coding",
       envVar: "KIMI_API_KEY",
+      envVars: ["KIMI_API_KEY"],
       placeholder: "sk-…",
       connected: kimiInventory?.connected === true || hasKeyFor(KIMI_PROVIDER_ID),
     });
@@ -1100,7 +1120,8 @@ export function ProvidersSection({
       {detailProvider ? (
         <OpenCodeProviderDetailModal
           provider={detailProvider}
-          keySource={apiKeySources.get(detailProvider.id) ?? (storedProviders.includes(detailProvider.id) ? "store" : undefined)}
+          keySource={apiKeySources.get(detailProvider.id)
+            ?? (storedProviders.includes(detailProvider.id) ? "store" : detailProvider.credentialSource)}
           verification={verificationByProvider[detailProvider.id]}
           verifying={verifyingProvider === detailProvider.id}
           authMethodsError={authMethodsError}

@@ -1595,6 +1595,19 @@ export type PiLoginProvider = {
   isSubscription?: boolean;
 };
 
+/** Non-secret OpenCode provider metadata shared by main, preload, and renderer. */
+export type OpenCodeProviderSummary = {
+  id: string;
+  name: string;
+  connected: boolean;
+  modelCount: number;
+  availableModelCount?: number;
+  /** Environment variable names OpenCode associates with credentials. */
+  envVars?: string[];
+  /** Non-secret source of an API credential visible to the ADE process. */
+  credentialSource?: "config" | "env";
+};
+
 export type PiAuthPromptKind = "text" | "secret" | "select" | "confirm" | "manual_code";
 
 export type PiAuthPrompt = {
@@ -1683,7 +1696,7 @@ export type AiSettingsStatus = {
   /** Mirrors OpenCodeBinarySource in main/services/opencode/openCodeBinaryManager.ts. */
   opencodeBinarySource?: "user-installed" | "tools-cache" | "bundled" | "missing";
   opencodeInventoryError?: string | null;
-  opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
+  opencodeProviders?: OpenCodeProviderSummary[];
   /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */
   opencodeProvidersStale?: boolean;
   customProviders?: AiCustomProviderConfig[];

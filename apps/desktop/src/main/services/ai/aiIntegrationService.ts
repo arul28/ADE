@@ -22,6 +22,7 @@ import type {
   CursorCloudRunSummary,
   CursorAgentUsage,
   CursorAgentUsageRequest,
+  OpenCodeProviderSummary,
 } from "../../../shared/types";
 import {
   decodeOpenCodeRegistryId,
@@ -183,7 +184,7 @@ export type AiIntegrationStatus = {
   /** Last inventory probe error, if any (empty models when set after a failed probe). */
   opencodeInventoryError?: string | null;
   /** All providers reported by OpenCode's provider.list() — used to dynamically populate the settings UI and model picker. */
-  opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number; availableModelCount?: number }>;
+  opencodeProviders?: OpenCodeProviderSummary[];
   /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */
   opencodeProvidersStale?: boolean;
   /** Epoch ms of the last successful models.dev fetch (or cache mtime on fallback); null if never fetched. */
