@@ -13,6 +13,7 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { macDesktopNotParkedPhrase } from "../../../shared/types/macDesktop";
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
@@ -681,6 +682,13 @@ export function ChatMacDesktopPanel({
     parkedCount: parkedWindows.length,
   });
   const notParkedNewest = notParked[0] ?? null;
+  // The window's own title when the lane still knows it, and its id when it
+  // does not — an id is what the user can find in Mission Control, a title is
+  // what they already see on their screen.
+  const notParkedLabel = notParkedNewest
+    ? windows.find((entry) => entry.id === notParkedNewest.windowId)?.title?.trim()
+      || String(notParkedNewest.windowId)
+    : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2" data-testid="mac-desktop-panel">
@@ -1083,7 +1091,7 @@ export function ChatMacDesktopPanel({
         >
           <WarningCircle size={12} className="shrink-0" />
           <span className="truncate">
-            {`Window ${notParkedNewest.windowId} stayed on your screen (${notParkedNewest.reason})`}
+            {`Window ${notParkedLabel} ${macDesktopNotParkedPhrase(notParkedNewest.reason)}. It is still on your main screen.`}
           </span>
           <button
             type="button"

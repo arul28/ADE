@@ -6,7 +6,12 @@ import type {
   MacDesktopStatus,
   MacDesktopWindow,
 } from "../../../shared/types/macDesktop";
-import { reduceMacDesktopNotParked } from "../../../shared/types/macDesktop";
+import {
+  MAC_DESKTOP_NOT_PARKED_RETRY_GRACE_MS,
+  macDesktopNotParkedPhrase,
+  macDesktopVisibleNotParked,
+  reduceMacDesktopNotParked,
+} from "../../../shared/types/macDesktop";
 import {
   macDesktopCursorFromEvent,
   reduceMacDesktopStatus,
@@ -155,7 +160,7 @@ describe("reduceMacDesktopStatus", () => {
 });
 
 describe("reduceMacDesktopNotParked", () => {
-  const stranded = (windowId: number, reason = "window_not_ready"): MacDesktopEventPayload => ({
+  const stranded = (windowId: number, reason = "not_ready"): MacDesktopEventPayload => ({
     type: "window-not-parked",
     laneId: "lane-1",
     windowId,
@@ -175,42 +180,47 @@ describe("reduceMacDesktopNotParked", () => {
     list = reduceMacDesktopNotParked(list, stranded(3), "lane-1", 3_000);
     list = reduceMacDesktopNotParked(list, stranded(4), "lane-1", 4_000);
     expect(list.map((entry) => entry.windowId)).toEqual([4, 3, 2]);
-    expect(list[0]).toEqual({ windowId: 4, reason: "window_not_ready", at: 4_000 });
+    expect(list[0]).toEqual({ windowId: 4, reason: "not_ready", at: 4_000, firstSeenAt: 4_000 });
 
     // A retry on a window already in the list replaces it with the newest
-    // reason rather than filling the list with one window's history.
+    // reason rather than filling the list with one window's history — and keeps
+    // the streak's start, which is what the grace window is measured against.
     const retried = reduceMacDesktopNotParked(list, stranded(3, "denied"), "lane-1", 5_000);
     expect(retried.map((entry) => entry.windowId)).toEqual([3, 4, 2]);
     expect(retried[0]?.reason).toBe("denied");
+    expect(retried[0]).toMatchObject({ at: 5_000, firstSeenAt: 3_000 });
   });
 
-  it("drops a window a later windows-changed shows parked, and keeps the rest", () => {
+  it("drops a window a later windows-changed shows parked, and one it no longer lists", () => {
     let list = reduceMacDesktopNotParked([], stranded(1), "lane-1", 1_000);
     list = reduceMacDesktopNotParked(list, stranded(2), "lane-1", 2_000);
+    list = reduceMacDesktopNotParked(list, stranded(3), "lane-1", 3_000);
     const after = reduceMacDesktopNotParked(list, {
       type: "windows-changed",
       laneId: "lane-1",
       // Window 2 landed. Window 1 came back in the list with no lane, which is
       // a window still loose on the human's own screen — it stays reported.
+      // Window 3 is not in the list at all: it closed, and a warning about a
+      // window that no longer exists is pure noise.
       windows: [parkedWindow(2, "lane-1"), parkedWindow(1, null)],
-    }, "lane-1", 3_000);
+    }, "lane-1", 4_000);
     expect(after.map((entry) => entry.windowId)).toEqual([1]);
   });
 
   it("returns the same array when nothing changed, and clears with the display", () => {
     const list = reduceMacDesktopNotParked([], stranded(1), "lane-1", 1_000);
-    // Another lane's news, and a windows-changed that parked nothing on the
-    // list, both have to be identity-stable or the panel re-renders per event.
+    // Another lane's news has to be identity-stable or the panel re-renders per
+    // event.
     expect(reduceMacDesktopNotParked(list, stranded(9), "lane-2", 2_000)).toBe(list);
-    expect(reduceMacDesktopNotParked(list, {
-      type: "windows-changed",
-      laneId: "lane-1",
-      windows: [parkedWindow(5, "lane-1")],
-    }, "lane-1", 2_000)).toBe(list);
     expect(reduceMacDesktopNotParked(list, {
       type: "lease-changed",
       laneId: "lane-1",
       lease: null,
+    }, "lane-1", 2_000)).toBe(list);
+    expect(reduceMacDesktopNotParked(list, {
+      type: "windows-changed",
+      laneId: "lane-1",
+      windows: [parkedWindow(1, null)],
     }, "lane-1", 2_000)).toBe(list);
 
     // The display is gone, so nothing is waiting to land on it.
@@ -224,6 +234,54 @@ describe("reduceMacDesktopNotParked", () => {
       laneId: "lane-1",
       reason: "stopped",
     }, "lane-1", 2_000)).toEqual([]);
+  });
+});
+
+describe("macDesktopVisibleNotParked", () => {
+  const stranded = (windowId: number, reason: string): MacDesktopEventPayload => ({
+    type: "window-not-parked",
+    laneId: "lane-1",
+    windowId,
+    reason,
+  });
+
+  it("hides a retry in progress and shows it once it outlives the grace window", () => {
+    // The bug this fixes: a TextEdit service window reports `not_ready` once and
+    // is gone a moment later. Showing it accused the user of a stranded window
+    // they never had.
+    const list = reduceMacDesktopNotParked([], stranded(33_976, "not_ready"), "lane-1", 1_000);
+    expect(macDesktopVisibleNotParked(list, 1_100)).toEqual([]);
+    expect(macDesktopVisibleNotParked(list, 1_000 + MAC_DESKTOP_NOT_PARKED_RETRY_GRACE_MS)).toEqual([]);
+    expect(macDesktopVisibleNotParked(list, 1_000 + MAC_DESKTOP_NOT_PARKED_RETRY_GRACE_MS + 1))
+      .toHaveLength(1);
+  });
+
+  it("keeps a retrying window's original start, so retries cannot postpone it forever", () => {
+    let list = reduceMacDesktopNotParked([], stranded(7, "not_ready"), "lane-1", 1_000);
+    list = reduceMacDesktopNotParked(list, stranded(7, "not_ready"), "lane-1", 5_000);
+    list = reduceMacDesktopNotParked(list, stranded(7, "not_ready"), "lane-1", 8_000);
+    expect(macDesktopVisibleNotParked(list, 8_000)).toHaveLength(1);
+  });
+
+  it("shows a final reason immediately", () => {
+    const list = reduceMacDesktopNotParked([], stranded(7, "permission_required"), "lane-1", 1_000);
+    expect(macDesktopVisibleNotParked(list, 1_001)).toHaveLength(1);
+  });
+});
+
+describe("macDesktopNotParkedPhrase", () => {
+  it("humanizes the codes a driver actually emits", () => {
+    expect(macDesktopNotParkedPhrase("not_ready")).toBe("is still opening");
+    expect(macDesktopNotParkedPhrase("window_not_ready")).toBe("is still opening");
+    expect(macDesktopNotParkedPhrase("escaped")).toBe("keeps leaving the lane screen");
+    expect(macDesktopNotParkedPhrase("gave_up")).toBe("keeps leaving the lane screen");
+    expect(macDesktopNotParkedPhrase("MAC_DESKTOP_PERMISSION_REQUIRED"))
+      .toBe("needs Accessibility permission");
+    expect(macDesktopNotParkedPhrase("accessibility_denied")).toBe("needs Accessibility permission");
+  });
+
+  it("falls through to the raw reason, which beats a vague sentence", () => {
+    expect(macDesktopNotParkedPhrase("something_new")).toBe("something_new");
   });
 });
 

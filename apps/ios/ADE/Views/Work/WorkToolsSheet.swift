@@ -300,7 +300,8 @@ struct WorkToolsSheet: View {
             // says it. Newest only, matching the desktop panel's single line.
             if let stranded = (macDesktop.notParked ?? []).first {
               Label(
-                "Window \(stranded.windowId) stayed on your screen (\(stranded.reason))",
+                "Window \(Self.strandedWindowLabel(stranded, in: macDesktop.windows ?? [])) "
+                  + "\(Self.notParkedPhrase(stranded.reason)). It is still on your main screen.",
                 systemImage: "exclamationmark.triangle"
               )
               .font(.caption)
@@ -401,6 +402,35 @@ struct WorkToolsSheet: View {
       unreadableFramePath: unreadableFramePath,
       supportsObservationPreview: syncService.supportsWorkToolsObservationPreview
     )
+  }
+
+  /// The window's own title when the lane still knows it, else its id — the
+  /// same choice the desktop panel makes, so one screen does not name a window
+  /// the other cannot.
+  static func strandedWindowLabel(
+    _ stranded: WorkToolsMacDesktopNotParked,
+    in windows: [WorkToolsMacDesktopWindow]
+  ) -> String {
+    let title = windows.first { $0.id == stranded.windowId }?.title?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if let title, !title.isEmpty { return title }
+    return String(stranded.windowId)
+  }
+
+  /// The human half of a driver reason code. Mirrors
+  /// `macDesktopNotParkedPhrase` in `shared/types/macDesktop.ts`; the host only
+  /// sends codes worth showing, so there is no retry case to hide here — it is
+  /// still mapped, because an older host may send one.
+  static func notParkedPhrase(_ reason: String) -> String {
+    let code = reason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if code == "not_ready" || code == "window_not_ready" { return "is still opening" }
+    if code == "escaped" || code == "window_escaped" || code == "gave_up" {
+      return "keeps leaving the lane screen"
+    }
+    if code.contains("permission") || code.contains("accessibility") || code.contains("not_trusted") {
+      return "needs Accessibility permission"
+    }
+    return reason
   }
 
   private func refresh() async {

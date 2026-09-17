@@ -10,6 +10,7 @@ import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/sha
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import {
   MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS,
+  macDesktopVisibleNotParked,
   reduceMacDesktopNotParked,
 } from "../../../../desktop/src/shared/types/macDesktop";
 import type {
@@ -441,10 +442,12 @@ function summarizeMacDesktop(
     // longer exists, so it leaves with the display rather than lingering.
     lastObservation: status.display ? lastObservation : null,
     hostIsLocal: status.hostIsLocal,
-    // Same rule the desktop panel folds with, from the same event. Copied out
-    // of the tracking list so a later mutation of it cannot reach a published
-    // state object.
-    notParked: [...notParked],
+    // Same rule the desktop panel folds with, from the same event, and the
+    // same "is this worth saying" filter: a mirrored client shows whatever it
+    // is handed, so a retry the driver is still working through must not cross
+    // the wire at all. Copied out of the tracking list so a later mutation of
+    // it cannot reach a published state object.
+    notParked: macDesktopVisibleNotParked(notParked, Date.now()),
   };
 }
 

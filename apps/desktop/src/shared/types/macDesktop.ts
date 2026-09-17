@@ -668,7 +668,82 @@ export type MacDesktopNotParked = {
   windowId: number;
   reason: string;
   at: number;
+  /**
+   * When this window's current not-parked streak started.
+   *
+   * Separate from `at` because a retrying driver reports the same window once
+   * per poll: `at` is the newest report, `firstSeenAt` is how long the window
+   * has actually been stuck, and only the second one can tell a transient
+   * "not yet" apart from a window that really is stranded.
+   */
+  firstSeenAt: number;
 };
+
+/**
+ * Reasons that mean "the driver will try again in a moment", not "this failed".
+ *
+ * `not_ready` is emitted by the window watcher for a window whose accessibility
+ * element has not appeared yet, and the watcher deliberately forgets the window
+ * so the next poll re-parks it. A service window that exists for half a second
+ * — TextEdit's, say — produced one of these and then vanished, and showing it
+ * meant the panel accused the user of a stranded window that had never existed
+ * for them to look at.
+ */
+const MAC_DESKTOP_NOT_PARKED_RETRY_REASONS: ReadonlySet<string> = new Set([
+  "not_ready",
+  "window_not_ready",
+]);
+
+export function isMacDesktopNotParkedRetry(reason: string): boolean {
+  return MAC_DESKTOP_NOT_PARKED_RETRY_REASONS.has(reason.trim().toLowerCase());
+}
+
+/**
+ * How long a retry may keep retrying before it is worth saying out loud.
+ *
+ * A window that is still not ready after this has stopped being "opening" and
+ * started being "stuck", and it is still on the user's own screen either way.
+ */
+export const MAC_DESKTOP_NOT_PARKED_RETRY_GRACE_MS = 5_000;
+
+/**
+ * The subset of tracked entries a surface should actually show.
+ *
+ * Tracking and showing are separated on purpose: the reducer has to remember a
+ * retry to know how long it has been going on, but a retry in progress is not
+ * news. An entry becomes news when its reason is final, or when the retry has
+ * outlived the grace window and the window is still not parked.
+ */
+export function macDesktopVisibleNotParked(
+  entries: readonly MacDesktopNotParked[],
+  now: number,
+): MacDesktopNotParked[] {
+  return entries.filter(
+    (entry) =>
+      !isMacDesktopNotParkedRetry(entry.reason)
+      || now - entry.firstSeenAt > MAC_DESKTOP_NOT_PARKED_RETRY_GRACE_MS,
+  );
+}
+
+/**
+ * The human half of a driver reason code.
+ *
+ * One map, read by the desktop panel and mirrored by the Work-tools sheet, so
+ * the two surfaces cannot drift into describing the same code differently. An
+ * unknown code falls through to itself rather than to a vague sentence: a
+ * reason nobody has humanized yet is still more useful than "something failed".
+ */
+export function macDesktopNotParkedPhrase(reason: string): string {
+  const code = reason.trim().toLowerCase();
+  if (isMacDesktopNotParkedRetry(code)) return "is still opening";
+  if (code === "escaped" || code === "window_escaped" || code === "gave_up") {
+    return "keeps leaving the lane screen";
+  }
+  if (code.includes("permission") || code.includes("accessibility") || code.includes("not_trusted")) {
+    return "needs Accessibility permission";
+  }
+  return reason;
+}
 
 /**
  * How many stranded windows a client remembers.
@@ -700,18 +775,30 @@ export function reduceMacDesktopNotParked(
     if (event.laneId !== laneId) return current;
     // One entry per window: a driver retrying the same window reports the
     // newest reason, it does not fill the list with one window's history.
+    const previous = current.find((entry) => entry.windowId === event.windowId) ?? null;
     const rest = current.filter((entry) => entry.windowId !== event.windowId);
-    return [{ windowId: event.windowId, reason: event.reason, at: now }, ...rest]
-      .slice(0, MAC_DESKTOP_NOT_PARKED_MAX);
+    return [
+      {
+        windowId: event.windowId,
+        reason: event.reason,
+        at: now,
+        // A retry keeps the streak's start, so the grace window measures the
+        // stuck window rather than the newest poll.
+        firstSeenAt: previous?.firstSeenAt ?? now,
+      },
+      ...rest,
+    ].slice(0, MAC_DESKTOP_NOT_PARKED_MAX);
   }
   if (event.type === "windows-changed") {
     if (event.laneId !== laneId) return current;
-    // The window landed after all. `laneId` on the window IS parked-ness — a
-    // window with no lane is still loose on the human's own screen.
-    const parked = new Set(
-      event.windows.filter((window) => window.laneId === laneId).map((window) => window.id),
+    // The window landed after all — or stopped existing. `laneId` on the window
+    // IS parked-ness: a window listed with no lane is still loose on the human's
+    // own screen, while a window the list no longer mentions at all is gone, and
+    // a warning about a window that closed is pure noise.
+    const loose = new Set(
+      event.windows.filter((window) => window.laneId !== laneId).map((window) => window.id),
     );
-    const next = current.filter((entry) => !parked.has(entry.windowId));
+    const next = current.filter((entry) => loose.has(entry.windowId));
     return next.length === current.length ? current : next;
   }
   // The display is gone, so nothing is waiting to land on it.

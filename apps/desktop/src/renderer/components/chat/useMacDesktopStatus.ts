@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
+  MAC_DESKTOP_NOT_PARKED_RETRY_GRACE_MS,
+  macDesktopVisibleNotParked,
   reduceMacDesktopNotParked,
   type MacDesktopEventPayload,
   type MacDesktopNotParked,
@@ -111,8 +113,10 @@ export function macDesktopCursorFromEvent(
 export type UseMacDesktopStatus = {
   status: MacDesktopStatus | null;
   /**
-   * Windows the driver could not park, newest first, at most
-   * `MAC_DESKTOP_NOT_PARKED_MAX`. Empty is the normal state.
+   * Windows the driver could not park AND that are worth saying out loud,
+   * newest first, at most `MAC_DESKTOP_NOT_PARKED_MAX`. Empty is the normal
+   * state — a retry the driver is still working through is tracked but not
+   * shown until it outlives the grace window.
    */
   notParked: readonly MacDesktopNotParked[];
   /** Drops one stranded-window line the user has read. */
@@ -137,7 +141,15 @@ export function useMacDesktopStatus(args: {
   const [status, setStatus] = useState<MacDesktopStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState<MacDesktopAgentCursor | null>(null);
-  const [notParked, setNotParked] = useState<readonly MacDesktopNotParked[]>([]);
+  const [tracked, setTracked] = useState<readonly MacDesktopNotParked[]>([]);
+  /**
+   * Ticks only while a tracked retry is still inside its grace window.
+   *
+   * A retry that is never reported again has no event left to re-render on, so
+   * without this one timer the line would appear only on the next unrelated
+   * event. One timeout, armed only when something is actually waiting.
+   */
+  const [graceTick, setGraceTick] = useState(0);
 
   const refresh = useCallback(async () => {
     const next = await macDesktopApi().getStatus({ laneId, chatSessionId: sessionId }, runtimePin);
@@ -182,7 +194,7 @@ export function useMacDesktopStatus(args: {
       // Tracked beside the status rather than inside it: a window that stayed on
       // the human's own screen is not part of `getStatus`'s answer, so a refresh
       // must not silently clear a warning nothing has fixed.
-      setNotParked((current) => reduceMacDesktopNotParked(current, event, laneId, Date.now()));
+      setTracked((current) => reduceMacDesktopNotParked(current, event, laneId, Date.now()));
       if (event.type === "display-destroyed" && event.laneId === laneId) {
         clearMacDesktopFrame(laneId);
         return;
@@ -202,8 +214,25 @@ export function useMacDesktopStatus(args: {
     return () => clearTimeout(timer);
   }, [cursor]);
 
+  const notParked = useMemo(
+    () => macDesktopVisibleNotParked(tracked, Date.now()),
+    // `graceTick` is the dependency that makes a waiting retry re-evaluate.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tracked, graceTick],
+  );
+
+  useEffect(() => {
+    const now = Date.now();
+    const waiting = tracked
+      .filter((entry) => now - entry.firstSeenAt <= MAC_DESKTOP_NOT_PARKED_RETRY_GRACE_MS)
+      .map((entry) => MAC_DESKTOP_NOT_PARKED_RETRY_GRACE_MS - (now - entry.firstSeenAt));
+    if (!waiting.length) return;
+    const timer = setTimeout(() => setGraceTick((tick) => tick + 1), Math.min(...waiting) + 50);
+    return () => clearTimeout(timer);
+  }, [tracked, graceTick]);
+
   const dismissNotParked = useCallback((windowId: number) => {
-    setNotParked((current) => {
+    setTracked((current) => {
       const next = current.filter((entry) => entry.windowId !== windowId);
       return next.length === current.length ? current : next;
     });

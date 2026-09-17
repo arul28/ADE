@@ -788,31 +788,33 @@ describe("workToolsStateService", () => {
       service.dispose();
     });
 
-    it("mirrors stranded windows, newest first, and drops one once it parks", async () => {
+    it("mirrors stranded windows, hides a retry in progress, and drops one once it parks", async () => {
       // `window-not-parked` used to reach the mirror and stop there. A window
       // the driver could not park is on the human's own screen, which is the one
-      // thing a phone cannot see, so it is the thing most worth forwarding.
+      // thing a phone cannot see, so it is the thing most worth forwarding — but
+      // a `not_ready` retry the driver is about to fix is not news, and a phone
+      // shows whatever it is handed, so it never crosses the wire.
       const mac = macService(() => macStatus());
       const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
       await service.getLaneState({ laneId: "lane-1" });
-      mac.emit({ type: "window-not-parked", laneId: "lane-1", windowId: 1, reason: "window_not_ready" });
+      mac.emit({ type: "window-not-parked", laneId: "lane-1", windowId: 1, reason: "not_ready" });
       mac.emit({ type: "window-not-parked", laneId: "lane-1", windowId: 2, reason: "denied" });
       // Another lane's stranded window must not show up in this lane's mirror.
       mac.emit({ type: "window-not-parked", laneId: "lane-2", windowId: 3, reason: "denied" });
 
       const stranded = await service.getLaneState({ laneId: "lane-1" });
       expect(stranded.macDesktop?.notParked).toEqual([
-        { windowId: 2, reason: "denied", at: expect.any(Number) },
-        { windowId: 1, reason: "window_not_ready", at: expect.any(Number) },
+        { windowId: 2, reason: "denied", at: expect.any(Number), firstSeenAt: expect.any(Number) },
       ]);
 
       mac.emit({
         type: "windows-changed",
         laneId: "lane-1",
+        // Window 2 landed; window 1 is not listed at all, so it is gone.
         windows: [{ id: 2, laneId: "lane-1", appName: "Safari" }] as never,
       });
       const settled = await service.getLaneState({ laneId: "lane-1" });
-      expect(settled.macDesktop?.notParked?.map((entry) => entry.windowId)).toEqual([1]);
+      expect(settled.macDesktop?.notParked).toEqual([]);
       service.dispose();
     });
 
