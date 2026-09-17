@@ -3582,9 +3582,18 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  *
  * Claude folds a message into the live query, so it has all three. Codex takes
  * the app-server's `turn/steer` request into the running turn, so it has
- * "inline" — but no interrupt-and-resend, so it stops there. Cursor's SDK has
- * no mid-run message API: its interrupt cancels the run and resends on the same
- * agent thread, so it has no "inline". Everything else is queue-only.
+ * "inline" — but no interrupt-and-resend, so it stops there. Cursor has all
+ * three since `@cursor/sdk` 1.0.31 added `Run.steer()`, which injects a message
+ * into the live local run; its interrupt still means something different from
+ * Claude's — it cancels the run and resends on the same agent thread — which is
+ * why `activeTurnInterruptContinues` keeps saying so. Everything else is
+ * queue-only.
+ *
+ * Cursor's inline mode is effectively local-only. A cloud run implements
+ * `Run.steer` but refuses every call, so a cloud turn degrades to a follow-up
+ * message. This table stays per-provider; the renderer withholds the inline
+ * handler for a cloud Cursor session so the default never lands on a mode that
+ * always degrades.
  *
  * The ACP providers are stated rather than left to the fallback. ACP has no
  * mid-turn message method at all — `session/prompt` is one request per turn —
@@ -3593,12 +3602,33 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
 export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, readonly ActiveTurnSendMode[]>> = {
   claude: ["inline", "queue", "interrupt"],
   codex: ["inline", "queue"],
-  cursor: ["interrupt", "queue"],
+  cursor: ["inline", "queue", "interrupt"],
   qwen: ["queue"],
   kimi: ["queue"],
   grok: ["queue"],
   copilot: ["queue"],
 };
+
+/**
+ * True when a Cursor session's turns run in cloud rather than on the local agent.
+ *
+ * Lives beside the dispatch table because it is the one exception to it:
+ * `Run.steer()` is a local-run API, and a cloud run refuses every inline steer.
+ * The table stays per-provider — a session-shaped rule cannot live in a
+ * provider-keyed record — so each surface that knows the session reads this.
+ *
+ * Both fields are checked because `cursorRuntime` is only ever written as
+ * "cloud": a session promoted before that field existed carries only
+ * `cursorCloudAgentId`, and reading the flag alone would call it local.
+ */
+export function cursorSessionRunsInCloud(session: {
+  provider?: string | null;
+  cursorRuntime?: string | null;
+  cursorCloudAgentId?: string | null;
+} | null | undefined): boolean {
+  if (session?.provider !== "cursor") return false;
+  return (session.cursorRuntime ?? (session.cursorCloudAgentId ? "cloud" : "local")) === "cloud";
+}
 
 const QUEUE_ONLY_ACTIVE_TURN_MODES: readonly ActiveTurnSendMode[] = ["queue"];
 
@@ -3689,10 +3719,12 @@ export type AgentChatSteerArgs = {
   interactionMode?: AgentChatInteractionMode | null;
   /**
    * Atomic active-turn delivery. Omit to stage the message for the next turn.
-   * Claude: "inline" maps to SDK priority "next" and "interrupt" to "now".
-   * Cursor: only "interrupt" is accepted — the Cursor SDK has no mid-run
-   * message API, so the redirect is cancel + resend on the same agent thread.
-   * Every other provider rejects the field.
+   * Which providers accept which mode is `ACTIVE_TURN_DISPATCH_MODES` above —
+   * never restated here, because a second copy is how the two drift apart.
+   * Each provider implements the modes differently (Claude maps "inline" to SDK
+   * priority "next" and "interrupt" to "now"; Cursor's "inline" is
+   * `Run.steer()` and its "interrupt" is cancel + resend on the same agent
+   * thread), so read `activeTurnInterruptContinues` for the labelling fact.
    */
   dispatchMode?: AgentChatDispatchSteerMode;
 };

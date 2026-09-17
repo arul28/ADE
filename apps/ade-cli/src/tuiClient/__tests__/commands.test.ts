@@ -428,13 +428,12 @@ describe("commands", () => {
 
   it("offers each /steer dispatch command exactly where the provider accepts that mode", () => {
     // Gating is derived from ACTIVE_TURN_DISPATCH_MODES, not restated: Claude
-    // takes inline + interrupt, Codex only inline, Cursor only interrupt, and
+    // takes inline + interrupt, Cursor both too, Codex only inline, and
     // everything else stages.
     const steerRows = (provider: string) => paletteCommands("/steer", [], { provider })
       .map((row) => row.name);
     expect(steerRows("claude")).toEqual(expect.arrayContaining(["/steer send", "/steer interrupt"]));
-    expect(steerRows("cursor")).toContain("/steer interrupt");
-    expect(steerRows("cursor")).not.toContain("/steer send");
+    expect(steerRows("cursor")).toEqual(expect.arrayContaining(["/steer send", "/steer interrupt"]));
     expect(steerRows("codex")).toContain("/steer send");
     expect(steerRows("codex")).not.toContain("/steer interrupt");
     for (const provider of ["droid", "opencode"]) {

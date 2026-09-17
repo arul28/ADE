@@ -798,19 +798,25 @@ that could not work without it.
   SDK priority `now` to redirect the current model step without tearing down the
   Claude query. Codex sessions get the **send during turn** action only: the
   app-server folds a `turn/steer` request into the turn already running, but has
-  no interrupt-and-resend, so `"interrupt"` is rejected. Cursor sessions get the
-  interrupt action only, labelled
-  **Interrupt & continue** — `dispatchSteer({ mode: "interrupt" })` there
-  promotes the staged row to the cancel-and-resend redirect, and `"inline"` is
-  rejected. The tooltips and the hint above the staged list follow the same
-  table and name the real provider (`stagedSteerHint`), so a Cursor session
-  reads "Interrupt with this message, edit or remove." rather than promising an
-  inline send. Both buttons are hidden for the remaining providers (OpenCode,
-  Droid, Pi, the ACP providers), which only support post-turn delivery — and for
-  those the hint says so outright ("Droid cannot take a message mid-turn, so
-  this one waits for the turn to end."). That sentence keys off
-  `capability.modes`, not the wired handlers, so a Claude or Codex chat whose
-  dispatch handler is merely unwired never claims the provider is queue-only.
+  no interrupt-and-resend, so `"interrupt"` is rejected. Cursor gets both
+  actions on a local session: **send during turn** folds the staged row into the
+  live run through `Run.steer()`, and **Interrupt & continue** promotes it to
+  the cancel-and-resend redirect. A Cursor **Cloud** session gets the interrupt
+  action only, because a cloud run refuses every steer
+  (`cursorSessionRunsInCloud`, see [Agent Routing](agent-routing.md)). A refused
+  inline dispatch answers `{ dispatchedAt: null }` **without throwing**: the row
+  stays staged, its chip stays up, and the transcript gets one notice saying the
+  message will send as a new message instead. The tooltips and the hint above
+  the staged list name the real provider and follow the actions this pane can
+  actually dispatch rather than the provider name alone (`stagedSteerHint`), so
+  a cloud Cursor session reads "Interrupt with this message, edit or remove."
+  rather than promising an inline send. Both buttons are hidden for the
+  remaining providers (OpenCode, Droid, Pi, the ACP providers), which only
+  support post-turn delivery — and for those the hint says so outright ("Droid
+  cannot take a message mid-turn, so this one waits for the turn to end."). That
+  sentence keys off `capability.modes`, not the wired handlers, so a Claude or
+  Codex chat whose dispatch handler is merely unwired never claims the provider
+  is queue-only.
 - **A cancel that fails is reported.** `onCancelSteer` catches the rejection and
   raises "Couldn't remove the queued message: …" in the pane error banner. A
   swallowed rejection read as a cancellation that never happened while the agent
@@ -825,30 +831,32 @@ that could not work without it.
   `activeTurnDispatchModes` / `defaultActiveTurnDispatchMode`; the composer's
   `activeTurnSendModesForProvider` only layers the copy on top, and the chat
   pane, the main service's steer/dispatch guards, the `ade code` TUI and the
-  iOS `WorkActiveSendCapability` mirror all read the same table):
-  Claude offers **Send during turn** / **Send after turn** / **Interrupt &
-  send** and defaults to *Send during turn*; Codex offers **Send during turn** /
-  **Send after turn** and defaults to *Send during turn*; Cursor offers
-  **Interrupt & continue** / **Send after turn** and defaults to *Interrupt &
-  continue*.
-  Cursor has no *Send during turn* because its SDK exposes no mid-run message
-  API — the redirect cancels the run and resends on the same agent thread, so
-  the label says "continue" (that per-provider fact is
+  iOS `WorkActiveSendCapability` mirror all read the same table). Read the table
+  itself for the per-provider lists rather than a second copy here; the copy is
+  layered on top per mode — **Send during turn** / **Send after turn** /
+  **Interrupt & send** — except that Cursor's interrupt reads **Interrupt &
+  continue** because it cancels the run and resends on the same agent thread
+  rather than folding into a live query. That per-provider fact is
   `activeTurnInterruptContinues`, beside the table, which the composer, the TUI
-  and the iOS mirror all read). Codex is the mirror case: its app-server takes a
-  mid-turn `turn/steer` but offers no interrupt-and-resend, so it has *Send
-  during turn* and no interrupt affordance. Mode descriptions name the actual
-  provider
+  and the iOS mirror all read. Claude and Cursor both carry all three modes and
+  default to *Send during turn*. Codex is the partial case: its app-server takes
+  a mid-turn `turn/steer` but offers no interrupt-and-resend, so it has *Send
+  during turn* and no interrupt affordance at all. Mode descriptions name the
+  actual provider
   ("Stop and redirect Cursor now."). The selection is held for the session and
   re-normalized when the provider changes, so a mode the new provider cannot
   honor can never stay selected. A mode this pane has no wired handler for —
   reachable while a model for another provider is picked mid-turn, since the
-  menu follows the picked provider and the handlers follow the live session —
-  falls through to the next *offered* mode the pane can actually dispatch, in
-  menu order, and only then to queueing, so Enter and the primary
-  button always deliver the draft somewhere and the primary button never labels
-  itself with a mode the caret does not show. Immediate modes are a single
-  atomic
+  menu follows the picked provider and the handlers follow the live session, and
+  the state a Cursor **Cloud** session is deliberately put in — downgrades to
+  **queue** rather than dead-ending, so Enter and the primary button always
+  deliver the draft somewhere and the primary button never labels itself with a
+  mode the caret does not show. The downgrade target is queue and never
+  interrupt: a mode the user did not pick must not cancel their running agent.
+  The visible consequence is that a cloud Cursor chat defaults to *Send after
+  turn* rather than the *Interrupt & continue* it defaulted to before Cursor
+  gained inline; interrupt is still one click away in the caret menu. Immediate
+  modes are a single atomic
   `steer({ dispatchMode })` call rather than queue-then-dispatch. The primary
   action disables on an empty draft, while the caret remains available so the
   user can inspect or change the delivery mode. Providers with no atomic

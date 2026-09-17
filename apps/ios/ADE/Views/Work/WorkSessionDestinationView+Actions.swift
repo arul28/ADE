@@ -133,18 +133,38 @@ extension WorkSessionDestinationView {
       }
       switch delivery {
       case .queued(let steerId):
-        // We asked for an atomic dispatch and got a staged row back, so this
-        // host predates `dispatchMode` on `chat.steer` (it shipped later than
-        // `chat.dispatchSteer`, which is what the capability gate checks).
-        // Promote with the older two-step call rather than dropping the mode
-        // the user picked. Current hosts answer `.sent` and never land here.
+        // Two hosts land here. An old one predates `dispatchMode` on
+        // `chat.steer` (it shipped later than `chat.dispatchSteer`, which is
+        // what the capability gate checks). A current one staged the row on
+        // purpose because the live run refused an inline steer. The two-step
+        // promotion is right for the first and harmless for the second, but only
+        // the host can say whether it landed — so read the result rather than
+        // assuming a non-throwing call delivered.
         if let steerId, let atomicDispatchMode {
           do {
-            try await syncService.dispatchChatSteer(
+            let dispatched = try await syncService.dispatchChatSteer(
               sessionId: sessionId,
               steerId: steerId,
               mode: atomicDispatchMode
             )
+            if !dispatched {
+              // Still staged on the host. Keep the queued echo and the chip so
+              // the message stays visible until the turn boundary sends it.
+              updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+              upsertOptimisticPendingSteer(
+                id: steerId,
+                text: text,
+                timestamp: echo.timestamp,
+                attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+              )
+              schedulePostSendReconciliation(reconcileLocalEchoes: false)
+              // The send succeeded — the message is staged, not failed — so the
+              // shared tail's cleanup has to run here too. Returning without it
+              // leaves a stale error banner over a send that worked.
+              openingDeliveryWarning = nil
+              errorMessage = nil
+              return true
+            }
           } catch {
             // Staging already succeeded on the host. Keep the single queued
             // message and clear the composer instead of restoring a duplicate
@@ -463,22 +483,29 @@ extension WorkSessionDestinationView {
 
   @MainActor
   func dispatchSteerInline(_ steerId: String) async {
-    do {
-      try await syncService.dispatchChatSteer(sessionId: sessionId, steerId: steerId, mode: "inline")
-      optimisticPendingSteers.removeAll { $0.id == steerId }
-      await refreshChatStateAfterAction(forceRemote: true)
-      errorMessage = nil
-    } catch {
-      ADEHaptics.error()
-      errorMessage = error.localizedDescription
-    }
+    await dispatchSteer(steerId, mode: "inline")
   }
 
   @MainActor
   func dispatchSteerInterrupt(_ steerId: String) async {
+    await dispatchSteer(steerId, mode: "interrupt")
+  }
+
+  /// Promote a staged row into the live turn.
+  ///
+  /// The chip is cleared only when the host reports it actually dispatched. Both
+  /// modes can answer `dispatchedAt: null` without throwing — an inline steer the
+  /// run refuses, or a promotion whose row already left the queue — and clearing
+  /// the chip there makes the message vanish from view before it is sent.
+  @MainActor
+  private func dispatchSteer(_ steerId: String, mode: String) async {
     do {
-      try await syncService.dispatchChatSteer(sessionId: sessionId, steerId: steerId, mode: "interrupt")
-      optimisticPendingSteers.removeAll { $0.id == steerId }
+      let dispatched = try await syncService.dispatchChatSteer(
+        sessionId: sessionId,
+        steerId: steerId,
+        mode: mode
+      )
+      if dispatched { optimisticPendingSteers.removeAll { $0.id == steerId } }
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {

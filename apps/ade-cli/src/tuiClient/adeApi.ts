@@ -974,7 +974,11 @@ export async function dispatchSteerMessage(
   sessionId: string,
   steerId: string,
   mode: AgentChatDispatchSteerMode,
-): Promise<AgentChatDispatchSteerResult> {
+): Promise<Partial<AgentChatDispatchSteerResult> | undefined> {
+  // Partial on purpose. `connection.action` ends in an unchecked cast, and a
+  // durably queued command answers with an ack envelope that carries no
+  // `dispatchedAt` at all — an object missing the field, not `undefined`.
+  // Callers must handle the absence rather than read it as a delivery.
   return await connection.action<AgentChatDispatchSteerResult>("chat", "dispatchSteer", { sessionId, steerId, mode });
 }
 

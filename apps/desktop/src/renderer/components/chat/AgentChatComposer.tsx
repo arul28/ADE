@@ -2127,8 +2127,9 @@ export function AgentChatComposer({
   );
   // Only the user's explicit pick is state; the effective mode is derived, so
   // it is never stale for a render. A pick the current provider cannot honor
-  // (Cursor has no "send during turn") reads back as that provider's default,
-  // and until the user picks anything the mode simply follows the provider.
+  // (any queue-only provider, or a mode whose handler is withheld) reads back as
+  // that provider's default, and until the user picks anything the mode simply
+  // follows the provider.
   const [activeTurnSendModePick, setActiveTurnSendMode] = useState<ActiveTurnSendMode | null>(null);
   const [activeTurnStopMode, setActiveTurnStopMode] = useState<AgentChatStopMode>("stop_and_clear");
   const selectedActiveTurnSendMode = activeTurnSendModePick
@@ -2152,10 +2153,15 @@ export function AgentChatComposer({
   const effectiveActiveTurnSendMode: ActiveTurnSendMode =
     activeTurnSendModeDispatchable(selectedActiveTurnSendMode)
       ? selectedActiveTurnSendMode
+      // Menu order decides the fallback, and that is load-bearing: "queue"
+      // precedes "interrupt" for every provider that has both, so an unwired
+      // inline handler degrades to queue rather than promoting the user into a
+      // cancel they did not pick. A Cursor cloud session lands here. Reordering
+      // a provider's modes so interrupt comes first would silently change that.
       : activeTurnSendCapability.modes.find(activeTurnSendModeDispatchable) ?? "queue";
-  // The split send affordance appears for any provider with at least one
-  // atomic active-turn delivery mode (Claude: inline + interrupt; Cursor:
-  // interrupt only). Everything else keeps the single queue button.
+  // The split send affordance appears for any provider with at least one wired
+  // atomic active-turn delivery handler. Everything else keeps the single queue
+  // button.
   const activeTurnSendMenuEnabled = Boolean(onSendSteerNow || onSendSteerInterrupt);
 
   useEffect(() => {

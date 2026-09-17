@@ -466,11 +466,11 @@ enum WorkActiveSendMode: String, Equatable {
 ///
 /// Claude folds a message into the live query, so it has all three. Codex takes
 /// the app-server's `turn/steer` request into the running turn, so it has "send
-/// during turn" — but no cancel-and-resend, so it stops there. Cursor's SDK has
-/// no mid-run message API: its interrupt cancels the run and resends on the
-/// same agent thread, so it has no "send during turn" and its button says
-/// "continue". Everything else is queue-only, which leaves nothing to pick
-/// between, so the picker stays hidden.
+/// during turn" — but no cancel-and-resend, so it stops there. Cursor has all
+/// three too since `@cursor/sdk` 1.0.31 added `Run.steer()`, but its interrupt
+/// keeps its own meaning — it cancels the run and resends on the same agent
+/// thread — so its button still says "continue". Everything else is queue-only,
+/// which leaves nothing to pick between, so the picker stays hidden.
 struct WorkActiveSendCapability: Equatable {
   let modes: [WorkActiveSendMode]
   let agentLabel: String
@@ -493,7 +493,18 @@ struct WorkActiveSendCapability: Equatable {
     case "codex":
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "Codex", interruptContinues: false)
     case "cursor":
-      return WorkActiveSendCapability(modes: [.interrupt, .queue], agentLabel: "Cursor", interruptContinues: true)
+      // Cursor gained `.inline` when `@cursor/sdk` 1.0.31 added `Run.steer()`.
+      // `interruptContinues` stays true: its interrupt still cancels the run and
+      // resends on the same thread, which Claude's does not.
+      //
+      // Known difference from desktop: a Cursor CLOUD run refuses every steer,
+      // and the desktop pane withholds the inline handler for one. This model
+      // keys off the provider alone because the iOS session carries no
+      // `cursorRuntime`, so a cloud Cursor chat still offers `.inline` here. The
+      // host answers with a queued message plus a notice saying so, which is
+      // honest but one tap longer than it needs to be. Add the runtime to the
+      // iOS session and gate it here to close the gap.
+      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Cursor", interruptContinues: true)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and

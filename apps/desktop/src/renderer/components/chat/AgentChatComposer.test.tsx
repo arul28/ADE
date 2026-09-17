@@ -706,34 +706,53 @@ describe("AgentChatComposer", () => {
     availableModelIds: ["cursor/composer-2"],
   };
 
-  it("offers Cursor only interrupt-and-continue plus queue, with interrupt selected by default", () => {
+  it("offers Cursor all three modes, with send-during-turn selected by default", () => {
+    const onSendSteerNow = vi.fn();
     const onSendSteerInterrupt = vi.fn();
     renderComposer({
       ...CURSOR_STEER_OVERRIDES,
-      // Cursor has no inline dispatch: the host would reject it.
+      onSendSteerNow,
+      onSendSteerInterrupt,
+    });
+
+    // Inline is first in the table, so it is the default and the primary button.
+    fireEvent.click(screen.getByRole("button", { name: "Send during turn" }));
+    expect(onSendSteerNow).toHaveBeenCalledTimes(1);
+    expect(onSendSteerInterrupt).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    const options = screen.getAllByRole("menuitemradio").map((item) => item.textContent ?? "");
+    expect(options).toHaveLength(3);
+    expect(options[0]).toContain("Send during turn");
+    expect(options[1]).toContain("Send after turn");
+    expect(options[2]).toContain("Interrupt & continue");
+    // Cursor keeps its own interrupt wording: it stops the run and resends on
+    // the same thread, which is not what Claude's interrupt does.
+    expect(screen.getByRole("menu", { name: "Send options" }).textContent)
+      .toContain("Stop and redirect Cursor now.");
+  });
+
+  it("drops Cursor to queue when the inline handler is absent, as on a cloud run", () => {
+    // A cloud Cursor run refuses every steer, so the pane withholds the inline
+    // handler there. The composer must not offer a button whose dispatch would
+    // always degrade to a queued message.
+    const onSendSteerInterrupt = vi.fn();
+    renderComposer({
+      ...CURSOR_STEER_OVERRIDES,
       onSendSteerNow: undefined,
       onSendSteerInterrupt,
     });
 
-    // The default mode is the redirect, so it is what the primary button runs.
-    fireEvent.click(screen.getByRole("button", { name: "Interrupt & continue" }));
-    expect(onSendSteerInterrupt).toHaveBeenCalledTimes(1);
-
+    expect(screen.queryByRole("button", { name: "Send during turn" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "More send options" }));
-    const options = screen.getAllByRole("menuitemradio").map((item) => item.textContent ?? "");
-    expect(options).toHaveLength(2);
-    expect(options[0]).toContain("Interrupt & continue");
-    expect(options[1]).toContain("Send after turn");
     expect(screen.queryByRole("menuitemradio", { name: /Send during turn/ })).toBeNull();
-    expect(screen.getByRole("menu", { name: "Send options" }).textContent)
-      .toContain("Stop and redirect Cursor now.");
   });
 
   it("falls back to queueing when the picked model's provider offers a mode the live session cannot dispatch", () => {
     // A Cursor session with a Claude model picked mid-turn: the composer's
     // capability follows the *picked* provider (Claude, whose default is
     // "send during turn") while the wired handlers follow the *session*
-    // (Cursor, which has no inline dispatch). The draft must still go
+    // (Cursor, whose inline handler is unwired here). The draft must still go
     // somewhere — it queues rather than silently disappearing.
     const onSubmit = vi.fn();
     const onSendSteerInterrupt = vi.fn();

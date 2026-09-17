@@ -96,9 +96,9 @@ func workChatBlocksManualCompactSend(
 /// on this session. Read off `WorkActiveSendCapability` — the hand mirror of
 /// the desktop's `ACTIVE_TURN_DISPATCH_MODES` — rather than restated here, so
 /// the staged strip and the composer's split send button can never disagree.
-/// Claude can fold a staged row into the live turn or interrupt with it; Cursor
-/// has no mid-run message API, so it gets interrupt only; everything else has
-/// nothing to promote into and keeps the plain staged row.
+/// Claude and Cursor can both fold a staged row into the live turn or interrupt
+/// with it; everything else has nothing to promote into and keeps the plain
+/// staged row.
 func workChatManualSteerDispatchModes(
   session: TerminalSessionSummary?,
   summary: AgentChatSessionSummary?
@@ -1877,10 +1877,9 @@ struct WorkSessionDestinationView: View {
       ? "Viewing subagent transcript. Return to main chat to send."
       : nil
     let openLaneAction: (() -> Void)? = showsLaneActions ? { openSessionLane() } : nil
-    // Wired per mode, not per provider: Cursor accepts the interrupt promotion
-    // but has no inline channel, so it gets the Interrupt button and not
-    // "Send now". Matches the desktop pane, which gates each handler on the
-    // same table.
+    // Wired per mode, not per provider, so a provider that gains or loses a
+    // mode needs no change here. Matches the desktop pane, which gates each
+    // handler on the same table.
     // Also host-gated: a brain that predates `chat.dispatchSteer` cannot
     // promote a staged row at all, so the buttons would only ever produce an
     // error toast. `manualSteerDispatchModes` carries the same gate.

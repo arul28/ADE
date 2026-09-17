@@ -18,6 +18,7 @@ import type {
   CursorSdkModelParameterValue,
   CursorSdkPermissionPolicy,
   CursorSdkSendPrompt,
+  CursorSdkSteerOutcome,
   CursorSdkUserImage,
   CursorSdkWorkerInit,
   CursorSdkWorkerRequest,
@@ -726,6 +727,27 @@ async function cancelRun(): Promise<void> {
   await currentRun?.cancel();
 }
 
+/**
+ * Push a message into the live local run.
+ *
+ * Only `currentRun` is eligible. Cloud runs are tracked separately in
+ * `cloudRuns` and are never reached from here, so a cloud turn reports
+ * `unsupported` and falls back to the queue.
+ *
+ * `Run.steer` is declared optional by the SDK, so a build without the method
+ * reports `unsupported` too. Never throw for a missing channel: the caller's
+ * fallback is a normal follow-up message, and an exception here would lose text
+ * the user already typed.
+ */
+async function steerRun(text: string): Promise<{ outcome: CursorSdkSteerOutcome }> {
+  const run = currentRun;
+  if (!run || typeof run.steer !== "function") return { outcome: "unsupported" };
+  const outcome = await run.steer(text);
+  // The SDK's union is the two terminal values; anything else is treated as a
+  // refusal so the host keeps ownership of the message.
+  return { outcome: outcome === "complete_delivered" ? "complete_delivered" : "revert_to_followup" };
+}
+
 async function updatePolicy(policy: CursorSdkPermissionPolicy): Promise<void> {
   if (!initState) throw new Error("Cursor SDK worker is not initialized.");
   initState.policy = policy;
@@ -1151,6 +1173,8 @@ async function dispatch(req: CursorSdkWorkerRequest): Promise<unknown> {
     case "cancel":
       await cancelRun();
       return {};
+    case "steer":
+      return steerRun(req.payload.text);
     case "dispose":
       await dispose();
       return {};

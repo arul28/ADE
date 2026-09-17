@@ -32,6 +32,128 @@ describe("Cursor SDK event mapper", () => {
     ]);
   });
 
+  // Payloads below are copied from a real `@cursor/sdk` 1.0.31 local run, not
+  // invented: `updateTodos` streams the growing list on `running` and repeats
+  // the final list with `completed`.
+  describe("updateTodos", () => {
+    const completedCall = {
+      type: "tool_call",
+      call_id: "tool_8711b80d",
+      name: "updateTodos",
+      status: "completed",
+      args: {
+        todos: [
+          { content: "Add subtract(a, b) to math.js", status: "pending" },
+          { content: "Add multiply(a, b) to math.js", status: "pending" },
+        ],
+      },
+      result: {
+        status: "success",
+        value: {
+          todos: [
+            { content: "Add subtract(a, b) to math.js", status: "completed" },
+            // camelCase, as the SDK's own proto-to-string conversion emits it.
+            { content: "Add multiply(a, b) to math.js", status: "inProgress" },
+          ],
+        },
+      },
+    };
+
+    it("emits nothing while the list is still streaming", () => {
+      // One event lands per item added. Mapping them would redraw the plan card
+      // once per todo, and the last two carry identical lists.
+      expect(mapCursorSdkMessageToChatEvents({
+        ...completedCall,
+        status: "running",
+        result: undefined,
+      }, mapperMeta())).toEqual([]);
+    });
+
+    it("emits a todo update and a plan from the terminal event", () => {
+      // The expectations follow the RESULT, not the arguments: the arguments are
+      // what the model asked for, the result is what the tool recorded.
+      const events = mapCursorSdkMessageToChatEvents(completedCall, mapperMeta());
+      expect(events).toEqual([
+        {
+          type: "todo_update",
+          items: [
+            { id: "todo-0", description: "Add subtract(a, b) to math.js", status: "completed" },
+            { id: "todo-1", description: "Add multiply(a, b) to math.js", status: "in_progress" },
+          ],
+          turnId: "turn-1",
+        },
+        {
+          type: "plan",
+          steps: [
+            { text: "Add subtract(a, b) to math.js", status: "completed" },
+            { text: "Add multiply(a, b) to math.js", status: "in_progress" },
+          ],
+          turnId: "turn-1",
+        },
+      ]);
+    });
+
+    it("falls back to the arguments when the result carries no list", () => {
+      const events = mapCursorSdkMessageToChatEvents({
+        ...completedCall,
+        result: { status: "success", value: {} },
+      }, mapperMeta());
+      expect(events[0]).toMatchObject({ items: [{ status: "pending" }, { status: "pending" }] });
+    });
+
+    it("treats an inherited Object key as unrecognised", () => {
+      // `status` comes from the model. A bare index would return
+      // `Object.prototype.constructor` here — truthy, so the default never
+      // fires, and the spread would leave the step with no status at all.
+      const events = mapCursorSdkMessageToChatEvents({
+        ...completedCall,
+        result: { status: "success", value: { todos: [{ content: "Ship it", status: "constructor" }] } },
+      }, mapperMeta());
+      expect(events[0]).toMatchObject({ items: [{ description: "Ship it", status: "pending" }] });
+      expect(events[1]).toMatchObject({ steps: [{ text: "Ship it", status: "pending" }] });
+    });
+
+    it("keeps a step with an unrecognised status instead of dropping it", () => {
+      // A value outside the SDK's four-member enum must never remove a step the
+      // model planned.
+      const events = mapCursorSdkMessageToChatEvents({
+        ...completedCall,
+        result: { status: "success", value: { todos: [{ content: "Ship it", status: "wat" }] } },
+      }, mapperMeta());
+      expect(events[0]).toMatchObject({ items: [{ id: "todo-0", description: "Ship it", status: "pending" }] });
+      expect(events[1]).toMatchObject({ steps: [{ text: "Ship it", status: "pending" }] });
+    });
+
+    it("records a cancelled step as failed on the plan while the todo row stays pending", () => {
+      // `todo_update` has no failure state; `plan` does. "cancelled" is the
+      // SDK's own fourth enum member.
+      const events = mapCursorSdkMessageToChatEvents({
+        ...completedCall,
+        result: { status: "success", value: { todos: [{ content: "Try it", status: "cancelled" }] } },
+      }, mapperMeta());
+      expect(events[0]).toMatchObject({ items: [{ status: "pending" }] });
+      expect(events[1]).toMatchObject({ steps: [{ status: "failed" }] });
+    });
+
+    it("emits nothing when the list is empty", () => {
+      expect(mapCursorSdkMessageToChatEvents({
+        ...completedCall,
+        args: { todos: [] },
+        result: { status: "success", value: { todos: [] } },
+      }, mapperMeta())).toEqual([]);
+    });
+  });
+
+  it("drops the user echo of a steered message", () => {
+    // `Run.steer()` makes the SDK replay the steered text as a `user` event.
+    // `dispatchSteer` already emitted that row with its steer id and delivery
+    // state, so mapping this one would print the message twice.
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "stop and do this instead" }] },
+    }, mapperMeta())).toEqual([]);
+  });
+
   it("maps shell tool calls to command events", () => {
     const events = mapCursorSdkMessageToChatEvents({
       type: "tool_call",

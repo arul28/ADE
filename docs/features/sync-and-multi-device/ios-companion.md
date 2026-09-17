@@ -3687,13 +3687,21 @@ the stats and shows update guidance.
   `WorkModels.swift` — a hand-mirrored copy of the desktop's canonical
   `ACTIVE_TURN_DISPATCH_MODES` table in `apps/desktop/src/shared/types/chat.ts`,
   kept in step by hand because iOS cannot import the TS. Modes are in menu order
-  and the first is the default, so Claude mirrors desktop's three choices
-  (**Send during turn**, **Send after turn**, **Interrupt & send**, defaulting to
-  *Send during turn*) and Cursor gets two (**Interrupt & continue**, **Send after
-  turn**, defaulting to *Interrupt & continue*). `interruptContinues` is mirrored
-  alongside the table, so Cursor's button and hint say "continue" — its SDK has
-  no mid-run message API, and the redirect cancels and resends on the same agent
-  thread. Every provider name in the option titles, details, hints and VoiceOver
+  and the first is the default; read the table for the per-provider lists rather
+  than a copy here, and the mirror for the iOS copy. Claude and Cursor both
+  carry all three choices (**Send during turn**, **Send after turn**, and an
+  interrupt), and `interruptContinues` is mirrored alongside the table so
+  Cursor's button and hint read **Interrupt & continue** — its interrupt cancels
+  the run and resends on the same agent thread rather than folding into a live
+  query, which is the one thing its inline channel (`Run.steer()`) did not
+  change. **Known gap against desktop:** the desktop pane withholds inline for a
+  Cursor **Cloud** session, because a cloud run refuses every steer. The iOS
+  session summary carries no `cursorRuntime`, so this mirror keys off the
+  provider alone and a cloud Cursor chat still offers *Send during turn*. The
+  host answers honestly — the message is queued with a notice saying so — but it
+  costs the user one extra tap. Closing it means carrying the runtime onto the
+  iOS session and gating the capability on it. Every provider name in the option
+  titles, details, hints and VoiceOver
   strings comes from the capability's `agentLabel` rather than hard-coded
   "Claude". The primary button's icon/label communicates the selected behavior,
   the chevron opens a custom SwiftUI popover, and selection dismisses it
@@ -3761,11 +3769,25 @@ the stats and shows update guidance.
   provider with no such channel, and for a brain that does not advertise
   `chat.dispatchSteer` — the same gate the staged strip's buttons read, so the
   composer can never request a promotion the strip is hiding the recovery for.
-  A host old enough to advertise `chat.dispatchSteer` but too old to accept
-  `dispatchMode` on `chat.steer` answers `queued: true`; that one case falls
-  back to the legacy two-step promotion rather than dropping the user's choice,
-  and if the promotion fails the single queued message remains and the draft is
-  not restored as a duplicate.
+  A `queued: true` answer now has two causes: a host old enough to advertise
+  `chat.dispatchSteer` but too old to accept `dispatchMode` on `chat.steer`, and
+  a current host that staged the row on purpose because the live run refused an
+  inline steer. Both fall back to the legacy two-step promotion — right for the
+  first, harmless for the second — rather than dropping the user's choice, and
+  if the promotion fails the single queued message remains and the draft is not
+  restored as a duplicate.
+- **A non-throwing `chat.dispatchSteer` is not a delivery.** The host answers
+  `{ dispatchedAt: null }` without throwing when the running turn refused the
+  message, which a Cursor inline dispatch can hit at any time, so
+  `SyncService.dispatchChatSteer` returns a `Bool` read off `dispatchedAt`
+  instead of discarding the result. The staged chip and the queued echo are
+  cleared only when that reads true; otherwise the row keeps its queued display
+  until the turn boundary sends it. A durably queued command carries no
+  `dispatchedAt` key at all (the machine has not answered yet) and reads as
+  not-dispatched, which is the safe side — reconciliation corrects it. Both the
+  composer's promotion path and the staged strip's **Send now** / **Interrupt**
+  buttons go through the one private `dispatchSteer(_:mode:)` helper so they
+  cannot disagree about what a null answer means.
 - **The staged strip is only ever "you queued this".** With active-turn sends
   atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
   queue, so it no longer hides behind an accordion: one queued message is a

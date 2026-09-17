@@ -127,7 +127,7 @@ Two helpers summarise a parsed stream:
 
 | Type | Purpose |
 |---|---|
-| `user_message` | A user turn; carries text, attachments, `turnId`, optional `steerId` and `deliveryState`. `deliveryState` is `"queued"` while a steer waits for turn-end delivery, `"delivered"` once flushed at turn boundary, `"inline"` when the user inline-dispatched a queued steer into the active Claude turn (SDK `shouldQuery:false` send), and `"failed"` if dispatch errored. Same-turn steers (`queued`, `inline`, and Codex `accepted`/`processed`/`unprocessed`) do not clear the live provider-retry working indicator; only a primary user message, `delivered`/`failed` user message, or a terminal status/`done` starts the next retry-replay segment. A `user_message` carrying `metadata.boardMove` is intercepted before the user-bubble branch and rendered as a divider (`Moved on the board · <from> → <to>`) with the exact text the agent received centred underneath — never a bubble, because the user dragged a card between Work-board columns rather than typing that sentence. |
+| `user_message` | A user turn; carries text, attachments, `turnId`, optional `steerId` and `deliveryState`. `deliveryState` is `"queued"` while a steer waits for turn-end delivery, `"delivered"` once flushed at turn boundary, `"inline"` when the message was folded into the active turn rather than queued behind it (Claude's SDK `shouldQuery:false` send, or Cursor's `Run.steer()`), and `"failed"` if dispatch errored. Same-turn steers (`queued`, `inline`, and Codex `accepted`/`processed`/`unprocessed`) do not clear the live provider-retry working indicator; only a primary user message, `delivered`/`failed` user message, or a terminal status/`done` starts the next retry-replay segment. A `user_message` carrying `metadata.boardMove` is intercepted before the user-bubble branch and rendered as a divider (`Moved on the board · <from> → <to>`) with the exact text the agent received centred underneath — never a bubble, because the user dragged a card between Work-board columns rather than typing that sentence. |
 | `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. |
 | `transcript_retraction` | Provider-level retraction signal. Claude emits this for refusal fallback `retracted_message_uuids` and assistant `supersedes`; renderers remove prior assistant text rows whose `messageId` matches `messageIds`, optionally retaining `replacementMessageId` as the new provider message id. The persisted JSONL remains append-only. |
 | `reasoning` | Chain-of-thought or assistant-internal reasoning; surfaces as a distinct transcript row with a collapsible header. |
@@ -235,7 +235,10 @@ Adapters preserve provider richness while converging on compact event shapes:
 - Codex 0.144.5 `mcpToolCall` items retain plugin/app/resource metadata, while
   native web/image/subagent items keep their specialized compact rows.
 - Cursor MCP calls and generated images, OpenCode image file parts, and Droid
-  assistant image blocks reuse those same tool/image events.
+  assistant image blocks reuse those same tool/image events. Cursor's native
+  `updateTodos` tool is folded into `todo_update` + `plan` instead of a raw tool
+  row, so its plan renders through the same card the fenced `ade_update_plan`
+  control block produces.
 
 Every event uses the provider item id (plus turn id) as its lifecycle key.
 Desktop `chatTranscriptRows`, ADE Code `aggregateChatBlocks`, and iOS

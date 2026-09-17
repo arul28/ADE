@@ -18,6 +18,7 @@ import type {
   CursorSdkPermissionPolicy,
   CursorSdkRuntime,
   CursorSdkSendPrompt,
+  CursorSdkSteerOutcome,
   CursorSdkWorkerInit,
   CursorSdkWorkerRequest,
   CursorSdkWorkerResponse,
@@ -78,6 +79,8 @@ export type CursorSdkPooled = {
   sendPrompt: (payload: CursorSdkSendPrompt) => Promise<unknown>;
   updatePolicy: (policy: CursorSdkPermissionPolicy) => Promise<void>;
   cancel: () => Promise<void>;
+  /** Push a message into the live local run. See CursorSdkSteerOutcome. */
+  steer: (text: string) => Promise<{ outcome: CursorSdkSteerOutcome }>;
   dispose: () => void;
   /** Resolves only after the worker process has actually exited. */
   waitForExit: () => Promise<void>;
@@ -714,6 +717,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     sendPrompt: (payload) => pooled.request("send", payload),
     updatePolicy: (policy) => pooled.request("policy_update", policy),
     cancel: () => pooled.request("cancel"),
+    steer: (text) => pooled.request<{ outcome: CursorSdkSteerOutcome }>("steer", { text }),
     dispose: () => {
       for (const [, waiter] of pending) waiter.reject(new Error("Cursor SDK worker disposed."));
       pending.clear();
