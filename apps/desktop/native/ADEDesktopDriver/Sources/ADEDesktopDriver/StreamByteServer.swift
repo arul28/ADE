@@ -110,23 +110,3 @@ final class StreamByteServer {
         port = 0
     }
 }
-
-/// A one-way "it happened" shared between the `NWListener` queue and the main
-/// thread. Small enough to be its own type only because the alternative is a
-/// captured `var` plus a captured `NSLock`, which reads like a bug.
-private final class SettledFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-
-    var isSet: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return value
-    }
-
-    func set() {
-        lock.lock()
-        value = true
-        lock.unlock()
-    }
-}

@@ -81,9 +81,10 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion and the offscreen-fallback arithmetic. |
 | `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`, beside the notch helper. |
 | `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface a later Linux seat backend implements. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, window ownership, idle release, the lease, events, and teardown. The observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, idle release, the lease, events, and teardown. The window lifecycle, observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the one `DesktopSeatProvider` implementation. One method per driver op; the only file that knows the op names. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopInput.ts` | The observation and input half: the one capture path, target→driver payload, who a call claims to be for the lease check, and the eight acting commands built on it. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopWindows.ts` | The window and app lifecycle: launching an app onto a lane's display, parking and unparking a window, presenting the set elsewhere, and the one window read every `windows-changed` event is built from. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The two writers of a movie file — the per-turn time-lapse and the captioned recording — serialized against the helper's one recorder per lane. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | The pending-input card that asks for real input, and the lease push that makes the helper's own refusal correct. |
@@ -201,10 +202,15 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
 - **An agent cannot wear the human's holder id.** `getStatus().lease.holderId`
   prints the takeover's controller id to anyone who can read the lane, and the
   service prefers `controllerId` over the chat id when it decides who is
-  holding the lease. The RPC scope in `adeRpcServer.ts` therefore strips
-  `chatSessionId`, `controllerId` and `holderId` from every agent-shaped call
-  and re-fills the chat id from the caller's own session. Reading the holder id
-  stays possible; using it does not.
+  holding the lease. There are two writers of those fields, and both strip
+  them: the RPC scope in `adeRpcServer.ts` (`scopeMacDesktopAdeActionArgs`)
+  cuts `chatSessionId`, `controllerId` and `holderId` from every agent-shaped
+  call and re-fills the chat id from the caller's own session, and the
+  automation runner in `automationService.ts`
+  (`scopeAutomationAdeActionArgs`) cuts the same three from an `ade-action`
+  step's resolved args, which call the domain service in-process and never pass
+  through the RPC scope. Reading the holder id stays possible; using it does
+  not.
 - **An agent with no resolvable lane acts on nothing.** Accessibility-mode
   input is behind no lease at all, so an orchestration step or a chat whose
   session record is gone is refused every acting command rather than passed
@@ -221,6 +227,17 @@ string built from the stream's own SPS.
 The token is minted per `startStream` and returned only by `startStream`.
 `getStreamStatus` reports the transport shape with `url` and `token` null,
 because that read sits on the agent action allowlist.
+
+An explicit `stopStream` is not a per-watcher unsubscribe: it is CTO/human-only
+and it stops the encoder for every watcher of that lane at once, because the
+owner set goes with it. A chat ENDING is the gentle path — `stopOwnedBy` drops
+only that chat and stops the stream only if the set empties.
+
+An anonymous viewer — a live view opened with no chat session — is a member of
+the owner set like any other, so no closing chat can ever empty a set it is in.
+A stream only that viewer is watching is reclaimed by the idle path instead:
+the stream server's zero-clients timer, or the lane's display teardown
+(`forgetLane`).
 
 The stream runs at a low frame rate while nothing happens — no agent action, no
 takeover — and at full rate on activity. The last decoded frame is kept, which

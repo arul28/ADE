@@ -80,8 +80,15 @@ import {
 import { createMacDesktopObservations, MacDesktopObservationError } from "./macDesktopObservations";
 import { createMacDesktopInput } from "./macDesktopInput";
 import { createMacDesktopRecording } from "./macDesktopRecording";
-import { asWindows, createMacVirtualDisplayProvider } from "./macDesktopSeatProvider";
+import {
+  asNullableString,
+  asNumber,
+  asRecord,
+  asWindows,
+  createMacVirtualDisplayProvider,
+} from "./macDesktopSeatProvider";
 import { createMacDesktopStreaming } from "./macDesktopStreaming";
+import { createMacDesktopWindows } from "./macDesktopWindows";
 
 /** KV key for the lane display size. Read on every `start`. */
 export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
@@ -156,15 +163,6 @@ export type MacDesktopServiceDeps = {
 };
 
 type DriverDisplayReply = MacDesktopDisplay & { displayId?: number };
-
-const asRecord = (value: unknown): Record<string, unknown> =>
-  (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
-
-const asNumber = (value: unknown, fallback: number): number =>
-  (typeof value === "number" && Number.isFinite(value) ? value : fallback);
-
-const asNullableString = (value: unknown): string | null =>
-  (typeof value === "string" && value.trim().length ? value.trim() : null);
 
 /**
  * What the runtime actually holds.
@@ -365,6 +363,19 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     serviceError: (code, message) => new MacDesktopError(code, message),
   });
 
+  const windowLifecycle = createMacDesktopWindows({
+    logger: deps.logger,
+    isDarwin,
+    emit,
+    ensureProvider,
+    activeProvider,
+    requireDisplay: (laneId) => {
+      requireDisplay(laneId);
+    },
+    assertPermission,
+    ownership,
+  });
+
   const leaseFlow = createMacDesktopLeaseFlow({
     logger: deps.logger,
     isDarwin,
@@ -558,7 +569,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     };
     const supported = isDarwin && driverHealth.state !== "missing" && driverHealth.state !== "unsupported";
     const display = laneId ? ownership.getDisplay(laneId) : null;
-    const windows = laneId ? await listWindowsInternal(laneId).catch(() => []) : [];
+    const windows = laneId ? await windowLifecycle.listInternal(laneId).catch(() => []) : [];
     const streamStatus = laneId ? streaming.buildStreamStatus(laneId, { redacted: true }) : null;
     return {
       platform,
@@ -720,18 +731,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   }
 
   // -------------------------------------------------------------------------
-  // Windows
-  // -------------------------------------------------------------------------
-
-  const listWindowsInternal = async (laneId?: string | null): Promise<MacDesktopWindow[]> => {
-    const seat = isDarwin ? activeProvider() : null;
-    if (!seat) return [];
-    const windows = await seat.listWindows({ laneId: laneId ?? null });
-    if (laneId) ownership.reconcileWindows(laneId, windows);
-    return windows;
-  };
-
-  // -------------------------------------------------------------------------
   // The API
   // -------------------------------------------------------------------------
 
@@ -785,108 +784,22 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async listWindows(args: { laneId?: string | null } = {}): Promise<MacDesktopWindow[]> {
       assertSupported();
       await ensureDriver();
-      return await listWindowsInternal(args.laneId ?? null);
+      return await windowLifecycle.listInternal(args.laneId ?? null);
     },
 
     async open(args: MacDesktopOpenArgs): Promise<MacDesktopOpenResult> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      requireDisplay(laneId);
-      const seat = await ensureProvider();
-      assertPermission("accessibility");
-      const reply = await seat.launch({
-        laneId,
-        target: args.target,
-        args: args.args ?? [],
-      });
-      const windows = asWindows(reply.windows);
-      const bundleId = asNullableString(reply.bundleId);
-      const pid = typeof reply.pid === "number" ? reply.pid : null;
-      for (const window of windows) {
-        ownership.claimWindow({
-          laneId,
-          windowId: window.id,
-          pid: window.pid,
-          bundleId: window.bundleId,
-          appName: window.appName,
-          origin: "ade_launched",
-          singleInstance: window.singleInstance,
-        });
-      }
-      if (pid != null) {
-        ownership.watchLaunch({
-          laneId,
-          pid,
-          target: args.target,
-          bundleId,
-          chatSessionId: args.chatSessionId ?? null,
-        });
-      }
-      ownership.touchDisplay(laneId);
-      emit({ type: "windows-changed", laneId, windows });
-      return {
-        laneId,
-        pid,
-        appName: asNullableString(reply.appName),
-        bundleId,
-        windows,
-        watching: reply.watching === true,
-      };
+      return await windowLifecycle.open(args);
     },
 
     async claimWindow(args: MacDesktopClaimArgs): Promise<MacDesktopWindow> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      requireDisplay(laneId);
-      const seat = await ensureProvider();
-      assertPermission("accessibility");
-      const existing = ownership.getWindow(args.windowId);
-      if (existing && existing.laneId !== laneId && existing.singleInstance && existing.bundleId) {
-        ownership.assertSingleInstanceAvailable({
-          laneId,
-          bundleId: existing.bundleId,
-          singleInstance: true,
-          appName: existing.appName,
-        });
-      }
-      const window = await seat.park({ laneId, windowId: args.windowId });
-      ownership.claimWindow({
-        laneId,
-        windowId: window.id ?? args.windowId,
-        pid: window.pid,
-        bundleId: window.bundleId,
-        appName: window.appName,
-        origin: "claimed",
-        singleInstance: window.singleInstance,
-      });
-      ownership.touchDisplay(laneId);
-      emit({ type: "windows-changed", laneId, windows: await listWindowsInternal(laneId) });
-      return window;
+      return await windowLifecycle.claimWindow(args);
     },
 
     async releaseWindow(args: MacDesktopReleaseArgs): Promise<{ released: number }> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      const seat = await ensureProvider();
-      const targets = args.windowId != null
-        ? [args.windowId]
-        : ownership.listWindowRecords(laneId).map((record) => record.windowId);
-      let released = 0;
-      for (const windowId of targets) {
-        try {
-          await seat.unpark({ windowId });
-          ownership.releaseWindow(windowId);
-          released += 1;
-        } catch (error) {
-          deps.logger.debug("mac_desktop.release_window_failed", {
-            laneId,
-            windowId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      if (released) emit({ type: "windows-changed", laneId, windows: await listWindowsInternal(laneId) });
-      return { released };
+      return await windowLifecycle.releaseWindow(args);
     },
 
     async observe(args: MacDesktopObserveArgs): Promise<MacDesktopObservation> {
@@ -1000,13 +913,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
     async present(args: MacDesktopPresentArgs): Promise<{ moved: number }> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      requireDisplay(laneId);
-      const seat = await ensureProvider();
-      const reply = await seat.present({ laneId, destination: args.destination });
-      ownership.touchDisplay(laneId);
-      emit({ type: "windows-changed", laneId, windows: await listWindowsInternal(laneId) });
-      return { moved: asNumber(reply.moved, 0) };
+      return await windowLifecycle.present(args);
     },
 
     async noteTurnEnded(args: {

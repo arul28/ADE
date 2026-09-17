@@ -10,6 +10,7 @@ import {
   normalizeRuntimeRule,
   presetToTemplate,
   resolveLaneNameTemplate,
+  scopeAutomationAdeActionArgs,
   triggerMatches,
 } from "./automationService";
 import { openKvDb } from "../state/kvDb";
@@ -3289,5 +3290,43 @@ describe("automation ingress storage bounds", () => {
     expect(mapExecRows(raw.exec(
       "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
     ))[0]?.count).toBe(1);
+  });
+});
+
+describe("scopeAutomationAdeActionArgs", () => {
+  it("strips host-authored chat message provenance from automation args", () => {
+    const args = {
+      chatSessionId: "chat-1",
+      metadata: { spawnCompletion: { childSessionId: "child-1" }, note: "keep" },
+    };
+    scopeAutomationAdeActionArgs("chat", args);
+    expect(args.metadata).toEqual({ note: "keep" });
+    // The chat domain derives its own session scoping; only provenance is cut.
+    expect(args.chatSessionId).toBe("chat-1");
+  });
+
+  it("strips forged takeover identity from mac_desktop automation args", () => {
+    const args: Record<string, unknown> = {
+      laneId: "lane-1",
+      controllerId: "controller-the-human-minted",
+      holderId: "controller-the-human-minted",
+      chatSessionId: "someone-elses-chat",
+      x: 10,
+      y: 20,
+    };
+    scopeAutomationAdeActionArgs("mac_desktop", args);
+    expect(args).toEqual({ laneId: "lane-1", x: 10, y: 20 });
+  });
+
+  it("strips mac_desktop identity from positional automation args too", () => {
+    const args = [{ laneId: "lane-1", controllerId: "c", holderId: "h", chatSessionId: "s" }];
+    scopeAutomationAdeActionArgs("mac_desktop", args);
+    expect(args[0]).toEqual({ laneId: "lane-1" });
+  });
+
+  it("leaves other domains' args untouched", () => {
+    const args = { controllerId: "c", holderId: "h" };
+    scopeAutomationAdeActionArgs("lane", args);
+    expect(args).toEqual({ controllerId: "c", holderId: "h" });
   });
 });

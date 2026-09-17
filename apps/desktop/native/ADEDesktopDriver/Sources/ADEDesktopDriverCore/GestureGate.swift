@@ -17,7 +17,10 @@
 /// the caller sees a slightly later reply rather than a corrupted desktop.
 /// Everything harmless — `ping`, `observe`, `window.list`, capture — keeps
 /// answering, which is what makes the gate safe to hold for the length of a
-/// human-scale gesture.
+/// human-scale gesture. A parked request is still on somebody's 20-second
+/// clock, so the queue is time-bounded too: anything that waited longer than
+/// `deferredTTL` is answered with `deferred_expired` rather than executed into
+/// a desktop that has moved on.
 ///
 /// Pure on purpose: no AppKit, no CoreGraphics, no window server. The ordering
 /// rules are the part that has to be right, so they are the part that is
@@ -35,6 +38,18 @@ public enum GestureGateDecision: Equatable, Sendable {
     case rejected(DriverError)
 }
 
+/// What the drain should do with one item it pulled off the parking lot.
+public enum GestureGateDrain: Equatable, Sendable {
+    /// Still fresh: run it.
+    case run(DriverRequest)
+    /// It sat behind the gesture longer than the client was willing to wait.
+    /// The request is carried along so the caller can be answered on its `id`
+    /// instead of being left to time out, and it is *not* executed: posting
+    /// clicks at coordinates that were decided half a minute ago is worse than
+    /// an explicit failure.
+    case expired(DriverRequest, DriverError)
+}
+
 /// The per-process "a real gesture is in flight" flag, plus the queue of
 /// requests that had to wait for it.
 public final class GestureGate: @unchecked Sendable {
@@ -46,11 +61,28 @@ public final class GestureGate: @unchecked Sendable {
     /// memory and a drain that takes longer than the gesture did.
     public static let maxDeferred = 64
 
-    private let lock = NSLock()
-    private var activeLane: String?
-    private var queue: [DriverRequest] = []
+    /// How long a parked request stays worth running.
+    ///
+    /// Comfortably inside the Node client's 20-second request timeout: past
+    /// this point the caller has either given up or is about to, and the world
+    /// the request was aimed at (pointer position, window frames, element
+    /// indices) is stale anyway.
+    public static let deferredTTL: TimeInterval = 15
 
-    public init() {}
+    private struct Parked {
+        let request: DriverRequest
+        let enqueuedAt: Date
+    }
+
+    private let lock = NSLock()
+    private let now: @Sendable () -> Date
+    private var activeLane: String?
+    private var queue: [Parked] = []
+
+    /// `now` is injectable so the expiry rule can be tested without sleeping.
+    public init(now: @escaping @Sendable () -> Date = { Date() }) {
+        self.now = now
+    }
 
     public var activeLaneId: String? {
         lock.lock()
@@ -109,35 +141,72 @@ public final class GestureGate: @unchecked Sendable {
     }
 
     /// Which ops can disturb a gesture that is already holding the button.
+    ///
+    /// Every `DriverOp` is named and there is no `default`, so adding an op is
+    /// a compile error here rather than a silent promotion to "harmless" — the
+    /// failure mode that let `window.park` (which ends in a `setFrame`) slip
+    /// through while `window.unpark` was already deferred.
     public static func isHazardous(_ request: DriverRequest, duringGestureOn laneId: String) -> Bool {
         switch request.knownOp {
-        case .input:
-            // Every `input`, not just the real ones, and not just this lane's:
-            // an accessibility click on another lane can raise and focus a
-            // window under the moving pointer just as effectively.
-            return true
-        case .destroyDisplay, .present:
-            return request.string("laneId") == laneId
-        case .unparkWindow:
-            // `window.unpark` names a window, never a lane, so it cannot be
-            // narrowed to the gesturing lane without a registry lookup this
-            // type deliberately does not have. Deferring all of them for the
-            // length of one gesture is the cheaper half of that trade.
-            return true
-        case .reconcileDisplays:
-            // Harmless unless it is the sweep that would tear down the very
-            // display the gesture is happening on.
-            guard let live = request.stringArray("liveLaneIds") else { return false }
-            return !live.contains(laneId)
-        default:
+        case .none:
+            // Node is newer than this helper. The op will be answered with
+            // `unknown_op` in a moment; holding it behind a gesture would only
+            // delay that.
             return false
+        case .some(let op):
+            switch op {
+            case .input:
+                // Every `input`, not just the real ones, and not just this
+                // lane's: an accessibility click on another lane can raise and
+                // focus a window under the moving pointer just as effectively.
+                //
+                // `wait` is the one exception: it posts no events at all, it
+                // only polls and pumps. Deferring it is actively harmful — it
+                // blocks for up to 120 s, so parking it would hold every other
+                // parked request behind it long past the client's timeout.
+                return request.string("command") != "wait"
+            case .destroyDisplay, .present:
+                return request.string("laneId") == laneId
+            case .parkWindow, .unparkWindow:
+                // Both end in a `setFrame` on a window this type cannot map
+                // back to a lane without a registry lookup it deliberately does
+                // not have. Deferring all of them for the length of one gesture
+                // is the cheaper half of that trade.
+                return true
+            case .launch:
+                // Launching or re-activating an app raises a window, which can
+                // land under the moving pointer mid-drag. Any lane, same
+                // rationale as park/unpark.
+                return true
+            case .reconcileDisplays:
+                // Harmless unless it is the sweep that would tear down the very
+                // display the gesture is happening on.
+                guard let live = request.stringArray("liveLaneIds") else { return false }
+                return !live.contains(laneId)
+            case .health,
+                 .createDisplay,
+                 .listWindows,
+                 .observe,
+                 .setLease,
+                 .clearLease,
+                 .screenshot,
+                 .startStream,
+                 .setStreamRate,
+                 .stopStream,
+                 .startRecording,
+                 .stopRecording:
+                // Read-only, or scoped to plumbing the window server does not
+                // route through the pointer. These keep answering so a gesture
+                // never looks like a hung driver.
+                return false
+            }
         }
     }
 
     public func enqueue(_ request: DriverRequest) {
         lock.lock()
         defer { lock.unlock() }
-        queue.append(request)
+        queue.append(Parked(request: request, enqueuedAt: now()))
     }
 
     /// One at a time, in arrival order.
@@ -146,9 +215,22 @@ public final class GestureGate: @unchecked Sendable {
     /// be a drag, and replaying a batch would run the rest of it inside that new
     /// gesture — the exact thing the gate exists to stop. The drain loop checks
     /// `isActive` between every item.
-    public func dequeue() -> DriverRequest? {
+    public func dequeue() -> GestureGateDrain? {
         lock.lock()
-        defer { lock.unlock() }
-        return queue.isEmpty ? nil : queue.removeFirst()
+        let parked = queue.isEmpty ? nil : queue.removeFirst()
+        let stamp = now()
+        lock.unlock()
+        guard let parked else { return nil }
+        let waited = stamp.timeIntervalSince(parked.enqueuedAt)
+        guard waited <= Self.deferredTTL else {
+            return .expired(
+                parked.request,
+                DriverError(
+                    code: DriverErrorCode.deferredExpired,
+                    message: "Request \(parked.request.id) waited \(Int(waited.rounded()))s behind a real gesture and was dropped instead of run."
+                )
+            )
+        }
+        return .run(parked.request)
     }
 }

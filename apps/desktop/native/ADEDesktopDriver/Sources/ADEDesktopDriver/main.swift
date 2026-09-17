@@ -229,16 +229,30 @@ final class DriverRuntime: NSObject {
     ///
     /// Posted to the run loop rather than called inline so it runs *after* the
     /// drag's own reply has gone out, keeping replies in the order a client
-    /// would expect. One item at a time with a re-check between: a parked
-    /// request can itself be a drag, and the rest of the queue has to wait for
-    /// that one too.
+    /// would expect.
+    ///
+    /// One item at a time, with an `isActive` re-check between each. Today a
+    /// gesture begins and ends synchronously inside one request, so the gate
+    /// cannot re-arm mid-drain and the check never fires; it is one atomic read
+    /// per item, and it is what keeps the drain correct the day a gesture
+    /// becomes asynchronous — a parked request can itself be a drag, and the
+    /// rest of the queue would have to wait for that one too.
     func scheduleDeferredDrain() {
         performOnMain(#selector(DriverRuntime.drainDeferred), with: nil)
     }
 
     @objc private func drainDeferred() {
         while !gestures.isActive, let next = gestures.dequeue() {
-            dispatch(next)
+            switch next {
+            case .run(let request):
+                dispatch(request)
+            case .expired(let request, let error):
+                // Answered, never executed: the caller's own timeout has almost
+                // certainly fired, and replaying stale coordinates into a
+                // desktop that moved on is the worse of the two outcomes.
+                log("dropping deferred \(request.op) \(request.id): \(error.message)")
+                output.write(.reply(.failure(id: request.id, error: error)))
+            }
         }
     }
 

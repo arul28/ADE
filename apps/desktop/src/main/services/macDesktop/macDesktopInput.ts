@@ -35,22 +35,13 @@ import {
 import type { MacDesktopLeaseRegistry } from "./macDesktopLease";
 import type { MacDesktopObservations } from "./macDesktopObservations";
 import type { MacDesktopOwnershipRegistry } from "./macDesktopOwnership";
-import { asWindows } from "./macDesktopSeatProvider";
+import { asNullableString, asNumber, asRecord, asWindows } from "./macDesktopSeatProvider";
 
 /** An observation asking for more than this is clamped. */
 const MAX_OBSERVATION_LIMIT = MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT;
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const MAX_WAIT_TIMEOUT_MS = 120_000;
-
-const asNumber = (value: unknown, fallback: number): number =>
-  (typeof value === "number" && Number.isFinite(value) ? value : fallback);
-
-const asNullableString = (value: unknown): string | null =>
-  (typeof value === "string" && value.trim().length ? value.trim() : null);
-
-const asRecord = (value: unknown): Record<string, unknown> =>
-  (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
 
 export type MacDesktopInputDeps = {
   now: () => number;

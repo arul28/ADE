@@ -303,8 +303,14 @@ describe("macDesktopService real input and the lease", () => {
     // The helper keeps its own lease; it is told which holder we authorized.
     expect(input?.payload.lease).toEqual({ holderId: "ade-window:abc" });
 
+    // The holder id is readable by anyone who can read the lane's status —
+    // including an agent, which is why the RPC scope strips `controllerId` on
+    // the way in rather than hiding it here.
+    expect((await service.getStatus({ laneId: "lane-1" })).lease?.holderId).toBe("ade-window:abc");
+
     // Without the controller id the same panel looks like an agent chat, and
     // the user's own takeover refuses it.
+    const inputCallsBefore = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input).length;
     await expect(service.click({
       laneId: "lane-1",
       x: 10,
@@ -312,30 +318,9 @@ describe("macDesktopService real input and the lease", () => {
       mode: "real",
       chatSessionId: "chat-1",
     })).rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
-    service.dispose();
-  });
-
-  it("refuses a real click whose forged controllerId the RPC scope stripped", async () => {
-    // An agent can read the human's takeover holder id out of
-    // `getStatus().lease.holderId`. Echoing it back as `controllerId` would have
-    // made `inputHolderId` hand it the lease, so the RPC scope strips the field
-    // from an agent's call — and what arrives here is a real click with only a
-    // chat id, which the user's own takeover refuses.
-    const driver = createFakeDriver();
-    const { service } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:human" });
-    const holderId = (await service.getStatus({ laneId: "lane-1" })).lease?.holderId;
-    expect(holderId).toBe("ade-window:human");
-
-    await expect(service.click({
-      laneId: "lane-1",
-      x: 10,
-      y: 10,
-      mode: "real",
-      chatSessionId: "chat-agent",
-    })).rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
-    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input)).toBe(false);
+    // Refused before the driver: no second input op was posted.
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input).length)
+      .toBe(inputCallsBefore);
     service.dispose();
   });
 

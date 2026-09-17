@@ -641,6 +641,49 @@ function listMatches(expected: string[] | undefined, actual: string[] | undefine
  *   - `titleRegex` / `bodyRegex` are case-insensitive; invalid patterns drop the match.
  *   - `authors[]` prefers `trigger.issue.author` / `trigger.pr.author` over `trigger.author`.
  */
+/**
+ * Strip the fields an automation's `ade-action` config is not a trusted author
+ * of, before the resolved args reach an in-process domain service.
+ *
+ * The RPC server scopes the same fields for a session-bound agent
+ * (`scopeMacDesktopAdeActionArgs` in `apps/ade-cli/src/adeRpcServer.ts`); an
+ * automation step never goes through that path — it calls the domain service
+ * directly in this process — so the identity fields have to be dropped here too
+ * or a rule is a second, unscoped writer of them.
+ *
+ * `chat`: `spawnDispatch` and its siblings decide whether an agent completion
+ * wakes another agent, and the host derives that provenance from observed
+ * identity, not from config.
+ *
+ * `mac_desktop`: a human takeover holds the input lease under a `controllerId`
+ * the viewing client minted, and `getStatus().lease.holderId` prints that id to
+ * anyone who can read the lane's status. `inputHolderId` in the service prefers
+ * `controllerId` over the chat id, so a rule carrying a copied controller/holder
+ * id would post real `CGEvent` input while wearing the human's takeover.
+ * `chatSessionId` goes with them: the RPC path pins it to the caller's own
+ * session, and an unattended automation has no chat identity to pin, so any
+ * value it carries is borrowed.
+ */
+export function scopeAutomationAdeActionArgs(domain: string, resolvedArgs: unknown): void {
+  const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
+  if (domain === "chat") {
+    for (const candidate of candidates) {
+      if (isRecord(candidate) && isRecord(candidate.metadata)) {
+        stripHostAuthoredMessageProvenance(candidate.metadata);
+      }
+    }
+    return;
+  }
+  if (domain === "mac_desktop") {
+    for (const candidate of candidates) {
+      if (!isRecord(candidate)) continue;
+      delete candidate.controllerId;
+      delete candidate.holderId;
+      delete candidate.chatSessionId;
+    }
+  }
+}
+
 export function triggerMatches(
   ruleTrigger: AutomationTrigger,
   trigger: TriggerContext,
@@ -2985,16 +3028,7 @@ export function createAutomationService({
       }
     }
 
-    // Automation config is not a trusted author of chat-message provenance:
-    // `spawnDispatch` and its siblings decide whether an agent completion wakes
-    // another agent, and the host derives them from observed identity.
-    if (domain === "chat") {
-      for (const candidate of Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs]) {
-        if (isRecord(candidate) && isRecord(candidate.metadata)) {
-          stripHostAuthoredMessageProvenance(candidate.metadata);
-        }
-      }
-    }
+    scopeAutomationAdeActionArgs(domain, resolvedArgs);
 
     try {
       const callable = fn as (...a: unknown[]) => unknown;

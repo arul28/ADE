@@ -28,19 +28,33 @@ const RECORDING_STOP_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 5_000;
 
 /**
- * The two reply normalizers, exported because the service reads the same
- * replies this file produces.
+ * The driver-reply normalizers.
  *
- * A helper that answered with a string, an array or nothing at all must become
- * an empty object exactly once, in one place, or the two sides disagree about
- * what "no reply" looks like.
+ * A driver field that answered with a string, an array or nothing at all must
+ * be coerced exactly once, in one place, or the service and this file disagree
+ * about what "no reply" looks like. `asReply` is local — every reply this file
+ * produces is already normalized by the time the service sees it — while the
+ * rest are exported because the service and `macDesktopInput.ts` read the same
+ * loosely-typed driver payloads.
  */
-export const asReply = (value: unknown): DesktopSeatReply =>
+const asReply = (value: unknown): DesktopSeatReply =>
   (value && typeof value === "object" && !Array.isArray(value) ? value as DesktopSeatReply : {});
 
 /** A driver field that should have been a window list, whatever it actually is. */
 export const asWindows = (value: unknown): MacDesktopWindow[] =>
   (Array.isArray(value) ? value as MacDesktopWindow[] : []);
+
+/** A driver field that should have been an object. */
+export const asRecord = (value: unknown): Record<string, unknown> =>
+  (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+
+/** A driver field that should have been a finite number. */
+export const asNumber = (value: unknown, fallback: number): number =>
+  (typeof value === "number" && Number.isFinite(value) ? value : fallback);
+
+/** A driver field that should have been a non-empty string. */
+export const asNullableString = (value: unknown): string | null =>
+  (typeof value === "string" && value.trim().length ? value.trim() : null);
 
 export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient): DesktopSeatProvider {
   const request = async (

@@ -10,6 +10,7 @@ import {
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
 import {
+  ADE_ACTION_ALLOWLIST,
   ADE_ACTION_DOMAIN_NAMES,
   type AdeActionDomain,
   callerHasRoleAtLeast,
@@ -2958,6 +2959,34 @@ function scopeWorkToolsAdeActionArgs(
 }
 
 /**
+ * The `mac_desktop` actions that only READ, and so answer without a lane.
+ *
+ * The one hand-written half of the derivation below, because "does this act on
+ * the display" is a judgement no table records. `getStatus` is the domain's
+ * capability probe and has to work on every host; `listWindows` and
+ * `getStreamStatus` are redacted reads.
+ */
+const MAC_DESKTOP_READ_ONLY_ACTIONS = new Set<string>(["getStatus", "listWindows", "getStreamStatus"]);
+
+/**
+ * Derived, not listed: every allowlisted `mac_desktop` action that is neither a
+ * read nor CTO-only is lane-bound. A hand-typed list fails OPEN — a new acting
+ * action added to the allowlist would be reachable by an unpinned caller until
+ * someone remembered to copy its name here. The allowlist table is the full
+ * policy surface (a runtime whose service omits a method rejects the call on
+ * its own), so deriving from it can only ever over-cover.
+ *
+ * CTO-only actions (`startStream`, `takeControl`, ...) are excluded because the
+ * role gate already refuses them for an agent-shaped caller; a lane check on
+ * top would answer with the wrong error.
+ */
+export const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>(
+  (ADE_ACTION_ALLOWLIST.mac_desktop ?? []).filter(
+    (action) => !MAC_DESKTOP_READ_ONLY_ACTIONS.has(action) && !isCtoOnlyAdeAction("mac_desktop", action),
+  ),
+);
+
+/**
  * `mac_desktop` carries a caller-asserted identity the same way `work_tools`
  * carried a caller-asserted lane.
  *
@@ -2998,26 +3027,6 @@ function scopeWorkToolsAdeActionArgs(
  * paired phone each drive whichever lane's display their UI is showing, and the
  * human's takeover holds the lease under a `controllerId`, not a chat id.
  */
-const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>([
-  "start",
-  "stop",
-  "open",
-  "claimWindow",
-  "releaseWindow",
-  "observe",
-  "click",
-  "type",
-  "press",
-  "scroll",
-  "drag",
-  "wait",
-  "screenshot",
-  "startRecording",
-  "stopRecording",
-  "requestInputLease",
-  "present",
-]);
-
 function scopeMacDesktopAdeActionArgs(
   runtime: AdeRuntime,
   session: SessionState,

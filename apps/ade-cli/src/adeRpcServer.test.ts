@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAdeRpcRequestHandler,
   _resetGlobalAskUserRateLimit,
+  MAC_DESKTOP_LANE_BOUND_ACTIONS,
   resolveComputerUseOwners,
 } from "./adeRpcServer";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
@@ -7006,5 +7007,39 @@ describe("run_ade_action search scope", () => {
     });
     expect(status?.isError).toBeUndefined();
     expect(search.indexStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("MAC_DESKTOP_LANE_BOUND_ACTIONS", () => {
+  it("covers every acting mac_desktop action, derived from the allowlist", () => {
+    // Pinned deliberately: the set is DERIVED from the action allowlist, so a
+    // new `mac_desktop` action lands here automatically and this assertion is
+    // the place the reviewer decides whether it is an act or a read.
+    expect([...MAC_DESKTOP_LANE_BOUND_ACTIONS].sort()).toEqual([
+      "claimWindow",
+      "click",
+      "drag",
+      "observe",
+      "open",
+      "present",
+      "press",
+      "releaseWindow",
+      "requestInputLease",
+      "screenshot",
+      "scroll",
+      "start",
+      "startRecording",
+      "stop",
+      "stopRecording",
+      "type",
+      "wait",
+    ]);
+    // The reads answer without a lane; the CTO-only viewing trio is gated by role.
+    for (const read of ["getStatus", "listWindows", "getStreamStatus"]) {
+      expect(MAC_DESKTOP_LANE_BOUND_ACTIONS.has(read), read).toBe(false);
+    }
+    for (const ctoOnly of ["startStream", "stopStream", "takeControl", "returnControl", "renewLease"]) {
+      expect(MAC_DESKTOP_LANE_BOUND_ACTIONS.has(ctoOnly), ctoOnly).toBe(false);
+    }
   });
 });
