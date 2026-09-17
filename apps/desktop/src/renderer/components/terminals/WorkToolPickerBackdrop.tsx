@@ -6,8 +6,10 @@ import { createBackdropRenderer } from "./workToolPickerBackdropRenderer";
 export {
   BACKDROP_FRAME_MS,
   BACKDROP_IDLE_FRAME_MS,
+  BACKDROP_IDLE_FREEZE_MS,
   BACKDROP_MAX_DPR,
   BACKDROP_PIXEL_BUDGET,
+  BACKDROP_RENDER_SCALE,
   backdropThemeFor,
   isSoftwareRenderer,
   resolveBackdropSize,
@@ -26,10 +28,13 @@ export type { WorkToolPickerBackdropTheme } from "./workToolPickerBackdropShader
  *    in that file rather than a hunt through GLSL.
  * 2. The budget. This is decoration on a page you land on constantly, sitting
  *    inside an Electron renderer that is also running a terminal, a browser
- *    view and a chat stream. It renders at DPR 1, never more than
- *    `BACKDROP_PIXEL_BUDGET` pixels, never faster than 30 fps — 20 while nothing is chasing the pointer — and not at all
- *    while the window is blurred, the document hidden, the canvas scrolled out
- *    of view, or the pointer's device cannot hover. Under
+ *    view and a chat stream. It renders at DPR 1 and then at
+ *    `BACKDROP_RENDER_SCALE` under that, never more than
+ *    `BACKDROP_PIXEL_BUDGET` pixels, never faster than 30 fps — 12 while
+ *    nothing is chasing the pointer, and nothing at all once
+ *    `BACKDROP_IDLE_FREEZE_MS` has passed without one. It does not draw while
+ *    the window is blurred, the document hidden, the canvas scrolled out of
+ *    view, or the pointer's device cannot hover. Under
  *    `prefers-reduced-motion` it paints one frame and stops. Without WebGL — or
  *    with only a software rasteriser behind it — it is a static CSS gradient
  *    and no canvas at all.

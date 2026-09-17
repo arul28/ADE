@@ -5,8 +5,10 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   BACKDROP_FRAME_MS,
   BACKDROP_IDLE_FRAME_MS,
+  BACKDROP_IDLE_FREEZE_MS,
   BACKDROP_MAX_DPR,
   BACKDROP_PIXEL_BUDGET,
+  BACKDROP_RENDER_SCALE,
   WorkToolPickerBackdrop,
   backdropThemeFor,
   isSoftwareRenderer,
@@ -99,9 +101,21 @@ describe("resolveBackdropSize", () => {
   it("never renders above DPR 1, whatever the display claims", () => {
     // The whole point of the cap: on a 2× panel a 400×300 pane would otherwise
     // cost four times the fragments for a gradient with nothing to resolve.
-    expect(resolveBackdropSize(400, 300, 2)).toEqual({ width: 400, height: 300 });
-    expect(resolveBackdropSize(400, 300, 3)).toEqual({ width: 400, height: 300 });
+    expect(resolveBackdropSize(400, 300, 2)).toEqual({ width: 240, height: 180 });
+    expect(resolveBackdropSize(400, 300, 3)).toEqual({ width: 240, height: 180 });
     expect(BACKDROP_MAX_DPR).toBe(1);
+  });
+
+  it("renders under CSS resolution and lets the compositor scale it back up", () => {
+    // The mesh is four gaussian lobes under a 0.192 warp — nothing in it is
+    // sharper than tens of pixels, so a 0.6× buffer carries every feature it
+    // has and the upscale is the blit the canvas was already doing. Fragment
+    // cost is linear in pixels, so this is the single biggest lever here.
+    expect(BACKDROP_RENDER_SCALE).toBeLessThan(1);
+    const size = resolveBackdropSize(1000, 500, 1);
+    expect(size).toEqual({ width: 600, height: 300 });
+    // Aspect survives, because the canvas keeps its CSS box.
+    expect(size.width / size.height).toBeCloseTo(1000 / 500, 5);
   });
 
   it("holds the pixel budget on a pane wider than the budget allows", () => {
@@ -116,26 +130,50 @@ describe("resolveBackdropSize", () => {
   });
 
   it("leaves a pane inside the budget at its own size", () => {
-    // The pane's default width, in a tall window: well inside 600k.
-    expect(resolveBackdropSize(447, 900, 1)).toEqual({ width: 447, height: 900 });
+    // The pane's default width, in a tall window: well inside the budget even
+    // before the render scale takes it down to 268×540.
+    expect(resolveBackdropSize(447, 900, 1)).toEqual({ width: 268, height: 540 });
   });
 
   it("survives a zero-sized or nonsense box instead of asking WebGL for one", () => {
     // A pane mid-collapse, and a `getBoundingClientRect` before first layout.
     expect(resolveBackdropSize(0, 0, 1)).toEqual({ width: 1, height: 1 });
-    expect(resolveBackdropSize(Number.NaN, 300, Number.NaN)).toEqual({ width: 1, height: 300 });
+    expect(resolveBackdropSize(Number.NaN, 300, Number.NaN)).toEqual({ width: 1, height: 180 });
   });
 
   it("caps the frame rate at 30, so a 240Hz panel costs seven skipped frames", () => {
     expect(BACKDROP_FRAME_MS).toBeCloseTo(1000 / 30, 5);
   });
 
-  it("drops to 20 fps when nothing is chasing the pointer", () => {
+  it("drops to 12 fps when nothing is chasing the pointer", () => {
     // Idle is what this page is doing essentially all the time, and the drift
-    // underneath the swirl moves a few pixels a second. The 30 fps ceiling is
-    // for the cursor, which has to keep up with a hand.
-    expect(BACKDROP_IDLE_FRAME_MS).toBeCloseTo(1000 / 20, 5);
+    // underneath the swirl is slow enough (`timeScale` -0.55) that 12 reads the
+    // same as 20. The 30 fps ceiling is for the cursor, which has to keep up
+    // with a hand.
+    expect(BACKDROP_IDLE_FRAME_MS).toBeCloseTo(1000 / 12, 5);
     expect(BACKDROP_IDLE_FRAME_MS).toBeGreaterThan(BACKDROP_FRAME_MS);
+  });
+
+  it("stops entirely after twenty idle seconds rather than drifting forever", () => {
+    // The steady state of this page is "open, and nobody is looking at it".
+    // Twenty seconds is past any read of the cards and well short of anything a
+    // user would notice stopping; the canvas keeps its last composited frame.
+    expect(BACKDROP_IDLE_FREEZE_MS).toBe(20_000);
+    expect(BACKDROP_IDLE_FREEZE_MS).toBeGreaterThan(BACKDROP_IDLE_FRAME_MS * 60);
+  });
+
+  it("drifts slowly enough to survive the idle frame rate", () => {
+    // Slowing the CONTENT is the one knob that buys frames back for free: the
+    // same drift at the reference's -1.373 would stutter at 12 fps.
+    expect(Math.abs(UNIFORMS.timeScale)).toBeLessThan(1);
+  });
+
+  it("keeps the mesh warp at three octaves", () => {
+    // The fourth octave displaces the sample point by less than a pixel at any
+    // pane size this budget allows, for a full extra noise evaluation on every
+    // fragment — measured against four octaves the output differs by a mean of
+    // 0.7/255 and never by more than 6/255.
+    expect(FRAG).toMatch(/for \(int i = 0; i < 3; i\+\+\)/u);
   });
 
   it("leaves the reference's 5-tap blur out of the fragment shader", () => {
@@ -450,6 +488,61 @@ describe("WorkToolPickerBackdrop frame scheduling", () => {
     });
     expect(raf).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBeGreaterThan(0);
+  });
+
+  it("freezes on the current frame after twenty idle seconds, and wakes on a move", () => {
+    // The steady state of this page is "open, and nobody is looking at it" — a
+    // picker behind a terminal or under a chat someone is reading. Twelve
+    // frames a second of drift, forever, is the cost this freeze removes; the
+    // canvas keeps whatever it last composited, so nothing blanks.
+    const { gl } = stubGl();
+    useStubGl(gl);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.useFakeTimers();
+    // Vitest's fake timers do not fake `performance.now`, and the freeze is
+    // measured against it — so the clock the loop reads is driven by hand here,
+    // in step with the timers.
+    let clock = 1_000;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    let pending: FrameRequestCallback | null = null;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      pending = cb;
+      return 1;
+    });
+
+    render(<WorkToolPickerBackdrop theme="dark" />);
+
+    // Run the loop past the freeze deadline the way the browser would: a timer
+    // sleeps to the frame's deadline, then the rAF it asked for lands.
+    const pump = (ms: number = BACKDROP_IDLE_FRAME_MS) => {
+      act(() => {
+        clock += ms;
+        vi.advanceTimersByTime(ms);
+        const frame = pending;
+        pending = null;
+        frame?.(clock);
+      });
+    };
+    const frames = Math.ceil(BACKDROP_IDLE_FREEZE_MS / BACKDROP_IDLE_FRAME_MS) + 2;
+    for (let i = 0; i < frames; i += 1) pump();
+
+    // Nothing owed to the clock and nothing owed to the display: the renderer
+    // is not woken again at all.
+    expect(pending).toBeNull();
+    const drawnWhileFrozen = gl.drawArrays.mock.calls.length;
+    pump(5_000);
+    // Five more seconds of wall clock and the mesh has not moved: no frame was
+    // asked for, and nothing was drawn.
+    expect(pending).toBeNull();
+    expect(gl.drawArrays).toHaveBeenCalledTimes(drawnWhileFrozen);
+
+    // A pointer move is a person: the drift starts again on the next frame.
+    act(() => {
+      // jsdom has no `PointerEvent`; a mouse event of the same type is what the
+      // listener actually reads (`clientX`/`clientY`).
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 10, clientY: 10 }));
+    });
+    expect(pending).not.toBeNull();
   });
 
   it("paints one frame and stops under reduced motion", () => {

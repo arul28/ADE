@@ -2449,7 +2449,14 @@ button:active, [role="button"]:active {
    edge up to a real accent, and one soft accent glow over 160ms. Press settles
    back to a 0.99 scale, so the card gives under the cursor rather than jumping
    out from under it. */
+/* The hover glow lives on `::after`, not on this box-shadow, and the transition
+   list below deliberately does not name `box-shadow`. A transitioned shadow is
+   repainted on the main thread on every frame of the 160ms — sixteen cards deep,
+   over a live shader canvas — while an `opacity` transition is one Chromium
+   promotes and runs on the compositor. The resting shadow is still a shadow; it
+   just never animates. */
 .ade-tool-card {
+  position: relative;
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
   background: color-mix(in srgb, var(--color-card) 80%, transparent);
@@ -2460,8 +2467,28 @@ button:active, [role="button"]:active {
   transition:
     transform 160ms ease-out,
     background-color 160ms ease-out,
-    border-color 160ms ease-out,
-    box-shadow 160ms ease-out;
+    border-color 160ms ease-out;
+}
+
+.ade-tool-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.1),
+    0 10px 26px -12px color-mix(in srgb, var(--color-accent) 60%, transparent);
+  transition: opacity 160ms ease-out;
+}
+
+[data-theme="light"] .ade-tool-card::after {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 26%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.6),
+    0 10px 26px -14px color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 
 [data-theme="light"] .ade-tool-card {
@@ -2478,18 +2505,11 @@ button:active, [role="button"]:active {
   transform: translateY(-3px);
   border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
   background: color-mix(in srgb, var(--color-card) 90%, transparent);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent),
-    inset 0 1px 0 0 rgb(255 255 255 / 0.1),
-    0 10px 26px -12px color-mix(in srgb, var(--color-accent) 60%, transparent);
 }
 
-[data-theme="light"] .ade-tool-card:not(:disabled):hover,
-[data-theme="light"] .ade-tool-card:not(:disabled)[data-highlighted="true"] {
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 26%, transparent),
-    inset 0 1px 0 0 rgb(255 255 255 / 0.6),
-    0 10px 26px -14px color-mix(in srgb, var(--color-accent) 45%, transparent);
+.ade-tool-card:not(:disabled):hover::after,
+.ade-tool-card:not(:disabled)[data-highlighted="true"]::after {
+  opacity: 1;
 }
 
 /* The glyph, tinted at rest. `--color-accent` at full strength would make the
@@ -2507,7 +2527,8 @@ button:active, [role="button"]:active {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ade-tool-card {
+  .ade-tool-card,
+  .ade-tool-card::after {
     transition: none;
   }
 
@@ -2531,7 +2552,8 @@ button:active, [role="button"]:active {
 /* Motion off: the fill and hairline still answer the cursor, the geometry does
    not. A lift is the part of this that moves. */
 @media (prefers-reduced-motion: reduce) {
-  .ade-tool-card {
+  .ade-tool-card,
+  .ade-tool-card::after {
     transition: none;
   }
 
