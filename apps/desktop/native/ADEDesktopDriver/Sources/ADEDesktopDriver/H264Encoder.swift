@@ -67,14 +67,25 @@ final class H264Encoder {
         )
     }
 
-    func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
+    /// Encodes one frame.
+    ///
+    /// `forceKeyframe` exists for the viewer that attaches to a still screen.
+    /// A lane's desktop with nothing happening on it produces no new capture
+    /// frames at all, so "the next keyframe is at most two seconds away" is
+    /// only true while something is moving; a reader that arrives during the
+    /// quiet would otherwise wait for the next thing to happen before it had a
+    /// picture. The caller re-submits the last captured buffer with this set.
+    func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime, forceKeyframe: Bool = false) {
         guard let session else { return }
+        let frameProperties: CFDictionary? = forceKeyframe
+            ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
+            : nil
         VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
             presentationTimeStamp: presentationTime,
             duration: .invalid,
-            frameProperties: nil,
+            frameProperties: frameProperties,
             infoFlagsOut: nil
         ) { [weak self] status, _, sampleBuffer in
             guard status == noErr, let sampleBuffer, let self else { return }

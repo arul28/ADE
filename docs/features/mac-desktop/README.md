@@ -224,6 +224,18 @@ H.264 access units to a token-guarded loopback HTTP endpoint, exactly like
 `iosVideoStreamServer.ts`. The renderer decodes with WebCodecs, using a codec
 string built from the stream's own SPS.
 
+A still desktop produces no frames at all. ScreenCaptureKit delivers a frame
+when the content changes and not otherwise, so a lane whose screen nobody has
+touched stops sending within a second of the display appearing — which is the
+state a viewer opening the tab arrives in, and the reason the first version of
+this pane sat on a black rectangle reading "Starting" forever. Two things in the
+driver make the picture unconditional: a reader attaching forces the encoder to
+re-submit the last captured frame as an IDR (`CaptureEngine.refreshKeyframe`),
+and while a reader is attached and nothing has been encoded for a second, the
+same re-encode runs on a keepalive. The codec record is broadcast on the
+transition as well as sent on attach, so a reader that arrived before the first
+keyframe can still configure its decoder.
+
 The token is minted per `startStream` and returned only by `startStream`.
 `getStreamStatus` reports the transport shape with `url` and `token` null,
 because that read sits on the agent action allowlist.

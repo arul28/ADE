@@ -69,6 +69,13 @@ final class CaptureEngine {
         var height: Int
         var codec: String?
         var startedAt: Date
+        /// The last frame ScreenCaptureKit delivered, kept so a reader that
+        /// attaches to a still screen can be handed a keyframe of it.
+        var lastBuffer: CVPixelBuffer?
+        var lastPresentationTime: CMTime
+        /// When the encoder last produced an access unit, for the keepalive.
+        var lastEncodedAt: Date
+        var keepAlive: DispatchSourceTimer?
     }
 
     struct RecordingState {
@@ -81,6 +88,18 @@ final class CaptureEngine {
         var startedAt: Date
         var firstPresentationTime: CMTime?
     }
+
+    /// How long a reader may go without a picture on a screen where nothing is
+    /// happening.
+    ///
+    /// ScreenCaptureKit delivers a frame when the content changes and not
+    /// otherwise, so an untouched lane desktop is a stream that stops dead
+    /// after its first frames — which is exactly the state a viewer opening the
+    /// tab arrives in. The engine re-encodes the last captured frame as a
+    /// keyframe at this cadence while somebody is reading, so the picture is
+    /// never more than a second away and a reconnecting viewer is never
+    /// waiting on the desktop to do something.
+    private static let keepAliveInterval: TimeInterval = 1.0
 
     private var streams: [String: StreamState] = [:]
     private var recordings: [String: RecordingState] = [:]
@@ -345,16 +364,27 @@ final class CaptureEngine {
                 }
                 self.lock.unlock()
             }
+            self.lock.lock()
+            self.streams[laneId]?.lastEncodedAt = Date()
+            self.lock.unlock()
             server.broadcast(StreamRecord.accessUnitRecord(payload: payload, keyframe: keyframe))
+        }
+        // A reader attaching is the one moment a keyframe is owed immediately.
+        server.onClientAttached = { [weak self] in
+            self?.refreshKeyframe(laneId: laneId)
         }
 
         let sink = CaptureFrameSink(
-            onFrame: { sampleBuffer in
+            onFrame: { [weak self] sampleBuffer in
                 guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-                encoder.encode(
-                    pixelBuffer: buffer,
-                    presentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-                )
+                let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                if let self {
+                    self.lock.lock()
+                    self.streams[laneId]?.lastBuffer = buffer
+                    if CMTIME_IS_NUMERIC(time) { self.streams[laneId]?.lastPresentationTime = time }
+                    self.lock.unlock()
+                }
+                encoder.encode(pixelBuffer: buffer, presentationTime: time)
             },
             onError: { [weak self] error in
                 self?.emit(
@@ -390,11 +420,61 @@ final class CaptureEngine {
             width: configuration.width,
             height: configuration.height,
             codec: nil,
-            startedAt: Date()
+            startedAt: Date(),
+            lastBuffer: nil,
+            lastPresentationTime: .zero,
+            lastEncodedAt: Date(),
+            keepAlive: nil
         )
         lock.unlock()
+        startKeepAlive(laneId: laneId, server: server)
         log("stream for lane \(laneId) on 127.0.0.1:\(port) at \(configuration.width)x\(configuration.height)@\(fps)")
         return (port, configuration.width, configuration.height, nil)
+    }
+
+    /// Re-encodes the lane's last captured frame as a keyframe.
+    ///
+    /// Everything about a still desktop's stream depends on this: the frame is
+    /// the one ScreenCaptureKit last handed over, re-submitted with a forced
+    /// IDR and a presentation time one frame later than the previous one, so
+    /// the encoder accepts it and every reader — the one that just attached and
+    /// the ones already watching — gets parameter sets and a whole picture.
+    private func refreshKeyframe(laneId: String) {
+        lock.lock()
+        guard var state = streams[laneId], let buffer = state.lastBuffer else {
+            lock.unlock()
+            return
+        }
+        let step = CMTime(value: 1, timescale: CMTimeScale(max(1, state.fps)))
+        let next = CMTimeAdd(state.lastPresentationTime, step)
+        state.lastPresentationTime = next
+        streams[laneId] = state
+        let encoder = state.encoder
+        lock.unlock()
+        encoder.encode(pixelBuffer: buffer, presentationTime: next, forceKeyframe: true)
+    }
+
+    /// The idle heartbeat: one keyframe a second while somebody is reading and
+    /// the screen has produced nothing. It stops costing anything the moment
+    /// the desktop is busy, because a real frame resets the clock, and it does
+    /// no work at all while no reader is attached.
+    private func startKeepAlive(laneId: String, server: StreamByteServer) {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + Self.keepAliveInterval, repeating: Self.keepAliveInterval)
+        timer.setEventHandler { [weak self] in
+            guard let self, server.clientCount > 0 else { return }
+            self.lock.lock()
+            let due = self.streams[laneId].map {
+                Date().timeIntervalSince($0.lastEncodedAt) >= Self.keepAliveInterval
+            } ?? false
+            self.lock.unlock()
+            guard due else { return }
+            self.refreshKeyframe(laneId: laneId)
+        }
+        timer.resume()
+        lock.lock()
+        streams[laneId]?.keepAlive = timer
+        lock.unlock()
     }
 
     func setStreamRate(laneId: String, fps: Int) throws {
@@ -434,6 +514,8 @@ final class CaptureEngine {
             return false
         }
         lock.unlock()
+        state.keepAlive?.cancel()
+        state.server.onClientAttached = nil
         state.stream.stopCapture { _ in }
         state.encoder.stop()
         state.server.stop()

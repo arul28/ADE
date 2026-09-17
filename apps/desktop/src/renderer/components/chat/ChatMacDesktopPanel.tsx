@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowsOut,
+  ArrowSquareIn,
+  ArrowsInSimple,
+  ArrowsOutSimple,
   CaretDown,
   Cursor,
   Monitor,
@@ -18,8 +20,11 @@ import type { SystemSettingsPaneId } from "../../../shared/types/systemSettings"
 import { cn } from "../ui/cn";
 import {
   WORK_TOOL_CHROME_CHIP,
+  WORK_TOOL_CHROME_META,
   WORK_TOOL_CHROME_ROW,
   WORK_TOOL_PRIMARY_BUTTON,
+  WORK_TOOL_SURFACE,
+  WorkToolChromeButton,
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
 import { H264VideoCanvas } from "./H264VideoCanvas";
@@ -32,6 +37,14 @@ import {
 import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
 import { useMacDesktopRealInput } from "./useMacDesktopRealInput";
 import { useMacDesktopStatus } from "./useMacDesktopStatus";
+import {
+  macDesktopClaimableWindows,
+  macDesktopFooter,
+  macDesktopParkedWindows,
+  macDesktopPresentAction,
+  macDesktopStatusPill,
+  macDesktopWindowLabel,
+} from "./macDesktopStrip";
 
 /**
  * The lane's private macOS screen, as a Work tools pane tool.
@@ -92,6 +105,8 @@ export function ChatMacDesktopPanel({
     dismissNotParked,
   } = useMacDesktopStatus({ laneId, laneName, sessionId, runtimePin });
   const [windowsOpen, setWindowsOpen] = useState(false);
+  const [claimable, setClaimable] = useState<MacDesktopWindow[]>([]);
+  const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [viewRect, setViewRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
 
@@ -104,7 +119,7 @@ export function ChatMacDesktopPanel({
   const windows: MacDesktopWindow[] = status?.windows ?? [];
   const supported = status?.supported ?? null;
   const iHaveControl = macDesktopUserHasControl(lease, macDesktopControllerId());
-  const anyWindowParked = windows.some((entry) => entry.onDisplayId === display?.displayId);
+  const parkedWindows = macDesktopParkedWindows(windows, display?.displayId);
 
   const live = useMacDesktopLiveView({
     laneId,
@@ -253,6 +268,41 @@ export function ChatMacDesktopPanel({
     }
   }, [laneId, refreshStatus, setStatusError]);
 
+  /**
+   * What is open on the user's own screen that this lane could adopt.
+   *
+   * Read when the dropdown opens rather than kept in the status: it is a
+   * snapshot of the whole Mac's windows, it changes every time the user opens
+   * anything, and nothing in the strip depends on it until somebody is looking
+   * for a window to claim.
+   */
+  const refreshClaimable = useCallback(async () => {
+    try {
+      const all = await macDesktopApi().listWindows({ laneId: null }, pinRef.current);
+      setClaimable(macDesktopClaimableWindows(all));
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : String(error));
+    }
+  }, [setStatusError]);
+
+  useEffect(() => {
+    if (!windowsOpen) return;
+    void refreshClaimable();
+  }, [refreshClaimable, windowsOpen]);
+
+  const claimWindow = useCallback(async (windowId: number) => {
+    setBusy(true);
+    try {
+      await macDesktopApi().claimWindow({ laneId, windowId, chatSessionId: sessionId }, pinRef.current);
+      await refreshStatus();
+      await refreshClaimable();
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [laneId, refreshClaimable, refreshStatus, sessionId, setStatusError]);
+
   const releaseWindow = useCallback(async (windowId: number) => {
     try {
       await macDesktopApi().releaseWindow({ laneId, windowId }, pinRef.current);
@@ -260,6 +310,26 @@ export function ChatMacDesktopPanel({
       setStatusError(error instanceof Error ? error.message : String(error));
     }
   }, [laneId, setStatusError]);
+
+  /**
+   * Escape leaves the expanded screen.
+   *
+   * Capturing, and before the surface's own key handler: while the user holds
+   * the lease every key on that surface is forwarded to the lane's Mac, so an
+   * Escape typed to get out of full screen would otherwise go to whatever app
+   * is focused over there and never come back here.
+   */
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setExpanded(false);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [expanded]);
 
   /**
    * The one remediation button, routed through the app-level opener.
@@ -326,31 +396,48 @@ export function ChatMacDesktopPanel({
       : status?.permissions.accessibility === "denied"
         ? { message: "Accessibility is off for ADE on the lane's Mac.", pane: "macos-accessibility" }
         : null;
-  const parkedLine = windows.length
-    ? windows.map((entry) => [entry.appName, entry.title].filter(Boolean).join(" — ")).join(" · ")
-    : "No windows parked yet";
+  const pill = macDesktopStatusPill({ live: live.status, lease, iHaveControl });
+  const footer = macDesktopFooter(parkedWindows);
+  const presentAction = macDesktopPresentAction({
+    hostIsLocal: Boolean(status?.hostIsLocal),
+    ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
+    parkedCount: parkedWindows.length,
+  });
   const notParkedNewest = notParked[0] ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2" data-testid="mac-desktop-panel">
-      {/* ── Strip ─────────────────────────────────────────────────────── */}
-      <div className={cn(WORK_TOOL_CHROME_ROW, "gap-2")}>
-        <span className={WORK_TOOL_CHROME_CHIP} data-testid="mac-desktop-live-chip">
+      {/* ── Strip ─────────────────────────────────────────────────────────
+
+          One row that holds its line from 600px up: two short text chips on
+          the left, icon buttons on the right, and nothing in between that can
+          grow. `flex-nowrap` is the guarantee; `min-w-0` + `truncate` on the
+          status pill is what it spends when the pane gets narrow. */}
+      <div className={cn(WORK_TOOL_CHROME_ROW, "flex-nowrap gap-1")}>
+        <span
+          className={cn(
+            WORK_TOOL_CHROME_META,
+            "inline-flex min-w-0 shrink items-center gap-1.5 whitespace-nowrap px-1",
+          )}
+          data-testid="mac-desktop-live-chip"
+        >
           <span
             className={cn(
-              "inline-block size-[6px] rounded-full",
-              live.status === "playing" ? "bg-emerald-400" : "bg-amber-400",
+              "size-[6px] shrink-0 rounded-full",
+              pill.tone === "live" ? "bg-emerald-400" : pill.tone === "error" ? "bg-rose-400/85" : "bg-amber-400",
             )}
           />
-          {live.status === "playing" ? "Live" : live.status === "error" ? "Reconnecting" : "Starting"}
-          <span className="opacity-60">·</span>
-          {iHaveControl ? "You are driving" : lease?.holder === "agent" ? "Agent driving" : "Idle"}
+          <span className="truncate">
+            {pill.label}
+            <span className="px-1 opacity-60">·</span>
+            {pill.detail}
+          </span>
         </span>
 
         {realInput.inputError ? (
           <button
             type="button"
-            className={cn(WORK_TOOL_CHROME_CHIP, "max-w-[280px] truncate text-amber-300")}
+            className={cn(WORK_TOOL_CHROME_CHIP, "max-w-[180px] truncate text-amber-300")}
             title={realInput.inputError}
             data-testid="mac-desktop-input-error"
             onClick={realInput.clearInputError}
@@ -360,24 +447,25 @@ export function ChatMacDesktopPanel({
           </button>
         ) : null}
 
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             type="button"
-            className={WORK_TOOL_CHROME_CHIP}
+            className={cn(WORK_TOOL_CHROME_CHIP, "shrink-0 whitespace-nowrap")}
             aria-expanded={windowsOpen}
             data-testid="mac-desktop-windows-toggle"
             onClick={() => setWindowsOpen((open) => !open)}
           >
-            Windows {windows.length}
+            Windows {parkedWindows.length}
             <CaretDown size={10} />
           </button>
           {windowsOpen ? (
-            <div className="absolute left-0 top-full z-50 mt-1 min-w-[220px] rounded-[10px] border border-border bg-surface p-1 shadow-float">
-              {windows.length === 0 ? (
-                <p className="px-2 py-1.5 text-[12px] text-muted-fg">Nothing parked on this screen.</p>
-              ) : windows.map((entry) => (
+            <div
+              className="absolute left-0 top-full z-50 mt-1 max-h-[280px] min-w-[240px] overflow-auto rounded-[10px] border border-border bg-surface p-1 shadow-float"
+              data-testid="mac-desktop-windows-menu"
+            >
+              {parkedWindows.map((entry) => (
                 <div key={entry.id} className="flex items-center gap-2 px-2 py-1.5 text-[12px]">
-                  <span className="min-w-0 flex-1 truncate">{entry.appName}{entry.title ? ` — ${entry.title}` : ""}</span>
+                  <span className="min-w-0 flex-1 truncate">{macDesktopWindowLabel(entry)}</span>
                   <button
                     type="button"
                     className="shrink-0 text-muted-fg hover:text-fg"
@@ -387,47 +475,71 @@ export function ChatMacDesktopPanel({
                   </button>
                 </div>
               ))}
+              {/* Everything open on the user's own screen that could move here.
+                  This half is why the dropdown exists at all on a lane with
+                  nothing parked: the footer's "claim a window" has to lead
+                  somewhere, and this is where. */}
+              <p className="px-2 pb-1 pt-1.5 text-[11px] text-muted-fg" data-testid="mac-desktop-claim-label">
+                {claimable.length ? "Claim a window" : "Nothing open to claim."}
+              </p>
+              {claimable.map((entry) => (
+                <button
+                  key={`claim-${entry.id}`}
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-[7px] px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.06]"
+                  disabled={busy}
+                  data-testid="mac-desktop-claim-window"
+                  onClick={() => void claimWindow(entry.id)}
+                >
+                  <span className="min-w-0 flex-1 truncate">{macDesktopWindowLabel(entry)}</span>
+                  <ArrowSquareIn size={12} className="shrink-0 text-muted-fg" />
+                </button>
+              ))}
             </div>
           ) : null}
         </div>
 
-        <button
-          type="button"
-          className={WORK_TOOL_CHROME_CHIP}
-          disabled={busy}
-          aria-pressed={recording?.running ?? false}
-          data-testid="mac-desktop-record"
-          onClick={() => void toggleRecording()}
-        >
-          {recording?.running ? <Stop size={11} weight="fill" /> : <Record size={11} weight="fill" />}
-          {recording?.running ? "Stop" : "Rec"}
-        </button>
-
-        <div className="flex-1" />
-
-        {status?.hostIsLocal ? (
-          <button
-            type="button"
-            className={WORK_TOOL_CHROME_CHIP}
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          <WorkToolChromeButton
+            label={recording?.running ? "Stop recording" : "Record this screen"}
+            onClick={() => void toggleRecording()}
             disabled={busy}
-            data-testid="mac-desktop-present"
-            onClick={() => void present(anyWindowParked ? "main" : "display")}
+            active={recording?.running ?? false}
+            testId="mac-desktop-record"
           >
-            <ArrowsOut size={11} />
-            {anyWindowParked ? "Bring to my screen" : "Send back"}
-          </button>
-        ) : null}
+            {recording?.running ? <Stop size={16} weight="fill" /> : <Record size={16} weight="fill" />}
+          </WorkToolChromeButton>
 
-        <button
-          type="button"
-          className={cn(WORK_TOOL_CHROME_CHIP, iHaveControl && "text-amber-300")}
-          disabled={busy}
-          data-testid="mac-desktop-takeover"
-          onClick={() => void (iHaveControl ? returnControl() : takeControl())}
-        >
-          <Cursor size={11} />
-          {iHaveControl ? "Return to agent" : "Take over"}
-        </button>
+          <WorkToolChromeButton
+            label={expanded ? "Exit full screen" : "Full screen"}
+            onClick={() => setExpanded((open) => !open)}
+            active={expanded}
+            testId="mac-desktop-expand"
+          >
+            {expanded ? <ArrowsInSimple size={16} /> : <ArrowsOutSimple size={16} />}
+          </WorkToolChromeButton>
+
+          {presentAction ? (
+            <WorkToolChromeButton
+              label={presentAction.label}
+              onClick={() => void present(presentAction.destination)}
+              disabled={busy}
+              testId="mac-desktop-present"
+            >
+              <ArrowSquareIn size={16} />
+            </WorkToolChromeButton>
+          ) : null}
+
+          <WorkToolChromeButton
+            label={iHaveControl ? "Return control to the agent" : "Take over"}
+            onClick={() => void (iHaveControl ? returnControl() : takeControl())}
+            disabled={busy}
+            active={iHaveControl}
+            testId="mac-desktop-takeover"
+          >
+            <Cursor size={16} />
+          </WorkToolChromeButton>
+        </div>
       </div>
 
       {/* ── One-line permission state ─────────────────────────────────── */}
@@ -460,9 +572,22 @@ export function ChatMacDesktopPanel({
         tabIndex={iHaveControl ? 0 : -1}
         data-testid="mac-desktop-surface"
         data-control={iHaveControl ? "user" : "agent"}
+        /*
+          The pane's own surface, not a black box.
+
+          The first version painted `bg-black/60` under a canvas that keeps its
+          aspect ratio, so before the first frame the pane was a black
+          rectangle, and after it a black letterbox band above and below the
+          picture. The surrounding area is the panel's surface colour now and
+          the canvas draws the display's aspect ratio on top of it; a screen
+          that has not arrived yet is a line of text, which is a state, where a
+          black rectangle was a defect.
+        */
         className={cn(
-          "relative min-h-0 flex-1 overflow-hidden rounded-[10px] bg-black/60",
-          "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]",
+          expanded
+            ? "fixed inset-0 z-[1000] overflow-hidden bg-[color-mix(in_srgb,var(--color-surface)_92%,black)]"
+            : cn(WORK_TOOL_SURFACE, "bg-surface"),
+          "flex items-center justify-center",
           iHaveControl && "shadow-[inset_0_0_0_2px_rgb(251_191_36_/_0.8)]",
         )}
         onPointerDown={realInput.onPointerDown}
@@ -473,6 +598,21 @@ export function ChatMacDesktopPanel({
           if (iHaveControl) event.preventDefault();
         }}
       >
+        {/*
+          The canvas is mounted as soon as there is an address and stays
+          mounted: its own `data-status` is what the strip reads, and
+          unmounting it on every status wobble would restart the decode. It is
+          transparent until the first frame lands, so the line underneath shows
+          through rather than a black plate sitting on top of it.
+        */}
+        {live.status !== "playing" ? (
+          <p
+            className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-[12px] text-muted-fg"
+            data-testid="mac-desktop-surface-status"
+          >
+            {live.error ?? (live.url ? "Starting display…" : "Connecting to the lane's screen…")}
+          </p>
+        ) : null}
         {live.url ? (
           <H264VideoCanvas
             url={live.url}
@@ -480,12 +620,9 @@ export function ChatMacDesktopPanel({
             onStatus={live.onStatus}
             onDimensions={live.onDimensions}
             onCanvas={live.onCanvas}
+            className={live.status === "playing" ? undefined : "opacity-0"}
           />
-        ) : (
-          <div className="flex h-full items-center justify-center text-[12px] text-muted-fg">
-            {live.error ?? "Connecting to the lane's screen…"}
-          </div>
-        )}
+        ) : null}
 
         {cursorPoint ? (
           <span
@@ -515,10 +652,31 @@ export function ChatMacDesktopPanel({
         ) : null}
       </div>
 
-      {/* ── Parked windows ────────────────────────────────────────────── */}
-      <p className="truncate px-1 text-[11px] text-muted-fg" data-testid="mac-desktop-parked">
-        {parkedLine}
-      </p>
+      {/* ── Parked windows ──────────────────────────────────────────────
+
+          With nothing parked this line is the pane's only instruction, so it
+          names both ways to put something on the screen instead of reporting
+          that there is nothing on it. */}
+      {footer.kind === "windows" ? (
+        <p className="truncate px-1 text-[11px] text-muted-fg" data-testid="mac-desktop-parked">
+          {footer.text}
+        </p>
+      ) : (
+        <p className="flex min-w-0 items-center gap-1.5 px-1 text-[11px] text-muted-fg" data-testid="mac-desktop-parked">
+          <span className="shrink-0">{footer.text}</span>
+          <code className="shrink-0 rounded bg-white/[0.06] px-1 py-px font-mono text-[10.5px] text-fg/75">
+            {footer.command}
+          </code>
+          <button
+            type="button"
+            className="shrink-0 underline underline-offset-2 hover:text-fg"
+            data-testid="mac-desktop-claim-open"
+            onClick={() => setWindowsOpen(true)}
+          >
+            Claim…
+          </button>
+        </p>
+      )}
 
       {/*
         ── A window that would not go ──────────────────────────────────

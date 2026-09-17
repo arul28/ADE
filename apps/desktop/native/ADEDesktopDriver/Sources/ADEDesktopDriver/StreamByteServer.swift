@@ -15,6 +15,14 @@ final class StreamByteServer {
     private let lock = NSLock()
     private var configRecord: Data?
 
+    /// Called on the server queue each time a reader attaches.
+    ///
+    /// The one thing a new reader needs and cannot be given from a cache is a
+    /// keyframe that the deltas after it actually follow, so the engine
+    /// re-encodes the last captured frame as an IDR rather than this class
+    /// replaying a stale one out of order.
+    var onClientAttached: (() -> Void)?
+
     private(set) var port: UInt16 = 0
 
     var clientCount: Int {
@@ -55,10 +63,22 @@ final class StreamByteServer {
         return assigned
     }
 
+    /// Records the codec string and hands it to everyone already reading.
+    ///
+    /// The codec is only known once the first keyframe has been encoded, so a
+    /// reader that attached before that moment has had no config record at all
+    /// and cannot configure a decoder. Broadcasting on the transition is what
+    /// closes that window; it is one 23-byte record, once per stream.
     func setConfig(codec: String) {
+        let record = StreamRecord.configRecord(codec: codec)
         lock.lock()
-        configRecord = StreamRecord.configRecord(codec: codec)
+        let changed = configRecord != record
+        configRecord = record
+        let targets = changed ? connections : []
         lock.unlock()
+        for connection in targets {
+            connection.send(content: record, completion: .contentProcessed { _ in })
+        }
     }
 
     private func accept(_ connection: NWConnection) {
@@ -80,6 +100,7 @@ final class StreamByteServer {
         if let config {
             connection.send(content: config, completion: .contentProcessed { _ in })
         }
+        onClientAttached?()
     }
 
     private func drop(_ connection: NWConnection) {
