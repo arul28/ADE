@@ -121,14 +121,16 @@ describe("chatSessionProjection", () => {
     expect(projected.activeBackgroundTaskCount).toBe(0);
   });
 
-  it("copies chat lastActivityAt and cursorCloudAgentId onto the Work row", () => {
+  it("copies chat lastActivityAt, cursorCloudAgentId, and cursorRuntime onto the Work row", () => {
     const projected = projectChatOntoSession(session(), chat({
       lastActivityAt: "2026-08-13T20:26:10.000Z",
       cursorCloudAgentId: "bc-cloud-agent",
+      cursorRuntime: "local",
     }));
 
     expect(projected.lastActivityAt).toBe("2026-08-13T20:26:10.000Z");
     expect(projected.cursorCloudAgentId).toBe("bc-cloud-agent");
+    expect(projected.cursorRuntime).toBe("local");
   });
 
   it("clears a parked usage-limit deadline when the chat no longer has one", () => {

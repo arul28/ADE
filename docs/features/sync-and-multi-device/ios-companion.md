@@ -3694,14 +3694,12 @@ the stats and shows update guidance.
   Cursor's button and hint read **Interrupt & continue** — its interrupt cancels
   the run and resends on the same agent thread rather than folding into a live
   query, which is the one thing its inline channel (`Run.steer()`) did not
-  change. **Known gap against desktop:** the desktop pane withholds inline for a
-  Cursor **Cloud** session, because a cloud run refuses every steer. The iOS
-  session summary carries no `cursorRuntime`, so this mirror keys off the
-  provider alone and a cloud Cursor chat still offers *Send during turn*. The
-  host answers honestly — the message is queued with a notice saying so — but it
-  costs the user one extra tap. Closing it means carrying the runtime onto the
-  iOS session and gating the capability on it. Every provider name in the option
-  titles, details, hints and VoiceOver
+  change. A Cursor **Cloud** session withholds *Send during turn* the same way
+  the desktop pane does: `workChatCursorSessionRunsInCloud` is the iOS half of
+  `cursorSessionRunsInCloud`, and it reads `cursorRuntime` when the host sent
+  it so a leftover `cursorCloudAgentId` cannot hide inline on a local chat.
+  Older hosts omit `cursorRuntime`; those still key off a non-empty agent id.
+  Every provider name in the option titles, details, hints and VoiceOver
   strings comes from the capability's `agentLabel` rather than hard-coded
   "Claude". The primary button's icon/label communicates the selected behavior,
   the chevron opens a custom SwiftUI popover, and selection dismisses it

@@ -834,9 +834,14 @@ to an ordinary follow-up message. The dispatch table stays keyed by provider —
 session-shaped rule cannot live in a provider-keyed record — so the carve-out is
 the exported helper `cursorSessionRunsInCloud(session)` beside it, and every
 surface that knows the session reads that one derivation: `agentChatService`,
-the desktop `AgentChatPane`, and the `ade code` TUI's `/steer` advert. It checks
+the desktop `AgentChatPane`, the hosted web client (same pane, same helper),
+the `ade code` TUI's `/steer` advert, and iOS
+`workChatCursorSessionRunsInCloud`. It checks
 `cursorRuntime` **and** `cursorCloudAgentId` because a session promoted before
-`cursorRuntime` existed carries only the agent id.
+`cursorRuntime` existed carries only the agent id. When the host pins
+`cursorRuntime: "local"`, that wins over a leftover agent id — iOS session
+summaries decode the same field so a returned-to-local Cursor chat keeps
+**Send during turn**.
 
 Two consequences worth stating rather than discovering:
 

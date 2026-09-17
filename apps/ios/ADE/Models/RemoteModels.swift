@@ -1103,6 +1103,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var cursorConfigValues: [String: RemoteJSONValue]?
   /// Cursor Cloud agent id when this chat is a live cloud mirror. Older hosts omit it.
   var cursorCloudAgentId: String? = nil
+  /// `"cloud"` or `"local"`. Older hosts omit it; when present it wins over a
+  /// leftover `cursorCloudAgentId`, matching desktop `cursorSessionRunsInCloud`.
+  var cursorRuntime: String? = nil
   var identityKey: String?
   var surface: String?
   var automationId: String?
@@ -1197,6 +1200,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
       && lhs.cursorConfigValues == rhs.cursorConfigValues
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
+      && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.computerUse == rhs.computerUse
       && lhs.completion == rhs.completion
       && lhs.claudeGoal == rhs.claudeGoal
@@ -4500,6 +4504,9 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// Present when this Work row is a Cursor Cloud chat. Cursor owns that
   /// agent's name, so ADE hides Rename.
   var cursorCloudAgentId: String? = nil
+  /// `"cloud"` or `"local"`. Older hosts omit it; when present it wins over a
+  /// leftover `cursorCloudAgentId`, matching desktop `cursorSessionRunsInCloud`.
+  var cursorRuntime: String? = nil
   // Orchestration-mode fields (populated when the session is part of an orchestration run)
   var orchestrationRunId: String? = nil
   var orchestrationRole: String? = nil
@@ -4568,6 +4575,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.pendingInputItemId == rhs.pendingInputItemId
       && lhs.steeringInput == rhs.steeringInput
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
+      && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.orchestrationRunId == rhs.orchestrationRunId
       && lhs.orchestrationRole == rhs.orchestrationRole
       && lhs.orchestrationTag == rhs.orchestrationTag
@@ -4617,6 +4625,7 @@ extension TerminalSessionSummary {
     case pendingInputItemId
     case steeringInput
     case cursorCloudAgentId
+    case cursorRuntime
     case orchestrationRunId
     case orchestrationRole
     case orchestrationTag
@@ -4665,6 +4674,7 @@ extension TerminalSessionSummary {
     pendingInputItemId = try container.decodeIfPresent(String.self, forKey: .pendingInputItemId)
     steeringInput = try container.decodeIfPresent(Bool.self, forKey: .steeringInput)
     cursorCloudAgentId = try container.decodeIfPresent(String.self, forKey: .cursorCloudAgentId)
+    cursorRuntime = try container.decodeIfPresent(String.self, forKey: .cursorRuntime)
     orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
     orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
     orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)

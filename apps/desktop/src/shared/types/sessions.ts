@@ -394,6 +394,11 @@ export type TerminalSessionSummary = {
   parentIdentityKey?: string | null;
   /** Cursor Cloud agent id when this chat is a live view of a cloud agent. */
   cursorCloudAgentId?: string | null;
+  /**
+   * `"cloud"` or `"local"`. When present it wins over a leftover
+   * `cursorCloudAgentId`, matching `cursorSessionRunsInCloud`.
+   */
+  cursorRuntime?: "local" | "cloud" | null;
 };
 
 export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user";
