@@ -489,10 +489,19 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    * Every function call in flight: dedupe, settle-order and the results that
    * are still waiting on it. See `ctoVoiceToolCalls`.
    */
+  /**
+   * Every voice-side log line is stamped with the call it belongs to, read at
+   * write time rather than captured, so a line written while a call is ending
+   * names the call that is live then.
+   */
+  const logWithCall = (event: string, meta?: Record<string, unknown>): void => {
+    deps.logger?.info(event, { callId: state.callId, ...meta });
+  };
+
   const functionCalls = createFunctionCallLedger({
     send: (payload) => send(payload),
     requestModelResponse: () => responses.requestModelResponse(),
-    log: (event, meta) => deps.logger?.info(event, { callId: state.callId, ...meta }),
+    log: logWithCall,
   });
 
   /**
@@ -527,7 +536,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
    */
   const burstValve = createTranscriptBurstValve({
     now: () => now(),
-    log: (event, meta) => deps.logger?.info(event, { callId: state.callId, ...meta }),
+    log: logWithCall,
   });
 
   /**
@@ -778,10 +787,7 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     // The call is over. `endCall` aborts the running turn and empties the
     // queue, but the loop that owns them is still unwinding, and a job it had
     // already taken would otherwise run a full CTO turn after hang-up. The
-    // record goes with it, or the turn is one the log cannot account for.
-    // Belt and braces: `endCall` closes every queued record itself, so nothing
-    // reaches here today — but the sibling branches all close theirs, and a
-    // return that quietly drops one is how that stops being true.
+    // record closes with it, under the same `call_ended` outcome `endCall` uses.
     if (!started) {
       timings.close(timing, "call_ended");
       return;

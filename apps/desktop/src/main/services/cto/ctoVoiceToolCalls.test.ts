@@ -80,6 +80,9 @@ describe("a call the model made", () => {
     harness.fake.receive({ type: "session.created", session: { id: "sess_2" } });
     const answeredOnTheOldCall = functionOutputs(harness.fake).length;
 
+    // Not `finish?.()`: if the backend turn never ran, the assertion below
+    // would hold for the wrong reason and the test would prove nothing.
+    expect(turn.finish).toBeDefined();
     turn.finish?.({ spoken: "Three merged yesterday." });
     await tick();
 

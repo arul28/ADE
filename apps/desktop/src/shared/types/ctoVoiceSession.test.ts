@@ -55,8 +55,9 @@ describe("buildCtoVoiceSessionUpdate", () => {
     ]);
     expect(update.session.tool_choice).toBe("auto");
     // The Realtime session shape, not the Responses one: a stray `responses`
-    // key is how this update gets rejected wholesale.
-    expect(JSON.stringify(update.session)).not.toContain("responses");
+    // key is how this update gets rejected wholesale. Asserted on the key, not
+    // on the serialized text: the prompt prose contains the word "response".
+    expect(update.session).not.toHaveProperty("responses");
     expect(update.session.output_modalities).toEqual(["audio"]);
   });
 

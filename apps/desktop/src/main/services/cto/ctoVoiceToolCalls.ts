@@ -18,7 +18,7 @@ export function createFunctionCallLedger(deps: {
   send: (payload: Record<string, unknown>) => void;
   /** Ask the model to speak about a result it is worth hearing about. */
   requestModelResponse: () => void;
-  log?: (event: string, meta?: Record<string, unknown>) => void;
+  log: (event: string, meta?: Record<string, unknown>) => void;
 }) {
   /**
    * Calls already dispatched, by `call_id`.
@@ -101,7 +101,10 @@ export function createFunctionCallLedger(deps: {
       // call id that session never wrote is refused by the server, which tears
       // down the new call over work that belonged to the old one.
       if (!handled.has(callId)) {
-        deps.log?.("cto_voice.function_output_dropped", { callId });
+        // Named `functionCallId`, not `callId`: the wired logger stamps every
+        // line with the VOICE call id under `callId`, and this meta is spread
+        // over it — a second meaning for the same key would silently replace it.
+        deps.log("cto_voice.function_output_dropped", { functionCallId: callId });
         return;
       }
       // Never while the response that MADE this call is still generating. An

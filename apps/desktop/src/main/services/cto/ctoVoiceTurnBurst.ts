@@ -14,9 +14,12 @@ import {
  * when a question is open — it was once cleared only inside the confirmation
  * branch, and an ordinary talkative call latched it shut for good.
  *
- * Quiet is what opens it, measured from the last transcript of ANY kind, which
- * is why `isShut` both reads the clock and moves it: the cooldown belongs to
- * this valve and nothing outside it has to remember the order.
+ * Quiet is what opens it, measured from the last transcript that CARRIED
+ * SPEECH, which is why `isShut` both reads the clock and moves it: the cooldown
+ * belongs to this valve and nothing outside it has to remember the order.
+ * Empty transcripts are deliberately excluded — a source that streams empty
+ * results would keep re-arming the clock and hold the gate shut forever, even
+ * though nobody is talking.
  */
 export function createTranscriptBurstValve(deps: {
   now: () => number;
@@ -30,14 +33,16 @@ export function createTranscriptBurstValve(deps: {
    * length of the call.
    */
   let acceptedAtMs: number[] = [];
-  /** When the last transcript of any kind arrived — the cooldown is measured off it. */
+  /** When the last transcript WITH SPEECH arrived — the cooldown is measured off it. */
   let lastTranscriptAtMs = 0;
   let tripped = false;
 
   return {
     /**
-     * Is the valve still shut? Call this once per transcript, before anything
-     * else judges it: this is also where the quiet clock starts again.
+     * Is the valve still shut? Call this once per transcript that carried
+     * speech, before anything else judges it: this is also where the quiet
+     * clock starts again. An empty transcript must not reach here, or a stream
+     * of them would hold the gate shut through any amount of silence.
      */
     isShut(): boolean {
       const at = deps.now();

@@ -54,7 +54,11 @@ export function createVoiceAudioQueue(limit: number) {
       dropped = 0;
     },
 
-    /** How much is waiting. Read by the tests. */
+    /**
+     * How much is waiting — the queue's only fullness observation point, since
+     * `chunks` is closed over. Only the tests read it today; it is kept because
+     * nothing else can answer "did the bound actually hold" from outside.
+     */
     size(): number {
       return chunks.length;
     },
