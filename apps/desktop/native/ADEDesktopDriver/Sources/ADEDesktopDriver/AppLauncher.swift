@@ -46,13 +46,17 @@ extension WindowControl {
         // second lane by name.
         configuration.createsNewApplicationInstance = true
 
-        var launched: NSRunningApplication?
-        var failure: Error?
-        let semaphore = DispatchSemaphore(value: 0)
+        // Boxed rather than captured: the completion arrives on AppKit's
+        // thread and is read on this one, and a plain captured `var` read
+        // inside the pump loop below is a data race the optimiser may resolve
+        // by never re-reading it.
+        let launchedBox = ValueBox<NSRunningApplication>()
+        let failureBox = ValueBox<Error>()
+        let settled = SettledFlag()
         let completion: (NSRunningApplication?, Error?) -> Void = { application, error in
-            launched = application
-            failure = error
-            semaphore.signal()
+            launchedBox.set(application)
+            failureBox.set(error)
+            settled.set()
         }
         if url.isFileURL {
             workspace.openApplication(at: url, configuration: configuration, completionHandler: completion)
@@ -61,17 +65,32 @@ extension WindowControl {
         }
         // The run loop has to keep turning: AppKit delivers the completion on
         // the main queue, and blocking it outright would deadlock the launch.
-        let deadline = Date().addingTimeInterval(20)
-        while semaphore.wait(timeout: .now()) == .timedOut, Date() < deadline {
+        //
+        // Ten seconds, not twenty: this wait plus the three-second parking loop
+        // below has to fit inside the dispatcher's watchdog budget, or a slow
+        // launch would be answered twice — once by the watchdog and once by
+        // this. An `openApplication` that has not answered in ten seconds is
+        // not going to.
+        let deadline = Date().addingTimeInterval(10)
+        while !settled.isSet, Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
-        if let failure {
+        if let failure = failureBox.value {
             throw DriverError(
                 code: DriverErrorCode.internalError,
                 message: "Could not open \"\(target)\": \(failure.localizedDescription)"
             )
         }
-        guard let launched else {
+        guard settled.isSet else {
+            // Neither an app nor an error: answered as a failure rather than as
+            // an empty success, because "launched nothing, watching nothing" is
+            // indistinguishable from a target that opened no process.
+            throw DriverError(
+                code: DriverErrorCode.internalError,
+                message: "Launching \"\(target)\" did not complete within 10s."
+            )
+        }
+        guard let launched = launchedBox.value else {
             return LaunchResult(pid: nil, appName: nil, bundleId: nil, windows: [], watching: false)
         }
 

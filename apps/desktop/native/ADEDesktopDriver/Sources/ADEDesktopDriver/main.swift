@@ -71,6 +71,24 @@ final class DriverRuntime: NSObject {
     private var signalSources: [DispatchSourceSignal] = []
     private var isShuttingDown = false
 
+    /// Every request currently being handled, and the right to answer it.
+    ///
+    /// The dispatcher is synchronous, so the ordinary paths answer by
+    /// construction. This is for the paths that are not ordinary: a
+    /// ScreenCaptureKit or AVFoundation completion handler that is never
+    /// invoked leaves the main thread inside `handle` forever, and the caller
+    /// with a promise that never settles — the one failure nobody can diagnose
+    /// from Node's side. The watchdog answers on the handler's behalf, and the
+    /// tracker makes sure a handler that finishes afterwards stays quiet rather
+    /// than writing a second reply for the same id.
+    private let pending = PendingRequestTracker(timeout: 15)
+    private var watchdog: DispatchSourceTimer?
+
+    /// How often the watchdog looks for an overdue request. A second of
+    /// granularity on a 15-second deadline is noise, and the sweep is a lock
+    /// and a dictionary walk over at most a handful of entries.
+    private static let watchdogInterval: TimeInterval = 1
+
     // -----------------------------------------------------------------------
     // Lifecycle
     // -----------------------------------------------------------------------
@@ -80,6 +98,7 @@ final class DriverRuntime: NSObject {
         application.setActivationPolicy(.accessory)
         startReading()
         installSignalHandlers()
+        startWatchdog()
         log("ade-desktop-driver \(driverVersion) ready (pid \(getpid()))")
         application.run()
     }
@@ -103,6 +122,27 @@ final class DriverRuntime: NSObject {
             source.resume()
             signalSources.append(source)
         }
+    }
+
+    /// Answers, on a queue of its own, anything the main thread has been stuck
+    /// inside for longer than the tracker's timeout.
+    ///
+    /// Off the main thread on purpose: the case it exists for is precisely the
+    /// one where the main thread is not coming back, so a main-run-loop timer
+    /// would be parked behind the very handler it is supposed to rescue.
+    /// `OutputWriter` is serialised, so writing from here is safe.
+    private func startWatchdog() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + Self.watchdogInterval, repeating: Self.watchdogInterval)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            for overdue in self.pending.takeOverdue() {
+                self.log("watchdog answering \(overdue.op) \(overdue.id) after \(Int(overdue.elapsed))s with no reply")
+                self.output.write(.reply(.failure(id: overdue.id, error: overdue.driverError)))
+            }
+        }
+        timer.resume()
+        watchdog = timer
     }
 
     private func startReading() {
@@ -150,6 +190,8 @@ final class DriverRuntime: NSObject {
         guard !isShuttingDown else { return }
         isShuttingDown = true
         log("shutting down: \(reason)")
+        watchdog?.cancel()
+        watchdog = nil
         permissionTimer?.invalidate()
         permissionTimer = nil
         // Recordings first: `CaptureEngine.dispose` is what finalises each
@@ -176,11 +218,7 @@ final class DriverRuntime: NSObject {
             // A line that named an id is owed a reply even when the rest of it
             // was nonsense; only a line with nobody to answer becomes an event.
             if let id = DriverInputDecoder.requestId(inLine: line) {
-                output.write(
-                    .reply(
-                        .failure(id: id, code: DriverErrorCode.protocolError, message: "\(error)")
-                    )
-                )
+                respond(.failure(id: id, code: DriverErrorCode.protocolError, message: "\(error)"))
             } else {
                 output.write(.event(DriverEvent.protocolError("\(error)")))
             }
@@ -196,30 +234,58 @@ final class DriverRuntime: NSObject {
             gestures.enqueue(request)
             return
         case .rejected(let error):
-            output.write(.reply(.failure(id: request.id, error: error)))
+            respond(.failure(id: request.id, error: error))
             return
         }
         dispatch(request)
     }
 
+    /// The watchdog deadline for one request.
+    ///
+    /// Everything the driver does is a handful of framework calls and answers
+    /// in well under the tracker's default, with one exception: `input` carries
+    /// its own duration. A `wait` polls for up to two minutes and a `drag` runs
+    /// for as long as it was asked to, so their budget is the default *plus*
+    /// what the caller asked for. Anything else is a hang.
+    private static func watchdogBudget(for request: DriverRequest) -> TimeInterval? {
+        guard request.knownOp == .input, let payload = request.object("payload") else { return nil }
+        let waitMs = payload["timeoutMs"]?.intValue ?? 0
+        let dragMs = payload["durationMs"]?.intValue ?? 0
+        let extra = Double(max(0, waitMs) + max(0, dragMs)) / 1000
+        return extra > 0 ? 15 + extra : nil
+    }
+
+    /// The single door every reply goes through.
+    ///
+    /// The tracker decides whether this reply is the one that gets written: for
+    /// a request the watchdog already answered it is not, and writing it anyway
+    /// would put two lines with one id on a wire whose client keys its promises
+    /// by id.
+    private func respond(_ reply: DriverReply) {
+        guard pending.claim(id: reply.id) else { return }
+        output.write(.reply(reply))
+    }
+
     /// Handle one request and write its reply. Every request reaches this
-    /// exactly once, whether it arrived on the wire or out of the gesture queue.
+    /// exactly once, whether it arrived on the wire or out of the gesture
+    /// queue, and leaves it having produced exactly one reply — from here, or
+    /// from the watchdog if this never returns.
     private func dispatch(_ request: DriverRequest) {
+        pending.begin(id: request.id, op: request.op, budget: Self.watchdogBudget(for: request))
+        defer { pending.finish(id: request.id) }
         do {
             let result = try handle(request)
-            output.write(.reply(.success(id: request.id, result: result)))
+            respond(.success(id: request.id, result: result))
         } catch let error as DriverError {
-            output.write(.reply(.failure(id: request.id, error: error)))
+            respond(.failure(id: request.id, error: error))
         } catch let error as CaptureError {
-            output.write(.reply(.failure(id: request.id, error: Self.driverError(for: error))))
+            respond(.failure(id: request.id, error: Self.driverError(for: error)))
         } catch {
-            output.write(
-                .reply(
-                    .failure(
-                        id: request.id,
-                        code: DriverErrorCode.internalError,
-                        message: "\(error)"
-                    )
+            respond(
+                .failure(
+                    id: request.id,
+                    code: DriverErrorCode.internalError,
+                    message: "\(error)"
                 )
             )
         }
@@ -251,7 +317,7 @@ final class DriverRuntime: NSObject {
                 // certainly fired, and replaying stale coordinates into a
                 // desktop that moved on is the worse of the two outcomes.
                 log("dropping deferred \(request.op) \(request.id): \(error.message)")
-                output.write(.reply(.failure(id: request.id, error: error)))
+                respond(.failure(id: request.id, error: error))
             }
         }
     }

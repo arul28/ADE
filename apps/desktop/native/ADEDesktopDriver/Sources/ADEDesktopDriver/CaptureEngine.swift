@@ -125,16 +125,16 @@ final class CaptureEngine {
 
     @available(macOS 12.3, *)
     private func shareableContent() throws -> SCShareableContent {
-        var result: Result<SCShareableContent, Error>?
+        let box = ValueBox<Result<SCShareableContent, Error>>()
         SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { content, error in
             if let content {
-                result = .success(content)
+                box.set(.success(content))
             } else {
-                result = .failure(error ?? CaptureError.failed("ScreenCaptureKit returned no content."))
+                box.set(.failure(error ?? CaptureError.failed("ScreenCaptureKit returned no content.")))
             }
         }
-        RunLoopPump.wait(until: { result != nil }, timeout: 10)
-        switch result {
+        RunLoopPump.wait(until: { box.value != nil }, timeout: 10)
+        switch box.value {
         case .success(let content):
             return content
         case .failure(let error):
@@ -163,6 +163,171 @@ final class CaptureEngine {
         )
     }
 
+    /// `filter`, with the same patience as a capture start.
+    ///
+    /// A display or a window is often missing from `SCShareableContent` for a
+    /// beat after it appears — a virtual display that was just created, a
+    /// window belonging to an app that was just launched. Sizing a capture is
+    /// the first thing every caller does, so without this the retry below never
+    /// gets a chance to run: the request has already failed on the measurement.
+    @available(macOS 12.3, *)
+    private func retryingFilter(
+        displayId: CGDirectDisplayID,
+        windowId: CGWindowID?,
+        label: String
+    ) throws -> (SCContentFilter, Int, Int) {
+        var attempt = 0
+        while true {
+            do {
+                return try filter(displayId: displayId, windowId: windowId)
+            } catch {
+                guard displayId != 0,
+                      attempt < Self.startBackoffs.count,
+                      Self.isRetryableStartFailure(error)
+                else { throw error }
+                log("\(label) has no capture surface yet (\(Self.describe(error))); retrying in \(Int(Self.startBackoffs[attempt] * 1000))ms")
+                RunLoopPump.wait(until: { false }, timeout: Self.startBackoffs[attempt])
+                attempt += 1
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Starting a capture
+    // -----------------------------------------------------------------------
+
+    /// The backoff between attempts to start a ScreenCaptureKit capture.
+    ///
+    /// An app that launched a moment ago is the case this exists for. Starting
+    /// a stream within a few seconds of `app.launch` fails inside
+    /// ScreenCaptureKit with `-3805` ("application connection being
+    /// interrupted") roughly every time: the window server is still rebuilding
+    /// the connection the new process just made, and the capture session is
+    /// refused rather than queued. It is a transient state measured in
+    /// hundreds of milliseconds, so the fix is to ask again rather than to make
+    /// every caller sleep ten seconds before it records. Five seconds of
+    /// budget, refreshing `SCShareableContent` each time so an attempt is never
+    /// made against a stale content snapshot.
+    static let startBackoffs: [TimeInterval] = [0.25, 0.5, 1.0, 2.0]
+
+    /// The `SCStreamError` codes worth trying again.
+    ///
+    /// Everything here describes the world being momentarily not ready — a
+    /// connection being rebuilt, a content list that has not caught up with a
+    /// display or a window that exists. The codes deliberately left out are the
+    /// permanent ones: `userDeclined` (-3801) and `missingEntitlements`
+    /// (-3803) are answers, not races, and retrying them only delays a message
+    /// the user needs to read.
+    static let retryableStartCodes: Set<Int> = [
+        -3802, // failedToStart
+        -3804, // failedApplicationConnectionInvalid
+        -3805, // failedApplicationConnectionInterrupted
+        -3806, // failedNoMatchingApplicationContext
+        -3811, // internalError
+        -3813, // noWindowList
+        -3814, // noDisplayList
+        -3815, // noCaptureSource
+    ]
+
+    static func isRetryableStartFailure(_ error: Error) -> Bool {
+        if let captureError = error as? CaptureError {
+            switch captureError {
+            case .noSurface:
+                // A display ScreenCaptureKit has not published yet. The
+                // permanent version of this — a lane with no display surface at
+                // all — is refused before any capture is attempted, in `filter`.
+                return true
+            case .failed:
+                // Our own "it never answered": worth one more ask.
+                return true
+            }
+        }
+        return Self.retryableStartCodes.contains((error as NSError).code)
+    }
+
+    private static func describe(_ error: Error) -> String {
+        if let captureError = error as? CaptureError {
+            switch captureError {
+            case .noSurface(let message), .failed(let message): return message
+            }
+        }
+        let nsError = error as NSError
+        return "\(nsError.localizedDescription) (\(nsError.domain) \(nsError.code))"
+    }
+
+    /// Builds a stream against a freshly resolved content filter and starts it,
+    /// retrying the transient refusals above.
+    ///
+    /// Every exit is a value or a throw, and every attempt that got as far as
+    /// an `SCStream` tears that stream down before the next one: a half-started
+    /// stream left holding a capture session is the thing that makes the
+    /// *second* attempt fail too.
+    @available(macOS 12.3, *)
+    private func startCaptureStream(
+        displayId: CGDirectDisplayID,
+        windowId: CGWindowID?,
+        configuration: SCStreamConfiguration,
+        sink: CaptureFrameSink,
+        label: String
+    ) throws -> SCStream {
+        var attempt = 0
+        var lastError: Error = CaptureError.failed("\(label) never started.")
+        while true {
+            do {
+                let (contentFilter, _, _) = try filter(displayId: displayId, windowId: windowId)
+                let stream = SCStream(filter: contentFilter, configuration: configuration, delegate: sink)
+                do {
+                    try stream.addStreamOutput(
+                        sink,
+                        type: .screen,
+                        sampleHandlerQueue: .global(qos: .userInitiated)
+                    )
+                } catch {
+                    stream.stopCapture { _ in }
+                    throw error
+                }
+                let settled = SettledFlag()
+                let failure = ValueBox<Error>()
+                stream.startCapture { error in
+                    failure.set(error)
+                    settled.set()
+                }
+                RunLoopPump.wait(until: { settled.isSet }, timeout: 10)
+                guard settled.isSet else {
+                    // A completion that never came. Treated as a failure and
+                    // never as a success: the old code carried on here, which
+                    // handed back a stream that was not capturing and a reply
+                    // that said it was.
+                    stream.stopCapture { _ in }
+                    throw CaptureError.failed("ScreenCaptureKit did not answer the \(label) start request.")
+                }
+                if let error = failure.value {
+                    stream.stopCapture { _ in }
+                    throw error
+                }
+                if attempt > 0 {
+                    log("\(label) started on attempt \(attempt + 1)")
+                }
+                return stream
+            } catch {
+                lastError = error
+                guard attempt < Self.startBackoffs.count, Self.isRetryableStartFailure(error) else { break }
+                let delay = Self.startBackoffs[attempt]
+                log("\(label) start failed (\(Self.describe(error))); retrying in \(Int(delay * 1000))ms")
+                // Pumped, not slept: the main thread is still answering every
+                // other lane's requests while this one backs off.
+                RunLoopPump.wait(until: { false }, timeout: delay)
+                attempt += 1
+            }
+        }
+        if case CaptureError.noSurface(let message) = lastError {
+            throw CaptureError.noSurface(message)
+        }
+        throw CaptureError.failed(
+            "\(label) could not start after \(attempt + 1) attempts: \(Self.describe(lastError))"
+        )
+    }
+
     // -----------------------------------------------------------------------
     // Screenshots
     // -----------------------------------------------------------------------
@@ -184,51 +349,81 @@ final class CaptureEngine {
 
     @available(macOS 12.3, *)
     private func captureImage(displayId: CGDirectDisplayID, windowId: CGWindowID?) throws -> CGImage {
-        let (contentFilter, width, height) = try filter(displayId: displayId, windowId: windowId)
+        let (contentFilter, width, height) = try retryingFilter(
+            displayId: displayId,
+            windowId: windowId,
+            label: "screenshot"
+        )
         let configuration = SCStreamConfiguration()
         configuration.width = max(1, width)
         configuration.height = max(1, height)
         configuration.showsCursor = false
 
         if #available(macOS 14.0, *) {
-            var result: Result<CGImage, Error>?
-            SCScreenshotManager.captureImage(contentFilter: contentFilter, configuration: configuration) { image, error in
-                if let image {
-                    result = .success(image)
-                } else {
-                    result = .failure(error ?? CaptureError.failed("ScreenCaptureKit returned no image."))
+            var attempt = 0
+            var lastError: Error = CaptureError.failed("The screenshot never ran.")
+            while true {
+                // Re-resolved every attempt: a screenshot that failed because
+                // the content list was stale must not be retried against the
+                // same stale list.
+                let attemptFilter = attempt == 0
+                    ? contentFilter
+                    : (try filter(displayId: displayId, windowId: windowId)).0
+                let box = ValueBox<Result<CGImage, Error>>()
+                SCScreenshotManager.captureImage(
+                    contentFilter: attemptFilter,
+                    configuration: configuration
+                ) { image, error in
+                    if let image {
+                        box.set(.success(image))
+                    } else {
+                        box.set(.failure(error ?? CaptureError.failed("ScreenCaptureKit returned no image.")))
+                    }
                 }
-            }
-            RunLoopPump.wait(until: { result != nil }, timeout: 10)
-            switch result {
-            case .success(let image): return image
-            case .failure(let error): throw error
-            case nil: throw CaptureError.failed("The screenshot did not arrive in time.")
+                RunLoopPump.wait(until: { box.value != nil }, timeout: 10)
+                switch box.value {
+                case .success(let image):
+                    if attempt > 0 { log("screenshot succeeded on attempt \(attempt + 1)") }
+                    return image
+                case .failure(let error):
+                    lastError = error
+                case nil:
+                    lastError = CaptureError.failed("The screenshot did not arrive in time.")
+                }
+                guard attempt < Self.startBackoffs.count, Self.isRetryableStartFailure(lastError) else {
+                    throw CaptureError.failed(
+                        "The screenshot failed after \(attempt + 1) attempts: \(Self.describe(lastError))"
+                    )
+                }
+                log("screenshot failed (\(Self.describe(lastError))); retrying in \(Int(Self.startBackoffs[attempt] * 1000))ms")
+                RunLoopPump.wait(until: { false }, timeout: Self.startBackoffs[attempt])
+                attempt += 1
             }
         }
 
         // macOS 13: no screenshot API, so one frame is pulled off a short-lived
         // stream. Same content filter, same permission, more ceremony.
-        var captured: CGImage?
-        var failure: Error?
+        let captured = ValueBox<CGImage>()
+        let streamFailure = ValueBox<Error>()
         let sink = CaptureFrameSink(
             onFrame: { sampleBuffer in
-                guard captured == nil, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-                captured = Self.makeImage(from: buffer)
+                guard captured.value == nil, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+                captured.set(Self.makeImage(from: buffer))
             },
-            onError: { failure = $0 }
+            onError: { streamFailure.set($0) }
         )
-        let stream = SCStream(filter: contentFilter, configuration: configuration, delegate: sink)
-        try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
-        var started = false
-        stream.startCapture { error in
-            failure = error
-            started = true
-        }
-        RunLoopPump.wait(until: { captured != nil || (started && failure != nil) }, timeout: 10)
+        let stream = try startCaptureStream(
+            displayId: displayId,
+            windowId: windowId,
+            configuration: configuration,
+            sink: sink,
+            label: "screenshot"
+        )
+        RunLoopPump.wait(until: { captured.value != nil || streamFailure.value != nil }, timeout: 10)
         stream.stopCapture { _ in }
-        if let captured { return captured }
-        throw failure ?? CaptureError.failed("No frame arrived from ScreenCaptureKit.")
+        if let image = captured.value { return image }
+        if let error = streamFailure.value { throw error }
+        throw CaptureError.failed("No frame arrived from ScreenCaptureKit.")
     }
 
     static func makeImage(from buffer: CVPixelBuffer) -> CGImage? {
@@ -345,7 +540,7 @@ final class CaptureEngine {
         }
         lock.unlock()
 
-        let (contentFilter, width, height) = try filter(displayId: displayId, windowId: nil)
+        let (_, width, height) = try retryingFilter(displayId: displayId, windowId: nil, label: "stream.start")
         let configuration = SCStreamConfiguration()
         configuration.width = max(2, width - width % 2)
         configuration.height = max(2, height - height % 2)
@@ -402,19 +597,23 @@ final class CaptureEngine {
                 )
             }
         )
-        let stream = SCStream(filter: contentFilter, configuration: configuration, delegate: sink)
-        try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
-        var startError: Error?
-        var started = false
-        stream.startCapture { error in
-            startError = error
-            started = true
-        }
-        RunLoopPump.wait(until: { started }, timeout: 10)
-        if let startError {
+        let stream: SCStream
+        do {
+            stream = try startCaptureStream(
+                displayId: displayId,
+                windowId: nil,
+                configuration: configuration,
+                sink: sink,
+                label: "stream.start"
+            )
+        } catch {
+            // Every resource this request opened is released before the throw,
+            // so a retry from the caller starts from the same state as the
+            // first attempt rather than from a leaked listener and encoder.
+            server.onClientAttached = nil
             server.stop()
             encoder.stop()
-            throw startError
+            throw error
         }
 
         lock.lock()
@@ -549,7 +748,7 @@ final class CaptureEngine {
             throw CaptureError.failed("Lane \(laneId) is already recording.")
         }
 
-        let (contentFilter, width, height) = try filter(displayId: displayId, windowId: nil)
+        let (_, width, height) = try retryingFilter(displayId: displayId, windowId: nil, label: "record.start")
         let evenWidth = max(2, width - width % 2)
         let evenHeight = max(2, height - height % 2)
         let url = URL(fileURLWithPath: filePath)
@@ -602,8 +801,18 @@ final class CaptureEngine {
                 if state.firstPresentationTime == nil {
                     state.firstPresentationTime = time
                     self.recordings[laneId] = state
-                    writer.startWriting()
-                    writer.startSession(atSourceTime: time)
+                    if writer.startWriting() {
+                        writer.startSession(atSourceTime: time)
+                    } else {
+                        // Nothing can be appended after this, and `record.stop`
+                        // is the request that has to say so; it reads the
+                        // writer's status. Logged here because this is the
+                        // moment the reason exists.
+                        self.log(
+                            "recording writer on lane \(laneId) refused to start: "
+                                + "\(writer.error.map { "\($0)" } ?? "no reason given")"
+                        )
+                    }
                 }
                 let willAppend = input.isReadyForMoreMediaData && writer.status == .writing
                 if willAppend {
@@ -618,16 +827,23 @@ final class CaptureEngine {
                 self?.log("recording stream error on lane \(laneId): \(error)")
             }
         )
-        let stream = SCStream(filter: contentFilter, configuration: configuration, delegate: sink)
-        try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
-        var startError: Error?
-        var started = false
-        stream.startCapture { error in
-            startError = error
-            started = true
+        let stream: SCStream
+        do {
+            stream = try startCaptureStream(
+                displayId: displayId,
+                windowId: nil,
+                configuration: configuration,
+                sink: sink,
+                label: "record.start"
+            )
+        } catch {
+            // The writer never received a frame, so there is no moov atom to
+            // finalise and nothing to salvage: cancel it and take the empty
+            // file with it, or the next `record.start` inherits a stale path.
+            writer.cancelWriting()
+            try? FileManager.default.removeItem(at: url)
+            throw error
         }
-        RunLoopPump.wait(until: { started }, timeout: 10)
-        if let startError { throw startError }
 
         let startedAt = Date()
         lock.lock()
@@ -658,7 +874,7 @@ final class CaptureEngine {
         lock.unlock()
         state.stream.stopCapture { _ in }
         state.input.markAsFinished()
-        var finished = false
+        let finished = SettledFlag()
         if state.writer.status == .writing {
             // Close the session at the last frame we appended. AVFoundation
             // otherwise leaves the session open to the writer's own idea of
@@ -667,8 +883,25 @@ final class CaptureEngine {
             if let last = state.lastPresentationTime {
                 state.writer.endSession(atSourceTime: last)
             }
-            state.writer.finishWriting { finished = true }
-            RunLoopPump.wait(until: { finished }, timeout: 15)
+            state.writer.finishWriting { finished.set() }
+            RunLoopPump.wait(until: { finished.isSet }, timeout: 15)
+            if !finished.isSet {
+                throw DriverError(
+                    code: DriverErrorCode.internalError,
+                    message: "The recording for lane \(laneId) did not finalise within 15s; "
+                        + "\(state.filePath) may be unplayable."
+                )
+            }
+        }
+        if state.writer.status == .failed {
+            // An mp4 that never got its moov atom is not a short video, it is
+            // not a video, and answering `ok` with its path would send the
+            // caller to a file no player can open.
+            throw DriverError(
+                code: DriverErrorCode.internalError,
+                message: "The recording for lane \(laneId) failed: "
+                    + "\(state.writer.error.map { "\($0)" } ?? "AVAssetWriter gave no reason")."
+            )
         }
         // The reported duration is the span of frames when there are frames,
         // so it matches the container the caller is about to open. Wall clock
