@@ -37,8 +37,10 @@ import {
 import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
 import { useMacDesktopRealInput } from "./useMacDesktopRealInput";
 import { useMacDesktopStatus } from "./useMacDesktopStatus";
+import { MacDesktopClaimPicker, MacDesktopLeaseChip } from "./MacDesktopClaimPicker";
+import { MacDesktopEmptyOverlay } from "./MacDesktopEmptyOverlay";
+import { macDesktopHasLease } from "./macDesktopClaimPicker.logic";
 import {
-  macDesktopClaimableWindows,
   macDesktopFooter,
   macDesktopParkedWindows,
   macDesktopPresentAction,
@@ -105,7 +107,12 @@ export function ChatMacDesktopPanel({
     dismissNotParked,
   } = useMacDesktopStatus({ laneId, laneName, sessionId, runtimePin });
   const [windowsOpen, setWindowsOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [claimable, setClaimable] = useState<MacDesktopWindow[]>([]);
+  const [claimableLoading, setClaimableLoading] = useState(false);
+  const [claimError, setClaimError] = useState<string | null>(null);
+  /** The empty-screen card, until this person waves it away for this mount. */
+  const [emptyDismissed, setEmptyDismissed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [viewRect, setViewRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
@@ -120,6 +127,20 @@ export function ChatMacDesktopPanel({
   const supported = status?.supported ?? null;
   const iHaveControl = macDesktopUserHasControl(lease, macDesktopControllerId());
   const parkedWindows = macDesktopParkedWindows(windows, display?.displayId);
+
+  /**
+   * Lane id → name, for "ADE · docs-fix" on a window parked somewhere else.
+   *
+   * Only this lane's own name, deliberately. The tab store's lane list belongs
+   * to the PROJECT tab's machine, and this display can be hosted on another
+   * one, so a name taken from there would be a different lane that happens to
+   * share an id-shaped slot. A lane the viewer has no row for degrades to a
+   * short id, which is at least true.
+   */
+  const laneNames = useMemo(
+    () => (laneName ? { [laneId]: laneName } : {}),
+    [laneId, laneName],
+  );
 
   const live = useMacDesktopLiveView({
     laneId,
@@ -271,37 +292,67 @@ export function ChatMacDesktopPanel({
   /**
    * What is open on the user's own screen that this lane could adopt.
    *
-   * Read when the dropdown opens rather than kept in the status: it is a
+   * Read when the picker opens rather than kept in the status: it is a
    * snapshot of the whole Mac's windows, it changes every time the user opens
    * anything, and nothing in the strip depends on it until somebody is looking
-   * for a window to claim.
+   * for a window to claim. Unfiltered on purpose — the picker decides what a
+   * row means, including the ones it has to show as locked.
    */
   const refreshClaimable = useCallback(async () => {
+    setClaimableLoading(true);
+    setClaimError(null);
     try {
       const all = await macDesktopApi().listWindows({ laneId: null }, pinRef.current);
-      setClaimable(macDesktopClaimableWindows(all));
+      setClaimable(all);
     } catch (error) {
-      setStatusError(error instanceof Error ? error.message : String(error));
+      setClaimError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setClaimableLoading(false);
     }
-  }, [setStatusError]);
+  }, []);
 
   useEffect(() => {
-    if (!windowsOpen) return;
+    if (!pickerOpen) return;
     void refreshClaimable();
-  }, [refreshClaimable, windowsOpen]);
+  }, [pickerOpen, refreshClaimable]);
 
+  /**
+   * A dismissal lasts until the screen is used, not forever.
+   *
+   * Waving the card away says "not now"; parking a window and then releasing it
+   * is a new empty screen, and the person who arrives at it should be offered
+   * the same two buttons rather than a blank pane with a silent history.
+   */
+  useEffect(() => {
+    if (parkedWindows.length) setEmptyDismissed(false);
+  }, [parkedWindows.length]);
+
+  /**
+   * Adopt one window onto this lane's screen.
+   *
+   * The failure is reported INSIDE the picker rather than replacing the
+   * picture: the user is mid-choice in a list, and a claim that the window
+   * server refused should leave them in the list with a reason, not drop them
+   * back onto a pane-wide error line with the dialog gone.
+   */
   const claimWindow = useCallback(async (windowId: number) => {
     setBusy(true);
     try {
       await macDesktopApi().claimWindow({ laneId, windowId, chatSessionId: sessionId }, pinRef.current);
       await refreshStatus();
-      await refreshClaimable();
     } catch (error) {
-      setStatusError(error instanceof Error ? error.message : String(error));
+      setClaimError(error instanceof Error ? error.message : String(error));
+      throw error;
     } finally {
       setBusy(false);
     }
-  }, [laneId, refreshClaimable, refreshStatus, sessionId, setStatusError]);
+  }, [laneId, refreshStatus, sessionId]);
+
+  /** `open` on the lane's Mac, from the empty card's inline input. */
+  const openApp = useCallback(async (target: string) => {
+    await macDesktopApi().open({ laneId, target, chatSessionId: sessionId }, pinRef.current);
+    await refreshStatus();
+  }, [laneId, refreshStatus, sessionId]);
 
   const releaseWindow = useCallback(async (windowId: number) => {
     try {
@@ -463,9 +514,16 @@ export function ChatMacDesktopPanel({
               className="absolute left-0 top-full z-50 mt-1 max-h-[280px] min-w-[240px] overflow-auto rounded-[10px] border border-border bg-surface p-1 shadow-float"
               data-testid="mac-desktop-windows-menu"
             >
+              {parkedWindows.length ? null : (
+                <p className="px-2 py-1.5 text-[11px] text-muted-fg">Nothing on this lane's screen yet.</p>
+              )}
               {parkedWindows.map((entry) => (
                 <div key={entry.id} className="flex items-center gap-2 px-2 py-1.5 text-[12px]">
                   <span className="min-w-0 flex-1 truncate">{macDesktopWindowLabel(entry)}</span>
+                  {/* Ownership, stated where the window is listed: a lane can be
+                      watching a window it does not hold, and the chip is the
+                      only place that difference is visible. */}
+                  {macDesktopHasLease(entry, laneId) ? <MacDesktopLeaseChip /> : null}
                   <button
                     type="button"
                     className="shrink-0 text-muted-fg hover:text-fg"
@@ -475,26 +533,18 @@ export function ChatMacDesktopPanel({
                   </button>
                 </div>
               ))}
-              {/* Everything open on the user's own screen that could move here.
-                  This half is why the dropdown exists at all on a lane with
-                  nothing parked: the footer's "claim a window" has to lead
-                  somewhere, and this is where. */}
-              <p className="px-2 pb-1 pt-1.5 text-[11px] text-muted-fg" data-testid="mac-desktop-claim-label">
-                {claimable.length ? "Claim a window" : "Nothing open to claim."}
-              </p>
-              {claimable.map((entry) => (
-                <button
-                  key={`claim-${entry.id}`}
-                  type="button"
-                  className="flex w-full items-center gap-2 rounded-[7px] px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.06]"
-                  disabled={busy}
-                  data-testid="mac-desktop-claim-window"
-                  onClick={() => void claimWindow(entry.id)}
-                >
-                  <span className="min-w-0 flex-1 truncate">{macDesktopWindowLabel(entry)}</span>
-                  <ArrowSquareIn size={12} className="shrink-0 text-muted-fg" />
-                </button>
-              ))}
+              {/* The one way into the picker from the strip. The dropdown used
+                  to inline a second list of every claimable window, which made
+                  a menu that answered two questions badly. */}
+              <button
+                type="button"
+                className="mt-0.5 flex w-full items-center gap-2 rounded-[7px] border-t border-border/50 px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.06]"
+                data-testid="mac-desktop-claim-another"
+                onClick={() => { setWindowsOpen(false); setPickerOpen(true); }}
+              >
+                <ArrowSquareIn size={12} className="shrink-0 text-muted-fg" />
+                Claim another…
+              </button>
             </div>
           ) : null}
         </div>
@@ -635,6 +685,23 @@ export function ChatMacDesktopPanel({
           </span>
         ) : null}
 
+        {/*
+          Nothing parked: a card ON the picture, not a line under it.
+
+          Gated on a display that is actually up and a stream that is not still
+          erroring, so the card never argues with "Connecting to the lane's
+          screen…" underneath it. It disappears on its own the moment a window
+          parks, because `parkedWindows` is what renders it.
+        */}
+        {!parkedWindows.length && !emptyDismissed && !pickerOpen ? (
+          <MacDesktopEmptyOverlay
+            busy={busy}
+            onClaim={() => setPickerOpen(true)}
+            onOpenApp={openApp}
+            onDismiss={() => setEmptyDismissed(true)}
+          />
+        ) : null}
+
         {iHaveControl ? (
           <div
             className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 bg-amber-500/15 py-1 text-[11px] text-amber-200"
@@ -654,29 +721,13 @@ export function ChatMacDesktopPanel({
 
       {/* ── Parked windows ──────────────────────────────────────────────
 
-          With nothing parked this line is the pane's only instruction, so it
-          names both ways to put something on the screen instead of reporting
-          that there is nothing on it. */}
-      {footer.kind === "windows" ? (
+          Only when there is something to name. An empty screen is answered on
+          the picture by the overlay card, so this line never carries filler. */}
+      {footer ? (
         <p className="truncate px-1 text-[11px] text-muted-fg" data-testid="mac-desktop-parked">
           {footer.text}
         </p>
-      ) : (
-        <p className="flex min-w-0 items-center gap-1.5 px-1 text-[11px] text-muted-fg" data-testid="mac-desktop-parked">
-          <span className="shrink-0">{footer.text}</span>
-          <code className="shrink-0 rounded bg-white/[0.06] px-1 py-px font-mono text-[10.5px] text-fg/75">
-            {footer.command}
-          </code>
-          <button
-            type="button"
-            className="shrink-0 underline underline-offset-2 hover:text-fg"
-            data-testid="mac-desktop-claim-open"
-            onClick={() => setWindowsOpen(true)}
-          >
-            Claim…
-          </button>
-        </p>
-      )}
+      ) : null}
 
       {/*
         ── A window that would not go ──────────────────────────────────
@@ -705,6 +756,20 @@ export function ChatMacDesktopPanel({
             Dismiss
           </button>
         </p>
+      ) : null}
+
+      {pickerOpen ? (
+        <MacDesktopClaimPicker
+          laneId={laneId}
+          displayId={display?.displayId}
+          laneNames={laneNames}
+          windows={claimable}
+          loading={claimableLoading}
+          error={claimError}
+          onRefresh={() => void refreshClaimable()}
+          onClaim={claimWindow}
+          onClose={() => setPickerOpen(false)}
+        />
       ) : null}
     </div>
   );

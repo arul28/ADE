@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import {
-  macDesktopClaimableWindows,
   macDesktopFooter,
   macDesktopParkedWindows,
   macDesktopPresentAction,
@@ -86,33 +85,18 @@ describe("macDesktopFooter", () => {
   it("lists what is parked", () => {
     expect(macDesktopFooter([makeWindow({ onDisplayId: 31 })])).toEqual({
       kind: "windows",
-      text: "Xcode — ADE.xcodeproj",
+      text: "Xcode \u2014 ADE.xcodeproj",
     });
   });
 
-  it("tells a person with an empty screen what to do about it", () => {
-    const footer = macDesktopFooter([]);
-    expect(footer.kind).toBe("empty");
-    if (footer.kind !== "empty") throw new Error("unreachable");
-    expect(footer.text).toBe("No windows yet ·");
-    expect(footer.command).toBe("ade mac-desktop open <app>");
-    expect(footer.action).toBe("or claim a window");
-  });
-});
-
-describe("macDesktopClaimableWindows", () => {
-  it("offers only windows on the user's own screen", () => {
-    const own = makeWindow({ id: 4 });
-    expect(macDesktopClaimableWindows([
-      own,
-      makeWindow({ id: 5, laneId: "lane", onDisplayId: 31 }),
-      makeWindow({ id: 6, minimized: true }),
-    ])).toEqual([own]);
+  it("says nothing at all on an empty screen, because the overlay says it", () => {
+    expect(macDesktopFooter([])).toBeNull();
   });
 });
 
 describe("macDesktopWindowLabel", () => {
-  it("drops the dash for an untitled window", () => {
+  it("joins the app and the window, and drops a missing title", () => {
+    expect(macDesktopWindowLabel(makeWindow())).toBe("Xcode — ADE.xcodeproj");
     expect(macDesktopWindowLabel(makeWindow({ title: null }))).toBe("Xcode");
   });
 });

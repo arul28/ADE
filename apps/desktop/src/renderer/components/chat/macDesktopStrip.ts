@@ -86,40 +86,18 @@ export function macDesktopWindowLabel(window: MacDesktopWindow): string {
   return [window.appName, window.title].filter(Boolean).join(" — ");
 }
 
-export type MacDesktopFooter =
-  | { kind: "windows"; text: string }
-  | { kind: "empty"; text: string; command: string; action: string };
+export type MacDesktopFooter = { kind: "windows"; text: string };
 
 /**
- * The line under the screen.
+ * The line under the screen, or nothing at all.
  *
- * The empty case is the one that matters: "No windows parked yet" told a person
- * opening the tab for the first time only that the thing they were looking at
- * was expected to be empty, and not one way to change that. It now names both —
- * the command that launches an app onto the screen, and the button that adopts
- * one that is already open.
+ * The empty case used to be a sentence with a CLI command and a "Claim…" link
+ * in it, sitting under a live video of an empty screen — plain, repetitive and
+ * in the wrong place. An empty screen now says what it is on the picture
+ * itself ({@link MacDesktopEmptyOverlay}), so there is nothing left for this
+ * line to say and it returns null instead of inventing filler.
  */
-export function macDesktopFooter(parked: readonly MacDesktopWindow[]): MacDesktopFooter {
-  if (parked.length) {
-    return { kind: "windows", text: parked.map(macDesktopWindowLabel).join(" · ") };
-  }
-  return {
-    kind: "empty",
-    text: "No windows yet ·",
-    command: "ade mac-desktop open <app>",
-    action: "or claim a window",
-  };
-}
-
-/**
- * Windows that could be moved onto this lane's screen.
- *
- * Anything already parked on a lane display is excluded — its own lane's and
- * every other lane's — because "claim" is for a window sitting on the user's
- * own desk, and re-claiming a parked one is what `present` is for.
- */
-export function macDesktopClaimableWindows(
-  windows: readonly MacDesktopWindow[],
-): MacDesktopWindow[] {
-  return windows.filter((entry) => entry.laneId == null && entry.onDisplayId == null && !entry.minimized);
+export function macDesktopFooter(parked: readonly MacDesktopWindow[]): MacDesktopFooter | null {
+  if (!parked.length) return null;
+  return { kind: "windows", text: parked.map(macDesktopWindowLabel).join(" \u00b7 ") };
 }
