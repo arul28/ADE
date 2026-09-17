@@ -79,6 +79,10 @@ export function acpProbeConfigHome(
       return copilotConfigHome({ env });
     case "grok":
       return null;
+    // Devin reads `~/.config/devin` (%APPDATA%\devin on Windows) and honors
+    // no override env var, so ADE sets nothing — same posture as Grok.
+    case "devin":
+      return null;
   }
 }
 

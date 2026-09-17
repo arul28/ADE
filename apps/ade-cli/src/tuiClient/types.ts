@@ -105,6 +105,7 @@ export type AdeCodeProvider =
     AgentChatProvider,
     "codex" | "claude" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
   >
+  | "devin"
   | "ollama"
   | "lmstudio";
 

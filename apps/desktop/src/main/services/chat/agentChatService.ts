@@ -425,6 +425,10 @@ import type {
   LaneLinearIssue,
   SessionLinearIssueLink,
   CursorCloudServiceTier,
+  DevinCloudAttachment,
+  DevinCloudMessage,
+  DevinCloudMode,
+  DevinCloudSessionSummary,
 } from "../../../shared/types";
 import {
   applyClaudePlanModeTransition as applyClaudePlanModeTransitionShared,
@@ -726,6 +730,7 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import { createComputerUseArtifactPath } from "../computerUse/localComputerUse";
 import {
   buildOpenCodePromptParts,
   mapPermissionModeToOpenCodeAgent,
@@ -793,6 +798,21 @@ import {
   type CursorCloudMirrorRefreshResult,
 } from "./cursorCloudConversation";
 import { createCursorCloudMirrorWatch } from "./cursorCloudMirrorWatch";
+import {
+  DEVIN_CLOUD_EMPTY_TERMINAL_READ_LIMIT,
+  DEVIN_CLOUD_MESSAGES_RETRY_ATTEMPTS,
+  DEVIN_CLOUD_MESSAGES_RETRY_MS,
+  DEVIN_CLOUD_PLACEHOLDER_NAME_READ_LIMIT,
+  DEVIN_CLOUD_REMOTE_NAME_READ_TTL_MS,
+  devinCloudMessageFingerprint,
+  isDevinCloudSessionLive,
+} from "./devinCloudConversation";
+import { normalizeDevinSessionId } from "../ai/devinCloudClient";
+import {
+  buildDevinCloudAdeTags,
+  devinCloudFleetStatus,
+  normalizeDevinCloudMode,
+} from "../../../shared/devinCloudFleetStatus";
 import {
   acquireDroidSdkConnection,
   releaseDroidSdkConnection,
@@ -1448,6 +1468,14 @@ type PersistedChatState = {
   cursorRuntime?: AgentChatRuntime;
   /** First turn id at which the session flipped to cloud (renders the system bubble). */
   cursorPromotedTurnId?: string;
+  /** Durable Devin cloud session id once this session has been linked to cloud. */
+  devinSessionId?: string;
+  /** Default runtime for new turns in this session. Set on promotion. */
+  devinRuntime?: AgentChatRuntime;
+  /** Devin agent tier requested at create (`devin_mode`). */
+  devinMode?: DevinCloudMode | null;
+  /** First turn id at which the session flipped to cloud (renders the system bubble). */
+  devinPromotedTurnId?: string;
   recentConversationEntries?: PersistedRecentConversationEntry[];
   continuitySummary?: string | null;
   continuitySummaryUpdatedAt?: string | null;
@@ -8183,6 +8211,18 @@ function getCursorSdkApiKey(): string | null {
   return env || null;
 }
 
+function getDevinCloudApiKey(): string | null {
+  try {
+    const stored = getApiKey("devin")?.trim();
+    if (stored) return stored;
+  } catch {
+    // API key store is initialized by the Electron main process; unit tests may
+    // exercise chat helpers before that setup runs.
+  }
+  const env = process.env.DEVIN_API_KEY?.trim();
+  return env || null;
+}
+
 function assertCursorChatModelCanUseSdk(args: {
   modelRef: string;
   descriptor?: ModelDescriptor | null;
@@ -14865,6 +14905,18 @@ export function createAgentChatService(args: {
       ...(managed.session.cursorPromotedTurnId
         ? { cursorPromotedTurnId: managed.session.cursorPromotedTurnId }
         : prevPersisted?.cursorPromotedTurnId ? { cursorPromotedTurnId: prevPersisted.cursorPromotedTurnId } : {}),
+      ...(managed.session.devinSessionId
+        ? { devinSessionId: managed.session.devinSessionId }
+        : prevPersisted?.devinSessionId ? { devinSessionId: prevPersisted.devinSessionId } : {}),
+      ...(managed.session.devinRuntime
+        ? { devinRuntime: managed.session.devinRuntime }
+        : prevPersisted?.devinRuntime ? { devinRuntime: prevPersisted.devinRuntime } : {}),
+      ...(managed.session.devinMode !== undefined && managed.session.devinMode !== null
+        ? { devinMode: managed.session.devinMode }
+        : prevPersisted?.devinMode ? { devinMode: prevPersisted.devinMode } : {}),
+      ...(managed.session.devinPromotedTurnId
+        ? { devinPromotedTurnId: managed.session.devinPromotedTurnId }
+        : prevPersisted?.devinPromotedTurnId ? { devinPromotedTurnId: prevPersisted.devinPromotedTurnId } : {}),
       ...(managed.recentConversationEntries.length
         ? {
             recentConversationEntries: managed.recentConversationEntries.map((entry) => ({
@@ -15225,6 +15277,17 @@ export function createAgentChatService(args: {
       const cursorPromotedTurnId = typeof record.cursorPromotedTurnId === "string" && record.cursorPromotedTurnId.trim().length
         ? record.cursorPromotedTurnId.trim()
         : undefined;
+      const devinSessionId = typeof record.devinSessionId === "string" && record.devinSessionId.trim().length
+        ? record.devinSessionId.trim()
+        : undefined;
+      const devinRuntime: AgentChatRuntime | undefined =
+        record.devinRuntime === "cloud" || record.devinRuntime === "local"
+          ? (record.devinRuntime as AgentChatRuntime)
+          : undefined;
+      const devinMode = normalizeDevinCloudMode(record.devinMode);
+      const devinPromotedTurnId = typeof record.devinPromotedTurnId === "string" && record.devinPromotedTurnId.trim().length
+        ? record.devinPromotedTurnId.trim()
+        : undefined;
       const codexTerminalTurnIds = Array.isArray(record.codexTerminalTurnIds)
         ? uniqueNonEmpty(
             record.codexTerminalTurnIds.map((turnId) => typeof turnId === "string" ? turnId : null),
@@ -15352,6 +15415,10 @@ export function createAgentChatService(args: {
         ...(cursorCloudAgentId ? { cursorCloudAgentId } : {}),
         ...(cursorRuntime ? { cursorRuntime } : {}),
         ...(cursorPromotedTurnId ? { cursorPromotedTurnId } : {}),
+        ...(devinSessionId ? { devinSessionId } : {}),
+        ...(devinRuntime ? { devinRuntime } : {}),
+        ...(devinMode ? { devinMode } : {}),
+        ...(devinPromotedTurnId ? { devinPromotedTurnId } : {}),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
         ...(pendingSteers?.length ? { pendingSteers } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
@@ -15475,7 +15542,8 @@ export function createAgentChatService(args: {
       case "qwen":
       case "kimi":
       case "grok":
-      case "copilot": return { acpSessionId: candidate.pointer };
+      case "copilot":
+      case "devin": return { acpSessionId: candidate.pointer };
       default: return {};
     }
   };
@@ -15976,6 +16044,7 @@ export function createAgentChatService(args: {
     kimi: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
     grok: "npm install -g @xai-official/grok",
     copilot: "npm install -g @github/copilot",
+    devin: "curl -fsSL https://cli.devin.ai/install.sh | bash",
   };
 
   /**
@@ -20351,6 +20420,10 @@ export function createAgentChatService(args: {
         ...(persisted?.cursorCloudAgentId ? { cursorCloudAgentId: persisted.cursorCloudAgentId } : {}),
         ...(persisted?.cursorRuntime ? { cursorRuntime: persisted.cursorRuntime } : {}),
         ...(persisted?.cursorPromotedTurnId ? { cursorPromotedTurnId: persisted.cursorPromotedTurnId } : {}),
+        ...(persisted?.devinSessionId ? { devinSessionId: persisted.devinSessionId } : {}),
+        ...(persisted?.devinRuntime ? { devinRuntime: persisted.devinRuntime } : {}),
+        ...(persisted?.devinMode ? { devinMode: persisted.devinMode } : {}),
+        ...(persisted?.devinPromotedTurnId ? { devinPromotedTurnId: persisted.devinPromotedTurnId } : {}),
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         ...(persisted?.surface ? { surface: persisted.surface } : {}),
@@ -25926,6 +25999,9 @@ export function createAgentChatService(args: {
       case "copilot": return copilotConfigHome({ env });
       // Grok reads `~/.grok` and nothing else, so ADE sets nothing.
       case "grok": return null;
+      // Devin reads `~/.config/devin` (%APPDATA%\devin on Windows) and honors
+      // no override env var, so ADE sets nothing.
+      case "devin": return null;
     }
   };
 
@@ -43072,6 +43148,583 @@ export function createAgentChatService(args: {
     return { sessionId: managed.session.id, session: managed.session };
   };
 
+  // ------------------------------------------------------------------
+  // Devin cloud mirror
+  //
+  // Devin's surface is simpler than Cursor Cloud's: one flat GET messages
+  // poll — no runs, no attach lease, no webhook ingress. The mirror dedupes
+  // on event_id plus the same user:/text: fingerprints emitted events
+  // produce, so a restarted host does not double-print history and a
+  // composer send does not echo back from the next poll.
+  // ------------------------------------------------------------------
+
+  const devinCloudHydrateInFlight = new Set<string>();
+  const devinCloudHydratedEventIds = new Map<string, Set<string>>();
+  const devinCloudRemoteNameReadAt = new Map<string, number>();
+  const devinCloudEmptyReads = new Map<string, number>();
+  const devinCloudPlaceholderNameReads = new Map<string, number>();
+  const devinCloudDoneAnnounced = new Set<string>();
+  /** Attachment ids already filed into the proof drawer, per ADE session. */
+  const devinCloudSyncedAttachmentIds = new Map<string, Set<string>>();
+  /** Sessions whose needs-you marker this mirror raised (so it can clear it without touching others'). */
+  const devinCloudAttentionRaised = new Set<string>();
+
+  const forgetDevinCloudHydrationState = (sessionId: string): void => {
+    devinCloudHydratedEventIds.delete(sessionId);
+    devinCloudRemoteNameReadAt.delete(sessionId);
+    devinCloudEmptyReads.delete(sessionId);
+    devinCloudPlaceholderNameReads.delete(sessionId);
+    devinCloudDoneAnnounced.delete(sessionId);
+    devinCloudSyncedAttachmentIds.delete(sessionId);
+    devinCloudAttentionRaised.delete(sessionId);
+  };
+
+  const clearAllDevinCloudHydrationState = (): void => {
+    devinCloudHydrateInFlight.clear();
+    devinCloudHydratedEventIds.clear();
+    devinCloudRemoteNameReadAt.clear();
+    devinCloudEmptyReads.clear();
+    devinCloudPlaceholderNameReads.clear();
+    devinCloudDoneAnnounced.clear();
+    devinCloudSyncedAttachmentIds.clear();
+    devinCloudAttentionRaised.clear();
+  };
+
+  /** File types the proof drawer can actually render; everything else is skipped, not errored. */
+  const DEVIN_PROOF_IMPORTABLE_EXTENSIONS = new Set([
+    "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "avif", "heic",
+    "mp4", "webm", "mov", "avi", "mkv", "heif", "tif", "tiff", "m4v", "ogv",
+    "zip", "har", "log", "txt", "md",
+  ]);
+
+  const devinProofKind = (attachment: DevinCloudAttachment): string => {
+    const contentType = (attachment.contentType ?? "").toLowerCase();
+    if (contentType.startsWith("image/")) return "screenshot";
+    if (contentType.startsWith("video/")) return "video_recording";
+    const ext = attachment.name.toLowerCase().split(".").pop() ?? "";
+    if (["mp4", "webm", "mov", "avi", "mkv", "m4v", "ogv"].includes(ext)) return "video_recording";
+    if (["zip", "har"].includes(ext)) return "browser_trace";
+    if (["log", "txt", "md"].includes(ext)) return "console_logs";
+    return "screenshot";
+  };
+
+  /**
+   * File a Devin session's produced files (recordings, screenshots, exports)
+   * into the proof drawer. The bytes come through the authenticated API — the
+   * signed URLs in the API response are short-lived — and land in
+   * `.ade/artifacts/computer-use`, which the broker ingests as file records.
+   * Failures skip quietly: proof sync must never stall transcript hydration.
+   */
+  const syncDevinCloudAttachments = async (
+    managed: ManagedChatSession,
+    devinSessionId: string,
+  ): Promise<void> => {
+    const broker = computerUseArtifactBrokerRef;
+    if (!broker) return;
+    let attachments: DevinCloudAttachment[];
+    try {
+      attachments = await aiIntegrationService.listDevinCloudAttachments(devinSessionId);
+    } catch (error) {
+      logger.warn("agent_chat.devin_cloud_attachments_failed", {
+        sessionId: managed.session.id,
+        devinSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    if (!attachments.length) return;
+    const seen = devinCloudSyncedAttachmentIds.get(managed.session.id) ?? new Set<string>();
+    devinCloudSyncedAttachmentIds.set(managed.session.id, seen);
+    for (const attachment of attachments) {
+      if (attachment.source !== "devin") continue;
+      if (seen.has(attachment.attachmentId)) continue;
+      seen.add(attachment.attachmentId);
+      const extension = attachment.name.toLowerCase().split(".").pop() ?? "";
+      if (!DEVIN_PROOF_IMPORTABLE_EXTENSIONS.has(extension)) continue;
+      try {
+        const bytes = await aiIntegrationService.downloadDevinCloudAttachment(attachment);
+        if (!bytes?.length) continue;
+        const filePath = createComputerUseArtifactPath(projectRoot, `devin-${attachment.name}`, extension);
+        fs.writeFileSync(filePath, bytes);
+        broker.ingest({
+          backend: { name: "devin", style: "external_cli" },
+          inputs: [{
+            path: filePath,
+            kind: devinProofKind(attachment),
+            title: attachment.name,
+            mimeType: attachment.contentType ?? undefined,
+            description: `Attachment from Devin session ${devinSessionId}`,
+          }],
+          owners: [{ kind: "chat_session", id: managed.session.id }],
+        });
+      } catch (error) {
+        logger.warn("agent_chat.devin_cloud_attachment_sync_failed", {
+          sessionId: managed.session.id,
+          devinSessionId,
+          attachmentId: attachment.attachmentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
+
+  const hydrateDevinCloudMessages = (
+    managed: ManagedChatSession,
+    messages: DevinCloudMessage[],
+    meta: { turnId: string },
+  ): boolean => {
+    if (!messages.length) return false;
+    const existingFingerprints = transcriptCloudFingerprints([
+      ...(eventHistoryBySession.get(managed.session.id) ?? []),
+      ...readTranscriptEnvelopes(managed),
+    ]);
+    const hydratedIds = devinCloudHydratedEventIds.get(managed.session.id) ?? new Set<string>();
+    let emittedVisible = false;
+    for (const message of messages) {
+      if (!message.eventId || !message.message) continue;
+      if (hydratedIds.has(message.eventId)) continue;
+      hydratedIds.add(message.eventId);
+      const fingerprint = devinCloudMessageFingerprint(message);
+      if (fingerprint && fingerprintAlreadyHydrated(existingFingerprints, fingerprint)) continue;
+      if (fingerprint) existingFingerprints.add(fingerprint);
+      emittedVisible = true;
+      emitChatEvent(managed, {
+        type: message.source === "user" ? "user_message" : "text",
+        text: message.message,
+        turnId: meta.turnId,
+        runtime: "cloud",
+      });
+    }
+    devinCloudHydratedEventIds.set(managed.session.id, hydratedIds);
+    return emittedVisible;
+  };
+
+  const attachAndHydrateDevinCloudChat = async (args: {
+    managed: ManagedChatSession;
+    devinSessionId: string;
+  }): Promise<boolean> => {
+    const { managed, devinSessionId } = args;
+    if (devinCloudHydrateInFlight.has(managed.session.id)) return false;
+    devinCloudHydrateInFlight.add(managed.session.id);
+    const hydrateTurnId = randomUUID();
+    let emittedVisible = false;
+    try {
+      // Devin owns the session title; a rename on app.devin.ai is not worth an
+      // API call per mirror tick, so the read is TTL'd like Cursor's.
+      const readRemoteSession = async (): Promise<DevinCloudSessionSummary | null> => {
+        devinCloudRemoteNameReadAt.set(managed.session.id, Date.now());
+        try {
+          const remote = await aiIntegrationService.getDevinCloudSession(devinSessionId);
+          if (remote?.title) {
+            adoptCursorCloudSessionTitle(managed, remote.title, "devin_cloud_session");
+          }
+          return remote;
+        } catch (error) {
+          logger.warn("agent_chat.devin_cloud_session_info_failed", {
+            sessionId: managed.session.id,
+            devinSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+      };
+      const lastRemoteReadAt = devinCloudRemoteNameReadAt.get(managed.session.id);
+      let remote: DevinCloudSessionSummary | null = null;
+      if (
+        lastRemoteReadAt === undefined
+        || Date.now() - lastRemoteReadAt >= DEVIN_CLOUD_REMOTE_NAME_READ_TTL_MS
+      ) {
+        remote = await readRemoteSession();
+      }
+
+      let items: DevinCloudMessage[] = [];
+      let liveStatus = remote?.status ?? null;
+      for (let attempt = 0; attempt < DEVIN_CLOUD_MESSAGES_RETRY_ATTEMPTS; attempt += 1) {
+        try {
+          const page = await aiIntegrationService.listDevinCloudMessages({
+            devinSessionId,
+            first: 200,
+          });
+          items = page.items;
+        } catch (error) {
+          logger.warn("agent_chat.devin_cloud_messages_failed", {
+            sessionId: managed.session.id,
+            devinSessionId,
+            attempt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        if (items.length > 0) break;
+        if (liveStatus == null) {
+          remote = remote ?? await aiIntegrationService.getDevinCloudSession(devinSessionId).catch(() => null);
+          liveStatus = remote?.status ?? null;
+        }
+        if (!isDevinCloudSessionLive(liveStatus)) break;
+        await sleepMs(DEVIN_CLOUD_MESSAGES_RETRY_MS);
+      }
+
+      emittedVisible = hydrateDevinCloudMessages(managed, items, { turnId: hydrateTurnId });
+
+      // Attention mapping: a Devin session paused for the user joins the
+      // board's Needs-you tier like a local approval would. Only flips when
+      // the remote record was actually read this pass — a skipped remote read
+      // must not clear a state it cannot see. A local pending request always
+      // wins; it is the stricter signal.
+      if (remote && !hasLivePendingInput(managed)) {
+        const needsYou = devinCloudFleetStatus(remote) === "needs_you";
+        if (needsYou && !devinCloudAttentionRaised.has(managed.session.id)) {
+          devinCloudAttentionRaised.add(managed.session.id);
+          sessionService.requestAttention(
+            managed.session.id,
+            "Devin session is waiting for input",
+            "provider_structured",
+          );
+        } else if (!needsYou && devinCloudAttentionRaised.delete(managed.session.id)) {
+          // Only clear the marker this mirror raised — a user- or
+          // runtime-raised attention belongs to whoever raised it.
+          sessionService.clearAttentionRequest(managed.session.id);
+        }
+      }
+
+      await syncDevinCloudAttachments(managed, devinSessionId).catch((error) => {
+        logger.warn("agent_chat.devin_cloud_proof_sync_failed", {
+          sessionId: managed.session.id,
+          devinSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+      // Bound the empty-terminal retry the same way Cursor's does: a session
+      // that finished with no visible transcript never produces one, and an
+      // unbounded retry would refetch it on every mirror tick forever.
+      if (items.length === 0 && liveStatus != null && !isDevinCloudSessionLive(liveStatus)) {
+        const attempts = (devinCloudEmptyReads.get(managed.session.id) ?? 0) + 1;
+        devinCloudEmptyReads.set(managed.session.id, attempts);
+      } else if (items.length > 0) {
+        devinCloudEmptyReads.delete(managed.session.id);
+      }
+
+      // Devin titles the session shortly after first output — after the read
+      // above. While the ADE title is still a default, re-read the name only
+      // on the tick that yields the first visible message or sees the session
+      // reach a terminal status, bounded like Cursor's placeholder reads.
+      const reachedTerminalThisPass = liveStatus != null && !isDevinCloudSessionLive(liveStatus);
+      if (
+        (emittedVisible || reachedTerminalThisPass)
+        && sessionTitleIsDefault(managed)
+      ) {
+        const placeholderReads = devinCloudPlaceholderNameReads.get(managed.session.id) ?? 0;
+        if (placeholderReads < DEVIN_CLOUD_PLACEHOLDER_NAME_READ_LIMIT) {
+          devinCloudPlaceholderNameReads.set(managed.session.id, placeholderReads + 1);
+          remote = (await readRemoteSession()) ?? remote;
+          liveStatus = remote?.status ?? liveStatus;
+        }
+      }
+
+      if (emittedVisible) {
+        flushBufferedReasoning(managed);
+        flushBufferedText(managed);
+        if (!isDevinCloudSessionLive(liveStatus) && !devinCloudDoneAnnounced.has(managed.session.id)) {
+          devinCloudDoneAnnounced.add(managed.session.id);
+          emitChatEvent(managed, {
+            type: "done",
+            turnId: hydrateTurnId,
+            status: "completed",
+            runtime: "cloud",
+            ...(managed.session.model ? { model: managed.session.model } : {}),
+            ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          });
+        }
+        persistChatState(managed);
+      }
+      return emittedVisible;
+    } finally {
+      devinCloudHydrateInFlight.delete(managed.session.id);
+    }
+  };
+
+  const resolveManagedDevinCloudSession = (sessionId: string): ManagedChatSession | null => {
+    const existing = managedSessions.get(sessionId);
+    if (existing) return existing;
+    try {
+      return sessionService.get(sessionId) ? ensureManagedSession(sessionId) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const refreshWatchedDevinCloudMirror = async (
+    sessionId: string,
+  ): Promise<CursorCloudMirrorRefreshResult> => {
+    const managed = resolveManagedDevinCloudSession(sessionId);
+    if (!managed) return "skipped";
+    const devinSessionId = managed.session.devinSessionId?.trim();
+    if (!devinSessionId) return "skipped";
+    if (devinCloudHydrateInFlight.has(managed.session.id)) return "skipped";
+    if (!getDevinCloudApiKey()) return "skipped";
+    // An empty terminal transcript stops polling after a few reads — nothing
+    // more will ever arrive.
+    if ((devinCloudEmptyReads.get(managed.session.id) ?? 0) >= DEVIN_CLOUD_EMPTY_TERMINAL_READ_LIMIT) {
+      return "skipped";
+    }
+    try {
+      const emitted = await attachAndHydrateDevinCloudChat({ managed, devinSessionId });
+      return emitted ? "new" : "unchanged";
+    } catch (error) {
+      logger.warn("agent_chat.devin_cloud_mirror_watch_failed", {
+        sessionId: managed.session.id,
+        devinSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "skipped";
+    }
+  };
+
+  const devinCloudMirror = createCursorCloudMirrorWatch({
+    refresh: refreshWatchedDevinCloudMirror,
+  });
+  const watchDevinCloudMirror = devinCloudMirror.watch;
+  const clearDevinCloudMirrorWatches = devinCloudMirror.clearAll;
+
+  const openDevinCloudChat = async (args: {
+    devinSessionId: string;
+    laneId: string;
+    sessionId?: string | null;
+    devinMode?: DevinCloudMode | null;
+  }): Promise<{ sessionId: string; session: AgentChatSession }> => {
+    const trimmedDevin = normalizeDevinSessionId(args.devinSessionId);
+    const trimmedLane = args.laneId.trim();
+    if (!trimmedDevin) throw new Error("Devin cloud session id is required.");
+    if (!trimmedLane) throw new Error("Lane id is required.");
+
+    if (!getDevinCloudApiKey()) {
+      throw new Error("Devin Cloud chat requires a Devin API token.");
+    }
+
+    const laneInfo = (() => {
+      try {
+        return laneService.getLaneBaseAndBranch(trimmedLane);
+      } catch {
+        return null;
+      }
+    })();
+    if (!laneInfo) throw new Error(`Lane '${trimmedLane}' was not found.`);
+
+    const requestedId = args.sessionId?.trim() || "";
+    let managed: ManagedChatSession | null = null;
+    if (requestedId) {
+      try {
+        managed = managedSessions.get(requestedId)
+          ?? (sessionService.get(requestedId) ? ensureManagedSession(requestedId) : null);
+      } catch {
+        managed = null;
+      }
+    }
+    if (!managed) {
+      for (const candidate of managedSessions.values()) {
+        if (candidate.session.devinSessionId === trimmedDevin) {
+          managed = candidate;
+          break;
+        }
+      }
+    }
+
+    const existedBefore = Boolean(managed);
+    if (!managed) {
+      const created = await createSession({
+        laneId: trimmedLane,
+        provider: "devin",
+        model: "adaptive",
+        modelId: "devin/adaptive",
+        ...(requestedId ? { sessionId: requestedId } : {}),
+      });
+      managed = managedSessions.get(created.id) ?? null;
+    }
+    if (!managed) throw new Error("Could not open a Devin Cloud chat session.");
+
+    managed.session.devinSessionId = trimmedDevin;
+    managed.session.devinRuntime = "cloud";
+    if (args.devinMode !== undefined) {
+      managed.session.devinMode = normalizeDevinCloudMode(args.devinMode);
+    }
+    persistChatState(managed);
+
+    // New links return immediately; reopening an existing empty cloud chat
+    // waits for hydrate so Retry/backfill does not time out.
+    const hydratePromise = attachAndHydrateDevinCloudChat({
+      managed,
+      devinSessionId: trimmedDevin,
+    }).catch((error) => {
+      logger.warn("agent_chat.devin_cloud_open_chat_hydrate_failed", {
+        sessionId: managed.session.id,
+        devinSessionId: trimmedDevin,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (existedBefore) throw error;
+    });
+    if (existedBefore) await hydratePromise;
+
+    return { sessionId: managed.session.id, session: managed.session };
+  };
+
+  /**
+   * POST a user message into a linked Devin cloud session and mirror it
+   * locally. Devin has no "follow-up run" verb — messages go straight into
+   * the session's mailbox, so the whole turn is one REST call plus the local
+   * transcript entry.
+   */
+  const devinCloudSendTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      userText?: string;
+      displayText: string;
+      attachments: AgentChatFileRef[];
+      contextAttachments: AgentChatContextAttachment[];
+      metadata?: AgentChatEventMetadata | null | undefined;
+      laneDirectiveKey?: string | null;
+      turnId?: string;
+      onDispatched?: (() => void) | undefined;
+      onBackendDispatched?: (() => void) | undefined;
+    },
+  ): Promise<void> => {
+    const devinSessionId = managed.session.devinSessionId?.trim();
+    if (!devinSessionId) throw new Error("This chat is not linked to a Devin cloud session.");
+    if (!getDevinCloudApiKey()) {
+      throw new Error("Devin Cloud requires a Devin API token. Add one in Settings > AI Providers or set DEVIN_API_KEY.");
+    }
+    const validation = validateSessionReadyForTurn(managed);
+    if (!validation.ready) throw new Error(validation.reason);
+
+    const turnId = args.turnId ?? randomUUID();
+    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
+    setSessionActive(managed);
+    emitPreparedUserMessage(managed, {
+      text: userText,
+      displayText,
+      attachments: args.attachments,
+      contextAttachments: args.contextAttachments,
+      metadata: args.metadata,
+      turnId,
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    emitChatEvent(managed, {
+      type: "status",
+      turnStatus: "started",
+      turnId,
+    });
+    try {
+      await aiIntegrationService.sendDevinCloudMessage({
+        devinSessionId,
+        message: args.promptText,
+      });
+      args.onBackendDispatched?.();
+    } catch (error) {
+      emitChatEvent(managed, {
+        type: "status",
+        turnStatus: "failed",
+        turnId,
+      });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: "failed",
+        runtime: "cloud",
+        terminalReason: error instanceof Error ? error.message : String(error),
+      });
+      persistChatState(managed);
+      throw error;
+    }
+    // The user_message emitted above already carries this text's fingerprint,
+    // so the next poll's copy of it dedupes silently.
+    emitChatEvent(managed, {
+      type: "status",
+      turnStatus: "completed",
+      turnId,
+    });
+    persistChatState(managed);
+  };
+
+  const devinCloudFollowUp = async (args: {
+    devinSessionId: string;
+    message: string;
+  }): Promise<void> => {
+    const trimmedId = normalizeDevinSessionId(args.devinSessionId);
+    const message = args.message.trim();
+    if (!trimmedId) throw new Error("Devin cloud session id is required.");
+    if (!message) throw new Error("Message is required.");
+
+    const matched = (() => {
+      for (const [, managed] of managedSessions) {
+        if (managed.session.devinSessionId === trimmedId) return managed;
+      }
+      return null;
+    })();
+    if (!matched) {
+      throw new Error(
+        `No active chat session is associated with Devin session '${trimmedId}'. Open the session before sending a follow-up.`,
+      );
+    }
+    await devinCloudSendTurn(matched, {
+      promptText: message,
+      displayText: message,
+      attachments: [],
+      contextAttachments: [],
+    });
+  };
+
+  /**
+   * Create a fresh Devin cloud session bound to a lane's repo, tagged with
+   * ADE provenance, and link it into a new or existing chat.
+   */
+  const createDevinCloudSessionForLane = async (args: {
+    laneId: string;
+    prompt: string;
+    sessionId?: string | null;
+    title?: string | null;
+    devinMode?: DevinCloudMode | null;
+    projectId?: string | null;
+    bypassApproval?: boolean;
+  }): Promise<{ sessionId: string; session: AgentChatSession; devinSessionId: string }> => {
+    const trimmedLane = args.laneId.trim();
+    const prompt = args.prompt.trim();
+    if (!trimmedLane) throw new Error("Lane id is required.");
+    if (!prompt) throw new Error("Prompt is required.");
+
+    const laneInfo = (() => {
+      try {
+        return laneService.getLaneBaseAndBranch(trimmedLane);
+      } catch {
+        return null;
+      }
+    })();
+    if (!laneInfo) throw new Error(`Lane '${trimmedLane}' was not found.`);
+
+    const repoUrl = await detectLaneGitRemoteUrl(laneInfo.worktreePath);
+    const tags = buildDevinCloudAdeTags({
+      laneId: trimmedLane,
+      projectId: args.projectId,
+      sessionId: args.sessionId,
+    });
+    const created = await aiIntegrationService.createDevinCloudSession({
+      prompt,
+      ...(repoUrl ? { repoUrls: [repoUrl] } : {}),
+      tags,
+      ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      ...(args.devinMode ? { devinMode: args.devinMode } : {}),
+      ...(args.bypassApproval !== undefined ? { bypassApproval: args.bypassApproval } : {}),
+    });
+    const opened = await openDevinCloudChat({
+      devinSessionId: created.sessionId,
+      laneId: trimmedLane,
+      ...(args.sessionId ? { sessionId: args.sessionId } : {}),
+      ...(args.devinMode !== undefined ? { devinMode: args.devinMode } : {}),
+    });
+    return { ...opened, devinSessionId: created.sessionId };
+  };
+
   const droidPoolKeyFor = (managed: ManagedChatSession): string => [
     "sdk",
     managed.session.id,
@@ -43653,6 +44306,23 @@ export function createAgentChatService(args: {
     if (isAcpChatProvider(managed.session.provider)) {
       if (reasoningEffort !== undefined) {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      }
+      // Devin cloud-linked chats ship the text as a session message instead
+      // of an ACP turn; the local runtime only answers for local sessions.
+      if (managed.session.provider === "devin" && managed.session.devinRuntime === "cloud") {
+        await devinCloudSendTurn(managed, {
+          promptText,
+          userText: submittedText,
+          displayText: visibleText,
+          attachments,
+          contextAttachments,
+          metadata,
+          laneDirectiveKey,
+          turnId,
+          onDispatched,
+          onBackendDispatched,
+        });
+        return;
       }
       // A slash command is ordinary prompt text for every ACP dialect: the
       // agent advertises the list, ADE offers it, and the chosen text is sent
@@ -47459,6 +48129,18 @@ export function createAgentChatService(args: {
       ...(liveSession?.cursorPromotedTurnId || persisted?.cursorPromotedTurnId
         ? { cursorPromotedTurnId: liveSession?.cursorPromotedTurnId ?? persisted?.cursorPromotedTurnId }
         : {}),
+      ...(liveSession?.devinSessionId || persisted?.devinSessionId
+        ? { devinSessionId: liveSession?.devinSessionId ?? persisted?.devinSessionId }
+        : {}),
+      ...(liveSession?.devinRuntime || persisted?.devinRuntime
+        ? { devinRuntime: liveSession?.devinRuntime ?? persisted?.devinRuntime }
+        : {}),
+      ...(liveSession?.devinMode || persisted?.devinMode
+        ? { devinMode: liveSession?.devinMode ?? persisted?.devinMode }
+        : {}),
+      ...(liveSession?.devinPromotedTurnId || persisted?.devinPromotedTurnId
+        ? { devinPromotedTurnId: liveSession?.devinPromotedTurnId ?? persisted?.devinPromotedTurnId }
+        : {}),
       ...(liveSession?.cursorCloudServiceTier !== undefined || persisted?.cursorCloudServiceTier !== undefined
         ? { cursorCloudServiceTier: liveSession?.cursorCloudServiceTier ?? persisted?.cursorCloudServiceTier }
         : {}),
@@ -48265,6 +48947,7 @@ export function createAgentChatService(args: {
     transcriptHistoryCacheBySession.delete(sessionId);
     resolvedTranscriptPathBySession.delete(sessionId);
     forgetCursorCloudHydrationState(sessionId);
+    forgetDevinCloudHydrationState(sessionId);
   };
 
   const countActiveForLane = (laneId: string): number => {
@@ -50221,6 +50904,7 @@ export function createAgentChatService(args: {
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
       forgetCursorCloudHydrationState(trimmedSessionId);
+      forgetDevinCloudHydrationState(trimmedSessionId);
     } else {
       clearSubagentSnapshots(trimmedSessionId);
     }
@@ -50300,6 +50984,8 @@ export function createAgentChatService(args: {
     clearInterval(sessionCleanupTimer);
     clearCursorCloudMirrorWatches();
     clearAllCursorCloudHydrationState();
+    clearDevinCloudMirrorWatches();
+    clearAllDevinCloudHydrationState();
     scheduledWorkScheduler?.dispose();
     autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
@@ -53896,6 +54582,10 @@ export function createAgentChatService(args: {
     handleCursorCloudStatusChange,
     openCursorCloudChat,
     watchCursorCloudMirror,
+    createDevinCloudSessionForLane,
+    devinCloudFollowUp,
+    openDevinCloudChat,
+    watchDevinCloudMirror,
     subscribeToEvents(callback: (event: AgentChatEventEnvelope) => void) {
       eventSubscribers.add(callback);
       return () => {

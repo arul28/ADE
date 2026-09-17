@@ -27,6 +27,7 @@ type ProviderStatusSnapshot = {
     kimi?: unknown;
     grok?: unknown;
     copilot?: unknown;
+    devin?: unknown;
   };
   providerConnections?: {
     pi?: ProviderConnectionFlags;
@@ -34,6 +35,7 @@ type ProviderStatusSnapshot = {
     kimi?: ProviderConnectionFlags;
     grok?: ProviderConnectionFlags;
     copilot?: ProviderConnectionFlags;
+    devin?: ProviderConnectionFlags;
   };
   piInstallation?: { sdkAvailable?: boolean; cliAvailable?: boolean; availableModelIds?: string[] };
   opencodeProviders?: Array<{ id: string; connected: boolean }>;
@@ -54,6 +56,7 @@ const ACP_PICKER_FAMILIES = [
   { provider: "kimi", family: "moonshot" },
   { provider: "grok", family: "xai" },
   { provider: "copilot", family: "github-copilot" },
+  { provider: "devin", family: "devin" },
 ] as const satisfies readonly { provider: string; family: ProviderFamily }[];
 
 const EMPTY_AUTH_STATUS: AuthStatusMap = {};

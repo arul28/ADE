@@ -84,6 +84,7 @@ const PICKER_FAMILY_BY_GROUP: Record<ProviderGroupKey, ProviderFamily> = {
   droid: "factory",
   kimi: "moonshot",
   qwen: "qwen",
+  devin: "devin",
   ollama: "ollama",
   lmstudio: "lmstudio",
 };

@@ -1679,6 +1679,9 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   const apiKeys = asStringMap(value.apiKeys);
   if (apiKeys && Object.keys(apiKeys).length) out.apiKeys = apiKeys;
 
+  const devinCloudOrgId = asString(value.devinCloudOrgId)?.trim();
+  if (devinCloudOrgId) out.devinCloudOrgId = devinCloudOrgId;
+
   const localProviders = coerceAiLocalProviders(value.localProviders);
   if (localProviders) out.localProviders = localProviders;
 
@@ -2050,6 +2053,10 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.apiKeys ?? {}),
     ...(localAi?.apiKeys ?? {})
   };
+  // Explicit-null clears a configured org id; absent means keep.
+  const devinCloudOrgId = localAi?.devinCloudOrgId !== undefined
+    ? localAi.devinCloudOrgId
+    : sharedAi?.devinCloudOrgId;
   // Replace semantics (not union): the UI writes the full authoritative list,
   // and this merge also runs on the ai.updateConfig write-patch path — a union
   // would make removals impossible to persist. Absent = keep, [] = clear.
@@ -2085,6 +2092,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(featureModelOverrides).length ? { featureModelOverrides } : {}),
     ...(Object.keys(featureReasoningOverrides).length ? { featureReasoningOverrides } : {}),
     ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
+    ...(devinCloudOrgId ? { devinCloudOrgId } : {}),
     ...(customProviders.length ? { customProviders } : {}),
     ...(customModelSlugs.length ? { customModelSlugs } : {}),
     ...(disabledProviders.length ? { disabledProviders } : {}),

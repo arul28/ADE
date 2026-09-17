@@ -294,6 +294,15 @@ import type {
   CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
+  DevinCloudAuthStatus,
+  DevinCloudCreateSessionForLaneRequest,
+  DevinCloudCreateSessionForLaneResult,
+  DevinCloudFleetResult,
+  DevinCloudOpenChatRequest,
+  DevinCloudOpenChatResult,
+  DevinCloudPullIntoLaneResult,
+  DevinCloudSetCredentialsRequest,
+  DevinCloudWatchMirrorRequest,
   AdeCliInstallResult,
   AdeCliStatus,
   OpenCodeRuntimeSnapshot,
@@ -1213,7 +1222,7 @@ declare global {
          * have it and callers must guard before reaching for it.
          */
         acpProviderDiagnostics?: (args: {
-          provider: "qwen" | "kimi" | "grok" | "copilot";
+          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
           runDoctor?: boolean;
         }) => Promise<AcpProviderDiagnostics>;
         opencodeAuthMethods: () => Promise<{ methods: OpenCodeProviderAuthMethods }>;
@@ -1312,6 +1321,36 @@ declare global {
         onCursorCloudFleetEvent: (
           cb: (event: CursorCloudFleetEvent) => void,
         ) => () => void;
+        devinCloudGetAuthStatus: () => Promise<DevinCloudAuthStatus>;
+        devinCloudSetCredentials: (
+          args: DevinCloudSetCredentialsRequest,
+        ) => Promise<DevinCloudAuthStatus>;
+        devinCloudFleet: (args?: {
+          force?: boolean;
+          includeArchived?: boolean;
+        }) => Promise<DevinCloudFleetResult>;
+        devinCloudPullIntoLane: (
+          devinSessionId: string,
+        ) => Promise<DevinCloudPullIntoLaneResult>;
+        devinCloudTerminateSession: (
+          devinSessionId: string,
+          options?: { archive?: boolean },
+        ) => Promise<void>;
+        devinCloudArchiveSession: (devinSessionId: string) => Promise<void>;
+        devinCloudUnarchiveSession: (devinSessionId: string) => Promise<void>;
+        devinCloudFollowUp: (args: {
+          devinSessionId: string;
+          message: string;
+        }) => Promise<void>;
+        devinCloudOpenChat: (
+          args: DevinCloudOpenChatRequest,
+        ) => Promise<DevinCloudOpenChatResult>;
+        devinCloudCreateSession: (
+          args: DevinCloudCreateSessionForLaneRequest,
+        ) => Promise<DevinCloudCreateSessionForLaneResult>;
+        devinCloudWatchMirror: (
+          args: DevinCloudWatchMirrorRequest,
+        ) => Promise<void>;
       };
       transcription: {
         transcribe: (

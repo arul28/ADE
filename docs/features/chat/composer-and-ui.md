@@ -2030,6 +2030,61 @@ configured yet — this list updates on refresh and when agents finish") rather
 than letting a stale list look current. A missing Cursor key renders a connect
 prompt linking Settings → AI connections instead of an empty list.
 
+## Devin Cloud fleet view
+
+Devin is a single provider id covering local (`devin acp` chats and the tracked
+`devin` CLI) and cloud (the session fleet); capability gates decide which parts
+light up per surface. Cloud auth is a pasted token in Settings → AI connections:
+a v3 Personal Access Token (`cog_`, primary — self-serve on every Devin account)
+or a legacy v1 personal key (`apk_user_`) for enterprises where PATs are
+admin-disabled. The org id is collected once and auto-discovered from the token
+when possible.
+
+The top bar and left sidebar carry auth-gated Devin quick-view buttons
+(`DevinCloudQuickViewButton`, mounted beside the Cursor quick-view). They render
+only while `devinCloudGetAuthStatus().configured` is true and open
+`DevinCloudFleetModal`, an org-wide fleet surface listing Devin sessions.
+Provenance chips (**Mine / From ADE / All**) sit beside the status and lane
+filters; ADE-created sessions carry `ade` + `ade:lane:<id>` tags at launch and
+show a "via ADE" badge. Status derives once in `shared/devinCloudFleetStatus.ts`
+(archived → archived, error → error, exit/finished → finished, suspended →
+suspended, waiting_for_user/waiting_for_approval → needs_you, running →
+working, else starting), so the modal, rows, and the attention mapping cannot
+disagree. Devin has no live event feed: the list self-refreshes while the modal
+is open and on the manual refresh control, and the footer says so.
+
+Row actions: **Open live session** mirrors the session into an ADE chat
+(transcript via `GET /v3/organizations/{org}/sessions/{id}/messages`, sends via
+`POST .../messages`), **Live** opens `session.url` in ADE's built-in browser —
+the only live Desktop/VM view, since no provider exposes VM control over an API
+— **Stop** terminates, **Pull into lane…** merges a finished session's pushed
+branch into its owning/matching/new lane (same refusal rules as Cursor: dirty
+worktrees refused, conflicts abort and report), and the ⋯ menu offers
+Archive/Unarchive, Open PR, and Delete with confirmation. A successful pull
+offers **Continue in lane**, which launches the local `devin` CLI in that lane
+seeded with the session's task context — the reverse of handing off to cloud.
+
+The chat drawer's **Devin Cloud sessions** panel drafts a new session bound to
+the selected lane's repository: target repo and base branch come from the lane,
+**Agent mode** maps to `devin_mode` (Devin default / normal / fast / lite /
+ultra / fusion), and **Skip Devin's approval gate** sets `bypass_approval`.
+Sending from the composer launches the session with the provenance tags. From
+any non-cloud chat, the attach menu's **Hand off to Devin Cloud** packages the
+lane context into a prompt and launches the same path.
+
+Cloud sessions join ADE's attention system: `waiting_for_user` /
+`waiting_for_approval` raise a "Needs you" marker
+(`requestAttention`, provider_structured source) that clears when the session
+leaves that state or the user answers. Session attachments marked as Devin's own
+output (recordings, screenshots) are downloaded into the computer-use artifact
+store and ingested into the chat's proof drawer, deduped by attachment id.
+
+Known limits: cloud sessions run on Devin's VMs — no local file access and no
+API for screen/exec, so the deep-link live view is the interactive surface.
+There is no third-party OAuth for the REST API; the token paste is the only
+path (same as Cursor). The Devin CLI does not yet expose account
+Knowledge/Playbooks/Secrets to local sessions.
+
 ## Fragile and tricky wiring
 
 - **Draft launch job lifecycle.** `DraftLaunchJob` tracks multi-step

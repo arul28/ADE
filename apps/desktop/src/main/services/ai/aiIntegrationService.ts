@@ -22,6 +22,13 @@ import type {
   CursorCloudRunSummary,
   CursorAgentUsage,
   CursorAgentUsageRequest,
+  DevinCloudAttachment,
+  DevinCloudAuthStatus,
+  DevinCloudCreateSessionRequest,
+  DevinCloudSendMessageRequest,
+  DevinCloudSendMessageResult,
+  DevinCloudSessionSummary,
+  DevinCloudSetCredentialsRequest,
 } from "../../../shared/types";
 import {
   decodeOpenCodeRegistryId,
@@ -73,6 +80,7 @@ import { parseStructuredOutput } from "./utils";
 import {
   deleteApiKey as deleteStoredApiKey,
   getAllApiKeys,
+  getApiKey as getStoredApiKey,
   getApiKeyStoreStatus,
   listStoredProviders,
   storeApiKey as storeStoredApiKey,
@@ -98,6 +106,13 @@ import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import {
+  createDevinCloudClient,
+  detectDevinAuthMode,
+  normalizeDevinSessionId,
+  type DevinCloudClient,
+  type DevinCloudListSessionsArgs,
+} from "./devinCloudClient";
 import {
   cursorUsageCostUsd,
   mapCursorAgentUsageToTokenEntry,
@@ -150,6 +165,7 @@ export type AiIntegrationStatus = {
     kimi?: boolean;
     grok?: boolean;
     copilot?: boolean;
+    devin?: boolean;
   };
   models: {
     claude: AgentModelDescriptor[];
@@ -160,10 +176,11 @@ export type AiIntegrationStatus = {
     kimi?: AgentModelDescriptor[];
     grok?: AgentModelDescriptor[];
     copilot?: AgentModelDescriptor[];
+    devin?: AgentModelDescriptor[];
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-    cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot";
+    cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
     provider?: string;
     source?: "config" | "env" | "store" | "file";
     endpointSource?: "auto" | "config";
@@ -991,6 +1008,7 @@ export const ACP_STATUS_FAMILIES = {
   kimi: "moonshot",
   grok: "xai",
   copilot: "github-copilot",
+  devin: "devin",
 } as const;
 
 function buildStatusModelLists(
@@ -1010,6 +1028,7 @@ function buildStatusModelLists(
     kimi: availability.kimi ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.kimi) : [],
     grok: availability.grok ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.grok) : [],
     copilot: availability.copilot ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.copilot) : [],
+    devin: availability.devin ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.devin) : [],
   };
 }
 
@@ -1126,6 +1145,7 @@ export function createAiIntegrationService(args: {
       ["kimi", ACP_STATUS_FAMILIES.kimi],
       ["grok", ACP_STATUS_FAMILIES.grok],
       ["copilot", ACP_STATUS_FAMILIES.copilot],
+      ["devin", ACP_STATUS_FAMILIES.devin],
     ] as const;
     for (const [provider, family] of acpModelFamilies) {
       const health = getProviderRuntimeHealth(provider);
@@ -1517,6 +1537,195 @@ export function createAiIntegrationService(args: {
         try { (cloudAgent as { close?: () => void }).close?.(); } catch { /* ignore */ }
       }
     }
+  };
+
+  // ---- Devin Cloud -------------------------------------------------------
+  // PAT (`cog_`, v3, self-serve on every account) primary; `apk_user_` v1
+  // personal keys ride the same calls as a fallback for PAT-disabled
+  // enterprises. Org id auto-discovery means a v3 user pastes only the key.
+
+  let devinCloudClientCache: {
+    apiKey: string;
+    orgId: string | null;
+    client: DevinCloudClient;
+  } | null = null;
+
+  const requireDevinCloudApiKey = async (): Promise<string> => {
+    const key = getStoredApiKey("devin");
+    if (!key) {
+      throw new Error("Add a Devin API token before using Devin Cloud agents.");
+    }
+    return key;
+  };
+
+  const readDevinCloudOrgId = (): string | null => {
+    const snapshot = projectConfigService.get();
+    const aiConfig = extractAiConfig(snapshot);
+    const orgId = typeof aiConfig.devinCloudOrgId === "string" ? aiConfig.devinCloudOrgId.trim() : "";
+    return orgId || null;
+  };
+
+  const persistDevinCloudOrgId = (orgId: string | null): void => {
+    try {
+      const snapshot = projectConfigService.get();
+      const localAi = { ...(snapshot.local?.ai ?? {}), devinCloudOrgId: orgId };
+      projectConfigService.save({
+        shared: snapshot.shared,
+        local: { ...(snapshot.local ?? {}), ai: localAi },
+      });
+    } catch (error) {
+      logger.warn("ai.devin_cloud.org_id_persist_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const devinCloudClient = async (): Promise<DevinCloudClient> => {
+    const apiKey = await requireDevinCloudApiKey();
+    const orgId = readDevinCloudOrgId();
+    if (
+      devinCloudClientCache
+      && devinCloudClientCache.apiKey === apiKey
+      && devinCloudClientCache.orgId === orgId
+    ) {
+      return devinCloudClientCache.client;
+    }
+    const client = createDevinCloudClient({ apiKey, orgId, logger });
+    devinCloudClientCache = { apiKey, orgId, client };
+    return client;
+  };
+
+  const rememberDiscoveredDevinOrg = (client: DevinCloudClient): void => {
+    const resolved = client.getOrgId();
+    if (resolved && resolved !== readDevinCloudOrgId()) {
+      persistDevinCloudOrgId(resolved);
+    }
+  };
+
+  const getDevinCloudAuthStatus = async (): Promise<DevinCloudAuthStatus> => {
+    const apiKey = getStoredApiKey("devin");
+    if (!apiKey) {
+      return { configured: false, authMode: null, orgId: null, orgName: null, error: null };
+    }
+    return {
+      configured: true,
+      authMode: detectDevinAuthMode(apiKey),
+      orgId: devinCloudClientCache?.orgId ?? readDevinCloudOrgId(),
+      orgName: null,
+      error: null,
+    };
+  };
+
+  const setDevinCloudCredentials = async (
+    args: DevinCloudSetCredentialsRequest,
+  ): Promise<DevinCloudAuthStatus> => {
+    const key = args.apiKey.trim();
+    if (!key) {
+      deleteStoredApiKey("devin");
+      persistDevinCloudOrgId(null);
+      devinCloudClientCache = null;
+      return { configured: false, authMode: null, orgId: null, orgName: null, error: null };
+    }
+    const orgId = args.orgId?.trim() || null;
+    // Verify before persisting so a bad key never reaches the store.
+    const client = createDevinCloudClient({ apiKey: key, orgId, logger });
+    const { orgName } = await client.verify();
+    storeStoredApiKey("devin", key);
+    const resolvedOrgId = client.getOrgId() ?? orgId;
+    if (detectDevinAuthMode(key) === "v3") {
+      persistDevinCloudOrgId(resolvedOrgId);
+    }
+    devinCloudClientCache = { apiKey: key, orgId: resolvedOrgId, client };
+    return {
+      configured: true,
+      authMode: detectDevinAuthMode(key),
+      orgId: resolvedOrgId,
+      orgName,
+      error: null,
+    };
+  };
+
+  const listDevinCloudSessions = async (
+    args: DevinCloudListSessionsArgs = {},
+  ): Promise<{ items: DevinCloudSessionSummary[]; endCursor: string | null }> => {
+    const client = await devinCloudClient();
+    const result = await client.listSessions(args);
+    rememberDiscoveredDevinOrg(client);
+    return result;
+  };
+
+  const getDevinCloudSession = async (
+    devinSessionId: string,
+  ): Promise<DevinCloudSessionSummary | null> => {
+    const client = await devinCloudClient();
+    const result = await client.getSession(devinSessionId);
+    rememberDiscoveredDevinOrg(client);
+    return result;
+  };
+
+  const createDevinCloudSession = async (
+    args: DevinCloudCreateSessionRequest,
+  ): Promise<DevinCloudSessionSummary> => {
+    const client = await devinCloudClient();
+    const result = await client.createSession(args);
+    rememberDiscoveredDevinOrg(client);
+    return result;
+  };
+
+  const listDevinCloudMessages = async (args: {
+    devinSessionId: string;
+    first?: number;
+    after?: string | null;
+  }) => {
+    const client = await devinCloudClient();
+    return await client.listMessages(args.devinSessionId, {
+      first: args.first,
+      after: args.after,
+    });
+  };
+
+  const listDevinCloudAttachments = async (
+    devinSessionId: string,
+  ) => {
+    const client = await devinCloudClient();
+    return await client.listAttachments(devinSessionId);
+  };
+
+  const downloadDevinCloudAttachment = async (
+    attachment: DevinCloudAttachment,
+  ) => {
+    const client = await devinCloudClient();
+    return await client.downloadAttachment(attachment);
+  };
+
+  const sendDevinCloudMessage = async (
+    args: DevinCloudSendMessageRequest,
+  ): Promise<DevinCloudSendMessageResult> => {
+    const client = await devinCloudClient();
+    const id = normalizeDevinSessionId(args.devinSessionId);
+    await client.sendMessage(id, {
+      message: args.message,
+      ...(args.attachmentUrls?.length ? { attachmentUrls: args.attachmentUrls } : {}),
+    });
+    return { delivered: true };
+  };
+
+  const terminateDevinCloudSession = async (args: {
+    devinSessionId: string;
+    archive?: boolean;
+  }): Promise<void> => {
+    const client = await devinCloudClient();
+    await client.terminateSession(args.devinSessionId, { archive: args.archive });
+  };
+
+  const archiveDevinCloudSession = async (devinSessionId: string): Promise<void> => {
+    const client = await devinCloudClient();
+    await client.archiveSession(devinSessionId);
+  };
+
+  const unarchiveDevinCloudSession = async (devinSessionId: string): Promise<void> => {
+    const client = await devinCloudClient();
+    await client.unarchiveSession(devinSessionId);
   };
 
   const getMode = (): AiProviderMode => {
@@ -2071,6 +2280,7 @@ export function createAiIntegrationService(args: {
             kimi: enabled("kimi") && Boolean(providerConnections.kimi?.runtimeAvailable),
             grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
             copilot: enabled("copilot") && Boolean(providerConnections.copilot?.runtimeAvailable),
+            devin: enabled("devin") && Boolean(providerConnections.devin?.runtimeAvailable),
           };
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             // API/local rows are not owned by any one provider tile (they reach
@@ -2085,6 +2295,7 @@ export function createAiIntegrationService(args: {
             if (descriptor.family === ACP_STATUS_FAMILIES.kimi) return availability.kimi === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.grok) return availability.grok === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.copilot) return availability.copilot === true;
+            if (descriptor.family === ACP_STATUS_FAMILIES.devin) return availability.devin === true;
             return true;
           }));
 
@@ -2270,6 +2481,20 @@ export function createAiIntegrationService(args: {
     getCursorAgentUsage,
     listCursorCloudArtifacts,
     downloadCursorCloudArtifact,
+
+    getDevinCloudAuthStatus,
+    setDevinCloudCredentials,
+    listDevinCloudSessions,
+    getDevinCloudSession,
+    createDevinCloudSession,
+    listDevinCloudMessages,
+    listDevinCloudAttachments,
+    downloadDevinCloudAttachment,
+    sendDevinCloudMessage,
+    terminateDevinCloudSession,
+    archiveDevinCloudSession,
+    unarchiveDevinCloudSession,
+    requireDevinCloudApiKey,
 
     getAvailabilityAsync,
     resolveModelForTask,

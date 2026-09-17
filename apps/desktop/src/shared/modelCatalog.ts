@@ -75,6 +75,7 @@ export const MODEL_PICKER_PROVIDER_ORDER = [
   "claude",
   "codex",
   "cursor",
+  "devin",
   "opencode",
   "pi",
   "copilot",
@@ -107,6 +108,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   meta: "Meta",
   qwen: "Qwen",
   moonshot: "Moonshot",
+  devin: "Devin",
 };
 
 export const PROVIDER_BADGE_COLORS: Record<string, string> = {
@@ -127,6 +129,7 @@ export const PROVIDER_BADGE_COLORS: Record<string, string> = {
   lmstudio: "#64748B",
   groq: "#06B6D4",
   together: "#22C55E",
+  devin: "#2563EB",
   meta: "#3B82F6",
   qwen: "#6D4AFF",
   moonshot: "#1F1F1F",
@@ -168,6 +171,7 @@ export const PROVIDER_GROUP_COLORS: Record<ProviderGroupKey, string> = {
   kimi: "#1F1F1F",
   grok: "#DC2626",
   copilot: "#8B5CF6",
+  devin: "#2563EB",
   opencode: "#2563EB",
   ollama: "#71717A",
   lmstudio: "#64748B",
@@ -225,6 +229,7 @@ const PROVIDER_GROUP_LABELS: Record<ProviderGroupKey, string> = {
   kimi: "Kimi",
   grok: "Grok",
   copilot: "GitHub Copilot",
+  devin: "Devin",
   opencode: "OpenCode",
   ollama: "Ollama",
   lmstudio: "LM Studio",

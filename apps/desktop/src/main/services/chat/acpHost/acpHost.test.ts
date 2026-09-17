@@ -1783,24 +1783,24 @@ describe("run | degrade conformance matrix", () => {
     | "mcp_injection";
 
   const EXPECTED: Record<Feature, Record<AcpProviderId, "run" | "degrade">> = {
-    capabilities: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
-    lifecycle: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
-    prompt_stream: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
-    permission: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
-    cancel: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
+    capabilities: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
+    lifecycle: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
+    prompt_stream: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
+    permission: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
+    cancel: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
     // Qwen 0.22.3 has no session/close. It degrades to ending its private process.
-    close_eviction: { qwen: "degrade", kimi: "run", grok: "run", copilot: "run" },
+    close_eviction: { qwen: "degrade", kimi: "run", grok: "run", copilot: "run", devin: "run" },
     // Copilot's resume is unverified, so ADE uses session/load instead.
-    resume: { qwen: "run", kimi: "run", grok: "run", copilot: "degrade" },
-    slash_advertise: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
+    resume: { qwen: "run", kimi: "run", grok: "run", copilot: "degrade", devin: "run" },
+    slash_advertise: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
     // Kimi reports no usage at all.
-    usage_fold: { qwen: "run", kimi: "degrade", grok: "run", copilot: "run" },
-    mcp_injection: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
+    usage_fold: { qwen: "run", kimi: "degrade", grok: "run", copilot: "run", devin: "run" },
+    mcp_injection: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
   };
 
   it("records the expected outcome for every cell", () => {
     const cells = Object.values(EXPECTED).flatMap((row) => Object.values(row));
-    expect(cells).toHaveLength(40);
+    expect(cells).toHaveLength(50);
   });
 
   it.each(ACP_PROVIDER_IDS)("%s matches its declared matrix row", (providerId: AcpProviderId) => {

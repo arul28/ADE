@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, Diamond, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -1791,9 +1791,15 @@ export function AgentChatComposer({
   cursorCloudHasEligibleModels = true,
   cursorCloudModeActive = false,
   onSubmitToCloud,
+  cloudTargetLabel = "Cursor Cloud",
   cursorCloudPanelAvailable = false,
   cursorCloudPaneOpen = false,
   onToggleCursorCloudPanel,
+  devinCloudPanelAvailable = false,
+  devinCloudPaneOpen = false,
+  onToggleDevinCloudPanel,
+  devinCloudHandoffAvailable = false,
+  onHandoffToDevinCloud,
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
@@ -2039,16 +2045,27 @@ export function AgentChatComposer({
    */
   cursorCloudHasEligibleModels?: boolean;
   /**
-   * Cloud mode: the next send goes to Cursor Cloud instead of the local runtime. The composer
-   * sets it by picking "Cursor Cloud" in the launch shelf's machine picker. The same overflow
-   * menu exposes the all-agents Cursor Cloud panel.
+   * Cloud mode: the next send goes to a hosted cloud runtime instead of the local runtime.
+   * The composer sets it by picking a cloud row in the launch shelf's machine picker. The same
+   * overflow menu exposes the cloud sessions panel.
    */
   cursorCloudModeActive?: boolean;
   onSubmitToCloud?: (promptText: string) => Promise<boolean> | boolean;
+  /**
+   * Display name of the cloud runtime the next send targets ("Cursor Cloud", "Devin Cloud").
+   * The composer uses it for the send button's label and tooltip text.
+   */
+  cloudTargetLabel?: string;
   /** Whether the Cursor Cloud all-agents panel can be opened for this lane. */
   cursorCloudPanelAvailable?: boolean;
   cursorCloudPaneOpen?: boolean;
   onToggleCursorCloudPanel?: () => void;
+  /** Whether the Devin Cloud sessions panel can be opened for this lane. */
+  devinCloudPanelAvailable?: boolean;
+  devinCloudPaneOpen?: boolean;
+  onToggleDevinCloudPanel?: () => void;
+  devinCloudHandoffAvailable?: boolean;
+  onHandoffToDevinCloud?: () => void;
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
@@ -5098,7 +5115,7 @@ export function AgentChatComposer({
     }
     if (cloudModeActiveForSend) {
       if (cloudSendBlock) return cloudSendBlock.reason;
-      return "Send to Cursor Cloud";
+      return `Send to ${cloudTargetLabel}`;
     }
     if (!modelId) return singleModelBlockedMessage ?? "Select a model first";
     if (singleModelBlockedMessage) return singleModelBlockedMessage;
@@ -6102,6 +6119,23 @@ export function AgentChatComposer({
                       onSelect: onToggleCursorCloudPanel,
                     }]
                   : []),
+                ...(devinCloudPanelAvailable && onToggleDevinCloudPanel
+                  ? [{
+                      id: "devin-cloud-panel",
+                      label: devinCloudPaneOpen ? "Close Devin Cloud sessions" : "Open Devin Cloud sessions",
+                      icon: <Diamond size={14} weight={devinCloudPaneOpen ? "fill" : "regular"} />,
+                      active: devinCloudPaneOpen,
+                      onSelect: onToggleDevinCloudPanel,
+                    }]
+                  : []),
+                ...(devinCloudHandoffAvailable && onHandoffToDevinCloud
+                  ? [{
+                      id: "devin-cloud-handoff",
+                      label: "Hand off to Devin Cloud",
+                      icon: <CloudArrowUp size={14} weight="regular" />,
+                      onSelect: onHandoffToDevinCloud,
+                    }]
+                  : []),
                 ...(showOrchestratorModeButton
                   ? [{
                       id: "orchestrator",
@@ -6250,12 +6284,12 @@ export function AgentChatComposer({
                 const label = parallelChatMode
                   ? "Send to lanes"
                   : cloudMode
-                    ? "Send to Cursor Cloud"
+                    ? `Send to ${cloudTargetLabel}`
                     : "Send";
                 const description = parallelChatMode
                   ? "Create child lanes and send this prompt with its attachments to every configured model."
                   : cloudMode
-                    ? "Launch a Cursor Cloud agent with this prompt and the panel's settings."
+                    ? `Launch a ${cloudTargetLabel} session with this prompt and the panel's settings.`
                     : "Send this prompt to the selected model.";
                 const backgroundAvailable = Boolean(onSubmitInBackground) && !parallelChatMode && !cloudMode;
                 const sendIcon = cloudMode

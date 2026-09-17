@@ -497,6 +497,7 @@ export function applyOrchestrationPermissionProfile(
     case "kimi":
     case "grok":
     case "copilot":
+    case "devin":
       return {
         acpPermissionMode: "yolo" satisfies AgentChatAcpPermissionMode,
         permissionMode: "full-auto",

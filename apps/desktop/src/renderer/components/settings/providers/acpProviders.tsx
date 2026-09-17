@@ -7,7 +7,8 @@
  * honest-degradation note Kimi needs — so it lives in a table rather than in
  * four near-identical descriptors.
  */
-import React from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import { CheckCircle, Info, XCircle } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../../../shared/modelRegistry";
@@ -88,6 +89,16 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     installCommand: "npm install -g @github/copilot",
     credentialSource: "Signed in through `copilot login`; the free plan includes the CLI. ADE does not write ~/.copilot.",
     setup: "Install the Copilot CLI and run `copilot login`. ADE reuses that GitHub login and never writes Copilot's config.json. Cancelled turns can still look finished on Copilot's side; ADE marks them stopped.",
+  },
+  {
+    ...ACP_PROVIDER_METADATA.devin,
+    id: "devin",
+    tagline: "Uses your Devin account through the devin CLI.",
+    logoFamily: "devin",
+    installCommand: "curl -fsSL https://cli.devin.ai/install.sh | bash",
+    credentialSource: "Signed in through `devin auth login` (browser OAuth, any Devin account), or WINDSURF_API_KEY. ADE does not write Devin's config.",
+    setup: "Install the Devin CLI (`brew install --cask devin-cli`, or the install command) and run `devin auth login`. ADE reuses that login and never writes Devin's config. Devin discovers AGENTS.md and .agents/skills/ in the lane itself, so ADE guidance reaches it without prompt injection.",
+    degradation: "Devin CLI does not yet expose account Knowledge, Playbooks, or Secrets to local sessions.",
   },
 ];
 
@@ -319,6 +330,114 @@ function KimiBody() {
   );
 }
 
+/**
+ * Devin Cloud credentials: the API token that powers the fleet, mirrored
+ * chats, and cloud sends — separate from the `devin auth login` session the
+ * local CLI keeps. Any Devin account can mint one in its settings.
+ */
+function DevinBody() {
+  const [auth, setAuth] = useState<Awaited<ReturnType<typeof window.ade.ai.devinCloudGetAuthStatus>> | null>(null);
+  const [keyInput, setKeyInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void window.ade.ai.devinCloudGetAuthStatus()
+      .then((status) => { if (alive) setAuth(status); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+
+  const save = useCallback(async () => {
+    const apiKey = keyInput.trim();
+    if (!apiKey || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const status = await window.ade.ai.devinCloudSetCredentials({ apiKey });
+      setAuth(status);
+      if (status.configured) setKeyInput("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, keyInput]);
+
+  const clear = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setAuth(await window.ade.ai.devinCloudSetCredentials({ apiKey: "" }));
+      setKeyInput("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <SubsectionTitle>Devin Cloud</SubsectionTitle>
+      <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+        The API token that powers the Devin fleet, mirrored chats, and sending
+        work to Devin's cloud VMs. Paste a Personal Access Token
+        (<span style={{ fontFamily: MONO_FONT }}>cog_…</span>) from
+        app.devin.ai → Settings → API, or a legacy personal key
+        (<span style={{ fontFamily: MONO_FONT }}>apk_user_…</span>) where PATs
+        are unavailable.
+      </div>
+      {auth?.configured ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.success, fontSize: 10, fontFamily: SANS_FONT }}>
+            <CheckCircle size={12} weight="fill" />
+            Connected{auth.orgName ? ` — ${auth.orgName}` : ""}
+          </span>
+          {auth.orgId ? (
+            <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+              {auth.orgId}
+            </span>
+          ) : null}
+          <button type="button" style={outlineButton({ height: 28 })} disabled={busy} onClick={() => void clear()}>
+            Remove
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
+          <input
+            aria-label="Devin API token"
+            value={keyInput}
+            onChange={(event) => setKeyInput(event.target.value)}
+            placeholder="cog_..."
+            type="password"
+            disabled={busy}
+            onKeyDown={(event) => { if (event.key === "Enter") void save(); }}
+            style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
+          />
+          <button type="button" style={outlineButton({ height: 28 })} disabled={busy || !keyInput.trim()} onClick={() => void save()}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </div>
+      )}
+      {auth && !auth.configured && auth.error ? (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.danger, fontSize: 10, fontFamily: SANS_FONT }}>
+          <XCircle size={12} weight="fill" />
+          {auth.error}
+        </div>
+      ) : null}
+      {error ? (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.danger, fontSize: 10, fontFamily: SANS_FONT }}>
+          <Info size={12} weight="fill" />
+          {error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
   return {
     id: spec.id,
@@ -330,7 +449,7 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     // chip on its own.
     preview: providerTierIsPreview(spec.id),
     // All four share one permission vocabulary because they share one host.
-    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "copilot" ? "github-copilot" : "qwen", isCliWrapped: true, key: spec.id },
+    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "copilot" ? "github-copilot" : spec.id === "devin" ? "devin" : "qwen", isCliWrapped: true, key: spec.id },
     status: (ctx) => acpStatus(ctx, spec.id),
     models: (ctx) => acpModels(ctx, spec.id),
     version: (ctx) => acpVersion(ctx, spec.id),
@@ -341,6 +460,7 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
       ? { Diagnostics: ({ ctx }: { ctx: ProvidersViewContext }) => <AcpDiagnostics ctx={ctx} id={spec.id} /> }
       : {}),
     ...(spec.id === "kimi" ? { Body: KimiBody } : {}),
+    ...(spec.id === "devin" ? { Body: DevinBody } : {}),
   };
 }
 

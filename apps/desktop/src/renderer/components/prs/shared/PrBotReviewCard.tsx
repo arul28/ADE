@@ -5,6 +5,7 @@ import codexMark from "@lobehub/icons-static-svg/icons/codex.svg";
 import copilotMark from "@lobehub/icons-static-svg/icons/githubcopilot.svg";
 import greptileMark from "@lobehub/icons-static-svg/icons/greptile.svg";
 import vercelMark from "@lobehub/icons-static-svg/icons/vercel.svg";
+import devinMark from "../../../assets/provider-logos/devin.svg";
 
 import type { PrReview } from "../../../../shared/types";
 import { COLORS, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
@@ -23,7 +24,8 @@ export type BotProvider =
   | "cursor"
   | "vercel"
   | "linear"
-  | "codecov";
+  | "codecov"
+  | "devin";
 
 type ProviderVisual = {
   label: string;
@@ -49,6 +51,7 @@ const PROVIDERS: Record<BotProvider, ProviderVisual> = {
   vercel: { label: "Vercel", accent: COLORS.textPrimary, initial: "V", mark: vercelMark },
   linear: { label: "Linear", accent: COLORS.accent, initial: "L" },
   codecov: { label: "Codecov", accent: COLORS.danger, initial: "C" },
+  devin: { label: "Devin", accent: "#2563EB", initial: "D", mark: devinMark },
 };
 
 const DETECTION_PATTERNS: Array<{ provider: BotProvider; test: (login: string) => boolean }> = [
@@ -69,6 +72,7 @@ const DETECTION_PATTERNS: Array<{ provider: BotProvider; test: (login: string) =
   { provider: "linear", test: (l) => l === "linear" || l.startsWith("linear-") },
   { provider: "codecov", test: (l) => l.startsWith("codecov") },
   { provider: "cursor", test: (l) => l.startsWith("cursor") },
+  { provider: "devin", test: (l) => l === "devin" || l.startsWith("devin-") },
 ];
 
 export function detectBotProvider(authorLogin: string): BotProvider | null {
