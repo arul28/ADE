@@ -988,7 +988,9 @@ Runtime support files outside `services/sync/`:
   the Worker; and **a PUT that landed must drop its seqs even when a later
   DELETE cannot be sent**, because the Worker stamps `updated_at` on every
   write and replaying the PUT would last-writer-wins over a newer remote
-  edit. A cache belonging to a different
+  edit. A mutation that cannot be written to disk is rolled back in memory
+  and reported as a failed write, so a restart cannot lose a value the UI
+  already treated as saved. A cache belonging to a different
   account is discarded rather than merged. The store is keyed by machine ADE
   directory so every project scope in a brain shares one cache and one cursor,
   and it is built only when sync is enabled — a `--no-sync` brain has no store
@@ -1012,7 +1014,9 @@ Runtime support files outside `services/sync/`:
   migration for provider API keys, Linear OAuth refresh credentials, and
   repository-scoped project secrets. Migration is write-confirmed, per account
   and per source, and hydrates local stores without replacing device-origin
-  values.
+  values. A source that stays pending or fails clears the runtime latch so a
+  later vault-ready tick can retry it; completed sources stay protected by
+  their receipts.
 - `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
   `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`) — how
   desktop, `ade code`, the CLI, and iOS reach the stores through the brain.

@@ -209,6 +209,9 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
       getLogger: () => options.logger,
       getReceiptDir: () => options.receiptDir,
       getAccountMigrationGeneration: () => accountMigrationGeneration,
+      onMigrationSettled: (complete) => {
+        if (!complete) migrationStarted = false;
+      },
     })
     : null;
 

@@ -82,13 +82,18 @@ Main process:
   the renderer settings bridge. Both stores keep local reads immediate while
   the brain and Worker remain the account authority. A sync pulls every
   truncated page before it reports ready, and it drops uploaded write seqs
-  even when a later delete cannot be sent.
+  even when a later delete cannot be sent. A cache write that cannot hit
+  disk rolls the in-memory mutation back and reports failure rather than
+  pretending the value is saved. Renderer preferences that already exist
+  locally are uploaded on first hydrate when the account has no row for
+  them.
 - `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
   `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
   receipt-backed sign-in migration and hydration for provider API keys, Linear
   OAuth refresh credentials, and repository-scoped project secrets. A source is
   marked complete only after the account confirms the write; crashes and
-  unavailable contexts leave it pending.
+  unavailable contexts leave it pending, and a later vault-ready tick retries
+  those pending sources.
 - `apps/ade-cli/src/services/account/sharedAccountAuthService.ts`,
   `cliRefreshBroker.ts`, and `apps/desktop/src/main/services/account/accountBridge.ts` —
   the brain-owned refresh broker used by desktop, CLI, and ADE Code; a

@@ -380,4 +380,26 @@ describe("runAccountMigration", () => {
       for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("reports incomplete when a source stays pending so the lifecycle can retry", async () => {
+    const onMigrationSettled = vi.fn();
+    const vault = {
+      list: vi.fn(async () => ({ ok: false as const, unavailable: true as const, message: "down" })),
+      get: vi.fn(async () => ({ ok: false as const, unavailable: true as const, message: "down" })),
+      set: vi.fn(async () => ({ ok: false as const, unavailable: true as const, message: "down" })),
+    };
+    const runner = createAccountMigrationRunner({
+      accountBridge: { status: () => signedInStatus("user-a") },
+      accountVaultBridge: vault,
+      getContexts: () => [],
+      getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
+      getReceiptDir: () => makeReceiptDir(),
+      getAccountMigrationGeneration: () => 0,
+      onMigrationSettled,
+    });
+
+    expect(runner.start()).toBe(true);
+    await vi.waitFor(() => expect(onMigrationSettled).toHaveBeenCalledWith(false));
+    expect(runner.start()).toBe(true);
+  });
 });

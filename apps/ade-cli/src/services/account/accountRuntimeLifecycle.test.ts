@@ -208,6 +208,43 @@ describe("account runtime lifecycle", () => {
     }
   });
 
+  it("retries migration on a later ready tick when a source stays pending", async () => {
+    vi.useFakeTimers();
+    const setup = makeLifecycleArgs();
+    accountKeyStoreMocks.getAllApiKeys
+      .mockImplementationOnce(() => {
+        throw new Error("api keys not ready");
+      })
+      .mockReturnValue({ anthropic: "sk-test" });
+    accountKeyStoreMocks.getApiKeyProvenance.mockReturnValue({
+      source: "device",
+      accountUserId: null,
+    });
+    const lifecycle = createAccountRuntimeLifecycle(setup.args);
+
+    try {
+      await lifecycle.initialize();
+      const callsAfterInit = accountKeyStoreMocks.getAllApiKeys.mock.calls.length;
+      expect(callsAfterInit).toBeGreaterThan(0);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await vi.waitFor(() => {
+        expect(accountKeyStoreMocks.getAllApiKeys.mock.calls.length).toBeGreaterThan(callsAfterInit);
+      });
+    } finally {
+      accountKeyStoreMocks.getAllApiKeys.mockReset();
+      accountKeyStoreMocks.getAllApiKeys.mockImplementation(() => ({}));
+      accountKeyStoreMocks.getApiKeyProvenance.mockReset();
+      accountKeyStoreMocks.getApiKeyProvenance.mockImplementation(() => ({
+        source: "device",
+        accountUserId: null,
+      }));
+      setup.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("purges account-origin credentials on sign-out without sync", () => {
     const accountKeys = new Map([
       ["account-origin", "account-value"],

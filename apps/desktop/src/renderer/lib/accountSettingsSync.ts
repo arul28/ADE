@@ -306,6 +306,9 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     return seen;
   };
 
+  // Existing values are not dirty edits. Hydrate still uploads any key the
+  // account has never stored, so a first sign-in does not leave this machine's
+  // preferences stranded locally.
   const lastSeen = snapshot();
 
   /** Pull the account's rows and apply the ones that are newer than ours. */
@@ -325,6 +328,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       const scopeKey = scopeKeyFor(entry);
       if (scopeKey) scopes.add(scopeKey);
     }
+    const seenRemoteKeys = new Set<string>();
     for (const scope of scopes) {
       const result = await api.list({ scope });
       if (!isCurrentIdentity() || !result.ok) return;
@@ -332,6 +336,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       for (const row of result.value) {
         const entry = byKey.get(row.key);
         if (!entry || scopeKeyFor(entry) !== row.scope) continue;
+        seenRemoteKeys.add(stampKey(row.scope, row.key));
         if (dirtyKeys.has(dirtyKey(userIdAtStart, entry.key)) || dirtyKeys.has(dirtyKey(null, entry.key))) continue;
         const stamp = stamps[stampKey(row.scope, row.key)];
         // Strictly newer. An equal stamp means this machine already holds the
@@ -349,6 +354,19 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       }
       if (!isCurrentIdentity()) return;
       persistStamps();
+    }
+    if (!isCurrentIdentity()) return;
+    // First sign-in of an empty account must still pick up this machine's
+    // existing preferences. lastSeen starts as the current snapshot so a
+    // subscribe does not treat those values as edits, and hydrate only
+    // applies remote rows, so without this pass they would never leave.
+    const localState = options.store.getState();
+    for (const entry of settings) {
+      const scopeKey = scopeKeyFor(entry);
+      if (!scopeKey) continue;
+      const key = stampKey(scopeKey, entry.key);
+      if (seenRemoteKeys.has(key) || stamps[key]) continue;
+      push(entry, entry.read(localState));
     }
   };
 

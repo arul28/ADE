@@ -171,8 +171,29 @@ describe("accountSettingsSync (renderer)", () => {
     );
     await settle();
     expect(state.theme).toBe("light");
-    // Applying a hydrated value must not bounce straight back as a write.
-    expect(api.set).not.toHaveBeenCalled();
+    expect(api.set).not.toHaveBeenCalledWith(expect.objectContaining({ key: "theme" }));
+    stop();
+  });
+
+  it("uploads existing local preferences the account has never stored", async () => {
+    const { store } = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const api = createApi();
+    const stop = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+    );
+    await settle();
+    expect(api.set).toHaveBeenCalledWith({
+      scope: "all",
+      key: "theme",
+      value: "dark",
+      expectedAccountUserId: "__signed-in__",
+    });
+    expect(api.set).toHaveBeenCalledWith({
+      scope: "all",
+      key: "chatFontSizePx",
+      value: 14,
+      expectedAccountUserId: "__signed-in__",
+    });
     stop();
   });
 
@@ -197,10 +218,15 @@ describe("accountSettingsSync (renderer)", () => {
     const { store, state } = createStore({ theme: "dark" });
     const storage = createStorage();
     const api = createApi();
-    api.set.mockResolvedValueOnce({
-      ok: false as const,
-      rejected: true as const,
-      message: "ownership changed",
+    api.set.mockImplementation(async (args: { value?: unknown }) => {
+      if (args.value === "light") {
+        return {
+          ok: false as const,
+          rejected: true as const,
+          message: "ownership changed",
+        };
+      }
+      return { ok: true as const, value: null };
     });
     const stop = startAccountSettingsSync(
       baseOptions({
@@ -292,7 +318,7 @@ describe("accountSettingsSync (renderer)", () => {
     await settle();
     expect(state.theme).toBe("dark");
 
-    rows.push(row("chatFontSizePx", 18, "2026-02-01T00:00:00.000Z"));
+    rows.push(row("chatFontSizePx", 18, "2030-02-01T00:00:00.000Z"));
     timers[0]?.();
     await settle();
     expect(api.sync).toHaveBeenCalledTimes(1);
@@ -314,7 +340,12 @@ describe("accountSettingsSync (renderer)", () => {
     );
     await settle();
     state.setTheme("light");
-    expect(api.set).toHaveBeenCalledTimes(1);
+    expect(api.set).toHaveBeenCalledWith({
+      scope: "all",
+      key: "theme",
+      value: "light",
+      expectedAccountUserId: "__signed-in__",
+    });
 
     // The server's copy predates the local edit: a pull must leave it alone.
     rows.push(row("theme", "dark", "2026-01-01T00:00:00.000Z"));
@@ -470,6 +501,7 @@ describe("accountSettingsSync (renderer)", () => {
       baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
     );
     await settle();
+    api.set.mockClear();
     stop();
     state.setTheme("light");
     await settle();

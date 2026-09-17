@@ -100,6 +100,12 @@ export type AccountMigrationRunnerOptions = {
   getReceiptDir?: () => string;
   /** Bumped by the account lifecycle whenever its vault ownership is purged. */
   getAccountMigrationGeneration: () => number;
+  /**
+   * Fired when a launched run finishes. `complete` is false when hydration
+   * failed or a source stayed pending, so the lifecycle can clear its latch
+   * and retry on a later ready tick.
+   */
+  onMigrationSettled?: (complete: boolean) => void;
 };
 
 export function getOpenAccountContexts<T extends AccountMigrationContext>(
@@ -302,67 +308,89 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
       }
     };
     accountMigrationInFlight = (async () => {
+      let complete = true;
       try {
-        const { hydrateApiKeysFromVault } = await import("../ai/apiKeyStore");
-        await hydrateApiKeysFromVault();
-      } catch (error) {
-        options.getLogger().warn?.("account.vault_hydrate_failed", {
-          source: "provider_api_keys",
-          error: errorMessage(error),
-        });
-      }
-      if (!isCurrent()) return;
-      for (const context of openAccountContexts()) {
-        if (!isCurrent()) return;
         try {
-          await context.linearCredentialService?.hydrateFromVault();
-          await context.projectSecretService?.hydrateFromVault();
+          const { hydrateApiKeysFromVault } = await import("../ai/apiKeyStore");
+          await hydrateApiKeysFromVault();
         } catch (error) {
+          complete = false;
           options.getLogger().warn?.("account.vault_hydrate_failed", {
-            source: "project_context",
+            source: "provider_api_keys",
             error: errorMessage(error),
           });
         }
-        if (!isCurrent()) return;
-      }
-      const migrationOptions = () => ({
-        receiptDir: options.getReceiptDir?.() ?? resolveMachineAdeLayout().adeDir,
-        getAccountUserId: () => isCurrent() ? ownerToken.userId : null,
-        isCurrent,
-        logger: {
-          info: (message: string, meta?: Record<string, unknown>) => options.getLogger().info?.(message, meta),
-          warn: (message: string, meta?: Record<string, unknown>) => options.getLogger().warn?.(message, meta),
-        },
-      });
-      if (!isCurrent()) return;
-      await runAccountMigration({
-        ...migrationOptions(),
-        sources: {
-          provider_api_keys: () => migrateProviderApiKeys(isCurrent, ownerToken.userId),
-          linear_credentials: () => migrateLinearRefreshToken(isCurrent, ownerToken.userId),
-        },
-      });
-      for (const context of openAccountContexts()) {
-        if (!isCurrent()) return;
-        const projectRoot = context.project?.rootPath;
-        if (!projectRoot) continue;
-        await runAccountMigration({
-          ...migrationOptions(),
-          projectRoot,
-          sources: {
-            project_secrets: () => migrateProjectSecrets(context, isCurrent, ownerToken.userId),
+        if (!isCurrent()) {
+          complete = false;
+          return;
+        }
+        for (const context of openAccountContexts()) {
+          if (!isCurrent()) {
+            complete = false;
+            return;
+          }
+          try {
+            await context.linearCredentialService?.hydrateFromVault();
+            await context.projectSecretService?.hydrateFromVault();
+          } catch (error) {
+            complete = false;
+            options.getLogger().warn?.("account.vault_hydrate_failed", {
+              source: "project_context",
+              error: errorMessage(error),
+            });
+          }
+          if (!isCurrent()) {
+            complete = false;
+            return;
+          }
+        }
+        const migrationOptions = () => ({
+          receiptDir: options.getReceiptDir?.() ?? resolveMachineAdeLayout().adeDir,
+          getAccountUserId: () => isCurrent() ? ownerToken.userId : null,
+          isCurrent,
+          logger: {
+            info: (message: string, meta?: Record<string, unknown>) => options.getLogger().info?.(message, meta),
+            warn: (message: string, meta?: Record<string, unknown>) => options.getLogger().warn?.(message, meta),
           },
         });
-      }
-    })()
-      .catch((error) => {
+        if (!isCurrent()) {
+          complete = false;
+          return;
+        }
+        const machineRun = await runAccountMigration({
+          ...migrationOptions(),
+          sources: {
+            provider_api_keys: () => migrateProviderApiKeys(isCurrent, ownerToken.userId),
+            linear_credentials: () => migrateLinearRefreshToken(isCurrent, ownerToken.userId),
+          },
+        });
+        if (machineRun.pending.length > 0 || machineRun.failed.length > 0) complete = false;
+        for (const context of openAccountContexts()) {
+          if (!isCurrent()) {
+            complete = false;
+            return;
+          }
+          const projectRoot = context.project?.rootPath;
+          if (!projectRoot) continue;
+          const projectRun = await runAccountMigration({
+            ...migrationOptions(),
+            projectRoot,
+            sources: {
+              project_secrets: () => migrateProjectSecrets(context, isCurrent, ownerToken.userId),
+            },
+          });
+          if (projectRun.pending.length > 0 || projectRun.failed.length > 0) complete = false;
+        }
+      } catch (error) {
+        complete = false;
         options.getLogger().warn?.("account.migration_failed", {
           error: errorMessage(error),
         });
-      })
-      .finally(() => {
+      } finally {
         accountMigrationInFlight = null;
-      });
+        options.onMigrationSettled?.(complete);
+      }
+    })();
     return true;
   };
 

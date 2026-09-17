@@ -281,8 +281,21 @@ export function createAccountCacheStore<
     return cache;
   }
 
-  function persist(): void {
-    if (!cache) return;
+  function snapshotCache(
+    current: AccountCacheFile<TRow, TPending>,
+  ): AccountCacheFile<TRow, TPending> {
+    return {
+      version: current.version,
+      seqCounter: current.seqCounter,
+      accountUserId: current.accountUserId,
+      cursor: current.cursor,
+      rows: { ...current.rows },
+      pending: current.pending.map((entry) => ({ ...entry })),
+    };
+  }
+
+  function persist(): boolean {
+    if (!cache) return true;
     const { rows, ...rest } = cache;
     const serialized = { ...rest, [rowsField]: rows };
     try {
@@ -294,12 +307,12 @@ export function createAccountCacheStore<
       } else {
         writeFileAtomic(cachePath, contents, { mode: 0o600 });
       }
+      return true;
     } catch (error) {
-      // A cache that cannot be written still serves this process correctly, so
-      // failing the user's change would be worse than losing the copy.
       logger.warn(config.events.writeFailed, {
         error: error instanceof Error ? error.message : String(error ?? ""),
       });
+      return false;
     }
   }
 
@@ -353,6 +366,7 @@ export function createAccountCacheStore<
       return false;
     }
 
+    const before = snapshotCache(current);
     mutator(current, (write) => queueInto(current, write));
 
     // The callback is synchronous today, but keep the check on both sides of
@@ -363,7 +377,10 @@ export function createAccountCacheStore<
       dropMutation(epoch !== epochAtEntry ? "epoch_changed" : "owner_changed");
       return false;
     }
-    persist();
+    if (!persist()) {
+      cache = before;
+      return false;
+    }
     return true;
   }
 
@@ -431,7 +448,7 @@ export function createAccountCacheStore<
           if (cached) cached.updatedAt = uploadedAt;
         }
       }
-      persist();
+      if (!persist()) return "failed";
     }
 
     // Then pull, page by page. A truncated page is not a finished cache:
@@ -467,7 +484,7 @@ export function createAccountCacheStore<
           after.rows[key] = next;
         }
         if (page.cursor) after.cursor = page.cursor;
-        persist();
+        if (!persist()) return "failed";
         if (!page.truncated) return "ready";
         logger.info(config.events.pullTruncated, { cursor: after.cursor, page: pageIndex + 1 });
         if ((page.cursor ?? null) === (cursorAtPull ?? null)) return "unavailable";

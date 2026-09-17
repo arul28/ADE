@@ -362,6 +362,23 @@ describe("account settings store", () => {
     expect(logger.warn).toHaveBeenNthCalledWith(2, "account.settings_mutation_dropped", { reason: "signed_out" });
   });
 
+  it("rolls back an in-memory write when the cache file cannot be persisted", () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const store = makeStore({ logger });
+    expect(store.set("all", "appearance.theme", "dark")).toBe(true);
+
+    const cachePath = store.cachePathForTests();
+    fs.rmSync(cachePath, { force: true });
+    fs.mkdirSync(cachePath);
+
+    expect(store.set("all", "appearance.theme", "light")).toBe(false);
+    expect(store.get("all", "appearance.theme")).toBe("dark");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "account.settings_cache_write_failed",
+      expect.objectContaining({ error: expect.any(String) }),
+    );
+  });
+
   it("A1: rejects set and remove when the expected owner differs", () => {
     const store = makeStore();
 
