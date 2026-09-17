@@ -9037,9 +9037,14 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.iosSimulatorOpenSystemSettings, async (_event, arg = {}): Promise<{ ok: boolean }> => {
-    const pane: IosSimulatorPrivacyPane = (arg as { pane?: unknown } | null)?.pane === "automation"
-      ? "automation"
-      : "screen-recording";
+    // Validated against the union rather than narrowed by one `===`: the pane
+    // list grew a third member (Accessibility, which Mac Desktop needs) and a
+    // hand-rolled ternary silently routed it to Screen Recording instead.
+    const requested = (arg as { pane?: unknown } | null)?.pane;
+    const pane: IosSimulatorPrivacyPane =
+      requested === "automation" || requested === "accessibility" || requested === "screen-recording"
+        ? requested
+        : "screen-recording";
     return openSimulatorPrivacyPane(pane);
   });
 

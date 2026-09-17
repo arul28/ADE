@@ -506,8 +506,20 @@ export function ChatMacDesktopPanel({
     );
   }
 
-  const permissionBlocked = status?.permissions.screenRecording === "denied"
-    || status?.permissions.accessibility === "denied";
+  /**
+   * The one permission line, and which pane it opens.
+   *
+   * Screen Recording first when both are missing: without it there is no
+   * picture at all, so it is the grant that changes what the user can see. The
+   * pane ids are the simulator's, deliberately — the two tools want the same
+   * two macOS grants and one opener is one thing to keep working.
+   */
+  const blockedPermission: { message: string; pane: "screen-recording" | "accessibility" } | null =
+    status?.permissions.screenRecording === "denied"
+      ? { message: "Screen Recording is off for ADE on the lane's Mac.", pane: "screen-recording" }
+      : status?.permissions.accessibility === "denied"
+        ? { message: "Accessibility is off for ADE on the lane's Mac.", pane: "accessibility" }
+        : null;
   const parkedLine = windows.length
     ? windows.map((entry) => [entry.appName, entry.title].filter(Boolean).join(" — ")).join(" · ")
     : "No windows parked yet";
@@ -599,17 +611,21 @@ export function ChatMacDesktopPanel({
       </div>
 
       {/* ── One-line permission state ─────────────────────────────────── */}
-      {permissionBlocked ? (
+      {blockedPermission ? (
         <p className="flex items-center gap-2 px-1 text-[12px] text-amber-300" data-testid="mac-desktop-permission">
           <WarningCircle size={12} />
-          {status?.permissions.screenRecording === "denied"
-            ? "Screen Recording is off for ADE on the lane's Mac."
-            : "Accessibility is off for ADE on the lane's Mac."}
-          {status?.hostIsLocal && status.permissions.screenRecording === "denied" ? (
+          {blockedPermission.message}
+          {/*
+            The opener only appears for a display hosted on THIS Mac. A grant is
+            made on the machine the display lives on, so opening this computer's
+            System Settings for a remote lane would send the user to the wrong
+            box entirely — the sentence names that machine instead.
+          */}
+          {status?.hostIsLocal ? (
             <button
               type="button"
               className="underline underline-offset-2"
-              onClick={() => void openIosSimSettingsPane("screen-recording").catch(() => {})}
+              onClick={() => void openIosSimSettingsPane(blockedPermission.pane).catch(() => {})}
             >
               Open System Settings
             </button>
