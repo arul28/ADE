@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import {
   CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
   CTO_VOICE_INITIAL_STATE,
+  ctoVoiceMicrophoneMessage,
   type CtoVoiceStatePayload,
 } from "../../../shared/types/ctoVoice";
 import { CtoVoiceStartSheet } from "./CtoVoiceStartSheet";
@@ -28,12 +29,15 @@ const startFreshSession = vi.fn(async () => ({
 const onClose = vi.fn();
 
 let callState: CtoVoiceStatePayload = { ...CTO_VOICE_INITIAL_STATE, isCallOwner: true };
+/** The microphone verdict, which arrives AFTER the phase goes live. */
+let captureReady = false;
 let microphoneFailure: { kind: string; message: string } | null = null;
 const clearCtoMicrophoneFailure = vi.fn(() => { microphoneFailure = null; });
 
 vi.mock("./useCtoVoiceCall", () => ({
   useCtoVoiceCall: () => ({ state: callState, start }),
   useCtoMicrophoneFailure: () => microphoneFailure,
+  useCtoCaptureReady: () => captureReady,
   clearCtoMicrophoneFailure: () => clearCtoMicrophoneFailure(),
 }));
 
@@ -59,7 +63,9 @@ beforeEach(() => {
   onClose.mockClear();
   clearCtoMicrophoneFailure.mockClear();
   microphoneFailure = null;
+  captureReady = false;
   callState = { ...CTO_VOICE_INITIAL_STATE, isCallOwner: true };
+  vi.useRealTimers();
   (globalThis.window as unknown as { ade: unknown }).ade = {
     app: {
       runtimeTarget: { platform: "darwin", arch: "arm64" },
@@ -75,7 +81,7 @@ afterEach(() => {
 });
 
 describe("CtoVoiceStartSheet", () => {
-  it("goes straight to connecting, and closes once the call is live", async () => {
+  it("goes straight to connecting, and closes once the microphone is open", async () => {
     const { rerender } = render(<CtoVoiceStartSheet onClose={onClose} />);
 
     // No key step: the sheet asks for the call first and only falls back to a
@@ -86,9 +92,50 @@ describe("CtoVoiceStartSheet", () => {
     // the user with a header notice and no way forward.
     expect(onClose).not.toHaveBeenCalled();
 
+    // A live PHASE is not enough. The microphone is opened by the HUD host
+    // after this point, so a sheet that closes here is a sheet that is gone
+    // before the device can refuse.
     setLive();
     rerender(<CtoVoiceStartSheet onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-connecting")).toBeTruthy());
+    expect(onClose).not.toHaveBeenCalled();
+
+    captureReady = true;
+    rerender(<CtoVoiceStartSheet onClose={onClose} />);
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps a microphone refusal that lands after the call went live inside the sheet", async () => {
+    const { rerender } = render(<CtoVoiceStartSheet onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-connecting")).toBeTruthy());
+
+    // The exact race: the phase reaches a live value first, and the device
+    // answers a moment later. The sheet has to still be there to say so.
+    setLive();
+    rerender(<CtoVoiceStartSheet onClose={onClose} />);
+    microphoneFailure = { kind: "os-denied", message: ctoVoiceMicrophoneMessage("os-denied", "darwin") };
+    rerender(<CtoVoiceStartSheet onClose={onClose} />);
+
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+    expect(screen.getByTestId("cto-voice-try-again")).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("stops waiting for a microphone verdict that never comes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(<CtoVoiceStartSheet onClose={onClose} />);
+      await vi.advanceTimersByTimeAsync(0);
+      setLive();
+      rerender(<CtoVoiceStartSheet onClose={onClose} />);
+      expect(onClose).not.toHaveBeenCalled();
+      // No host to open the device, no failure either: the call is up, so the
+      // sheet gives way rather than spinning over a working call.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("falls back to the key step only when the call says there is no key", async () => {
@@ -109,8 +156,7 @@ describe("CtoVoiceStartSheet", () => {
 
     microphoneFailure = {
       kind: "dev-build",
-      message: "This is a development build. macOS cannot ask it for the microphone."
-        + " Start ADE from Terminal, or allow 'Electron' under Microphone in System Settings.",
+      message: ctoVoiceMicrophoneMessage("dev-build", "darwin"),
     };
     rerender(<CtoVoiceStartSheet onClose={onClose} />);
 
@@ -126,7 +172,7 @@ describe("CtoVoiceStartSheet", () => {
   it("sends a machine with no input device to the sound pane, not the privacy one", async () => {
     microphoneFailure = {
       kind: "no-device",
-      message: "No microphone is connected. Plug one in or pick an input under System Settings, Sound.",
+      message: ctoVoiceMicrophoneMessage("no-device", "darwin"),
     };
     render(<CtoVoiceStartSheet onClose={onClose} />);
     await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
@@ -138,6 +184,40 @@ describe("CtoVoiceStartSheet", () => {
       ade: { app: { openSystemSettingsPane: ReturnType<typeof vi.fn> } };
     }).ade.app.openSystemSettingsPane;
     await waitFor(() => expect(open).toHaveBeenCalledWith("macos-sound-input"));
+  });
+
+  it("offers the Windows sound pane to a Windows owner with no input device", async () => {
+    (globalThis.window as unknown as {
+      ade: { app: { runtimeTarget: { platform: string } } };
+    }).ade.app.runtimeTarget.platform = "win32";
+    microphoneFailure = {
+      kind: "no-device",
+      message: ctoVoiceMicrophoneMessage("no-device", "win32"),
+    };
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+    expect(screen.getByText(/Windows Settings › System › Sound › Input/)).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("cto-voice-open-mic-settings"));
+
+    const open = (globalThis.window as unknown as {
+      ade: { app: { openSystemSettingsPane: ReturnType<typeof vi.fn> } };
+    }).ade.app.openSystemSettingsPane;
+    await waitFor(() => expect(open).toHaveBeenCalledWith("windows-sound"));
+  });
+
+  it("keeps the sentence but drops the button on Linux, where no pane can be opened", async () => {
+    (globalThis.window as unknown as {
+      ade: { app: { runtimeTarget: { platform: string } } };
+    }).ade.app.runtimeTarget.platform = "linux";
+    microphoneFailure = {
+      kind: "no-device",
+      message: ctoVoiceMicrophoneMessage("no-device", "linux"),
+    };
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+    expect(screen.getByText(/your desktop's sound settings/)).toBeTruthy();
+    expect(screen.queryByTestId("cto-voice-open-mic-settings")).toBeNull();
   });
 
   it("opens the microphone pane by id, never by URL", async () => {

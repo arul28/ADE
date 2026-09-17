@@ -103,6 +103,33 @@ export function spoken(fake: ReturnType<typeof createFakeSocket>): string[] {
     .filter((value): value is string => typeof value === "string");
 }
 
+/**
+ * The silent `system` items ADE put in the conversation, as their text.
+ *
+ * A note, not a line to read out: it is added to the history and nothing else
+ * is sent for it, so nothing is spoken until something asks for a response.
+ * The "still working" sentences and the note behind a confirmation are both
+ * made of these.
+ */
+export function systemNotes(fake: ReturnType<typeof createFakeSocket>): string[] {
+  return fake.sent
+    .filter((message) => {
+      const item = message.item as { type?: unknown; role?: unknown } | undefined;
+      return message.type === "conversation.item.create"
+        && item?.type === "message"
+        && item.role === "system";
+    })
+    .map((message) => {
+      const content = (message.item as { content?: Array<{ text?: unknown }> }).content ?? [];
+      return String(content[0]?.text ?? "");
+    });
+}
+
+/** Just the "still working" ones. */
+export function workingNudges(fake: ReturnType<typeof createFakeSocket>): string[] {
+  return systemNotes(fake).filter((text) => text.includes("still running"));
+}
+
 /** Responses the model was asked to generate for itself, in the conversation. */
 export function modelResponses(fake: ReturnType<typeof createFakeSocket>): number {
   return fake.sent

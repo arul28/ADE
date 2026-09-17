@@ -24,6 +24,10 @@ export const SYSTEM_SETTINGS_PANE_URLS = {
    * A different pane from Microphone on purpose: permission and hardware are
    * different problems, and a machine with no built-in microphone needs the one
    * that lists inputs, not the one that lists apps.
+   *
+   * `?input` is a real anchor, not a guess: the Sound settings extension
+   * declares `allowsXAppleSystemPreferencesURLScheme` and reads a
+   * `DeepLinkAnchorKey` whose values are `input`, `output` and `effects`.
    */
   "macos-sound-input": "x-apple.systempreferences:com.apple.Sound-Settings.extension?input",
   /** Windows Settings › System › Sound. */

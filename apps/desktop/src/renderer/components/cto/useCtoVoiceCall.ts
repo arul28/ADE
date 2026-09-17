@@ -135,6 +135,38 @@ function subscribeMicrophone(listener: () => void) {
   return () => { microphoneListeners.delete(listener); };
 }
 
+/**
+ * True once this window has a live microphone track for the running call.
+ *
+ * The start sheet is the only reader, and it needs this because `start()`
+ * answering `ok` is not the same thing as a call the user can talk on: the
+ * microphone is opened by the HUD host in response to the phase change, which
+ * happens AFTER the sheet has already seen a live phase. Closing on the phase
+ * alone dropped the sheet a beat before the device failed, so a refused or
+ * missing microphone landed on the page notice under the header — a yellow line
+ * with no buttons — instead of in the modal the user was looking at.
+ *
+ * Its own store, alongside the failure one, and for the same reason: the device
+ * lives on this side, and only this side knows it opened.
+ */
+let captureReady = false;
+
+function setCaptureReady(next: boolean): void {
+  if (captureReady === next) return;
+  captureReady = next;
+  microphoneListeners.forEach((listener) => listener());
+}
+
+/** Test seam, and the teardown path: forget that a device was ever open. */
+export function clearCtoCaptureReady(): void {
+  setCaptureReady(false);
+}
+
+/** True while this window holds an open microphone for the call. */
+export function useCtoCaptureReady(): boolean {
+  return useSyncExternalStore(subscribeMicrophone, () => captureReady, () => captureReady);
+}
+
 /** The last microphone refusal, or null. Cleared when a call goes live. */
 export function useCtoMicrophoneFailure(): CtoVoiceMicrophoneFailure | null {
   return useSyncExternalStore(
@@ -534,13 +566,19 @@ export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
     if (!live) {
       stopCapture();
       flushVoicePlayback();
+      setCaptureReady(false);
       return;
     }
     let cancelled = false;
     void startCapture()
       .then(() => {
+        if (cancelled) return;
         // The device opened: whatever the last attempt said is no longer true.
-        if (!cancelled) clearCtoMicrophoneFailure();
+        clearCtoMicrophoneFailure();
+        // And this is the signal the start sheet waits for. It is set HERE,
+        // after the track is confirmed live, rather than beside the phase
+        // change — the whole point is that it is later than the phase.
+        setCaptureReady(true);
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -549,6 +587,7 @@ export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
         // Recorded BEFORE the hang-up: ending the call unmounts the HUD and
         // closes the sheet's connecting state, and the verdict is the only
         // thing either of them can show afterwards.
+        setCaptureReady(false);
         setMicrophoneFailure({ kind, message });
         // The hang-up carries the same sentence because it comes from this
         // side; see `CtoVoiceBridge.end` for why a silent one is not enough.
@@ -584,5 +623,5 @@ export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
     return () => window.removeEventListener(CTO_VOICE_CAPTURE_EVENT, onCapture);
   }, []);
 
-  useEffect(() => () => { stopCapture(); flushVoicePlayback(); }, []);
+  useEffect(() => () => { stopCapture(); flushVoicePlayback(); setCaptureReady(false); }, []);
 }

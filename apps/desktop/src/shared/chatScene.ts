@@ -57,6 +57,27 @@ export const SCENE_LIMITS = {
   readyTimeoutMs: 8_000,
 } as const;
 
+/**
+ * How long the DOM has to hold still, with no animation running, before a
+ * scene is called settled.
+ *
+ * Long enough to bridge the gap between two steps of a staged reveal — a scene
+ * that fades a header in and then, a beat later, counts a number up is one
+ * animation as far as the author is concerned — and short enough that the
+ * still is taken while the view still means what it drew.
+ */
+export const SCENE_SETTLE_QUIET_MS = 600;
+
+/**
+ * The longest a scene may keep the settle watcher waiting after `ready`.
+ *
+ * There has to be a cap: a scene with a looping animation (a pulsing dot, a
+ * marquee) is never quiet and never will be, and without a deadline it would
+ * simply never produce a still. At the cap the host takes the picture anyway —
+ * a frame of a loop is a truthful picture of a view that loops.
+ */
+export const SCENE_SETTLE_MAX_MS = 4_000;
+
 export const SCENE_CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
   "script-src 'unsafe-inline'",
@@ -433,7 +454,89 @@ const SCENE_SDK_SOURCE = `
   // Report height once layout settles so the host can size the frame, and again
   // on any resize the scene causes itself.
   function reportHeight() { post("resize", { height: measure() }); }
-  window.addEventListener("load", function () { reportHeight(); post("ready", { height: measure() }); });
+
+  /*
+   * Settle watch: tell the host the moment this view has finished moving.
+   *
+   * The host needs it because a scene's still has to be taken WHILE the scene
+   * is still up. Freezing at the end of the turn was too late for anything the
+   * user had scrolled past, and too early for nothing — the animation the
+   * author wrote is exactly the part that must have played before the picture
+   * is worth keeping.
+   *
+   * Two signals, because neither alone is enough. getAnimations() sees
+   * WAAPI and CSS animations (ade.animate, a keyframed reveal) but not a
+   * requestAnimationFrame loop; the MutationObserver sees ade.countUp writing
+   * into a text node but not a transform that never touches the DOM. Quiet on
+   * both for SETTLE_QUIET_MS is the definition of stopped.
+   *
+   * Reported exactly once. A scene that keeps animating forever hits the cap
+   * and is reported anyway — a frame of a loop is a truthful picture of a view
+   * that loops — and a late mutation after that must not produce a second
+   * settle, because the host acts on the first one.
+   */
+  var settleReported = false;
+  var quietTimer = null;
+  var capTimer = null;
+  var settleObserver = null;
+
+  function animationsRunning() {
+    try {
+      if (typeof document.getAnimations !== "function") return false;
+      var running = document.getAnimations();
+      for (var i = 0; i < running.length; i++) {
+        if (running[i].playState === "running") return true;
+      }
+      return false;
+    } catch (e) {
+      // A browser without the API cannot report an animation; the mutation
+      // half still speaks for itself.
+      return false;
+    }
+  }
+
+  function reportSettled() {
+    if (settleReported) return;
+    settleReported = true;
+    if (quietTimer !== null) clearTimeout(quietTimer);
+    if (capTimer !== null) clearTimeout(capTimer);
+    try { if (settleObserver) settleObserver.disconnect(); } catch (e) {}
+    post("settled", { height: measure() });
+  }
+
+  function armQuiet() {
+    if (settleReported) return;
+    if (quietTimer !== null) clearTimeout(quietTimer);
+    quietTimer = setTimeout(function () {
+      // Re-arm rather than settle while something is still playing: a long
+      // animation mutates nothing, so the debounce alone would call it quiet
+      // half a second in.
+      if (animationsRunning()) { armQuiet(); return; }
+      reportSettled();
+    }, ${SCENE_SETTLE_QUIET_MS});
+  }
+
+  function watchForSettle() {
+    if (settleObserver || settleReported) return;
+    try {
+      settleObserver = new MutationObserver(armQuiet);
+      settleObserver.observe(document.documentElement, {
+        childList: true, subtree: true, attributes: true, characterData: true,
+      });
+    } catch (e) {
+      settleObserver = null;
+    }
+    capTimer = setTimeout(reportSettled, ${SCENE_SETTLE_MAX_MS});
+    armQuiet();
+  }
+
+  window.addEventListener("load", function () {
+    reportHeight();
+    post("ready", { height: measure() });
+    // Started from 'ready' on purpose: the cap is measured from the moment the
+    // scene is up, not from a document that has not run its script yet.
+    watchForSettle();
+  });
   if (typeof ResizeObserver === "function") {
     try { new ResizeObserver(reportHeight).observe(document.body); } catch (e) {}
   }
@@ -530,14 +633,40 @@ export function buildSceneDocument(args: SceneDocumentArgs): string {
   ].join("\n");
 }
 
+/**
+ * A scene's still, once the bytes are on disk.
+ *
+ * The picture, not the code: a still is what a scene leaves behind so that
+ * scrollback, a reopened chat and a finished voice call all show SOMETHING
+ * rather than an empty gap where a view used to be.
+ *
+ * `uri` is project-relative (`.ade/artifacts/computer-use/…png`) because that
+ * is what `ade-artifact://project/` resolves and what survives a project moving
+ * on disk. `artifactId` is the proof-drawer record when one was created; it can
+ * be null — an unfiled still is still a picture, and losing the drawer row is a
+ * smaller loss than losing the image.
+ */
+export type SceneStillRecord = {
+  uri: string;
+  artifactId: string | null;
+  title: string;
+};
+
 /** Messages the frame is allowed to send. Anything else is dropped. */
 export type SceneHostMessage =
   | { type: "ready"; payload: { height?: number } }
   | { type: "resize"; payload: { height?: number } }
+  /**
+   * The scene has stopped moving: no animation is running and the DOM has been
+   * quiet for {@link SCENE_SETTLE_QUIET_MS}, or {@link SCENE_SETTLE_MAX_MS}
+   * elapsed since `ready`. It is the host's cue to take the still — the moment
+   * the view is finished but before the turn ends and the frame comes down.
+   */
+  | { type: "settled"; payload: { height?: number } }
   | { type: "emit"; payload: { name: string; payload?: unknown } }
   | { type: "error"; payload: { message: string } };
 
-const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "emit", "error"]);
+const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "emit", "error"]);
 
 /**
  * Validate an inbound frame message. The frame is untrusted, so shape-check
@@ -563,7 +692,7 @@ export function parseSceneHostMessage(value: unknown): SceneHostMessage | null {
   const height = typeof payload.height === "number" && Number.isFinite(payload.height)
     ? Math.max(0, Math.min(4000, Math.round(payload.height)))
     : undefined;
-  return type === "ready"
-    ? { type: "ready", payload: { height } }
-    : { type: "resize", payload: { height } };
+  if (type === "ready") return { type: "ready", payload: { height } };
+  if (type === "settled") return { type: "settled", payload: { height } };
+  return { type: "resize", payload: { height } };
 }

@@ -107,7 +107,7 @@ describe("useCtoVoiceAudioOwner", () => {
 
     await waitFor(() => expect(end).toHaveBeenCalled());
     expect(end).toHaveBeenCalledWith(ctoVoiceMicrophoneMessage("in-use", "darwin"));
-    expect(end.mock.calls[0]?.[0]).toBe("Another app may be holding the microphone. Close it and try again.");
+    expect(end.mock.calls[0]?.[0]).toBe("Another app is holding the microphone. Close it and try again.");
   });
 
   it("says there is no microphone when the machine has no input at all", async () => {
@@ -120,9 +120,7 @@ describe("useCtoVoiceAudioOwner", () => {
     render(<AudioOwner state={liveOwner} />);
 
     await waitFor(() => expect(end).toHaveBeenCalled());
-    expect(end.mock.calls[0]?.[0]).toBe(
-      "No microphone is connected. Plug one in or pick an input under System Settings, Sound.",
-    );
+    expect(end.mock.calls[0]?.[0]).toBe(ctoVoiceMicrophoneMessage("no-device", "darwin"));
     expect(getUserMedia).not.toHaveBeenCalled();
   });
 
@@ -135,10 +133,8 @@ describe("useCtoVoiceAudioOwner", () => {
     render(<AudioOwner state={liveOwner} />);
 
     await waitFor(() => expect(end).toHaveBeenCalled());
-    expect(end.mock.calls[0]?.[0]).toBe(
-      "This is a development build. macOS cannot ask it for the microphone."
-      + " Start ADE from Terminal, or allow 'Electron' under Microphone in System Settings.",
-    );
+    expect(end.mock.calls[0]?.[0]).toBe(ctoVoiceMicrophoneMessage("dev-build", "darwin"));
+    expect(end.mock.calls[0]?.[0]).toContain("Terminal");
   });
 
   it("points a Windows user at the Windows pane, from the bridge and not navigator", async () => {
@@ -147,7 +143,7 @@ describe("useCtoVoiceAudioOwner", () => {
     render(<AudioOwner state={liveOwner} />);
 
     await waitFor(() => expect(end).toHaveBeenCalled());
-    expect(end.mock.calls[0]?.[0]).toContain("Windows Settings, Privacy, Microphone");
+    expect(end.mock.calls[0]?.[0]).toContain("Windows Settings › Privacy & security › Microphone");
   });
 
   it("refuses before getUserMedia when the OS gate says the mic is not granted", async () => {

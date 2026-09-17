@@ -77,6 +77,15 @@ export type IdentityThreadRotationDeps<TManaged> = {
     appendDailyEntry: (line: string) => void;
     appendMemoryFact: (line: string) => void;
   } | null;
+  /**
+   * Is a turn running on this thread right now — foreground or background?
+   *
+   * Injected rather than derived from `describeSession().status`, because the
+   * session row only knows about a foreground turn: a Claude background task or
+   * a Codex turn still awaiting its start edge is just as live, and disposing
+   * under one loses the same work.
+   */
+  isTurnActive: (managed: TManaged) => boolean;
   dispose: (args: { sessionId: string }) => Promise<unknown>;
   ensureIdentitySession: (args: {
     identityKey: AgentChatIdentityKey;
@@ -95,6 +104,36 @@ export type IdentityThreadRotationDeps<TManaged> = {
 function clipHandoffLine(value: string, maxChars = 200): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars - 1)}…`;
+}
+
+/**
+ * The sentence the user reads when a rotation arrives mid-answer.
+ *
+ * Lives next to the refusal rather than in the settings page because every
+ * entry point — the settings card, the IPC bridge, `cto_state.startFreshSession`
+ * — surfaces the thrown message verbatim, so one string keeps them in step.
+ */
+export const IDENTITY_ROTATION_TURN_ACTIVE_MESSAGE =
+  "Wait for the current answer to finish, then try again.";
+
+/**
+ * Refusal to retire a thread that is still working.
+ *
+ * Coded so a caller can tell "you asked at a bad moment" from "the rotation
+ * broke", and carrying its own user-facing message because the callers that
+ * already propagate a thrown error need no new mapping to show it.
+ */
+export class IdentityRotationTurnActiveError extends Error {
+  readonly code = "turn-active" as const;
+
+  constructor() {
+    super(IDENTITY_ROTATION_TURN_ACTIVE_MESSAGE);
+    this.name = "IdentityRotationTurnActiveError";
+  }
+}
+
+export function isIdentityRotationTurnActiveError(error: unknown): boolean {
+  return error instanceof IdentityRotationTurnActiveError;
 }
 
 export function createIdentityThreadRotation<TManaged>(
@@ -225,10 +264,18 @@ export function createIdentityThreadRotation<TManaged>(
    * ENDED — which is what puts it in History with its turn count, transcript
    * and all. Identity, memory, daily log and project state are untouched. Only
    * the conversation starts over.
+   *
+   * Refuses while a turn is running. Every entry point here — the settings
+   * card, the IPC bridge, `cto_state.startFreshSession` — can be reached
+   * mid-stream, and disposing then throws away an answer the user is watching
+   * arrive, with nothing to show for it. `force` exists for the one caller that
+   * knows better; the over-limit path does not even need it, because a thread
+   * that cannot take a turn has no live turn to lose.
    */
   const startFreshIdentitySession = async (args: {
     identityKey: AgentChatIdentityKey;
     laneId: string;
+    force?: boolean;
   }): Promise<{
     session: AgentChatSession;
     previousSessionId: string | null;
@@ -239,6 +286,19 @@ export function createIdentityThreadRotation<TManaged>(
 
     if (existing) {
       const managed = deps.ensureManagedSession(existing.sessionId);
+      if (!args.force && deps.isTurnActive(managed)) {
+        // A thread blocked on context overflow reports an active turn it can
+        // never finish — that is the case rotation exists for, so it goes
+        // through. Anything else is work in flight, and the user can wait.
+        const canFinish = getSessionTurnHealth({ sessionId: existing.sessionId }).canTakeTurn;
+        if (canFinish) {
+          deps.logger.info("agent_chat.identity_rotation_refused_turn_active", {
+            identityKey: args.identityKey,
+            sessionId: existing.sessionId,
+          });
+          throw new IdentityRotationTurnActiveError();
+        }
+      }
       try {
         const distilled = await distilIdentityHandoff(managed);
         // The same routine a compaction runs, for the same reason: the rolling

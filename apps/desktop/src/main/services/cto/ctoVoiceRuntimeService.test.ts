@@ -16,6 +16,7 @@ import {
   type CtoVoiceState,
   isVoiceCallLive,
 } from "../../../shared/types/ctoVoice";
+import { CTO_VOICE_FORBIDDEN_VIEW_PHRASES } from "../../../shared/types/ctoVoicePrompt";
 import { createCtoVoiceRuntimeService } from "./ctoVoiceRuntimeService";
 import {
   buildVoiceSceneContract,
@@ -600,6 +601,79 @@ function askCtoOnWire(fake: ReturnType<typeof createFakeSocket>, request: string
 
     await run("how many lanes do we have");
     expect(asked[1]).not.toContain("real HTML, CSS and JavaScript");
+  });
+
+  /**
+   * The scene of 2026-09-17 was real HTML and still useless: four tiles, a
+   * ten-row table of wrapping names and a second table of prose, clipped
+   * partway down by a frame that does not scroll. The turn says how big the
+   * frame is now, and what one scene is allowed to be.
+   */
+  it("tells the CTO how big the frame is and what one scene may hold", async () => {
+    const contract = buildVoiceSceneContract();
+    expect(contract).toContain("about 560px wide");
+    expect(contract).toContain("does NOT scroll");
+    expect(contract).toContain("At most one row of up to 4 stat tiles");
+    expect(contract).toContain("at most ONE table or list of at most 6 rows");
+    expect(contract).toContain("+N more");
+    expect(contract).toContain("text-overflow: ellipsis");
+    expect(contract).toContain("never a sentence or a paragraph inside a cell");
+    expect(contract).toContain("pick the single most useful view");
+    // The healthy rows stay quiet, so the two that need attention are the two
+    // the eye lands on.
+    expect(contract).toContain("--warning");
+    expect(contract).toContain("leave everything healthy in --fg-muted");
+  });
+
+  /**
+   * The example is what actually gets copied, so it has to obey every rule
+   * above it: three tiles, five rows and a "+N more", not the ten-row table the
+   * live call produced.
+   */
+  it("shows an example that fits the rules it just gave", () => {
+    const contract = buildVoiceSceneContract();
+    const example = contract.slice(contract.indexOf('<!-- @scene title="Lanes" -->'));
+    expect(example).toContain("<script>ade.ready();</script>");
+    expect((example.match(/class="tile"/g) ?? []).length).toBe(3);
+    expect((example.match(/class="name"/g) ?? []).length).toBe(5);
+    expect(example).toContain('<td class="more" colspan="3">+5 more</td>');
+    expect(example).toContain('<div class="foot">');
+    // Every name cell is clamped, because one long lane name is what pushed the
+    // live table out of the frame.
+    expect(example).toContain("white-space: nowrap; overflow: hidden; text-overflow: ellipsis");
+  });
+
+  /**
+   * The user asked for a view; they did not ask to be told about one. The turn
+   * prompt is the other half of the brief's rule, and it is asserted the same
+   * way — against the phrases the live answer actually used.
+   */
+  it("never gives the CTO a word for the view when it asks for one", async () => {
+    const asked: string[] = [];
+    const fake = createFakeSocket();
+    const { host } = createVoiceRuntimeHost();
+    const chat = host.agentChatService as unknown as Record<string, unknown>;
+    chat.runSessionTurn = async (args: { text: string }) => {
+      asked.push(args.text);
+      return { outputText: "Ten lanes, two dirty.", status: "completed" };
+    };
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+    await voice.start({ ownerToken: "owner-1" });
+    fake.open();
+    fake.receive({ type: "session.created", session: { id: "sess_1" } });
+    await tick();
+    askCtoOnWire(fake, "show me what's going on");
+    await tick();
+    voice.dispose();
+
+    const prompt = asked[0]!.toLowerCase();
+    expect(prompt).toContain("the user asked to see this, so draw it");
+    for (const forbidden of CTO_VOICE_FORBIDDEN_VIEW_PHRASES) {
+      expect(prompt).not.toContain(forbidden);
+    }
   });
 
   /**

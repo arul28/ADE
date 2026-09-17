@@ -6,11 +6,11 @@ import {
   isVoiceCallLive,
   type CtoVoiceMicrophoneBlockKind,
 } from "../../../shared/types/ctoVoice";
-import type { SystemSettingsPaneId } from "../../../shared/types/systemSettings";
-import { rendererRuntimeTarget } from "../../lib/platform";
 import { COLORS } from "../lanes/laneDesignTokens";
+import { ctoMicrophoneSettingsAction, openCtoSettingsPane } from "./ctoMicrophoneFix";
 import {
   clearCtoMicrophoneFailure,
+  useCtoCaptureReady,
   useCtoMicrophoneFailure,
   useCtoVoiceCall,
 } from "./useCtoVoiceCall";
@@ -31,6 +31,13 @@ import {
  */
 
 const START_FAILURE_TITLE = "ADE cannot start the call";
+
+/**
+ * How long a live call may go without a microphone verdict before the sheet
+ * stops waiting for one. Long enough for `getUserMedia` plus an OS permission
+ * gate that answers immediately; short enough that it is not a hang.
+ */
+const CAPTURE_WAIT_MS = 4_000;
 
 /**
  * Why a call could not start, in the user's terms.
@@ -94,52 +101,6 @@ async function startFreshCtoSession(): Promise<boolean> {
   }
 }
 
-/**
- * The pane that can actually fix this cause, and what the button should say.
- *
- * Permission and hardware are different problems in different panes: a machine
- * with no microphone needs the one that lists INPUTS, not the one that lists
- * apps, and sending it to the permission pane is how "ADE is already allowed"
- * becomes a dead end.
- */
-function settingsActionFor(kind: CtoVoiceMicrophoneBlockKind | null): {
-  label: string;
-  paneId: SystemSettingsPaneId;
-} | null {
-  if (!kind) return null;
-  const windows = rendererRuntimeTarget().platform === "win32";
-  if (kind === "no-device" || kind === "unavailable") {
-    return {
-      label: "Open sound settings",
-      paneId: windows ? "windows-sound" : "macos-sound-input",
-    };
-  }
-  if (kind === "in-use") return null;
-  return {
-    label: "Open microphone settings",
-    paneId: windows ? "windows-microphone" : "macos-microphone",
-  };
-}
-
-/**
- * Open an OS pane by id, never by URL.
- *
- * `x-apple.systempreferences:` and `ms-settings:` are deliberately outside the
- * external-URL scheme allowlist, so main resolves a small enum against a vetted
- * table instead of the renderer handing it a string. See
- * `shared/types/systemSettings.ts`.
- */
-async function openSettingsPane(paneId: SystemSettingsPaneId): Promise<void> {
-  const open = window.ade?.app?.openSystemSettingsPane;
-  if (!open) return;
-  try {
-    await open(paneId);
-  } catch {
-    // A pane that will not open is not worth a second failure on top of the
-    // one already on screen.
-  }
-}
-
 function SheetButton({
   label,
   onClick,
@@ -169,6 +130,11 @@ function SheetButton({
 export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
   const { state, start } = useCtoVoiceCall();
   const microphoneFailure = useCtoMicrophoneFailure();
+  // A live phase is not a call the user can talk on; an open microphone is. The
+  // sheet waits for this rather than for the phase, because the device is
+  // opened after the phase changes and its refusal would otherwise land behind
+  // a sheet that had already closed.
+  const captureReady = useCtoCaptureReady();
   // Connecting first, always. The key step is a FALLBACK reached by asking and
   // being told there is no key — not a branch decided by probing for one — so
   // there is one path through this sheet whether a key exists or not, and a
@@ -253,12 +219,29 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
     setPhase("blocked");
   }, [microphoneFailure]);
 
-  // The one exit that is not a click: the call is up, so the sheet's job is
-  // done. Guarded on `blocked` because a call that failed and was torn down can
-  // pass back through a live-looking phase on its way to `ended`.
+  // The one exit that is not a click: the call is up AND this window has the
+  // microphone, so the sheet's job is done. Guarded on `blocked` because a call
+  // that failed and was torn down can pass back through a live-looking phase on
+  // its way to `ended`.
   useEffect(() => {
-    if (live && phase === "connecting") onClose();
-  }, [live, phase, onClose]);
+    if (live && captureReady && phase === "connecting") onClose();
+  }, [live, captureReady, phase, onClose]);
+
+  /**
+   * The sheet is not allowed to wait forever.
+   *
+   * Waiting for the device is right, but only the HUD host can ever set that
+   * flag, and a build where it is not mounted — or a window that is not the
+   * call owner by the time the device opens — would leave a spinner over a call
+   * that is running perfectly well. So a live call with no verdict either way
+   * closes the sheet anyway: at that point the call IS up, and a microphone
+   * that fails later still has the page notice.
+   */
+  useEffect(() => {
+    if (!live || captureReady || phase !== "connecting") return;
+    const timer = window.setTimeout(onClose, CAPTURE_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [live, captureReady, phase, onClose]);
 
   // A call that died before it went live, with nothing the microphone can
   // explain — a refused key, a socket that never came up. The sentence is the
@@ -297,7 +280,7 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
     );
   }
 
-  const settingsAction = settingsActionFor(failure?.microphone ?? null);
+  const settingsAction = ctoMicrophoneSettingsAction(failure?.microphone ?? null);
   // The one refusal the owner can clear without leaving this sheet.
   const chatOverLimit = failure?.error === "chat-unavailable";
 
@@ -314,7 +297,7 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
           <SheetButton
             label={settingsAction.label}
             testId="cto-voice-open-mic-settings"
-            onClick={() => { void openSettingsPane(settingsAction.paneId); }}
+            onClick={() => { void openCtoSettingsPane(settingsAction.paneId); }}
           />
         ) : null}
         {chatOverLimit ? (

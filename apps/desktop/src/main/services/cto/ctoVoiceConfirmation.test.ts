@@ -263,6 +263,10 @@ describe("isDestructiveVoiceCommand", () => {
       "gh pr merge 42",
       "gh release create v1.0.0",
       "npm publish",
+      // Any push, not just a forced one: a plain push publishes the same
+      // commits to the same branch, and `gitPush` has always been tap-only.
+      "git push origin main",
+      "git push",
     ]) {
       expect(isDestructiveVoiceCommand(command), command).toBe(true);
     }
@@ -271,7 +275,8 @@ describe("isDestructiveVoiceCommand", () => {
   it("does not fire on the day-to-day", () => {
     for (const command of [
       "git status",
-      "git push origin main",
+      "git pull",
+      "git fetch --all",
       "git log --oneline -20",
       "npm test",
       "ls -la",

@@ -109,6 +109,7 @@ describe("the cto_voice domain", () => {
       "cto_voice",
       services.cto_voice as Record<string, unknown>,
     )).toEqual([
+      "attachStill",
       "end",
       "getState",
       "hasKey",
@@ -2085,7 +2086,7 @@ describe("runtime computer-use artifact actions", () => {
         path: snapshotPath,
         title: "Merged pull requests",
         sessionId: "chat-1",
-      })).resolves.toEqual({ filed: true, ownerSessionId: "chat-1" });
+      })).resolves.toEqual({ filed: true, ownerSessionId: "chat-1", artifactId: null });
       expect(broker.ingest).toHaveBeenCalledTimes(1);
       const payload = broker.ingest.mock.calls[0][0] as {
         owners?: { kind: string; id: string }[];
@@ -2102,7 +2103,7 @@ describe("runtime computer-use artifact actions", () => {
         getSessionSummary: vi.fn(async () => null),
       });
       await expect(service.ingestSceneSnapshot({ path: snapshotPath, sessionId: "other-project-chat" }))
-        .resolves.toEqual({ filed: true, ownerSessionId: null });
+        .resolves.toEqual({ filed: true, ownerSessionId: null, artifactId: null });
       expect((broker.ingest.mock.calls[0][0] as { owners?: unknown }).owners).toBeUndefined();
     });
 

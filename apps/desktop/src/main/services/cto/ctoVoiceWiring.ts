@@ -214,6 +214,7 @@ function resolveTransport(host: CtoVoiceHost, senderId: number): CtoVoiceTranspo
     pullAudio: (args) => inProcess.pullAudio(args),
     resolveApproval: (args) => inProcess.resolveApproval(args),
     sendCapture: (args) => inProcess.sendCapture(args),
+    attachStill: (args) => inProcess.attachStill(args),
   };
   return {
     transport: {
@@ -791,6 +792,25 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
         note: typeof arg?.note === "string" ? arg.note : "",
       })
       .catch((error) => host.logger?.warn("cto_voice.capture_failed", { error: String(error) }));
+  });
+
+  /**
+   * Keep a still of a scene the running call drew.
+   *
+   * Not gated on call ownership, for the same reason `attachImage` is not: the
+   * window that draws the HUD is the window that can capture its frame, and on
+   * a machine with several ADE windows that need not be the one holding the
+   * microphone. What it carries is a record of bytes already filed, so there is
+   * nothing here a non-owning window could use to reach the socket.
+   */
+  ipcMain.handle(IPC.ctoVoiceAttachStill, async (_event, arg: { still?: unknown }): Promise<void> => {
+    const active = call;
+    if (!active) return;
+    const still = arg?.still as { uri?: unknown } | null | undefined;
+    if (!still || typeof still.uri !== "string" || !still.uri.trim().length) return;
+    await active.transport
+      .call("attachStill", { ownerToken: active.token, still })
+      .catch((error) => host.logger?.warn("cto_voice.still_failed", { error: String(error) }));
   });
 
   ipcMain.handle(IPC.ctoVoiceHasKey, async (event): Promise<boolean> => {

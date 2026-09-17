@@ -44,6 +44,13 @@ export function isDestructiveVoiceTool(toolName: string): boolean {
  * by accident, and applied to the command text only.
  */
 const CTO_VOICE_DESTRUCTIVE_COMMAND_PATTERNS: readonly RegExp[] = [
+  // ANY push, not just a forced one. `gitPush` is on the tool list above, so a
+  // spoken "yes" can never publish through ADE's own operation — and a plain
+  // `git push origin main` publishes exactly the same commits to exactly the
+  // same branch. The force variants stay below because they are what the
+  // pattern is named for, and a narrowing edit to this line must not silently
+  // take them with it.
+  /\bgit\s+push\b/i,
   /\bgit\s+push\b[^\n]*\s(?:--force|-f)\b/i,
   /\bgit\s+push\b[^\n]*--force-with-lease\b/i,
   /\bgit\s+reset\s+--hard\b/i,

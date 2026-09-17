@@ -5,7 +5,7 @@ import path from "node:path";
 // `AdeRuntime` the same way and for the same reason.
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { projectAttachmentsDir, stageAttachmentBytes } from "../../../shared/chatAttachmentStagingFs";
-import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
+import { SCENE_FENCE_LANGUAGE, type SceneStillRecord } from "../../../shared/chatScene";
 import { isContextOverflowFailureText } from "../../../shared/types/chat";
 import {
   CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
@@ -613,7 +613,12 @@ export function createCtoVoiceRuntimeService(
               // "you may add a fence" reads as an option and "show me" did not
               // read as an instruction to draw.
               voiceRequestAsksForVisual(intent)
-                ? `The user asked to SEE this, so draw it: end your sentences with exactly one \`\`\`${SCENE_FENCE_LANGUAGE} fence containing a real rendering of what they asked for — actual values, actual labels, not a placeholder or a description of a picture. Say your sentences as well; the fence is what they look at while you talk.\n${buildVoiceSceneContract()}`
+                // Not a word about the view, in either direction. The answer of
+                // 2026-09-17 opened with "You should see a picture beside the
+                // call that lays out the current state" — a whole sentence
+                // spent telling the user about something already in front of
+                // them. What they want to hear is what it SAYS.
+                ? `The user asked to SEE this, so draw it: end your sentences with exactly one \`\`\`${SCENE_FENCE_LANGUAGE} fence containing a real rendering of what they asked for — actual values, actual labels, never a placeholder and never a description of one. Say your sentences as well, and write them as if the user is already looking at what you drew: say what it shows, and never mention the view itself — not that it exists, not where it is, not what it looks like, and not that you made it.\n${buildVoiceSceneContract()}`
                 : `When a picture says it better than words, you may add exactly one \`\`\`${SCENE_FENCE_LANGUAGE} fence after your sentences. Never more than one, and never instead of speaking.`,
               // This sentence does not create the gate — the hold in
               // `setCallConfirmMode` does. It only tells the CTO what is about
@@ -677,12 +682,13 @@ export function createCtoVoiceRuntimeService(
         }
       },
 
-      persistCall: async ({ callId, startedAt, endedAt, captions, costUsd }: {
+      persistCall: async ({ callId, startedAt, endedAt, captions, costUsd, stills }: {
         callId: string;
         startedAt: string;
         endedAt: string;
         captions: CtoVoiceState["captions"];
         costUsd: number;
+        stills: SceneStillRecord[];
       }) => {
         if (!ctoMemoryService) return;
         const minutes = Math.max(0, (Date.parse(endedAt) - Date.parse(startedAt)) / 60_000);
@@ -694,6 +700,12 @@ export function createCtoVoiceRuntimeService(
           `- Length: ${minutes.toFixed(1)} min`,
           `- Cost: $${costUsd.toFixed(2)} at $${CTO_VOICE_USD_PER_MINUTE.toFixed(2)}/min`,
           "",
+          // The views the call drew, by artifact path rather than as words: the
+          // call record is what the CTO reads back later, and "I drew them a
+          // chart" is only useful if the chart can still be found.
+          ...(stills.length
+            ? ["## Views drawn", "", ...stills.map((still) => `- ${still.title} — ${still.uri}`), ""]
+            : []),
           "## Transcript",
           "",
           ...captions.map((caption) => `**${caption.role}**: ${caption.text}`),
@@ -1010,6 +1022,30 @@ export function createCtoVoiceRuntimeService(
       const pngBase64 = typeof args?.pngBase64 === "string" ? args.pngBase64 : "";
       if (!pngBase64) return { ok: false, error: "bad-request", detail: "the capture carried no image" };
       service?.attachImage({ pngBase64, note: typeof args?.note === "string" ? args.note : "" });
+      return { ok: true };
+    },
+
+    /**
+     * Keep the still of a scene the call drew.
+     *
+     * The bytes are already in the project's artifact store — the renderer put
+     * them there through the same jailed route the Proof button uses — so what
+     * crosses here is a record, and this process never takes a path from the
+     * other side that it then reads.
+     */
+    async attachStill(args?: {
+      ownerToken?: string;
+      still?: { uri?: unknown; artifactId?: unknown; title?: unknown };
+    }): Promise<CtoVoiceActionResult> {
+      const token = readOwnerToken(args);
+      if (!touchOwner(token)) return NOT_OWNER;
+      const uri = typeof args?.still?.uri === "string" ? args.still.uri.trim() : "";
+      if (!uri) return { ok: false, error: "bad-request", detail: "the still carried no artifact" };
+      service?.attachStill({
+        uri,
+        artifactId: typeof args?.still?.artifactId === "string" ? args.still.artifactId : null,
+        title: (typeof args?.still?.title === "string" ? args.still.title.trim() : "") || "Generated view",
+      });
       return { ok: true };
     },
 

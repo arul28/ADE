@@ -7,6 +7,8 @@ import {
   CTO_VOICE_TURN_BURST_LIMIT,
   CTO_VOICE_TURN_BURST_WINDOW_MS,
   CTO_VOICE_SAMPLE_RATE,
+  CTO_VOICE_WORKING_NUDGE_AFTER_MS,
+  CTO_VOICE_WORKING_NUDGE_EVERY_MS,
   ctoVoiceStatusLine,
   ctoVoiceTranscriptHasSpeech,
 } from "../../../shared/types/ctoVoice";
@@ -23,6 +25,7 @@ import {
   spoken,
   tick,
   utter,
+  workingNudges,
 } from "./ctoVoiceCallHarness";
 import { createResponseQueue } from "./ctoVoiceResponseQueue";
 import { createTranscriptBurstValve } from "./ctoVoiceTurnBurst";
@@ -616,6 +619,42 @@ describe("end_call", () => {
       await vi.advanceTimersByTimeAsync(CTO_VOICE_END_CALL_AUDIO_TAIL_MS + 1);
 
       expect(harness.latest().phase).toBe("ended");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The views a call drew have to outlive it.
+   *
+   * The scene is rendered by the HUD, which is unmounted the instant the call
+   * ends, so the picture reaches the transcript card only if the call carried
+   * it — a card about a chart with no chart in it is what the owner reported.
+   */
+  it("carries the stills of the views it drew into the durable record", async () => {
+    vi.useFakeTimers();
+    try {
+      const persistCall = vi.fn(async () => {});
+      const harness = createService({ persistCall });
+      await openCall(harness);
+
+      harness.service.attachStill({ uri: ".ade/artifacts/computer-use/a.png", artifactId: "a1", title: "PRs" });
+      // The same view settling twice is the same picture.
+      harness.service.attachStill({ uri: ".ade/artifacts/computer-use/a.png", artifactId: "a1", title: "PRs" });
+      harness.service.attachStill({ uri: ".ade/artifacts/computer-use/b.png", artifactId: "a2", title: "Lanes" });
+      // A record with no artifact behind it is not a still.
+      harness.service.attachStill({ uri: "", artifactId: null, title: "nothing" });
+
+      endCallOnWire(harness);
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_END_CALL_AUDIO_TAIL_MS + 1);
+
+      expect(persistCall).toHaveBeenCalledTimes(1);
+      const persisted = (persistCall as unknown as { mock: { calls: [{ stills: { uri: string }[] }][] } })
+        .mock.calls[0]![0].stills;
+      expect(persisted.map((still) => still.uri)).toEqual([
+        ".ade/artifacts/computer-use/a.png",
+        ".ade/artifacts/computer-use/b.png",
+      ]);
     } finally {
       vi.useRealTimers();
     }
@@ -1909,5 +1948,143 @@ describe("a create the server refused", () => {
     sent.length = 0;
     queue.stopSpeaking();
     expect(sent).toHaveLength(0);
+  });
+});
+
+/**
+ * A request that runs long, and the silence it used to leave behind.
+ *
+ * Measured on the call of 2026-09-17: an `ask_cto` for "what's going on,
+ * visualize it" ran 36 seconds and the user heard nothing at all after the
+ * acknowledgement. The nudge is company, not information — the model is asked
+ * to find its own sentence, in the conversation so it can be talked over, and
+ * it is never told anything about the result it does not have yet.
+ */
+describe("a request that runs long", () => {
+  /** A call with an `ask_cto` running that never finishes until it is told to. */
+  async function askAndWait() {
+    let release: (result: CtoVoiceBackendResult) => void = () => {};
+    const harness = createService({
+      runBackendTurn: () => new Promise<CtoVoiceBackendResult>((resolve) => { release = resolve; }),
+    });
+    await openCall(harness);
+    askCto(harness, "what's going on");
+    await vi.advanceTimersByTimeAsync(0);
+    return { harness, release: () => release({ spoken: "Ten lanes, two dirty." }) };
+  }
+
+  /** The wire's answer to the nudge's own response, so the one-response lock reopens. */
+  function finishNudgeResponse(harness: ReturnType<typeof createService>, id: string) {
+    harness.fake.receive({ type: "response.created", response: { id } });
+    harness.fake.receive({ type: "response.done", response: { id, status: "completed", output: [] } });
+  }
+
+  it("says something once the request has been silent for the first wait", async () => {
+    vi.useFakeTimers();
+    try {
+      const { harness } = await askAndWait();
+
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_WORKING_NUDGE_AFTER_MS - 1);
+      expect(workingNudges(harness.fake)).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const nudges = workingNudges(harness.fake);
+      expect(nudges).toHaveLength(1);
+      expect(nudges[0]).toContain("about 7 seconds so far");
+      expect(nudges[0]).toContain("do not invent results");
+      // Asked for IN the conversation, so the user can talk over it — the
+      // opposite of every line ADE writes for itself.
+      expect(modelResponses(harness.fake)).toBe(1);
+      expect(spoken(harness.fake)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says something again after the longer gap, not after the first one", async () => {
+    vi.useFakeTimers();
+    try {
+      const { harness } = await askAndWait();
+
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_WORKING_NUDGE_AFTER_MS);
+      finishNudgeResponse(harness, "resp_nudge_1");
+
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_WORKING_NUDGE_EVERY_MS - 1);
+      expect(workingNudges(harness.fake)).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const nudges = workingNudges(harness.fake);
+      expect(nudges).toHaveLength(2);
+      expect(nudges[1]).toContain("about 19 seconds so far");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the moment the answer comes back", async () => {
+    vi.useFakeTimers();
+    try {
+      const { harness, release } = await askAndWait();
+
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_WORKING_NUDGE_AFTER_MS);
+      finishNudgeResponse(harness, "resp_nudge_1");
+      expect(workingNudges(harness.fake)).toHaveLength(1);
+
+      release();
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_WORKING_NUDGE_EVERY_MS * 4);
+
+      expect(workingNudges(harness.fake)).toHaveLength(1);
+      expect(functionOutputs(harness.fake))
+        .toContainEqual({ status: "ok", answer: "Ten lanes, two dirty." });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** The same setting that decides whether it acknowledges at all. */
+  it("says nothing at all when the user asked it to work silently", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createService({
+        backchannelsEnabled: () => false,
+        runBackendTurn: () => new Promise<CtoVoiceBackendResult>(() => {}),
+      });
+      await openCall(harness);
+      askCto(harness, "what's going on");
+      await vi.advanceTimersByTimeAsync(CTO_VOICE_WORKING_NUDGE_AFTER_MS * 5);
+
+      expect(workingNudges(harness.fake)).toEqual([]);
+      expect(modelResponses(harness.fake)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * A question ADE asked out loud is the only thing the user should be hearing
+   * about. A cheerful "still working on it" over an open permission gate is the
+   * call talking past the one sentence it needs an answer to.
+   */
+  it("says nothing while a question is waiting to be answered", async () => {
+    vi.useFakeTimers();
+    try {
+      const { harness } = await askAndWait();
+      harness.service.raiseApproval({
+        itemId: "item-1",
+        toolName: "Bash",
+        prompt: "Shall I run the tests?",
+      });
+
+      await vi.advanceTimersByTimeAsync(
+        CTO_VOICE_WORKING_NUDGE_AFTER_MS + CTO_VOICE_WORKING_NUDGE_EVERY_MS,
+      );
+
+      expect(workingNudges(harness.fake)).toEqual([]);
+      // The question itself is still asked, and it is ADE's own words.
+      expect(spoken(harness.fake)).toHaveLength(1);
+      expect(spoken(harness.fake)[0]).toContain("Shall I run the tests?");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -96,6 +96,7 @@ import {
 } from "./chatTranscriptRows";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
+import { rememberCallStill, resetSceneStillsForTest } from "./sceneStillStore";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
@@ -5986,6 +5987,42 @@ describe("AgentChatMessageList voice calls", () => {
     fireEvent.click(caret);
 
     expect(screen.getByTestId("voice-call-rows")).toBeTruthy();
+  });
+
+  /**
+   * The owner's report: "after an image scene the CTO makes, make sure there is
+   * a still". A call's scene is drawn by the HUD, which is gone by the time the
+   * card exists, so the picture has to be carried into the card or the call
+   * reads as if it never drew anything.
+   */
+  it("shows the views the call drew, collapsed as a thumbnail and expanded in full", () => {
+    rememberCallStill("call-1", {
+      uri: ".ade/artifacts/computer-use/red-checks.png",
+      artifactId: "a1",
+      title: "Red checks",
+    });
+    try {
+      renderMessageList(callEvents);
+
+      const thumb = screen.getByTestId("voice-call-still-thumb");
+      expect(thumb.getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/computer-use/red-checks.png");
+
+      fireEvent.click(screen.getByTestId("voice-call-caret"));
+      expect(screen.queryByTestId("voice-call-still-thumb")).toBeNull();
+      const stills = screen.getByTestId("voice-call-stills");
+      expect(stills.textContent).toContain("Red checks");
+      expect(screen.getByTestId("voice-call-still")).toBeTruthy();
+    } finally {
+      resetSceneStillsForTest();
+    }
+  });
+
+  it("draws no tile for a call that never drew anything", () => {
+    renderMessageList(callEvents);
+    expect(screen.queryByTestId("voice-call-still-thumb")).toBeNull();
+    fireEvent.click(screen.getByTestId("voice-call-caret"));
+    expect(screen.queryByTestId("voice-call-stills")).toBeNull();
   });
 
   it("leaves a transcript with no voice events untouched", () => {

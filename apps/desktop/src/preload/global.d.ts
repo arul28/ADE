@@ -2296,6 +2296,15 @@ declare global {
           /** The chat that drew the scene; proof is chat-scoped. */
           sessionId?: string | null;
         }) => Promise<boolean>;
+        /**
+         * Keep the settle-time still. Resolves the stored record, or null when
+         * there is no project, no bytes, or no capture route.
+         */
+        storeStill: (args: {
+          dataUrl: string;
+          title: string;
+          sessionId?: string | null;
+        }) => Promise<import("../shared/chatScene").SceneStillRecord | null>;
       };
       computerUse: {
         listArtifacts: (

@@ -9,6 +9,7 @@ import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import type { CtoVoiceBridge, CtoVoiceStatePayload } from "../shared/types/ctoVoice";
+import type { SceneStillRecord } from "../shared/chatScene";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
@@ -7686,6 +7687,8 @@ const adeBridge = {
     deny: (id: string) => ipcRenderer.invoke(IPC.ctoVoiceDeny, { id }) as Promise<void>,
     attachImage: (args: { pngBase64: string; note: string }) =>
       ipcRenderer.invoke(IPC.ctoVoiceAttachImage, args) as Promise<void>,
+    attachStill: (args: { still: SceneStillRecord }) =>
+      ipcRenderer.invoke(IPC.ctoVoiceAttachStill, args) as Promise<void>,
     hasKey: () => ipcRenderer.invoke(IPC.ctoVoiceHasKey) as Promise<boolean>,
     onState: (handler: (state: CtoVoiceStatePayload) => void) => {
       const listener = (_event: unknown, payload: unknown) => handler(payload as CtoVoiceStatePayload);
@@ -7720,6 +7723,9 @@ const adeBridge = {
     attachProof: (
       args: { dataUrl?: string | null; title: string; sessionId?: string | null },
     ): Promise<boolean> => ipcRenderer.invoke(IPC.sceneAttachProof, args),
+    storeStill: (
+      args: { dataUrl: string; title: string; sessionId?: string | null },
+    ): Promise<SceneStillRecord | null> => ipcRenderer.invoke(IPC.sceneStoreStill, args),
   },
   orchestration: createOrchestrationBridge({
     callAction: (action, args, ipcChannel, pin) => {

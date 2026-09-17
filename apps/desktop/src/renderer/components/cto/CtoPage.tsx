@@ -12,7 +12,7 @@ import type {
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { CtoTalkButton } from "./CtoTalkButton";
+import { CtoTalkButton, CtoTalkNoticeLine, type CtoTalkNotice } from "./CtoTalkButton";
 import { CtoSettingsPage } from "./CtoSettingsPage";
 import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
@@ -41,7 +41,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** Why the last call could not start. Its own line, so the header never moves. */
-  const [talkNotice, setTalkNotice] = useState<string | null>(null);
+  const [talkNotice, setTalkNotice] = useState<CtoTalkNotice | null>(null);
   const [switchingModel, setSwitchingModel] = useState(false);
   /**
    * Whether ADE thinks this thread should be rotated, and whether it can still
@@ -393,16 +393,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             </button>
           </div>
         </div>
-        {talkNotice ? (
-          <p
-            data-testid="cto-talk-error"
-            role="status"
-            className="truncate border-t border-white/[0.05] px-4 py-1.5 text-[11px] leading-[1.5] text-amber-300/85"
-            title={talkNotice}
-          >
-            {talkNotice}
-          </p>
-        ) : null}
+        {talkNotice ? <CtoTalkNoticeLine notice={talkNotice} /> : null}
       </div>
 
       {showRotationPrompt && threadHealth ? (
@@ -661,8 +652,8 @@ function CtoRotationPrompt({
         </div>
         <div className="mt-0.5 text-[11.5px] leading-[1.5] text-muted-fg/60">
           {blocked
-            ? "The CTO can't answer until you start a fresh session. Nothing it remembers is lost, and this conversation stays in History."
-            : "Starting a fresh session keeps everything the CTO remembers — this conversation stays in History. ADE won't do it on its own."}
+            ? "The CTO can't answer until you start a fresh session. Nothing it remembers is lost, and this conversation moves to Past threads."
+            : "Starting a fresh session keeps everything the CTO remembers — this conversation moves to Past threads. ADE won't do it on its own."}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">

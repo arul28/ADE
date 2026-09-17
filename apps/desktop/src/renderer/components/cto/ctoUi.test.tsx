@@ -4,8 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
-import { CtoHistoryList, dayLabel, sessionDuration, sessionTitle } from "./CtoHistoryList";
-import { CtoSettingsPage, VOICE_GRID_COLUMNS } from "./CtoSettingsPage";
+import {
+  CtoHistoryList,
+  dayLabel,
+  sessionDuration,
+  sessionRetirementNote,
+  sessionTitle,
+} from "./CtoHistoryList";
+import { CTO_PAST_THREADS_DESCRIPTION, CtoSettingsPage, VOICE_GRID_COLUMNS } from "./CtoSettingsPage";
 import { CtoMemoryPanel } from "./CtoMemoryPanel";
 import { CtoPage } from "./CtoPage";
 import { useAppStore } from "../../state/appStore";
@@ -492,7 +498,7 @@ describe("CtoPage settings", () => {
     expect(startFreshSession).not.toHaveBeenCalled();
     // And the question says what survives rather than asking "are you sure".
     expect(screen.getByTestId("cto-fresh-session-confirm-text").textContent).toBe(
-      "Everything the CTO remembers is kept, and this conversation stays in History."
+      "Everything the CTO remembers is kept, and this conversation moves to Past threads."
       + " Only the live thread starts over.",
     );
 
@@ -501,6 +507,17 @@ describe("CtoPage settings", () => {
     await waitFor(() => expect(startFreshSession).toHaveBeenCalledTimes(1));
     expect((await screen.findByTestId("cto-fresh-session-result")).textContent)
       .toBe("Fresh session started. The CTO wrote a hand-off note.");
+  });
+
+  it("shows the renamed section, and its description, in the settings rail", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Past threads/ }));
+
+    expect(screen.getByText(CTO_PAST_THREADS_DESCRIPTION)).toBeTruthy();
+    // The old word is what made it read as a pile of separate assistants.
+    expect(screen.queryByRole("button", { name: /^History/ })).toBeNull();
   });
 
   it("backs out of the confirm without retiring anything", async () => {
@@ -530,7 +547,7 @@ describe("CtoPage settings", () => {
     fireEvent.click(screen.getByTestId("cto-fresh-session-confirm"));
 
     expect((await screen.findByTestId("cto-fresh-session-result")).textContent)
-      .toContain("still in History in full");
+      .toContain("kept in Past threads in full");
   });
 
   it("keeps the rotation prompt away while the thread has room", async () => {
@@ -688,6 +705,40 @@ describe("CtoHistoryList", () => {
     cleanup();
     render(<CtoHistoryList sessions={[{ ...entry, capabilityMode: "fallback" }]} />);
     expect(screen.getByTestId("session-history-list").textContent).toContain("Limited tools");
+  });
+
+  it("says what a retired thread cost and what survived it", () => {
+    expect(sessionRetirementNote({ ...entry, turnCount: 12 }))
+      .toBe("Retired after 12 turns · memory carried over");
+    // A thread from before the count still says the part that matters.
+    expect(sessionRetirementNote(entry)).toBe("Retired · memory carried over");
+    // Nothing has been carried over from a thread that is still going.
+    expect(sessionRetirementNote({ ...entry, endedAt: null }))
+      .toBe("Still running · this is the live thread");
+  });
+
+  it("puts the note on the row, so the list never reads as separate assistants", () => {
+    render(<CtoHistoryList sessions={[{ ...entry, turnCount: 3 }]} />);
+    expect(screen.getByTestId("cto-history-row-note").textContent)
+      .toBe("Retired after 3 turns · memory carried over");
+  });
+
+  it("says the current thread is still running when nothing has been retired", () => {
+    render(<CtoHistoryList sessions={[]} />);
+    expect(screen.getByText(/No thread has been retired in this project yet/)).toBeTruthy();
+  });
+});
+
+describe("CTO settings sections", () => {
+  afterEach(cleanup);
+
+  it("calls the section Past threads and explains that the CTO itself carries on", () => {
+    // The owner read "History" as a list of different CTOs and asked why it is
+    // not one ever-learning session. It is: only the thread underneath rotates.
+    expect(CTO_PAST_THREADS_DESCRIPTION).toContain("one assistant with one memory");
+    expect(CTO_PAST_THREADS_DESCRIPTION).toContain("retired");
+    expect(CTO_PAST_THREADS_DESCRIPTION).toContain("carry over");
+    expect(CTO_PAST_THREADS_DESCRIPTION.split(". ").length).toBe(2);
   });
 });
 

@@ -23,11 +23,11 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 
 ### Renderer (`apps/desktop/src/renderer/components/cto/`)
 
-- `CtoPage.tsx` — the `/cto` shell. A single full-bleed chat thread (`AgentChatPane` with a locked session), not tabs. The slim header shows only the CTO name/avatar and Settings gear; model controls stay in settings. The CTO composer also hides lane, permission, model, reasoning, and fast-mode controls because the session is project-level, always full-access, and settings-owned. There is no setup wizard and no first-run card — a project that has never picked a model opens on `ModelPickCard`, which is the CTO's welcome screen. The primary session is cached module-side so it stays warm across tab switches, and is obtained via `window.ade.cto.ensureSession()`. When the wake retries are exhausted the thread is replaced by a failure pane rather than a raw error line: it says the CTO didn't answer and that the thread is still there, puts the underlying error in a `TechnicalDetailsFold`, and offers **Try again**, which resets the retry budget and re-runs the wake effect — a failure pane with no way out is a dead end. It also owns `ModelPickCard` (`data-testid="cto-model-pick"`), which takes the thread's place while `modelPreferences` is null; the wake effect is gated on the same condition **and** on the identity snapshot having landed, so nothing materializes a session before the pick is known or on a provider the user has not chosen.
-- `CtoSettingsPage.tsx` — settings as a page, not a sheet. A left rail of six sections — Identity, Model, Voice, Memory, Prompt, History — and one topic per pane at a readable width. The page opens on Model, because the model pick is the setting users change most; that pane pairs the picker with a `ModelFactsCard` whose every line comes from the descriptor through `modelFacts.ts`, so the card and the picker row cannot describe one model two ways. The Voice pane renders `OpenAiKeySection` above a two-column grid of the ten `CTO_VOICE_VOICES` — two columns because ten divides evenly and no tile is left alone on a line — and the backchannel toggle. It replaced a 440px drawer that stacked a model picker, a raw markdown editor, a 4.5k-token prompt and a history list in one column, where the things you change sat above two blocks you only read. Memory and Prompt now open on request. Identity carries the name and standing instructions only: the CTO's *voice* is still the doctrine's, and `IMMUTABLE_CTO_DOCTRINE` is not editable from here.
+- `CtoPage.tsx` — the `/cto` shell. A single full-bleed chat thread (`AgentChatPane` with a locked session), not tabs. The slim header shows only the CTO name/avatar and Settings gear; model controls stay in settings. The CTO composer also hides lane, permission, model, reasoning, and fast-mode controls because the session is project-level, always full-access, and settings-owned. There is no setup wizard and no first-run card — a project that has never picked a model opens on `ModelPickCard`, which is the CTO's welcome screen. The primary session is cached module-side so it stays warm across tab switches, and is obtained via `window.ade.cto.ensureSession()`. When the wake retries are exhausted the thread is replaced by a failure pane rather than a raw error line: it says the CTO didn't answer and that the thread is still there, puts the underlying error in a `TechnicalDetailsFold`, and offers **Try again**, which resets the retry budget and re-runs the wake effect — a failure pane with no way out is a dead end. The failure line under the header is `CtoTalkNoticeLine`, and it carries the same "Open sound settings" / "Open microphone settings" button the start sheet offers: this line is where a microphone verdict lands once the sheet has closed; while the sheet is open the verdict renders there instead, because it now waits for the device rather than for the phase. The button is macOS and Windows only; on Linux there is no vetted pane URL, so the sentence names the desktop's own sound settings instead. It also owns `ModelPickCard` (`data-testid="cto-model-pick"`), which takes the thread's place while `modelPreferences` is null; the wake effect is gated on the same condition **and** on the identity snapshot having landed, so nothing materializes a session before the pick is known or on a provider the user has not chosen.
+- `CtoSettingsPage.tsx` — settings as a page, not a sheet. A left rail of six sections — Identity, Model, Voice, Memory, Prompt, Past threads — and one topic per pane at a readable width. The last one is called **Past threads**, not History, and says why it exists in two sentences (`CTO_PAST_THREADS_DESCRIPTION`): the CTO is one assistant with one memory, running on a conversation thread that is retired when it fills up or the owner starts fresh, and its memory, identity and daily log carry over into the next one. The section id stays `history` because that is what the rail routes on; only the words changed, after an owner read the old ones as a list of different CTOs. The page opens on Model, because the model pick is the setting users change most; that pane pairs the picker with a `ModelFactsCard` whose every line comes from the descriptor through `modelFacts.ts`, so the card and the picker row cannot describe one model two ways. The Voice pane renders `OpenAiKeySection` above a two-column grid of the ten `CTO_VOICE_VOICES` — two columns because ten divides evenly and no tile is left alone on a line — and the backchannel toggle. It replaced a 440px drawer that stacked a model picker, a raw markdown editor, a 4.5k-token prompt and a history list in one column, where the things you change sat above two blocks you only read. Memory and Prompt now open on request. Identity carries the name and standing instructions only: the CTO's *voice* is still the doctrine's, and `IMMUTABLE_CTO_DOCTRINE` is not editable from here.
 - `ctoSettingsUi.tsx` — the settings page's visual vocabulary: `CTO_SECTION_COLORS` (one accent per section, the way each Settings section has a brand colour), `CtoCard`, and the rest of the type ramp. It imports `SettingsSectionShell` directly rather than copying it, and hand-builds only what is not shareable — two settings surfaces sitting side by side in one app must not read as two products.
-- `CtoHistoryList.tsx` — every session the CTO has run in this project, as a list you can scan. `sessionTitle` strips the "Session closed: " prefix the log writer put there, because the row should lead with the work rather than with the machine's sentence, and the rows carry no raw tool-tier enum.
-- `CtoVoiceStartSheet.tsx` — everything between pressing **Talk** with no key and hearing the CTO, as one sheet. It stays up through connecting and closes only once the call is actually live; a failure renders *inside* it while it is open and only falls back to the page notice once it has closed, because two surfaces showing one sentence at once teaches the user to read neither. Every start failure the main process names gets its own line, and an unrecognised one still gets a sentence. It also owns the microphone-block path (`CTO_VOICE_MICROPHONE_BLOCK_TITLE`), which deep-links to the right settings pane rather than describing a path.
+- `CtoHistoryList.tsx` — every thread the CTO has retired in this project, as a list you can scan. `sessionTitle` strips the "Session closed: " prefix the log writer put there, because the row should lead with the work rather than with the machine's sentence, and the rows carry no raw tool-tier enum. Each row carries one note under the title from `sessionRetirementNote` — "Retired after 12 turns · memory carried over", or "Still running · this is the live thread" for one that has not ended — which is where the list answers the question the old columns raised: nothing the CTO knows went with the thread. The turn count is no longer a separate column, because the note already says it.
+- `CtoVoiceStartSheet.tsx` — everything between pressing **Talk** with no key and hearing the CTO, as one sheet. It stays up through connecting and closes only once the call is live **and this window has an open microphone** — `useCtoCaptureReady()`, set by the HUD host after `getUserMedia` hands back a live track. A live phase is not a call you can talk on: the device is opened after the phase changes, so a sheet that closed on the phase alone was gone a beat before the microphone could refuse, which is how a refusal came to land on the page notice with no button on it. A verdict that never arrives is not allowed to wedge the sheet either — a live call with no answer either way closes it after four seconds, because at that point the call genuinely is up; a failure renders *inside* it while it is open and only falls back to the page notice once it has closed, because two surfaces showing one sentence at once teaches the user to read neither. Every start failure the main process names gets its own line, and an unrecognised one still gets a sentence. It also owns the microphone-block path (`CTO_VOICE_MICROPHONE_BLOCK_TITLE`), which deep-links to the right settings pane rather than describing a path.
 - `CtoMemoryPanel.tsx` — "what the CTO remembers": an editable `MEMORY.md` textarea (save via `window.ade.cto.updateMemory`), a read-only current thread-state, and a collapsible today's daily log. Loads via `window.ade.cto.getMemory`.
 - `CtoPromptPreview.tsx` — renders the effective, layered system prompt (doctrine, continuity, memory guidance, environment knowledge, capabilities).
 - `useCtoModelOptions.ts` — loads the user's configured model IDs for the settings Model section, and owns `ctoModelSupportsLiveRedirect(descriptor)`, the `ModelPicker` filter both CTO pickers pass. It resolves eligibility through `resolveChatProviderForDescriptor` — the provider the model would actually launch on, never its registry family, because an OpenAI model that is not CLI-wrapped runs under OpenCode, which stages everything. `ctoSessionViewState.ts` — view-state helpers. `shared/designTokens.ts` + `shared/TimelineEntry.tsx` — shared class tokens and the session-history timeline row.
@@ -239,9 +239,9 @@ A single project-level thread is the right default and it has one failure mode: 
 
 - The distillation prefers **asking the CTO** to write its own hand-off note — but only when there is something to summarize *and* `getSessionTurnHealth` says the thread can still take a turn. The case this whole routine exists for can do neither, so the **deterministic** path is not an apology: it builds the note from the session summary, the last eight user messages, and the titles of any scheduled work, all read from disk. If that comes back empty it says so in the entry — "could not be summarized… its full transcript is still on disk under the retired session" — rather than writing nothing.
 - The note goes through the routines a normal turn already uses: `flushIdentityContinuityDeterministic(managed, "session_rotation")`, then the note itself into `continuitySummary` and `thread-state.md` (`writeCtoThreadStateFromSummary`), a dated fact into `memory.md` (`appendMemoryFact`), and one line into the daily log (`appendDailyEntry`).
-- Then the old session is **ended**, which is what puts it in History with its turn count and leaves its transcript on disk, and `ensureIdentitySession({ reuseExisting: false })` creates the replacement. Identity, memory, daily log and project state are untouched; only the conversation restarts. `listIdentitySessions` sorts by `lastActivityAt`, so the next `ensureIdentitySession` resolves to the new thread.
+- Then the old session is **ended**, which is what puts it under Past threads with its turn count and leaves its transcript on disk, and `ensureIdentitySession({ reuseExisting: false })` creates the replacement. Identity, memory, daily log and project state are untouched; only the conversation restarts. `listIdentitySessions` sorts by `lastActivityAt`, so the next `ensureIdentitySession` resolves to the new thread.
 
-**Where it is reachable.** The `cto_state.startFreshSession` action (plus `IPC.ctoStartFreshSession` as the desktop's own fallback) and `window.ade.cto.startFreshSession()`. It is **CTO-only** in `ADE_ACTION_CTO_ONLY.cto_state`: nothing it touches is destructive, but deciding a thread is finished is the operator's call, and an agent that could make it could quietly drop the context it is being supervised with. `cto_state.getThreadHealth` stays open to every role, like `getAttention` — it creates nothing and returns no content. In the UI it is the "Start a fresh session" card under Settings → Model (confirm-before-act, with the plain sentence *"Everything the CTO remembers is kept, and this conversation stays in History. Only the live thread starts over."*), the rotation prompt on the CTO page, and a button on the voice start sheet's refusal card.
+**Where it is reachable.** The `cto_state.startFreshSession` action (plus `IPC.ctoStartFreshSession` as the desktop's own fallback) and `window.ade.cto.startFreshSession()`. It is **CTO-only** in `ADE_ACTION_CTO_ONLY.cto_state`: nothing it touches is destructive, but deciding a thread is finished is the operator's call, and an agent that could make it could quietly drop the context it is being supervised with. `cto_state.getThreadHealth` stays open to every role, like `getAttention` — it creates nothing and returns no content. In the UI it is the "Start a fresh session" card under Settings → Model (confirm-before-act, with the plain sentence *"Everything the CTO remembers is kept, and this conversation moves to Past threads. Only the live thread starts over."*), the rotation prompt on the CTO page, and a button on the voice start sheet's refusal card.
 
 ### Hidden from rosters, but never silent
 
@@ -515,6 +515,51 @@ The tool's description tells the model to say **which one it is doing** in the s
 
 A result comes back as `conversation.item.create` with a `function_call_output` — `{ status, answer }`, plus a short `reason` when a turn was interrupted or failed. **The provider's error text never travels**: it would be read out loud. `reason` is a house sentence (`CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW`, `CTO_VOICE_SPOKEN_TURN_FAILED`), which is the same guarantee the old relay had, moved one layer out.
 
+#### Long pauses while it's working
+
+An `ask_cto` for *"what's going on, visualize it"* ran **36 seconds** on the call
+of 2026-09-17 — 7.8 of them before the CTO's first word, two tool calls — and
+after the acknowledgement the user heard nothing at all. The owner's words for
+it were *"long pauses while it's working"*, which is the right complaint: a call
+that goes quiet for half a minute reads as a call that dropped.
+
+So while a request is running, the call keeps the user company. After
+`CTO_VOICE_WORKING_NUDGE_AFTER_MS` (7 s) of silence it puts a silent `system`
+note in the conversation — *the request you are working on is still running
+(about N seconds so far); say one short, natural sentence to keep the user
+company* — and asks for a response. Then at most every
+`CTO_VOICE_WORKING_NUDGE_EVERY_MS` (12 s), and at most
+`CTO_VOICE_WORKING_NUDGE_MAX` (3) times per request, which covers about forty
+seconds of work — longer than the slowest turn measured.
+
+Five things about it are load bearing:
+
+- **The model finds its own words.** The note is a brief, not a line to read:
+  *vary it, do not repeat yourself, do not invent results, do not ask a
+  question*. A fixed filler every seven seconds is worse company than silence,
+  an invented result is a lie about work that has not finished, and a question
+  hands the turn back to a user who is waiting rather than deciding.
+- **It is created IN the conversation**, unlike every other line ADE asks for
+  (see *Two shapes of `response.create`*). It is the model speaking for itself,
+  and being in the conversation is also what lets the user talk over it —
+  `interrupt_response: true` truncates it the moment they do.
+- **The wait is measured from the last thing the user could HEAR**, not from
+  when the request started: the clock is `outputAudioDeadlineMs`, when the audio
+  handed to the renderer so far finishes playing. An acknowledgement still in
+  the speaker pushes the nudge out behind it rather than talking over it, and a
+  turn that answers inside the wait never nudges at all.
+- **It defers rather than gives up** while a confirmation is open, while the
+  user is mid-utterance, or while a response is already generating. A cheerful
+  *"still working on it"* over an open permission gate talks past the one
+  sentence the call needs an answer to.
+- **It is the `acknowledgeAloud` setting**, read live. Off means the user asked
+  for silence while it works, and a nudge is the same promise as the
+  acknowledgement: company, not information.
+
+Pending nudges are cleared when the answer comes back, when the request is
+cancelled or superseded, and on hang-up. The counter is per **request**, not per
+call: four slow requests are four separate silences.
+
 #### One voice, and it can draw
 
 `buildCtoVoiceInstructions` is the brief, and it is the only place the user's
@@ -538,17 +583,33 @@ once it has the answer.
 
 **And it knows it can show things.** The brief tells the model that a visual, a
 chart, a diagram, a picture, a timeline or a plain *"show me"* is something it
-should pass along and say out loud that it is drawing — *"one picture appears
-beside the call"* — and never something it can only describe. On the live call
+should pass along, and never something it can only describe. On the live call
 the CTO's answer could already carry a ```scene fence that the HUD renders
 beside the conversation; what was missing was anyone telling either end that
 "show me" meant draw. The other end is `runBackendTurn`, where
 `voiceRequestAsksForVisual` scans the request the model wrote and swaps the
 turn's permissive line — *"when a picture says it better than words, you may add
 one fence"* — for an instruction: *the user asked to SEE this, so draw it*, with
-actual values and actual labels, and say your sentences as well. Both live
-scenarios above produced it unprompted: *"I'm pulling up the open pull requests
-and drawing a quick view beside the call."*
+actual values and actual labels, and say your sentences as well.
+
+**But it never talks about the view.** The first version told the model to say
+out loud that it was drawing, and on the call of 2026-09-17 the relayed answer
+opened with *"You should see a picture beside the call that lays out the current
+state"* — a whole spoken sentence about something the user was already looking
+at. A view is furniture. Both halves now say the same thing: what you show is
+simply in front of you both, the way something on the table between you is, so
+talk about what it *says* — *"ADE is up, ten lanes, two of them dirty"* — and
+never about the view itself: not that it exists, not where it is, not what it
+looks like, and not that you made it. The acknowledgement is about the **work**
+too — *"Pulling up the lanes."*, never a sentence about what is about to
+appear.
+
+The rule is "never mention the view", which nothing can be checked against, so
+what is checked is `CTO_VOICE_FORBIDDEN_VIEW_PHRASES` (`ctoVoicePrompt.ts`):
+the phrases the live answer actually used. Both the brief and the *visual* turn
+prompt are asserted to contain none of them, in either acknowledgement mode —
+one list rather than a copy per suite, because a phrase added to one copy would
+quietly only apply to half the words the CTO speaks.
 
 **And the turn now says what a scene IS.** "End your sentences with a ```scene
 fence" was the whole instruction, and on the call of 2026-09-16 the CTO obeyed
@@ -560,12 +621,40 @@ is real HTML, CSS and JS and never text or ASCII art; first line
 `<!-- @scene title="..." -->`; ADE's own CSS variables (`--bg`, `--surface`,
 `--border`, `--fg`, `--fg-muted`, `--accent`, `--success`, `--warning`,
 `--danger`, `--font-sans`, `--font-mono`); no network, no libraries, no remote
-images, data inline, `ade.ready()` when drawn; a table or a grid of cards with
-real values and labels; readable when it stops moving; never an approve or
-confirm control, because ADE owns permission; under about 8 KB — plus one
-ten-line table to copy. It is attached **only** when a visual was asked for: it
-is several hundred characters the other turns should not pay for, and a test
-pins both halves.
+images, data inline, `ade.ready()` when drawn; never an approve or confirm
+control, because ADE owns permission; under about 8 KB. It is attached **only**
+when a visual was asked for: it is several hundred characters the other turns
+should not pay for, and a test pins both halves.
+
+**And it says how big the frame is, and what one scene may hold.** On
+2026-09-17 the CTO drew real HTML — the fix above had landed — and what it drew
+was four stat tiles, a ten-row lane table with wrapping names, and a *second*
+table of prose cells. The frame clipped partway down the first table, so the
+user got half a view of something that was never going to fit. Nothing had told
+the CTO how big the frame is, that it does not scroll, or that a scene is one
+idea rather than everything it happens to know. The contract now carries the
+layout rules as well:
+
+- **Size.** About 560 px wide and about 520 px tall, **no scrolling**, and
+  anything past the bottom edge is cut off and lost.
+- **One idea.** Pick the single most useful view for the question that was
+  asked, not everything you know. At most one row of up to **4** stat tiles,
+  and at most **one** table or list of at most **6** rows — show the five that
+  matter and make the last row a muted `+N more`.
+- **Short labels, never prose in a cell.** Any cell holding a name carries a
+  `max-width` plus `white-space: nowrap; overflow: hidden; text-overflow:
+  ellipsis`, so one long lane name cannot push the table out of the frame.
+- **Colour only what needs attention** — dirty, behind, failing, waiting — with
+  `--warning` or `--danger`, and leave everything healthy in `--fg-muted`. A
+  view where everything is coloured says nothing.
+- `--font-sans` for text and `--font-mono` only for numbers and ids; the title a
+  small uppercase label rather than a heading; one muted footer line with the
+  timestamp.
+
+The example in the contract is what actually gets copied, so it obeys every one
+of those rules — three tiles, five rows, a `+5 more` and a footer — and a test
+asserts that it does, by counting the tiles and the clamped name cells rather
+than by reading it.
 
 **The brief answers the question it was asked.** Two more failures from the same
 call: *"How are you?"* came back as an identity spiel, and the model volunteered
@@ -602,7 +691,7 @@ Sent by ADE:
 | `conversation.item.create` (`function_call_output`) | One `ask_cto` / `cancel_work` / approval / `end_call` result. |
 | `response.create` | Two shapes, and they are not interchangeable — see below. |
 | `response.cancel` | Barge-in, and **only** for a response ADE created itself. Always with the `response_id` from `response.created`: a bare cancel means "the response in the default conversation", which an out-of-band one never is, and the server answers `Cancellation failed: no active response found` while the CTO keeps talking. A cancel that lands before the server has named the response is held and sent the moment it does. |
-| `conversation.item.create` (`system`) | A mid-call capture, and the note that a confirmation is open. Silent — no response is asked for, so nothing is read out. |
+| `conversation.item.create` (`system`) | A mid-call capture, the note that a confirmation is open, and the "still working" note below. Silent in itself — nothing is read out until something asks for a response. |
 
 Handled from OpenAI:
 
@@ -772,6 +861,14 @@ The fix does not hide anything, because the turns are real turns and the tool ca
 - `commitChatEvent` stamps `provenance.voiceCallId` onto the stored and live envelopes while it is set. One choke point, so nothing a turn emits can escape untagged.
 - In the renderer, the collapse pass copies the id onto each render row and `groupVoiceCallRows` folds a maximal consecutive run of rows sharing one call id into a single `voice_call_group` row: a microphone glyph, "Voice call", the duration, the number of exchanges, and the first line of what was said. Collapsed is the default; expanding renders the folded rows inline through the same row renderer, so the utterances, the replies and any approval the call raised are all there. It follows the `boardMove` / `background_job_group` precedent rather than inventing a card shape.
 - A call that connected and produced nothing produces no rows, so there is no run and **no card at all**.
+
+### The views a call drew survive it
+
+A scene drawn on a call is rendered by `CtoVoiceHudHost`, which is unmounted with the HUD the moment the call ends — so a call whose whole answer was a picture left a card with no picture in it. The still is what fixes that, and it is taken *while the call is still running*: `SceneFrame` captures when the scene stops moving (see the chat feature doc, "The still"), not at the end of a turn that, for a HUD scene, never comes.
+
+The host forwards each still twice, because the two readers have different lifetimes. `rememberCallStill` puts the record in the renderer's call-stills index, which is what the transcript card reads back — collapsed it is one thumbnail beside the title, expanded it is a row of tiles with their titles above the folded rows. And `window.ade.ctoVoice.attachStill` hands the same record to the call, which keeps it (deduped by uri, bounded to the last eight) and passes it to `persistCall`, so `.ade/cto/calls/<id>.md` gets a **Views drawn** section listing each artifact by path. That record is what the CTO itself reads back later, and *"I drew them a chart"* is only useful if the chart can still be found.
+
+What crosses these seams is always a **record**, never image bytes and never a path the main process would then read: the renderer stores the PNG first, through the jailed `scene.storeStill` route, and passes on the project-relative uri it got back. A still from another machine has no `ade-artifact://project/` handler to resolve it, so the card draws no tile rather than a broken image.
 
 ### A call never reads an error out loud
 
@@ -1212,8 +1309,8 @@ the markup as `sceneSource`. `CtoVoiceHudHost` renders it in the same
 view drawn in a chat turn are the same component with the same policy.
 
 A malformed or empty fence is deliberately left in the prose rather than
-silently dropped: the user hears something odd, which is a better failure than a
-picture that never appears and text that never mentions it.
+silently dropped: the user hears something odd, which is a better failure than
+an answer that quietly describes nothing while the frame stays empty.
 
 ### The HUD lives at the shell
 

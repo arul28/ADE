@@ -49536,6 +49536,11 @@ export function createAgentChatService(args: {
         appendMemoryFact: (line) => ctoMemoryService.appendMemoryFact(line),
       }
       : null,
+    // The same pair `hasActiveWorkloads` uses: the session row carries the
+    // foreground turn, the runtime carries background tasks and turns that
+    // have not reached their start edge yet.
+    isTurnActive: (managed) =>
+      managed.session.status === "active" || hasRuntimeActiveWorkload(managed.runtime),
     dispose: (args) => dispose(args),
     ensureIdentitySession: (args) => ensureIdentitySession(args),
   });

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MarkdownBlock } from "./chatMarkdownBlock";
 import { SceneFrame } from "./SceneFrame";
+import { readSceneStill, rememberSceneStill, resetSceneStillsForTest } from "./sceneStillStore";
 
 const SCENE = [
   "```scene",
@@ -243,6 +244,197 @@ describe("SceneFrame", () => {
       rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
       expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
+    });
+  });
+
+  /* ─────────────────────── settle-time still ─────────────────────── */
+
+  /**
+   * The picture a scene leaves behind, taken when it STOPS MOVING rather than
+   * when its turn ends.
+   *
+   * Freezing at the end of the turn answered nothing for the two cases the user
+   * actually hits — a scene scrolled out of view by then, and a window too
+   * short to ever hold one fully — because both fall through to "leave the live
+   * frame up", which leaves scrollback and every reopen with no picture at all.
+   */
+  describe("keeping a still of a settled scene", () => {
+    function stubShellRect(rect: Partial<DOMRect>) {
+      const full = { x: 0, y: 0, top: 0, left: 0, width: 400, height: 200, bottom: 200, right: 400, ...rect };
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(full as DOMRect);
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      resetSceneStillsForTest();
+      delete (window as unknown as { ade?: unknown }).ade;
+    });
+
+    async function renderSettlingScene(options: {
+      snapshot?: (rect: unknown) => Promise<string | null>;
+      storeStill?: (args: unknown) => Promise<unknown>;
+      scopeKey?: string;
+      onStill?: (record: { uri: string; artifactId: string | null; title: string }) => void;
+    } = {}) {
+      const snapshot = options.snapshot ?? vi.fn(async () => "data:image/png;base64,STILL");
+      const storeStill = options.storeStill
+        ?? vi.fn(async () => ({ uri: ".ade/artifacts/computer-use/s.png", artifactId: "a1", title: "Generated view" }));
+      (window as unknown as { ade?: unknown }).ade = { scene: { snapshot, storeStill } };
+      const props = {
+        source: '<div id="n">3</div>',
+        live: true,
+        ...(options.scopeKey ? { scopeKey: options.scopeKey } : {}),
+        ...(options.onStill ? { onStill: options.onStill } : {}),
+      };
+      const { rerender } = render(<SceneFrame {...props} />);
+      const frame = await screen.findByTestId("chat-scene-frame");
+      const post = (type: string) => window.dispatchEvent(
+        new MessageEvent("message", {
+          source: (frame as HTMLIFrameElement).contentWindow,
+          data: { __adeScene: 1, type, payload: { height: 200 } },
+        }),
+      );
+      act(() => { post("ready"); });
+      await waitFor(() =>
+        expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running"),
+      );
+      return { rerender, snapshot, storeStill, settle: () => act(() => { post("settled"); }), props };
+    }
+
+    it("captures while the scene is still live, and keeps running", async () => {
+      stubShellRect({});
+      const { snapshot, storeStill, settle } = await renderSettlingScene();
+
+      settle();
+      await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
+      // The still is taken mid-turn; nothing is torn down for it.
+      expect(screen.getByTestId("chat-scene-frame")).toBeTruthy();
+      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running");
+      await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(1));
+      expect((storeStill as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatchObject({
+        dataUrl: "data:image/png;base64,STILL",
+      });
+    });
+
+    /**
+     * The case the owner asked for: a scene that had scrolled away by the end
+     * of its turn used to freeze with NO picture and a live frame left running.
+     * With a settle-time still it freezes to the picture it already has.
+     */
+    it("shows the still on a scene the freeze could never capture", async () => {
+      stubShellRect({});
+      const { rerender, settle, props, snapshot } = await renderSettlingScene();
+      settle();
+      await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
+
+      // Now scroll it half off and end the turn — the freeze capture refuses a
+      // partial rect, and before the still existed that meant nothing at all.
+      stubShellRect({ top: -120, y: -120, bottom: 80 });
+      rerender(<SceneFrame {...props} live={false} />);
+      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
+      expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
+      expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src")).toBe("data:image/png;base64,STILL");
+    });
+
+    it("waits for a partly visible scene to come fully on screen before capturing", async () => {
+      stubShellRect({ top: -120, y: -120, bottom: 80 });
+      const { snapshot, settle } = await renderSettlingScene();
+
+      settle();
+      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
+      // A partial capture is cropped by main and kept forever; never take one.
+      expect(snapshot).not.toHaveBeenCalled();
+
+      stubShellRect({});
+      window.dispatchEvent(new Event("scroll"));
+      await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
+    });
+
+    it("settles on its own when the frame never says it has", async () => {
+      stubShellRect({});
+      vi.useFakeTimers();
+      (window as unknown as { ade?: unknown }).ade = {
+        scene: { snapshot: vi.fn(async () => "data:image/png;base64,STILL") },
+      };
+      render(<SceneFrame source={'<div id="n">3</div>'} live />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const frame = screen.getByTestId("chat-scene-frame");
+      act(() => {
+        window.dispatchEvent(new MessageEvent("message", {
+          source: (frame as HTMLIFrameElement).contentWindow,
+          data: { __adeScene: 1, type: "ready", payload: { height: 200 } },
+        }));
+      });
+      // An older prepared document, or a script that threw before the watcher
+      // was armed: the host runs the same deadline independently.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      const snapshot = (window as unknown as { ade: { scene: { snapshot: ReturnType<typeof vi.fn> } } })
+        .ade.scene.snapshot;
+      expect(snapshot).toHaveBeenCalledTimes(1);
+    });
+
+    it("hands the stored record to a caller that outlives the frame", async () => {
+      stubShellRect({});
+      const onStill = vi.fn();
+      const { settle } = await renderSettlingScene({ scopeKey: "call-1", onStill });
+      settle();
+      await waitFor(() => expect(onStill).toHaveBeenCalledTimes(1));
+      expect(onStill.mock.calls[0]?.[0]).toMatchObject({ uri: ".ade/artifacts/computer-use/s.png" });
+      expect(readSceneStill("call-1")?.record?.artifactId).toBe("a1");
+    });
+
+    /**
+     * A reopened chat: the code must NOT run again. A scene is code an agent
+     * wrote and the still exists precisely so scrollback never re-executes it.
+     */
+    it("shows a stored still instead of re-running the scene on a later mount", async () => {
+      rememberSceneStill("row-9", {
+        record: { uri: ".ade/artifacts/computer-use/old.png", artifactId: "a9", title: "Merged PRs" },
+      });
+      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-9" />);
+
+      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
+      expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
+      expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/computer-use/old.png");
+      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("frozen");
+    });
+
+    /** A scene that IS live on this mount plays out; the still never pre-empts it. */
+    it("still runs the code when the turn that drew it is live", async () => {
+      rememberSceneStill("row-10", {
+        record: { uri: ".ade/artifacts/computer-use/old.png", artifactId: "a10", title: "Merged PRs" },
+      });
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey="row-10" />);
+      expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
+    });
+
+    it("files the settle still as proof when the freeze never captured one", async () => {
+      stubShellRect({});
+      const attachProof = vi.fn(async (_args: { dataUrl?: string | null }) => true);
+      const snapshot = vi.fn(async () => "data:image/png;base64,STILL");
+      (window as unknown as { ade?: unknown }).ade = { scene: { snapshot, attachProof } };
+      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live />);
+      const frame = await screen.findByTestId("chat-scene-frame");
+      act(() => {
+        for (const type of ["ready", "settled"]) {
+          window.dispatchEvent(new MessageEvent("message", {
+            source: (frame as HTMLIFrameElement).contentWindow,
+            data: { __adeScene: 1, type, payload: { height: 200 } },
+          }));
+        }
+      });
+      await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
+
+      // Out of view at the end of the turn, so `snapshot` state is null — the
+      // Proof button used to file nothing at all here.
+      stubShellRect({ top: -120, y: -120, bottom: 80 });
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
+      act(() => { screen.getByTestId("chat-scene-proof").click(); });
+      await waitFor(() => expect(attachProof).toHaveBeenCalledTimes(1));
+      expect(attachProof.mock.calls[0]?.[0]).toMatchObject({ dataUrl: "data:image/png;base64,STILL" });
     });
   });
 

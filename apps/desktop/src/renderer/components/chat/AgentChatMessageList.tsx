@@ -56,6 +56,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import type { SceneStillRecord } from "../../../shared/chatScene";
 import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
@@ -67,6 +68,7 @@ import { normalizePath } from "../../lib/pathUtils";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
+import { sceneStillSrc, useCallStills } from "./sceneStillStore";
 import {
   CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
   splitChatOutputContextSegments,
@@ -2369,6 +2371,28 @@ type RenderEventOptions = NonNullable<Parameters<typeof renderEvent>[1]>;
  * deep by construction. `work_log_group` rows are skipped here for the same
  * reason the timeline skips them: tool work lives in the turn footer.
  */
+/**
+ * One still from a call, or nothing.
+ *
+ * Nothing rather than a broken image: the bytes resolve through
+ * `ade-artifact://project/`, which only exists in a local desktop window, so a
+ * still taken on another machine has no src here and the card simply does not
+ * draw a tile for it.
+ */
+function VoiceCallStill({
+  still,
+  className,
+  testId,
+}: {
+  still: SceneStillRecord;
+  className: string;
+  testId: string;
+}) {
+  const src = sceneStillSrc(still);
+  if (!src) return null;
+  return <img src={src} alt={still.title} data-testid={testId} className={className} />;
+}
+
 function VoiceCallGroupCard({
   event,
   options,
@@ -2379,6 +2403,17 @@ function VoiceCallGroupCard({
   const [expanded, setExpanded] = useState(false);
   const duration = formatCompactDuration(event.durationMs);
   const exchanges = `${event.exchanges} ${event.exchanges === 1 ? "exchange" : "exchanges"}`;
+  /**
+   * The views the call drew.
+   *
+   * They are not in the folded rows and cannot be: a call's scene is rendered
+   * by the HUD, which is gone by the time this card exists, so a card built
+   * only from transcript rows showed a call about a chart with no chart in it.
+   * The still is taken while the scene is still on screen and lands here as a
+   * record of bytes in the project's artifact store — the same picture, from
+   * the place that outlived the frame.
+   */
+  const stills = useCallStills(event.callId);
   return (
     <ChatCard
       skin="rail"
@@ -2411,6 +2446,15 @@ function VoiceCallGroupCard({
             </ChatCardTitle>
             {event.openingLine ? <ChatCardSub>{event.openingLine}</ChatCardSub> : null}
           </span>
+          {/* Collapsed, the picture is a hint that there is one — one thumbnail,
+              not a strip, because the row has to stay a row. */}
+          {!expanded && stills.length ? (
+            <VoiceCallStill
+              still={stills[stills.length - 1]!}
+              className="mt-[1px] h-7 w-10 shrink-0 rounded-[3px] object-cover"
+              testId="voice-call-still-thumb"
+            />
+          ) : null}
           <span className="mt-[3px] shrink-0 text-fg/40" data-testid="voice-call-caret">
             {expanded
               ? <CaretDown size={12} weight="bold" aria-hidden />
@@ -2418,6 +2462,22 @@ function VoiceCallGroupCard({
           </span>
         </button>
       </ChatCardRow>
+      {expanded && stills.length ? (
+        <div className="mt-2.5 flex flex-wrap gap-2" data-testid="voice-call-stills">
+          {stills.map((still) => (
+            <figure key={still.uri} className="m-0 min-w-0">
+              <VoiceCallStill
+                still={still}
+                className="max-h-40 w-auto rounded-[5px] border border-white/[0.07]"
+                testId="voice-call-still"
+              />
+              <figcaption className="mt-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/40">
+                {still.title}
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      ) : null}
       {expanded ? (
         <div className="mt-2.5 space-y-3 border-l border-white/[0.06] pl-3" data-testid="voice-call-rows">
           {event.rows.map((row) => {

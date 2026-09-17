@@ -3,11 +3,25 @@ import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Type-only: `node:fs` is mocked below, so the symlink test reaches for the
+// real modules through `vi.importActual` and borrows only their types here.
+import type * as NodeFs from "node:fs";
+import type * as NodeOs from "node:os";
+import type * as NodePath from "node:path";
+
 const spawnMock = vi.fn();
 const existsSyncMock = vi.fn((_filePath: unknown) => true);
-const statSyncMock = vi.fn((_filePath: unknown) => ({ isFile: () => true, size: 12 }));
+/**
+ * Typed by the shape the helper reads — `isFile()` and `size` — not by the
+ * literal fixture, so the symlink test can hand it a real `fs.Stats`.
+ */
+const statSyncMock = vi.fn(
+  (_filePath: unknown): { isFile: () => boolean; size: number } => ({ isFile: () => true, size: 12 }),
+);
 const readFileSyncMock = vi.fn((_filePath: unknown) => Buffer.from("PNGBYTES"));
 const rmSyncMock = vi.fn();
+/** Identity by default: no symlinks in the fixture paths the other tests use. */
+const realpathSyncMock = vi.fn((filePath: unknown) => filePath as string);
 const mkdirSyncMock = vi.fn();
 const spawnSyncMock = vi.fn((_command: string, _args: string[], _options: object) => ({
   error: undefined,
@@ -29,6 +43,7 @@ vi.mock("node:fs", () => ({
     statSync: (filePath: unknown) => statSyncMock(filePath),
     readFileSync: (filePath: unknown) => readFileSyncMock(filePath),
     rmSync: (filePath: unknown, options: unknown) => rmSyncMock(filePath, options),
+    realpathSync: (filePath: unknown) => realpathSyncMock(filePath),
     mkdirSync: (filePath: unknown, options: unknown) => mkdirSyncMock(filePath, options),
   },
 }));
@@ -106,6 +121,7 @@ describe("CaptureHelper", () => {
     existsSyncMock.mockReturnValue(true);
     statSyncMock.mockReturnValue({ isFile: () => true, size: 12 });
     readFileSyncMock.mockReturnValue(Buffer.from("PNGBYTES"));
+    realpathSyncMock.mockImplementation((filePath: unknown) => filePath as string);
   });
 
   it("does not spawn until the setting turns it on", () => {
@@ -203,6 +219,77 @@ describe("CaptureHelper", () => {
     expect(readFileSyncMock).not.toHaveBeenCalled();
     expect(onFailure).toHaveBeenCalledTimes(1);
     expect(onFailure.mock.calls[0][0].reason).toBe("capture-failed");
+  });
+
+  /**
+   * The lexical jail check clears the NAME. A symlink planted inside the
+   * capture directory has a name that passes and a target anywhere on disk, so
+   * the read has to be re-checked against the path the filesystem will open.
+   *
+   * Driven against the REAL filesystem — a real symlink, a real
+   * `fs.realpathSync` — because a mocked one would only prove the test's own
+   * idea of what a symlink is.
+   */
+  it("refuses a symlink inside the capture directory that points outside it", async () => {
+    const realFs = await vi.importActual<typeof NodeFs>("node:fs");
+    const realOs = await vi.importActual<typeof NodeOs>("node:os");
+    const realPath = await vi.importActual<typeof NodePath>("node:path");
+
+    const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-symlink-"));
+    const outsideDir = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-secret-"));
+    const secret = realPath.join(outsideDir, "secret.png");
+    realFs.writeFileSync(secret, "SECRETBYTES");
+    const planted = realPath.join(root, "capture-1.png");
+    realFs.symlinkSync(secret, planted);
+    const honest = realPath.join(root, "capture-2.png");
+    realFs.writeFileSync(honest, "PNGBYTES");
+
+    // Real fs for everything the delivery path touches, so nothing about the
+    // escape is simulated.
+    realpathSyncMock.mockImplementation((filePath: unknown) => realFs.realpathSync(filePath as string));
+    statSyncMock.mockImplementation((filePath: unknown) => realFs.statSync(filePath as string));
+    readFileSyncMock.mockImplementation((filePath: unknown) => realFs.readFileSync(filePath as string));
+
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const onShot = vi.fn();
+    const onFailure = vi.fn();
+    const helper = new CaptureHelper({
+      executablePath: "/tmp/ade-capture-helper",
+      outputDirectory: root,
+      logger,
+      onShot,
+      onFailure,
+      platform: "darwin",
+      chordCooldownMs: 0,
+    });
+    helper.updateSettings({ enabled: true });
+    child.emit("spawn");
+
+    child.stdout.write('{"type":"chord"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    child.stdout.write(JSON.stringify({ type: "captured", path: planted }) + "\n");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(onShot).not.toHaveBeenCalled();
+    expect(readFileSyncMock).not.toHaveBeenCalled();
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure.mock.calls[0][0].reason).toBe("capture-failed");
+    // The file it pointed at is still there: refusing is not deleting.
+    expect(realFs.existsSync(secret)).toBe(true);
+
+    // ...and an ordinary file in the same directory is still read.
+    child.stdout.write('{"type":"chord"}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    child.stdout.write(JSON.stringify({ type: "captured", path: honest }) + "\n");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onShot).toHaveBeenCalledTimes(1);
+    expect(onShot.mock.calls[0][0].pngBase64).toBe(Buffer.from("PNGBYTES").toString("base64"));
+
+    realFs.rmSync(root, { recursive: true, force: true });
+    realFs.rmSync(outsideDir, { recursive: true, force: true });
   });
 
   /**

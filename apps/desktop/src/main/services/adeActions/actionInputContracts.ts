@@ -114,6 +114,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Attach a window the user captured to the call's next backend turn. The image reaches the CTO thread, never the voice model.",
       input: "object { ownerToken: string, pngBase64: string, note?: string }",
     },
+    attachStill: {
+      description:
+        "Keep a still of a scene the call drew, so the call's transcript card still shows a picture once the HUD is gone. Carries a record of "
+        + "bytes already filed in the project's artifact store, never image data and never a path this process would read.",
+      input: "object { ownerToken: string, still: { uri: string, artifactId?: string | null, title?: string } }",
+    },
   },
   account: {
     startLogin: {

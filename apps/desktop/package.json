@@ -51,7 +51,7 @@
     "validate:win:release": "node ./scripts/validate-win-artifacts.mjs --mode=release",
     "validate:win:release:signed": "node ./scripts/validate-win-artifacts.mjs --mode=release --require-signed",
     "release:mac:local": "node ./scripts/release-mac-local.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run",
     "test:integration": "vitest run .integration.test --passWithNoTests",

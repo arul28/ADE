@@ -914,14 +914,14 @@ import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
-import { createComputerUseArtifactPath } from "../computerUse/localComputerUse";
+import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
 import { sceneDocumentStore } from "../scenes/sceneDocumentStore";
 import {
   clampSceneCaptureRect,
   decodeScenePngDataUrl,
   type SceneCaptureRect,
 } from "../scenes/sceneSnapshot";
-import { SCENE_LIMITS } from "../../../shared/chatScene";
+import { SCENE_LIMITS, type SceneStillRecord } from "../../../shared/chatScene";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
@@ -9097,6 +9097,89 @@ export function registerIpc({
       } catch (error) {
         logSceneFailure("scene.attach_proof_failed", error);
         return false;
+      }
+    },
+  );
+
+  /**
+   * Keep a scene's settle-time still.
+   *
+   * The same bytes and the same jail as the Proof button — `attachProof` and
+   * this one write through `createComputerUseArtifactPath` into
+   * `.ade/artifacts/computer-use/` and file through the same broker or the same
+   * CTO-only runtime action — and one deliberate difference: THE BYTES ARE
+   * NEVER DELETED HERE. Proof is a drawer record, so a record that could not be
+   * created makes the file pointless; a still is the picture itself, and the
+   * renderer is about to show it back from this path. A still that could not be
+   * filed is an unlisted image, which is exactly what the caller asked for.
+   *
+   * The renderer never names a path. It hands over a PNG data URL and gets back
+   * a project-relative uri, so `ade-artifact://project/` can resolve it without
+   * this process ever trusting a path from the other side.
+   */
+  ipcMain.handle(
+    IPC.sceneStoreStill,
+    async (
+      _event,
+      arg: { dataUrl?: string | null; title?: string | null; sessionId?: string | null },
+    ): Promise<SceneStillRecord | null> => {
+      try {
+        const ctx = getCtx();
+        const projectRoot = ctx.project?.rootPath ?? null;
+        if (!projectRoot) return null;
+        const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
+        if (!bytes) return null;
+        const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
+        const artifactPath = createComputerUseArtifactPath(projectRoot, title, "png");
+        fs.writeFileSync(artifactPath, bytes);
+        const record: SceneStillRecord = {
+          uri: toProjectArtifactUri(projectRoot, artifactPath),
+          artifactId: null,
+          title: title.slice(0, 200),
+        };
+
+        // Filing is best effort and deliberately after the bytes are on disk:
+        // the still is already usable, and a drawer row that could not be
+        // written must not cost the user the picture.
+        try {
+          const broker = ctx.computerUseArtifactBrokerService;
+          if (broker) {
+            const sessionId = await resolveSceneProofOwner(ctx, arg?.sessionId);
+            const filed = broker.ingest({
+              backend: { name: "scene", style: "manual", toolName: "scene_still" },
+              ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
+              inputs: [{
+                kind: "screenshot",
+                title: record.title,
+                path: artifactPath,
+                mimeType: "image/png",
+                description: "Still of an agent-authored scene, taken when it stopped moving.",
+              }],
+            });
+            record.artifactId = filed.artifacts[0]?.id ?? null;
+          } else if (localRuntimeConnectionPool) {
+            // Runtime-backed build: this process owns neither the broker nor
+            // the chat service, so the daemon repeats the jail and the owner
+            // resolution against the services it does own.
+            const response = await localRuntimeConnectionPool.callActionForRoot(projectRoot, {
+              domain: "computer_use_artifacts",
+              action: "ingestSceneSnapshot",
+              args: {
+                path: artifactPath,
+                title,
+                sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : null,
+              },
+            });
+            const answered = (response.result as { artifactId?: unknown } | null)?.artifactId;
+            record.artifactId = typeof answered === "string" ? answered : null;
+          }
+        } catch (error) {
+          logSceneNote("scene.still_not_filed", { path: artifactPath, error: String(error) });
+        }
+        return record;
+      } catch (error) {
+        logSceneFailure("scene.store_still_failed", error);
+        return null;
       }
     },
   );

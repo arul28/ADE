@@ -6,12 +6,17 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 
 /**
- * Every session the CTO has run here, as a list you can scan.
+ * Every thread the CTO has retired here, as a list you can scan.
  *
  * Two things made the old one unreadable: the row led with the log line
  * ("Session closed: …"), which is the machine's sentence and not the work's,
  * and every row carried a `FULL_TOOLING` chip — a raw enum, shown loudest on
  * the rows where it meant "nothing unusual happened".
+ *
+ * A third thing made it alarming: called "History" and listed as "sessions",
+ * it read as though the CTO were a different assistant each time. Each row now
+ * says what actually happened to it — the thread was retired, and the memory
+ * went on to the next one.
  */
 
 /** Log lines are prefixed by whoever wrote them; the title is what is left. */
@@ -61,6 +66,23 @@ export function sessionTurns(entry: CtoSessionLogEntry): string | null {
   return `${turns} ${turns === 1 ? "turn" : "turns"}`;
 }
 
+/**
+ * The one line under a row that says what happened to this thread.
+ *
+ * "Retired" rather than "closed" or "ended", and "memory carried over" on
+ * every retired row, because the question this list kept raising was whether
+ * the CTO loses what it knew when a thread goes. It does not, and the row is
+ * where to say so. A thread still running says so instead — there is nothing
+ * to have carried over yet.
+ */
+export function sessionRetirementNote(entry: CtoSessionLogEntry): string {
+  if (!entry.endedAt) return "Still running · this is the live thread";
+  const turns = sessionTurns(entry);
+  return turns
+    ? `Retired after ${turns} · memory carried over`
+    : "Retired · memory carried over";
+}
+
 /** Null while a session is still open — there is no duration to state yet. */
 export function sessionDuration(entry: CtoSessionLogEntry): string | null {
   if (!entry.endedAt) return null;
@@ -99,7 +121,6 @@ function Meta({ children, width }: { children: React.ReactNode; width?: number }
 function SessionRow({ entry, onOpen }: { entry: CtoSessionLogEntry; onOpen?: (entry: CtoSessionLogEntry) => void }) {
   const model = entry.modelId ? getModelById(entry.modelId) : undefined;
   const duration = sessionDuration(entry);
-  const turns = sessionTurns(entry);
   const title = sessionTitle(entry);
   const interactive = Boolean(onOpen);
   return (
@@ -129,20 +150,35 @@ function SessionRow({ entry, onOpen }: { entry: CtoSessionLogEntry; onOpen?: (en
       onMouseEnter={(event) => { event.currentTarget.style.background = COLORS.hoverBg; }}
       onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
     >
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontFamily: SANS_FONT,
-          fontSize: 12.5,
-          color: COLORS.textPrimary,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-        title={title}
-      >
-        {title}
+      <span style={{ flex: 1, minWidth: 0, display: "grid", gap: 1 }}>
+        <span
+          style={{
+            minWidth: 0,
+            fontFamily: SANS_FONT,
+            fontSize: 12.5,
+            color: COLORS.textPrimary,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={title}
+        >
+          {title}
+        </span>
+        <span
+          data-testid="cto-history-row-note"
+          style={{
+            minWidth: 0,
+            fontFamily: SANS_FONT,
+            fontSize: 10.5,
+            color: COLORS.textDim,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {sessionRetirementNote(entry)}
+        </span>
       </span>
 
       {model ? (
@@ -166,8 +202,8 @@ function SessionRow({ entry, onOpen }: { entry: CtoSessionLogEntry; onOpen?: (en
       {/* Fixed, right-aligned so the numbers form columns down the list
           instead of drifting with the width of whatever is beside them. An
           entry with no count renders the column empty rather than shifting
-          every row beside it. */}
-      <Meta width={58}>{turns ?? ""}</Meta>
+          every row beside it. The turn count is not a column any more: the
+          note under the title already states it, and twice is once too many. */}
       <Meta width={52}>{duration ?? ""}</Meta>
       <Meta width={62}>{relativeTime(entry.createdAt)}</Meta>
     </div>
@@ -196,7 +232,7 @@ export function CtoHistoryList({
   if (sessions.length === 0) {
     return (
       <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-        The CTO has not run a session in this project yet.
+        No thread has been retired in this project yet. The CTO's current one is still running.
       </p>
     );
   }

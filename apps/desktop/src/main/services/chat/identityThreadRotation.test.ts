@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createIdentityThreadRotation,
+  IDENTITY_ROTATION_TURN_ACTIVE_MESSAGE,
+  isIdentityRotationTurnActiveError,
   type IdentityThreadRotationDeps,
 } from "./identityThreadRotation";
 import type { AgentChatSession } from "../../../shared/types/chat";
@@ -60,6 +62,8 @@ function makeDeps(overrides: Partial<IdentityThreadRotationDeps<Managed>> = {}) 
     writeContinuitySummary: vi.fn(),
     writeThreadState: vi.fn(),
     memory: { appendDailyEntry: vi.fn(), appendMemoryFact: vi.fn() },
+    // Settled by default; the refusal tests are the ones that turn this on.
+    isTurnActive: () => false,
     dispose: vi.fn(async () => undefined),
     ensureIdentitySession: vi.fn(async () => session),
     ...overrides,
@@ -190,6 +194,54 @@ describe("startFreshIdentitySession", () => {
     expect(result.handoff).toEqual({ written: false, thin: false, source: "none" });
     expect(deps.dispose).not.toHaveBeenCalled();
     expect(deps.flushContinuity).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Mid-stream rotation throws away an answer the user is watching arrive, and
+   * every entry point can be reached mid-stream.
+   */
+  it("refuses while a turn is running, and rotates once it settles", async () => {
+    let turnActive = true;
+    const { deps } = makeDeps({
+      // A healthy thread: its running turn can still finish, so it is worth
+      // waiting for.
+      readTurnHealthRecord: () => ({ failure: null, context: null }),
+      isTurnActive: () => turnActive,
+    });
+    const rotation = createIdentityThreadRotation(deps);
+
+    await expect(
+      rotation.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" }),
+    ).rejects.toThrow(IDENTITY_ROTATION_TURN_ACTIVE_MESSAGE);
+    await expect(
+      rotation.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" }),
+    ).rejects.toSatisfy(isIdentityRotationTurnActiveError);
+    expect(deps.dispose).not.toHaveBeenCalled();
+
+    turnActive = false;
+    const result = await rotation.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+    expect(result.previousSessionId).toBe("session-old");
+    expect(deps.dispose).toHaveBeenCalledWith({ sessionId: "session-old" });
+  });
+
+  it("rotates through an active turn on force, and on a thread that cannot finish it", async () => {
+    const healthy = makeDeps({
+      readTurnHealthRecord: () => ({ failure: null, context: null }),
+      isTurnActive: () => true,
+    });
+    const forced = await createIdentityThreadRotation(healthy.deps)
+      .startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1", force: true });
+    expect(forced.previousSessionId).toBe("session-old");
+    expect(healthy.deps.dispose).toHaveBeenCalledWith({ sessionId: "session-old" });
+
+    // The over-limit path needs no force: a thread that cannot take a turn has
+    // no live turn left to lose, and refusing would wedge the only way out.
+    const overflowed = makeDeps({ isTurnActive: () => true });
+    const rotated = await createIdentityThreadRotation(overflowed.deps)
+      .startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+    expect(rotated.previousSessionId).toBe("session-old");
+    expect(overflowed.deps.dispose).toHaveBeenCalledWith({ sessionId: "session-old" });
   });
 });
 

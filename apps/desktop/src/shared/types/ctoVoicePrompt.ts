@@ -20,6 +20,29 @@
 export const CTO_VOICE_CONTEXT_MAX_CHARS = 6_000;
 
 /**
+ * Ways of talking about a view instead of about what it shows.
+ *
+ * The rule is "never mention the view", which is not a thing a prompt can be
+ * checked against — so what is checked is this list, taken from the sentence
+ * the call of 2026-09-17 actually produced: *"You should see a picture beside
+ * the call that lays out the current state."* Every phrase in it is one the
+ * brief or the turn prompt would have to contain in order to teach it, so the
+ * two are asserted to contain none of them. Exported rather than duplicated in
+ * two suites, because a phrase added to one copy and not the other is a rule
+ * that quietly only applies to half the words the CTO speaks.
+ *
+ * Lower case: the assertion lower-cases the prompt before looking.
+ */
+export const CTO_VOICE_FORBIDDEN_VIEW_PHRASES = [
+  "you should see",
+  "beside the call",
+  "the picture",
+  "i drew",
+  "sketch",
+  "on screen",
+] as const;
+
+/**
  * The session prompt: a persona brief, and the rules for when to talk to the CTO.
  *
  * Long on purpose now, where the old one was deliberately short. Under the old
@@ -84,11 +107,18 @@ export function buildCtoVoiceInstructions(args: {
     + " changing anything, or any fact about this project that is not in the"
     + " context below. Never guess a project fact.",
     "",
+    // Never a word about the view itself. On the call of 2026-09-17 the answer
+    // began "You should see a picture beside the call that lays out the current
+    // state", because the brief had told the model to say it was drawing. A
+    // view the user is already looking at does not need announcing, and a
+    // sentence about it is a sentence spent on nothing they asked for.
     "You can show things, not only say them. When the user asks for a visual, a"
     + " chart, a diagram, a picture, a timeline, or says 'show me', include that in"
-    + " what you look up and tell them plainly that you are drawing it — one"
-    + " picture appears beside the call while you talk. Never tell the user you can"
-    + " only describe it.",
+    + " what you look up, and never tell the user you can only describe it. What"
+    + " you show is simply in front of you both, the way something on the table"
+    + " between you is. So talk about what it says — 'ADE is up, ten lanes, two of"
+    + " them dirty' — and never about the view itself: not that it exists, not"
+    + " where it is, not what it looks like, and not that you made it.",
   ];
 
   if (acknowledge) {
@@ -99,7 +129,12 @@ export function buildCtoVoiceInstructions(args: {
       + " the same turn. Vary it every single time and keep it specific to what was"
       + " asked — 'Sure, counting the lanes.', 'On it.', 'Okay, let me look at that"
       + " PR.', 'Pulling the test output now.' Never reuse a stock phrase, and never"
-      + " say the same acknowledgement twice on one call.",
+      + " say the same acknowledgement twice on one call."
+      // The acknowledgement is about the WORK even when the user asked to see
+      // something: "Pulling up the lanes." is the same sentence whether the
+      // answer ends up spoken or shown, and it is the only one they need.
+      + " When the user asked to see something, acknowledge the work — 'Pulling up"
+      + " the lanes.' — and say nothing about how they are going to see it.",
     );
   } else {
     lines.push(

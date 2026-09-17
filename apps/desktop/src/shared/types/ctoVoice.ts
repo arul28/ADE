@@ -20,6 +20,8 @@
  * out loud, and that gate is a hold in code rather than a sentence in a prompt.
  */
 
+import type { SceneStillRecord } from "../chatScene";
+
 /**
  * The realtime model the call speaks with.
  *
@@ -429,6 +431,16 @@ export const CTO_VOICE_MICROPHONE_BLOCK_TITLE = "ADE cannot use the microphone";
  * preload platform bridge rather than `navigator.platform`, which cannot tell
  * Windows on ARM from Windows on x64 and has no business deciding this either.
  *
+ * Two sentences, always: what happened, then what to do. The second one names
+ * the OS out loud ("macOS System Settings › Sound › Input") because the owner
+ * who read "System Settings, Sound" on a Mac asked what a Windows user is
+ * meant to make of it — the wording has to be true for the machine it is on
+ * and obviously ABOUT that machine, not a location the reader has to guess at.
+ *
+ * Linux gets a generic sentence: there is no one sound pane to name, and no
+ * URL ADE can open, so it says what to look for rather than pointing at a
+ * place that may not exist on that desktop.
+ *
  * It lives here rather than in the component because the same failure has to
  * read identically wherever it surfaces — the sheet's guidance card, the
  * header notice and the call's terminal state are one event.
@@ -438,34 +450,42 @@ export function ctoVoiceMicrophoneMessage(
   platform: string,
 ): string {
   const windows = platform === "win32";
+  const mac = platform === "darwin";
+  /** Where inputs are chosen, by name, on this OS. */
+  const soundPane = windows
+    ? "Windows Settings › System › Sound › Input"
+    : mac
+      ? "macOS System Settings › Sound › Input"
+      : "your desktop's sound settings";
+  /** Where app microphone permission is granted, by name, on this OS. */
+  const privacyPane = windows
+    ? "Windows Settings › Privacy & security › Microphone"
+    : mac
+      ? "macOS System Settings › Privacy & Security › Microphone"
+      : "your desktop's microphone permissions";
   switch (kind) {
     case "dev-build":
-      // Windows has no equivalent: its microphone policy is one global switch
-      // that covers every desktop app including an unsigned Electron, so
-      // "start it from a terminal" would be false advice. It falls through to
-      // the settings sentence, which IS the fix there.
-      if (!windows) {
-        return "This is a development build. macOS cannot ask it for the microphone."
-          + " Start ADE from Terminal, or allow 'Electron' under Microphone in System Settings.";
+      // Only macOS has this failure. Windows microphone policy is one global
+      // switch that covers every desktop app including an unsigned Electron,
+      // so "start it from a terminal" would be false advice there and the
+      // permission sentence IS the fix; Linux has no TCC identity to lack.
+      if (mac) {
+        return "This is a development build, so macOS will not grant it the microphone."
+          + ` Start ADE from Terminal, or allow "Electron" under ${privacyPane}.`;
       }
-      return windows
-        ? "ADE could not open the microphone. Allow microphone access for ADE in Windows Settings, Privacy, Microphone."
-        : "ADE could not open the microphone. Allow microphone access for ADE in System Settings, Privacy & Security, Microphone.";
+      return `ADE could not open the microphone. Allow microphone access for ADE under ${privacyPane}.`;
     case "no-device":
-      return windows
-        ? "No microphone is connected. Plug one in or pick an input under Windows Settings, Sound."
-        : "No microphone is connected. Plug one in or pick an input under System Settings, Sound.";
+      return `No microphone is connected to this ${windows ? "PC" : mac ? "Mac" : "computer"}.`
+        + ` Plug one in, or choose an input under ${soundPane}.`;
     case "in-use":
-      return "Another app may be holding the microphone. Close it and try again.";
+      // No pane worth naming: the fix is another app, not a setting.
+      return "Another app is holding the microphone. Close it and try again.";
     case "unavailable":
-      return windows
-        ? "ADE could not open the microphone. Check that a microphone is connected and enabled in Windows Settings, Sound."
-        : "ADE could not open the microphone. Check that a microphone is connected and enabled in System Settings, Sound.";
+      return "ADE could not open the microphone."
+        + ` Check that one is connected and selected under ${soundPane}.`;
     case "os-denied":
     default:
-      return windows
-        ? "ADE could not open the microphone. Allow microphone access for ADE in Windows Settings, Privacy, Microphone."
-        : "ADE could not open the microphone. Allow microphone access for ADE in System Settings, Privacy & Security, Microphone.";
+      return `ADE could not open the microphone. Allow microphone access for ADE under ${privacyPane}.`;
   }
 }
 
@@ -480,7 +500,10 @@ export function isCtoVoiceMicrophoneMessage(reason: string): boolean {
     ["os-denied", "dev-build", "no-device", "in-use", "unavailable"];
   return kinds.some((kind) =>
     reason === ctoVoiceMicrophoneMessage(kind, "darwin")
-    || reason === ctoVoiceMicrophoneMessage(kind, "win32"));
+    || reason === ctoVoiceMicrophoneMessage(kind, "win32")
+    // Linux too: its sentences are their own wording, and a hang-up carrying
+    // one is the same event as the other two.
+    || reason === ctoVoiceMicrophoneMessage(kind, "linux"));
 }
 
 /**
@@ -496,10 +519,10 @@ export type CtoVoiceActionResult = {
 };
 
 /**
- * The nine actions a call is driven by, as data.
+ * The ten actions a call is driven by, as data.
  *
  * Here rather than beside the service that implements them because the policy
- * tables consume it: this module imports nothing, and `ctoVoiceRuntimeService`
+ * tables consume it: this module imports nothing at runtime, and `ctoVoiceRuntimeService`
  * pulls in `ws`, the API key store and the chat service graph. An action list
  * is a contract, not an implementation detail, and the gate that reads it must
  * not have to load a WebSocket client to do so.
@@ -514,6 +537,7 @@ export const CTO_VOICE_ACTIONS = [
   "pullAudio",
   "resolveApproval",
   "sendCapture",
+  "attachStill",
 ] as const;
 
 export type CtoVoiceAction = (typeof CTO_VOICE_ACTIONS)[number];
@@ -540,6 +564,16 @@ export type CtoVoiceBridge = {
   approve: (id: string) => Promise<void>;
   deny: (id: string) => Promise<void>;
   attachImage: (args: { pngBase64: string; note: string }) => Promise<void>;
+  /**
+   * Hand the call the still of a scene it drew.
+   *
+   * The renderer is the only side that can take it — the scene runs in a frame
+   * in this window — and the call is the only side that outlives the HUD. So
+   * the picture crosses once, as a record of bytes already on disk, and the
+   * call carries it into the transcript card the HUD unmount would otherwise
+   * take with it.
+   */
+  attachStill: (args: { still: SceneStillRecord }) => Promise<void>;
   hasKey: () => Promise<boolean>;
   onState: (handler: (state: CtoVoiceStatePayload) => void) => () => void;
   onAudio: (handler: (base64: string) => void) => () => void;
@@ -712,3 +746,38 @@ export function formatVoiceCost(elapsedMs: number): string {
  * graph of its own. This covers one missed poll and the graph's own latency.
  */
 export const CTO_VOICE_END_CALL_AUDIO_TAIL_MS = 450;
+
+/**
+ * How long a request may run in silence before the call says something.
+ *
+ * Measured on the call of 2026-09-17: an `ask_cto` for "what's going on,
+ * visualize it" ran 36 seconds — 7.8 of them before the CTO's first word — and
+ * the user heard nothing at all after the acknowledgement. A call that goes
+ * quiet for half a minute reads as a call that dropped, and the owner's words
+ * for it were "long pauses while it's working".
+ *
+ * Seven seconds because that is roughly where a turn stops being a beat and
+ * starts being a silence: the acknowledgement is usually still playing for the
+ * first two or three, and a nudge on top of it would be the call talking over
+ * itself.
+ */
+export const CTO_VOICE_WORKING_NUDGE_AFTER_MS = 7_000;
+
+/**
+ * The shortest gap between two of those sentences.
+ *
+ * Longer than the first wait on purpose. The first one answers "is this thing
+ * still on"; the ones after it only have to keep the line warm, and a voice
+ * that says something every seven seconds while it works is worse company than
+ * one that says nothing.
+ */
+export const CTO_VOICE_WORKING_NUDGE_EVERY_MS = 12_000;
+
+/**
+ * How many of them one request may produce.
+ *
+ * Three covers about forty seconds of work, which is longer than the slowest
+ * turn measured. Past that the model has nothing left to say that is not either
+ * a repeat or a guess about a result it has not been given.
+ */
+export const CTO_VOICE_WORKING_NUDGE_MAX = 3;

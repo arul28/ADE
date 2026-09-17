@@ -39,7 +39,16 @@ export async function ingestSceneSnapshot({
   broker,
   agentChatService,
   args,
-}: IngestSceneSnapshotArgs): Promise<{ filed: boolean; ownerSessionId: string | null }> {
+}: IngestSceneSnapshotArgs): Promise<{
+  filed: boolean;
+  ownerSessionId: string | null;
+  /**
+   * The drawer record the bytes were filed as, for a caller that has to show
+   * the image back (a scene still). Null when the broker answered no record —
+   * the file is still there, so the picture is not lost with the row.
+   */
+  artifactId: string | null;
+}> {
   const rawPath = typeof args?.path === "string" ? args.path.trim() : "";
   if (!rawPath) throw new Error("path is required.");
   const artifactsRoot = nodePath.resolve(
@@ -90,7 +99,7 @@ export async function ingestSceneSnapshot({
     if (found) ownerSessionId = claimed;
   }
 
-  broker.ingest({
+  const filed = broker.ingest({
     backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
     ...(ownerSessionId ? { owners: [{ kind: "chat_session" as const, id: ownerSessionId }] } : {}),
     inputs: [{
@@ -101,5 +110,8 @@ export async function ingestSceneSnapshot({
       description: "Snapshot of an agent-authored scene.",
     }],
   });
-  return { filed: true, ownerSessionId };
+  // Read defensively: the broker is injected, and a caller that answers
+  // nothing has still filed the bytes. An unknown id costs the caller its
+  // drawer link, never the picture.
+  return { filed: true, ownerSessionId, artifactId: filed?.artifacts?.[0]?.id ?? null };
 }

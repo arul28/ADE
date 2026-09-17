@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCtoVoiceInstructions } from "./ctoVoicePrompt";
+import {
+  buildCtoVoiceInstructions,
+  CTO_VOICE_FORBIDDEN_VIEW_PHRASES,
+} from "./ctoVoicePrompt";
 
 /**
  * The session prompt IS the policy under the hybrid: it decides what the model
@@ -46,8 +49,29 @@ describe("buildCtoVoiceInstructions", () => {
   it("tells the model it can draw, not only describe", () => {
     const prompt = buildCtoVoiceInstructions(base);
     expect(prompt).toContain("show me");
-    expect(prompt).toContain("one picture appears beside the call");
-    expect(prompt).toContain("Never tell the user you can only describe it");
+    expect(prompt).toContain("never tell the user you can only describe it");
+    expect(prompt).toContain("talk about what it says");
+  });
+
+  /**
+   * The answer on the call of 2026-09-17 opened "You should see a picture
+   * beside the call that lays out the current state" — a whole sentence about
+   * something the user was already looking at. The view is furniture; what they
+   * asked for is what it says.
+   */
+  it("never gives the user a word for the view they are already looking at", () => {
+    for (const acknowledgeAloud of [true, false]) {
+      const prompt = buildCtoVoiceInstructions({ ...base, acknowledgeAloud }).toLowerCase();
+      for (const forbidden of CTO_VOICE_FORBIDDEN_VIEW_PHRASES) {
+        expect(prompt).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it("keeps the acknowledgement about the work, not about the drawing", () => {
+    const prompt = buildCtoVoiceInstructions({ ...base, acknowledgeAloud: true });
+    expect(prompt).toContain("acknowledge the work — 'Pulling up the lanes.'");
+    expect(prompt).toContain("say nothing about how they are going to see it");
   });
 
   /**

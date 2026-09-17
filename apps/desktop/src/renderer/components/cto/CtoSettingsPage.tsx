@@ -39,6 +39,18 @@ import { ctoModelSupportsLiveRedirect } from "./useCtoModelOptions";
  * app should not look like two products.
  */
 
+/**
+ * What "Past threads" is, in two sentences.
+ *
+ * Exported because it is the answer to a question the owner actually asked,
+ * and a test pins it: the CTO is ONE identity with durable memory, and only
+ * the provider conversation underneath it is ever replaced.
+ */
+export const CTO_PAST_THREADS_DESCRIPTION =
+  "The CTO is one assistant with one memory, running on a conversation thread that is retired"
+  + " when it fills up or when you start fresh."
+  + " Its memory, identity and daily log carry over into the next thread; the retired ones are listed here.";
+
 const SECTIONS: Array<{
   id: CtoSectionKey;
   label: string;
@@ -82,11 +94,16 @@ const SECTIONS: Array<{
     description: "Everything the CTO is sent, assembled into one document.",
   },
   {
+    // The id stays `history`: it is the section route other code selects by,
+    // and only the words the owner reads were wrong.
     id: "history",
-    label: "History",
+    label: "Past threads",
     icon: ClockCounterClockwise,
-    title: "History",
-    description: "Every session this CTO has run in this project.",
+    title: "Past threads",
+    // "History" read as though the CTO were a series of separate assistants —
+    // the owner asked why it has different sessions at all when it is supposed
+    // to be one ever-learning colleague. These two sentences are the answer.
+    description: CTO_PAST_THREADS_DESCRIPTION,
   },
 ];
 
@@ -161,12 +178,12 @@ function ModelFacts({
  * so the confirm step does not ask "are you sure" — it says what survives.
  */
 export const CTO_FRESH_SESSION_CONFIRM =
-  "Everything the CTO remembers is kept, and this conversation stays in History. Only the live thread starts over.";
+  "Everything the CTO remembers is kept, and this conversation moves to Past threads. Only the live thread starts over.";
 
 /** What the hand-off actually turned out to be, in one line. */
 export function describeFreshSessionResult(handoff: CtoStartFreshSessionResult["handoff"]): string {
   if (handoff.thin) {
-    return "Fresh session started. The hand-off note was thin, so the old conversation is still in History in full.";
+    return "Fresh session started. The hand-off note was thin, so the old conversation is kept in Past threads in full.";
   }
   if (handoff.written && handoff.source === "model") {
     return "Fresh session started. The CTO wrote a hand-off note.";
@@ -174,7 +191,7 @@ export function describeFreshSessionResult(handoff: CtoStartFreshSessionResult["
   if (handoff.written && handoff.source === "deterministic") {
     return "Fresh session started. ADE distilled a hand-off from the transcript.";
   }
-  return "Fresh session started. There was no hand-off to write, and the old conversation is still in History.";
+  return "Fresh session started. There was no hand-off to write, and the old conversation is kept in Past threads.";
 }
 
 /**

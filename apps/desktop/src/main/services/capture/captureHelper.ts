@@ -510,6 +510,32 @@ export class CaptureHelper {
     return isPathInside(resolved, root, this.platform) ? resolved : null;
   }
 
+  /**
+   * The same jail check, re-asked of the path the filesystem will actually
+   * open.
+   *
+   * `resolveInsideOutputDirectory` is lexical: it answers about the NAME. A
+   * symlink planted inside the capture directory has a name that passes and a
+   * target that does not, so reading the "resolved" path still reads whatever
+   * it points at. `realpathSync` collapses the links — on both sides, because
+   * the capture directory itself often lives under a symlinked temp root
+   * (`/var` → `/private/var` on macOS) and comparing a canonical path against
+   * a lexical root would reject every legitimate capture there.
+   *
+   * Null when the path cannot be canonicalized at all: a capture file that is
+   * not there is not one to read either, and the caller already reports that.
+   */
+  private canonicalizeInsideOutputDirectory(resolved: string): string | null {
+    try {
+      const pathApi = this.platform === "win32" ? path.win32 : path.posix;
+      const realRoot = fs.realpathSync(pathApi.resolve(this.options.outputDirectory));
+      const realPath = fs.realpathSync(resolved);
+      return isPathInside(realPath, realRoot, this.platform) ? realPath : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** A capture that arrived too late still left a PNG behind. Remove it. */
   private discardOrphanedCapture(capturedPath: string): void {
     const resolved = this.resolveInsideOutputDirectory(capturedPath);
@@ -532,7 +558,11 @@ export class CaptureHelper {
     const capturedPath = output.path;
     // Anything outside the directory ADE told the helper to use is not ours to
     // read or delete, however the helper came to name it.
-    const resolved = this.resolveInsideOutputDirectory(capturedPath);
+    const lexical = this.resolveInsideOutputDirectory(capturedPath);
+    // Canonicalized before anything opens it: the lexical check clears the
+    // NAME, and a symlink inside the directory has a clean name and a target
+    // anywhere on disk.
+    const resolved = lexical ? this.canonicalizeInsideOutputDirectory(lexical) : null;
     if (!resolved) {
       // The path the HELPER named, not the resolved one: `resolved` is null by
       // construction on this branch, and the name the helper chose is the only

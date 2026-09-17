@@ -397,6 +397,8 @@ export const IPC = {
   ctoVoiceApprove: "cto-voice:approve",
   ctoVoiceDeny: "cto-voice:deny",
   ctoVoiceAttachImage: "cto-voice:attach-image",
+  /** Renderer → main: a still of a scene this call drew, for the call's card. */
+  ctoVoiceAttachStill: "cto-voice:attach-still",
   ctoVoiceHasKey: "cto-voice:has-key",
   /** Main → renderer: the whole call state, on every change. */
   ctoVoiceState: "cto-voice:state",
@@ -408,6 +410,13 @@ export const IPC = {
   scenePrepare: "ade.scene.prepare",
   sceneSnapshot: "ade.scene.snapshot",
   sceneAttachProof: "ade.scene.attachProof",
+  /**
+   * Keep a scene's settle-time still: write the PNG into the project's artifact
+   * store and answer the record the renderer shows it back from. Separate from
+   * `attachProof` because the two want opposite things from a failed filing —
+   * proof deletes bytes it could not file, a still keeps them.
+   */
+  sceneStoreStill: "ade.scene.storeStill",
   orchestrationRunCreate: "ade.orchestration.runCreate",
   orchestrationBundleRead: "ade.orchestration.bundleRead",
   orchestrationManifestReadSection: "ade.orchestration.manifestReadSection",

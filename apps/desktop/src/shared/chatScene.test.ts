@@ -7,6 +7,8 @@ import {
   parseSceneHostMessage,
   SCENE_CONTENT_SECURITY_POLICY,
   SCENE_LIMITS,
+  SCENE_SETTLE_MAX_MS,
+  SCENE_SETTLE_QUIET_MS,
   summarizeSceneFence,
 } from "./chatScene";
 
@@ -143,6 +145,16 @@ describe("parseSceneHostMessage", () => {
     expect(msg?.payload).toEqual({ height: 4000 });
   });
 
+  it("accepts the settled message, so a scene can say when it stopped moving", () => {
+    expect(parseSceneHostMessage({ __adeScene: 1, type: "settled", payload: { height: 240 } })).toEqual({
+      type: "settled",
+      payload: { height: 240 },
+    });
+    // Same clamp as every other sizing message: the frame is still untrusted.
+    const huge = parseSceneHostMessage({ __adeScene: 1, type: "settled", payload: { height: 99_999 } });
+    expect(huge?.payload).toEqual({ height: 4000 });
+  });
+
   it("drops an emit with no name and truncates a long error", () => {
     expect(parseSceneHostMessage({ __adeScene: 1, type: "emit", payload: {} })).toBeNull();
     const err = parseSceneHostMessage({ __adeScene: 1, type: "error", payload: { message: "e".repeat(900) } });
@@ -168,5 +180,30 @@ describe("summarizeSceneFence", () => {
       .toBe("[scene: Merged PRs]");
     expect(summarizeSceneFence("<p>x</p>")).toBe("[scene: generated view]");
     expect(summarizeSceneFence("   ")).toBe("[scene: generated view]");
+  });
+});
+
+describe("the settle watcher in the injected SDK", () => {
+  const document_ = buildSceneDocument({ html: "<p>hi</p>" });
+
+  it("posts settled on both signals, with the quiet window and the cap baked in", () => {
+    // Animations alone miss a requestAnimationFrame counter; mutations alone
+    // miss a transform that never touches the DOM. Both have to be watched or
+    // the still is taken mid-animation on half the scenes that have one.
+    expect(document_).toContain("getAnimations");
+    expect(document_).toContain("MutationObserver");
+    expect(document_).toContain(`}, ${SCENE_SETTLE_QUIET_MS});`);
+    expect(document_).toContain(`setTimeout(reportSettled, ${SCENE_SETTLE_MAX_MS})`);
+  });
+
+  it("keeps the SDK a single template — no stray backtick reopens it", () => {
+    // A backtick inside the embedded source is not a style problem: it ends the
+    // template literal that carries the whole SDK and takes the file's parse
+    // with it.
+    expect(document_).not.toContain("`");
+  });
+
+  it("caps the wait so a scene that never stops still produces a still", () => {
+    expect(SCENE_SETTLE_MAX_MS).toBeGreaterThan(SCENE_SETTLE_QUIET_MS);
   });
 });

@@ -173,7 +173,7 @@ describe("ingesting a scene snapshot", () => {
       args: { path: shot, title: "  Lane throughput  " },
     });
 
-    expect(result).toEqual({ filed: true, ownerSessionId: null });
+    expect(result).toEqual({ filed: true, ownerSessionId: null, artifactId: null });
     expect(filed).toHaveLength(1);
     expect(filed[0]?.inputs[0]).toMatchObject({
       kind: "screenshot",
@@ -269,7 +269,7 @@ describe("ingesting a scene snapshot", () => {
     const stranger = await ingestSceneSnapshot({
       projectRoot, broker, agentChatService, args: { path: shot, sessionId: "chat-elsewhere" },
     });
-    expect(stranger).toEqual({ filed: true, ownerSessionId: null });
+    expect(stranger).toEqual({ filed: true, ownerSessionId: null, artifactId: null });
     expect(filed.at(-1)?.owners).toBeUndefined();
   });
 });
