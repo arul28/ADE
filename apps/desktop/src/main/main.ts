@@ -4008,6 +4008,16 @@ app.whenReady().then(async () => {
       credentialStore: linearCredentialStore,
       getAccountVault: () => accountVaultBridge,
       getAccountUserId: () => accountAuthService.getStatus().userId,
+      getDeviceId: () => {
+        try {
+          return fs.readFileSync(
+            path.join(machineAdeLayout.secretsDir, "sync-device-id"),
+            "utf8",
+          ).trim() || null;
+        } catch {
+          return null;
+        }
+      },
     });
     const linearClient = createLinearClient({
       credentials: linearCredentialService,

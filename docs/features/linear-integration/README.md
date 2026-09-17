@@ -15,9 +15,11 @@ The Linear services live under the `cto/` service directory as shared plumbing; 
   OAuth-client storage in the active project's `.ade/secrets` or shared machine
   credential store, with account/device provenance and `ensureFreshToken()` for
   automatic OAuth refresh. The OAuth refresh token is mirrored as the
-  account-vault `linear_refresh_token` item and can hydrate a missing local
-  refresh token; device-origin API keys and custom OAuth-client settings remain
-  local. `getOAuthClientCredentials()` falls back to the bundled ADE app client
+  account-vault `linear_refresh_token` item, stamped with this machine as
+  `refreshOwner`. Only that owner hydrates or exchanges the grant; other
+  signed-in machines leave Linear refresh to the owner so two devices cannot
+  rotate the same token. Device-origin API keys and custom OAuth-client
+  settings remain local. `getOAuthClientCredentials()` falls back to the bundled ADE app client
   (secretless) when no custom client is configured, and
   `getOAuthClientSource()` reports which is in effect.
 - `apps/desktop/src/main/services/account/accountVaultBridge.ts` and
@@ -61,9 +63,10 @@ Credentials are owned by `apps/desktop/src/main/services/cto/linearCredentialSer
 The active project keeps an encrypted local access-token record so separate ADE
 projects can attach separate Linear workspaces, while the signed-in account is
 the authority for the OAuth refresh credential. The refresh token is mirrored
-to the account vault as `linear_refresh_token`; a missing local OAuth refresh
-token hydrates from that account item without replacing a device-origin local
-credential. A silent, receipt-backed migration moves a device-origin refresh
+to the account vault as `linear_refresh_token` with this machine as
+`refreshOwner`; a missing local OAuth refresh token hydrates from that
+account item only on the stamped owner, without replacing a device-origin
+local credential. A silent, receipt-backed migration moves a device-origin refresh
 token into the account once after sign-in. Two connection paths:
 
 1. **OAuth** (the primary "Sign in with Linear" path; bundled public client with PKCE). By default sign-in uses the **ADE Linear OAuth app** — its public client id (`ADE_LINEAR_APP_CLIENT_ID` in `cto/linearAppClient.ts`) ships with the app, and PKCE means no client secret is bundled. A user-configured custom OAuth client, when present, takes precedence; `linearCredentialService.getOAuthClientSource()` reports `"ade-app"` vs `"custom"` and `oauthConfigured` is now always `true` (the bundled client makes OAuth always available). The ADE app requests the `read,write,admin` scope, while a custom client keeps the narrower `read,write` — the `admin` scope is Linear's requirement for OAuth-app data-change webhooks, so a workspace that authorizes the ADE app gets its Linear webhook auto-provisioned (pointed at the ADE relay) and can drive automation Linear triggers with no manual "Connect Linear events" step. `linearOAuthService.ts` boots an ephemeral loopback server on port 19836, returns the authorize URL for the renderer to open, and finalizes on callback. The sign-in session expires after 10 minutes. The resulting access token (which Linear expires ~24h after sign-in) is refreshed automatically: `linearCredentialService.ensureFreshToken()` exchanges the stored `refresh_token` via `linearTokenRefresh.ts` proactively before requests and reactively on a 401, rotating the refresh token on success. `linearOAuthRefreshLock.ts` serializes refresh across processes. An `invalid_grant` clears the connection so the user re-authorizes; transient failures leave the token in place.

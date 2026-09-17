@@ -80,7 +80,9 @@ Main process:
   Settings are non-secret and survive sign-out; vault credentials are encrypted,
   purged at deliberate sign-out or account switch, and never exposed through
   the renderer settings bridge. Both stores keep local reads immediate while
-  the brain and Worker remain the account authority.
+  the brain and Worker remain the account authority. A sync pulls every
+  truncated page before it reports ready, and it drops uploaded write seqs
+  even when a later delete cannot be sent.
 - `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
   `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
   receipt-backed sign-in migration and hydration for provider API keys, Linear
@@ -1773,7 +1775,7 @@ proxy fabricates callable namespaces for missing properties, so
 | Account settings cache | `~/.ade/account-settings.json` | Plaintext, owner-tagged cache; settings survive sign-out and stamps are namespaced by account |
 | Account vault cache | `~/.ade/account-vault.json.enc` | Encrypted with the machine credential-store key, written atomically with `0600`; legacy plaintext is removed after a successful encrypted write |
 | AI provider API keys | Machine credential store plus account vault | Every local value records device/account provenance; account-hydrated keys are purged on sign-out or account switch, while device-origin keys remain |
-| Linear credentials | Encrypted machine credential store or active project's `.ade/secrets`, plus account vault | The OAuth refresh token is the `linear_refresh_token` account item and hydrates the local cache; provenance purges account-origin values on sign-out or account switch, while device-origin API keys and custom OAuth-client settings remain local |
+| Linear credentials | Encrypted machine credential store or active project's `.ade/secrets`, plus account vault | The OAuth refresh token is the `linear_refresh_token` account item, stamped with a `refreshOwner` device id. Only that owner hydrates or refreshes the grant; provenance purges account-origin values on sign-out or account switch, while device-origin API keys and custom OAuth-client settings remain local |
 | Repository account secrets | Encrypted project-secret store plus account vault | Repository-scoped `project_secret` values follow the account and are keyed by normalized Git origin; device-only secrets remain local |
 | OpenAI API key (CTO voice) | Machine ADE home — `~/.ade/secrets` (or `$ADE_HOME`) via `resolveMachineAdeLayout` | machine-scoped, never read back to the renderer; an `OPENAI_API_KEY` in the environment is the read-only last tier |
 | Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |

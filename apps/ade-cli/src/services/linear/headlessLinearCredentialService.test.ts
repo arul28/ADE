@@ -38,6 +38,41 @@ describe("headless Linear credential service", () => {
     }
   });
 
+  it("does not hydrate a Linear refresh grant owned by another machine", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-owner-"));
+    const adeDir = path.join(projectRoot, ".ade");
+    const vault = {
+      list: vi.fn(async () => ({
+        ok: true as const,
+        value: [{
+          scope: "all",
+          kind: "linear_refresh_token",
+          key: "default",
+          value: null,
+          updatedAt: "2026-09-16T00:00:00.000Z",
+          refreshOwner: "other-device",
+        }],
+      })),
+      get: vi.fn(async () => ({ ok: true as const, value: "remote-refresh-token" })),
+      set: vi.fn(async () => ({ ok: true as const, value: null })),
+      remove: vi.fn(async () => ({ ok: true as const, value: null })),
+      sync: vi.fn(async () => ({ ok: true as const, value: null })),
+    };
+    const service = createHeadlessLinearCredentialService({
+      adeDir,
+      getAccountVault: () => vault,
+      getAccountUserId: () => "user_ada",
+      getDeviceId: () => "this-device",
+    });
+    try {
+      await service.hydrateFromVault();
+      expect(service.getRefreshToken()).toBeNull();
+      expect(vault.get).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("A1: does not hydrate or change an environment Linear token", async () => {
     const previous = {
       adeLinearApi: process.env.ADE_LINEAR_API,

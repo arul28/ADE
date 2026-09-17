@@ -255,6 +255,59 @@ describe("account settings store", () => {
     expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "appearance.theme");
   });
 
+  it("keeps pulling truncated pages until the relay says the view is complete", async () => {
+    const store = makeStore();
+    let pulls = 0;
+    relay.getAccountSettings.mockImplementation(async () => {
+      pulls += 1;
+      if (pulls === 1) {
+        return {
+          settings: [record("all", "appearance.theme", "dark", "2026-09-16T00:00:00.000Z")],
+          cursor: "2026-09-16T00:00:00.000Z",
+          truncated: true,
+        };
+      }
+      return {
+        settings: [record("all", "editor.font", "mono", "2026-09-16T00:01:00.000Z")],
+        cursor: "2026-09-16T00:01:00.000Z",
+        truncated: false,
+      };
+    });
+
+    await expect(store.sync()).resolves.toBe("ready");
+    expect(pulls).toBe(2);
+    expect(store.get("all", "appearance.theme")).toBe("dark");
+    expect(store.get("all", "editor.font")).toBe("mono");
+  });
+
+  it("does not report ready when a truncated pull cannot advance the cursor", async () => {
+    const store = makeStore();
+    relay.getAccountSettings.mockResolvedValue({
+      settings: [record("all", "appearance.theme", "dark", "2026-09-16T00:00:00.000Z")],
+      cursor: null,
+      truncated: true,
+    });
+
+    await expect(store.sync()).resolves.toBe("unavailable");
+    expect(relay.getAccountSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops uploaded writes even when a later delete cannot be sent", async () => {
+    const store = makeStore();
+    store.set("all", "appearance.theme", "dark");
+    store.remove("all", "editor.minimap");
+    relay.deleteAccountSetting.mockResolvedValueOnce(null);
+
+    await store.sync();
+
+    relay.putAccountSettings.mockClear();
+    relay.deleteAccountSetting.mockResolvedValue(true);
+    await store.sync();
+
+    expect(relay.putAccountSettings).not.toHaveBeenCalled();
+    expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "editor.minimap");
+  });
+
   // One user's theme appearing after another signs in is a leak, not a
   // convenience.
   it("discards the cache when the signed-in account changes", () => {

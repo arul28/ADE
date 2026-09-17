@@ -979,10 +979,16 @@ Runtime support files outside `services/sync/`:
   server's older row for a key this machine just changed and the user would
   watch their own edit revert; **a pulled row must be strictly newer than the
   cached one**, because the page is fetched from a cursor taken before that
-  upload and legitimately contains stale rows; and **the queue clears by
+  upload and legitimately contains stale rows; **the queue clears by
   sequence, not by timestamp**, because two writes to one key inside a
   millisecond share a timestamp and clearing by it loses the edit a user made
-  while the previous upload was in flight. A cache belonging to a different
+  while the previous upload was in flight; **a truncated pull is not
+  `ready`**, because migration starts on a complete cache and a partial page
+  would upload this machine's older copies of keys that still live later in
+  the Worker; and **a PUT that landed must drop its seqs even when a later
+  DELETE cannot be sent**, because the Worker stamps `updated_at` on every
+  write and replaying the PUT would last-writer-wins over a newer remote
+  edit. A cache belonging to a different
   account is discarded rather than merged. The store is keyed by machine ADE
   directory so every project scope in a brain shares one cache and one cursor,
   and it is built only when sync is enabled — a `--no-sync` brain has no store
@@ -3766,7 +3772,8 @@ feature is merged or because a deliberately isolated-port host is running.
 - **Only explicitly account-owned credentials sync.** `.ade/local.secret.yaml`
   and device-only credentials remain per-machine. Account-scoped AI provider
   keys use the `provider_api_key` vault kind, Linear OAuth refresh tokens use
-  `linear_refresh_token`, and repository account secrets use `project_secret`
+  `linear_refresh_token` with a per-device `refreshOwner` so only one machine
+  exchanges the rotating grant, and repository account secrets use `project_secret`
   under the normalized repository scope. Local credential stores retain
   provenance and purge account-origin values on sign-out or account switch;
   access tokens, GitHub tokens, and vendor CLI refresh credentials stay on the

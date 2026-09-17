@@ -1492,6 +1492,13 @@ export async function createAdeRuntime(args: {
       getAccountAccessToken,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
+      getDeviceId: () => {
+        try {
+          return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+        } catch {
+          return null;
+        }
+      },
     });
     linearCredentialServiceForAccount = headlessLinearServices.linearCredentialService;
     teardown.push(() => headlessLinearServices.dispose());

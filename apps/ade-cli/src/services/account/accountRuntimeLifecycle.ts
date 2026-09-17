@@ -72,6 +72,7 @@ function createHeadlessAccountVaultBridge(
           key: item.key,
           value: null,
           updatedAt: item.updatedAt,
+          refreshOwner: item.refreshOwner,
         })),
       };
     },

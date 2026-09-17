@@ -37,7 +37,20 @@ export type AccountActionBridgeOptions<TRow> = {
 type CallOptions = AccountStoreWriteOptions & {
   /** Treat a bare false action result as a rejected write. */
   rejectFalse?: boolean;
+  /** Device id allowed to rotate a vaulted refresh grant. */
+  refreshOwner?: string | null;
 };
+
+function writeOptionsArg(callOptions: CallOptions): Record<string, unknown> | undefined {
+  const extra: Record<string, unknown> = {};
+  if (callOptions.expectedAccountUserId !== undefined) {
+    extra.expectedAccountUserId = callOptions.expectedAccountUserId;
+  }
+  if (callOptions.refreshOwner !== undefined) {
+    extra.refreshOwner = callOptions.refreshOwner;
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -68,12 +81,11 @@ export function createAccountActionBridge<TRow>(options: AccountActionBridgeOpti
       if (!pool) return unavailable<T>();
       const rootPath = options.getRootPath();
       if (!rootPath) return unavailable<T>();
+      const extra = writeOptionsArg(callOptions);
       const response = await pool.callActionForRoot(rootPath, {
         domain: options.domain,
         action,
-        argsList: callOptions.expectedAccountUserId === undefined
-          ? argsList
-          : [...argsList, { expectedAccountUserId: callOptions.expectedAccountUserId }],
+        argsList: extra ? [...argsList, extra] : argsList,
       });
       const raw = unwrap(response?.result);
       if (callOptions.rejectFalse && raw === false) return rejected<T>();

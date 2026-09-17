@@ -53,7 +53,17 @@ function toItem(value: unknown): AccountVaultItem | null {
   ) {
     return null;
   }
-  return { scope, kind, key, value: hasValue ? itemValue : null, updatedAt };
+  const refreshOwner = value.refreshOwner === null || typeof value.refreshOwner === "string"
+    ? value.refreshOwner
+    : undefined;
+  return {
+    scope,
+    kind,
+    key,
+    value: hasValue ? itemValue : null,
+    updatedAt,
+    ...(refreshOwner !== undefined ? { refreshOwner } : {}),
+  };
 }
 
 export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {

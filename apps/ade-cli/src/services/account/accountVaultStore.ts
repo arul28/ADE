@@ -260,6 +260,7 @@ export function createAccountVaultStore(args: {
     async upload(pending) {
       const relay = args.relay!;
       const writes = pending.filter((entry) => !entry.deleted && entry.value != null);
+      const completedSeqs: number[] = [];
       let uploadedAt: string | null = null;
       if (writes.length) {
         const result = await relay.putAccountVault(
@@ -275,12 +276,19 @@ export function createAccountVaultStore(args: {
         // `null` means there was no token to ask with. The queue stays.
         if (result === null) return null;
         uploadedAt = result.updatedAt;
+        completedSeqs.push(...writes.map((entry) => entry.seq));
       }
       for (const entry of pending.filter((item) => item.deleted)) {
-        const deleted = await relay.deleteAccountVaultItem(entry.scope, entry.kind, entry.key);
-        if (deleted === null) return null;
+        let deleted: boolean | null;
+        try {
+          deleted = await relay.deleteAccountVaultItem(entry.scope, entry.kind, entry.key);
+        } catch {
+          return { updatedAt: uploadedAt, completedSeqs };
+        }
+        if (deleted === null) return { updatedAt: uploadedAt, completedSeqs };
+        completedSeqs.push(entry.seq);
       }
-      return { updatedAt: uploadedAt };
+      return { updatedAt: uploadedAt, completedSeqs };
     },
     async pull(cursor) {
       const page = await args.relay!.getAccountVault({ since: cursor });
@@ -317,6 +325,7 @@ export function createAccountVaultStore(args: {
       updatedAt: string;
       /** False when the relay could not open the stored bytes. */
       readable: boolean;
+      refreshOwner: string | null;
     }> {
       const current = cache.readCache();
       const rows = [];
@@ -328,6 +337,7 @@ export function createAccountVaultStore(args: {
           ...split,
           updatedAt: item.updatedAt,
           readable: item.value !== null,
+          refreshOwner: item.refreshOwner,
         });
       }
       return rows.sort((left, right) => left.key.localeCompare(right.key));
@@ -345,7 +355,11 @@ export function createAccountVaultStore(args: {
       value: string,
       options?: AccountVaultStoreWriteOptions,
     ): boolean {
-      const refreshOwner = options?.refreshOwner ?? null;
+      const refreshOwner = options?.refreshOwner !== undefined
+        ? options.refreshOwner
+        : kind === "linear_refresh_token"
+          ? (args.getDeviceId?.() ?? null)
+          : null;
       return cache.mutate((current, queue) => {
         current.rows[cacheKey(scope, kind, key)] = {
           value,

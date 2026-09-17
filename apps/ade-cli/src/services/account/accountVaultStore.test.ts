@@ -150,6 +150,57 @@ describe("account vault store", () => {
     expect(store.get("all", "provider_key", "openai")).toBe("sk-from-elsewhere");
   });
 
+  it("stamps this machine as refreshOwner on a Linear refresh token", async () => {
+    const store = makeStore();
+    store.set("all", "linear_refresh_token", "default", "rt-linear");
+    await store.sync();
+
+    const sent = relay.putAccountVault.mock.calls[0]![0] as Array<{ kind: string; refreshOwner: string | null }>;
+    expect(sent[0]).toMatchObject({ kind: "linear_refresh_token", refreshOwner: "this-machine" });
+    expect(store.list()).toMatchObject([{ key: "default", refreshOwner: "this-machine" }]);
+  });
+
+  it("keeps pulling truncated vault pages until the relay says the view is complete", async () => {
+    const store = makeStore();
+    let pulls = 0;
+    relay.getAccountVault.mockImplementation(async () => {
+      pulls += 1;
+      if (pulls === 1) {
+        return {
+          items: [item("anthropic", "sk-page-1", "2026-09-16T00:00:00.000Z")],
+          cursor: "2026-09-16T00:00:00.000Z",
+          truncated: true,
+        };
+      }
+      return {
+        items: [item("openai", "sk-page-2", "2026-09-16T00:01:00.000Z")],
+        cursor: "2026-09-16T00:01:00.000Z",
+        truncated: false,
+      };
+    });
+
+    await expect(store.sync()).resolves.toBe("ready");
+    expect(pulls).toBe(2);
+    expect(store.get("all", "provider_key", "anthropic")).toBe("sk-page-1");
+    expect(store.get("all", "provider_key", "openai")).toBe("sk-page-2");
+  });
+
+  it("drops uploaded vault writes even when a later delete cannot be sent", async () => {
+    const store = makeStore();
+    store.set("all", "provider_key", "anthropic", "sk-live-abc");
+    store.remove("all", "provider_key", "openai");
+    relay.deleteAccountVaultItem.mockResolvedValueOnce(null);
+
+    await store.sync();
+
+    relay.putAccountVault.mockClear();
+    relay.deleteAccountVaultItem.mockResolvedValue(true);
+    await store.sync();
+
+    expect(relay.putAccountVault).not.toHaveBeenCalled();
+    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "openai");
+  });
+
   it("queues a revocation and clears it locally at once", async () => {
     const store = makeStore();
     store.set("all", "provider_key", "anthropic", "sk-live-abc");

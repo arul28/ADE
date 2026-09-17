@@ -2,6 +2,13 @@ import path from "node:path";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AccountVaultBridge } from "../../../../desktop/src/main/services/account/accountVaultBridge";
 import { describeVaultFailure, fireAndForgetVaultWrite } from "../../../../desktop/src/main/services/account/vaultWrite";
+import {
+  LINEAR_REFRESH_VAULT_KEY,
+  LINEAR_REFRESH_VAULT_KIND,
+  LINEAR_REFRESH_VAULT_SCOPE,
+  linearRefreshVaultWriteOptions,
+  thisDeviceOwnsLinearRefreshGrant,
+} from "../../../../desktop/src/main/services/account/linearVaultRefreshOwner";
 import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "../../../../desktop/src/main/services/cto/linearAppClient";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import { createCredentialProvenanceStore } from "../../../../desktop/src/shared/credentialProvenanceStore";
@@ -61,6 +68,7 @@ export function createHeadlessLinearCredentialService(args: {
   logger?: Logger;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
+  getDeviceId?: () => string | null;
 }): HeadlessLinearCredentialService {
   const secretsDir = path.join(args.adeDir, "secrets");
   const credentialStore = new EncryptedFileCredentialStore({
@@ -127,7 +135,23 @@ export function createHeadlessLinearCredentialService(args: {
         logEvent: "linear_sync.account_vault_sync_failed",
       },
       "set",
-      (vault) => vault.set("all", "linear_refresh_token", "default", refreshToken),
+      (vault) => {
+        const options = linearRefreshVaultWriteOptions(args.getDeviceId);
+        return options
+          ? vault.set(
+            LINEAR_REFRESH_VAULT_SCOPE,
+            LINEAR_REFRESH_VAULT_KIND,
+            LINEAR_REFRESH_VAULT_KEY,
+            refreshToken,
+            options,
+          )
+          : vault.set(
+            LINEAR_REFRESH_VAULT_SCOPE,
+            LINEAR_REFRESH_VAULT_KIND,
+            LINEAR_REFRESH_VAULT_KEY,
+            refreshToken,
+          );
+      },
     );
   };
 
@@ -139,7 +163,11 @@ export function createHeadlessLinearCredentialService(args: {
         logEvent: "linear_sync.account_vault_sync_failed",
       },
       "remove",
-      (vault) => vault.remove("all", "linear_refresh_token", "default"),
+      (vault) => vault.remove(
+        LINEAR_REFRESH_VAULT_SCOPE,
+        LINEAR_REFRESH_VAULT_KIND,
+        LINEAR_REFRESH_VAULT_KEY,
+      ),
     );
   };
 
@@ -213,6 +241,13 @@ export function createHeadlessLinearCredentialService(args: {
     const client = readOAuthClientCredentials();
     if (!client) return;
     refreshInFlight = (async () => {
+      if (!(await thisDeviceOwnsLinearRefreshGrant({
+        getAccountVault: args.getAccountVault,
+        getDeviceId: args.getDeviceId,
+      }))) {
+        args.logger?.info("linear_sync.oauth_refresh_skipped_other_owner", {});
+        return;
+      }
       const performRefresh = async (tokenToRefresh: string): Promise<void> => {
         const result = await refreshLinearOAuthAccessToken({
           refreshToken: tokenToRefresh,
@@ -276,6 +311,12 @@ export function createHeadlessLinearCredentialService(args: {
   const hydrateFromVault = async (): Promise<void> => {
     const accountUserId = args.getAccountUserId?.()?.trim() || null;
     if (!accountUserId) return;
+    if (!(await thisDeviceOwnsLinearRefreshGrant({
+      getAccountVault: args.getAccountVault,
+      getDeviceId: args.getDeviceId,
+    }))) {
+      return;
+    }
 
     try {
       if (readCredential(refreshTokenKey)) return;
@@ -301,7 +342,11 @@ export function createHeadlessLinearCredentialService(args: {
 
     let result: Awaited<ReturnType<AccountVaultBridge["get"]>>;
     try {
-      result = await vault.get("all", "linear_refresh_token", "default");
+      result = await vault.get(
+        LINEAR_REFRESH_VAULT_SCOPE,
+        LINEAR_REFRESH_VAULT_KIND,
+        LINEAR_REFRESH_VAULT_KEY,
+      );
     } catch (error) {
       logVaultFailure("get", error);
       return;

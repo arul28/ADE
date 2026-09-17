@@ -8,6 +8,13 @@ import {
   describeVaultFailure,
   fireAndForgetVaultWrite,
 } from "../account/vaultWrite";
+import {
+  LINEAR_REFRESH_VAULT_KEY,
+  LINEAR_REFRESH_VAULT_KIND,
+  LINEAR_REFRESH_VAULT_SCOPE,
+  linearRefreshVaultWriteOptions,
+  thisDeviceOwnsLinearRefreshGrant,
+} from "../account/linearVaultRefreshOwner";
 import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "./linearAppClient";
 import {
   deviceCredentialProvenance,
@@ -59,6 +66,7 @@ type LinearCredentialServiceArgs = {
   credentialStore?: SyncCredentialStore | null;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
+  getDeviceId?: () => string | null;
   fetchImpl?: typeof fetch;
 };
 
@@ -114,7 +122,23 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
         logEvent: "linear_sync.account_vault_sync_failed",
       },
       "set",
-      (vault) => vault.set("all", "linear_refresh_token", "default", refreshToken),
+      (vault) => {
+        const options = linearRefreshVaultWriteOptions(args.getDeviceId);
+        return options
+          ? vault.set(
+            LINEAR_REFRESH_VAULT_SCOPE,
+            LINEAR_REFRESH_VAULT_KIND,
+            LINEAR_REFRESH_VAULT_KEY,
+            refreshToken,
+            options,
+          )
+          : vault.set(
+            LINEAR_REFRESH_VAULT_SCOPE,
+            LINEAR_REFRESH_VAULT_KIND,
+            LINEAR_REFRESH_VAULT_KEY,
+            refreshToken,
+          );
+      },
     );
   };
 
@@ -126,7 +150,11 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
         logEvent: "linear_sync.account_vault_sync_failed",
       },
       "remove",
-      (vault) => vault.remove("all", "linear_refresh_token", "default"),
+      (vault) => vault.remove(
+        LINEAR_REFRESH_VAULT_SCOPE,
+        LINEAR_REFRESH_VAULT_KIND,
+        LINEAR_REFRESH_VAULT_KEY,
+      ),
     );
   };
 
@@ -686,6 +714,13 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     if (!client) return;
     const refreshToken = stored.refreshToken;
     refreshInFlight = (async () => {
+      if (!(await thisDeviceOwnsLinearRefreshGrant({
+        getAccountVault: args.getAccountVault,
+        getDeviceId: args.getDeviceId,
+      }))) {
+        args.logger?.info("linear_sync.oauth_refresh_skipped_other_owner", {});
+        return;
+      }
       const performRefresh = async (tokenToRefresh: string): Promise<void> => {
         const result = await refreshLinearOAuthAccessToken({
           refreshToken: tokenToRefresh,
@@ -770,6 +805,12 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const hydrateFromVault = async (): Promise<void> => {
     const accountUserId = args.getAccountUserId?.()?.trim() || null;
     if (!accountUserId) return;
+    if (!(await thisDeviceOwnsLinearRefreshGrant({
+      getAccountVault: args.getAccountVault,
+      getDeviceId: args.getDeviceId,
+    }))) {
+      return;
+    }
     let stored: StoredLinearToken | null;
     try {
       stored = getStoredToken();
@@ -796,7 +837,11 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
     let result: Awaited<ReturnType<AccountVaultBridge["get"]>>;
     try {
-      result = await vault.get("all", "linear_refresh_token", "default");
+      result = await vault.get(
+        LINEAR_REFRESH_VAULT_SCOPE,
+        LINEAR_REFRESH_VAULT_KIND,
+        LINEAR_REFRESH_VAULT_KEY,
+      );
     } catch (error) {
       logVaultFailure("get", error);
       return;

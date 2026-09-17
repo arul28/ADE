@@ -304,6 +304,63 @@ describe("linearCredentialService", () => {
     expect(vault.set).toHaveBeenCalledWith("all", "linear_refresh_token", "default", "rt-account");
   });
 
+  it("stamps this machine as Linear refreshOwner when writing the vault grant", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-owner-"));
+    const store = new MemoryCredentialStore();
+    const vault = createVaultMock();
+    const service = createLinearCredentialService({
+      adeDir: path.join(root, ".ade"),
+      logger: createLogger(),
+      credentialStore: store,
+      getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
+      getDeviceId: () => "device-a",
+    });
+
+    service.setOAuthToken({ accessToken: "at", refreshToken: "rt-account" });
+
+    expect(vault.set).toHaveBeenCalledWith(
+      "all",
+      "linear_refresh_token",
+      "default",
+      "rt-account",
+      { refreshOwner: "device-a" },
+    );
+  });
+
+  it("does not hydrate a Linear refresh grant owned by another machine", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-skip-hydrate-"));
+    const store = new MemoryCredentialStore();
+    store.setSync("linear.token.v1", "at-local");
+    store.setSync("linear.authMode.v1", "oauth");
+    const vault = createVaultMock();
+    vault.list.mockResolvedValue({
+      ok: true,
+      value: [{
+        scope: "all",
+        kind: "linear_refresh_token",
+        key: "default",
+        value: null,
+        updatedAt: "2026-09-16T00:00:00.000Z",
+        refreshOwner: "other-device",
+      }],
+    } as never);
+    vault.get.mockResolvedValue({ ok: true, value: "rt-from-account" } as never);
+    const service = createLinearCredentialService({
+      adeDir: path.join(root, ".ade"),
+      logger: createLogger(),
+      credentialStore: store,
+      getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
+      getDeviceId: () => "this-device",
+    });
+
+    await service.hydrateFromVault();
+
+    expect(store.getSync("linear.refreshToken.v1")).toBeNull();
+    expect(vault.get).not.toHaveBeenCalled();
+  });
+
   it("hydrates a missing local OAuth refresh token without overwriting one already stored", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-hydrate-"));
     const store = new MemoryCredentialStore();
@@ -1952,6 +2009,41 @@ describe("linearCredentialService OAuth token refresh", () => {
     expect(String(fetchImpl.mock.calls[0][1]?.body ?? "")).toContain("grant_type=refresh_token");
     expect(service.getToken()).toBe("at_refreshed");
     expect(service.getStatus()).toMatchObject({ authMode: "oauth", refreshTokenStored: true });
+  });
+
+  it("does not refresh a Linear grant owned by another machine", async () => {
+    const fetchImpl = vi.fn(async () => okResponse({ access_token: "at_stolen" }));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-refresh-owner-"));
+    const vault = createVaultMock();
+    vault.list.mockResolvedValue({
+      ok: true,
+      value: [{
+        scope: "all",
+        kind: "linear_refresh_token",
+        key: "default",
+        value: null,
+        updatedAt: "2026-09-16T00:00:00.000Z",
+        refreshOwner: "other-device",
+      }],
+    } as never);
+    const service = createLinearCredentialService({
+      adeDir: path.join(root, ".ade"),
+      logger: createLogger(),
+      credentialStore: new MemoryCredentialStore(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getAccountVault: () => vault as never,
+      getDeviceId: () => "this-device",
+    });
+    service.setOAuthToken({
+      accessToken: "at_old",
+      refreshToken: "rt_old",
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+
+    await service.ensureFreshToken();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(service.getToken()).toBe("at_old");
   });
 
   it("does not refresh a manual token or a still-fresh OAuth token", async () => {

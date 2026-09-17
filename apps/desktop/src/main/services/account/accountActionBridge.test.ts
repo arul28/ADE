@@ -273,6 +273,23 @@ describe("accountVaultBridge (main)", () => {
     });
   });
 
+  it("forwards Linear refreshOwner through vault set args", async () => {
+    const pool = poolReturningVault({ domain: "account_vault", action: "set", result: undefined });
+    const bridge = createAccountVaultBridge({
+      getPool: () => pool,
+      getRootPath: () => "/repo",
+    });
+
+    await bridge.set("all", "linear_refresh_token", "default", "rt", {
+      refreshOwner: "device-a",
+    });
+    expect(pool.callActionForRoot).toHaveBeenLastCalledWith("/repo", {
+      domain: "account_vault",
+      action: "set",
+      argsList: ["all", "linear_refresh_token", "default", "rt", { refreshOwner: "device-a" }],
+    });
+  });
+
   it("A2: distinguishes a rejected write from an unavailable runtime", async () => {
     const bridge = createAccountVaultBridge({
       getPool: () => poolReturningVault({ domain: "account_vault", action: "set", result: false }),
@@ -322,6 +339,7 @@ describe("accountVaultBridge (main)", () => {
           key: "anthropic",
           value: "token",
           updatedAt: "2026-01-01T00:00:00.000Z",
+          refreshOwner: null,
         },
       ],
     });

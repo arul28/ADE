@@ -160,6 +160,7 @@ export function createAccountSettingsStore(args: {
     async upload(pending) {
       const relay = args.relay!;
       const writes = pending.filter((entry) => !entry.deleted);
+      const completedSeqs: number[] = [];
       let uploadedAt: string | null = null;
       if (writes.length) {
         const result = await relay.putAccountSettings(
@@ -174,12 +175,19 @@ export function createAccountSettingsStore(args: {
         // `null` means there was no token to ask with. The queue stays.
         if (result === null) return null;
         uploadedAt = result.updatedAt;
+        completedSeqs.push(...writes.map((entry) => entry.seq));
       }
       for (const entry of pending.filter((item) => item.deleted)) {
-        const deleted = await relay.deleteAccountSetting(entry.scope, entry.key);
-        if (deleted === null) return null;
+        let deleted: boolean | null;
+        try {
+          deleted = await relay.deleteAccountSetting(entry.scope, entry.key);
+        } catch {
+          return { updatedAt: uploadedAt, completedSeqs };
+        }
+        if (deleted === null) return { updatedAt: uploadedAt, completedSeqs };
+        completedSeqs.push(entry.seq);
       }
-      return { updatedAt: uploadedAt };
+      return { updatedAt: uploadedAt, completedSeqs };
     },
     async pull(cursor) {
       const page = await args.relay!.getAccountSettings({ since: cursor });

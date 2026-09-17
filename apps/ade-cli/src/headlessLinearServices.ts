@@ -185,6 +185,7 @@ type HeadlessLinearDeps = {
   getAccountAccessToken?: () => Promise<string | null>;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
+  getDeviceId?: () => string | null;
 };
 
 type HeadlessLinearServices = {
@@ -2952,6 +2953,7 @@ export function createHeadlessLinearServices(
       logger: args.logger,
       getAccountVault: args.getAccountVault,
       getAccountUserId: args.getAccountUserId,
+      getDeviceId: args.getDeviceId,
     });
   const githubService = createHeadlessGitHubService(
     args.projectRoot,

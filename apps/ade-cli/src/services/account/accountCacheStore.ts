@@ -44,6 +44,9 @@ export type AccountCacheSyncStatus = "ready" | "unavailable" | "failed";
 
 export type AccountCacheSyncListener = (status: AccountCacheSyncStatus) => void;
 
+/** One Worker page is 500 rows. Fifty pages is far past any real vault. */
+const MAX_PULL_PAGES = 50;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -107,8 +110,16 @@ export type AccountCacheStoreConfig<
   /**
    * Flush the queue. `null` means "could not ask" — the queue stays and the
    * pull is skipped. Throwing means the same, and is logged.
+   *
+   * `completedSeqs` is what actually landed. A PUT that succeeded followed by
+   * a DELETE that could not be sent must drop the PUT seqs immediately, or the
+   * next pass replays them with a fresh Worker timestamp and last-writer-wins
+   * over a newer remote edit.
    */
-  upload(pending: TPending[]): Promise<{ updatedAt: string | null } | null>;
+  upload(pending: TPending[]): Promise<{
+    updatedAt: string | null;
+    completedSeqs?: readonly number[];
+  } | null>;
   pull(cursor: string | null): Promise<
     { rows: TRemote[]; cursor: string | null; truncated: boolean } | null
   >;
@@ -385,11 +396,13 @@ export function createAccountCacheStore<
     const pending = current.pending.slice();
     if (pending.length) {
       let uploadedAt: string | null = null;
+      let completedSeqs: ReadonlySet<number> = new Set(pending.map((entry) => entry.seq));
       try {
         const result = await config.upload(pending);
         // `null` means there was no token to ask with. The queue stays.
         if (result === null) return "unavailable";
         uploadedAt = result.updatedAt;
+        if (result.completedSeqs) completedSeqs = new Set(result.completedSeqs);
       } catch (error) {
         // Keep the queue. An upload that failed is work still to do, and
         // dropping it would silently lose a change the user believes is saved.
@@ -403,56 +416,63 @@ export function createAccountCacheStore<
       // Clear only what was actually sent, matched by sequence rather than by
       // key: an edit made while the upload was in flight carries a newer seq
       // for the same key, and dropping it would lose a change the user believes
-      // is saved.
-      const sentSeqs = new Set(pending.map((entry) => entry.seq));
+      // is saved. Persist immediately so a later pull failure cannot resurrect
+      // a PUT the Worker already accepted.
       const after = readCache();
-      after.pending = after.pending.filter((entry) => !sentSeqs.has(entry.seq));
+      after.pending = after.pending.filter((entry) => !completedSeqs.has(entry.seq));
       // Adopt the server's stamp for everything that landed. Without this the
       // cached row still carries a local provisional time, and the pull below —
       // which asks from a cursor taken BEFORE this upload — would hand back the
       // older server row and revert the user's own edit.
       if (uploadedAt) {
         for (const entry of pending) {
-          if (entry.deleted) continue;
+          if (entry.deleted || !completedSeqs.has(entry.seq)) continue;
           const cached = after.rows[config.pendingKey(entry)];
           if (cached) cached.updatedAt = uploadedAt;
         }
       }
+      persist();
     }
 
-    // Then pull.
+    // Then pull, page by page. A truncated page is not a finished cache:
+    // migration starts on `ready`, and treating a partial vault as complete
+    // would upload this machine's older copies of keys that still live on
+    // later pages.
     try {
-      if (abandoned()) return "unavailable";
-      const before = readCache();
-      const page = await config.pull(before.cursor);
-      if (!page) return "unavailable";
-      if (abandoned()) return "unavailable";
-      const after = readCache();
-      const stillPending = new Set(after.pending.map((entry) => config.pendingKey(entry)));
-      for (const remote of page.rows) {
-        const key = config.remoteKey(remote);
-        // A key this machine has queued is not the server's to answer yet.
-        if (stillPending.has(key)) continue;
-        if (remote.deleted) {
-          delete after.rows[key];
-          continue;
+      for (let pageIndex = 0; pageIndex < MAX_PULL_PAGES; pageIndex += 1) {
+        if (abandoned()) return "unavailable";
+        const before = readCache();
+        const cursorAtPull = before.cursor;
+        const page = await config.pull(cursorAtPull);
+        if (!page) return "unavailable";
+        if (abandoned()) return "unavailable";
+        const after = readCache();
+        const stillPending = new Set(after.pending.map((entry) => config.pendingKey(entry)));
+        for (const remote of page.rows) {
+          const key = config.remoteKey(remote);
+          // A key this machine has queued is not the server's to answer yet.
+          if (stillPending.has(key)) continue;
+          if (remote.deleted) {
+            delete after.rows[key];
+            continue;
+          }
+          // Nor is a row older than what this machine already holds. A page
+          // fetched from a cursor taken before our own upload legitimately
+          // contains stale rows, and applying one would revert the user's edit
+          // in front of them.
+          const cached = after.rows[key];
+          if (cached && Date.parse(remote.updatedAt) <= Date.parse(cached.updatedAt)) continue;
+          const next = config.toRow(remote, cached);
+          if (next === null) continue;
+          after.rows[key] = next;
         }
-        // Nor is a row older than what this machine already holds. A page
-        // fetched from a cursor taken before our own upload legitimately
-        // contains stale rows, and applying one would revert the user's edit in
-        // front of them.
-        const cached = after.rows[key];
-        if (cached && Date.parse(remote.updatedAt) <= Date.parse(cached.updatedAt)) continue;
-        const next = config.toRow(remote, cached);
-        if (next === null) continue;
-        after.rows[key] = next;
+        if (page.cursor) after.cursor = page.cursor;
+        persist();
+        if (!page.truncated) return "ready";
+        logger.info(config.events.pullTruncated, { cursor: after.cursor, page: pageIndex + 1 });
+        if ((page.cursor ?? null) === (cursorAtPull ?? null)) return "unavailable";
       }
-      if (page.cursor) after.cursor = page.cursor;
-      persist();
-      if (page.truncated) {
-        logger.info(config.events.pullTruncated, { cursor: after.cursor });
-      }
-      return "ready";
+      return "unavailable";
     } catch (error) {
       logger.warn(config.events.pullFailed, {
         error: error instanceof Error ? error.message : String(error ?? ""),
