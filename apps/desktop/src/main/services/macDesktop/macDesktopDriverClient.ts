@@ -86,7 +86,8 @@ export class MacDesktopDriverError extends Error {
   readonly code: string;
 
   constructor(code: string, message: string) {
-    super(message);
+    // See `MacDesktopError`: the code prefix is what reaches the CLI's hints.
+    super(message.startsWith(`${code}:`) ? message : `${code}: ${message}`);
     this.name = "MacDesktopDriverError";
     this.code = code;
   }
@@ -322,6 +323,21 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (disposed) return Promise.reject(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver client is disposed."));
     if (child && childReady) return Promise.resolve();
     if (startPromise) return startPromise;
+    // A handle that never reached `spawn` — or whose `close` was attributed to
+    // a newer one — would otherwise sit here forever: `isRunning()` stays
+    // false, health stays "starting", and every request answers "the desktop
+    // driver is not running" with nothing behind it that will ever recover.
+    // Drop the stale child so this attempt spawns a real one.
+    if (child) {
+      const stale = child;
+      child = null;
+      childReady = false;
+      try {
+        stale.kill("SIGKILL");
+      } catch {
+        // Already gone; the handle was the only thing left of it.
+      }
+    }
 
     const attempt = new Promise<void>((resolve, reject) => {
       if (platform !== "darwin") {
@@ -366,6 +382,26 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       });
       spawned.once("error", (error: Error) => {
         deps.logger.warn("mac_desktop.driver_error", { error: error.message });
+        // A spawn that fails outright (ENOENT, EACCES, ETXTBSY while the binary
+        // is being replaced) emits `error`, and only logging it left `child`
+        // pointing at a handle that never starts and never closes: health stayed
+        // "starting" forever and every request answered "the desktop driver is
+        // not running" with no restart behind it. Treat it as the exit it is.
+        if (child !== spawned) return;
+        child = null;
+        childReady = false;
+        if (stableTimer) {
+          clearTimeout(stableTimer);
+          stableTimer = null;
+        }
+        const failure = new MacDesktopDriverError(
+          "MAC_DESKTOP_DRIVER_UNAVAILABLE",
+          `The desktop driver could not start (${error.message}).`,
+        );
+        settlePending(failure);
+        scheduleRestart();
+        publishHealth();
+        reject(failure);
       });
       spawned.once("spawn", () => {
         if (child !== spawned) return;
@@ -404,9 +440,17 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       });
     });
 
-    startPromise = attempt.finally(() => {
-      if (startPromise === attempt) startPromise = null;
+    // `startPromise` holds the DERIVED promise, so the guard has to compare
+    // against that one. Comparing against `attempt` was never true, which left
+    // `startPromise` set forever: after the first attempt settled, every later
+    // `start()` returned that stale promise and never spawned again. The driver
+    // could therefore be started exactly once per process — once it exited for
+    // any reason, health sat on "starting" and every call answered "the desktop
+    // driver is not running" with no restart that could ever take effect.
+    const settled: Promise<void> = attempt.finally(() => {
+      if (startPromise === settled) startPromise = null;
     }) as Promise<void>;
+    startPromise = settled;
     // The rejection is delivered to whoever awaited `start`; without this the
     // `finally` chain above is an unhandled rejection of its own.
     startPromise.catch(() => {});

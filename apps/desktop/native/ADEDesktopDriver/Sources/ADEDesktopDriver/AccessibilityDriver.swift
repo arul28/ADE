@@ -370,6 +370,31 @@ final class AccessibilityDriver {
            direction == "visible" {
             return
         }
+        try scrollNearest(from: element, pid: record.pid, direction: direction, amount: amount)
+    }
+
+    /// A scroll with no observed target: "scroll whatever this app is showing".
+    ///
+    /// `ade mac-desktop scroll down` is documented to scroll the display, so a
+    /// caller that never observed still has to get a scroll. The app's focused
+    /// window stands in for the element, and the wheel fallback below is the
+    /// same process-targeted post the element path ends in.
+    func scroll(pid: pid_t, direction: String, amount: Int) throws {
+        let app = AXUIElementCreateApplication(pid)
+        var focused: CFTypeRef?
+        let root: AXUIElement =
+            AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused) == .success
+            ? unsafeBitCast(focused, to: AXUIElement.self)
+            : app
+        try scrollNearest(from: root, pid: pid, direction: direction, amount: amount)
+    }
+
+    private func scrollNearest(
+        from element: AXUIElement,
+        pid: pid_t,
+        direction: String,
+        amount: Int
+    ) throws {
         if let scrollBar = findScrollBar(from: element, direction: direction),
            let current = Self.stringValue(of: scrollBar).flatMap(Double.init) {
             let step = 0.1 * Double(max(1, amount))
@@ -398,7 +423,7 @@ final class AccessibilityDriver {
         ) else {
             throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a scroll event.")
         }
-        event.postToPid(record.pid)
+        event.postToPid(pid)
     }
 
     private func findScrollBar(from element: AXUIElement, direction: String) -> AXUIElement? {

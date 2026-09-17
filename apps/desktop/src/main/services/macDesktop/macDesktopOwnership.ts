@@ -21,7 +21,8 @@ export class MacDesktopOwnershipError extends Error {
   readonly laneId: string | null;
 
   constructor(code: string, message: string, laneId: string | null = null) {
-    super(message);
+    // See `MacDesktopError`: the `CODE: ` prefix is what reaches the CLI hints.
+    super(message.startsWith(`${code}:`) ? message : `${code}: ${message}`);
     this.name = "MacDesktopOwnershipError";
     this.code = code;
     this.laneId = laneId;

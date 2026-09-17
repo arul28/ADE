@@ -822,7 +822,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
-    $ ade mac-desktop                                   Launch the installed desktop app
+    $ ade desktop                                   Launch the installed ADE desktop app
+    $ ade mac-desktop start | observe | click | proof
+                                                     Drive this lane's private macOS display
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
@@ -2026,7 +2028,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   machine brain and starts it if needed.
 
     $ ade desktop
-    $ ade mac-desktop open
+    $ ade desktop --app-name "ADE Beta"
 
   Flags:
     --app-name <name>       Installed app name to open. Defaults to ADE, ADE Beta,
@@ -3118,7 +3120,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                        --alt (option) --control
     $ ade mac-desktop scroll down --amount 5 --text    Scroll the display or a target
     $ ade mac-desktop drag --from <handle> --to 900,420
-    $ ade mac-desktop wait --text "Done" --timeout 8000
+    $ ade mac-desktop wait --label "Done" --timeout 8000 --text
 
   Every acting command re-observes and prints what the screen looks like now.
   Accessibility input is the default and needs no approval; --real posts real
@@ -23682,10 +23684,16 @@ function renderKeyValues(
     ([, value]) => value !== undefined && value !== null && value !== "",
   );
   const labelWidth = Math.max(0, ...rows.map(([label]) => label.length));
+  // An absolute path is the one value a caller copies rather than reads, so it
+  // is never clipped: a truncated artifact path is a path nobody can open.
+  const isAbsolutePathValue = (value: unknown): boolean =>
+    typeof value === "string"
+    && (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value));
   return [
     title,
     ...rows.map(
-      ([label, value]) => `${label.padEnd(labelWidth)}  ${cell(value, 96)}`,
+      ([label, value]) =>
+        `${label.padEnd(labelWidth)}  ${cell(value, isAbsolutePathValue(value) ? 4096 : 96)}`,
     ),
   ].join("\n");
 }
@@ -25188,6 +25196,10 @@ function macDesktopObservationSections(observation: JsonObject): string[] {
     ],
     ["caption", observation.caption],
     ["elements", `${elements.length}/${observation.elementCount ?? elements.length}`],
+    // The bracketed number on each line below is an index, not a handle. Say
+    // once how the two compose so a --text caller never has to guess the shape
+    // `click` accepts.
+    ["handles", observation.id ? `obs-${observation.id}:e:<#>` : null],
   ]);
   const sections = [header];
   if (elements.length) {
@@ -25248,6 +25260,11 @@ function formatMacDesktopStatus(value: unknown): string {
     ["host is local", status.hostIsLocal],
   ]);
   const sections = [header];
+  // A supported host with no display reads as a wall of green rows that never
+  // says the one thing the caller has to do next.
+  if (status.supported === true && !display) {
+    sections.push("", "No display for this lane yet — run: ade mac-desktop start");
+  }
   sections.push(...macDesktopWindowsFooter(windows));
   if (lanes.length) {
     sections.push(
@@ -25295,7 +25312,20 @@ function formatMacDesktopAction(value: unknown): string {
     ["ok", result.ok ?? true],
     ["action", result.action],
     ["mode", result.mode],
-    ["resolved", resolved ? macDesktopElementLine(resolved) : "(no element; acted on a point)"],
+    [
+      "resolved",
+      resolved
+        ? macDesktopElementLine(resolved)
+        // A key press has no target element and no point either — saying it
+        // "acted on a point" described a click that never happened.
+        // Only a click or a drag can land on a point; a key, a scroll or a wait
+        // that resolved nothing was never "acted on a point".
+        : (result.action === "click" || result.action === "drag"
+          ? "(no element; acted on a point)"
+          : result.action === "wait"
+            ? "(no element matched)"
+            : "(no element; sent to the focused window)"),
+    ],
     ["waited", typeof result.waitedMs === "number" ? `${result.waitedMs}ms` : null],
   ]);
   if (!observation) return header;
@@ -28039,7 +28069,12 @@ async function main(): Promise<void> {
       return;
     }
     if (error instanceof CliToolError) {
-      await writeProcessOutput(process.stderr, `ade: ${error.message}\n`);
+      // Mac Desktop errors arrive as `MAC_DESKTOP_*: sentence`; the code is the
+      // hint table's key, not something a reader needs to see twice.
+      await writeProcessOutput(
+        process.stderr,
+        `ade: ${error.message.replace(/^MAC_DESKTOP_[A-Z0-9_]+:\s*/, "")}\n`,
+      );
       const iosHint = iosSimulatorErrorHint(
         error.message,
         iosSimulatorSubcommandFromArgv(process.argv.slice(2)),

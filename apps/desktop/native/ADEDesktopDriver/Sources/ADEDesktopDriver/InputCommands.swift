@@ -143,14 +143,26 @@ extension DriverRuntime {
             try accessibility.press(pid: pid, key: key, modifiers: modifiers)
             return ["resolvedIndex": resolvedIndex]
         case "scroll":
-            let (element, record) = try resolve(payload: payload)
-            try accessibility.scroll(
-                element,
-                record: record,
-                direction: payload["direction"]?.stringValue ?? "down",
-                amount: payload["amount"]?.intValue ?? 3
-            )
-            return ["resolvedIndex": .int(record.index)]
+            let direction = payload["direction"]?.stringValue ?? "down"
+            let amount = payload["amount"]?.intValue ?? 3
+            // A scroll with no target is documented ("scroll the display or a
+            // target"), so it falls back to this lane's frontmost window the
+            // way `press` does. A target that was NAMED and did not resolve
+            // still fails: silently scrolling something else would be worse
+            // than the error.
+            if hasTarget(payload) {
+                let (element, record) = try resolve(payload: payload)
+                try accessibility.scroll(element, record: record, direction: direction, amount: amount)
+                return ["resolvedIndex": .int(record.index)]
+            }
+            guard let first = windows.listWindows(laneId: laneId).first else {
+                throw DriverError(
+                    code: DriverErrorCode.noDisplay,
+                    message: "Lane \(laneId) has no window to scroll."
+                )
+            }
+            try accessibility.scroll(pid: first.pid, direction: direction, amount: amount)
+            return ["resolvedIndex": .null]
         case "drag":
             throw DriverError(
                 code: DriverErrorCode.inputLeaseRequired,
@@ -265,6 +277,14 @@ extension DriverRuntime {
             }
             return nil
         }
+    }
+
+    /// True when the caller named something to act on, at any nesting level.
+    private func hasTarget(_ payload: [String: JSONValue]) -> Bool {
+        if let handle = payload["handle"]?.stringValue, !handle.isEmpty { return true }
+        if let text = payload["text"]?.stringValue, !text.isEmpty { return true }
+        if let target = payload["target"]?.objectValue { return hasTarget(target) }
+        return false
     }
 
     private func resolve(payload: [String: JSONValue]) throws -> (AXUIElement, ObservedElement) {

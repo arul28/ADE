@@ -111,7 +111,12 @@ export class MacDesktopError extends Error {
   readonly code: string;
 
   constructor(code: string, message: string) {
-    super(message);
+    // `CODE: message`, the shape the unsupported-platform error already used.
+    // The daemon flattens a thrown error to its message string, so the prefix
+    // is the only part of the code that survives the wire — and the CLI's hint
+    // table keys on exactly that. Without it every hint below the platform one
+    // was unreachable. The CLI strips the prefix before printing the sentence.
+    super(message.startsWith(`${code}:`) ? message : `${code}: ${message}`);
     this.name = "MacDesktopError";
     this.code = code;
   }
@@ -612,10 +617,27 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const startInternal = async (args: MacDesktopStartArgs): Promise<MacDesktopStatus> => {
     const laneId = args.laneId.trim();
     if (!laneId) throw new MacDesktopError("MAC_DESKTOP_NO_DISPLAY", "start needs a laneId.");
+    // An explicit resolution is a preference first: it is what the next start
+    // on this host uses, whether or not a display is live right now.
+    const requested = args.resolution && args.resolution in MAC_DESKTOP_RESOLUTION_PRESETS
+      ? args.resolution
+      : null;
+    if (requested) deps.writeSetting?.(MAC_DESKTOP_RESOLUTION_SETTING_KEY, requested);
     const existing = ownership.getDisplay(laneId);
     if (existing) {
-      ownership.touchDisplay(laneId);
-      return await buildStatus({ laneId });
+      const wanted = requested ? MAC_DESKTOP_RESOLUTION_PRESETS[requested] : null;
+      const sameSize = !wanted
+        || (existing.width === wanted.width && existing.height === wanted.height);
+      if (sameSize) {
+        ownership.touchDisplay(laneId);
+        return await buildStatus({ laneId });
+      }
+      // The driver has no resize op, so a new size is a new display. Saying
+      // "ok" and leaving the old size in place — which is what returning the
+      // existing display did — made `ade mac-desktop display 1080p` a no-op
+      // that reported success. The parked windows go back to the user's screen,
+      // the same as `stop`, and the caller re-opens what it still needs.
+      await destroyDisplay(laneId, "stopped");
     }
     const seat = await ensureProvider();
     await reconcileDisplays(seat);

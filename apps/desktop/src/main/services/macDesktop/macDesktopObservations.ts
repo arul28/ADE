@@ -58,7 +58,10 @@ export class MacDesktopObservationError extends Error {
   readonly code: string;
 
   constructor(code: string, message: string) {
-    super(message);
+    // See `MacDesktopError`: the `CODE: ` prefix is the only part of the code
+    // that survives the daemon's flatten-to-message, and it is what the CLI's
+    // hint table keys on. The CLI strips it before printing the sentence.
+    super(message.startsWith(`${code}:`) ? message : `${code}: ${message}`);
     this.name = "MacDesktopObservationError";
     this.code = code;
   }
