@@ -18,6 +18,7 @@ export * from "./computerUseArtifacts";
 export * from "./iosSimulator";
 export * from "./agentObservation";
 export * from "./appControl";
+export * from "./macDesktop";
 export * from "./builtInBrowser";
 export * from "./builtInBrowserLoginImport";
 export * from "./config";

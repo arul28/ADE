@@ -10,12 +10,21 @@
  */
 
 /** The tools that have something to *look at*. Git and Files do not. */
-export type WorkLiveScreenTool = "browser" | "app-control" | "ios";
+export type WorkLiveScreenTool = "browser" | "app-control" | "ios" | "mac-desktop";
 
-export const WORK_LIVE_SCREEN_TOOLS: readonly WorkLiveScreenTool[] = ["browser", "app-control", "ios"];
+export const WORK_LIVE_SCREEN_TOOLS: readonly WorkLiveScreenTool[] = [
+  "browser",
+  "app-control",
+  "ios",
+  // The lane's own macOS screen. It qualifies for the same reason the others do
+  // — there is a picture of it — and it is the cheapest of the four to show:
+  // the frame is already in `macDesktopFrameStore`, kept by whichever surface
+  // last held the decoder, so the card adds no capture of its own.
+  "mac-desktop",
+];
 
 export function isWorkLiveScreenTool(tool: string | null | undefined): tool is WorkLiveScreenTool {
-  return tool === "browser" || tool === "app-control" || tool === "ios";
+  return tool === "browser" || tool === "app-control" || tool === "ios" || tool === "mac-desktop";
 }
 
 /**

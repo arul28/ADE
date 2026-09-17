@@ -561,7 +561,7 @@ describe("workLiveBottomReserve", () => {
 });
 
 describe("workLiveSource", () => {
-  const empty = { browserTab: null, appControlSession: null, iosSession: null };
+  const empty = { browserTab: null, appControlSession: null, iosSession: null, macDesktopFrame: null };
 
   it("answers every per-tool question from one adapter", () => {
     const browser = workLiveSource("browser", {

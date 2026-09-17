@@ -5,6 +5,38 @@ import type {
 } from "../shared/types/systemSettings";
 import type { LocalizedRemoteUrl } from "../shared/remoteLoopbackUrl";
 import type {
+  MacDesktopActionResult,
+  MacDesktopClaimArgs,
+  MacDesktopClickArgs,
+  MacDesktopDragArgs,
+  MacDesktopEventPayload,
+  MacDesktopGetStatusArgs,
+  MacDesktopLeaseState,
+  MacDesktopObservation,
+  MacDesktopObserveArgs,
+  MacDesktopOpenArgs,
+  MacDesktopOpenResult,
+  MacDesktopPressArgs,
+  MacDesktopPresentArgs,
+  MacDesktopRecordStartArgs,
+  MacDesktopRecordingStatus,
+  MacDesktopReleaseArgs,
+  MacDesktopScreenshotArgs,
+  MacDesktopScreenshotResult,
+  MacDesktopScrollArgs,
+  MacDesktopStartArgs,
+  MacDesktopStartStreamArgs,
+  MacDesktopStatus,
+  MacDesktopStopArgs,
+  MacDesktopStopResult,
+  MacDesktopStreamStatus,
+  MacDesktopTakeoverArgs,
+  MacDesktopTypeArgs,
+  MacDesktopWaitArgs,
+  MacDesktopWaitResult,
+  MacDesktopWindow,
+} from "../shared/types/macDesktop";
+import type {
   BuiltInBrowserRemoteRequest,
   BuiltInBrowserRemoteRequestAck,
 } from "../shared/types/builtInBrowserRemote";
@@ -2492,6 +2524,117 @@ declare global {
         ) => Promise<{ url: string | null; forwarded: boolean; error: string | null }>;
         onEvent: (
           cb: (ev: IosSimulatorEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+      };
+      /**
+       * The lane's private macOS screen. Mirrors `iosSimulator`: every method
+       * takes an optional pin, because the display belongs to the lane's host
+       * rather than to this window.
+       */
+      macDesktop: {
+        getStatus: (
+          args?: MacDesktopGetStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
+        start: (
+          args: MacDesktopStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
+        stop: (
+          args: MacDesktopStopArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStopResult>;
+        listWindows: (
+          args?: { laneId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopWindow[]>;
+        open: (
+          args: MacDesktopOpenArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopOpenResult>;
+        claimWindow: (
+          args: MacDesktopClaimArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopWindow>;
+        releaseWindow: (
+          args: MacDesktopReleaseArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ released: number }>;
+        observe: (
+          args: MacDesktopObserveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopObservation>;
+        click: (
+          args: MacDesktopClickArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        type: (
+          args: MacDesktopTypeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        press: (
+          args: MacDesktopPressArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        scroll: (
+          args: MacDesktopScrollArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        drag: (
+          args: MacDesktopDragArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        wait: (
+          args: MacDesktopWaitArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopWaitResult>;
+        screenshot: (
+          args: MacDesktopScreenshotArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopScreenshotResult>;
+        startRecording: (
+          args: MacDesktopRecordStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopRecordingStatus>;
+        stopRecording: (
+          args: { laneId: string; chatSessionId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopRecordingStatus>;
+        startStream: (
+          args: MacDesktopStartStreamArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStreamStatus>;
+        stopStream: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStreamStatus>;
+        getStreamStatus: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStreamStatus>;
+        takeControl: (
+          args: MacDesktopTakeoverArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopLeaseState>;
+        returnControl: (
+          args: { laneId: string; controllerId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopLeaseState | null>;
+        renewLease: (
+          args: { laneId: string; holderId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopLeaseState | null>;
+        present: (
+          args: MacDesktopPresentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ moved: number }>;
+        resolveStreamUrl: (
+          streamUrl: string | null,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ url: string | null; forwarded: boolean; error: string | null }>;
+        onEvent: (
+          cb: (ev: MacDesktopEventPayload) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };

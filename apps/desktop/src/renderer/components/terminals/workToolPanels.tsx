@@ -14,6 +14,7 @@ import type { WorkSidebarTab } from "../../state/appStore";
 import { formatToolTypeLabel } from "../../lib/sessions";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
+import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
@@ -373,14 +374,35 @@ function WorkAppControlTool({
 /**
  * The lane's private macOS screen.
  *
- * Read-only on the hosted web client, which is all this unit builds. The
- * Electron panel (`ChatMacDesktopPanel`, with the live stream and takeover)
- * lands in the renderer unit and replaces the second branch here; until it
- * does, the desktop shows the same description rather than an empty frame, so
- * the tab is never a dead card.
+ * Read-only on the hosted web client, which has no way to hold an input lease
+ * and no decoder for the host's stream. Everywhere else — including a Windows
+ * or Linux desktop watching a Mac-hosted lane — this is the live panel: the
+ * display lives on the runtime host, so the viewer's own platform never enters
+ * into it.
  */
-function WorkMacDesktopTool({ laneId }: WorkToolPanelProps) {
-  return <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />;
+function WorkMacDesktopTool({
+  laneId,
+  activeLane,
+  toolContext,
+  panelSessionId,
+  runtimePin,
+  warningReason,
+}: WorkToolPanelProps) {
+  if (isReadOnlyWorkTool("mac-desktop", toolContext)) {
+    return <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />;
+  }
+  if (!laneId) return <NoLaneNotice />;
+  return (
+    <NativePanelFrame warningReason={warningReason} padded>
+      <ChatMacDesktopPanel
+        key={`work-mac-desktop:${runtimePin?.key ?? "bound"}`}
+        laneId={laneId}
+        laneName={activeLane?.name ?? null}
+        sessionId={panelSessionId}
+        runtimePin={runtimePin}
+      />
+    </NativePanelFrame>
+  );
 }
 
 export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkToolPanelProps>> = {

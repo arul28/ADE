@@ -20,6 +20,7 @@ import { useDockLayout } from "../ui/DockLayoutState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
+import { LaneMacDesktopPeek } from "./LaneMacDesktopPeek";
 import { useLaneAgents, type LaneAgent } from "./laneAgents";
 import { openAgentInWorkTabPath } from "../../lib/laneNavigation";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
@@ -3221,6 +3222,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 if (!isSelected) e.currentTarget.style.background = isInSplit ? "rgba(167,139,250,0.06)" : "transparent";
               }}
             >
+              <LaneMacDesktopPeek laneId={lane.id} />
               {/* Tab number / merged-PR manage shortcut */}
               <span
                 className="group/merged-manage relative inline-flex shrink-0 items-center justify-center"

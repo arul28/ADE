@@ -162,6 +162,19 @@ export type WorkLiveSourceState = {
     deviceName?: string | null;
     handoff?: unknown;
   } | null;
+  /**
+   * The lane's last desktop frame, straight from `macDesktopFrameStore`.
+   *
+   * The Mac Desktop source is the odd one out: the other three describe a
+   * SESSION and the picture arrives separately, while this one has only the
+   * picture. That is deliberate — a display is per lane and permanent-ish, so
+   * "is something happening on it" is answered by whether a frame has arrived
+   * recently and not by whether an object exists.
+   */
+  macDesktopFrame: {
+    at?: number | null;
+    caption?: string | null;
+  } | null;
 };
 
 const AGENT_OWNER_LABEL = "agent";
@@ -209,6 +222,15 @@ export const WORK_LIVE_SOURCES: Record<
     ownerLabel: appControlSession?.chatSessionId ? AGENT_OWNER_LABEL : null,
     caption: appControlSession?.label ?? null,
     handoff: detectWorkLiveHandoff(appControlSession),
+    recording: null,
+  }),
+  "mac-desktop": ({ macDesktopFrame }) => ({
+    live: Boolean(macDesktopFrame),
+    // Never "agent": the display belongs to the lane, not to a chat, and every
+    // chat in the lane shares it. Claiming one owner would be a guess.
+    ownerLabel: null,
+    caption: macDesktopFrame?.caption ?? null,
+    handoff: null,
     recording: null,
   }),
   ios: ({ iosSession }) => ({

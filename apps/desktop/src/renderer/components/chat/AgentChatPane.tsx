@@ -141,6 +141,7 @@ import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecycleBanner, shouldRenderChatLifecycleBanner } from "./ChatLifecycleBanner";
 import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
+import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -14044,11 +14045,27 @@ export function AgentChatPane({
       className={awayDigestCard ? undefined : "mx-auto my-1.5 flex w-fit"}
     />
   ) : null;
-  const composerNoticeOverlay = awayDigestCard || lifecyclePill ? (
+  /**
+   * The turn's time-lapse of the lane's macOS screen, when there was one.
+   *
+   * Rendered in the notice overlay rather than inline in the transcript because
+   * it is context about the turn that just ended, not a message in it — and it
+   * renders null (and subscribes to nothing that can produce one) for every
+   * chat whose lane never used the desktop.
+   */
+  const macDesktopTimeLapseCard = laneId ? (
+    <ChatMacDesktopTimeLapseCard
+      laneId={laneId}
+      sessionId={composerSessionId}
+      runtimePin={renderedChatRuntimePin}
+    />
+  ) : null;
+  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard ? (
     <div
       data-testid="chat-composer-notice-overlay"
       className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
     >
+      {macDesktopTimeLapseCard}
       {awayDigestCard}
       {lifecyclePill}
     </div>

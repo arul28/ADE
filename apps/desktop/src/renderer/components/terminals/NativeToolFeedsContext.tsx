@@ -21,6 +21,7 @@ import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { isMacPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { WorkToolContext } from "./workTools";
+import { useMacDesktopSupport } from "./useMacDesktopSupport";
 import {
   useNativeToolSessions,
   type NativeToolFeedScope,
@@ -135,11 +136,16 @@ export function NativeToolFeedsProvider({
 
   // Capability flags, never a platform sniff: the hosted web client renders
   // these same components with stubbed native namespaces.
+  // The Mac Desktop gate is the HOST's capability, read once per machine — the
+  // only flag here that is not a property of this computer.
+  const supportsMacDesktop = useMacDesktopSupport({ runtimePin, enabled: active });
+
   const context = useMemo<WorkToolContext>(() => ({
     isRemoteProject,
     supportsIosSimulator: isMacPlatform(),
     isWebClient: isWebClientMode(),
-  }), [isRemoteProject]);
+    supportsMacDesktop,
+  }), [isRemoteProject, supportsMacDesktop]);
 
   // The browser view is owned by THIS window's main process. A pin on another
   // checkout of this computer still drives that view, just under the pinned

@@ -821,6 +821,7 @@ import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
+import type { MacDesktopServiceApi } from "../../../shared/types/macDesktop";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
 import {
@@ -1130,6 +1131,15 @@ export type AppContext = {
   agentChatService: ReturnType<typeof createAgentChatService> | null;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService> | null;
   iosSimulatorService?: ReturnType<typeof createIosSimulatorService> | null;
+  /**
+   * The lane's private macOS screen.
+   *
+   * Optional and nullable for the same reason the simulator is: a non-macOS
+   * host never constructs it, and the runtime-backed build resolves it through
+   * the `mac_desktop` action domain rather than through this field. Every
+   * handler below states the absence instead of dereferencing null.
+   */
+  macDesktopService?: MacDesktopServiceApi | null;
   appControlService?: ReturnType<typeof createAppControlService> | null;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   githubService: ReturnType<typeof createGithubService>;
@@ -2596,6 +2606,23 @@ export function registerIpc({
     });
     if (runtimeStatus) return runtimeStatus;
     return throwIosSimulatorUnavailableForEvent(ctx, arg, channel);
+  };
+
+  /**
+   * The Mac Desktop service, or a stated absence.
+   *
+   * Never a null dereference: on a Windows or Linux desktop, and in any build
+   * whose runtime is the daemon rather than this process, the field is null and
+   * the renderer's call arrives here only as the *local fallback* arm of
+   * `callMacDesktopActionOr`. Rejecting with a sentence is what lets the panel
+   * render "no display on this machine" instead of an opaque IPC crash.
+   */
+  const ensureMacDesktop = (): MacDesktopServiceApi => {
+    const service = getCtx().macDesktopService;
+    if (!service) {
+      throw new Error("Mac Desktop is not available on this machine.");
+    }
+    return service;
   };
 
   const ensureAppControl = (): NonNullable<AppContext["appControlService"]> => {
@@ -9087,6 +9114,39 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorCaptureProofBundle, async (_event, arg = {}) =>
     ensureIosSimulator().captureProofBundle(arg));
+
+  // ── Mac Desktop ─────────────────────────────────────────────────────────
+  //
+  // One handler per `MacDesktopServiceApi` method the renderer drives. These
+  // are the LOCAL arm only: the preload namespace routes every call through the
+  // `mac_desktop` action domain first (pinned, then the bound project's
+  // runtime) and falls back to these channels, exactly as `iosSimulator` does.
+  // A runtime-backed build therefore never reaches `ensureMacDesktop` at all,
+  // and a dev build that does gets a sentence rather than a null crash.
+  ipcMain.handle(IPC.macDesktopGetStatus, async (_event, arg = {}) => ensureMacDesktop().getStatus(arg));
+  ipcMain.handle(IPC.macDesktopStart, async (_event, arg) => ensureMacDesktop().start(arg));
+  ipcMain.handle(IPC.macDesktopStop, async (_event, arg) => ensureMacDesktop().stop(arg));
+  ipcMain.handle(IPC.macDesktopListWindows, async (_event, arg = {}) => ensureMacDesktop().listWindows(arg));
+  ipcMain.handle(IPC.macDesktopOpen, async (_event, arg) => ensureMacDesktop().open(arg));
+  ipcMain.handle(IPC.macDesktopClaimWindow, async (_event, arg) => ensureMacDesktop().claimWindow(arg));
+  ipcMain.handle(IPC.macDesktopReleaseWindow, async (_event, arg) => ensureMacDesktop().releaseWindow(arg));
+  ipcMain.handle(IPC.macDesktopObserve, async (_event, arg) => ensureMacDesktop().observe(arg));
+  ipcMain.handle(IPC.macDesktopClick, async (_event, arg) => ensureMacDesktop().click(arg));
+  ipcMain.handle(IPC.macDesktopType, async (_event, arg) => ensureMacDesktop().type(arg));
+  ipcMain.handle(IPC.macDesktopPress, async (_event, arg) => ensureMacDesktop().press(arg));
+  ipcMain.handle(IPC.macDesktopScroll, async (_event, arg) => ensureMacDesktop().scroll(arg));
+  ipcMain.handle(IPC.macDesktopDrag, async (_event, arg) => ensureMacDesktop().drag(arg));
+  ipcMain.handle(IPC.macDesktopWait, async (_event, arg) => ensureMacDesktop().wait(arg));
+  ipcMain.handle(IPC.macDesktopScreenshot, async (_event, arg) => ensureMacDesktop().screenshot(arg));
+  ipcMain.handle(IPC.macDesktopStartRecording, async (_event, arg) => ensureMacDesktop().startRecording(arg));
+  ipcMain.handle(IPC.macDesktopStopRecording, async (_event, arg) => ensureMacDesktop().stopRecording(arg));
+  ipcMain.handle(IPC.macDesktopStartStream, async (_event, arg) => ensureMacDesktop().startStream(arg));
+  ipcMain.handle(IPC.macDesktopStopStream, async (_event, arg) => ensureMacDesktop().stopStream(arg));
+  ipcMain.handle(IPC.macDesktopGetStreamStatus, async (_event, arg) => ensureMacDesktop().getStreamStatus(arg));
+  ipcMain.handle(IPC.macDesktopTakeControl, async (_event, arg) => ensureMacDesktop().takeControl(arg));
+  ipcMain.handle(IPC.macDesktopReturnControl, async (_event, arg) => ensureMacDesktop().returnControl(arg));
+  ipcMain.handle(IPC.macDesktopRenewLease, async (_event, arg) => ensureMacDesktop().renewLease(arg));
+  ipcMain.handle(IPC.macDesktopPresent, async (_event, arg) => ensureMacDesktop().present(arg));
 
   ipcMain.handle(IPC.appControlGetStatus, async (event) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });

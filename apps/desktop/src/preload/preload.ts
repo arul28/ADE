@@ -758,6 +758,36 @@ import type {
   IosSimulatorShutdownResult,
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
+  MacDesktopActionResult,
+  MacDesktopClaimArgs,
+  MacDesktopClickArgs,
+  MacDesktopDragArgs,
+  MacDesktopEventPayload,
+  MacDesktopGetStatusArgs,
+  MacDesktopObservation,
+  MacDesktopObserveArgs,
+  MacDesktopOpenArgs,
+  MacDesktopOpenResult,
+  MacDesktopPressArgs,
+  MacDesktopPresentArgs,
+  MacDesktopRecordStartArgs,
+  MacDesktopRecordingStatus,
+  MacDesktopReleaseArgs,
+  MacDesktopScreenshotArgs,
+  MacDesktopScreenshotResult,
+  MacDesktopScrollArgs,
+  MacDesktopStartArgs,
+  MacDesktopStartStreamArgs,
+  MacDesktopLeaseState,
+  MacDesktopStatus,
+  MacDesktopStopArgs,
+  MacDesktopStopResult,
+  MacDesktopStreamStatus,
+  MacDesktopTakeoverArgs,
+  MacDesktopTypeArgs,
+  MacDesktopWaitArgs,
+  MacDesktopWaitResult,
+  MacDesktopWindow,
   IosSimulatorStreamStatus,
   IosSimulatorAppLifecycleArgs,
   IosSimulatorAppState,
@@ -2059,6 +2089,22 @@ async function callIosSimulatorMutation<T>(
   }
 }
 
+/**
+ * The lane's macOS display lives on the machine that owns the lane, so every
+ * call is per-lane in exactly the way `callIosSimulatorActionOr` documents.
+ * The local arm is the Electron channel, which only answers in a dev build
+ * whose main process constructed the service; a runtime-backed build resolves
+ * through the `mac_desktop` action domain and never touches it.
+ */
+function callMacDesktopActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr(pin, "mac_desktop", action, request, local);
+}
+
 function callAppControlActionOr<T>(
   pin: OpenProjectBinding | null | undefined,
   action: string,
@@ -2475,6 +2521,11 @@ const remoteIosSimulatorEventFanout = createRemoteRuntimeFanout<IosSimulatorEven
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
   invalidate: () => clearIosSimulatorStatusCaches(),
 });
+const remoteMacDesktopEventFanout = createRemoteRuntimeFanout<MacDesktopEventPayload>({
+  eventType: "mac_desktop_event",
+  label: "Mac Desktop",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 const remoteAppControlEventFanout = createRemoteRuntimeFanout<AppControlEventPayload>({
   eventType: "app_control_event",
   label: "App Control",
@@ -2530,6 +2581,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteFeedbackEventFanout,
   remoteComputerUseEventFanout,
   remoteIosSimulatorEventFanout,
+  remoteMacDesktopEventFanout,
   remoteAppControlEventFanout,
   remoteBuiltInBrowserRemoteRequestFanout,
   remoteOrchestrationEventFanout,
@@ -3461,6 +3513,34 @@ function subscribeIosSimulatorEvents(
   };
 }
 
+/**
+ * Mac Desktop events for whichever machine hosts the lane's display.
+ *
+ * Same three arms as the simulator, and for the same reason: a panel pinned to
+ * another machine has to hear THAT machine's display, and a project bound to a
+ * remote runtime hears it over the runtime event pump. A viewing client on
+ * Windows or Linux only ever uses the last two — there is no local service to
+ * fan out from — which is exactly what makes the tab work off macOS.
+ */
+function subscribeMacDesktopEvents(
+  cb: (payload: MacDesktopEventPayload) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<MacDesktopEventPayload>(payload, "mac_desktop_event"),
+    cb,
+    "Mac Desktop",
+  );
+  if (removePinned) return removePinned;
+  const removeLocal = macDesktopEventFanout(cb);
+  const removeRemote = remoteMacDesktopEventFanout.subscribe(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
 function subscribeAppControlEvents(
   cb: (payload: AppControlEventPayload) => void,
   pin?: OpenProjectBinding | null,
@@ -3818,6 +3898,9 @@ const computerUseEventFanout = createIpcEventFanout<ComputerUseEventPayload>(
 const iosSimulatorEventFanout = createIpcEventFanout<IosSimulatorEventPayload>(
   IPC.iosSimulatorEvent,
   () => clearIosSimulatorStatusCaches(),
+);
+const macDesktopEventFanout = createIpcEventFanout<MacDesktopEventPayload>(
+  IPC.macDesktopEvent,
 );
 const appControlEventFanout = createIpcEventFanout<AppControlEventPayload>(
   IPC.appControlEvent,
@@ -8167,6 +8250,224 @@ const adeBridge = {
       }
     },
     onEvent: subscribeIosSimulatorEvents,
+  },
+  /**
+   * The lane's private macOS screen.
+   *
+   * Every method takes an optional runtime pin, because the display is a
+   * property of the lane's host and not of this window: a Windows desktop
+   * viewing a Mac-hosted lane drives the whole surface through the pinned
+   * runtime. Nothing here is gated on this machine's platform — `getStatus`
+   * answers everywhere and reports `supported: false` when the HOST cannot
+   * host a display.
+   */
+  macDesktop: {
+    getStatus: (
+      args: MacDesktopGetStatusArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopStatus> =>
+      callMacDesktopActionOr(pin, "getStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopGetStatus, args),
+      ),
+    start: (
+      args: MacDesktopStartArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopStatus> =>
+      callMacDesktopActionOr(pin, "start", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopStart, args),
+      ),
+    stop: (
+      args: MacDesktopStopArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopStopResult> =>
+      callMacDesktopActionOr(pin, "stop", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopStop, args),
+      ),
+    listWindows: (
+      args: { laneId?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopWindow[]> =>
+      callMacDesktopActionOr(pin, "listWindows", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopListWindows, args),
+      ),
+    open: (
+      args: MacDesktopOpenArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopOpenResult> =>
+      callMacDesktopActionOr(pin, "open", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopOpen, args),
+      ),
+    claimWindow: (
+      args: MacDesktopClaimArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopWindow> =>
+      callMacDesktopActionOr(pin, "claimWindow", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopClaimWindow, args),
+      ),
+    releaseWindow: (
+      args: MacDesktopReleaseArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ released: number }> =>
+      callMacDesktopActionOr(pin, "releaseWindow", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopReleaseWindow, args),
+      ),
+    observe: (
+      args: MacDesktopObserveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopObservation> =>
+      callMacDesktopActionOr(pin, "observe", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopObserve, args),
+      ),
+    click: (
+      args: MacDesktopClickArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopActionResult> =>
+      callMacDesktopActionOr(pin, "click", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopClick, args),
+      ),
+    type: (
+      args: MacDesktopTypeArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopActionResult> =>
+      callMacDesktopActionOr(pin, "type", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopType, args),
+      ),
+    press: (
+      args: MacDesktopPressArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopActionResult> =>
+      callMacDesktopActionOr(pin, "press", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopPress, args),
+      ),
+    scroll: (
+      args: MacDesktopScrollArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopActionResult> =>
+      callMacDesktopActionOr(pin, "scroll", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopScroll, args),
+      ),
+    drag: (
+      args: MacDesktopDragArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopActionResult> =>
+      callMacDesktopActionOr(pin, "drag", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopDrag, args),
+      ),
+    wait: (
+      args: MacDesktopWaitArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopWaitResult> =>
+      callMacDesktopActionOr(pin, "wait", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopWait, args),
+      ),
+    screenshot: (
+      args: MacDesktopScreenshotArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopScreenshotResult> =>
+      callMacDesktopActionOr(pin, "screenshot", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopScreenshot, args),
+      ),
+    startRecording: (
+      args: MacDesktopRecordStartArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopRecordingStatus> =>
+      callMacDesktopActionOr(pin, "startRecording", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopStartRecording, args),
+      ),
+    stopRecording: (
+      args: { laneId: string; chatSessionId?: string | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopRecordingStatus> =>
+      callMacDesktopActionOr(pin, "stopRecording", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopStopRecording, args),
+      ),
+    /** The only call that hands out the stream token; never cached, never logged. */
+    startStream: (
+      args: MacDesktopStartStreamArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopStreamStatus> =>
+      callMacDesktopActionOr(pin, "startStream", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopStartStream, args),
+      ),
+    stopStream: (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopStreamStatus> =>
+      callMacDesktopActionOr(pin, "stopStream", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopStopStream, args),
+      ),
+    getStreamStatus: (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopStreamStatus> =>
+      callMacDesktopActionOr(pin, "getStreamStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopGetStreamStatus, args),
+      ),
+    takeControl: (
+      args: MacDesktopTakeoverArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopLeaseState> =>
+      callMacDesktopActionOr(pin, "takeControl", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopTakeControl, args),
+      ),
+    returnControl: (
+      args: { laneId: string; controllerId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopLeaseState | null> =>
+      callMacDesktopActionOr(pin, "returnControl", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopReturnControl, args),
+      ),
+    renewLease: (
+      args: { laneId: string; holderId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<MacDesktopLeaseState | null> =>
+      callMacDesktopActionOr(pin, "renewLease", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopRenewLease, args),
+      ),
+    present: (
+      args: MacDesktopPresentArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ moved: number }> =>
+      callMacDesktopActionOr(pin, "present", { args }, () =>
+        ipcRenderer.invoke(IPC.macDesktopPresent, args),
+      ),
+    /**
+     * Turn the host-encoded stream URL into one this desktop can open, exactly
+     * as the simulator's does — the URL names loopback on the Mac that owns the
+     * display, which is not this machine whenever the lane is remote.
+     */
+    resolveStreamUrl: async (
+      streamUrl: string | null,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ url: string | null; forwarded: boolean; error: string | null }> => {
+      const text = (streamUrl ?? "").trim();
+      if (!text) return { url: null, forwarded: false, error: null };
+      try {
+        const binding = pin ?? (await getProjectRuntimeBinding());
+        if (binding?.kind !== "remote") {
+          return { url: text, forwarded: false, error: null };
+        }
+        const parsed = parseLoopbackUrl(text);
+        if (!parsed) return { url: text, forwarded: false, error: null };
+        const forward = await ensureRemoteLoopbackForward(
+          binding,
+          parsed.port,
+          `${binding.displayName}:mac-desktop:${parsed.port}`,
+        );
+        return {
+          url: rewriteUrlHostPort(text, forward.localHost, forward.localPort),
+          forwarded: true,
+          error: null,
+        };
+      } catch (error) {
+        return {
+          url: null,
+          forwarded: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    onEvent: subscribeMacDesktopEvents,
   },
   appControl: {
     getStatus: async (

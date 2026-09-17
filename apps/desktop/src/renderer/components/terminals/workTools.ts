@@ -146,6 +146,17 @@ export type WorkToolContext = {
   supportsIosSimulator: boolean;
   /** Running as the hosted browser web client, where native namespaces are stubs. */
   isWebClient: boolean;
+  /**
+   * The lane's RUNTIME HOST can host a Mac Desktop display.
+   *
+   * Not a property of this computer, which is why it is a tri-state rather than
+   * a boolean: a Windows desktop watching a Mac-hosted lane must see the tool,
+   * and the answer arrives from `macDesktop.getStatus` a round-trip after the
+   * pane mounts. `null` means "not answered yet", and an unanswered capability
+   * shows the tool — hiding it and bringing it back a beat later is worse than
+   * showing it and letting the panel state its own error.
+   */
+  supportsMacDesktop?: boolean | null;
 };
 
 export type WorkToolAvailability =
@@ -201,6 +212,11 @@ export function workToolAvailability(
   }
   if (id === "ios" && !context.supportsIosSimulator) {
     return { available: false, reason: "macOS only" };
+  }
+  // The HOST's platform, not this one. The reason says so, because "macOS only"
+  // on a Mac desktop watching a Linux runtime reads as a bug in ADE.
+  if (id === "mac-desktop" && context.supportsMacDesktop === false) {
+    return { available: false, reason: "This lane's host isn't a Mac" };
   }
   return AVAILABLE;
 }

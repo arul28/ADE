@@ -25,6 +25,7 @@ import {
 import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
 import { cn } from "../ui/cn";
 import { workToolDefinition } from "../terminals/workTools";
+import { useMacDesktopFrame } from "../chat/macDesktopFrameStore";
 import type { NativeToolFeedScope } from "../terminals/useNativeToolSessions";
 import {
   useNativeToolFeedHandlers,
@@ -170,6 +171,7 @@ export function WorkLiveCornerCard({
     browser: 0,
     "app-control": 0,
     ios: 0,
+    "mac-desktop": 0,
   });
   /** Only used when there is no project to persist into (a projectless Work surface). */
   const [localPosition, setLocalPosition] = useState<WorkLiveCardPosition | null>(null);
@@ -232,7 +234,12 @@ export function WorkLiveCornerCard({
    * screencast would draw over the browser thumbnail.
    */
   const paintToolRef = useRef<WorkLiveScreenTool | null>(null);
-  const activityRef = useRef<Record<WorkLiveScreenTool, number>>({ browser: 0, "app-control": 0, ios: 0 });
+  const activityRef = useRef<Record<WorkLiveScreenTool, number>>({
+    browser: 0,
+    "app-control": 0,
+    ios: 0,
+    "mac-desktop": 0,
+  });
   const activityCommitRef = useRef<number | null>(null);
 
   /**
@@ -370,13 +377,35 @@ export function WorkLiveCornerCard({
     canBrowser,
     canIos,
     canAppControl,
+    context: toolContext,
   } = useNativeToolFeeds();
+  /**
+   * The lane's last desktop frame.
+   *
+   * A store read, not a feed: the panel that owns the decoder writes it, and
+   * this card only ever shows the last picture. That is what keeps the mini
+   * view free — no second stream client, no second encoder on the Mac.
+   */
+  const macDesktopFrame = useMacDesktopFrame(laneId);
   useNativeToolFeedHandlers(useMemo(() => ({
     onBrowserStatusSettled,
     onBrowserEvent,
     onAppControlEvent,
     onIosEvent,
   }), [onAppControlEvent, onBrowserEvent, onBrowserStatusSettled, onIosEvent]));
+
+  /**
+   * A new desktop frame is both the activity signal and the picture.
+   *
+   * Keyed on the frame's timestamp so a re-render with the same frame neither
+   * moves the activity clock nor repaints, which is what keeps the "×" usable:
+   * a dismissal survives until the desktop does something genuinely new.
+   */
+  useEffect(() => {
+    if (!macDesktopFrame) return;
+    bump("mac-desktop");
+    paintFrame("mac-desktop", macDesktopFrame.dataUrl);
+  }, [bump, macDesktopFrame, paintFrame]);
 
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
@@ -391,12 +420,14 @@ export function WorkLiveCornerCard({
     browserTab: activeBrowserTab,
     appControlSession,
     iosSession,
-  }), [activeBrowserTab, appControlSession, iosSession]);
+    macDesktopFrame,
+  }), [activeBrowserTab, appControlSession, iosSession, macDesktopFrame]);
 
   const sources = useMemo(() => ({
     browser: workLiveSource("browser", sourceState),
     "app-control": workLiveSource("app-control", sourceState),
     ios: workLiveSource("ios", sourceState),
+    "mac-desktop": workLiveSource("mac-desktop", sourceState),
   }), [sourceState]);
 
   const activities = useMemo<WorkLiveActivity[]>(() => [
@@ -408,7 +439,15 @@ export function WorkLiveCornerCard({
       live: sources["app-control"].live,
     },
     { tool: "ios", lastActivityAt: activityAt.ios, available: canIos, live: sources.ios.live },
-  ], [activityAt, canAppControl, canBrowser, canIos, sources]);
+    {
+      tool: "mac-desktop",
+      lastActivityAt: activityAt["mac-desktop"],
+      // A host that has not answered yet counts as available: the card can only
+      // show a frame that exists, so an unknown capability cannot invent one.
+      available: toolContext.supportsMacDesktop !== false,
+      live: sources["mac-desktop"].live,
+    },
+  ], [activityAt, canAppControl, canBrowser, canIos, sources, toolContext.supportsMacDesktop]);
 
   const dismissals = useMemo(
     () => normalizeWorkLiveCardDismissals(projectStateKey && laneId ? storedDismissals : localDismissals),
