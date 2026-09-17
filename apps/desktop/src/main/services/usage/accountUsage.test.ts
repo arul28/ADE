@@ -46,7 +46,15 @@ import { createUsageTrackingService } from "./usageTrackingService";
  * every window by construction; the tests assert relationships between rows,
  * never a literal date string.
  */
-const NOW_MS = Date.parse(`${new Date().toISOString().slice(0, 10)}T18:00:00.000Z`);
+// Local noon, not a UTC hour: the service derives its window from the local
+// clock, so a UTC-dated anchor lands on tomorrow's local day for the hours
+// where the UTC date is already ahead (evenings in the Americas) and every
+// rollup falls outside the window.
+const NOW_MS = (() => {
+  const localNoon = new Date();
+  localNoon.setHours(12, 0, 0, 0);
+  return localNoon.getTime();
+})();
 const TODAY = localDayKey(NOW_MS);
 const YESTERDAY = localDayKey(NOW_MS - 86_400_000);
 
