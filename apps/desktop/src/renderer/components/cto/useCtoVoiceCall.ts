@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from "react";
 
 import {
   CTO_VOICE_CAPTURE_DEFAULT_NOTE,
@@ -12,6 +12,7 @@ import {
   clearCtoMicrophoneFailure,
   flushVoicePlayback,
   getCtoAudioDevice,
+  isCtoCaptureLive,
   MicrophoneBlockedError,
   noteCaptureClosed,
   noteCaptureFailed,
@@ -199,17 +200,22 @@ export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
     return bridge()?.onAudio(playVoiceChunk);
   }, [live]);
 
+  // Hang-up has to invalidate the generation in the same commit, before
+  // `getUserMedia` can settle as a microtask and store a stream the call no
+  // longer owns. `useEffect` is too late for that race.
+  useLayoutEffect(() => {
+    if (!live) stopCtoCapture();
+  }, [live]);
+
   useEffect(() => {
     if (!live) {
-      stopCtoCapture();
       flushVoicePlayback();
       noteCaptureClosed();
       return;
     }
-    let cancelled = false;
     void startCtoCapture((audio, level) => bridge()?.pushAudio(audio, level))
-      .then(() => {
-        if (cancelled) return;
+      .then((opened) => {
+        if (!opened || !isCtoCaptureLive()) return;
         // The device opened: whatever the last attempt said is no longer true,
         // and this is the signal the start sheet waits for. Set HERE, after the
         // track is confirmed live, rather than beside the phase change — the
@@ -217,7 +223,6 @@ export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
         noteCaptureOpened();
       })
       .catch((error: unknown) => {
-        if (cancelled) return;
         const kind = error instanceof MicrophoneBlockedError ? error.kind : "unavailable";
         // Recorded BEFORE the hang-up: ending the call unmounts the HUD and
         // closes the sheet's connecting state, and the verdict is the only
@@ -229,7 +234,9 @@ export function useCtoVoiceAudioOwner(state: CtoVoiceStatePayload): void {
         // not either.
         void bridge()?.end(message, kind);
       });
-    return () => { cancelled = true; };
+    return () => {
+      stopCtoCapture();
+    };
   }, [live]);
 
   // A barge-in has to silence the speaker, not just re-label the pill.

@@ -15,6 +15,7 @@ import {
   noteLocalBargeIn,
   playVoiceChunk,
   resetLocalBargeIn,
+  stopCtoCapture,
   subscribeCtoAudioDevice,
   voicePlaybackActive,
 } from "./ctoVoiceAudioDevice";
@@ -51,6 +52,7 @@ function installBridge(overrides: {
   // Typed with the parameters so the reason AND the kind it carries can both
   // be asserted: the kind is what decides whether the sentence gets a button.
   const end = vi.fn(async (_reason?: string, _errorKind?: string) => {});
+  const pushAudio = vi.fn();
   (globalThis.window as unknown as { ade: unknown }).ade = {
     app: { runtimeTarget: { platform: overrides.platform ?? "darwin", arch: "arm64" } },
     transcription: {
@@ -63,7 +65,7 @@ function installBridge(overrides: {
       end,
       onAudio: () => () => {},
       onState: () => () => {},
-      pushAudio: () => {},
+      pushAudio,
       start: async () => ({ ok: true }),
       setMuted: async () => {},
       approve: async () => {},
@@ -83,10 +85,11 @@ function installBridge(overrides: {
       ),
     },
   });
-  return { end };
+  return { end, pushAudio };
 }
 
 afterEach(() => {
+  stopCtoCapture();
   cleanup();
   delete (globalThis.window as unknown as { ade?: unknown }).ade;
   vi.restoreAllMocks();
@@ -190,6 +193,43 @@ describe("useCtoVoiceAudioOwner", () => {
     render(<AudioOwner state={{ ...liveOwner, isCallOwner: false }} />);
 
     await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(end).not.toHaveBeenCalled();
+  });
+
+  it("stops a microphone that opens after hang-up, and never pumps it", async () => {
+    // Hang-up lands while `getUserMedia` is still outstanding. The old start
+    // stored whatever arrived, so a live track kept pumping into a call that
+    // had already ended. Greptile P1 on PR #1249.
+    let releaseStream: ((stream: MediaStream) => void) | null = null;
+    const getUserMedia = vi.fn(() => new Promise<MediaStream>((resolve) => {
+      releaseStream = resolve;
+    }));
+    const { end, pushAudio } = installBridge({ getUserMedia });
+    class FakeCaptureAudioContext {
+      destination = {};
+      createMediaStreamSource() { return { connect: () => {} }; }
+      createScriptProcessor() {
+        return { onaudioprocess: null as unknown, connect: () => {}, disconnect: () => {} };
+      }
+      close() { return Promise.resolve(); }
+    }
+    (globalThis as unknown as { AudioContext: unknown }).AudioContext = FakeCaptureAudioContext;
+
+    const { rerender } = render(<AudioOwner state={liveOwner} />);
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalled());
+
+    rerender(<AudioOwner state={{ ...liveOwner, phase: "ended", callId: null }} />);
+
+    const stop = vi.fn();
+    releaseStream?.({
+      getAudioTracks: () => [{ readyState: "live" }],
+      getTracks: () => [{ stop }],
+    } as unknown as MediaStream);
+
+    await waitFor(() => expect(stop).toHaveBeenCalled());
+    expect(getCtoAudioDevice().captureReady).toBe(false);
+    expect(pushAudio).not.toHaveBeenCalled();
+    // A hang-up the user performed is not a microphone failure.
     expect(end).not.toHaveBeenCalled();
   });
 });

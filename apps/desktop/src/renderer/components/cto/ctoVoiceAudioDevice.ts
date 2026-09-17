@@ -86,6 +86,19 @@ let mediaStream: MediaStream | null = null;
 let processor: ScriptProcessorNode | null = null;
 let playbackContext: AudioContext | null = null;
 let playbackAt = 0;
+/**
+ * Which capture attempt is current.
+ *
+ * `startCtoCapture` awaits the OS gate and `getUserMedia`, and hang-up can
+ * land in that gap. `stopCtoCapture` used to close whatever was stored, which
+ * was nothing yet, so the late stream installed a live track on a call that
+ * had already ended. Each start takes a generation; stop advances it; a
+ * stream that arrives for a stale generation is stopped immediately and never
+ * stored. The owner hook also stops in `useLayoutEffect` so the bump happens
+ * in the same commit as hang-up, before a pending `getUserMedia` can settle
+ * as a microtask.
+ */
+let captureGeneration = 0;
 
 /** Frames in a row over the level, counted against {@link CTO_VOICE_LOCAL_BARGE_IN_FRAMES}. */
 let loudFramesWhileSpeaking = 0;
@@ -247,26 +260,40 @@ function classifyCaptureError(error: unknown, denied: CtoVoiceMicrophoneBlockKin
   }
 }
 
+function discardMediaStream(stream: MediaStream | null | undefined): void {
+  stream?.getTracks().forEach((track) => track.stop());
+}
+
 /**
  * Open the microphone and pump frames at the call.
  *
  * `pushAudio` is passed in rather than reached for: this module owns the
- * device, and the call bridge belongs to the hook above it.
+ * device, and the call bridge belongs to the hook above it. Hang-up can land
+ * while the OS prompt is still outstanding; the generation in `stopCtoCapture`
+ * is what stops that late stream from being stored. Returns `true` when the
+ * graph is live, `false` when hang-up won the race — never throws for hang-up.
  */
 export async function startCtoCapture(
   pushAudio: (audio: string, level: number) => void,
-): Promise<void> {
-  if (mediaStream) return;
+): Promise<boolean> {
+  if (mediaStream) return true;
+  const generation = ++captureGeneration;
+  const cancelled = (): boolean => generation !== captureGeneration;
   const gate = await microphoneGate();
+  if (cancelled()) return false;
   if (gate.blocked) throw new MicrophoneBlockedError(gate.blocked);
   // No device is not a permission problem, and prompting for one produces a
   // `NotFoundError` that reads like a fault. Answer it before asking.
-  if (!await hasAudioInput()) throw new MicrophoneBlockedError("no-device");
+  const hasInput = await hasAudioInput();
+  if (cancelled()) return false;
+  if (!hasInput) throw new MicrophoneBlockedError("no-device");
+  let stream: MediaStream;
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
+    stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
   } catch (error) {
+    if (cancelled()) return false;
     const classified = classifyCaptureError(error, gate.denied);
     // The name is diagnostic, not user-facing: it goes to the log so an
     // unrecognised refusal can be classified later, and never into a sentence.
@@ -274,15 +301,20 @@ export async function startCtoCapture(
     console.warn("[cto-voice] microphone refused", classified.name);
     throw new MicrophoneBlockedError(classified.kind);
   }
+  if (cancelled()) {
+    discardMediaStream(stream);
+    return false;
+  }
   // A stream with no audio track, or one that is already over, is a failure
   // that arrived as a success. `muted` is deliberately NOT checked: a track can
   // legitimately start muted for a frame, and hanging up on that would refuse
   // calls on working microphones.
-  const track = mediaStream.getAudioTracks()[0];
+  const track = stream.getAudioTracks()[0];
   if (!track || track.readyState === "ended") {
-    stopCtoCapture();
+    discardMediaStream(stream);
     throw new MicrophoneBlockedError("unavailable");
   }
+  mediaStream = stream;
   audioContext = new AudioContext({ sampleRate: CTO_VOICE_SAMPLE_RATE });
   const source = audioContext.createMediaStreamSource(mediaStream);
   // ScriptProcessor is deprecated but is the only node that works without
@@ -298,19 +330,33 @@ export async function startCtoCapture(
   };
   source.connect(processor);
   processor.connect(audioContext.destination);
+  if (cancelled()) {
+    stopCtoCapture();
+    return false;
+  }
+  return true;
 }
 
 export function stopCtoCapture(): void {
+  // Invalidate every in-flight start BEFORE tearing down what is stored, so a
+  // `getUserMedia` that resolves in the same tick sees a stale generation and
+  // discards its stream instead of writing over this teardown.
+  captureGeneration += 1;
   // Cleared before the node is dropped: `disconnect` does not guarantee the
   // handler will not run once more, and one more frame after teardown pushes
   // audio into a call that is over.
   if (processor) processor.onaudioprocess = null;
   processor?.disconnect();
   processor = null;
-  mediaStream?.getTracks().forEach((track) => track.stop());
+  discardMediaStream(mediaStream);
   mediaStream = null;
   void audioContext?.close();
   audioContext = null;
+}
+
+/** True while a graph this window opened is still stored. */
+export function isCtoCaptureLive(): boolean {
+  return mediaStream !== null;
 }
 
 /** The device opened, or it did not. Both are the same fact from two ends. */
