@@ -46,7 +46,6 @@ export type AccountRuntimeLifecycleOptions = {
   accountAuthService: Pick<AccountAuthService, "getStatus" | "onSignedIn" | "onSignedOut">;
   getAccountAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
-  projectSecretReceiptRoot?: string | null;
   teardown: { push(release: () => void): void };
   relay?: AccountSettingsRelay & AccountVaultRelay;
   purgeAccountApiKeys?: () => void;
@@ -157,7 +156,6 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
         logger: options.logger,
       }),
     );
-    options.teardown.push(accountVaultStore.startPeriodicSync());
   }
 
   const purgeAccountOwnedCredentials = (): void => {
@@ -186,10 +184,16 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     }
   };
 
-  let lastAccountUserId = accountStoreUserId();
-  const unsubscribeAccountSignedOut = options.accountAuthService.onSignedOut?.(() => {
+  const purgeAccountState = (): void => {
     accountVaultStore?.purge();
     purgeAccountOwnedCredentials();
+  };
+
+  let migrationStarted = false;
+  let lastAccountUserId = accountStoreUserId();
+  const unsubscribeAccountSignedOut = options.accountAuthService.onSignedOut?.(() => {
+    purgeAccountState();
+    migrationStarted = false;
     lastAccountUserId = null;
   });
   if (unsubscribeAccountSignedOut) options.teardown.push(unsubscribeAccountSignedOut);
@@ -201,9 +205,20 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
       getContexts: options.getContexts,
       getLogger: () => options.logger,
       getReceiptDir: () => options.receiptDir,
-      projectSecretReceiptRoot: options.projectSecretReceiptRoot,
     })
     : null;
+
+  const startAccountMigration = (): void => {
+    if (!accountMigrationRunner || migrationStarted || !accountStoreUserId()) return;
+    migrationStarted = true;
+    accountMigrationRunner.start();
+  };
+
+  if (accountMigrationRunner && accountVaultStore) {
+    options.teardown.push(accountVaultStore.startPeriodicSync(undefined, (status) => {
+      if (status === "ready") startAccountMigration();
+    }));
+  }
 
   let initializationInFlight: Promise<void> | null = null;
   const initialize = async (): Promise<void> => {
@@ -222,7 +237,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
         options.logger.warn("account.migration_skipped_vault_unavailable", { status });
         return;
       }
-      accountMigrationRunner.start();
+      startAccountMigration();
     })().finally(() => {
       initializationInFlight = null;
     });
@@ -232,8 +247,8 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
   options.teardown.push(options.accountAuthService.onSignedIn(() => {
     const nextAccountUserId = accountStoreUserId();
     if (lastAccountUserId && nextAccountUserId && lastAccountUserId !== nextAccountUserId) {
-      accountVaultStore?.purge();
-      purgeAccountOwnedCredentials();
+      purgeAccountState();
+      migrationStarted = false;
     }
     lastAccountUserId = nextAccountUserId;
     void initialize();
@@ -242,10 +257,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
   return {
     accountSettingsStore,
     accountVaultStore,
-    accountVaultBridge,
     getAccountVault: () => accountVaultStore ? accountVaultBridge : null,
     initialize,
   };
 }
-
-export type AccountRuntimeLifecycle = ReturnType<typeof createAccountRuntimeLifecycle>;

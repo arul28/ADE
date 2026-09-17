@@ -178,6 +178,7 @@ export function createHeadlessLinearCredentialService(args: {
   // lifetime. No-op for manual tokens / env tokens / when no refresh token.
   let refreshInFlight: Promise<void> | null = null;
   const ensureFreshToken = async (opts?: { force?: boolean }): Promise<void> => {
+    if (readToken().source === "env") return;
     if (readCredential(authModeKey) !== "oauth") return;
     const refreshToken = readCredential(refreshTokenKey);
     if (!refreshToken) return;
@@ -255,10 +256,12 @@ export function createHeadlessLinearCredentialService(args: {
 
     try {
       if (readCredential(refreshTokenKey)) return;
+      const { source } = readToken();
       const authMode = readCredential(authModeKey);
       // Manual and environment-provided credentials remain authoritative on
       // this machine; only an OAuth connection can accept a refresh grant.
       if (authMode && authMode !== "oauth") return;
+      if (source === "env" || (source !== null && authMode !== "oauth")) return;
     } catch (error) {
       logVaultFailure("hydrate", error);
       return;
@@ -290,6 +293,9 @@ export function createHeadlessLinearCredentialService(args: {
 
     try {
       if (readCredential(refreshTokenKey)) return;
+      const { source } = readToken();
+      const authMode = readCredential(authModeKey);
+      if (source === "env" || (source !== null && authMode !== "oauth")) return;
       setCredentialProvenance(refreshTokenKey, accountProvenance(accountUserId));
       writeCredential(authModeKey, "oauth");
       writeCredential(refreshTokenKey, refreshToken);
@@ -304,9 +310,8 @@ export function createHeadlessLinearCredentialService(args: {
       return token.trim() || null;
     },
     getRefreshToken() {
-      return readCredential(authModeKey) === "oauth"
-        ? readCredential(refreshTokenKey)
-        : null;
+      if (readToken().source === "env") return null;
+      return readCredential(authModeKey) === "oauth" ? readCredential(refreshTokenKey) : null;
     },
     getRefreshTokenProvenance() {
       return getCredentialProvenance(refreshTokenKey);
@@ -315,12 +320,14 @@ export function createHeadlessLinearCredentialService(args: {
       const { token, source } = readToken();
       const storedAuthMode = readCredential(authModeKey);
       const refreshTokenStored = Boolean(readCredential(refreshTokenKey));
-      const authMode = storedAuthMode === "oauth"
-        && (source === "stored" || source === "override" || refreshTokenStored)
-        ? "oauth"
-        : token.trim().length > 0
-          ? "manual"
-          : null;
+      const authMode = source === "env"
+        ? "manual"
+        : storedAuthMode === "oauth"
+          && (source === "stored" || source === "override" || refreshTokenStored)
+          ? "oauth"
+          : token.trim().length > 0
+            ? "manual"
+            : null;
       return {
         tokenStored: token.trim().length > 0,
         tokenDecryptionFailed,

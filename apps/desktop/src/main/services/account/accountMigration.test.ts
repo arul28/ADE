@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { pathKey } from "../shared/pathCompare";
 import { runAccountMigration } from "./accountMigration";
-import { getOpenAccountContexts } from "./accountMigrationRunner";
+import { createAccountMigrationRunner, getOpenAccountContexts } from "./accountMigrationRunner";
 
 const receiptDirs: string[] = [];
 
@@ -168,9 +169,70 @@ describe("runAccountMigration", () => {
     expect(readReceipt(receiptDir)).toMatchObject({
       sources: {},
       projectSources: {
-        [path.resolve(projectOne)]: { project_secrets: { moved: 1, skipped: 0 } },
-        [path.resolve(projectTwo)]: { project_secrets: { moved: 2, skipped: 0 } },
+        [pathKey(path.resolve(projectOne))]: { project_secrets: { moved: 1, skipped: 0 } },
+        [pathKey(path.resolve(projectTwo))]: { project_secrets: { moved: 2, skipped: 0 } },
       },
     });
+  });
+
+  it("A3: migrates secrets for a project opened after an earlier project", async () => {
+    const receiptDir = makeReceiptDir();
+    const projectOne = fs.mkdtempSync(path.join(os.tmpdir(), "ade-open-project-one-"));
+    const projectTwo = fs.mkdtempSync(path.join(os.tmpdir(), "ade-open-project-two-"));
+    const roots = [projectOne, projectTwo];
+    for (const [root, repository] of [[projectOne, "one"], [projectTwo, "two"]] as const) {
+      fs.mkdirSync(path.join(root, ".git"));
+      fs.writeFileSync(
+        path.join(root, ".git", "config"),
+        `[remote "origin"]\n\turl = https://github.com/acme/${repository}.git\n`,
+      );
+    }
+    const makeContext = (root: string, name: string, value: string) => ({
+      project: { rootPath: root },
+      projectSecretService: {
+        list: () => ({ secrets: [{ name, storage: "account" }] }),
+        getSecretProvenance: () => ({ source: "device" as const, accountUserId: null }),
+        get: () => ({ value }),
+        hydrateFromVault: vi.fn(async () => {}),
+      },
+    });
+    const contextOne = makeContext(projectOne, "first-secret", "first-value");
+    const contextTwo = makeContext(projectTwo, "second-secret", "second-value");
+    let contexts = [contextOne];
+    const vault = {
+      list: vi.fn(async () => ({ ok: true as const, value: [] })),
+      get: vi.fn(async () => ({ ok: true as const, value: null })),
+      set: vi.fn(async () => ({ ok: true as const, value: null })),
+    };
+    const runner = createAccountMigrationRunner({
+      accountBridge: {
+        status: () => ({ signedIn: true, userId: "user-1" }) as any,
+      },
+      accountVaultBridge: vault,
+      getContexts: () => contexts,
+      getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
+      getReceiptDir: () => receiptDir,
+    });
+
+    try {
+      runner.start();
+      await vi.waitFor(() => expect(vault.set).toHaveBeenCalledWith(
+        "repo:github.com/acme/one",
+        "project_secret",
+        "first-secret",
+        "first-value",
+      ));
+
+      contexts = [contextOne, contextTwo];
+      runner.start();
+      await vi.waitFor(() => expect(vault.set).toHaveBeenCalledWith(
+        "repo:github.com/acme/two",
+        "project_secret",
+        "second-secret",
+        "second-value",
+      ));
+    } finally {
+      for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

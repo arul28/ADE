@@ -37,7 +37,6 @@ export type AccountMigrationRunnerOptions = {
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
   getLogger: () => AccountMigrationLogger;
   getReceiptDir?: () => string;
-  projectSecretReceiptRoot?: string | null;
 };
 
 export function getOpenAccountContexts<T extends AccountMigrationContext>(
@@ -128,52 +127,38 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
       : { moved: 0, skipped: 0, complete: false };
   };
 
-  const migrateProjectSecrets = async (): Promise<AccountMigrationSourceResult> => {
-    const contexts = openAccountContexts();
-    if (contexts.length === 0) return { moved: 0, skipped: 0, complete: false };
-    let sawProject = false;
-    let unresolvedProject = false;
+  const migrateProjectSecrets = async (
+    context: AccountMigrationContext,
+  ): Promise<AccountMigrationSourceResult> => {
+    const service = context.projectSecretService;
+    const root = context.project?.rootPath;
+    if (!root || !service) return { moved: 0, skipped: 0, complete: false };
+    const scope = accountRepoScopeKey(readGitOriginUrl(root));
+    if (!scope) return { moved: 0, skipped: 0, complete: false };
     let moved = 0;
     let skipped = 0;
-    for (const context of contexts) {
-      const service = context.projectSecretService;
-      const root = context.project?.rootPath;
-      if (!root) continue;
-      sawProject = true;
-      if (!service) {
-        unresolvedProject = true;
+    const listed = await listVaultItems(scope);
+    if (!listed) return { moved, skipped, complete: false };
+    const present = new Set(
+      listed
+        .filter((item) => item.scope === scope && item.kind === "project_secret")
+        .map((item) => item.key),
+    );
+    for (const secret of service.list().secrets) {
+      if (secret.storage !== "account") continue;
+      if (service.getSecretProvenance(secret.name)?.source !== "device") continue;
+      const local = service.get({ name: secret.name });
+      const existing = await options.accountVaultBridge.get(scope, "project_secret", secret.name);
+      if (!existing.ok) return { moved, skipped, complete: false };
+      if (existing.value !== null || present.has(secret.name)) {
+        skipped += 1;
         continue;
       }
-      const scope = accountRepoScopeKey(readGitOriginUrl(root));
-      if (!scope) {
-        unresolvedProject = true;
-        continue;
-      }
-      const listed = await listVaultItems(scope);
-      if (!listed) return { moved, skipped, complete: false };
-      const present = new Set(
-        listed
-          .filter((item) => item.scope === scope && item.kind === "project_secret")
-          .map((item) => item.key),
-      );
-      for (const secret of service.list().secrets) {
-        if (secret.storage !== "account") continue;
-        if (service.getSecretProvenance(secret.name)?.source !== "device") continue;
-        const local = service.get({ name: secret.name });
-        const existing = await options.accountVaultBridge.get(scope, "project_secret", secret.name);
-        if (!existing.ok) return { moved, skipped, complete: false };
-        if (existing.value !== null || present.has(secret.name)) {
-          skipped += 1;
-          continue;
-        }
-        const saved = await options.accountVaultBridge.set(scope, "project_secret", secret.name, local.value);
-        if (!saved.ok) return { moved, skipped, complete: false };
-        moved += 1;
-      }
+      const saved = await options.accountVaultBridge.set(scope, "project_secret", secret.name, local.value);
+      if (!saved.ok) return { moved, skipped, complete: false };
+      moved += 1;
     }
-    return sawProject && !unresolvedProject
-      ? { moved, skipped }
-      : { moved, skipped, complete: false };
+    return { moved, skipped };
   };
 
   let accountMigrationInFlight: Promise<void> | null = null;
@@ -207,23 +192,33 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
           });
         }
       }
-      await runAccountMigration({
+      const migrationOptions = () => ({
         receiptDir: options.getReceiptDir?.() ?? resolveMachineAdeLayout().adeDir,
-        projectRoot: options.projectSecretReceiptRoot,
         getAccountUserId: () => {
           const current = options.accountBridge.status();
           return current.signedIn ? current.userId : null;
         },
         logger: {
-          info: (message, meta) => options.getLogger().info?.(message, meta),
-          warn: (message, meta) => options.getLogger().warn?.(message, meta),
+          info: (message: string, meta?: Record<string, unknown>) => options.getLogger().info?.(message, meta),
+          warn: (message: string, meta?: Record<string, unknown>) => options.getLogger().warn?.(message, meta),
         },
+      });
+      await runAccountMigration({
+        ...migrationOptions(),
         sources: {
-          project_secrets: migrateProjectSecrets,
           provider_api_keys: migrateProviderApiKeys,
           linear_credentials: migrateLinearRefreshToken,
         },
       });
+      for (const context of openAccountContexts()) {
+        const projectRoot = context.project?.rootPath;
+        if (!projectRoot) continue;
+        await runAccountMigration({
+          ...migrationOptions(),
+          projectRoot,
+          sources: { project_secrets: () => migrateProjectSecrets(context) },
+        });
+      }
     })()
       .catch((error) => {
         options.getLogger().warn?.("account.migration_failed", {

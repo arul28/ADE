@@ -34,10 +34,6 @@ function readMap(read: () => string | null): Record<string, CredentialProvenance
 /** Shared read/write semantics for per-credential provenance maps. */
 export function createCredentialProvenanceStore(options: CredentialProvenanceStoreOptions) {
   return {
-    readMap(): Record<string, CredentialProvenance> {
-      return readMap(options.read);
-    },
-
     set(key: string, value: CredentialProvenance): void {
       const map = readMap(options.read);
       map[key] = value;

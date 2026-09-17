@@ -119,7 +119,6 @@ function makeLifecycleArgs(overrides: Record<string, unknown> = {}) {
     accountAuthService: auth.service,
     getAccountAccessToken: async () => "account-token",
     getContexts: () => [context],
-    projectSecretReceiptRoot: root,
     teardown: { push: (release: () => void) => releases.push(release) },
     relay,
     purgeAccountApiKeys,
@@ -184,7 +183,32 @@ describe("account runtime lifecycle", () => {
     }
   });
 
-  it("A4: purges account-origin credentials on sign-out without sync", () => {
+  it("A2: retries migration after the initial vault sync fails", async () => {
+    vi.useFakeTimers();
+    const setup = makeLifecycleArgs();
+    let syncAttempts = 0;
+    setup.relay.getAccountVault = vi.fn(async () => {
+      syncAttempts += 1;
+      if (syncAttempts === 1) throw new Error("offline");
+      return { items: [], cursor: null, truncated: false };
+    });
+    const lifecycle = createAccountRuntimeLifecycle(setup.args);
+
+    try {
+      await lifecycle.initialize();
+      expect(setup.context.linearCredentialService?.hydrateFromVault).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(syncAttempts).toBe(2);
+      expect(setup.context.linearCredentialService?.hydrateFromVault).toHaveBeenCalledOnce();
+    } finally {
+      setup.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("purges account-origin credentials on sign-out without sync", () => {
     const accountKeys = new Map([
       ["account-origin", "account-value"],
       ["device-only", "device-value"],

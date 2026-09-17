@@ -85,7 +85,6 @@ import {
   createHeadlessLinearCredentialService,
   type HeadlessLinearCredentialService,
 } from "./services/linear/headlessLinearCredentialService";
-export { createHeadlessLinearCredentialService } from "./services/linear/headlessLinearCredentialService";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
 import { createFileService as createFileServiceImpl } from "../../desktop/src/main/services/files/fileService";

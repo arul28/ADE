@@ -1049,7 +1049,6 @@ export async function createAdeRuntime(args: {
       logger,
       accountAuthService,
       getAccountAccessToken,
-      projectSecretReceiptRoot: projectRoot,
       getContexts: () => [{
         project: { rootPath: projectRoot },
         linearCredentialService: linearCredentialServiceForAccount,

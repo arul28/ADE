@@ -42,6 +42,8 @@ export type AccountCachePending = { seq: number; deleted: boolean };
 /** Result of a cache pass, including whether the remote authority answered. */
 export type AccountCacheSyncStatus = "ready" | "unavailable" | "failed";
 
+export type AccountCacheSyncListener = (status: AccountCacheSyncStatus) => void;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -131,7 +133,7 @@ export type AccountCacheStore<
     queue: (write: Omit<TPending, "seq">) => void,
   ) => void): boolean;
   sync(): Promise<AccountCacheSyncStatus>;
-  startPeriodicSync(intervalMs?: number): () => void;
+  startPeriodicSync(intervalMs?: number, onSync?: AccountCacheSyncListener): () => void;
   /** Empty the cache and write the empty file. */
   reset(): void;
   /** Empty the cache and delete the file, leaving nothing for a later reader. */
@@ -150,6 +152,7 @@ export function createAccountCacheStore<
   let corruptEntryLogged = false;
   let syncInFlight: Promise<AccountCacheSyncStatus> | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
+  const syncListeners = new Set<AccountCacheSyncListener>();
   /**
    * How many callers asked for the background sync.
    *
@@ -468,23 +471,29 @@ export function createAccountCacheStore<
      * is awake and signed in converges within one beat and an idle one costs a
      * single `since`-filtered query.
      */
-    startPeriodicSync(intervalMs = config.defaultSyncIntervalMs): () => void {
+    startPeriodicSync(intervalMs = config.defaultSyncIntervalMs, onSync?: AccountCacheSyncListener): () => void {
       syncHolders += 1;
+      if (onSync) syncListeners.add(onSync);
       let released = false;
       const release = (): void => {
         // Each caller's stop is its own. Calling it twice must not release a
         // hold that belongs to another project scope.
         if (released) return;
         released = true;
+        if (onSync) syncListeners.delete(onSync);
         stopPeriodicSync();
       };
       if (syncTimer) return release;
       syncTimer = setInterval(() => {
-        void this.sync().catch(() => {
-          // `sync` already logs and already keeps the queue. A rejection here
-          // would be an unhandled one on a timer, which takes the brain down
-          // for a condition that resolves itself.
-        });
+        void this.sync()
+          .then((status) => {
+            for (const listener of syncListeners) listener(status);
+          })
+          .catch(() => {
+            // `sync` already logs and already keeps the queue. A rejection here
+            // would be an unhandled one on a timer, which takes the brain down
+            // for a condition that resolves itself.
+          });
       }, Math.max(1_000, Math.trunc(intervalMs)));
       // Never hold the process open for a cache refresh.
       syncTimer.unref?.();

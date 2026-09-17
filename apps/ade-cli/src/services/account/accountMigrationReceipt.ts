@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
+import { pathKey } from "../../../../desktop/src/main/services/shared/pathCompare";
 
 /**
  * What this machine has already moved into the account, so it never moves it
@@ -77,6 +78,15 @@ export type MigrationReceiptScope = {
   projectRoot?: string | null;
 };
 
+function canonicalProjectRoot(root: string, platform: NodeJS.Platform): string {
+  const resolved = path.resolve(root);
+  try {
+    return pathKey(fs.realpathSync.native(resolved), platform);
+  } catch {
+    return pathKey(resolved, platform);
+  }
+}
+
 function emptyReceipt(accountUserId: string | null): ReceiptFile {
   return { version: RECEIPT_VERSION, accountUserId, sources: {} };
 }
@@ -86,9 +96,11 @@ export function createAccountMigrationReceipt(args: {
   getAccountUserId: () => string | null;
   logger?: { info(message: string, meta?: Record<string, unknown>): void };
   now?: () => number;
+  platform?: NodeJS.Platform;
 }) {
   const receiptPath = path.join(args.adeDir, RECEIPT_FILE);
   const now = args.now ?? Date.now;
+  const platform = args.platform ?? process.platform;
   const logger = args.logger ?? { info: () => {} };
 
   function read(): ReceiptFile {
@@ -122,7 +134,7 @@ export function createAccountMigrationReceipt(args: {
   function scopedProjectRoot(source: MigrationSource, scope?: MigrationReceiptScope): string | null {
     if (source !== "project_secrets") return null;
     const root = scope?.projectRoot?.trim();
-    return root ? path.resolve(root) : null;
+    return root ? canonicalProjectRoot(root, platform) : null;
   }
 
   function sourceOutcomes(

@@ -115,6 +115,25 @@ describe("account migration receipt", () => {
     expect(fs.statSync(receipt.receiptPathForTests()).mode & 0o777).toBe(0o600);
   });
 
+  it("A4: maps Windows path spellings of one project to one receipt key", () => {
+    const projectRoot = path.join(adeDir, "Project");
+    const aliasRoot = path.join(adeDir, "PROJECT");
+    fs.mkdirSync(projectRoot);
+    const receipt = createAccountMigrationReceipt({
+      adeDir,
+      getAccountUserId: () => accountUserId,
+      platform: "win32",
+    });
+
+    receipt.complete("project_secrets", { moved: 1, skipped: 0 }, { projectRoot });
+
+    expect(receipt.isComplete("project_secrets", { projectRoot: aliasRoot })).toBe(true);
+    const stored = JSON.parse(fs.readFileSync(receipt.receiptPathForTests(), "utf8")) as {
+      projectSources?: Record<string, unknown>;
+    };
+    expect(Object.keys(stored.projectSources ?? {})).toHaveLength(1);
+  });
+
   it("keeps earlier sources when a later one completes", () => {
     const receipt = makeReceipt();
     receipt.complete("project_secrets", { moved: 2, skipped: 0 });

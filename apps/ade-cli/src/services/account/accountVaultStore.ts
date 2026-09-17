@@ -4,6 +4,7 @@ import {
   createAccountCacheStore,
   createStoreRegistry,
   type AccountCacheLogger,
+  type AccountCacheSyncListener,
   type AccountCacheSyncStatus,
 } from "./accountCacheStore";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
@@ -363,8 +364,8 @@ export function createAccountVaultStore(args: {
     },
 
     /** Start (or join) the shared background sync. Refcounted; see the helper. */
-    startPeriodicSync(intervalMs = DEFAULT_SYNC_INTERVAL_MS): () => void {
-      return cache.startPeriodicSync(intervalMs);
+    startPeriodicSync(intervalMs = DEFAULT_SYNC_INTERVAL_MS, onSync?: AccountCacheSyncListener): () => void {
+      return cache.startPeriodicSync(intervalMs, onSync);
     },
 
     /**
