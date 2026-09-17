@@ -5,6 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { pathKey } from "../shared/pathCompare";
 import { runAccountMigration } from "./accountMigration";
 import { createAccountMigrationRunner, getOpenAccountContexts } from "./accountMigrationRunner";
+import type { AdeAccountStatus } from "../../../shared/types/account";
+
+function signedInStatus(userId: string): AdeAccountStatus {
+  return { signedIn: true, userId, email: null, name: null, expiresAt: null };
+}
 
 const receiptDirs: string[] = [];
 
@@ -206,7 +211,7 @@ describe("runAccountMigration", () => {
     };
     const runner = createAccountMigrationRunner({
       accountBridge: {
-        status: () => ({ signedIn: true, userId: "user-1" }) as any,
+        status: () => signedInStatus("user-1"),
       },
       accountVaultBridge: vault,
       getContexts: () => contexts,

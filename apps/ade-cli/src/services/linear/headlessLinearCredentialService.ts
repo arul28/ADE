@@ -33,6 +33,29 @@ function envToken(...names: string[]): string | null {
 
 export type HeadlessLinearCredentialService = ReturnType<typeof createLinearCredentialService>;
 
+/**
+ * Which auth mode a headless project is effectively in, in precedence order:
+ * an environment token is always manual; a stored OAuth mode counts only when
+ * a stored/override token or a refresh token backs it; any other token is
+ * manual; no token is no mode.
+ */
+function resolveAuthMode(args: {
+  source: "stored" | "env" | "override" | null;
+  storedAuthMode: string | null | undefined;
+  refreshTokenStored: boolean;
+  hasToken: boolean;
+}): "oauth" | "manual" | null {
+  if (args.source === "env") return "manual";
+  if (
+    args.storedAuthMode === "oauth"
+    && (args.source === "stored" || args.source === "override" || args.refreshTokenStored)
+  ) {
+    return "oauth";
+  }
+  if (args.hasToken) return "manual";
+  return null;
+}
+
 export function createHeadlessLinearCredentialService(args: {
   adeDir: string;
   logger?: Logger;
@@ -320,14 +343,7 @@ export function createHeadlessLinearCredentialService(args: {
       const { token, source } = readToken();
       const storedAuthMode = readCredential(authModeKey);
       const refreshTokenStored = Boolean(readCredential(refreshTokenKey));
-      const authMode = source === "env"
-        ? "manual"
-        : storedAuthMode === "oauth"
-          && (source === "stored" || source === "override" || refreshTokenStored)
-          ? "oauth"
-          : token.trim().length > 0
-            ? "manual"
-            : null;
+      const authMode = resolveAuthMode({ source, storedAuthMode, refreshTokenStored, hasToken: token.trim().length > 0 });
       return {
         tokenStored: token.trim().length > 0,
         tokenDecryptionFailed,
