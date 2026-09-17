@@ -316,7 +316,15 @@ export type IosSimulatorWindowIssue =
  * view and named no blocker — hence the two dedicated `IosSimulatorWindowIssue`
  * members above, which the overlay turns into an "Open Settings" affordance.
  */
-export type IosSimulatorPrivacyPane = "screen-recording" | "automation";
+/**
+ * macOS privacy panes ADE can deep-link into for a blocked host capability.
+ *
+ * `accessibility` is not a simulator concern — it is what the Mac Desktop
+ * driver needs before it can act on an element — but it lives on this type
+ * because the opener, its IPC route and its allow-list check are already here.
+ * A second opener would be a second place to get the URL allow-list wrong.
+ */
+export type IosSimulatorPrivacyPane = "screen-recording" | "automation" | "accessibility";
 
 export type IosSimulatorPermissionStatus =
   | "not-determined"

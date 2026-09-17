@@ -161,6 +161,10 @@ import {
   createAppControlService,
   type AppControlService,
 } from "../../desktop/src/main/services/appControl/appControlService";
+import {
+  createMacDesktopService,
+  type MacDesktopService,
+} from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
   createBridgeBrowserActorCapabilityIssuer,
@@ -348,6 +352,7 @@ export type AdeRuntime = {
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
+  macDesktopService?: MacDesktopService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
   /** Read-only Work tools-pane state for iOS and the hosted web client. */
   workToolsStateService?: WorkToolsStateService | null;
@@ -1363,6 +1368,51 @@ export async function createAdeRuntime(args: {
         },
       });
     teardown.push(() => appControlService?.dispose());
+    /**
+     * One private macOS screen per lane.
+     *
+     * Constructed next to the iOS simulator and App Control services, and for
+     * the same reason: it owns a host capability a chat can claim, so it needs
+     * the same chat-end release and the same lane teardown. It is created on
+     * every platform — `getStatus` answers everywhere and says `supported:
+     * false` off macOS, which is what lets a Windows desktop hide the tab by
+     * reading rather than by catching a throw.
+     */
+    const macDesktopService = chatOnlyRuntime
+      ? null
+      : createMacDesktopService({
+        projectRoot,
+        logger,
+        onEvent: (event) => pushEvent("runtime", { type: "mac_desktop_event", event }),
+        resolveLaneWorktreePath: (laneId: string): string | null => {
+          try {
+            return laneService.getLaneWorktreePath(laneId);
+          } catch {
+            return null;
+          }
+        },
+        resolveLaneName: async (laneId: string): Promise<string | null> => {
+          const lane = await laneService.getSummary(laneId).catch(() => null);
+          return lane?.name ?? null;
+        },
+        // The lane's primary pull request becomes a `github_pr` proof owner
+        // with the existing `published_to` relation, exactly as the browser and
+        // simulator proof paths do.
+        resolvePrimaryPrUrl: (laneId: string): string | null =>
+          prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
+        ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        // The lease question rides the normal pending-input card.
+        requestChatInput: async (input) => {
+          const chat = agentChatServiceHolder.current;
+          if (!chat?.requestChatInput) {
+            throw new Error("This runtime cannot ask for input, so real desktop input cannot be granted.");
+          }
+          return await chat.requestChatInput(input);
+        },
+        readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
+        writeSetting: (key: string, value: unknown) => db.setJson(key, value),
+      });
+    teardown.push(() => macDesktopService?.dispose());
     // `built_in_browser` is hosted by the desktop's Electron main process (the
     // browser pane owns a WebContentsView). The runtime daemon proxies calls
     // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
@@ -1416,6 +1466,10 @@ export async function createAdeRuntime(args: {
       getAppControlStatus: appControlService
         ? () => appControlService.getStatus()
         : null,
+      // TODO(mac-desktop): wire macDesktopService — the runtime service does not
+      // exist in this process yet. Null is the honest answer meanwhile: every
+      // client hides the tool rather than drawing an empty pane.
+      macDesktopService: null,
       onStateChanged: (laneId) =>
         pushEvent("runtime", { type: WORK_TOOLS_STATE_CHANGED_EVENT, laneId }),
       logger,
@@ -1442,6 +1496,13 @@ export async function createAdeRuntime(args: {
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
     prServiceRef = headlessLinearServices.prService;
+    if (macDesktopService) {
+      // Runs on every platform: off macOS `destroyForLane` is a no-op, so the
+      // teardown step never has to know what host it is on.
+      laneTeardownDeps.macDesktopService = {
+        destroyForLane: (laneId: string) => macDesktopService.destroyForLane(laneId),
+      };
+    }
     laneTeardownDeps.fileWatcherService = {
       countActiveForWorkspace: (id) => headlessLinearServices.fileService.countActiveWatchersForWorkspace(id),
       stopAllForWorkspace: (id) => headlessLinearServices.fileService.stopAllWatchersForWorkspace(id),
@@ -1559,6 +1620,15 @@ export async function createAdeRuntime(args: {
     bindIosSimulatorReleaseOnChatEnd({
       agentChatService,
       iosSimulatorService,
+      logger,
+    });
+    // A chat that ends must drop its Mac Desktop input lease; otherwise the
+    // lane stays un-drivable until the lease TTL lapses.
+    bindIosSimulatorReleaseOnChatEnd({
+      agentChatService,
+      iosSimulatorService: macDesktopService
+        ? { releaseIfOwnedBy: (sessionId: string) => macDesktopService.releaseIfOwnedBy(sessionId) }
+        : null,
       logger,
     });
     if (agentChatService) {
@@ -2378,6 +2448,7 @@ export async function createAdeRuntime(args: {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
+      macDesktopService,
       builtInBrowserService: builtInBrowserBridge,
       workToolsStateService,
       configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {

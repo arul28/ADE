@@ -770,5 +770,16 @@ export type MacDesktopServiceApi = {
   /** Runs on every platform: the lane teardown step calls it unconditionally. */
   destroyForLane(laneId: string): Promise<{ destroyed: boolean }>;
 
+  /**
+   * In-process change signal.
+   *
+   * The same payloads the runtime event stream carries, delivered to a caller
+   * inside this process — the Work tools mirror holds
+   * `Pick<MacDesktopServiceApi, "getStatus"> & { subscribe }` so it can re-read
+   * lane state on a change without being able to start a display, take a lease,
+   * or move a pointer.
+   */
+  subscribe(listener: (event: MacDesktopEventPayload) => void): () => void;
+
   dispose(): void;
 };

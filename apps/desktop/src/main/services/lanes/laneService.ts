@@ -1319,6 +1319,14 @@ export type LaneDeleteTeardownDeps = {
     countActiveForWorkspace: (workspaceId: string) => number;
     stopAllForWorkspace: (workspaceId: string) => number;
   };
+  /**
+   * The lane's Mac Desktop display. Called unconditionally: the service answers
+   * on every platform and destroys nothing off macOS, so the teardown step does
+   * not have to know which host it is running on.
+   */
+  macDesktopService?: {
+    destroyForLane: (laneId: string) => Promise<{ destroyed: boolean }>;
+  };
 };
 
 export function createLaneService({
@@ -4304,6 +4312,9 @@ export function createLaneService({
     try {
       teardownDeps?.fileWatcherService?.stopAllForWorkspace(laneId);
     } catch (error) { warn("stop_watchers", error); }
+    try {
+      await teardownDeps?.macDesktopService?.destroyForLane(laneId);
+    } catch (error) { warn("destroy_mac_desktop", error); }
   };
 
   // Named so a few methods (branch-drift resolution) can delegate to sibling
@@ -7441,6 +7452,13 @@ export function createLaneService({
           if (before === 0 && stopped === 0) return { detail: "none active" };
           return { detail: `stopped ${stopped} ${stopped === 1 ? "watcher" : "watchers"}` };
         });
+
+        await runStep("destroy_mac_desktop", async () => {
+          const svc = teardownDeps?.macDesktopService;
+          if (!svc) return { detail: "no service" };
+          const result = await svc.destroyForLane(laneId);
+          return { detail: result.destroyed ? "display destroyed" : "no display" };
+        }, { fatal: false });
 
         await runStep("cleanup_env", async () => {
           if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };

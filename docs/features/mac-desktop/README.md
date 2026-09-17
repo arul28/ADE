@@ -140,14 +140,24 @@ names the holding lane.
 1. **Auto-start.** The first time a chat opens the Mac Desktop tab, or the first
    time an agent is granted the tool, the service creates the display. There is
    no intermediate card.
-2. **Permissions.** Screen Recording and Accessibility are checked before the
-   first capture. A missing grant is one inline line with a System Settings
-   opener, reusing the simulator's probes and openers.
-3. **Idle release.** A display with no parked windows and no viewer for
-   `MAC_DESKTOP_IDLE_RELEASE_MS` is destroyed. The next open recreates it.
+2. **Permissions.** Screen Recording and Accessibility are reported by the
+   helper's own `ping`/`permissions.probe` reply — the service never shells out
+   to probe, so nothing runs ungated on a non-Mac host. A missing grant is one
+   inline line with a System Settings opener, reusing the simulator's
+   `openSystemSettings` route; `IosSimulatorPrivacyPane` gained an
+   `accessibility` pane for the second row rather than growing a second opener.
+   A grant revoked mid-session arrives as a `permission-changed` event and
+   every action then fails with `MAC_DESKTOP_PERMISSION_REQUIRED`.
+3. **Idle release.** A display with no parked windows, no stream reader and no
+   running recording for `MAC_DESKTOP_IDLE_RELEASE_MS` is destroyed on a 30s
+   sweep. The next open recreates it. The display size comes from the
+   `macDesktop.resolution` KV setting, defaulting to
+   `MAC_DESKTOP_DEFAULT_RESOLUTION`.
 4. **Teardown.** Lane delete and lane archive destroy the display through the
-   lane teardown step, next to the file watchers. A chat that ends releases its
-   lease through `releaseIfOwnedBy`.
+   lane teardown step, next to the file watchers — a `destroy_mac_desktop` step
+   that runs on every platform and reports "no display" off macOS. A chat that
+   ends releases its lease through `releaseIfOwnedBy`, bound in `bootstrap.ts`
+   through the same chat-session-ended listener the simulator uses.
 5. **Reconciliation.** On service start, every ADE-created virtual display that
    no live lane claims is destroyed. A crashed run never leaks a display.
 
@@ -163,7 +173,11 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
   `MAC_DESKTOP_USER_HAS_CONTROL` and the agent waits.
 - A remote viewer that disconnects during a takeover loses the lease on the
   socket close. The lease has a heartbeat deadline, so it can never stick.
-- Machine sleep drops the lease for the same reason.
+- Machine sleep drops the lease for the same reason. `powerMonitor` is
+  Electron-only and this service also runs in the runtime daemon, so sleep is
+  detected as a coarse wall-clock jump on the idle sweep (a tick that arrives
+  four intervals late) and the lease TTL is what actually guarantees the lease
+  cannot stick — the jump detector only makes the release immediate.
 
 ## Streaming
 

@@ -502,6 +502,9 @@ export type LaneDeleteStepName =
   | "stop_chats"
   | "stop_ptys"
   | "stop_watchers"
+  // Destroys the lane's Mac Desktop virtual display. Present on every platform
+  // because the step runs unconditionally; off macOS it reports "no display".
+  | "destroy_mac_desktop"
   | "cancel_auto_rebase"
   | "cleanup_env"
   | "git_status"
