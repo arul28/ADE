@@ -128,10 +128,13 @@ export type AccountCacheStore<
 > = {
   readCache(): AccountCacheFile<TRow, TPending>;
   /** Apply a local mutation only while its owner and cache generation remain current. */
-  mutate(mutator: (
-    current: AccountCacheFile<TRow, TPending>,
-    queue: (write: Omit<TPending, "seq">) => void,
-  ) => void): boolean;
+  mutate(
+    mutator: (
+      current: AccountCacheFile<TRow, TPending>,
+      queue: (write: Omit<TPending, "seq">) => void,
+    ) => void,
+    options?: { expectedAccountUserId?: string },
+  ): boolean;
   sync(): Promise<AccountCacheSyncStatus>;
   startPeriodicSync(intervalMs?: number, onSync?: AccountCacheSyncListener): () => void;
   /** Empty the cache and write the empty file. */
@@ -302,10 +305,18 @@ export function createAccountCacheStore<
       current: AccountCacheFile<TRow, TPending>,
       queue: (write: Omit<TPending, "seq">) => void,
     ) => void,
+    options?: { expectedAccountUserId?: string },
   ): boolean {
     const ownerAtEntry = config.getAccountUserId();
     if (!ownerAtEntry) {
       dropMutation("signed_out");
+      return false;
+    }
+    if (
+      options?.expectedAccountUserId !== undefined
+      && ownerAtEntry !== options.expectedAccountUserId
+    ) {
+      dropMutation("owner_changed");
       return false;
     }
 

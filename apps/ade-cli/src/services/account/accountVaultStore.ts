@@ -345,13 +345,6 @@ export function createAccountVaultStore(args: {
       value: string,
       options?: AccountVaultStoreWriteOptions,
     ): boolean {
-      if (
-        options?.expectedAccountUserId !== undefined
-        && args.getAccountUserId() !== options.expectedAccountUserId
-      ) {
-        logger.warn("account.vault_mutation_dropped", { reason: "owner_changed" });
-        return false;
-      }
       const refreshOwner = options?.refreshOwner ?? null;
       return cache.mutate((current, queue) => {
         current.rows[cacheKey(scope, kind, key)] = {
@@ -361,7 +354,7 @@ export function createAccountVaultStore(args: {
           refreshOwner,
         };
         queue({ scope, kind, key, value, deleted: false, refreshOwner });
-      });
+      }, { expectedAccountUserId: options?.expectedAccountUserId });
     },
 
     remove(
@@ -370,17 +363,10 @@ export function createAccountVaultStore(args: {
       key: string,
       options?: AccountVaultWriteOptions,
     ): boolean {
-      if (
-        options?.expectedAccountUserId !== undefined
-        && args.getAccountUserId() !== options.expectedAccountUserId
-      ) {
-        logger.warn("account.vault_mutation_dropped", { reason: "owner_changed" });
-        return false;
-      }
       return cache.mutate((current, queue) => {
         delete current.rows[cacheKey(scope, kind, key)];
         queue({ scope, kind, key, value: null, deleted: true, refreshOwner: null });
-      });
+      }, { expectedAccountUserId: options?.expectedAccountUserId });
     },
 
     /** Flush what is queued, then take what changed. Single-flight. */

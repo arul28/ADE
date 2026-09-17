@@ -50,9 +50,7 @@ export function createAccountMigrationStartRetry(options: AccountMigrationStartR
   const maxRetries = options.maxRetries ?? 3;
   const schedule = options.schedule ?? ((callback: () => void, delayMs: number) => {
     const timer = setTimeout(callback, delayMs);
-    if (typeof timer === "object" && timer !== null && "unref" in timer) {
-      (timer as { unref?: () => void }).unref?.();
-    }
+    timer.unref?.();
   });
   let retryCount = 0;
   let retryScheduled = false;

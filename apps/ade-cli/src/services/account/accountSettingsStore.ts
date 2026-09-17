@@ -222,13 +222,6 @@ export function createAccountSettingsStore(args: {
       value: unknown,
       options?: AccountSettingsWriteOptions,
     ): boolean {
-      if (
-        options?.expectedAccountUserId !== undefined
-        && args.getAccountUserId() !== options.expectedAccountUserId
-      ) {
-        logger.warn("account.settings_mutation_dropped", { reason: "owner_changed" });
-        return false;
-      }
       const changedAt = new Date(now()).toISOString();
       return cache.mutate((current, queue) => {
         current.rows[cacheKey(scope, key)] = {
@@ -240,17 +233,10 @@ export function createAccountSettingsStore(args: {
           writerDeviceId: args.getDeviceId?.() ?? null,
         };
         queue({ scope, key, value, deleted: false, changedAt });
-      });
+      }, { expectedAccountUserId: options?.expectedAccountUserId });
     },
 
     remove(scope: string, key: string, options?: AccountSettingsWriteOptions): boolean {
-      if (
-        options?.expectedAccountUserId !== undefined
-        && args.getAccountUserId() !== options.expectedAccountUserId
-      ) {
-        logger.warn("account.settings_mutation_dropped", { reason: "owner_changed" });
-        return false;
-      }
       return cache.mutate((current, queue) => {
         delete current.rows[cacheKey(scope, key)];
         queue({
@@ -260,7 +246,7 @@ export function createAccountSettingsStore(args: {
           deleted: true,
           changedAt: new Date(now()).toISOString(),
         });
-      });
+      }, { expectedAccountUserId: options?.expectedAccountUserId });
     },
 
     /** Flush what is queued, then take what changed. Single-flight. */
