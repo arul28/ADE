@@ -95,33 +95,33 @@
       "targets": {
         "darwin-arm64": {
           "package": "opencode-darwin-arm64",
-          "version": "1.18.14",
-          "tarball": "https://registry.npmjs.org/opencode-darwin-arm64/-/opencode-darwin-arm64-1.18.14.tgz",
-          "integrity": "sha512-xlzzkkvIE5mnB/s9xYbrY+N7d4K4iFclNp6hT9YIWEOgfJSESkPhCrmfy3qMrAGV+Ufof+QaZPSCMyngt/741Q=="
+          "version": "1.18.31",
+          "tarball": "https://registry.npmjs.org/opencode-darwin-arm64/-/opencode-darwin-arm64-1.18.31.tgz",
+          "integrity": "sha512-IN642oFENleWVDNqMnXi8NQLsZnA8hMswJ6X+GWz+CfBFuCpotjDb5OHgE2HBdC6r5wjG6v0mATb+Mn8xXCp1A=="
         },
         "darwin-x64": {
           "package": "opencode-darwin-x64",
-          "version": "1.18.14",
-          "tarball": "https://registry.npmjs.org/opencode-darwin-x64/-/opencode-darwin-x64-1.18.14.tgz",
-          "integrity": "sha512-HHPgOBWT3/1axMLU45z9p4g6STErwzSKJmH8w4h2RiFCii8F8cGCljZbFyLeWWQ1y3YHWl62r3ZFq1T69DasVg=="
+          "version": "1.18.31",
+          "tarball": "https://registry.npmjs.org/opencode-darwin-x64/-/opencode-darwin-x64-1.18.31.tgz",
+          "integrity": "sha512-xrw512dou9Drxs/1yH4CHEt/kvrSl8j1Ulez0wTOsW0lWZaATJMnlfHBjagWzv+QWIC4nz/cBgYzjn3JvxS7zQ=="
         },
         "linux-arm64": {
           "package": "opencode-linux-arm64",
-          "version": "1.18.14",
-          "tarball": "https://registry.npmjs.org/opencode-linux-arm64/-/opencode-linux-arm64-1.18.14.tgz",
-          "integrity": "sha512-LSILNOuBO5Lotcky2XcvpAVxj/abRcWynKdTcX1QX0+bVOCEsY/fb0tGUuJFafVzWsmjFS7QF3vyD9mnrMC7Qg=="
+          "version": "1.18.31",
+          "tarball": "https://registry.npmjs.org/opencode-linux-arm64/-/opencode-linux-arm64-1.18.31.tgz",
+          "integrity": "sha512-tLTZlOeWz4u48WQWg7PhKTn4gIXPHf7xaiWSHcmci1O3qKXEDLv/TaMzmqIuMChdwtflu2PSNIC00W+Hij/IkA=="
         },
         "linux-x64": {
           "package": "opencode-linux-x64",
-          "version": "1.18.14",
-          "tarball": "https://registry.npmjs.org/opencode-linux-x64/-/opencode-linux-x64-1.18.14.tgz",
-          "integrity": "sha512-SMZj5jyOoOsZ6Cp2jD8hZbxRpw71OkyMDq02ZIfEFj/MxzX5xulIeC3XedFaATvAjKMlnfq5A9MFssExcrwegg=="
+          "version": "1.18.31",
+          "tarball": "https://registry.npmjs.org/opencode-linux-x64/-/opencode-linux-x64-1.18.31.tgz",
+          "integrity": "sha512-gTJ5nGNq+KJblwmeusEdz8YFwvkV7a3xTOV9EKKEmsv0Lkbajq/oQO9jEC0sMiS66mjHDOrhLgIUxSVqfLBM8g=="
         },
         "win32-x64": {
           "package": "opencode-windows-x64-baseline",
-          "version": "1.18.14",
-          "tarball": "https://registry.npmjs.org/opencode-windows-x64-baseline/-/opencode-windows-x64-baseline-1.18.14.tgz",
-          "integrity": "sha512-39Y0oLPpzVBdyILqWnWHl15ruQpsMH7muI6IA/LIbJRwMaSimsMKt2v/ItefFXz3tRHqdxVTPf2RsYClyWBLng=="
+          "version": "1.18.31",
+          "tarball": "https://registry.npmjs.org/opencode-windows-x64-baseline/-/opencode-windows-x64-baseline-1.18.31.tgz",
+          "integrity": "sha512-wz5K8SpL+GTKez4BpYX1AbhRwBY7AVt+95ijWZrow84ibLTDoZ1skEsN5UUcQJ8LYeC+o1Vq0xi4A5kLGfvQ0w=="
         }
       }
     }

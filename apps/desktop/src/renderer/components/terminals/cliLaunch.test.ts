@@ -1871,7 +1871,7 @@ describe("tracked CLI resume helpers", () => {
         instructions?: string[];
         permission?: Record<string, string>;
       };
-      // Verified against opencode 1.18.21: config layers union `instructions`
+      // Verified against opencode 1.18.31: config layers union `instructions`
       // rather than overwriting, so the user's own files must survive.
       expect(config.instructions).toEqual(["./AGENTS.local.md", "/cache/ade/instructions.md"]);
       expect(config.permission).toEqual({ edit: "allow" });

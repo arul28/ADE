@@ -13,6 +13,9 @@ export type OpenCodeProviderDetail = {
   connected: boolean;
   hasKey: boolean;
   modelCount?: number;
+  /** Non-secret environment variable names advertised by OpenCode. */
+  envVars?: string[];
+  /** Legacy singular field kept for ADE's curated provider rows. */
   envVar?: string;
   placeholder?: string;
 };
@@ -57,12 +60,17 @@ export function OpenCodeProviderDetailModal({
     () => provider.methods.filter((m) => m.type === "oauth"),
     [provider.methods],
   );
+  const credentialEnvVars = provider.envVars?.length
+    ? provider.envVars
+    : provider.envVar
+      ? [provider.envVar]
+      : [];
   // Prefer live OpenCode auth methods when present. Fall back to ADE's known
   // env-key catalog only when OpenCode has not advertised methods yet (or only
   // OAuth was advertised for a dual-auth provider we also list in API_KEY_PROVIDERS).
   const supportsApi =
     provider.methods.some((m) => m.type === "api")
-    || Boolean(provider.envVar);
+    || credentialEnvVars.length > 0;
   // Connected OpenCode sessions (OAuth or key mirrored into OpenCode) must always
   // offer Disconnect — even when auth-method discovery failed and methods[] is empty.
   const canDisconnect = provider.connected || keySource === "store";
@@ -229,8 +237,10 @@ export function OpenCodeProviderDetailModal({
               {supportsApi ? (
                 <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div style={sectionLabelStyle}>API key</div>
-                  {provider.envVar ? (
-                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{provider.envVar}</div>
+                  {credentialEnvVars.length > 0 ? (
+                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                      {credentialEnvVars.join(" · ")}
+                    </div>
                   ) : null}
 
                   {editing ? (

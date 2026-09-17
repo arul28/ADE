@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { Logger } from "../logging/logger";
-import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
+import type { EffectiveProjectConfig, OpenCodeProviderSummary, ProjectConfigFile } from "../../../shared/types";
 import {
   createDynamicOpenCodeModelDescriptor,
   isLocalProviderFamily,
@@ -26,13 +26,18 @@ const TTL_MS = 60_000;
 const SERVER_IDLE_TTL_MS = 10_000;
 
 /** Metadata for an OpenCode provider as returned by provider.list(). */
-export type OpenCodeProviderInfo = {
-  id: string;
-  name: string;
-  connected: boolean;
-  modelCount: number;
-  availableModelCount?: number;
-};
+export type OpenCodeProviderInfo = OpenCodeProviderSummary;
+
+function normalizeOpenCodeProviderEnvVars(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const envVars = [...new Set(
+    value
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  )];
+  return envVars.length > 0 ? envVars : undefined;
+}
 
 type CacheEntry = {
   cachedAt: number;
@@ -107,6 +112,13 @@ function readPersistedInventoryFile(): PersistedInventoryFile {
               && (
                 info.availableModelCount === undefined
                 || (typeof info.availableModelCount === "number" && Number.isFinite(info.availableModelCount))
+              )
+              && (
+                info.envVars === undefined
+                || (
+                  Array.isArray(info.envVars)
+                  && info.envVars.every((envVar) => typeof envVar === "string" && envVar.trim().length > 0)
+                )
               );
           });
         }),
@@ -372,6 +384,7 @@ export async function probeOpenCodeProviderInventory(args: {
               all: Array<{
                 id: string;
                 name?: string;
+                env?: unknown;
                 models?: Record<string, Record<string, unknown>>;
               }>;
             }
@@ -489,16 +502,21 @@ export async function probeOpenCodeProviderInventory(args: {
         const providerInfos: OpenCodeProviderInfo[] = data.all.map((p: {
           id: string;
           name?: string;
+          env?: unknown;
           models?: Record<string, Record<string, unknown>>;
-        }) => ({
-          id: p.id,
-          name: typeof p.name === "string" ? p.name : p.id,
-          connected: connected.has(p.id),
-          modelCount: isLocalProviderFamily(p.id)
-            ? catalogCounts.get(p.id) ?? 0
-            : Object.keys(p.models ?? {}).length,
-          availableModelCount: availableProviderModelCounts.get(p.id) ?? 0,
-        }));
+        }) => {
+          const envVars = normalizeOpenCodeProviderEnvVars(p.env);
+          return {
+            id: p.id,
+            name: typeof p.name === "string" ? p.name : p.id,
+            connected: connected.has(p.id),
+            modelCount: isLocalProviderFamily(p.id)
+              ? catalogCounts.get(p.id) ?? 0
+              : Object.keys(p.models ?? {}).length,
+            availableModelCount: availableProviderModelCounts.get(p.id) ?? 0,
+            ...(envVars ? { envVars } : {}),
+          };
+        });
         inventoryCache = {
           cachedAt: Date.now(),
           projectRoot: args.projectRoot,

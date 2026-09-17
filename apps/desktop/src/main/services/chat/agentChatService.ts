@@ -2348,7 +2348,7 @@ function openCodeTodoId(todo: unknown, index: number): string {
 /**
  * The pre-`permission.asked` approval event.
  *
- * OpenCode 1.18.21 — the version ADE pins and bundles — publishes only
+ * OpenCode 1.18.31 — the version ADE pins and bundles — publishes only
  * `permission.asked` and `permission.replied`; `permission.updated` is gone from
  * both its source and the current SDK types. But `resolveOpenCodeBinaryPath`
  * falls back to a *user-installed* binary when the tools cache and the bundle

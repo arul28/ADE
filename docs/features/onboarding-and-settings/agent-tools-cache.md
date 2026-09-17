@@ -129,7 +129,7 @@ profile — 650 MB must never roam.
     vendor/aarch64-apple-darwin/bin/codex
     .install-complete
   @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.258/
-  opencode-darwin-arm64/1.18.14/
+  opencode-darwin-arm64/1.18.31/
   .staging/
   .locks/
 ```
@@ -447,7 +447,7 @@ Verified spawns from the cache:
 |---|---|---|
 | `codex` | `codex-cli 0.144.5` | accepted — Notarized Developer ID, OpenAI OpCo LLC |
 | `claude` | `2.1.220 (Claude Code)` | accepted — Notarized Developer ID, Anthropic PBC |
-| `opencode` | `1.18.14` | **`invalid signature`** — ad-hoc / linker-signed, **not notarized** |
+| `opencode` | `1.18.31` | **`invalid signature`** — ad-hoc / linker-signed, **not notarized** |
 
 OpenCode runs anyway. Its execution therefore depends entirely on the
 no-quarantine property above, not on notarization — if anything ever caused the
