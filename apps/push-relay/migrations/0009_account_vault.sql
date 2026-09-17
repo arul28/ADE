@@ -33,6 +33,8 @@ create table if not exists account_vault_items (
   updated_at text not null,
   writer_device_id text,
   refresh_owner text,
+  -- Same tombstone as settings: a hard delete is invisible to `since` pulls.
+  deleted integer not null default 0,
   primary key (user_id, scope_key, item_kind, item_key)
 );
 

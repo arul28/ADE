@@ -33,6 +33,11 @@ regexes = [
   # introduced these literals reassigns the commit — so the exception silently
   # stopped applying exactly when the branch was refreshed.
   '''api-keys\.v1\.bin''',
+  # Namespaced credential provenance key (`ai.api_key.provenance.v1`), not a
+  # secret. Same generic-api-key false positive as the file name above — the
+  # const ends in KEY and the namespaced value has mild entropy. Regex rather
+  # than a commit fingerprint so a rebase does not revive the finding.
+  '''ai\.api_key\.provenance\.v1''',
 ]
 paths = [
   '''\.env\.example$''',

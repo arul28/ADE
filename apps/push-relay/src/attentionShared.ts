@@ -390,9 +390,12 @@ export async function countAndGuard(options: {
   userId: string;
   adding: number;
   ceiling: number;
+  /** Restrict the count, e.g. live rows only so tombstones do not fill the cap. */
+  extraWhere?: string;
 }): Promise<boolean> {
+  const extra = options.extraWhere ?? "";
   const existing = await options.env.DB
-    .prepare(`select count(*) as count from ${options.table} where user_id = ?`)
+    .prepare(`select count(*) as count from ${options.table} where user_id = ?${extra}`)
     .bind(options.userId)
     .first<{ count: number }>();
   return (existing?.count ?? 0) + options.adding > options.ceiling;

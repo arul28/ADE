@@ -24,6 +24,9 @@ create table if not exists account_settings (
   updated_at text not null,
   changed_at text,
   writer_device_id text,
+  -- Last-writer-wins delete. Removing the row would make a `since` pull skip
+  -- the change, so other machines would keep the value forever.
+  deleted integer not null default 0,
   primary key (user_id, scope_key, setting_key)
 );
 

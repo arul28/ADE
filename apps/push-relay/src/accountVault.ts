@@ -164,6 +164,7 @@ export type AccountVaultRow = {
   updatedAt: string;
   writerDeviceId: string | null;
   refreshOwner: string | null;
+  deleted?: boolean;
 };
 
 type ParsedVaultWrite = {
@@ -218,7 +219,7 @@ async function handleRead(
     limit: MAX_ITEMS_PER_READ,
   });
   const rows = await env.DB.prepare(`
-    select scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner
+    select scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
     from account_vault_items
     where ${query.where}
     order by ${query.orderBy}
@@ -231,6 +232,7 @@ async function handleRead(
     updated_at: string;
     writer_device_id: string | null;
     refresh_owner: string | null;
+    deleted: number;
   }>();
 
   const paged = accountPageResult(rows.results, {
@@ -240,6 +242,19 @@ async function handleRead(
   });
   const items: AccountVaultRow[] = [];
   for (const row of paged.page) {
+    if (row.deleted) {
+      items.push({
+        scope: row.scope_key,
+        kind: row.item_kind,
+        key: row.item_key,
+        value: null,
+        updatedAt: row.updated_at,
+        writerDeviceId: row.writer_device_id,
+        refreshOwner: row.refresh_owner,
+        deleted: true,
+      });
+      continue;
+    }
     items.push({
       scope: row.scope_key,
       kind: row.item_kind,
@@ -296,6 +311,7 @@ async function handleWrite(
     userId,
     adding: parsed.length,
     ceiling: MAX_ITEMS_PER_ACCOUNT + MAX_ITEMS_PER_WRITE,
+    extraWhere: " and deleted = 0",
   })) {
     return json({ ok: false, error: "account vault limit reached" }, { status: 507 });
   }
@@ -306,14 +322,15 @@ async function handleWrite(
   const sealed = await Promise.all(parsed.map((write) => sealValue(key, write.value)));
   await env.DB.batch(parsed.map((write, index) => env.DB.prepare(`
     insert into account_vault_items(
-      user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner
+      user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
     )
-    values (?, ?, ?, ?, ?, ?, ?, ?)
+    values (?, ?, ?, ?, ?, ?, ?, ?, 0)
     on conflict(user_id, scope_key, item_kind, item_key) do update set
       ciphertext = excluded.ciphertext,
       updated_at = excluded.updated_at,
       writer_device_id = excluded.writer_device_id,
-      refresh_owner = excluded.refresh_owner
+      refresh_owner = excluded.refresh_owner,
+      deleted = 0
   `).bind(
     userId,
     write.scope,
@@ -345,10 +362,12 @@ async function handleDelete(
   if (!scope || !key || !kind || !ITEM_KINDS.has(kind)) {
     return json({ ok: false, error: "invalid item" }, { status: 400 });
   }
+  const updatedAt = new Date().toISOString();
   const result = await env.DB.prepare(`
-    delete from account_vault_items
-    where user_id = ? and scope_key = ? and item_kind = ? and item_key = ?
-  `).bind(userId, scope, kind, key).run();
+    update account_vault_items
+    set deleted = 1, ciphertext = '', updated_at = ?, writer_device_id = null, refresh_owner = null
+    where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0
+  `).bind(updatedAt, userId, scope, kind, key).run();
   return json({ ok: true, deleted: (result.meta?.changes ?? 0) > 0 });
 }
 

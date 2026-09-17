@@ -23,6 +23,26 @@ describe("push relay account row decoders", () => {
     });
   });
 
+  it("keeps a settings tombstone so peers can drop the key", () => {
+    expect(decodeAccountSettingRecord({
+      scope: "all",
+      key: "theme",
+      value: null,
+      updatedAt: "2026-09-16T00:00:00.000Z",
+      changedAt: null,
+      writerDeviceId: null,
+      deleted: true,
+    })).toEqual({
+      scope: "all",
+      key: "theme",
+      value: null,
+      updatedAt: "2026-09-16T00:00:00.000Z",
+      changedAt: null,
+      writerDeviceId: null,
+      deleted: true,
+    });
+  });
+
   it("drops settings rows with invalid identity or timestamp fields", () => {
     expect(decodeAccountSettingRecord({
       scope: "all",

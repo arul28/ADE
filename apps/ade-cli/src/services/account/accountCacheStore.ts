@@ -67,7 +67,7 @@ export type AccountCacheFile<TRow extends AccountCacheRow, TPending extends Acco
 export type AccountCacheStoreConfig<
   TRow extends AccountCacheRow,
   TPending extends AccountCachePending,
-  TRemote extends { updatedAt: string },
+  TRemote extends { updatedAt: string; deleted?: boolean },
 > = {
   adeDir: string;
   /** File name under `adeDir`, e.g. `account-settings.json`. */
@@ -147,7 +147,7 @@ export type AccountCacheStore<
 export function createAccountCacheStore<
   TRow extends AccountCacheRow,
   TPending extends AccountCachePending,
-  TRemote extends { updatedAt: string },
+  TRemote extends { updatedAt: string; deleted?: boolean },
 >(config: AccountCacheStoreConfig<TRow, TPending, TRemote>): AccountCacheStore<TRow, TPending> {
   const cachePath = path.join(config.adeDir, config.cacheFileName);
   const { logger, rowsField } = config;
@@ -194,6 +194,14 @@ export function createAccountCacheStore<
     if (cache && cache.accountUserId !== accountUserId) {
       // The signed-in account changed under us. Start clean rather than merge.
       epoch += 1;
+      if (!accountUserId) {
+        // Sign-out is not an account switch. Settings are supposed to survive
+        // it; persisting an empty file here would erase the owner's cache and
+        // look like data loss when they sign back in. Vault callers purge
+        // explicitly.
+        cache = null;
+        return emptyCache(null);
+      }
       cache = emptyCache(accountUserId);
       persist();
       return cache;
@@ -425,6 +433,10 @@ export function createAccountCacheStore<
         const key = config.remoteKey(remote);
         // A key this machine has queued is not the server's to answer yet.
         if (stillPending.has(key)) continue;
+        if (remote.deleted) {
+          delete after.rows[key];
+          continue;
+        }
         // Nor is a row older than what this machine already holds. A page
         // fetched from a cursor taken before our own upload legitimately
         // contains stale rows, and applying one would revert the user's edit in

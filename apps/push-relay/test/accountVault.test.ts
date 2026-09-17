@@ -253,7 +253,9 @@ describe("account vault", () => {
     expect(first.body).toMatchObject({ ok: true, deleted: true });
     const again = await call("DELETE", "/attention/account/vault/all/provider_key/anthropic");
     expect(again.body).toMatchObject({ ok: true, deleted: false });
-    expect((await call("GET", "/attention/account/vault")).body.items).toHaveLength(0);
+    expect((await call("GET", "/attention/account/vault")).body.items).toEqual([
+      expect.objectContaining({ key: "anthropic", deleted: true, value: null }),
+    ]);
   });
 
   it("rejects the whole batch when one item is bad, writing nothing", async () => {

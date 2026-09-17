@@ -46,5 +46,6 @@ baa7a0bb4b5f4c3112680c37ab7572663bb87551:apps/desktop/vite.webclient.config.ts:g
 7ec89db49bbd5f9724915222008be6fc0b264682:apps/ade-cli/src/cli.test.ts:generic-api-key:11792
 7ec89db49bbd5f9724915222008be6fc0b264682:apps/ade-cli/src/cli.test.ts:generic-api-key:11808
 
-# The "api-keys.v1.bin" file-name false positive lives in `.gitleaks.toml`'s
-# allowlist regexes: a commit-scoped fingerprint does not survive a rebase.
+# The "api-keys.v1.bin" file-name and `ai.api_key.provenance.v1` namespaced-key
+# false positives live in `.gitleaks.toml`'s allowlist regexes: a commit-scoped
+# fingerprint does not survive a rebase.

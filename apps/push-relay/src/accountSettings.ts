@@ -58,6 +58,7 @@ export type AccountSettingRow = {
   updatedAt: string;
   changedAt: string | null;
   writerDeviceId: string | null;
+  deleted?: boolean;
 };
 
 type ParsedWrite = {
@@ -105,6 +106,7 @@ function rowToSetting(row: {
   updated_at: string;
   changed_at: string | null;
   writer_device_id: string | null;
+  deleted: number;
 }): AccountSettingRow {
   let value: unknown = null;
   try {
@@ -123,6 +125,7 @@ function rowToSetting(row: {
     updatedAt: row.updated_at,
     changedAt: row.changed_at,
     writerDeviceId: row.writer_device_id,
+    ...(row.deleted ? { deleted: true } : {}),
   };
 }
 
@@ -147,7 +150,7 @@ async function handleRead(
     limit: MAX_SETTINGS_PER_READ,
   });
   const rows = await env.DB.prepare(`
-    select scope_key, setting_key, value_json, updated_at, changed_at, writer_device_id
+    select scope_key, setting_key, value_json, updated_at, changed_at, writer_device_id, deleted
     from account_settings
     where ${query.where}
     order by ${query.orderBy}
@@ -159,6 +162,7 @@ async function handleRead(
     updated_at: string;
     changed_at: string | null;
     writer_device_id: string | null;
+    deleted: number;
   }>();
 
   const paged = accountPageResult(rows.results, {
@@ -213,6 +217,7 @@ async function handleWrite(
     userId,
     adding: parsed.length,
     ceiling: MAX_SETTINGS_PER_ACCOUNT + MAX_SETTINGS_PER_WRITE,
+    extraWhere: " and deleted = 0",
   })) {
     return json(
       { ok: false, error: "account settings limit reached" },
@@ -227,14 +232,15 @@ async function handleWrite(
   const updatedAt = new Date().toISOString();
   await env.DB.batch(parsed.map((write) => env.DB.prepare(`
     insert into account_settings(
-      user_id, scope_key, setting_key, value_json, updated_at, changed_at, writer_device_id
+      user_id, scope_key, setting_key, value_json, updated_at, changed_at, writer_device_id, deleted
     )
-    values (?, ?, ?, ?, ?, ?, ?)
+    values (?, ?, ?, ?, ?, ?, ?, 0)
     on conflict(user_id, scope_key, setting_key) do update set
       value_json = excluded.value_json,
       updated_at = excluded.updated_at,
       changed_at = excluded.changed_at,
-      writer_device_id = excluded.writer_device_id
+      writer_device_id = excluded.writer_device_id,
+      deleted = 0
   `).bind(
     userId,
     write.scope,
@@ -263,12 +269,15 @@ async function handleDelete(
   if (!scope || !key) {
     return json({ ok: false, error: "invalid setting" }, { status: 400 });
   }
+  const updatedAt = new Date().toISOString();
   const result = await env.DB.prepare(`
-    delete from account_settings
-    where user_id = ? and scope_key = ? and setting_key = ?
-  `).bind(userId, scope, key).run();
+    update account_settings
+    set deleted = 1, value_json = 'null', updated_at = ?, writer_device_id = null
+    where user_id = ? and scope_key = ? and setting_key = ? and deleted = 0
+  `).bind(updatedAt, userId, scope, key).run();
   // Idempotent on purpose: a retry after a dropped response must not be an
-  // error, or a flaky network turns a reset into a stuck one.
+  // error, or a flaky network turns a reset into a stuck one. The row stays as
+  // a tombstone so a `since` pull can tell other machines to drop the key.
   return json({ ok: true, deleted: (result.meta?.changes ?? 0) > 0 });
 }
 

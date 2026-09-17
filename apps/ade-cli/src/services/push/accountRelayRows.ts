@@ -10,6 +10,8 @@ export type AccountSettingRecord = {
   updatedAt: string;
   changedAt: string | null;
   writerDeviceId: string | null;
+  /** Present on a tombstone so other machines drop the key. */
+  deleted?: boolean;
 };
 
 function readNonEmptyString(value: unknown): string | null {
@@ -35,7 +37,16 @@ export function decodeAccountSettingRecord(value: unknown): AccountSettingRecord
   const changedAt = readNullableString(value.changedAt);
   const writerDeviceId = readNullableString(value.writerDeviceId);
   if (!scope || !key || !updatedAt || changedAt === undefined || writerDeviceId === undefined) return null;
-  return { scope, key, value: value.value, updatedAt, changedAt, writerDeviceId };
+  if (value.deleted !== undefined && typeof value.deleted !== "boolean") return null;
+  return {
+    scope,
+    key,
+    value: value.value,
+    updatedAt,
+    changedAt,
+    writerDeviceId,
+    ...(value.deleted === true ? { deleted: true } : {}),
+  };
 }
 
 /** One setting as a client sends it. `changedAt` is diagnostics, not ordering. */
@@ -85,6 +96,8 @@ export type AccountVaultItem = {
   updatedAt: string;
   writerDeviceId: string | null;
   refreshOwner: string | null;
+  /** Present on a tombstone so other machines drop the item. */
+  deleted?: boolean;
 };
 
 const ACCOUNT_VAULT_ITEM_KINDS: ReadonlySet<string> = new Set([
@@ -103,7 +116,9 @@ export function decodeAccountVaultItem(value: unknown): AccountVaultItem | null 
   const kind = readNonEmptyString(value.kind);
   const key = readNonEmptyString(value.key);
   const updatedAt = readTimestamp(value.updatedAt);
-  const itemValue = value.value === null || typeof value.value === "string" ? value.value : undefined;
+  const itemValue = value.deleted === true
+    ? (value.value === null || typeof value.value === "string" ? value.value : null)
+    : (value.value === null || typeof value.value === "string" ? value.value : undefined);
   const writerDeviceId = readNullableString(value.writerDeviceId);
   const refreshOwner = readNullableString(value.refreshOwner);
   if (
@@ -116,6 +131,7 @@ export function decodeAccountVaultItem(value: unknown): AccountVaultItem | null 
     || writerDeviceId === undefined
     || refreshOwner === undefined
   ) return null;
+  if (value.deleted !== undefined && typeof value.deleted !== "boolean") return null;
   return {
     scope,
     kind: kind as AccountVaultItemKind,
@@ -124,6 +140,7 @@ export function decodeAccountVaultItem(value: unknown): AccountVaultItem | null 
     updatedAt,
     writerDeviceId,
     refreshOwner,
+    ...(value.deleted === true ? { deleted: true } : {}),
   };
 }
 

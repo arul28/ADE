@@ -74,6 +74,25 @@ describe("account settings store", () => {
     expect(reopened.get("all", "appearance.theme")).toBe("dark");
   });
 
+  it("does not persist an empty cache over settings when the owner signs out", () => {
+    const store = makeStore();
+    store.set("all", "appearance.theme", "dark");
+    const cachePath = store.cachePathForTests();
+
+    accountUserId = null;
+    expect(store.get("all", "appearance.theme")).toBeUndefined();
+
+    const onDisk = JSON.parse(fs.readFileSync(cachePath, "utf8")) as {
+      accountUserId: string;
+      settings: Record<string, { value: unknown }>;
+    };
+    expect(onDisk.accountUserId).toBe(USER);
+    expect(onDisk.settings["all\0appearance.theme"]?.value).toBe("dark");
+
+    accountUserId = USER;
+    expect(makeStore().get("all", "appearance.theme")).toBe("dark");
+  });
+
   it("ignores corrupt persisted rows and pending entries with one warning", () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
     fs.writeFileSync(path.join(adeDir, "account-settings.json"), JSON.stringify({
@@ -170,6 +189,26 @@ describe("account settings store", () => {
     await store.sync();
 
     expect(store.get("all", "chat.font-size")).toBe(16);
+  });
+
+  it("drops a locally cached setting when a pull carries a tombstone", async () => {
+    const store = makeStore();
+    store.set("all", "appearance.theme", "dark");
+    relay.putAccountSettings.mockResolvedValue({ updatedAt: "2026-09-16T00:00:00.000Z" });
+    await store.sync();
+
+    relay.getAccountSettings.mockResolvedValueOnce({
+      settings: [{
+        ...record("all", "appearance.theme", null, "2026-09-16T00:01:00.000Z"),
+        deleted: true,
+      }],
+      cursor: "2026-09-16T00:01:00.000Z",
+      truncated: false,
+    });
+
+    await store.sync();
+
+    expect(store.get("all", "appearance.theme")).toBeUndefined();
   });
 
   // A key queued while an upload is in flight is newer than what the server now

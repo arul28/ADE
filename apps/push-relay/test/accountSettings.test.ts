@@ -210,7 +210,9 @@ describe("account settings store", () => {
     expect(again.body).toMatchObject({ ok: true, deleted: false });
 
     const read = await call("GET", "/attention/account/settings");
-    expect(read.body.settings).toHaveLength(0);
+    expect(read.body.settings).toEqual([
+      expect.objectContaining({ key: "appearance.theme", deleted: true }),
+    ]);
   });
 
   // A partial success is the worst outcome: the caller believes everything
