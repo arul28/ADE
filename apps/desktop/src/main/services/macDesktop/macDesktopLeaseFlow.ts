@@ -11,6 +11,7 @@
  */
 
 import {
+  AUTOMATION_CHAT_SESSION_PREFIX,
   MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
 } from "../../../shared/types/macDesktop";
 import type {
@@ -83,9 +84,12 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       const laneId = args.laneId.trim();
       const chatSessionId = args.chatSessionId.trim();
       deps.requireDisplay(laneId);
-      if (!chatSessionId) {
-        return { granted: false, code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, lease: null };
-      }
+      const refuse = (): MacDesktopLeaseRequestResult => ({
+        granted: false,
+        code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+        lease: null,
+      });
+      if (!chatSessionId) return refuse();
       const grantNow = (): MacDesktopLeaseRequestResult => {
         const decision = deps.leases.grantToAgent({
           laneId,
@@ -106,9 +110,10 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       // An automation's synthetic holder (`automation:<ruleId>`) is not a chat,
       // so there is nobody to show a card to: asking would throw "chat not
       // found" *after* a `lease-requested` event had already told the UI a card
-      // was coming. Refuse before emitting anything.
-      if (chatSessionId.startsWith("automation:") || !deps.requestChatInput) {
-        return { granted: false, code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, lease: null };
+      // was coming. A host with no `requestChatInput` wired has no card either,
+      // so it refuses here too rather than after the event.
+      if (chatSessionId.startsWith(AUTOMATION_CHAT_SESSION_PREFIX) || !deps.requestChatInput) {
+        return refuse();
       }
       const reason = args.reason?.trim() || "drive this display with real pointer and keyboard input";
       deps.emit({ type: "lease-requested", laneId, chatSessionId, reason: args.reason?.trim() ?? null });
@@ -140,7 +145,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
           laneId,
           error: error instanceof Error ? error.message : String(error),
         });
-        return { granted: false, code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, lease: null };
+        return refuse();
       }
       const answer = [
         ...(response.answers?.mac_desktop_input_lease ?? []),
@@ -152,7 +157,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
         || answer.includes("don't allow")
         || answer.includes("do not allow");
       if (denied || (!answer.includes("allow") && response.decision !== "accept")) {
-        return { granted: false, code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, lease: null };
+        return refuse();
       }
       deps.leases.approveChat(laneId, chatSessionId);
       return grantNow();

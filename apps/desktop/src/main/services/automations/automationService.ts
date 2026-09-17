@@ -37,6 +37,7 @@ import type {
   RunAdeActionConfig,
 } from "../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
+import { AUTOMATION_CHAT_SESSION_PREFIX } from "../../../shared/types/macDesktop";
 import { stripHostAuthoredMessageProvenance } from "../chat/spawnMissionOwnership";
 import type { Logger } from "../logging/logger";
 import {
@@ -677,7 +678,7 @@ export function scopeAutomationAdeActionArgs(domain: string, resolvedArgs: unkno
     if (!trimmedRuleId) {
       throw new Error("scopeAutomationAdeActionArgs requires a rule id to scope mac_desktop args.");
     }
-    const syntheticSessionId = `automation:${trimmedRuleId}`;
+    const syntheticSessionId = `${AUTOMATION_CHAT_SESSION_PREFIX}${trimmedRuleId}`;
     for (const candidate of candidates) {
       if (!isRecord(candidate)) continue;
       delete candidate.controllerId;

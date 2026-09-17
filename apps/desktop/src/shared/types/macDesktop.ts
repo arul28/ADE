@@ -826,6 +826,13 @@ export const MAC_DESKTOP_STREAM_PATH = "/mac-desktop-video";
 /** Proof records made by this feature. */
 export const MAC_DESKTOP_PROOF_BACKEND_NAME = "ade-mac-desktop";
 
+/**
+ * Prefix of the synthetic chat session id an automation rule acts under.
+ * Minted by the automation runner and recognised by the lease flow, which
+ * refuses to show a card to a holder that is not a chat.
+ */
+export const AUTOMATION_CHAT_SESSION_PREFIX = "automation:";
+
 export function macDesktopDisplayName(laneName: string | null | undefined): string {
   const trimmed = laneName?.trim();
   return trimmed?.length ? `ADE · ${trimmed}` : "ADE lane";
