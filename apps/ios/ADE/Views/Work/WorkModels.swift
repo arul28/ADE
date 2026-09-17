@@ -483,6 +483,21 @@ struct WorkActiveSendCapability: Equatable {
   /// the staged-message strip can offer as buttons.
   var atomicDispatchModes: [WorkActiveSendMode] { modes.filter { $0 != .queue } }
 
+  /// Drops `.inline` for a Cursor run that executes in cloud.
+  ///
+  /// `Run.steer()` is a local-run API: a cloud run implements it and refuses
+  /// every call, so offering "Send during turn" there names an action the host
+  /// will not perform. The desktop pane withholds the same handler for the same
+  /// reason; this is the mobile half of that rule.
+  func withholdingInlineIfNeeded(runsInCloud: Bool, provider: String) -> WorkActiveSendCapability {
+    guard runsInCloud, providerFamilyKey(provider) == "cursor", modes.contains(.inline) else { return self }
+    return WorkActiveSendCapability(
+      modes: modes.filter { $0 != .inline },
+      agentLabel: agentLabel,
+      interruptContinues: interruptContinues
+    )
+  }
+
   static func forProvider(_ provider: String) -> WorkActiveSendCapability {
     // Normalized through the same family collapse the rest of Work uses, so a
     // session labelled "claude-code" or "cursor-agent" is not silently demoted
@@ -497,13 +512,10 @@ struct WorkActiveSendCapability: Equatable {
       // `interruptContinues` stays true: its interrupt still cancels the run and
       // resends on the same thread, which Claude's does not.
       //
-      // Known difference from desktop: a Cursor CLOUD run refuses every steer,
-      // and the desktop pane withholds the inline handler for one. This model
-      // keys off the provider alone because the iOS session carries no
-      // `cursorRuntime`, so a cloud Cursor chat still offers `.inline` here. The
-      // host answers with a queued message plus a notice saying so, which is
-      // honest but one tap longer than it needs to be. Add the runtime to the
-      // iOS session and gate it here to close the gap.
+      // This arm is provider-keyed, matching desktop's table. The cloud
+      // carve-out is a SESSION fact, so it lives in
+      // `withholdingInlineIfNeeded` and is applied by the caller that knows the
+      // session.
       return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Cursor", interruptContinues: true)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway

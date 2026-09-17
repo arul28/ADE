@@ -215,6 +215,20 @@ func workChatErrorIndicatesActiveTurn(_ error: Error) -> Bool {
     || message.contains("already active")
 }
 
+/// True when the host refused the requested `dispatchMode` outright.
+///
+/// A paired host older than this client advertises `chat.dispatchSteer` but
+/// still rejects Cursor's `"inline"`, because the accepted modes come from its
+/// own copy of `ACTIVE_TURN_DISPATCH_MODES`. The capability gate cannot see
+/// that — it only knows whether the ACTION exists — so the send throws before
+/// anything is queued and the two-step fallback, which only runs on a queued
+/// reply, never gets a chance. Retrying once without the mode stages the
+/// message instead of losing it.
+func workChatErrorIndicatesUnsupportedDispatchMode(_ error: Error) -> Bool {
+  let message = (error as NSError).localizedDescription.lowercased()
+  return message.contains("active-turn dispatch mode")
+}
+
 func workTranscriptEntryIdentity(_ entry: AgentChatTranscriptEntry) -> String {
   [
     entry.messageId ?? "",

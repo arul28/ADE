@@ -12129,7 +12129,9 @@ export function AgentChatPane({
   ]);
 
   const handleCursorCloudServiceTierChange = useCallback((tier: CursorCloudServiceTier | null) => {
-    if (!cursorCloudMode && selectedSession?.cursorRuntime !== "cloud") return;
+    // The derived value, not the raw field: a session promoted before
+    // `cursorRuntime` existed carries only `cursorCloudAgentId`.
+    if (!cursorCloudMode && cursorRuntime !== "cloud") return;
     setCursorCloudServiceTier(tier);
     setFastModeState(tier === "fast");
     if (!selectedSessionId) {

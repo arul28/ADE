@@ -135,6 +135,21 @@ describe("Cursor SDK event mapper", () => {
       expect(events[1]).toMatchObject({ steps: [{ status: "failed" }] });
     });
 
+    it("keeps a failed call as a failed tool result rather than a plan", () => {
+      // `result.value.todos` is absent on an error, so without this the `args`
+      // fallback would render the list the model ASKED for as a recorded plan
+      // and drop the failure row.
+      const events = mapCursorSdkMessageToChatEvents({
+        ...completedCall,
+        status: "error",
+        result: { status: "error", error: "todo write failed" },
+      }, mapperMeta());
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: "tool_result", status: "failed", itemId: "tool_8711b80d" });
+      expect(events.some((event) => event.type === "plan")).toBe(false);
+      expect(events.some((event) => event.type === "todo_update")).toBe(false);
+    });
+
     it("emits nothing when the list is empty", () => {
       expect(mapCursorSdkMessageToChatEvents({
         ...completedCall,

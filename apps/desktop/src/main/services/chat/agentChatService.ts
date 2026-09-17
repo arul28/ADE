@@ -5944,6 +5944,17 @@ type CursorSdkRecycleReason = "silent_run" | "transport_error" | "stale_token";
 const settledSteerIds = new WeakMap<ManagedChatSession, Set<string>>();
 
 /**
+ * True while an explicit dispatch owns this staged row.
+ *
+ * Only Claude and Cursor track in-flight dispatches, and only Cursor holds the
+ * row in `pendingSteers` across a network await — which is the window where an
+ * edit or a cancel would contradict what the agent already received.
+ */
+function isSteerDispatchInFlight(runtime: ChatRuntime, steerId: string): boolean {
+  return "dispatchingSteerIds" in runtime && runtime.dispatchingSteerIds.has(steerId);
+}
+
+/**
  * Records `steerId` as settled and reports whether this caller is the first to
  * do so. Only the first caller should emit the notice.
  */
@@ -46486,11 +46497,10 @@ export function createAgentChatService(args: {
       // Both runtimes that track in-flight dispatches splice the row out of the
       // queue before the dispatch completes, so without this the user would be
       // told the message is "no longer queued" while it is in fact being sent.
-      if (
-        requireQueued
-        && (runtime.kind === "claude" || runtime.kind === "cursor")
-        && runtime.dispatchingSteerIds.has(steerId)
-      ) {
+      // Not gated on `requireQueued`: the desktop Remove action omits it, and a
+      // cancel that reports success for a message already on its way is wrong
+      // whichever caller asked for it.
+      if (isSteerDispatchInFlight(runtime, steerId)) {
         throw new Error("This message is already being dispatched.");
       }
       const idx = queue.findIndex((s) => s.steerId === steerId);
@@ -46546,6 +46556,12 @@ export function createAgentChatService(args: {
 
     const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
     if (idx === -1) throw new Error("This message is no longer queued.");
+    // An inline dispatch holds the row in `pendingSteers` across the SDK await
+    // and sends the text it read at call time. Editing it mid-flight would make
+    // the transcript show text the agent never received.
+    if (isSteerDispatchInFlight(runtime, steerId)) {
+      throw new Error("This message is already being dispatched.");
+    }
 
     if (!trimmed.length) {
       const [removed] = runtime.pendingSteers.splice(idx, 1);

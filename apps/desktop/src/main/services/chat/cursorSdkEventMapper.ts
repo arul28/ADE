@@ -338,6 +338,20 @@ export function mapCursorSdkMessageToChatEvents(
         // rendering of this call, and showing both puts the same list on screen
         // twice.
         if (status === "running") return [];
+        // A failed call is a failure, not a plan. `result.value.todos` is absent
+        // on an error, so the `args` fallback would otherwise render the list
+        // the model ASKED for as though the tool had recorded it — and drop the
+        // failure row entirely.
+        if (status === "error") {
+          return [tagRuntime({
+            type: "tool_result" as const,
+            tool,
+            result,
+            itemId: callId,
+            turnId,
+            status: "failed" as const,
+          }, runtime)];
+        }
         const todos = cursorTodoItems(args, result);
         if (!todos.length) return [];
         return [

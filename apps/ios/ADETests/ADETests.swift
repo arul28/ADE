@@ -14083,6 +14083,24 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(providerSupportsLiveRedirect("codex"))
   }
 
+  /// A host older than this client advertises `chat.dispatchSteer` but still
+  /// rejects Cursor's `"inline"`. The send must stage rather than fail, so the
+  /// predicate that routes it has to match the host's real rejection sentence.
+  func testUnsupportedDispatchModeErrorIsRecognisedFromTheHostWording() {
+    let hostSentence = "Cursor sessions support only the \"interrupt\" active-turn dispatch mode."
+    XCTAssertTrue(workChatErrorIndicatesUnsupportedDispatchMode(
+      NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: hostSentence])
+    ))
+    let queueOnlySentence = "Droid sessions don't support the \"inline\" active-turn dispatch mode; it can only be staged for the next turn."
+    XCTAssertTrue(workChatErrorIndicatesUnsupportedDispatchMode(
+      NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: queueOnlySentence])
+    ))
+    // An unrelated failure must not be swallowed into the staging fallback.
+    XCTAssertFalse(workChatErrorIndicatesUnsupportedDispatchMode(
+      NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Session is disposed."])
+    ))
+  }
+
   func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {
     XCTAssertEqual(
       WorkChatStopCapability.modes,

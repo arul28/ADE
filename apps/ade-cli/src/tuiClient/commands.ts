@@ -337,10 +337,6 @@ export function paletteCommands(
   const normalizedQuery = query.trim().toLowerCase();
   const queryToken = normalizedQuery.replace(/^\//, "");
   const builtins = BUILTIN_COMMANDS
-    // `inlineSteerWithheld` is a session fact the provider cannot carry: a
-    // Cursor CLOUD run refuses every inline steer. Without it the palette
-    // offers `/steer send` on a chat where the hint line already hides it.
-    .filter((command) => !(options.inlineSteerWithheld && command.name === "/steer send"))
     .filter((command) => !command.providers?.length || (options.provider ? command.providers.includes(options.provider) : true))
     .map((command) => ({
       name: command.name,
@@ -370,7 +366,13 @@ export function paletteCommands(
     if (ADE_OWNED_CLAUDE_PARITY_COMMANDS.has(key)) continue;
     byName.set(key, command);
   }
-  const merged = [...byName.values()];
+  // Applied to the MERGED list, not just the builtins: a user command of the
+  // same name replaces the builtin in `byName`, so filtering earlier would let
+  // it put the row back. `inlineSteerWithheld` is a session fact the provider
+  // cannot carry — a Cursor CLOUD run refuses every inline steer, and without
+  // this the palette offers `/steer send` on a chat whose hint line hides it.
+  const merged = [...byName.values()]
+    .filter((command) => !(options.inlineSteerWithheld && slashCommandKey(command.name) === slashCommandKey("/steer send")));
   const queryTerms = parseWorkSearchQuery(queryToken).terms;
   const filtered = queryTerms.length === 0
       ? merged

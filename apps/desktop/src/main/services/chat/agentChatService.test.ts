@@ -23451,6 +23451,43 @@ describe("createAgentChatService", () => {
           .toContain("Stranded without the flush.");
       });
 
+      it("refuses to edit or cancel a row while its dispatch is in flight", async () => {
+        // The inline dispatch keeps the row in `pendingSteers` across the SDK
+        // await and sends the text it read at call time. An edit landing in that
+        // window would put text in the transcript the agent never received, and
+        // a cancel would clear the chip for a message already on its way.
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Do not mutate me." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        // `onCursorSteer` runs INSIDE the mocked steer, which is exactly the
+        // window the guard protects.
+        const attempts: Promise<unknown>[] = [];
+        mockState.onCursorSteer = () => {
+          attempts.push(
+            service.editSteer({ sessionId: session.id, steerId: staged.steerId, text: "edited" })
+              .then(() => "edit-allowed", (error: Error) => error.message),
+            service.cancelSteer({ sessionId: session.id, steerId: staged.steerId })
+              .then(() => "cancel-allowed", (error: Error) => error.message),
+          );
+        };
+
+        await service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+        const outcomes = await Promise.all(attempts);
+        expect(outcomes).toHaveLength(2);
+        for (const outcome of outcomes) {
+          expect(String(outcome)).toMatch(/already being dispatched/);
+        }
+        // The delivered text is the text that was staged, not the attempted edit.
+        expect(mockState.cursorSdkSteerCalls).toEqual(["Do not mutate me."]);
+      });
+
       it("promotes an already staged row into the live run", async () => {
         const events: AgentChatEventEnvelope[] = [];
         const { service, session } = await startStalledCursorTurn(events);

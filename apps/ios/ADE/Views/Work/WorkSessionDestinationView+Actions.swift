@@ -96,12 +96,24 @@ extension WorkSessionDestinationView {
     do {
       let delivery: SyncChatMessageDelivery
       if useSteer {
-        delivery = try await syncService.steerChatSession(
-          sessionId: sessionId,
-          text: text,
-          attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-          dispatchMode: atomicDispatchMode
-        )
+        do {
+          delivery = try await syncService.steerChatSession(
+            sessionId: sessionId,
+            text: text,
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+            dispatchMode: atomicDispatchMode
+          )
+        } catch where workChatErrorIndicatesUnsupportedDispatchMode(error) {
+          // An older host rejects a mode this client offers. Stage the message
+          // rather than failing the send outright.
+          updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+          delivery = try await syncService.steerChatSession(
+            sessionId: sessionId,
+            text: text,
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+            dispatchMode: nil
+          )
+        }
       } else {
         do {
           delivery = try await syncService.sendChatMessage(

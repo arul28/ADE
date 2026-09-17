@@ -447,6 +447,37 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
     }
   }
 
+  /// A Cursor CLOUD run refuses every inline steer, so the mobile capability
+  /// must withhold that mode exactly as the desktop pane withholds its handler.
+  /// Otherwise the primary button names an action the host will not perform.
+  func testCursorCloudWithholdsInlineFromTheSendCapability() {
+    let local = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: false)
+    XCTAssertEqual(local.modes, [.inline, .queue, .interrupt])
+    XCTAssertEqual(local.defaultMode, .inline)
+
+    let cloud = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: false, runsInCloud: true)
+    XCTAssertEqual(cloud.modes, [.queue, .interrupt])
+    // The primary button now names what the host will actually do.
+    XCTAssertEqual(cloud.defaultMode, .queue)
+    // Interrupt works on cloud and must survive the withholding.
+    XCTAssertTrue(cloud.modes.contains(.interrupt))
+    XCTAssertTrue(cloud.interruptContinues)
+
+    // Only Cursor is affected — the rule is about `Run.steer`, not about cloud.
+    XCTAssertEqual(
+      workChatActiveSendCapability(provider: "claude", liveRedirectOnly: false, runsInCloud: true).modes,
+      [.inline, .queue, .interrupt]
+    )
+  }
+
+  /// On the CTO surface queue is filtered out, so a cloud Cursor thread is left
+  /// with interrupt alone rather than an empty menu.
+  func testCursorCloudCtoSurfaceFallsBackToInterrupt() {
+    let cloudCto = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true, runsInCloud: true)
+    XCTAssertEqual(cloudCto.modes, [.interrupt])
+    XCTAssertEqual(cloudCto.defaultMode, .interrupt)
+  }
+
   /// The composer hides the picker for a single-mode provider, so the CTO on
   /// Codex gets a plain send button rather than a one-item menu, while Claude
   /// and Cursor each keep a real two-way choice.

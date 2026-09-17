@@ -5546,7 +5546,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
     }
     return [...localItems, ...searchItems];
-  }, [activeCommandProvider, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, paletteSearchResults, slashCommands]);
+  }, [activeCommandProvider, activeSession, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, paletteSearchResults, slashCommands]);
   useEffect(() => {
     if (!commandPaletteOpen) return;
     setCommandPaletteIndex((index) => Math.max(0, Math.min(index, Math.max(0, commandPaletteItems.length - 1))));
@@ -18248,6 +18248,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               userCommands={slashCommands}
               selectedIndex={slashIndex}
               provider={activeCommandProvider}
+              inlineSteerWithheld={cursorSessionRunsInCloud(activeSession)}
               width={paletteOverlayWidth}
               maxRows={slashPaletteHeightBudget}
             />
