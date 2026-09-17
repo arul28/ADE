@@ -233,13 +233,17 @@ describe("account settings store", () => {
     expect(makeStore().list()).toHaveLength(0);
   });
 
-  it("A1: rejects a mutation after discarding a persisted foreign cache", () => {
+  it("accepts the new owner's first write after discarding a persisted foreign cache", () => {
+    // The discard bumps the epoch to invalidate work captured before it. That
+    // bump must not reject the very write that triggered the read: the first
+    // API-key or secret write after an account switch has no retry path.
     makeStore().set("all", "appearance.theme", "dark");
     accountUserId = "user_grace";
     const reopened = makeStore();
 
-    expect(reopened.set("all", "appearance.theme", "light")).toBe(false);
-    expect(reopened.get("all", "appearance.theme")).toBeUndefined();
+    expect(reopened.set("all", "appearance.theme", "light")).toBe(true);
+    expect(reopened.get("all", "appearance.theme")).toBe("light");
+    expect(reopened.list().map((row) => row.value)).toEqual(["light"]);
   });
 
   it("does nothing at all when signed out", async () => {

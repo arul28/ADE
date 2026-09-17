@@ -298,16 +298,22 @@ export function createAccountCacheStore<
     ) => void,
   ): boolean {
     const ownerAtEntry = config.getAccountUserId();
-    const epochAtEntry = epoch;
     if (!ownerAtEntry) {
       dropMutation("signed_out");
       return false;
     }
 
+    // Read first, then take the epoch. `readCache()` bumps the epoch itself
+    // when it discards a cache persisted by another account, and that bump is
+    // meant to invalidate work captured *before* the discard — not this
+    // mutation, which is the first legitimate write of the new owner. Taking
+    // the epoch after the read keeps the guard for a collaborator's reset
+    // during the mutator without rejecting that first write.
     const current = readCache();
+    const epochAtEntry = epoch;
     const ownerAfterRead = config.getAccountUserId();
-    if (epoch !== epochAtEntry || ownerAfterRead !== ownerAtEntry || current.accountUserId !== ownerAtEntry) {
-      dropMutation(epoch !== epochAtEntry ? "epoch_changed" : "owner_changed");
+    if (ownerAfterRead !== ownerAtEntry || current.accountUserId !== ownerAtEntry) {
+      dropMutation("owner_changed");
       return false;
     }
 
