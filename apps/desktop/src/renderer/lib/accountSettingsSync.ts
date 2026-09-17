@@ -306,13 +306,13 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     return seen;
   };
 
-  // Existing values are not dirty edits. Hydrate still uploads any key the
-  // account has never stored, so a first sign-in does not leave this machine's
-  // preferences stranded locally.
+  // Existing values are not dirty edits. After a successful sync, hydrate
+  // still uploads any key the account has never stored, so a first sign-in
+  // does not leave this machine's preferences stranded locally.
   const lastSeen = snapshot();
 
   /** Pull the account's rows and apply the ones that are newer than ours. */
-  const hydrate = async (): Promise<void> => {
+  const hydrate = async (hydrateOptions: { seedMissing?: boolean } = {}): Promise<void> => {
     const api = options.getApi();
     const userIdAtStart = resolveAccountUserId();
     const generationAtStart = identityGeneration;
@@ -356,10 +356,12 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       persistStamps();
     }
     if (!isCurrentIdentity()) return;
-    // First sign-in of an empty account must still pick up this machine's
-    // existing preferences. lastSeen starts as the current snapshot so a
-    // subscribe does not treat those values as edits, and hydrate only
-    // applies remote rows, so without this pass they would never leave.
+    // Seed only after a successful sync. A cold cache lists as empty even
+    // when the account already has rows; uploading local defaults then
+    // last-writer-wins over those rows. Once sync has merged the Worker,
+    // an empty list is a genuinely empty account and this machine's
+    // existing preferences should follow the user.
+    if (!hydrateOptions.seedMissing) return;
     const localState = options.store.getState();
     for (const entry of settings) {
       const scopeKey = scopeKeyFor(entry);
@@ -368,6 +370,32 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       if (seenRemoteKeys.has(key) || stamps[key]) continue;
       push(entry, entry.read(localState));
     }
+  };
+
+  const pullThenHydrate = async (): Promise<void> => {
+    const api = options.getApi();
+    const userIdAtStart = resolveAccountUserId();
+    const generationAtStart = identityGeneration;
+    if (!api || !userIdAtStart || stopped || settings.length === 0) return;
+    let synced = false;
+    try {
+      const result = await api.sync();
+      synced = result.ok === true;
+    } catch {
+      synced = false;
+    }
+    if (stopped) return;
+    // Identity changed while the Worker merge was in flight. The new
+    // owner's pullThenHydrate is already running; starting hydrate here
+    // would capture that owner and apply the previous account's rows.
+    if (
+      identityGeneration !== generationAtStart
+      || resolveAccountUserId() !== userIdAtStart
+      || accountUserId !== userIdAtStart
+    ) {
+      return;
+    }
+    await hydrate({ seedMissing: synced });
   };
 
   function markDirtyKey(key: string): void {
@@ -454,23 +482,17 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     lastSeen.clear();
     for (const [key, value] of snapshot()) lastSeen.set(key, value);
     flushDirty();
-    void hydrate();
+    void pullThenHydrate();
   });
 
-  void hydrate();
+  void pullThenHydrate();
 
   const timer = schedule(() => {
-    const api = options.getApi();
-    if (!api || !options.isSignedIn()) return;
-    // `sync` flushes this machine's queue and takes what changed; `list` then
-    // reads the merged result out of the local cache, so the poll costs one
-    // round trip to the Worker rather than one per key.
+    if (!options.getApi() || !options.isSignedIn()) return;
+    // Same sync-then-hydrate path as first sign-in, including the identity
+    // abort. Seed still happens only when that merge succeeded.
     flushDirty();
-    void api
-      .sync()
-      .catch(() => null)
-      .then(() => hydrate())
-      .catch(() => null);
+    void pullThenHydrate();
   }, options.pollMs ?? ACCOUNT_SETTINGS_POLL_MS);
 
   return () => {

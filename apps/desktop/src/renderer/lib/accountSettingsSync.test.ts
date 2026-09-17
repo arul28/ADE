@@ -197,6 +197,49 @@ describe("accountSettingsSync (renderer)", () => {
     stop();
   });
 
+  it("does not upload local defaults before the account cache has synced", async () => {
+    const { store } = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const api = createApi();
+    api.sync.mockResolvedValue({
+      ok: false as const,
+      unavailable: true as const,
+      message: "offline",
+    });
+    const stop = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+    );
+    await settle();
+    expect(api.set).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("seeds missing local preferences once a later poll syncs an empty account", async () => {
+    const { store } = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const api = createApi();
+    api.sync
+      .mockResolvedValueOnce({
+        ok: false as const,
+        unavailable: true as const,
+        message: "offline",
+      })
+      .mockResolvedValue({ ok: true as const, value: null });
+    const stop = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+    );
+    await settle();
+    expect(api.set).not.toHaveBeenCalled();
+
+    timers[0]?.();
+    await settle();
+    expect(api.set).toHaveBeenCalledWith({
+      scope: "all",
+      key: "theme",
+      value: "dark",
+      expectedAccountUserId: "__signed-in__",
+    });
+    stop();
+  });
+
   it("A1: writes a local change with the expected account owner", async () => {
     const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
     const api = createApi();
@@ -321,7 +364,7 @@ describe("accountSettingsSync (renderer)", () => {
     rows.push(row("chatFontSizePx", 18, "2030-02-01T00:00:00.000Z"));
     timers[0]?.();
     await settle();
-    expect(api.sync).toHaveBeenCalledTimes(1);
+    expect(api.sync).toHaveBeenCalledTimes(2);
     expect(state.chatFontSizePx).toBe(18);
     stop();
   });
@@ -406,8 +449,15 @@ describe("accountSettingsSync (renderer)", () => {
     const accountA = new Promise<AccountSettingRow[]>((resolve) => {
       resolveAccountA = resolve;
     });
+    let markListed = (): void => {};
+    const listed = new Promise<void>((resolve) => {
+      markListed = resolve;
+    });
     api.list
-      .mockImplementationOnce(async () => ({ ok: true as const, value: await accountA }))
+      .mockImplementationOnce(async () => {
+        markListed();
+        return { ok: true as const, value: await accountA };
+      })
       .mockResolvedValueOnce({ ok: true as const, value: [row("theme", "from-account-b", "2030-01-01T00:00:00.000Z")] });
     const notifiers: Array<() => void> = [];
     const stop = startAccountSettingsSync(
@@ -423,6 +473,7 @@ describe("accountSettingsSync (renderer)", () => {
       }),
     );
 
+    await listed;
     userId = "account-b";
     notifiers[0]?.();
     resolveAccountA([row("theme", "from-account-a", "2030-02-01T00:00:00.000Z")]);

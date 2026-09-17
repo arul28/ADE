@@ -85,8 +85,10 @@ Main process:
   even when a later delete cannot be sent. A cache write that cannot hit
   disk rolls the in-memory mutation back and reports failure rather than
   pretending the value is saved. Renderer preferences that already exist
-  locally are uploaded on first hydrate when the account has no row for
-  them.
+  locally are uploaded after a successful Worker sync when the account still
+  has no row for them. A cold empty cache does not seed, because that cache
+  has not merged the Worker yet. Vault writes that fail while the brain is
+  down retry a few times on an unref'd timer.
 - `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
   `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
   receipt-backed sign-in migration and hydration for provider API keys, Linear
