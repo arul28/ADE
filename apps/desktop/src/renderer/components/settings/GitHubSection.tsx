@@ -1,7 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
-  GithubLogo,
   CheckCircle,
   Warning,
   ArrowsClockwise,
@@ -31,6 +30,12 @@ import {
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
+import {
+  SettingsManagerPage,
+  SettingsManagerRow,
+  SettingsManagerTable,
+} from "./primitives/SettingsManagerPage";
+import { SettingsTextField } from "./primitives";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -138,7 +143,6 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
-  const [tokenFocused, setTokenFocused] = useState(false);
   const [showPatSetup, setShowPatSetup] = useState(false);
   const [transcriptGistsEnabled, setTranscriptGistsEnabled] = useState(false);
   // The App row in the ladder below reports why the App credential is idle, and
@@ -343,29 +347,6 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     borderRadius: 0,
   };
 
-  const inputStyle: CSSProperties = {
-    height: 40,
-    background: COLORS.recessedBg,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: COLORS.border,
-    borderRadius: 8,
-    padding: "0 14px",
-    fontSize: 12,
-    fontFamily: MONO_FONT,
-    color: COLORS.textPrimary,
-    outline: "none",
-    width: "100%",
-    transition: "border-color 150ms ease, box-shadow 150ms ease",
-  };
-
-  const inputFocusedStyle: CSSProperties = tokenFocused
-    ? {
-        borderColor: COLORS.accent,
-        boxShadow: `0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent)`,
-      }
-    : {};
-
   const scopeRowStyle = (present: boolean): CSSProperties => ({
     display: "flex",
     alignItems: "center",
@@ -405,13 +386,12 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     padding: "0 10px",
   };
 
-  const summaryCell = (label: string, value: string | null) => (
-    <div>
-      <div style={LABEL_STYLE}>{label}</div>
-      <div style={{ marginTop: 4, fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
-        {value ?? "N/A"}
-      </div>
-    </div>
+  // The summary row keeps its mono face and its "N/A" fallback; only the
+  // surrounding grid became a manager table.
+  const summaryCell = (value: string | null) => (
+    <span style={{ fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary, minWidth: 0, overflowWrap: "anywhere" }}>
+      {value ?? "N/A"}
+    </span>
   );
 
   return (
@@ -419,55 +399,50 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
       {saveNotice ? <div style={noticeStyle}>{saveNotice}</div> : null}
       {actionError ? <div style={errorStyle}>{actionError}</div> : null}
 
-      <div style={cardStyle({
-        borderColor: isConnected ? "color-mix(in srgb, var(--color-success) 30%, transparent)" : tokenAuthenticated ? "color-mix(in srgb, var(--color-warning) 30%, transparent)" : undefined,
-      })}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: embedded ? "flex-end" : "space-between",
-            marginBottom: 20,
-          }}
-        >
-          {!embedded ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <GithubLogo size={28} weight="fill" style={{ color: statusColor }} />
-              <span style={{ fontSize: 16, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                GitHub connection
-              </span>
-            </div>
-          ) : null}
-          {githubStatus ? <span style={inlineBadge(statusColor)}>{statusLabel}</span> : null}
-        </div>
-
+      <SettingsManagerPage
+        anchor="github-connection"
+        title="GitHub connection"
+        description={
+          embedded
+            ? undefined
+            : "Authenticate with GitHub CLI or a personal access token, and install ADE for GitHub for webhook-backed PR updates."
+        }
+        toolbar={
+          <>
+            {githubStatus ? <span style={inlineBadge(statusColor)}>{statusLabel}</span> : null}
+            <button type="button" style={outlineButton()} disabled={githubBusy} onClick={handleRefreshStatus}>
+              <ArrowsClockwise size={12} weight="bold" /> Refresh status
+            </button>
+            {githubStatus?.patTokenStored ? (
+              <button type="button" style={outlineButton()} disabled={githubBusy} onClick={handleClearToken}>
+                <LinkBreak size={12} weight="bold" /> Clear PAT
+              </button>
+            ) : null}
+            <button type="button" style={outlineButton()} disabled={githubBusy} onClick={() => setShowPatSetup((value) => !value)}>
+              <Key size={12} weight="bold" /> {showPatSetup ? "Hide PAT setup" : githubStatus?.patTokenStored ? "Replace PAT" : "Use PAT instead"}
+            </button>
+          </>
+        }
+      >
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div
-            style={{
-              background: COLORS.recessedBg,
-              padding: 16,
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-              gap: 12,
-              borderRadius: 0,
-            }}
+          <SettingsManagerTable
+            columns={[{ label: "User" }, { label: "Repository" }, { label: "Reads with" }, { label: "Writes with" }]}
+            minWidth={560}
           >
-            {summaryCell("USER", githubStatus?.userLogin ?? null)}
-            {summaryCell("REPOSITORY", githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : null)}
-            {/* While GitHub is down ADE can't resolve which credential would
-                win, so it reports the honest "Unknown" rather than the
-                false-negative "Not connected". */}
-            {summaryCell(
-              "READS WITH",
-              outage && !activeReadCredential ? "Unknown" : readsWithLabel,
-            )}
-            {summaryCell(
-              "WRITES WITH",
-              outage && effectiveWriteAuthSource === "none"
-                ? "Unknown"
-                : credentialSourceLabel(effectiveWriteAuthSource),
-            )}
-          </div>
+            <SettingsManagerRow>
+              {summaryCell(githubStatus?.userLogin ?? null)}
+              {summaryCell(githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : null)}
+              {/* While GitHub is down ADE can't resolve which credential would
+                  win, so it reports the honest "Unknown" rather than the
+                  false-negative "Not connected". */}
+              {summaryCell(outage && !activeReadCredential ? "Unknown" : readsWithLabel)}
+              {summaryCell(
+                outage && effectiveWriteAuthSource === "none"
+                  ? "Unknown"
+                  : credentialSourceLabel(effectiveWriteAuthSource),
+              )}
+            </SettingsManagerRow>
+          </SettingsManagerTable>
 
           {credentialStoreUnreadable ? (
             <div style={{
@@ -515,35 +490,33 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
 
           {credentialStates.length > 0 ? (
             <div>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>CONNECTION ORDER</div>
-              <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
+              <SettingsManagerTable
+                columns={[
+                  { label: "Order", width: "56px" },
+                  { label: "Connection" },
+                  { label: "Capabilities" },
+                  { label: "Status", align: "right" },
+                ]}
+                minWidth={480}
+              >
                 {credentialStates.map((credential, index) => {
                   const badge = credentialStateBadge(credential, outage != null, appAccount);
                   return (
-                    <div
+                    <SettingsManagerRow
                       key={credential.source}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "minmax(140px, 1fr) auto",
-                        alignItems: "center",
-                        gap: 12,
-                        padding: "10px 12px",
-                        borderTop: index === 0 ? "none" : `1px solid ${COLORS.border}`,
-                      }}
+                      actions={<span style={inlineBadge(badge.color)}>{badge.label}</span>}
                     >
-                      <div>
-                        <div style={{ fontSize: 12, fontWeight: 650, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                          {index + 1}. {credentialSourceLabel(credential.source)}
-                        </div>
-                        <div style={{ marginTop: 2, fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                          {credential.capabilities.length === 1 ? "Read-only" : "Read and write"}
-                        </div>
-                      </div>
-                      <span style={inlineBadge(badge.color)}>{badge.label}</span>
-                    </div>
+                      <span style={{ fontFamily: SANS_FONT, color: COLORS.textMuted }}>{index + 1}</span>
+                      <span style={{ fontSize: 12, fontWeight: 650, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                        {credentialSourceLabel(credential.source)}
+                      </span>
+                      <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                        {credential.capabilities.length === 1 ? "Read-only" : "Read and write"}
+                      </span>
+                    </SettingsManagerRow>
                   );
                 })}
-              </div>
+              </SettingsManagerTable>
               <div style={{ marginTop: 7, fontSize: 10, lineHeight: "16px", fontFamily: SANS_FONT, color: COLORS.textMuted }}>
                 ADE uses the first working connection. Read requests can use the GitHub App; write actions skip it and use the first available write connection.
               </div>
@@ -680,22 +653,8 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               </div>
             </div>
           ) : null}
-
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            <button type="button" style={outlineButton()} disabled={githubBusy} onClick={handleRefreshStatus}>
-              <ArrowsClockwise size={12} weight="bold" /> Refresh status
-            </button>
-            {githubStatus?.patTokenStored ? (
-              <button type="button" style={outlineButton()} disabled={githubBusy} onClick={handleClearToken}>
-                <LinkBreak size={12} weight="bold" /> Clear PAT
-              </button>
-            ) : null}
-            <button type="button" style={outlineButton()} disabled={githubBusy} onClick={() => setShowPatSetup((value) => !value)}>
-              <Key size={12} weight="bold" /> {showPatSetup ? "Hide PAT setup" : githubStatus?.patTokenStored ? "Replace PAT" : "Use PAT instead"}
-            </button>
-          </div>
         </div>
-      </div>
+      </SettingsManagerPage>
 
       <GitHubAppInstallPanel />
 
@@ -788,14 +747,12 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
 
           <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <span style={LABEL_STYLE}>PERSONAL ACCESS TOKEN</span>
-            <input
+            <SettingsTextField
               type="password"
               value={githubTokenDraft}
-              onChange={(event) => setGithubTokenDraft(event.target.value)}
+              onChange={setGithubTokenDraft}
               placeholder="ghp_... or github_pat_..."
-              style={{ ...inputStyle, ...inputFocusedStyle }}
-              onFocus={() => setTokenFocused(true)}
-              onBlur={() => setTokenFocused(false)}
+              mono
             />
             {githubTokenDraft.trim() ? (
               <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>

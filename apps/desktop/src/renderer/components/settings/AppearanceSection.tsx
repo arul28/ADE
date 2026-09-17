@@ -25,8 +25,6 @@ import {
   TERMINAL_SCROLLBACK_OPTIONS,
 } from "./terminalOptions";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
-import { ChatAppearancePreview } from "./ChatAppearancePreview";
-import { LaunchPromptSection } from "./LaunchPromptSection";
 import {
   SettingsCard,
   SettingsGroup,
@@ -162,24 +160,24 @@ export function ThemeSwatch({
   );
 }
 
-const COPY_POSITION_META: Record<CodeBlockCopyButtonPosition, { label: string; hint: string }> = {
+export const COPY_POSITION_META: Record<CodeBlockCopyButtonPosition, { label: string; hint: string }> = {
   top: { label: "Top", hint: "Pinned to the corner" },
   bottom: { label: "Bottom", hint: "Easier after scrolling" },
   auto: { label: "Auto-float", hint: "Follows the viewport" },
 };
 
-const TRANSCRIPT_DENSITY_LABEL: Record<ChatTranscriptDensity, string> = {
+export const TRANSCRIPT_DENSITY_LABEL: Record<ChatTranscriptDensity, string> = {
   compact: "Compact",
   comfortable: "Comfortable",
   spacious: "Spacious",
 };
 
-const CHAT_CHROME_TINT_LABEL: Record<ChatChromeTint, string> = {
+export const CHAT_CHROME_TINT_LABEL: Record<ChatChromeTint, string> = {
   neutral: "No tint",
   colored: "Colored",
 };
 
-const SHELL_GEOMETRY_LABEL: Record<ChatShellGeometry, string> = {
+export const SHELL_GEOMETRY_LABEL: Record<ChatShellGeometry, string> = {
   soft: "Soft",
   default: "Default",
   sharp: "Sharp",
@@ -192,19 +190,6 @@ export function AppearanceSection() {
   const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
   const setChatFontSizePx = useAppStore((s) => s.setChatFontSizePx);
   const resetThemeAndChatFontDefaults = useAppStore((s) => s.resetThemeAndChatFontDefaults);
-  const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
-  const setChatTranscriptDensity = useAppStore((s) => s.setChatTranscriptDensity);
-  const chatChromeTint = useAppStore((s) => s.chatChromeTint);
-  const setChatChromeTint = useAppStore((s) => s.setChatChromeTint);
-  const chatShellGeometry = useAppStore((s) => s.chatShellGeometry);
-  const setChatShellGeometry = useAppStore((s) => s.setChatShellGeometry);
-  const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
-  const setChatUserMinimapEnabled = useAppStore((s) => s.setChatUserMinimapEnabled);
-  const promptStashButtonEnabled = useRootAppStore((s) => s.promptStashButtonEnabled);
-  const setPromptStashButtonEnabled = useRootAppStore((s) => s.setPromptStashButtonEnabled);
-
-  const codeBlockCopyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
-  const setCodeBlockCopyButtonPosition = useAppStore((s) => s.setCodeBlockCopyButtonPosition);
 
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
@@ -235,139 +220,6 @@ export function AppearanceSection() {
             {THEME_IDS.map((id) => (
               <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
             ))}
-          </div>
-        </SettingsCard>
-      </SettingsGroup>
-
-      <SettingsGroup title="Chat typography">
-        <SettingsCard
-          anchor="chat-font-size"
-          title="Chat font size"
-          description="Sizes the transcript and composer. Not a whole-window zoom."
-          control={
-            <SettingsSlider
-              min={CHAT_FONT_SIZE_MIN_PX}
-              max={CHAT_FONT_SIZE_MAX_PX}
-              value={chatFontSizePx}
-              onChange={setChatFontSizePx}
-              ariaLabel="Chat font size"
-              valueLabel={`${chatFontSizePx}px`}
-            />
-          }
-        />
-        <SettingsCard
-          anchor="transcript-density"
-          title="Transcript density"
-          description="Vertical spacing between messages."
-          control={
-            <SettingsSegmented
-              ariaLabel="Transcript density"
-              value={chatTranscriptDensity}
-              onChange={setChatTranscriptDensity}
-              options={CHAT_TRANSCRIPT_DENSITY_IDS.map((id) => ({
-                value: id,
-                label: TRANSCRIPT_DENSITY_LABEL[id],
-              }))}
-            />
-          }
-        />
-      </SettingsGroup>
-
-      <SettingsGroup title="Chat surface">
-        <SettingsCard
-          anchor="chat-tint"
-          title="Chat tint"
-          description="Colored gives each runtime its own hue in the chat chrome."
-          control={
-            <SettingsSegmented
-              ariaLabel="Chat tint"
-              value={chatChromeTint}
-              onChange={setChatChromeTint}
-              options={CHAT_CHROME_TINT_IDS.map((id) => ({ value: id, label: CHAT_CHROME_TINT_LABEL[id] }))}
-            />
-          }
-        />
-        <SettingsCard
-          anchor="chat-corners"
-          title="Chat shell corners"
-          control={
-            <SettingsSegmented
-              ariaLabel="Chat shell corners"
-              value={chatShellGeometry}
-              onChange={setChatShellGeometry}
-              options={CHAT_SHELL_GEOMETRY_IDS.map((id) => ({ value: id, label: SHELL_GEOMETRY_LABEL[id] }))}
-            />
-          }
-        />
-      </SettingsGroup>
-
-      <SettingsGroup title="Chat details">
-        <SettingsCard
-          anchor="code-block-copy-position"
-          title="Code block copy button"
-          description="Where the copy control sits on a code block."
-          control={
-            <SettingsSegmented
-              ariaLabel="Code block copy button position"
-              value={codeBlockCopyButtonPosition}
-              onChange={setCodeBlockCopyButtonPosition}
-              options={CODE_BLOCK_COPY_POSITION_IDS.map((id) => ({
-                value: id,
-                label: COPY_POSITION_META[id].label,
-                hint: COPY_POSITION_META[id].hint,
-              }))}
-            />
-          }
-        />
-        <SettingsCard
-          anchor="user-message-minimap"
-          title="User message minimap"
-          description="A tick per message you sent, in the chat's left gutter. Hover to preview, click to jump. Mouse only."
-          control={
-            <SettingsToggle
-              label="User message minimap"
-              checked={chatUserMinimapEnabled}
-              onChange={setChatUserMinimapEnabled}
-            />
-          }
-        />
-        <SettingsCard
-          anchor="prompt-stash-button"
-          title="Prompt stash button"
-          description="The bookmark beside the context meter. Cmd/Ctrl+S works either way."
-          control={
-            <SettingsToggle
-              label="Prompt stash button"
-              checked={promptStashButtonEnabled}
-              onChange={setPromptStashButtonEnabled}
-            />
-          }
-        />
-        <LaunchPromptSection />
-        <SettingsCard
-          anchor="appearance-preview"
-          title="Live preview"
-          description="Reflects every choice above."
-          stacked
-        >
-          <div
-            style={{
-              border: `1px solid ${COLORS.borderMuted}`,
-              borderRadius: 10,
-              background: COLORS.recessedBg,
-              padding: 14,
-              overflow: "hidden",
-              maxWidth: "100%",
-            }}
-          >
-            <ChatAppearancePreview
-              theme={theme}
-              chatFontSizePx={chatFontSizePx}
-              transcriptDensity={chatTranscriptDensity}
-              chromeTint={chatChromeTint}
-              shellGeometry={chatShellGeometry}
-              chatUserMinimapEnabled={chatUserMinimapEnabled}
-            />
           </div>
         </SettingsCard>
       </SettingsGroup>

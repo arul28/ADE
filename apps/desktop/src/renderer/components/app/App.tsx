@@ -1,4 +1,5 @@
 import React from "react";
+import { useAccountSettingsSync } from "../../lib/useAccountSettingsSync";
 import {
   BrowserRouter,
   HashRouter,
@@ -1316,6 +1317,11 @@ function BrowserHashRouteBridge() {
 export function App() {
   const theme = useAppStore((s) => s.theme);
   const projectRoot = useAppStore(selectActiveProjectRoot);
+
+  // Account-scoped preferences follow the signed-in account between machines.
+  // Mounted here, once, because it binds the ROOT store: a project-scoped mount
+  // would hydrate one window and leave the next stale.
+  useAccountSettingsSync();
 
   React.useEffect(() => {
     const w = window as Window & { __ADE_GET_DIRTY_FILE_TEXT__?: (p: string) => string | undefined };

@@ -181,6 +181,9 @@ import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/w
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
+import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
+import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
+import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
@@ -325,6 +328,10 @@ export type AdeRuntime = {
   operationService: ReturnType<typeof createOperationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   projectSecretService?: ReturnType<typeof createProjectSecretService> | null;
+  /** Machine-scoped, so null on a `--no-sync` brain. */
+  accountSettingsStore?: AccountSettingsStore | null;
+  /** Machine-scoped, so null on a `--no-sync` brain. */
+  accountVaultStore?: AccountVaultStore | null;
   conflictService: ReturnType<typeof createConflictService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -714,7 +721,6 @@ export async function createAdeRuntime(args: {
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);
-  initApiKeyStore(projectRoot, { credentialStore: new EncryptedFileCredentialStore() });
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
@@ -1018,15 +1024,54 @@ export async function createAdeRuntime(args: {
       db,
       logger,
     });
-    const projectSecretService = createProjectSecretService(projectRoot);
     registerAccountConfigProjectRoot(projectRoot);
     const accountAuthService = getSharedAccountAuthService({
       projectRoots: () => [projectRoot],
       logger,
     });
+    const accountStoreAdeDir = resolveMachineAdeLayout().adeDir;
+    const syncDeviceIdPath = path.join(
+      syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+      "sync-device-id",
+    );
+    const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
+    let projectSecretServiceForAccount: ReturnType<typeof createProjectSecretService> | null = null;
+    let linearCredentialServiceForAccount: ReturnType<typeof createLinearCredentialService> | null = null;
     const getAccountAccessToken = (
       options?: Parameters<typeof getSignedInAccountAccessToken>[1],
     ) => getSignedInAccountAccessToken(accountAuthService, options);
+    const accountRuntimeLifecycle = createAccountRuntimeLifecycle({
+      enabled: syncRuntimeOptions?.enabled === true,
+      accountStoreAdeDir,
+      pushRelayFilePath,
+      syncDeviceIdPath,
+      receiptDir: accountStoreAdeDir,
+      logger,
+      accountAuthService,
+      getAccountAccessToken,
+      getContexts: () => [{
+        project: { rootPath: projectRoot },
+        linearCredentialService: linearCredentialServiceForAccount,
+        projectSecretService: projectSecretServiceForAccount,
+      }],
+      teardown,
+    });
+    const {
+      accountSettingsStore,
+      accountVaultStore,
+    } = accountRuntimeLifecycle;
+    initApiKeyStore(projectRoot, {
+      credentialStore: new EncryptedFileCredentialStore(),
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+    });
+    const projectSecretService = createProjectSecretService(projectRoot, {
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+    });
+    projectSecretServiceForAccount = projectSecretService;
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -1041,9 +1086,6 @@ export async function createAdeRuntime(args: {
       adeDir: paths.adeDir,
       logger,
       broadcastEvent: (event) => pushEvent("runtime", { type: "lane_env_event", event }),
-      // Setup scripts run unrestricted shell and can come from repo-committed
-      // shared config, so the executor gets the same trust gate test suites use.
-      projectConfigService,
     });
 
     const laneTemplateService = createLaneTemplateService({
@@ -1448,7 +1490,17 @@ export async function createAdeRuntime(args: {
       onGitHubStatusChanged: (status) =>
         pushEvent("runtime", { type: "github_status_changed", event: status }),
       getAccountAccessToken,
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      getDeviceId: () => {
+        try {
+          return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+        } catch {
+          return null;
+        }
+      },
     });
+    linearCredentialServiceForAccount = headlessLinearServices.linearCredentialService;
     teardown.push(() => headlessLinearServices.dispose());
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
@@ -1944,11 +1996,6 @@ export async function createAdeRuntime(args: {
       "sync-cloud-relay.json",
     );
     const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
-    const syncDeviceIdPath = path.join(
-      syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
-      "sync-device-id",
-    );
-    const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
     const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
       const store = createPushRegistrationStore({ filePath: pushRelayFilePath, logger });
       return {
@@ -1993,6 +2040,10 @@ export async function createAdeRuntime(args: {
     pushPublisherService.setActivityRosterProvider(
       syncRuntimeOptions?.activityRosterProvider ?? null,
     );
+
+    // The lifecycle performs the first vault pull before it allows the
+    // receipt-backed migration to inspect local credentials.
+    await accountRuntimeLifecycle.initialize();
     const detachPushSources = publishPushEvents
       ? pushPublisherService.attachSources(projectId, {
         // The lightweight no-agent headless chat stub intentionally exposes
@@ -2368,6 +2419,8 @@ export async function createAdeRuntime(args: {
       operationService,
       projectConfigService,
       projectSecretService,
+      accountSettingsStore,
+      accountVaultStore,
       conflictService,
       gitService,
       diffService,

@@ -1,15 +1,19 @@
-import React, { useEffect, useId, useState } from "react";
-import { ArrowsClockwise } from "@phosphor-icons/react";
+import React, { useEffect, useState } from "react";
 import {
   DEFAULT_AUTO_UPDATE_PREFERENCES,
   type AutoUpdatePreferences,
 } from "../../../shared/types";
-import { COLORS, SANS_FONT, cardStyle } from "../lanes/laneDesignTokens";
-import { SettingsSectionShell, SettingsToggle } from "./settingsSectionUi";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
 
+/**
+ * The two update-install preferences, as cards.
+ *
+ * `AboutSection` embeds this under its own "Updates" group, so the controls
+ * carry the cards and the caller carries the group heading — the same split
+ * `AppearanceSection` uses.
+ */
 export function AutoUpdatesControls() {
-  const automaticInstallId = useId();
-  const onlyWhenIdleId = useId();
   const [preferences, setPreferences] = useState<AutoUpdatePreferences | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,95 +52,52 @@ export function AutoUpdatesControls() {
   const current = preferences ?? DEFAULT_AUTO_UPDATE_PREFERENCES;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <label
-            htmlFor={automaticInstallId}
-            style={{
-              display: "block",
-              color: COLORS.textPrimary,
-              cursor: "pointer",
-              fontFamily: SANS_FONT,
-              fontSize: 14,
-              fontWeight: 600,
-              lineHeight: 1.4,
-            }}
-          >
-            Install ADE updates automatically
-          </label>
-          <p style={{ margin: "6px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6 }}>
-            ADE shows a cancelable countdown before restarting. Leave this off to install updates from the top-right control.
-          </p>
-        </div>
-        <SettingsToggle
-          id={automaticInstallId}
-          checked={current.automaticInstall}
-          disabled={!preferences || saving}
-          onChange={(automaticInstall) => void update({ automaticInstall })}
-        />
-      </div>
-
-      {current.automaticInstall ? (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 16,
-            paddingTop: 16,
-            borderTop: `1px solid ${COLORS.outlineBorder}`,
-          }}
-        >
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <label
-              htmlFor={onlyWhenIdleId}
-              style={{
-                display: "block",
-                color: COLORS.textPrimary,
-                cursor: "pointer",
-                fontFamily: SANS_FONT,
-                fontSize: 13,
-                fontWeight: 600,
-                lineHeight: 1.4,
-              }}
-            >
-              Wait until active work finishes
-            </label>
-            <p style={{ margin: "6px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6 }}>
-              Start the restart countdown only when there are no active agent turns or work sessions.
-            </p>
-          </div>
+    <>
+      <SettingsCard
+        anchor="auto-updates"
+        title="Install ADE updates automatically"
+        description="ADE shows a cancelable countdown before restarting. Leave this off to install updates from the top-right control."
+        control={
           <SettingsToggle
-            id={onlyWhenIdleId}
-            checked={current.onlyWhenIdle}
-            disabled={saving}
-            onChange={(onlyWhenIdle) => void update({ onlyWhenIdle })}
+            label="Install ADE updates automatically"
+            checked={current.automaticInstall}
+            disabled={!preferences || saving}
+            onChange={(automaticInstall) => void update({ automaticInstall })}
           />
-        </div>
-      ) : null}
+        }
+      >
+        {error ? (
+          <p role="alert" style={{ margin: 0, color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>
+            {error}
+          </p>
+        ) : null}
+      </SettingsCard>
 
-      {error ? (
-        <p role="alert" style={{ margin: 0, color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>
-          {error}
-        </p>
+      {/* Only meaningful once automatic installs are on — it qualifies when the
+          countdown may start, and there is no countdown otherwise. */}
+      {current.automaticInstall ? (
+        <SettingsCard
+          anchor="auto-updates-only-when-idle"
+          title="Wait until active work finishes"
+          description="Start the restart countdown only when there are no active agent turns or work sessions."
+          control={
+            <SettingsToggle
+              label="Wait until active work finishes"
+              checked={current.onlyWhenIdle}
+              disabled={saving}
+              onChange={(onlyWhenIdle) => void update({ onlyWhenIdle })}
+            />
+          }
+        />
       ) : null}
-    </div>
+    </>
   );
 }
 
 export function AutoUpdatesSection() {
   return (
-    <SettingsSectionShell
-      id="auto-updates"
-      title="Updates"
-      description="Choose whether ADE installs downloaded updates automatically."
-      icon={ArrowsClockwise}
-      brandColor="#60A5FA"
-    >
-      <div style={cardStyle({ padding: 16, maxWidth: 720 })}>
-        <AutoUpdatesControls />
-      </div>
-    </SettingsSectionShell>
+    <SettingsGroup title="Updates" description="Choose whether ADE installs downloaded updates automatically.">
+      <AutoUpdatesControls />
+    </SettingsGroup>
   );
 }

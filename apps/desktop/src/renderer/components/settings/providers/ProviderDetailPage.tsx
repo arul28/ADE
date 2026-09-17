@@ -143,70 +143,6 @@ function ModelsPanel({
   );
 }
 
-function DefaultsPanel({
-  descriptor,
-  ctx,
-}: {
-  descriptor: ProviderDescriptor;
-  ctx: ProvidersViewContext;
-}) {
-  const options = useMemo(
-    () => getPermissionOptions({
-      family: descriptor.permissions.family,
-      isCliWrapped: descriptor.permissions.isCliWrapped,
-    }).map(toPermissionPickerOption),
-    [descriptor],
-  );
-  const current = (ctx.permissionDefaults[descriptor.permissions.key] as AgentChatPermissionMode | undefined)
-    ?? options[0]?.value as AgentChatPermissionMode;
-  const models = descriptor.models(ctx);
-  const defaultModelIsThisProvider = ctx.defaultModelId != null
-    && models.some((model) => model.id === ctx.defaultModelId);
-
-  return (
-    <section style={panel({ padding: 14, display: "flex", flexDirection: "column", gap: 14 })}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={SECTION_LABEL_STYLE}>Permission default</div>
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-          What new {descriptor.label} chats start with. Each chat can still change it.
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <PermissionModePicker
-            ariaLabel={`${descriptor.label} permission default`}
-            selectedValue={current}
-            options={options}
-            disabled={ctx.savingPermissionFor === descriptor.id}
-            onSelect={(value) => void ctx.actions.setPermissionDefault(descriptor.id, value as AgentChatPermissionMode)}
-          />
-          {ctx.savingPermissionFor === descriptor.id ? (
-            <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>Saving…</span>
-          ) : null}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={SECTION_LABEL_STYLE}>Default model</div>
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-          ADE has one default model across providers.
-          {ctx.defaultModelId && !defaultModelIsThisProvider ? ` It is currently ${ctx.defaultModelId}.` : ""}
-        </div>
-        <select
-          aria-label={`Default model for ${descriptor.label}`}
-          value={defaultModelIsThisProvider ? String(ctx.defaultModelId) : ""}
-          disabled={ctx.savingDefaultModel || models.length === 0}
-          onChange={(event) => void ctx.actions.setDefaultModel(event.target.value || null)}
-          style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBgSolid, color: COLORS.textPrimary, padding: "8px 10px", fontSize: 11, fontFamily: SANS_FONT }}
-        >
-          <option value="">Not set</option>
-          {models.map((model) => (
-            <option key={model.id} value={model.id}>{model.label}</option>
-          ))}
-        </select>
-      </div>
-    </section>
-  );
-}
-
 export function ProviderDetailPage({
   descriptor,
   ctx,
@@ -349,7 +285,15 @@ export function ProviderDetailPage({
         {/* ── Right: what it can do ── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           <ModelsPanel descriptor={descriptor} ctx={ctx} />
-          <DefaultsPanel descriptor={descriptor} ctx={ctx} />
+          {/* The "Permission default" and "Default model" controls used to sit
+              here. Both were removed rather than fixed, because neither
+              reached the product: no chat-launch path ever read
+              `ai.defaultModel`, and the permission picker wrote
+              `ai.permissions.providers.*` while nine of the ten providers read
+              a different key entirely. A control that saves and changes nothing
+              is worse than no control — it answers a question the user then
+              stops asking. Per-chat permission is set at launch, where it
+              works. */}
           {Body ? (
             <section style={panel({ padding: 14 })}>
               <Body ctx={ctx} />

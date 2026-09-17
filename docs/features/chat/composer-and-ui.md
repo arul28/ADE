@@ -2149,9 +2149,9 @@ produces output, so while the ADE title is still a default the mirror re-reads
 the name on the tick that yields the first visible turn or a terminal run,
 capped at three extra reads, with no polling of its own.
 
-The top bar and left sidebar carry connection-gated Cursor quick-view buttons
-(`CursorCloudQuickViewButton`, mounted beside the Linear quick-view and as a
-sidebar row). Each opens `CursorCloudFleetModal`, an account-wide fleet surface
+The top bar carries the connection-gated Cursor quick-view button
+(`CursorCloudQuickViewButton`, mounted beside the Linear quick-view). There is
+no Cursor Cloud row in the left rail. The button opens `CursorCloudFleetModal`, an account-wide fleet surface
 listing every Cursor Cloud agent across all Cursor pages. Entries report their
 ADE ownership (`matchedBy: session / repo / both / account`) when a session or
 repository matches the current project; agents launched on cursor.com or from

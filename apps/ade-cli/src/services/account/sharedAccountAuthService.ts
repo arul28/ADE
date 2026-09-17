@@ -18,6 +18,7 @@ import {
   createAccountAuthService,
   type AccountAuthService,
   type AccountOAuthConfig,
+  type AccountRefreshBroker,
 } from "./accountAuthService";
 
 export type AccountAttestationConfig = {
@@ -259,6 +260,39 @@ function readMachineKey(secretsDir: string): string | null {
   }
 }
 
+/**
+ * The process-wide refresh broker, or `null` when this process is the brain.
+ *
+ * Exactly one process on a machine may exchange the rotating refresh token.
+ * The brain is that process. Every other one installs a broker here and asks
+ * the brain instead, which is what removes the `invalid_grant` race by
+ * construction rather than by timing. Today's installers:
+ *   - desktop main, via `createBrainRefreshBroker` (accountBridge.ts), wired in
+ *     `registerIpc.ts`;
+ *   - every `ade …` command, via `installMachineBrainRefreshBroker` in `runCli`
+ *     (cliRefreshBroker.ts) — except the `serve`/`runtime`/`brain` plans and
+ *     `--headless`, which host the runtime rather than defer to it;
+ *   - the `ade code` TUI, via the same installer in `tuiClient/cli.tsx`.
+ * The installer puts a broker here even when no brain is listening. Its token
+ * request probes the socket each time, so a brain started later is used while
+ * a machine with no brain still safely keeps its local exchange.
+ *
+ * Deliberately module-level and late-bound: `getSharedAccountAuthService`
+ * caches one service per secrets directory, so whoever asks first fixes that
+ * service's options, and on desktop that can happen before the runtime pool
+ * exists. Installing the broker separately means startup order cannot decide
+ * whether a process refreshes locally.
+ */
+let sharedRefreshBroker: AccountRefreshBroker | null = null;
+
+export function setSharedAccountRefreshBroker(broker: AccountRefreshBroker | null): void {
+  sharedRefreshBroker = broker;
+}
+
+export function getSharedAccountRefreshBroker(): AccountRefreshBroker | null {
+  return sharedRefreshBroker;
+}
+
 export function getSharedAccountAuthService(args: {
   secretsDir?: string;
   projectRoots?: () => Iterable<string>;
@@ -286,6 +320,7 @@ export function getSharedAccountAuthService(args: {
       env: args.env,
     }),
     getMachineKey: () => readMachineKey(secretsDir),
+    getRefreshBroker: () => sharedRefreshBroker,
     env: args.env ?? process.env,
     logger: args.logger,
   });

@@ -130,6 +130,7 @@ import {
   createMachineRegisterRefusalObserver,
 } from "../analytics/reliabilityTelemetry";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
+import { purgeAccountApiKeys } from "../ai/apiKeyStore";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
 import { runGit } from "../git/git";
@@ -809,7 +810,23 @@ import {
 } from "../transcription/microphoneAccess";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
-import { createAccountBridge, createBrainAccountActionCaller } from "../account/accountBridge";
+import {
+  createAccountBridge,
+  createBrainAccountActionCaller,
+  createBrainRefreshBroker,
+} from "../account/accountBridge";
+import { createAccountVaultBridge } from "../account/accountVaultBridge";
+import {
+  createAccountMigrationRunner,
+  createAccountMigrationStartRetry,
+  getOpenAccountContexts,
+} from "../account/accountMigrationRunner";
+import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
+import type {
+  AccountSettingRow,
+  AccountSettingsResult,
+  AccountSettingsWriteOptions,
+} from "../../../shared/types/accountSettings";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
@@ -846,7 +863,10 @@ import type { createKeybindingsService } from "../keybindings/keybindingsService
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
-import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import {
+  getSharedAccountAuthService,
+  setSharedAccountRefreshBroker,
+} from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
@@ -1713,6 +1733,7 @@ function getAllowedDirs(getCtx: () => AppContext): string[] {
 export function registerIpc({
   getCtx,
   getResourceUsageContexts,
+  purgeClosedAccountCredentials,
   getSyncService,
   resolveSyncService,
   runWithIpcWindow,
@@ -1750,6 +1771,7 @@ export function registerIpc({
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
+  purgeClosedAccountCredentials?: () => void;
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
@@ -10935,6 +10957,20 @@ export function registerIpc({
     return ctx.feedbackReporterService.list();
   });
 
+  // Electron main stops exchanging the account refresh credential here, and
+  // asks the brain for a token instead. Exactly one process per machine may
+  // POST a single-use rotating credential; every `invalid_grant` sign-out in
+  // the brain log is two processes that both thought they could. Installed
+  // rather than passed to the service, because the shared service caches one
+  // instance per secrets directory and can be built before this point.
+  setSharedAccountRefreshBroker(
+    createBrainRefreshBroker(localRuntimeConnectionPool, LOCAL_RUNTIME_SYNC_TIMEOUT_MS),
+  );
+
+  const openAccountContexts = (): AppContext[] => {
+    return getOpenAccountContexts(getResourceUsageContexts?.() ?? [getCtx()]);
+  };
+
   // Machine-owned ADE account (Clerk identity, #815). The bridge owns the auth
   // service in main and only ever exposes the token-free surface to the
   // renderer — getToken is deliberately never wired here.
@@ -10943,6 +10979,38 @@ export function registerIpc({
     reconcileAccountOwnership: runtimeBridge.reconcileAccountOwnership,
     purgeMachineActivity: (machineKey) =>
       attentionAccountCoordinator.purgeMachineActivity(machineKey),
+    purgeAccountCredentials: () => {
+      try {
+        purgeAccountApiKeys();
+      } catch (error) {
+        getCtx().logger.warn("account.local_api_keys_purge_failed", {
+          error: error instanceof Error ? error.message : String(error ?? ""),
+        });
+      }
+      for (const context of openAccountContexts()) {
+        try {
+          context.projectSecretService?.purgeAccountCredentials();
+        } catch (error) {
+          getCtx().logger.warn("account.local_project_secrets_purge_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+        try {
+          context.linearCredentialService?.purgeAccountCredentials();
+        } catch (error) {
+          getCtx().logger.warn("account.local_linear_credentials_purge_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      }
+      try {
+        purgeClosedAccountCredentials?.();
+      } catch (error) {
+        getCtx().logger.warn("account.closed_project_credentials_purge_failed", {
+          error: error instanceof Error ? error.message : String(error ?? ""),
+        });
+      }
+    },
     // Routed to the brain rather than performed here: the push revocation's
     // live gate is in that process, and this client initializes as `cto`
     // (RuntimeRpcClient.initialize), which is what `account.call` requires.
@@ -10992,9 +11060,83 @@ export function registerIpc({
     }
   });
 
+  /**
+   * The account settings store, borrowed from any booted project scope.
+   *
+   * The store is keyed by the machine's ADE directory, not by a repository, so
+   * every booted scope answers with the same rows — the same reason machine
+   * usage reads borrow a scope. With no pool or no booted scope the service
+   * answers "unavailable" and the renderer keeps its local copy.
+   */
+  const accountSettingsSyncService = createAccountSettingsSyncService({
+    getPool: () => localRuntimeConnectionPool,
+    getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []),
+    logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+  });
+
+  ipcMain.handle(
+    IPC.accountSettingsList,
+    async (
+      _event,
+      args?: { scope?: string | null },
+    ): Promise<AccountSettingsResult<AccountSettingRow[]>> =>
+      await accountSettingsSyncService.list(args?.scope ?? null),
+  );
+
+  ipcMain.handle(
+    IPC.accountSettingsGet,
+    async (
+      _event,
+      args: { scope: string; key: string },
+    ): Promise<AccountSettingsResult<unknown>> =>
+      await accountSettingsSyncService.get(args.scope, args.key),
+  );
+
+  ipcMain.handle(
+    IPC.accountSettingsSet,
+    async (
+      _event,
+      args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> =>
+      await accountSettingsSyncService.set(
+        args.scope,
+        args.key,
+        args.value,
+        { expectedAccountUserId: args.expectedAccountUserId },
+      ),
+  );
+
+  ipcMain.handle(
+    IPC.accountSettingsSync,
+    async (): Promise<AccountSettingsResult<null>> => await accountSettingsSyncService.sync(),
+  );
+
+  const accountVaultBridge = createAccountVaultBridge({
+    getPool: () => localRuntimeConnectionPool,
+    getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null,
+    logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+  });
+
+  const accountMigrationRunner = createAccountMigrationRunner({
+    accountBridge,
+    getAccountMigrationGeneration: () => accountBridge.getMigrationGeneration(),
+    accountVaultBridge,
+    getContexts: () => getResourceUsageContexts?.() ?? [getCtx()],
+    getLogger: () => getCtx().logger,
+  });
+  const accountMigrationStartRetry = createAccountMigrationStartRetry({
+    start: () => accountMigrationRunner.start(),
+    isSignedIn: () => accountBridge.status().signedIn,
+  });
+
+  // A signed-in launch has no sign-in transition to trigger the work, so seed
+  // the same best-effort path immediately after the account/settings services.
+  accountMigrationStartRetry.tryStart();
+
   ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.status();
     if (status.signedIn) productAnalyticsService?.identifyAccount(status.userId);
+    accountMigrationStartRetry.tryStart(status.signedIn);
     return status;
   });
 
@@ -11013,7 +11155,10 @@ export function registerIpc({
     IPC.accountPollLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountLoginPoll> => {
       const result = await accountBridge.pollLogin(arg?.sessionId ?? "");
-      if (result.authStatus.signedIn) productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      if (result.authStatus.signedIn) {
+        productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      }
+      accountMigrationStartRetry.tryStart(result.authStatus.signedIn);
       return result;
     },
   );
@@ -11041,7 +11186,10 @@ export function registerIpc({
     IPC.accountPollDeviceLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountDeviceLoginPoll> => {
       const result = await accountBridge.pollDeviceLogin(arg?.sessionId ?? "");
-      if (result.authStatus.signedIn) productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      if (result.authStatus.signedIn) {
+        productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      }
+      accountMigrationStartRetry.tryStart(result.authStatus.signedIn);
       return result;
     },
   );
@@ -12095,12 +12243,6 @@ export function registerIpc({
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectConfigService"] as const);
     return ctx.projectConfigService.diffAgainstDisk();
-  });
-
-  ipcMain.handle(IPC.projectConfigConfirmTrust, async (_event, arg: { sharedHash?: string } = {}): Promise<ProjectConfigTrust> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectConfigService"] as const);
-    return ctx.projectConfigService.confirmTrust(arg);
   });
 
   // ── CTO state IPC ─────────────────────────────────────────────────

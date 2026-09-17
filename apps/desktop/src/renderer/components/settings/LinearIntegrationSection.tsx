@@ -8,7 +8,6 @@ const LINEAR_BRAND = "#5E6AD2";
 export function LinearIntegrationSection() {
   return (
     <SettingsSectionShell
-      id="linear-connection"
       title="Linear integration"
       description="Connect Linear for issue routing, lane context, PR linkage, and CTO workflows."
       brandColor={LINEAR_BRAND}

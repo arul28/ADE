@@ -14,6 +14,13 @@ import {
   resolveAccountOAuthConfig,
   resolveOfficialAccountDirectoryBaseUrl,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import {
+  type AccountRefreshBroker,
+} from "../../../../../ade-cli/src/services/account/accountAuthService";
+import {
+  createAccountRefreshBroker,
+  unwrapAccountActionResult,
+} from "../../../../../ade-cli/src/services/account/accountRefreshBroker";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
@@ -60,6 +67,8 @@ type AccountBridgeOptions = {
    * dependency on the attention stack.
    */
   purgeMachineActivity?: (machineKey: string) => Promise<void>;
+  /** Remove account-origin local credentials on sign-out or account switch. */
+  purgeAccountCredentials?: () => void;
   /**
    * Calls an `account.call` action on THIS machine's ADE brain.
    *
@@ -128,11 +137,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Strip the brain's `{ domain, action, result }` envelope when it is present. */
-function unwrapBrainAccountResult(raw: unknown): unknown {
-  return isRecord(raw) && isRecord(raw.result) ? raw.result : raw;
-}
-
 /**
  * Read the brain's `account.call` answer for `repairMachinePairing`.
  *
@@ -145,7 +149,7 @@ function unwrapBrainAccountResult(raw: unknown): unknown {
 export function readMachinePairingRepairResult(
   raw: unknown,
 ): AdeAccountMachinePairingRepairResult {
-  const envelope = unwrapBrainAccountResult(raw);
+  const envelope = unwrapAccountActionResult(raw);
   if (!isRecord(envelope) || typeof envelope.repaired !== "boolean") {
     throw new Error(
       "ADE couldn't read the result of reconnecting this computer. Check Your computers to see whether it came back.",
@@ -184,7 +188,7 @@ function readNonEmpty(value: unknown): string | null {
  * code and opens no page is a worse dead end than the error it replaced.
  */
 export function readAccountDeviceLoginStart(raw: unknown): AdeAccountDeviceLoginStart {
-  const payload = unwrapBrainAccountResult(raw);
+  const payload = unwrapAccountActionResult(raw);
   const sessionId = isRecord(payload) ? readNonEmpty(payload.sessionId) : null;
   const userCode = isRecord(payload) ? readNonEmpty(payload.userCode) : null;
   const verificationUri = isRecord(payload) ? readNonEmpty(payload.verificationUri) : null;
@@ -225,7 +229,7 @@ const DEVICE_LOGIN_POLL_STATUSES = new Set([
 export function readAccountDeviceLoginProgress(
   raw: unknown,
 ): { status: AdeAccountDeviceLoginPoll["status"]; message: string | null; intervalSec: number | null } {
-  const payload = unwrapBrainAccountResult(raw);
+  const payload = unwrapAccountActionResult(raw);
   const status = isRecord(payload) ? readNonEmpty(payload.status) : null;
   if (!status || !DEVICE_LOGIN_POLL_STATUSES.has(status)) {
     // An unreadable poll is NOT a sign-in. Report it as an error so the caller
@@ -294,6 +298,32 @@ export function createBrainAccountActionCaller(
       { action, ...(args ? { args } : {}) },
       { timeoutMs },
     );
+}
+
+/**
+ * Builds the desktop's refresh broker: the object that makes Electron main ask
+ * the brain for an account token instead of exchanging the refresh credential
+ * itself.
+ *
+ * This is the fix for the only sign-out this machine has ever actually
+ * suffered. The refresh token is single-use and rotating, and desktop, brain,
+ * and CLI all held it. Every `invalid_grant` in the brain log follows an
+ * interrupted rotation, and three of the four name a desktop pid: the desktop
+ * started an exchange, the brain started another, and whichever lost had a
+ * perfectly good session marked dead. The rotation journal narrowed that window
+ * but could not close it, because both processes were legitimately entitled to
+ * exchange. Taking the entitlement away from one of them closes it.
+ *
+ * Returns `null` when there is no pool to ask, which leaves the service on its
+ * local path — correct for a desktop that has no brain to defer to yet.
+ */
+export function createBrainRefreshBroker(
+  pool: BrainAccountActionCaller | null | undefined,
+  timeoutMs: number,
+): AccountRefreshBroker | null {
+  const call = createBrainAccountActionCaller(pool, timeoutMs);
+  if (!call) return null;
+  return createAccountRefreshBroker({ requestToken: () => call("getToken") });
 }
 
 /**
@@ -391,6 +421,8 @@ function toAccountStatus(
 
 export type AccountBridge = {
   status(): AdeAccountStatus;
+  /** Current migration owner generation; see purgeAccountCredentials. */
+  getMigrationGeneration(): number;
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(sessionId: string): Promise<AdeAccountLoginPoll>;
   cancelLogin(sessionId: string): void;
@@ -440,8 +472,25 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   >();
   const accountMachineNames = new Map<string, string>();
 
-  const service = () =>
-    getSharedAccountAuthService({
+  // Bumped on every purge (sign-out or a switch to another user) so a
+  // migration captured under the previous owner abandons itself instead of
+  // writing into the next one's vault. The runner compares this on every
+  // vault write and before recording its receipt.
+  let migrationGeneration = 0;
+  const purgeAccountCredentials = (): void => {
+    migrationGeneration += 1;
+    try {
+      options.purgeAccountCredentials?.();
+    } catch (error) {
+      options.logger?.warn("account.local_credentials_purge_failed", {
+        error: error instanceof Error ? error.message : String(error ?? ""),
+      });
+    }
+  };
+
+  let accountLifecycleBound = false;
+  const service = () => {
+    const accountService = getSharedAccountAuthService({
       secretsDir,
       projectRoots: () => {
         const root = options.getProjectRoot();
@@ -449,6 +498,23 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       },
       logger: options.logger,
     });
+    if (!accountLifecycleBound) {
+      accountLifecycleBound = true;
+      let lastUserId = accountService.getStatus().userId;
+      accountService.onSignedOut?.(() => {
+        purgeAccountCredentials();
+        lastUserId = null;
+      });
+      accountService.onSignedIn?.(() => {
+        const nextUserId = accountService.getStatus().userId;
+        if (lastUserId && nextUserId && lastUserId !== nextUserId) {
+          purgeAccountCredentials();
+        }
+        lastUserId = nextUserId;
+      });
+    }
+    return accountService;
+  };
 
   const configured = () => isLoginConfigured(options.getProjectRoot());
   const directoryService = () => new AccountMachineDirectoryService(service(), {
@@ -511,7 +577,12 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     }
   };
 
-  return {
+  // Once per desktop process. Declared out here so `status()` can consult it
+  // without the flag resetting on every call.
+  let autoRepairAttempted = false;
+
+  const bridge: AccountBridge = {
+    getMigrationGeneration: () => migrationGeneration,
     status: () => {
       const accountService = service();
       // Read the state alongside the status: `signedIn: false` with an
@@ -523,6 +594,47 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       // Optional call: a runtime that predates the split simply reports no read
       // state, and the renderer then falls back to its previous behaviour.
       const readState = accountService.getSessionReadState?.();
+
+      // An unreadable store is usually a key-binding divergence this process
+      // can converge on its own, and the overwhelmingly common cause is
+      // transient — 1,148 of these in one day on this developer's own machine
+      // were all ENOSPC on the lock file. Showing "Can't read your sign-in"
+      // before ADE has even tried the repair it is about to offer puts a
+      // frightening question to the user that the machine could have answered
+      // silently.
+      //
+      // So: try once, then report whatever is true afterwards.
+      //
+      // Once per process, and the flag is set BEFORE the attempt — a repair
+      // that throws must not turn every subsequent status read into another
+      // attempt at the same broken file. The brain is deliberately NOT
+      // restarted here; that half is disruptive, needs a user's intent, and
+      // cannot fix a credential-store condition anyway.
+      if (readState === "unreadable" && !autoRepairAttempted) {
+        autoRepairAttempted = true;
+        try {
+          const report = bridge.repairCredentialStore();
+          getMachineLogger()?.info("account.credential_store_auto_repair", {
+            outcome: report.outcome,
+            readable: report.readable,
+            recoveredKeys: report.recoveredKeys,
+          });
+          if (report.readable) {
+            return toAccountStatus(
+              accountService.getStatus(),
+              configured(),
+              accountService.getSessionReadState?.(),
+            );
+          }
+        } catch (error) {
+          // A failed repair is not news the user can act on differently — the
+          // surface they are about to see already offers the manual Repair.
+          options.logger?.warn("account.credential_store_auto_repair_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      }
+
       return toAccountStatus(status, configured(), readState);
     },
 
@@ -800,4 +912,6 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       return result;
     },
   };
+
+  return bridge;
 }

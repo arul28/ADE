@@ -860,6 +860,17 @@ export const IPC = {
   accountRemoveMachine: "ade.account.removeMachine",
   accountRepairMachinePairing: "ade.account.repairMachinePairing",
   accountRepairSession: "ade.account.repairSession",
+
+  /**
+   * The account settings store, reached through the brain's `account_settings`
+   * action domain. Every one of these resolves to an "unavailable" result
+   * rather than rejecting when no brain is reachable — a machine with no
+   * runtime keeps its local copy, it does not lose its theme.
+   */
+  accountSettingsList: "ade.accountSettings.list",
+  accountSettingsGet: "ade.accountSettings.get",
+  accountSettingsSet: "ade.accountSettings.set",
+  accountSettingsSync: "ade.accountSettings.sync",
   prsCreateFromLane: "ade.prs.createFromLane",
   prsLinkToLane: "ade.prs.linkToLane",
   prsPreflightCreateLaneFromPrBranch: "ade.prs.preflightCreateLaneFromPrBranch",
@@ -979,7 +990,6 @@ export const IPC = {
   projectConfigValidate: "ade.projectConfig.validate",
   projectConfigSave: "ade.projectConfig.save",
   projectConfigDiffAgainstDisk: "ade.projectConfig.diffAgainstDisk",
-  projectConfigConfirmTrust: "ade.projectConfig.confirmTrust",
   orchestratorGetWorkerStates: "ade.orchestrator.getWorkerStates",
   orchestratorGetModelCapabilities: "ade.orchestrator.getModelCapabilities",
   orchestratorGetTeamMembers: "ade.orchestrator.getTeamMembers",

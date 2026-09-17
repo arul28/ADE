@@ -13,6 +13,8 @@ import {
   resolveSettingsHash,
   resolveSettingsTab,
   searchSettingsEntries,
+  type SettingsTabId,
+  settingsScopeForAnchor,
   settingsEntryPath,
   settingsGroupsForTab,
   settingsRouteFor,
@@ -45,8 +47,33 @@ describe("settings manifest", () => {
     expect(new Set(anchors).size).toBe(anchors.length);
   });
 
-  it("namespaces every entry id under its tab", () => {
+  // An entry id is a stable key — tests and telemetry hold on to it — while a
+  // page is where the row happens to live today. When the Settings overhaul
+  // moved rows between pages it kept the ids, so this list is the set that no
+  // longer sits under its original namespace. Add to it when a row moves;
+  // never rename an id to make this pass.
+  const RE_HOMED_ENTRY_IDS: Record<string, SettingsTabId> = {
+    "appearance.chat-font-size": "chat",
+    "appearance.transcript-density": "chat",
+    "appearance.chat-tint": "chat",
+    "appearance.chat-corners": "chat",
+    "appearance.code-block-copy": "chat",
+    "appearance.message-minimap": "chat",
+    "appearance.prompt-stash": "chat",
+    "appearance.launch-prompt": "chat",
+    "appearance.preview": "chat",
+    "agents.dictation": "chat",
+    "agents.scheduled-work": "activity",
+    "agents.budget": "stats",
+  };
+
+  it("namespaces every entry id under its tab, except the rows that deliberately moved", () => {
     for (const entry of SETTINGS_ENTRIES) {
+      const expectedTab = RE_HOMED_ENTRY_IDS[entry.id];
+      if (expectedTab) {
+        expect(entry.tab, `${entry.id} moved to ${expectedTab}`).toBe(expectedTab);
+        continue;
+      }
       expect(entry.id.startsWith(`${entry.tab}.`), `${entry.id} is not under ${entry.tab}`).toBe(true);
     }
   });
@@ -66,7 +93,6 @@ describe("settings manifest", () => {
       "integrations.github",
       "integrations.linear",
       "agents.providers",
-      "agents.background-jobs",
       "agents.dictation",
       "appearance.launch-prompt",
       "lanes-git.lane-templates",
@@ -77,8 +103,8 @@ describe("settings manifest", () => {
       expect(settingsRouteFor(id), `${id} has no manifest entry`).not.toBe("/settings");
     }
     expect(settingsRouteFor("integrations.github")).toBe("/settings?tab=integrations#github-connection");
-    expect(settingsRouteFor("appearance.launch-prompt")).toBe("/settings?tab=appearance#chat-launch-clipboard");
-    expect(resolveSettingsHash("chat-launch-clipboard")?.tab).toBe("appearance");
+    expect(settingsRouteFor("appearance.launch-prompt")).toBe("/settings?tab=chat#chat-launch-clipboard");
+    expect(resolveSettingsHash("chat-launch-clipboard")?.tab).toBe("chat");
     expect(settingsRouteFor("nope.missing")).toBe("/settings");
   });
 
@@ -235,17 +261,27 @@ describe("settings manifest", () => {
     expect(settingsRouteFor("agents.providers")).toBe("/settings?tab=agents#ai-providers");
   });
 
-  it("only marks scope chips on settings whose storage would surprise", () => {
-    // Team-scoped settings always warrant the chip: they are committed and
-    // affect other people.
-    for (const entry of SETTINGS_ENTRIES.filter((candidate) => candidate.scope === "team")) {
-      expect(entry.showScopeChip, `${entry.id} is team-scoped but hides its chip`).toBe(true);
-    }
-    // App-scoped settings never do — nothing about localStorage surprises.
-    for (const entry of SETTINGS_ENTRIES.filter((candidate) => candidate.scope === "app")) {
-      expect(entry.showScopeChip ?? false, `${entry.id} is app-scoped but shows a chip`).toBe(false);
+  // The old vocabulary (`team` / `app`) is gone with the committed config file
+  // it named. What replaces this assertion is stronger: the chip no longer has
+  // a hand-typed scope to disagree with, because `SettingsCard` reads it from
+  // this manifest by anchor.
+  it("answers every entry's scope by its anchor, so no card can contradict the registry", () => {
+    for (const entry of SETTINGS_ENTRIES) {
+      expect(
+        settingsScopeForAnchor(entry.anchor),
+        `${entry.id} anchor ${entry.anchor} resolves to no scope`,
+      ).toBe(entry.scope);
     }
   });
+
+  it("scopes every entry to one of the four groups", () => {
+    const scopes = new Set(["account", "account-repo", "machine", "machine-repo"]);
+    for (const entry of SETTINGS_ENTRIES) {
+      expect(scopes.has(entry.scope), `${entry.id} has scope ${entry.scope}`).toBe(true);
+    }
+  });
+
+
 });
 
 type PaletteCommand = { id: string; title: string; hint: string; keywords: string[]; path: string };

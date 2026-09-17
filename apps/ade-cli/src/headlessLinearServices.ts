@@ -12,7 +12,7 @@ import type { createConflictService } from "../../desktop/src/main/services/conf
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createLinearClient } from "../../desktop/src/main/services/cto/linearClient";
-import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
+import type { AccountVaultBridge } from "../../desktop/src/main/services/account/accountVaultBridge";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
@@ -81,8 +81,11 @@ import {
 import { createBrainLogger } from "./services/runtime/brainLogger";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import type { AdeRuntimePaths } from "./bootstrap";
+import {
+  createHeadlessLinearCredentialService,
+  type HeadlessLinearCredentialService,
+} from "./services/linear/headlessLinearCredentialService";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
-import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "../../desktop/src/main/services/cto/linearAppClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
 import { createFileService as createFileServiceImpl } from "../../desktop/src/main/services/files/fileService";
 import { createPrService as createPrServiceImpl } from "../../desktop/src/main/services/prs/prService";
@@ -125,22 +128,6 @@ import {
   registerGithubCredentialIdentity,
   type GithubCredentialCandidate,
 } from "../../desktop/src/main/services/github/githubCredentialHealth";
-import {
-  linearInvalidGrantLikelyStaleRotation,
-  linearTokenNeedsRefresh,
-  refreshLinearOAuthAccessToken,
-} from "../../desktop/src/main/services/cto/linearTokenRefresh";
-import {
-  LinearOAuthRefreshLockTimeoutError,
-  withLinearOAuthRefreshLock,
-} from "../../desktop/src/main/services/cto/linearOAuthRefreshLock";
-
-// Keep headless runtimes aligned with the desktop credential service so packaged
-// alpha builds can offer the same PKCE-based Linear sign-in flow.
-const BUNDLED_LINEAR_OAUTH_CLIENT_ID =
-  process.env.ADE_LINEAR_CLIENT_ID?.trim() || ADE_LINEAR_APP_CLIENT_ID;
-
-type HeadlessLinearCredentialService = ReturnType<typeof createLinearCredentialService>;
 type HeadlessGitHubStatus = GitHubStatus;
 export type HeadlessGitHubService = GithubService;
 
@@ -196,6 +183,9 @@ type HeadlessLinearDeps = {
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
   getAccountAccessToken?: () => Promise<string | null>;
+  getAccountVault?: () => AccountVaultBridge | null | undefined;
+  getAccountUserId?: () => string | null;
+  getDeviceId?: () => string | null;
 };
 
 type HeadlessLinearServices = {
@@ -2519,276 +2509,6 @@ export function createHeadlessGitHubService(
   return service;
 }
 
-function createHeadlessLinearCredentialService(args: {
-  adeDir: string;
-  logger?: Logger;
-}): HeadlessLinearCredentialService {
-  const secretsDir = path.join(args.adeDir, "secrets");
-  const credentialStore = new EncryptedFileCredentialStore({
-    secretsDir,
-  });
-  const tokenKey = "linear.token.v1";
-  const authModeKey = "linear.authMode.v1";
-  const tokenExpiresAtKey = "linear.tokenExpiresAt.v1";
-  const refreshTokenKey = "linear.refreshToken.v1";
-  const oauthClientKey = "linear.oauthClient.v1";
-  let tokenOverride: string | null = null;
-  let tokenDecryptionFailed = false;
-
-  const readCredential = (key: string): string | null => {
-    try {
-      const stored = credentialStore.getSync(key);
-      tokenDecryptionFailed = false;
-      return stored?.trim() || null;
-    } catch {
-      tokenDecryptionFailed = true;
-      return null;
-    }
-  };
-
-  const writeCredential = (
-    key: string,
-    value: string | null | undefined,
-  ): void => {
-    if (value?.trim()) {
-      credentialStore.setSync(key, value.trim());
-    } else {
-      credentialStore.deleteSync(key);
-    }
-    tokenDecryptionFailed = false;
-  };
-
-  const readToken = (): {
-    token: string;
-    source: "stored" | "env" | "override" | null;
-  } => {
-    if (tokenOverride != null) {
-      return {
-        token: tokenOverride,
-        source: tokenOverride.trim().length > 0 ? "override" : null,
-      };
-    }
-    const stored = readCredential(tokenKey);
-    if (stored) return { token: stored, source: "stored" };
-    const envValue =
-      envToken(
-        "ADE_LINEAR_API",
-        "LINEAR_API_KEY",
-        "ADE_LINEAR_TOKEN",
-        "LINEAR_TOKEN",
-      ) ?? "";
-    return {
-      token: envValue,
-      source: envValue.trim().length > 0 ? "env" : null,
-    };
-  };
-
-  const readOAuthClientCredentials = (): {
-    clientId: string;
-    clientSecret: string | null;
-  } | null => {
-    const raw = readCredential(oauthClientKey);
-    if (!raw) {
-      return BUNDLED_LINEAR_OAUTH_CLIENT_ID
-        ? { clientId: BUNDLED_LINEAR_OAUTH_CLIENT_ID, clientSecret: null }
-        : null;
-    }
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-        return null;
-      const record = parsed as Record<string, unknown>;
-      const clientId =
-        typeof record.clientId === "string" ? record.clientId.trim() : "";
-      if (!clientId) return null;
-      return {
-        clientId,
-        clientSecret:
-          typeof record.clientSecret === "string" &&
-          record.clientSecret.trim().length > 0
-            ? record.clientSecret.trim()
-            : null,
-      };
-    } catch {
-      return null;
-    }
-  };
-
-  // Refresh an OAuth access token near expiry (parity with the desktop service)
-  // so headless `ade serve` Linear connections survive past Linear's ~24h token
-  // lifetime. No-op for manual tokens / env tokens / when no refresh token.
-  let refreshInFlight: Promise<void> | null = null;
-  const ensureFreshToken = async (opts?: { force?: boolean }): Promise<void> => {
-    if (readCredential(authModeKey) !== "oauth") return;
-    const refreshToken = readCredential(refreshTokenKey);
-    if (!refreshToken) return;
-    if (!opts?.force && !linearTokenNeedsRefresh(readCredential(tokenExpiresAtKey), Date.now())) return;
-    if (refreshInFlight) {
-      await refreshInFlight;
-      return;
-    }
-    const client = readOAuthClientCredentials();
-    if (!client) return;
-    refreshInFlight = (async () => {
-      const performRefresh = async (tokenToRefresh: string): Promise<void> => {
-        const result = await refreshLinearOAuthAccessToken({
-          refreshToken: tokenToRefresh,
-          clientId: client.clientId,
-          clientSecret: client.clientSecret,
-        });
-        if (result.ok) {
-          tokenOverride = result.accessToken;
-          writeCredential(tokenKey, result.accessToken);
-          writeCredential(authModeKey, "oauth");
-          writeCredential(refreshTokenKey, result.refreshToken ?? tokenToRefresh);
-          writeCredential(tokenExpiresAtKey, result.expiresAt);
-          return;
-        }
-        if (result.invalidGrant) {
-          const rereadRefresh = readCredential(refreshTokenKey);
-          const rereadExpires = readCredential(tokenExpiresAtKey);
-          if (
-            linearInvalidGrantLikelyStaleRotation({
-              attemptedRefreshToken: tokenToRefresh,
-              rereadRefreshToken: rereadRefresh,
-              rereadExpiresAt: rereadExpires,
-              trustFreshExpiresAt: !opts?.force,
-            })
-          ) {
-            tokenOverride = readCredential(tokenKey);
-            return;
-          }
-          tokenOverride = "";
-          writeCredential(tokenKey, null);
-          writeCredential(authModeKey, null);
-          writeCredential(refreshTokenKey, null);
-          writeCredential(tokenExpiresAtKey, null);
-          return;
-        }
-      };
-
-      try {
-        await withLinearOAuthRefreshLock(secretsDir, async () => {
-          const latestRefresh = readCredential(refreshTokenKey);
-          if (!latestRefresh) return;
-          if (
-            !opts?.force
-            && !linearTokenNeedsRefresh(readCredential(tokenExpiresAtKey), Date.now())
-          ) {
-            return;
-          }
-          await performRefresh(latestRefresh);
-        });
-      } catch (error: unknown) {
-        if (!(error instanceof LinearOAuthRefreshLockTimeoutError)) throw error;
-        args.logger?.warn("linear_sync.oauth_refresh_lock_timeout", {
-          message: error.message,
-        });
-      }
-    })().finally(() => {
-      refreshInFlight = null;
-    });
-    await refreshInFlight;
-  };
-
-  return {
-    getToken() {
-      const { token } = readToken();
-      return token.trim() || null;
-    },
-    getStatus() {
-      const { token, source } = readToken();
-      const authMode =
-        source === "stored" || source === "override"
-          ? readCredential(authModeKey) === "oauth"
-            ? "oauth"
-            : "manual"
-          : token.trim().length > 0
-            ? "manual"
-            : null;
-      return {
-        tokenStored: token.trim().length > 0,
-        tokenDecryptionFailed,
-        storageScope: "app",
-        repo: null,
-        userLogin: null,
-        scopes: [],
-        checkedAt: token.trim().length > 0 ? new Date().toISOString() : null,
-        authMode,
-        tokenExpiresAt: readCredential(tokenExpiresAtKey),
-        refreshTokenStored: Boolean(readCredential(refreshTokenKey)),
-        // The bundled ADE app client makes OAuth always available; a custom
-        // client (if configured) takes precedence over it.
-        oauthConfigured: true,
-      };
-    },
-    getTokenOrThrow() {
-      const { token } = readToken();
-      if (!token.trim()) {
-        throw new Error(
-          "Linear token missing. Set ADE_LINEAR_API, LINEAR_API_KEY, ADE_LINEAR_TOKEN, or LINEAR_TOKEN for headless mode.",
-        );
-      }
-      return token.trim();
-    },
-    setToken(nextToken: string) {
-      tokenOverride = nextToken.trim();
-      writeCredential(tokenKey, tokenOverride);
-      writeCredential(authModeKey, "manual");
-      writeCredential(refreshTokenKey, null);
-      writeCredential(tokenExpiresAtKey, null);
-    },
-    setOAuthToken(args: {
-      accessToken: string;
-      refreshToken?: string | null;
-      expiresAt?: string | null;
-    }) {
-      tokenOverride = args.accessToken.trim();
-      writeCredential(tokenKey, tokenOverride);
-      writeCredential(authModeKey, "oauth");
-      writeCredential(refreshTokenKey, args.refreshToken);
-      writeCredential(tokenExpiresAtKey, args.expiresAt);
-    },
-    clearToken() {
-      tokenOverride = "";
-      writeCredential(tokenKey, null);
-      writeCredential(authModeKey, null);
-      writeCredential(refreshTokenKey, null);
-      writeCredential(tokenExpiresAtKey, null);
-    },
-    setOAuthClientCredentials(args: {
-      clientId: string;
-      clientSecret?: string | null;
-    }) {
-      const clientId = args.clientId.trim();
-      if (!clientId.length) {
-        throw new Error("A Linear OAuth client ID is required.");
-      }
-      writeCredential(
-        oauthClientKey,
-        JSON.stringify({
-          clientId,
-          clientSecret: args.clientSecret?.trim() || null,
-        }),
-      );
-    },
-    clearOAuthClientCredentials() {
-      writeCredential(oauthClientKey, null);
-    },
-    getOAuthClientCredentials() {
-      // Resolution order lives in readOAuthClientCredentials: user-configured
-      // client, then the bundled ADE Linear app (PKCE — no secret ships).
-      return readOAuthClientCredentials();
-    },
-    getOAuthClientSource(): LinearOAuthClientSource {
-      // Compare by client id, not by which branch resolved: the bundled id is
-      // the ADE app even when a user pasted it in as a "custom" client.
-      return readOAuthClientCredentials()?.clientId === BUNDLED_LINEAR_OAUTH_CLIENT_ID ? "ade-app" : "custom";
-    },
-    ensureFreshToken,
-  };
-}
-
 function createHeadlessAgentChatService(
   projectRoot: string,
   githubService: HeadlessGitHubService,
@@ -3231,6 +2951,9 @@ export function createHeadlessLinearServices(
     createHeadlessLinearCredentialService({
       adeDir: args.adeDir,
       logger: args.logger,
+      getAccountVault: args.getAccountVault,
+      getAccountUserId: args.getAccountUserId,
+      getDeviceId: args.getDeviceId,
     });
   const githubService = createHeadlessGitHubService(
     args.projectRoot,

@@ -1,8 +1,11 @@
+export type ProjectSecretStorage = "account" | "device";
+
 export type ProjectSecretSummary = {
   name: string;
   createdAt: string;
   updatedAt: string;
   valueLength: number;
+  storage: ProjectSecretStorage;
 };
 
 export type ProjectSecretsStorageInfo = {
@@ -23,6 +26,7 @@ export type ProjectSecretValueResult = ProjectSecretSummary & {
 export type ProjectSecretSetArgs = {
   name: string;
   value: string;
+  storage?: ProjectSecretStorage;
 };
 
 export type ProjectSecretGetArgs = {

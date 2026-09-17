@@ -5,11 +5,11 @@ import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
-  cardStyle,
   inlineBadge,
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import { SettingsCard } from "./primitives";
 import { SettingsSectionShell } from "./settingsSectionUi";
 
 const summaryRowStyle: React.CSSProperties = {
@@ -79,9 +79,8 @@ function formatCleanupNotice(result: AdeCleanupResult, verb: string): string {
 function countActionableIssues(snapshot: AdeProjectSnapshot): number {
   const missingPaths = snapshot.entries.filter((entry) => !entry.exists).length;
   const healthIssues = snapshot.health.filter((issue) => issue.severity !== "info").length;
-  const trustIssue = snapshot.config.trust.requiresSharedTrust ? 1 : 0;
   const startupFixes = snapshot.cleanup.changed ? 1 : 0;
-  return missingPaths + healthIssues + trustIssue + startupFixes;
+  return missingPaths + healthIssues + startupFixes;
 }
 
 function CollapsiblePanel({
@@ -98,7 +97,7 @@ function CollapsiblePanel({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 12, marginTop: 12 }}>
+    <div style={{ borderTop: `1px solid ${COLORS.borderMuted}`, paddingTop: 12, marginTop: 12 }}>
       <button
         type="button"
         onClick={onToggle}
@@ -220,15 +219,17 @@ export function ProjectSection() {
   const actionableIssues = snapshot ? countActionableIssues(snapshot) : 0;
   const healthy = snapshot ? actionableIssues === 0 : false;
 
+  const shellDescription = (
+    <>
+      ADE stores team settings and local runtime data in a <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>.ade/</span> folder inside this repo.
+    </>
+  );
+
   if (!snapshot) {
     return (
       <SettingsSectionShell
         title="Project files"
-        description={
-          <>
-            ADE stores team settings and local runtime data in a <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>.ade/</span> folder inside this repo.
-          </>
-        }
+        description={shellDescription}
         icon={FolderOpen}
         brandColor="#34D399"
         iconWeight="fill"
@@ -241,10 +242,6 @@ export function ProjectSection() {
   }
 
   const warnings = snapshot.health.filter((issue) => issue.severity !== "info");
-  const teamConfigLabel = snapshot.config.trust.requiresSharedTrust
-    ? "Needs approval"
-    : "Approved";
-  const teamConfigColor = snapshot.config.trust.requiresSharedTrust ? COLORS.warning : COLORS.success;
   const folderLabel = grouped.missing.length > 0
     ? `${grouped.missing.length} missing path${grouped.missing.length === 1 ? "" : "s"}`
     : snapshot.cleanup.changed
@@ -256,50 +253,56 @@ export function ProjectSection() {
   return (
     <SettingsSectionShell
       title="Project files"
-      description={
-        <>
-          ADE stores team settings and local runtime data in a <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>.ade/</span> folder inside this repo.
-        </>
-      }
+      description={shellDescription}
       icon={FolderOpen}
       brandColor="#34D399"
       iconWeight="fill"
     >
-      <div style={cardStyle({ padding: 16 })}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 16 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              {healthy ? "Everything looks good" : "Needs attention"}
-            </div>
-            <div style={{ marginTop: 6, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-              {healthy
-                ? "Your repo folder, config files, and warnings are all in good shape."
-                : "Review the items below or use a repair action if something looks off."}
-            </div>
+      <SettingsCard
+        anchor="project"
+        title={healthy ? "Everything looks good" : "Needs attention"}
+        description={
+          healthy
+            ? "Your repo folder, config files, and warnings are all in good shape."
+            : "Review the items below or use a repair action if something looks off."
+        }
+        control={
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <span style={inlineBadge(healthy ? COLORS.success : COLORS.warning)}>
+              {healthy ? (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <CheckCircle size={13} weight="fill" />
+                  OK
+                </span>
+              ) : (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <WarningCircle size={13} weight="fill" />
+                  Check
+                </span>
+              )}
+            </span>
+            <button
+              type="button"
+              style={actionableIssues > 0
+                ? primaryButton({ height: 28, padding: "0 10px", fontSize: 11 })
+                : outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+              disabled={busy != null}
+              onClick={() => void runAction("repair", () => window.ade.project.initializeOrRepair())}
+            >
+              {busy === "repair" ? "Repairing..." : "Fix .ade folder"}
+            </button>
+            <button
+              type="button"
+              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+              disabled={busy != null}
+              onClick={() => void runAction("integrity", () => window.ade.project.runIntegrityCheck())}
+            >
+              {busy === "integrity" ? "Repairing..." : "Repair session logs"}
+            </button>
           </div>
-          <span style={inlineBadge(healthy ? COLORS.success : COLORS.warning)}>
-            {healthy ? (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                <CheckCircle size={13} weight="fill" />
-                OK
-              </span>
-            ) : (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                <WarningCircle size={13} weight="fill" />
-                Check
-              </span>
-            )}
-          </span>
-        </div>
-
+        }
+      >
         <div>
-          <div style={summaryRowStyle}>
-            <div style={summaryLabelStyle}>Team config</div>
-            <div style={summaryValueStyle}>
-              <span style={{ color: teamConfigColor, fontWeight: 600 }}>{teamConfigLabel}</span>
-              <span style={{ color: COLORS.textMuted }}> · {relativeAdePath(snapshot.config.sharedPath, snapshot.adeDir)}</span>
-            </div>
-          </div>
           <div style={summaryRowStyle}>
             <div style={summaryLabelStyle}>Your overrides</div>
             <div style={summaryValueStyle}>{relativeAdePath(snapshot.config.localPath, snapshot.adeDir)}</div>
@@ -394,27 +397,8 @@ export function ProjectSection() {
               </div>
             </div>
           </CollapsiblePanel>
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
-            <button
-              type="button"
-              style={actionableIssues > 0 ? primaryButton() : outlineButton()}
-              disabled={busy != null}
-              onClick={() => void runAction("repair", () => window.ade.project.initializeOrRepair())}
-            >
-              {busy === "repair" ? "Repairing..." : "Fix .ade folder"}
-            </button>
-            <button
-              type="button"
-              style={outlineButton()}
-              disabled={busy != null}
-              onClick={() => void runAction("integrity", () => window.ade.project.runIntegrityCheck())}
-            >
-              {busy === "integrity" ? "Repairing..." : "Repair session logs"}
-            </button>
-          </div>
         </CollapsiblePanel>
-      </div>
+      </SettingsCard>
     </SettingsSectionShell>
   );
 }

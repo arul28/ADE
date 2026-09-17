@@ -360,6 +360,9 @@ import type {
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
   AdeAccountSessionRepairResult,
+  AccountSettingRow,
+  AccountSettingsResult,
+  AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -10520,6 +10523,24 @@ const adeBridge = {
     repairSession: (): Promise<AdeAccountSessionRepairResult> =>
       ipcRenderer.invoke(IPC.accountRepairSession),
   },
+  /**
+   * The account settings store. Every method resolves to an
+   * `{ ok: false, unavailable: true }` result rather than rejecting when no
+   * brain is reachable, so a renderer that is offline simply keeps its local
+   * copy.
+   */
+  accountSettings: {
+    list: (args?: { scope?: string | null }): Promise<AccountSettingsResult<AccountSettingRow[]>> =>
+      ipcRenderer.invoke(IPC.accountSettingsList, args ?? {}),
+    get: (args: { scope: string; key: string }): Promise<AccountSettingsResult<unknown>> =>
+      ipcRenderer.invoke(IPC.accountSettingsGet, args),
+    set: (
+      args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> =>
+      ipcRenderer.invoke(IPC.accountSettingsSet, args),
+    sync: (): Promise<AccountSettingsResult<null>> =>
+      ipcRenderer.invoke(IPC.accountSettingsSync),
+  },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>
       callProjectRuntimeActionOr("pr", "createFromLane", { args }, () =>
@@ -11358,24 +11379,6 @@ const adeBridge = {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.projectConfigDiffAgainstDisk);
-    },
-    confirmTrust: async (
-      arg: { sharedHash?: string } = {},
-    ): Promise<ProjectConfigTrust> => {
-      projectConfigSnapshotCache.clear();
-      try {
-        const runtime =
-          await callProjectRuntimeActionIfBound<ProjectConfigTrust>(
-            "project_config",
-            "confirmTrust",
-            { args: arg },
-          );
-        return runtime.handled
-          ? runtime.result
-          : ipcRenderer.invoke(IPC.projectConfigConfirmTrust, arg);
-      } finally {
-        projectConfigSnapshotCache.clear();
-      }
     },
   },
   zoom: {

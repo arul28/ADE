@@ -136,12 +136,6 @@ export type ProvidersViewContext = {
   acpDoctorBusy: AcpSettingsProviderId | null;
   acpDiagnosticsError: Partial<Record<AcpSettingsProviderId, string>>;
 
-  /** Abstract permission defaults as persisted in `ai.permissions.providers`. */
-  permissionDefaults: AiProviderPermissions;
-  savingPermissionFor: SettingsProviderId | null;
-  defaultModelId: string | null;
-  savingDefaultModel: boolean;
-
   actions: ProvidersActions;
 };
 
@@ -180,8 +174,6 @@ export type ProvidersActions = {
   saveAdvancedProvider: () => Promise<void>;
   saveCustomModelSlugs: () => Promise<void>;
 
-  setPermissionDefault: (provider: SettingsProviderId, mode: AgentChatPermissionMode) => Promise<void>;
-  setDefaultModel: (modelId: string | null) => Promise<void>;
 
   revealClaudeLoginTerminal: (terminal: { terminalId: string; laneId: string }) => void;
 

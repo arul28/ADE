@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { ArrowsClockwise, CheckCircle, TerminalWindow, Warning } from "@phosphor-icons/react";
+import { ArrowsClockwise, CheckCircle, Warning } from "@phosphor-icons/react";
 import type { AdeCliStatus } from "../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { rendererPlatformAttribute } from "../../lib/platform";
+import { SettingsCard, SettingsGroup } from "./primitives";
 
 /**
  * The terminal installer this card's button mirrors: it drops the same `ade`
@@ -86,35 +87,23 @@ export function AdeCliSection({ embedded = false }: Props) {
   }
   const installDisabled = loading || installing || terminalReady || !status?.installAvailable || !window.ade?.adeCli;
 
-  const body = (
-    <>
-      {notice ? (
-        <div style={noticeStyle(notice.kind)}>
-          {notice.text}
-        </div>
-      ) : null}
-
-      <div style={embedded ? undefined : cardStyle({ borderColor: `${statusColor}30` })}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-            {!embedded ? (
-              <TerminalWindow size={28} weight="duotone" style={{ color: statusColor, flexShrink: 0 }} />
-            ) : null}
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: embedded ? 13 : 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                {embedded ? "Terminal CLI" : "ADE command"}
-              </div>
-              <div style={{ marginTop: 4, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>
-                {embedded
-                  ? <>Use <code style={codeStyle()}>ade</code> in your own Terminal. Agents launched by ADE already get the bundled CLI.</>
-                  : <>Agents launched by ADE get the bundled CLI automatically. Installing it here makes <code style={codeStyle()}>ade</code> available in your Terminal.</>}
-              </div>
-            </div>
+  return (
+    <SettingsGroup title="Command line">
+      <SettingsCard
+        anchor="ade-cli"
+        title={embedded ? "Terminal CLI" : "ADE command"}
+        description={embedded
+          ? <>Use <code style={codeStyle()}>ade</code> in your own Terminal. Agents launched by ADE already get the bundled CLI.</>
+          : <>Agents launched by ADE get the bundled CLI automatically. Installing it here makes <code style={codeStyle()}>ade</code> available in your Terminal.</>}
+        control={<span style={inlineBadge(statusColor)}>{loading ? "Checking" : statusLabel}</span>}
+      >
+        {notice ? (
+          <div style={{ ...noticeStyle(notice.kind), marginBottom: 14 }}>
+            {notice.text}
           </div>
-          <span style={inlineBadge(statusColor)}>{loading ? "Checking" : statusLabel}</span>
-        </div>
+        ) : null}
 
-        <div style={{ display: "grid", gap: 8, marginTop: embedded ? 14 : 18 }}>
+        <div style={{ display: "grid", gap: 8 }}>
           <ReadinessRow
             ready={agentReady}
             label="Agent sessions"
@@ -147,7 +136,7 @@ export function AdeCliSection({ embedded = false }: Props) {
           </div>
         ) : null}
 
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: embedded ? 14 : 18, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14, flexWrap: "wrap" }}>
           <button type="button" style={outlineButton({ height: 32 })} disabled={loading || installing} onClick={() => void refresh()}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               <ArrowsClockwise size={13} weight="bold" />
@@ -168,14 +157,8 @@ export function AdeCliSection({ embedded = false }: Props) {
                 : "Local development uses npm link for Terminal installs."}
           </div>
         ) : null}
-      </div>
-    </>
-  );
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {body}
-    </div>
+      </SettingsCard>
+    </SettingsGroup>
   );
 }
 

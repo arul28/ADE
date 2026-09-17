@@ -79,7 +79,7 @@ export function CursorCloudQuickViewButton({
   variant = "icon",
   onMenuActivate,
 }: {
-  variant?: "icon" | "menu-row" | "sidebar-row";
+  variant?: "icon" | "menu-row";
   onMenuActivate?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
@@ -240,22 +240,17 @@ export function CursorCloudQuickViewButton({
         data-state={open ? "open" : undefined}
         className={variant === "menu-row"
           ? HEADER_STATUS_MENU_ROW_CLASS
-          : variant === "sidebar-row"
-            ? `ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100${open ? " bg-white/[0.08]" : ""}`
-            : "ade-shell-control relative inline-flex h-[20px] w-[20px] items-center justify-center transition-[background-color,color,border-color,box-shadow] duration-150"}
+          : "ade-shell-control relative inline-flex h-[20px] w-[20px] items-center justify-center transition-[background-color,color,border-color,box-shadow] duration-150"}
         style={{
           WebkitAppRegion: "no-drag",
           color: open ? "#C4B5FD" : undefined,
         } as React.CSSProperties}
         onClick={handleToggle}
       >
-        {variant === "sidebar-row" ? (
-          <span className="ade-shell-sidebar-icon-slot flex shrink-0 items-center justify-center">
-            <Cursor.Avatar size={20} />
-          </span>
-        ) : (
-          <Cursor.Avatar size={variant === "menu-row" ? 12 : 13} />
-        )}
+        {/* The bare mark, not the avatar: the avatar draws its own rounded
+            tile and inset, which made the glyph read smaller than Linear's
+            mark in the same 20px control. */}
+        {variant === "menu-row" ? <Cursor.Avatar size={12} /> : <Cursor size={15} />}
         {variant !== "icon" ? <span className="ade-tab-label min-w-0 flex-1 truncate">Cursor Cloud</span> : null}
         {unreadFinished > 0 ? (
           <span

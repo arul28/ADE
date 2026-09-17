@@ -24,6 +24,7 @@ where the machinery lives.
 | `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. Reasoning/fast variants are per-provider: Claude/Codex/Droid/Pi keep their flags, but tracked OpenCode launches always run the root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — no `run --interactive` branch and no `--variant`, because the root command silently drops unknown args; variants remain a chat-runtime feature. |
 | `apps/desktop/src/main/services/ai/providerRuntimeHealth.ts` | Tracks provider readiness/auth/network failures so the UI can surface degraded states. |
 | `apps/desktop/src/main/services/ai/providerOptions.ts` | Normalises provider-native options (Claude permission mode, Codex approval + sandbox, OpenCode permission). |
+| `apps/desktop/src/main/services/ai/apiKeyStore.ts`, `apps/desktop/src/main/services/account/accountVaultBridge.ts` | Encrypts ADE-managed provider keys in machine storage, records account/device provenance, mirrors account-origin keys to the brain-backed vault, and purges account-origin values at sign-out or account switch. |
 | `apps/desktop/src/main/services/shared/providerConfigHomes.ts` | Where each provider CLI keeps its user-level config (`claudeConfigHome`, `codexConfigHome`, `factoryConfigHome`), and the canonical statement of the config-ownership rule below. Every adapter that reads or writes a provider config path goes through it. |
 | `apps/desktop/src/main/services/ai/authDetector.ts` | Discovers available credentials (CLI, API key, OAuth) and reports auth status. |
 | `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor and Droid run through embedded SDKs (`@cursor/sdk`, `@factory/droid-sdk`). |
@@ -176,8 +177,11 @@ host-advertised model metadata over their static compatibility catalogs.
   but ADE now probes `cursor-agent` for CLI-launch model inventory and
   merges those rows with the SDK registry so the picker can distinguish
   SDK chat models from Cursor CLI-only models.
-- API-key providers check the keychain via `apiKeyStore.ts` and then
-  the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / etc. env vars.
+- API-key providers check encrypted machine storage via `apiKeyStore.ts` and
+  then the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / etc. env vars. ADE-managed
+  keys can be account-owned (`provider_api_key` in the account vault) or
+  device-only; provenance decides which local values hydrate and which are
+  purged when the account changes.
 - OAuth providers trigger the OAuth redirect flow in
   `services/lanes/oauthRedirectService.ts`.
 - Local providers (`ollama`, `lmstudio`) probe the configured endpoint
@@ -198,6 +202,13 @@ verification result.
 
 Results feed into the UI's `AiProviderConnectionStatus` /
 `AiRuntimeConnectionStatus` (see `providerConnectionStatus.ts`).
+
+ADE's account vault is not a provider SDK config home. The brain owns the
+account refresh boundary and desktop, CLI, and ADE Code request access tokens
+through its refresh broker. The local encrypted key store remains the runtime
+adapter's fast path, while account migration and hydration fill it without
+overwriting a device-origin key. Ambient environment variables, provider-owned
+CLI stores, and Pi's `auth.json` remain local to the machine or provider.
 
 ### Pi sign-in
 

@@ -99,3 +99,26 @@ export function createAccountNamespace(
     },
   };
 }
+
+/**
+ * The hosted web client has no brain to reach, so the account settings store is
+ * reported unavailable rather than stubbed with a lie.
+ *
+ * An "ok, empty" answer would read as "your account has no saved settings" and
+ * would let the hydrator overwrite nothing while the write-through silently
+ * dropped every change. Unavailable is the truthful shape, and it is the one
+ * the offline desktop path already handles: keep the local copy.
+ */
+export function createAccountSettingsNamespace(): NonNullable<Window["ade"]["accountSettings"]> {
+  const unavailable = {
+    ok: false as const,
+    unavailable: true as const,
+    message: "Account settings sync needs the ADE desktop app on this computer.",
+  };
+  return {
+    list: async () => unavailable,
+    get: async () => unavailable,
+    set: async () => unavailable,
+    sync: async () => unavailable,
+  };
+}

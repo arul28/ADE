@@ -30,8 +30,6 @@ function makeSnapshot(overrides: Partial<ProjectConfigSnapshot> = {}): ProjectCo
     trust: {
       sharedHash: "shared",
       localHash: "local",
-      approvedSharedHash: "shared",
-      requiresSharedTrust: false,
     },
     paths: {
       sharedPath: "/tmp/project/.ade/project.json",

@@ -426,7 +426,7 @@ ade code remote --target mac --route tailscale
                                          # require the paired Tailscale path for this launch
 ade code remote session --target mac --project ADE --session chat-1
                                          # open a specific remote chat or provider CLI terminal session
-ade login                                # sign in to the optional shared machine account
+ade login                                # sign in to the required ADE account
 ade machines list --text                # list available, unreachable, and offline machines
 ade machines connect <machine-key> --project ADE
                                          # pair if needed, then open ADE Code

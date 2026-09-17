@@ -25,13 +25,15 @@ Default routing for typed commands: prefer the machine brain endpoint if reachab
 | `$ADE_HOME/projects.json` | Project catalog. |
 | `$ADE_HOME/personal-chats/` | Machine-owned projectless chat runtime state, hidden workspace, transcripts, and attachments. |
 | `~/.ade/secrets/` | Machine credential store (`credentials.safe.enc` for desktop safeStorage, `credentials.json.enc` plus `.machine-key` for headless fallback storage, per-store `*.lock` files, and the Ed25519 `machine-identity-signing.json` used by account adoption). |
+| `$ADE_HOME/account-settings.json` | Machine cache for account-scoped settings; settings survive sign-out. |
+| `$ADE_HOME/account-vault.json.enc` | Encrypted machine cache for account-scoped credentials; the cache is purged on deliberate sign-out. |
 | `~/.ade/bin/ade` | Bundled static runtime binary (release installs / remote uploads). |
 | `~/.ade/agent-skills/` | Bundled, version-locked ADE agent skills. Desktop remote bootstrap uploads this beside the remote runtime; CLI launch then re-seeds ADE-managed skills into runtime-native home skill directories. |
 | `~/.ade/runtime/<platform-arch>/` | Native node modules for that runtime binary. |
 | `~/.ade/cache/desktop/` | Partially downloaded desktop installer, kept between `ade setup` runs so an interrupted 1 GB download resumes. Deleted once the install succeeds. |
 | `~/.ade/runtime/launchd.{out,err}.log` | Runtime stdout/stderr when running as a login service on macOS. |
 
-Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`). Project-scoped ADE secrets live in `<project>/.ade/secrets/project-secrets.v1.enc` and are exposed through `ade secrets` / the `project_secret` action domain.
+Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`). Project-scoped ADE secrets use the encrypted local cache at `<project>/.ade/secrets/project-secrets.v1.enc`; signed-in account-scoped entries also sync through the encrypted account vault. They are exposed through `ade secrets` / the `project_secret` action domain.
 
 Channel builds use parallel state roots and binary names so Stable, Beta, and Alpha can coexist:
 
@@ -272,7 +274,7 @@ projects.remove { projectId } -> { removed }
 projects.touch  { projectId } -> ProjectRecord
 ```
 
-`projects.list` stamps each returned record with an `icon: { dataUrl, sourcePath, mimeType }` resolved on the host (`resolveRemoteProjectIcon` in `src/services/projects/projectIconResolver.ts`) — a best-effort, electron-free icon lookup (`.ade/ade.yaml` override, conventional icon/logo files, `index.html` `<link rel="icon">`, capped at 2 MB) so a desktop connected over the remote runtime can show the real project logo in its tab instead of a blank folder. A per-project resolution failure degrades to a null icon and never breaks the list.
+`projects.list` stamps each returned record with an `icon: { dataUrl, sourcePath, mimeType }` resolved on the host (`resolveRemoteProjectIcon` in `src/services/projects/projectIconResolver.ts`) — a best-effort, electron-free icon lookup (`.ade/local.yaml` override, conventional icon/logo files, `index.html` `<link rel="icon">`, capped at 2 MB) so a desktop connected over the remote runtime can show the real project logo in its tab instead of a blank folder. A per-project resolution failure degrades to a null icon and never breaks the list.
 
 Adding a project creates `<rootPath>/.ade/` if needed but does not run any heavy onboarding. The first project-scoped JSON-RPC call lazily builds an `AdeRuntime` for that root via `ProjectScopeRegistry`.
 
@@ -405,7 +407,7 @@ ade code remote --target mac --route tailscale --project ADE
                                    # require a paired Tailscale path; auto also tries LAN then Relay
 ade code remote session --target mac --project ADE --session chat-1
                                    # open a remote chat or provider CLI terminal session
-ade login                          # sign in to the optional shared machine account
+ade login                          # sign in to the shared ADE account
 ade machines list --text          # list account machines: dial status, plus a
                                    # presence column (Connected/Online/Asleep/
                                    # Offline and battery or wall power)
@@ -725,7 +727,8 @@ ade sync web --open                                # also open the pairing link 
 ade sync web --no-clipboard                        # print only; don't copy the link to the clipboard
 ade secrets list --text
 ade secrets get STRIPE_API_KEY --text
-ade secrets set STRIPE_API_KEY --value sk_...
+ade secrets set STRIPE_API_KEY --value sk_... --storage account
+ade secrets set LOCAL_TOKEN --value local-value --storage device
 printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
@@ -747,6 +750,10 @@ ade storage compress --text                          # losslessly compress old c
 ade --role cto storage maintenance --text            # run the policy-driven ledger maintenance sweep now (CTO)
 ade storage actions --text                           # raw storage service actions (cleanupPreview/cleanup live here)
 ade actions list --domain chat --text
+ade actions run account_settings.list --args-list-json '["all"]' --text
+ade actions run account_settings.set --args-list-json '["all","appearance.theme","dark"]' --text
+ade actions run account_vault.list --args-list-json '["all"]' --text
+ade --role cto actions run account_vault.get --args-list-json '["all","provider_api_key","openai"]' --text
 ade --role cto actions list --domain attention --text # discover account-wide Activity actions (domain name is a frozen wire identifier)
 ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
@@ -942,7 +949,7 @@ renderer publishing what it has open for phones and the hosted web client to
 mirror; an agent that wants a pane open should open the tool it needs
 (`ade browser panel`) rather than claim one is open.
 
-Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; `list` is metadata-only and `get --text` prints the secret value, so agents should read only the named secret the user asked for and avoid logging it.
+Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; account-linked projects default to account storage, `--storage account|device` chooses the scope explicitly, `list` is metadata-only and includes each secret's location, and `get --text` prints the secret value. Agents should read only the named secret the user asked for and avoid logging it.
 
 Output modes are explicit: `--text` for human-readable summaries, `--json` (default for piped output) for stable JSON, and `--pretty` for pretty-printed JSON.
 
@@ -974,8 +981,9 @@ publisher lives in the brain, **the brain must keep running for the machine to
 stay reachable** — which is what the service step guarantees. The directory
 also marks a machine `online` only within a 90s `last_seen_at` window.
 
-ADE accounts are optional; local `ade code`, project, lane, and PIN workflows
-remain available while signed out. `ade login` uses Clerk OAuth with a local
+An ADE account is required for shared account features; local `ade code`, project,
+lane, and PIN workflows already on this machine remain available while signed
+out. `ade login` uses Clerk OAuth with a local
 loopback callback when a browser is available. `--headless`, SSH sessions, and
 display-less Linux hosts use the account-directory device bridge instead: the
 CLI prints a verification URL and short code that can be completed in any
@@ -992,9 +1000,10 @@ Legacy opaque refresh tokens still work when local `CLERK_ISSUER` and
 `CLERK_OAUTH_CLIENT_ID` are configured; recreate them with the command above to
 remove that dependency. ADE never logs this environment value.
 
-Provider credentials, GitHub tokens, Linear tokens, and computer-use policy
-remain separate and are read from ADE project settings and their existing
-secure stores.
+Provider API keys, Linear OAuth credentials, and project secrets can follow the
+signed-in account through the encrypted account vault; device-only values remain
+in the machine's encrypted stores. GitHub tokens and computer-use policy remain
+separate and are read from their existing secure stores.
 
 `ade doctor` inspects the installed app and machine-brain health and prints one
 status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is

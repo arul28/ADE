@@ -299,6 +299,7 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createProjectSecretService } from "./services/secrets/projectSecretService";
+import { initApiKeyStore } from "./services/ai/apiKeyStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "./services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "./services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
@@ -339,6 +340,7 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoVoiceRuntimeService } from "./services/cto/ctoVoiceRuntimeService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
+import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
 import {
   buildRendererCspPolicy,
   isRendererFrameNavigationAllowed,
@@ -1954,6 +1956,11 @@ app.whenReady().then(async () => {
       }
     },
   });
+  const accountVaultBridge = createAccountVaultBridge({
+    getPool: () => localRuntimePool,
+    getRootPath: () => bootedUsageScopeRoot([...projectContexts.values()]),
+    logger: localRuntimeLogger,
+  });
   // Carry this machine's OS-level suspend/resume into the brain, which has no
   // such hook of its own and owns the account-directory publisher. Registered
   // here rather than lazily so the beat is already wired the first time the lid
@@ -3013,14 +3020,16 @@ app.whenReady().then(async () => {
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
     const scaffoldedFirstOpen = consumeFirstOpenStabilityMarker(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
-    const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
-    initApiKeyStore(projectRoot, {
-      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
-    });
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     registerAccountConfigProjectRoot(projectRoot);
     const accountAuthService = getSharedAccountAuthService({
       projectRoots: () => [projectRoot],
+      logger,
+    });
+    initApiKeyStore(projectRoot, {
+      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+      getAccountVault: () => accountVaultBridge,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
     });
     const getAccountAccessToken = () => getSignedInAccountAccessToken(accountAuthService);
@@ -3371,7 +3380,11 @@ app.whenReady().then(async () => {
       db,
       logger,
     });
-    const projectSecretService = createProjectSecretService(projectRoot);
+    const projectSecretService = createProjectSecretService(projectRoot, {
+      getAccountVault: () => accountVaultBridge,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+    });
 
     const laneEnvironmentService = createLaneEnvironmentService({
       projectRoot,
@@ -3381,7 +3394,6 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
       // Setup scripts run unrestricted shell and can come from repo-committed
       // shared config, so the executor gets the same trust gate test suites use.
-      projectConfigService,
     });
 
     const laneTemplateService = createLaneTemplateService({
@@ -3994,6 +4006,18 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir,
       logger,
       credentialStore: linearCredentialStore,
+      getAccountVault: () => accountVaultBridge,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      getDeviceId: () => {
+        try {
+          return fs.readFileSync(
+            path.join(machineAdeLayout.secretsDir, "sync-device-id"),
+            "utf8",
+          ).trim() || null;
+        } catch {
+          return null;
+        }
+      },
     });
     const linearClient = createLinearClient({
       credentials: linearCredentialService,
@@ -8463,6 +8487,16 @@ app.whenReady().then(async () => {
     syncNotchScreenState();
   });
 
+  // The account bridge is available on the welcome screen, before any project
+  // context has initialized the API-key service. Bind the machine credential
+  // store once here so a sign-out from that screen still purges account keys.
+  initApiKeyStore(path.dirname(machineAdeLayout.adeDir), {
+    credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+    getAccountUserId: () => getSharedAccountAuthService({
+      secretsDir: machineAdeLayout.secretsDir,
+    }).getStatus().userId,
+  });
+
   attentionIpcBridge = registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
@@ -8484,6 +8518,36 @@ app.whenReady().then(async () => {
       const contexts = new Set<AppContext>(projectContexts.values());
       contexts.add(getActiveContext());
       return Array.from(contexts);
+    },
+    purgeClosedAccountCredentials: () => {
+      const knownRoots = new Set<string>([
+        ...readLocalRecentProjects().map((entry) => entry.rootPath),
+        ...attemptedProjectRoots.list(),
+      ]);
+      for (const projectRoot of knownRoots) {
+        const normalizedRoot = normalizeProjectRoot(projectRoot);
+        if (projectContexts.has(normalizedRoot)) continue;
+        const adeDir = resolveAdeLayout(normalizedRoot).adeDir;
+        try {
+          createProjectSecretService(normalizedRoot).purgeAccountCredentials();
+        } catch (error) {
+          getActiveContext().logger.warn("account.closed_project_secrets_purge_failed", {
+            projectRoot: normalizedRoot,
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+        try {
+          createLinearCredentialService({
+            adeDir,
+            credentialStore: createDesktopCredentialStore(path.join(adeDir, "secrets")),
+          }).purgeAccountCredentials();
+        } catch (error) {
+          getActiveContext().logger.warn("account.closed_project_linear_purge_failed", {
+            projectRoot: normalizedRoot,
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      }
     },
     getSyncService: () => {
       return getMobileSyncService();

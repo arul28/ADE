@@ -74,11 +74,17 @@ import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { isRecord, resolvePathWithinRoot } from "../shared/utils";
-import { ensureSharedAdeProjectScaffold, initializeOrRepairAdeProject } from "../projects/adeProjectService";
+import {
+  CARRY_OVER_EXECUTABLE_KEYS,
+  CARRY_OVER_IMPORTABLE_KEYS,
+  collectSkippedConfigPaths,
+  hasConfigKeyValue,
+  sanitizeCarryOverAiConfig,
+} from "./projectConfigCarryOver";
+import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
+import { writeFileAtomic as durableWriteFileAtomic } from "../state/durableFile";
 
-const TRUSTED_SHARED_HASH_KEY = "project_config:trusted_shared_hash";
 const VERSION = 1;
-const EMPTY_CONTENT_HASH = createHash("sha256").update("").digest("hex");
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
   "repo",
   "git",
@@ -120,37 +126,7 @@ const STRING_MAP_SCHEMA = z.record(z.string(), z.unknown())
 const COMPUTE_BACKEND_SCHEMA = z.enum(["local", "vps", "daytona"]).optional().catch(undefined);
 
 function writeFileAtomicSync(target: string, data: string): void {
-  const dir = path.dirname(target);
-  const tmp = path.join(dir, "." + path.basename(target) + "." + process.pid + "." + Date.now() + ".tmp");
-  const fd = fs.openSync(tmp, "w");
-  try {
-    try {
-      fs.writeFileSync(fd, data, "utf8");
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    // Preserve the existing file's permissions: local.yaml may be chmod 600 to
-    // protect per-user env vars, but the temp file was created at the umask
-    // default (commonly 644). Copy the prior mode before swapping it in so the
-    // atomic write never widens permissions on a secrets-bearing config.
-    try {
-      fs.chmodSync(tmp, fs.statSync(target).mode & 0o777);
-    } catch {
-      // No existing target (first write) — keep the temp's default mode.
-    }
-    fs.renameSync(tmp, target);
-  } catch (error) {
-    // Any failure after the temp file was created (write/fsync/close OR rename,
-    // e.g. ENOSPC) must not leak the temp file. The live target is untouched
-    // until renameSync succeeds, so atomicity holds either way.
-    try {
-      fs.unlinkSync(tmp);
-    } catch {
-      // best-effort cleanup of the temp file
-    }
-    throw error;
-  }
+  durableWriteFileAtomic(target, data, { mode: 0o600, fsync: true });
 }
 
 function isPathWithinProjectRoot(projectRoot: string, candidate: string, opts: { allowMissing?: boolean } = {}): boolean {
@@ -1613,7 +1589,10 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     const maxPerStepTokenBudget = asNumber(orchestratorRaw.maxPerStepTokenBudget);
     if (maxPerStepTokenBudget != null && maxPerStepTokenBudget > 0) orchestrator.maxPerStepTokenBudget = maxPerStepTokenBudget;
 
-    // Legacy defaultPlannerProvider is ignored -- use defaultOrchestratorModel instead.
+    const defaultOrchestratorModel = coerceModelConfig(orchestratorRaw.defaultOrchestratorModel);
+    if (defaultOrchestratorModel) {
+      orchestrator.defaultOrchestratorModel = defaultOrchestratorModel;
+    }
 
     const autoResolveInterventions = asBool(orchestratorRaw.autoResolveInterventions);
     if (autoResolveInterventions != null) orchestrator.autoResolveInterventions = autoResolveInterventions;
@@ -1672,9 +1651,6 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     coerceSessionIntelligenceConfig(value.sessionIntelligence),
   );
   if (sessionIntelligence) out.sessionIntelligence = sessionIntelligence;
-
-  const defaultModel = asString(value.defaultModel)?.trim();
-  if (defaultModel) out.defaultModel = defaultModel;
 
   const apiKeys = asStringMap(value.apiKeys);
   if (apiKeys && Object.keys(apiKeys).length) out.apiKeys = apiKeys;
@@ -2073,7 +2049,6 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
   const out: AiConfig = {
     mode: localAi?.mode ?? sharedAi?.mode,
     defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
-    defaultModel: localAi?.defaultModel ?? sharedAi?.defaultModel,
     ...(Object.keys(taskRouting).length ? { taskRouting } : {}),
     ...(Object.keys(features).length ? { features } : {}),
     ...(Object.keys(budgets).length ? { budgets } : {}),
@@ -2308,26 +2283,6 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
 
 function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
-}
-
-function hasSharedConfigContent(config: ProjectConfigFile): boolean {
-  return Boolean(
-    config.project
-    || (config.testSuites?.length ?? 0) > 0
-    || (config.laneOverlayPolicies?.length ?? 0) > 0
-    || (config.automations?.length ?? 0) > 0
-    || (config.environments?.length ?? 0) > 0
-    || config.github
-    || config.git
-    || config.ai
-    || config.laneEnvInit
-    || (config.laneTemplates?.length ?? 0) > 0
-    || config.defaultLaneTemplate
-    || config.laneCleanup
-    || (config.providers && Object.keys(config.providers).length > 0)
-    || config.linearSync
-    || config.ui
-  );
 }
 
 function createDefId(projectId: string, key: string): string {
@@ -3137,14 +3092,6 @@ function validateEffectiveConfig(
   };
 }
 
-function trustError(sharedHash: string): Error {
-  const err = new Error(
-    `ADE_TRUST_REQUIRED: Shared config changed and must be confirmed before execution (sharedHash=${sharedHash})`
-  );
-  (err as Error & { code?: string }).code = "ADE_TRUST_REQUIRED";
-  return err;
-}
-
 function invalidConfigError(validation: ProjectConfigValidationResult): Error {
   const first = validation.issues[0];
   const msg = first ? `${first.path}: ${first.message}` : "Unknown config validation failure";
@@ -3172,21 +3119,27 @@ export function createProjectConfigService({
   let lastSeenSharedHash: string | null = null;
   let lastSeenLocalHash: string | null = null;
 
-  const getTrustedSharedHash = (): string | null => db.getJson<string>(TRUSTED_SHARED_HASH_KEY);
-
-  const setTrustedSharedHash = (hash: string) => {
-    db.setJson(TRUSTED_SHARED_HASH_KEY, hash);
-  };
-
-  const buildTrust = ({ sharedHash, localHash }: { sharedHash: string; localHash: string }): ProjectConfigTrust => {
-    const approvedSharedHash = getTrustedSharedHash();
-    return {
-      sharedHash,
-      localHash,
-      approvedSharedHash,
-      requiresSharedTrust: approvedSharedHash == null ? sharedHash !== EMPTY_CONTENT_HASH : approvedSharedHash !== sharedHash
-    };
-  };
+  /**
+   * Two content hashes, and no verdict.
+   *
+   * There used to be a trust gate here: a committed `.ade/ade.yaml` could
+   * introduce commands a teammate never approved, so execution refused until
+   * someone confirmed the file. That gate went with the file it guarded — ADE's
+   * configuration is now personal, scoped to an account or a machine, and
+   * nothing arrives from a repository that could run on your computer.
+   *
+   * It was also, by the end, a gate nobody could open. The only control that
+   * called `confirmTrust` was a banner in the Automations tab that renders only
+   * when the rule list contains a shared rule, so a repository with
+   * `automations: []` — ADE's own, among others — could reach a state where
+   * test runs refused and no UI existed to clear it.
+   *
+   * The hashes stay because change detection still needs them.
+   */
+  const buildTrust = ({ sharedHash, localHash }: { sharedHash: string; localHash: string }): ProjectConfigTrust => ({
+    sharedHash,
+    localHash,
+  });
 
   const syncSnapshots = (effective: EffectiveProjectConfig) => {
     const now = new Date().toISOString();
@@ -3253,16 +3206,127 @@ export function createProjectConfigService({
     };
   };
 
+  /**
+   * The empty `shared` layer.
+   *
+   * `.ade/ade.yaml` is no longer configuration input. It was the one channel
+   * through which a repository could hand your machine a `command`, a
+   * `setupScript` or an agent prompt, and the trust gate that used to guard it
+   * is gone; ignoring the file is what makes that removal safe. The `shared`
+   * key stays on the snapshot — dozens of callers round-trip it through
+   * `save` — but it is always this empty object.
+   */
+  const emptySharedConfig = (): ProjectConfigFile => ({
+    version: VERSION,
+    testSuites: [],
+    laneOverlayPolicies: [],
+    automations: [],
+  });
+
+  /**
+   * One-time migration off the committed file.
+   *
+   * If a legacy `.ade/ade.yaml` is still on disk, its non-executable keys move
+   * into `local.yaml` (local always wins on conflict — it is the scope the user
+   * actually edited), its executable keys are dropped, and the file is removed
+   * from the working tree. Deleting the file is what makes this idempotent.
+   */
+  const carryOverLegacySharedConfig = (): void => {
+    if (!fs.existsSync(sharedPath)) return;
+
+    let legacy: ProjectConfigFile;
+    let local: ProjectConfigFile;
+    try {
+      legacy = readConfigFile(sharedPath).config;
+      local = readConfigFile(localPath).config;
+    } catch (error) {
+      // Unreadable or malformed: leave the file alone and carry on with an
+      // empty shared layer. A broken legacy file must not break project load.
+      logger.warn("projectConfig.carryOver.unreadable", {
+        sharedPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    const importedKeys: string[] = [];
+    const skippedExecutableKeys: string[] = [];
+    const merged: ProjectConfigFile = { ...local, version: VERSION };
+
+    for (const key of CARRY_OVER_EXECUTABLE_KEYS) {
+      if (hasConfigKeyValue(legacy, key)) skippedExecutableKeys.push(key);
+    }
+    for (const key of CARRY_OVER_IMPORTABLE_KEYS) {
+      if (!hasConfigKeyValue(legacy, key)) continue;
+      if (hasConfigKeyValue(local, key)) continue;
+      if (key === "ai") {
+        const sanitized = sanitizeCarryOverAiConfig(legacy.ai);
+        skippedExecutableKeys.push(...sanitized.skipped);
+        if (!sanitized.value) continue;
+        (merged as Record<string, unknown>)[key] = sanitized.value;
+        importedKeys.push(key);
+        continue;
+      }
+      (merged as Record<string, unknown>)[key] = legacy[key];
+      importedKeys.push(key);
+    }
+
+    // The legacy providers block is executable configuration consumed by the
+    // conflict/runtime services. There is no inert subset to carry over.
+    if (hasConfigKeyValue(legacy, "providers") && !hasConfigKeyValue(local, "providers")) {
+      const skippedProviders: string[] = [];
+      collectSkippedConfigPaths(legacy.providers, "providers", skippedProviders);
+      skippedExecutableKeys.push(...skippedProviders);
+    }
+
+    if (importedKeys.length > 0) {
+      writeFileAtomicSync(localPath, toCanonicalYaml(merged));
+    }
+
+    let removed = false;
+    let removeError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        fs.rmSync(sharedPath, { force: true });
+        removed = true;
+        break;
+      } catch (error) {
+        removeError = error;
+        const code = error && typeof error === "object" && "code" in error
+          ? (error as NodeJS.ErrnoException).code
+          : undefined;
+        if (code !== "EBUSY" && code !== "EPERM") break;
+      }
+    }
+    if (!removed) {
+      logger.warn("projectConfig.carryOver.removeFailed", {
+        sharedPath,
+        error: removeError instanceof Error ? removeError.message : String(removeError ?? ""),
+      });
+    }
+
+    logger.info("projectConfig.carryOver", {
+      sharedPath,
+      localPath,
+      importedKeys,
+      importedCount: importedKeys.length,
+      skippedExecutableKeys,
+      skippedCount: skippedExecutableKeys.length,
+      removed,
+    });
+  };
+
   const readSnapshotFromDisk = (): ProjectConfigSnapshot => {
     fs.mkdirSync(adeDir, { recursive: true });
 
-    const sharedFile = readConfigFile(sharedPath);
+    carryOverLegacySharedConfig();
+
     const localFile = readConfigFile(localPath);
 
-    const sharedHash = hashContent(sharedFile.raw);
+    const sharedHash = hashContent("");
     const localHash = hashContent(localFile.raw);
 
-    return buildSnapshotFromFiles(sharedFile.config, localFile.config, { sharedHash, localHash }, { persistSnapshots: true });
+    return buildSnapshotFromFiles(emptySharedConfig(), localFile.config, { sharedHash, localHash }, { persistSnapshots: true });
   };
 
   const validateCandidate = (shared: ProjectConfigFile, local: ProjectConfigFile): ProjectConfigValidationResult => {
@@ -3273,69 +3337,25 @@ export function createProjectConfigService({
   };
 
   const saveCandidate = (candidate: ProjectConfigCandidate): ProjectConfigSnapshot => {
-    const shared = normalizeConfigFilePaths(coerceConfigFile(candidate.shared), projectRoot);
+    // `candidate.shared` is accepted and ignored. Callers round-trip the
+    // snapshot's (always empty) shared layer; nothing is ever written back to
+    // `.ade/ade.yaml`, which this service no longer reads.
+    const shared = emptySharedConfig();
     const local = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
     const validation = validateCandidate(shared, local);
     if (!validation.ok) {
       throw invalidConfigError(validation);
     }
 
-    const sharedYaml = toCanonicalYaml(shared);
     const localYaml = toCanonicalYaml(local);
-    const shouldWriteShared = fs.existsSync(sharedPath) || hasSharedConfigContent(shared);
 
-    // Did this save actually EDIT the shared scope, or is it carrying the
-    // loaded shared snapshot back through untouched?
-    //
-    // Most callers are local-scope writers — `laneTemplateService.saveTemplate`,
-    // `deleteTemplate`, `setDefaultTemplateId`, `setPrTranscriptGists` — and
-    // they all round-trip `snapshot.shared` because `save` takes both scopes.
-    // Trusting on every save therefore let editing one lane template silently
-    // approve an unreviewed, repo-committed `.ade/ade.yaml`, which is exactly
-    // the attacker-supplied file the setup-script trust gate exists to stop.
-    // Compared canonically (parse then re-serialize both sides) so a
-    // formatting-only rewrite of an untrusted file is not mistaken for an edit.
-    const sharedOnDisk = readConfigFile(sharedPath);
-    const sharedOnDiskYaml = toCanonicalYaml(
-      normalizeConfigFilePaths(coerceConfigFile(sharedOnDisk.config), projectRoot),
-    );
-    const sharedScopeEdited = sharedYaml !== sharedOnDiskYaml;
-
-    // Trust is a hash of the RAW bytes, but every save rewrites `.ade/ade.yaml`
-    // as canonical YAML — so a local-only save of an already-trusted but
-    // hand-formatted shared file changes the bytes and would silently revoke
-    // trust, popping the "trust this project" gate with no user action. Carry
-    // trust across the reserialization when the pre-write bytes were the ones
-    // the user already approved. That does not reopen the laundering hole the
-    // `sharedScopeEdited` gate closed: re-affirming content that was already
-    // approved (and, canonically, is unchanged) approves nothing new.
-    const sharedWasTrusted = getTrustedSharedHash() === hashContent(sharedOnDisk.raw);
-
-    if (shouldWriteShared) {
-      ensureSharedAdeProjectScaffold(projectRoot, { logger });
-    } else {
-      initializeOrRepairAdeProject(projectRoot, { logger });
-    }
-    fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
-    if (shouldWriteShared) {
-      writeFileAtomicSync(sharedPath, sharedYaml);
-    }
+    initializeOrRepairAdeProject(projectRoot, { logger });
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
     writeFileAtomicSync(localPath, localYaml);
 
-    const sharedHash = hashContent(shouldWriteShared ? sharedYaml : "");
-    // Trust follows the new bytes when the save either edited the shared scope
-    // (the user reviewed what they just wrote) or merely reserialized bytes that
-    // were already trusted. An untrusted round-trip stays untrusted.
-    if (shouldWriteShared && (sharedScopeEdited || sharedWasTrusted)) {
-      setTrustedSharedHash(sharedHash);
-    }
-
     logger.info("projectConfig.save", {
-      sharedPath,
       localPath,
-      sharedHash,
-      sharedScopeEdited,
-      sharedWasTrusted,
+      localHash: hashContent(localYaml),
     });
 
     const snapshot = readSnapshotFromDisk();
@@ -3385,23 +3405,6 @@ export function createProjectConfigService({
         localChanged,
         sharedHash: snapshot.trust.sharedHash,
         localHash: snapshot.trust.localHash,
-        approvedSharedHash: snapshot.trust.approvedSharedHash,
-        requiresSharedTrust: snapshot.trust.requiresSharedTrust
-      };
-    },
-
-    confirmTrust({ sharedHash }: { sharedHash?: string } = {}): ProjectConfigTrust {
-      const snapshot = readSnapshotFromDisk();
-      if (sharedHash && sharedHash !== snapshot.trust.sharedHash) {
-        throw new Error("Shared hash mismatch while confirming trust");
-      }
-
-      setTrustedSharedHash(snapshot.trust.sharedHash);
-      logger.info("projectConfig.confirmTrust", { sharedHash: snapshot.trust.sharedHash });
-      return {
-        ...snapshot.trust,
-        approvedSharedHash: snapshot.trust.sharedHash,
-        requiresSharedTrust: false
       };
     },
 
@@ -3415,17 +3418,5 @@ export function createProjectConfigService({
       return snapshot.effective;
     },
 
-    getExecutableConfig(): EffectiveProjectConfig {
-      const snapshot = readSnapshotFromDisk();
-      lastSeenSharedHash = snapshot.trust.sharedHash;
-      lastSeenLocalHash = snapshot.trust.localHash;
-      if (!snapshot.validation.ok) {
-        throw invalidConfigError(snapshot.validation);
-      }
-      if (snapshot.trust.requiresSharedTrust) {
-        throw trustError(snapshot.trust.sharedHash);
-      }
-      return snapshot.effective;
-    }
   };
 }

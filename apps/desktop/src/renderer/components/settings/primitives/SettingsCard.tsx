@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import type { SettingScope } from "../settingsManifest";
-import { ScopeChip } from "./ScopeChip";
+import { SettingsPageShell } from "./SettingsPageShell";
 
 /**
  * One setting, one card. The card owns its anchor id, so a Cmd-K result or a
@@ -13,7 +13,7 @@ export function SettingsCard({
   description,
   control,
   scope,
-  showScopeChip = false,
+  showScopeChip,
   remoteMachineName,
   children,
   /** Renders the control below the description instead of to its right. */
@@ -24,7 +24,17 @@ export function SettingsCard({
   title: string;
   description?: React.ReactNode;
   control?: React.ReactNode;
+  /**
+   * Overrides the manifest. Only for a card whose anchor is deliberately not a
+   * manifest entry; a registered setting must never disagree with the registry.
+   */
   scope?: SettingScope;
+  /**
+   * Forces the chip on or off. Left undefined, the card shows a chip whenever
+   * the manifest knows this anchor's scope — which is the honest default,
+   * because "where does this save" is the one question a settings row cannot
+   * answer by looking at it.
+   */
   showScopeChip?: boolean;
   remoteMachineName?: string | null;
   children?: React.ReactNode;
@@ -32,63 +42,20 @@ export function SettingsCard({
   disabled?: boolean;
 }) {
   return (
-    <section
-      id={anchor}
-      data-settings-anchor={anchor}
-      style={{
-        scrollMarginTop: 16,
-        padding: 16,
-        background: "color-mix(in srgb, var(--color-card) 90%, var(--color-bg) 10%)",
-        border: `1px solid ${COLORS.borderMuted}`,
-        borderRadius: 12,
-        opacity: disabled ? 0.6 : 1,
-      }}
+    <SettingsPageShell
+      anchor={anchor}
+      title={title}
+      description={description}
+      scope={scope}
+      showScopeChip={showScopeChip}
+      remoteMachineName={remoteMachineName}
+      sectionStyle={{ opacity: disabled ? 0.6 : 1 }}
+      headerStacked={stacked}
+      aside={control ? <div style={{ flexShrink: 0 }}>{control}</div> : null}
+      bodyStyle={{ marginTop: 14 }}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: stacked ? "flex-start" : "center",
-          justifyContent: "space-between",
-          gap: 16,
-          flexDirection: stacked ? "column" : "row",
-        }}
-      >
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <h3
-              style={{
-                margin: 0,
-                fontFamily: SANS_FONT,
-                fontSize: 13,
-                fontWeight: 600,
-                color: COLORS.textPrimary,
-                letterSpacing: "-0.01em",
-              }}
-            >
-              {title}
-            </h3>
-            {scope && showScopeChip ? (
-              <ScopeChip scope={scope} remoteMachineName={remoteMachineName} />
-            ) : null}
-          </div>
-          {description ? (
-            <p
-              style={{
-                margin: "4px 0 0",
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                lineHeight: 1.55,
-                color: COLORS.textMuted,
-              }}
-            >
-              {description}
-            </p>
-          ) : null}
-        </div>
-        {control ? <div style={{ flexShrink: 0 }}>{control}</div> : null}
-      </div>
-      {children ? <div style={{ marginTop: 14 }}>{children}</div> : null}
-    </section>
+      {children}
+    </SettingsPageShell>
   );
 }
 

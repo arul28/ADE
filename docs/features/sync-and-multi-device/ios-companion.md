@@ -22,10 +22,11 @@ rather than being inferred from the name.
 1. Sign in to the same ADE account on the phone and computer. This is the
    primary path: the computer appears through the account directory and the
    phone adopts it through Relay without a PIN.
-2. For a direct connection without an account, open the computer's
+2. For an explicitly paired/direct recovery connection, open the computer's
    **Connections** panel. The **This Mac** card owns the pairing PIN and QR.
    On the phone, scan that QR or choose the Mac from Nearby; there is no
-   pairing-link paste or manual address + PIN entry.
+   pairing-link paste or manual address + PIN entry. Fresh app access still
+   begins at the account gate.
 3. Enter the 6-digit PIN for a new QR/Nearby pairing. The phone receives a
    durable per-device secret and stores it in Keychain, so future reconnects
    do not ask for the PIN again.
@@ -34,12 +35,26 @@ rather than being inferred from the name.
    host owns the connection, and the user-facing model stays
    machine -> projects.
 
-Every fresh signed-out launch shows the account choice before the app. Signing
-in is not required for local-first use: **Continue without an account** keeps
-QR + PIN, Nearby + PIN, and the advanced SSH bootstrap available. If
-the phone already has a direct pairing, continuing resumes its ordinary saved
-reconnect without asking for the PIN again. A signed-in launch enters the app
-directly.
+Every fresh signed-out launch shows the account choice before the app. ADE
+requires an account, so a phone with no saved pairing has no account-less
+pass-through. A phone with an existing paired host may choose **Continue to
+your work** to recover cached/local work while signed out; a saved pairing whose
+credential cannot be read instead offers **Pair again** and explains the fault.
+Signing in enters the app and enables account-directory/Relay adoption; direct
+QR/Nearby/SSH pairing remains an explicit connection flow rather than a guest
+mode.
+
+### Account settings and vault boundary
+
+The account settings store is the non-secret, per-key account preference store;
+the brain and Push Relay own its account copy, while a host keeps an immediate
+local cache. iOS uses only the settings and push-preference commands the host
+advertises and never receives raw vault values. Provider API keys, Linear OAuth
+refresh credentials, and repository account secrets stay in the host's
+encrypted account vault and are hydrated there after sign-in. The host performs
+the silent, receipt-backed migration from device-local credentials; the phone
+does not copy or migrate secrets. Sign-out closes Relay and clears account
+authorization while preserving explicit direct pairing trust for recovery.
 
 Choosing a signed-in account machine performs first-time adoption through the
 directory using LAN, Tailscale, then Relay. LAN/Tailscale adoption is allowed
@@ -179,7 +194,8 @@ apps/ios/
 │   │   ├── ADEAppDelegate.swift     # UIApplicationDelegate: APNs device-token
 │   │   │                            # callbacks + notification presentation,
 │   │   │                            # feeds PushNotificationService
-│   │   ├── ContentView.swift        # signed-in-or-continue launch gate, then
+│   │   ├── ContentView.swift        # account-required launch gate with an
+│   │   │                            # explicit paired-host recovery path, then
 │   │   │                            # 5-tab TabView with a custom
 │   │   │                            # `ADERootBottomTabBar` overlay
 │   │   │                            # (Work/Lanes/PRs/Files/CTO + Work
@@ -231,7 +247,7 @@ apps/ios/
 │   │   │                            # ensureColumn migrations for upgrades)
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
-│   │   ├── AccountService.swift     # Clerk-backed optional account identity,
+│   │   ├── AccountService.swift     # Clerk-backed account identity,
 │   │   │                            # transferable social auth outcomes,
 │   │   │                            # durable sign-out/device-ownership epochs,
 │   │   │                            # serialized account push registration,
@@ -599,9 +615,10 @@ apps/ios/
 │   │   │                            # CreatePrWizardView, PrRebaseScreen,
 │   │   │                            # PrTargetBranchPickerDropdown,
 │   │   │                            # PrDetailOverviewPreviews (preview fixtures)
-│   │   ├── Settings/                # ConnectionSettingsView (account card →
-│   │   │                            #   connection status → machines list → ways
-│   │   │                            #   to add one), SettingsMachinesSection
+│   │   ├── Settings/                # ConnectionSettingsView (connection header
+│   │   │                            #   plus Account, Preferences, repository,
+│   │   │                            #   and this-device groups),
+│   │   │                            # SettingsMachinesSection
 │   │   │                            #   (reachable-machine list: top 3 + See all),
 │   │   │                            # SettingsMachineRenameSheet (account-wide
 │   │   │                            #   custom name set/clear),
@@ -2840,6 +2857,10 @@ release. `WorkToolsSheet` carries the matching `previewState` / `previewFrame`
 seam: when set, `refresh` installs them instead of asking the sync socket.
 
 ### Shipped
+
+Settings keeps the connection header outside four scope groups: Account,
+Preferences, this repository, and this device. Fresh access is account-required;
+the existing paired-host recovery path is the only account-less continuation.
 
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|

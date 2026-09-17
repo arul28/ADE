@@ -723,10 +723,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       localChanged: false,
       sharedHash: "",
       localHash: "",
-      approvedSharedHash: null,
-      requiresSharedTrust: false,
     }),
-    confirmTrust: async () => projectConfigSnapshot(state.getProject()?.rootPath ?? "").trust,
   };
 
   const zoom = createZoomNamespace(infra);
@@ -1124,7 +1121,7 @@ function projectConfigSnapshot(rootPath: string): Record<string, unknown> {
     local: file,
     effective: { providerMode: "guest", rootPath },
     validation: { ok: true, errors: [], warnings: [] },
-    trust: { trusted: true, sharedHash: "", approvedSharedHash: "" },
+    trust: { sharedHash: "", localHash: "" },
     paths: {
       sharedPath: rootPath ? `${rootPath}/.ade/config.json` : "",
       localPath: rootPath ? `${rootPath}/.ade/local.json` : "",

@@ -3658,6 +3658,96 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(true);
   });
 
+  it("routes account settings and vault actions through the runtime stores", async () => {
+    const fixture = createRuntime();
+    const accountSettingsStore = {
+      list: vi.fn(() => [{ scope: "all", key: "appearance.theme", value: "dark" }]),
+      get: vi.fn(() => "dark"),
+      set: vi.fn(() => true),
+      remove: vi.fn(() => true),
+      sync: vi.fn(async () => undefined),
+    };
+    const accountVaultStore = {
+      list: vi.fn(() => [{
+        scope: "all",
+        kind: "provider_api_key",
+        key: "openai",
+        updatedAt: "2026-09-17T12:00:00.000Z",
+        readable: true,
+      }]),
+      get: vi.fn(() => "sk-test"),
+      set: vi.fn(() => true),
+      remove: vi.fn(() => true),
+      sync: vi.fn(async () => undefined),
+    };
+    (fixture.runtime as any).accountSettingsStore = accountSettingsStore;
+    (fixture.runtime as any).accountVaultStore = accountVaultStore;
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
+    const settingsInventory = await callTool(agentHandler, "list_ade_actions", { domain: "account_settings" });
+    expect(settingsInventory.structuredContent.actions.map((entry: { name: string }) => entry.name)).toEqual(
+      expect.arrayContaining([
+        "account_settings.list",
+        "account_settings.get",
+        "account_settings.set",
+        "account_settings.remove",
+        "account_settings.sync",
+      ]),
+    );
+
+    const settingsList = await callTool(agentHandler, "run_ade_action", {
+      domain: "account_settings",
+      action: "list",
+      argsList: ["all"],
+    });
+    expect(settingsList?.isError).toBeUndefined();
+    expect(settingsList.structuredContent.result).toEqual([
+      { scope: "all", key: "appearance.theme", value: "dark" },
+    ]);
+    expect(accountSettingsStore.list).toHaveBeenCalledWith("all");
+
+    const settingsSet = await callTool(agentHandler, "run_ade_action", {
+      domain: "account_settings",
+      action: "set",
+      argsList: ["all", "appearance.theme", "light", { expectedAccountUserId: "account-a" }],
+    });
+    expect(settingsSet?.isError).toBeUndefined();
+    expect(accountSettingsStore.set).toHaveBeenCalledWith(
+      "all",
+      "appearance.theme",
+      "light",
+      { expectedAccountUserId: "account-a" },
+    );
+
+    const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
+    const vaultInventory = await callTool(ctoHandler, "list_ade_actions", { domain: "account_vault" });
+    expect(vaultInventory.structuredContent.actions.map((entry: { name: string }) => entry.name)).toEqual(
+      expect.arrayContaining([
+        "account_vault.list",
+        "account_vault.get",
+        "account_vault.set",
+        "account_vault.remove",
+        "account_vault.sync",
+      ]),
+    );
+    const vaultSet = await callTool(ctoHandler, "run_ade_action", {
+      domain: "account_vault",
+      action: "set",
+      argsList: ["all", "provider_api_key", "openai", "sk-test", { expectedAccountUserId: "account-a" }],
+    });
+    expect(vaultSet?.isError).toBeUndefined();
+    expect(vaultSet.structuredContent.result).toBe(true);
+    expect(accountVaultStore.set).toHaveBeenCalledWith(
+      "all",
+      "provider_api_key",
+      "openai",
+      "sk-test",
+      { expectedAccountUserId: "account-a" },
+    );
+  });
+
   it("exposes account-wide Attention actions only to CTO callers with discoverable contracts", async () => {
     const fixture = createRuntime();
     let accountOwnerId = "account-a";

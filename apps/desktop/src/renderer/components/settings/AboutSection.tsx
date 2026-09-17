@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowCircleUp, ArrowsClockwise, CheckCircle, WarningCircle } from "@phosphor-icons/react";
 import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { isWindowsPlatform, requestWindowsBetaNotice } from "../../lib/windowsBetaNotice";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
+import { SettingsCard, SettingsGroup } from "./primitives";
 
 const labelStyle: React.CSSProperties = {
   fontSize: 11,
@@ -188,13 +189,14 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
 
   if (!info) {
     return (
-      <div style={embedded ? undefined : cardStyle()}>
-        <div style={{ fontSize: embedded ? 13 : 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-          {embedded ? "App" : "ADE"}
-        </div>
-        <div style={{ marginTop: 10, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-          Loading app info...
-        </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+        <SettingsGroup title="About">
+          <SettingsCard
+            anchor="about-app"
+            title={embedded ? "App" : "ADE"}
+            description="Loading app info..."
+          />
+        </SettingsGroup>
       </div>
     );
   }
@@ -240,250 +242,224 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
     );
   }
 
-  const content = (
-    <>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-        <div style={{ fontSize: embedded ? 13 : 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-          {embedded ? "App" : "ADE"}
-        </div>
-        {pill}
-      </div>
-
-      <div style={{ display: "grid", gap: 10, marginTop: embedded ? 14 : 18 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-          <span style={labelStyle}>Running</span>
-          <span style={valueStyle}>{runningVersion}</span>
-          {restartPending ? (
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.warning }}>
-              <WarningCircle size={12} weight="fill" />
-              restart pending
-            </span>
-          ) : null}
-        </div>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-          <span style={labelStyle}>Installed</span>
-          <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-            <span style={valueStyle}>{installedVersion}</span>
-            {!downloadedVersion ? (
-              <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                · Latest <span style={{ ...valueStyle, fontSize: 11 }}>{latestVersion}</span>
-                {releasedAgo && latest != null && latestVersion === latest.version ? ` · ${releasedAgo}` : ""}
-              </span>
-            ) : null}
-          </span>
-        </div>
-        {downloadedVersion ? (
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-            <span style={labelStyle}>Downloaded</span>
-            <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-              <span style={valueStyle}>{downloadedVersion}</span>
-              <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                · Latest <span style={{ ...valueStyle, fontSize: 11 }}>{latestVersion}</span>
-                {releasedAgo && latest != null && latestVersion === latest.version ? ` · ${releasedAgo}` : ""}
-              </span>
-            </span>
-          </div>
-        ) : null}
-      </div>
-
-      {/* ADE is GA on macOS and Linux; only the Windows port is in beta. This is
-          the re-open surface for the start-up notice — the header build chip only
-          exists on alpha/beta packages, so a Windows Stable install needs it. */}
-      {isWindowsPlatform() ? (
-        <div
-          style={{
-            marginTop: embedded ? 14 : 18,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap",
-            padding: "10px 12px",
-            borderRadius: 9,
-            border: "1px solid color-mix(in srgb, var(--color-border) 80%, transparent)",
-            background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              ADE on Windows is in beta
-            </div>
-            <div style={{ marginTop: 3, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              What to expect, known gaps, and how to report a bug.
-            </div>
-          </div>
-          <button type="button" style={outlineButton()} onClick={requestWindowsBetaNotice}>
-            Open notice
-          </button>
-        </div>
-      ) : null}
-
-      {(updateAvailable || !isDev) ? (
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: embedded ? 14 : 18, flexWrap: "wrap" }}>
-          {updateAvailable && latest?.htmlUrl ? (
-            <button type="button" style={outlineButton()} onClick={openReleaseNotes}>
-              View release notes
-            </button>
-          ) : null}
-          {!isDev ? (
-            <button type="button" style={primaryButton()} disabled={checking} onClick={checkForUpdates}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                <ArrowsClockwise size={13} weight="bold" />
-                {checking ? "Checking..." : "Check for updates"}
-              </span>
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-
-      {info.localRuntime ? (
-        <div style={{ marginTop: embedded ? 14 : 18, paddingTop: embedded ? 14 : 18, borderTop: `1px solid ${COLORS.border}`, display: "grid", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                {embedded ? "Background service" : "ADE runtime service"}
-              </div>
-              <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <span style={labelStyle}>Running</span>
-                <span style={valueStyle}>
-                  {info.localRuntime.versionSkew.runtimeVersion ?? info.appVersion}
-                </span>
-                {info.localRuntime.pid != null || info.localRuntime.syncPort != null ? (
-                  <span style={{ ...valueStyle, color: COLORS.textMuted }}>
-                    {[
-                      info.localRuntime.pid != null ? `· pid ${info.localRuntime.pid}` : null,
-                      info.localRuntime.syncPort != null ? `· port ${info.localRuntime.syncPort}` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                  </span>
-                ) : null}
-                <span
-                  aria-hidden
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    flexShrink: 0,
-                    background: runtimeServiceHealthColor(info.localRuntime.serviceHealth.state),
-                  }}
-                />
-              </div>
-              <div style={{ marginTop: 5, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                {info.localRuntime.connectionState === "connected"
-                  ? "Connected and ready."
-                  : `Status: ${info.localRuntime.connectionState}.`}
-                {info.localRuntime.runtimeMode === "isolated" ? " Running in fallback mode." : ""}
-              </div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-              <span style={inlineBadge(runtimeServiceColor(info.localRuntime.serviceInstall.state))}>
-                {runtimeServiceLabel(info.localRuntime.serviceInstall.state)}
-              </span>
-              <span style={inlineBadge(runtimeServiceHealthColor(info.localRuntime.serviceHealth.state))}>
-                {runtimeServiceHealthLabel(info.localRuntime.serviceHealth.state)}
-              </span>
-              {runtimeSkew ? (
-                <span style={inlineBadge(COLORS.warning)}>
-                  {runtimeVersionSkewLabel(runtimeSkew.state)}
-                </span>
-              ) : null}
-            </div>
-          </div>
-          {restartPending ? (
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-                alignItems: "center",
-                padding: "9px 10px",
-                borderRadius: 8,
-                border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
-                background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-                color: COLORS.warning,
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                lineHeight: 1.45,
-              }}
-            >
-              <WarningCircle size={15} weight="fill" style={{ flexShrink: 0 }} />
-              <span>Will update when the app restarts</span>
-            </div>
-          ) : null}
-          {runtimeSkew && !restartPending ? (
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-                alignItems: "flex-start",
-                padding: "9px 10px",
-                borderRadius: 8,
-                border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
-                background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-                color: COLORS.warning,
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                lineHeight: 1.45,
-              }}
-            >
-              <WarningCircle size={15} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
-              <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-                <span>{runtimeVersionSkewMessage(runtimeSkew)}</span>
-                {(runtimeSkew.appVersion || runtimeSkew.runtimeVersion) ? (
-                  <span style={{ fontFamily: MONO_FONT, color: COLORS.textMuted, overflowWrap: "anywhere" }}>
-                    Desktop {runtimeSkew.appVersion ?? "unknown"} · Brain {runtimeSkew.runtimeVersion ?? "unknown"}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-          {!embedded && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-              {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path ? (
-                <span>Path: {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path}</span>
-              ) : null}
-              {info.localRuntime.serviceInstall.exitCode != null ? (
-                <span>Exit code: {info.localRuntime.serviceInstall.exitCode}</span>
-              ) : null}
-              {info.localRuntime.serviceHealth.checkedAt ? (
-                <span>Service checked: {formatRuntimeTimestamp(info.localRuntime.serviceHealth.checkedAt)}</span>
-              ) : null}
-              {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt) ? (
-                <span>Updated: {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt)}</span>
-              ) : null}
-            </div>
-          )}
-        </div>
-      ) : null}
-      <div
-        id="auto-updates"
-        data-settings-anchor="auto-updates"
-        style={{ marginTop: 18, paddingTop: 18, borderTop: `1px solid ${COLORS.border}` }}
-      >
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 700 }}>
-            Updates
-          </div>
-          <div style={{ marginTop: 4, color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5 }}>
-            Choose whether ADE installs downloaded updates automatically.
-          </div>
-        </div>
-        <AutoUpdatesControls />
-      </div>
-    </>
-  );
-
-  if (embedded) return content;
-
   return (
-    <div
-      style={cardStyle(
-        updateAvailable
-          ? { borderColor: "color-mix(in srgb, var(--color-warning) 40%, transparent)" }
-          : undefined,
-      )}
-    >
-      {content}
+    <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+      <SettingsGroup title="About">
+        <SettingsCard anchor="about-app" title={embedded ? "App" : "ADE"} control={pill}>
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+              <span style={labelStyle}>Running</span>
+              <span style={valueStyle}>{runningVersion}</span>
+              {restartPending ? (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.warning }}>
+                  <WarningCircle size={12} weight="fill" />
+                  restart pending
+                </span>
+              ) : null}
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+              <span style={labelStyle}>Installed</span>
+              <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                <span style={valueStyle}>{installedVersion}</span>
+                {!downloadedVersion ? (
+                  <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                    · Latest <span style={{ ...valueStyle, fontSize: 11 }}>{latestVersion}</span>
+                    {releasedAgo && latest != null && latestVersion === latest.version ? ` · ${releasedAgo}` : ""}
+                  </span>
+                ) : null}
+              </span>
+            </div>
+            {downloadedVersion ? (
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                <span style={labelStyle}>Downloaded</span>
+                <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                  <span style={valueStyle}>{downloadedVersion}</span>
+                  <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                    · Latest <span style={{ ...valueStyle, fontSize: 11 }}>{latestVersion}</span>
+                    {releasedAgo && latest != null && latestVersion === latest.version ? ` · ${releasedAgo}` : ""}
+                  </span>
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          {/* ADE is GA on macOS and Linux; only the Windows port is in beta. This is
+              the re-open surface for the start-up notice — the header build chip only
+              exists on alpha/beta packages, so a Windows Stable install needs it. */}
+          {isWindowsPlatform() ? (
+            <div
+              style={{
+                marginTop: 14,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                flexWrap: "wrap",
+                padding: "10px 12px",
+                borderRadius: 9,
+                border: "1px solid color-mix(in srgb, var(--color-border) 80%, transparent)",
+                background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                  ADE on Windows is in beta
+                </div>
+                <div style={{ marginTop: 3, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                  What to expect, known gaps, and how to report a bug.
+                </div>
+              </div>
+              <button type="button" style={outlineButton()} onClick={requestWindowsBetaNotice}>
+                Open notice
+              </button>
+            </div>
+          ) : null}
+
+          {(updateAvailable || !isDev) ? (
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14, flexWrap: "wrap" }}>
+              {updateAvailable && latest?.htmlUrl ? (
+                <button type="button" style={outlineButton()} onClick={openReleaseNotes}>
+                  View release notes
+                </button>
+              ) : null}
+              {!isDev ? (
+                <button type="button" style={primaryButton()} disabled={checking} onClick={checkForUpdates}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <ArrowsClockwise size={13} weight="bold" />
+                    {checking ? "Checking..." : "Check for updates"}
+                  </span>
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </SettingsCard>
+
+        {info.localRuntime ? (
+          <SettingsCard
+            anchor="about-runtime-service"
+            title={embedded ? "Background service" : "ADE runtime service"}
+            control={
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                <span style={inlineBadge(runtimeServiceColor(info.localRuntime.serviceInstall.state))}>
+                  {runtimeServiceLabel(info.localRuntime.serviceInstall.state)}
+                </span>
+                <span style={inlineBadge(runtimeServiceHealthColor(info.localRuntime.serviceHealth.state))}>
+                  {runtimeServiceHealthLabel(info.localRuntime.serviceHealth.state)}
+                </span>
+                {runtimeSkew ? (
+                  <span style={inlineBadge(COLORS.warning)}>
+                    {runtimeVersionSkewLabel(runtimeSkew.state)}
+                  </span>
+                ) : null}
+              </div>
+            }
+          >
+            <div style={{ display: "grid", gap: 12 }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span style={labelStyle}>Running</span>
+                  <span style={valueStyle}>
+                    {info.localRuntime.versionSkew.runtimeVersion ?? info.appVersion}
+                  </span>
+                  {info.localRuntime.pid != null || info.localRuntime.syncPort != null ? (
+                    <span style={{ ...valueStyle, color: COLORS.textMuted }}>
+                      {[
+                        info.localRuntime.pid != null ? `· pid ${info.localRuntime.pid}` : null,
+                        info.localRuntime.syncPort != null ? `· port ${info.localRuntime.syncPort}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                    </span>
+                  ) : null}
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: "50%",
+                      flexShrink: 0,
+                      background: runtimeServiceHealthColor(info.localRuntime.serviceHealth.state),
+                    }}
+                  />
+                </div>
+                <div style={{ marginTop: 5, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                  {info.localRuntime.connectionState === "connected"
+                    ? "Connected and ready."
+                    : `Status: ${info.localRuntime.connectionState}.`}
+                  {info.localRuntime.runtimeMode === "isolated" ? " Running in fallback mode." : ""}
+                </div>
+              </div>
+              {restartPending ? (
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                    padding: "9px 10px",
+                    borderRadius: 8,
+                    border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
+                    background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+                    color: COLORS.warning,
+                    fontFamily: SANS_FONT,
+                    fontSize: 11,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <WarningCircle size={15} weight="fill" style={{ flexShrink: 0 }} />
+                  <span>Will update when the app restarts</span>
+                </div>
+              ) : null}
+              {runtimeSkew && !restartPending ? (
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "flex-start",
+                    padding: "9px 10px",
+                    borderRadius: 8,
+                    border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
+                    background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+                    color: COLORS.warning,
+                    fontFamily: SANS_FONT,
+                    fontSize: 11,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <WarningCircle size={15} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
+                  <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+                    <span>{runtimeVersionSkewMessage(runtimeSkew)}</span>
+                    {(runtimeSkew.appVersion || runtimeSkew.runtimeVersion) ? (
+                      <span style={{ fontFamily: MONO_FONT, color: COLORS.textMuted, overflowWrap: "anywhere" }}>
+                        Desktop {runtimeSkew.appVersion ?? "unknown"} · Brain {runtimeSkew.runtimeVersion ?? "unknown"}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              {!embedded && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                  {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path ? (
+                    <span>Path: {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path}</span>
+                  ) : null}
+                  {info.localRuntime.serviceInstall.exitCode != null ? (
+                    <span>Exit code: {info.localRuntime.serviceInstall.exitCode}</span>
+                  ) : null}
+                  {info.localRuntime.serviceHealth.checkedAt ? (
+                    <span>Service checked: {formatRuntimeTimestamp(info.localRuntime.serviceHealth.checkedAt)}</span>
+                  ) : null}
+                  {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt) ? (
+                    <span>Updated: {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt)}</span>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          </SettingsCard>
+        ) : null}
+      </SettingsGroup>
+
+      <SettingsGroup title="Updates" description="Choose whether ADE installs downloaded updates automatically.">
+        <AutoUpdatesControls />
+      </SettingsGroup>
     </div>
   );
 }

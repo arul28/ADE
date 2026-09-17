@@ -5,6 +5,7 @@ import YAML from "yaml";
 
 import type { ProjectIcon } from "../../../shared/types";
 import { isWithinDir, resolvePathWithinRoot } from "../shared/utils";
+import { writeFileAtomic } from "../state/durableFile";
 import { ensureSharedAdeProjectScaffold } from "./adeProjectService";
 
 const ICON_MAX_BYTES = 10 * 1024 * 1024;
@@ -138,7 +139,7 @@ function realpathExisting(filePath: string): string {
  * a junction or symlink. The root and the resolved icon then name the same file
  * with different strings, and `path.relative` between them yields a `..`
  * traversal instead of a project-relative path — which `setProjectIconOverride`
- * would persist into the shared `.ade/ade.yaml` as the project's `iconPath`.
+ * would persist into the local `.ade/local.yaml` as the project's `iconPath`.
  *
  * Falls back to the lexical resolve when the root does not exist, so callers
  * that probe a stale project directory still get "no icon" rather than a throw.
@@ -160,7 +161,7 @@ function toProjectRelative(projectRoot: string, filePath: string): string {
 function readProjectIconOverride(projectRoot: string): ProjectIconOverride {
   let filePath: string;
   try {
-    filePath = resolvePathWithinRoot(projectRoot, ".ade/ade.yaml", { allowMissing: false });
+    filePath = resolvePathWithinRoot(projectRoot, ".ade/local.yaml", { allowMissing: false });
   } catch {
     return undefined;
   }
@@ -589,7 +590,7 @@ export function resolveProjectIconPath(
   const rootMtimeMs = dirMtimeMs(root);
   const appsMtimeMs = dirMtimeMs(path.join(root, "apps"));
   const packagesMtimeMs = dirMtimeMs(path.join(root, "packages"));
-  const configMtimeMs = dirMtimeMs(path.join(root, ".ade", "ade.yaml"));
+  const configMtimeMs = dirMtimeMs(path.join(root, ".ade", "local.yaml"));
   const cached = projectIconPathCache.get(cacheKey);
   if (
     cached
@@ -680,10 +681,10 @@ function mimeTypeForIconPath(filePath: string): string | null {
 
 function writeProjectIconPathOverride(projectRoot: string, iconPath: string | null): void {
   ensureSharedAdeProjectScaffold(projectRoot);
-  const sharedConfigPath = path.join(projectRoot, ".ade", "ade.yaml");
+  const localConfigPath = path.join(projectRoot, ".ade", "local.yaml");
   let config: Record<string, unknown> = {};
   try {
-    const parsed = YAML.parse(fs.readFileSync(sharedConfigPath, "utf8"));
+    const parsed = YAML.parse(fs.readFileSync(localConfigPath, "utf8"));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       config = parsed as Record<string, unknown>;
     }
@@ -701,18 +702,7 @@ function writeProjectIconPathOverride(projectRoot: string, iconPath: string | nu
   config.project = project;
   config.version = typeof config.version === "number" ? config.version : 1;
 
-  fs.mkdirSync(path.dirname(sharedConfigPath), { recursive: true });
-  // Write to a sibling temp file then rename so a crash mid-write can never
-  // leave .ade/ade.yaml truncated/corrupted. The rename is atomic on the
-  // same filesystem.
-  const tempPath = `${sharedConfigPath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tempPath, YAML.stringify(config, { indent: 2 }));
-  try {
-    fs.renameSync(tempPath, sharedConfigPath);
-  } catch (renameError) {
-    try { fs.unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
-    throw renameError;
-  }
+  writeFileAtomic(localConfigPath, YAML.stringify(config, { indent: 2 }), { mode: 0o600 });
 }
 
 export function setProjectIconOverride(projectRoot: string, iconPath: string): ProjectIcon {
@@ -798,7 +788,7 @@ export function resolveProjectIcon(
   const rootMtimeMs = dirMtimeMs(root);
   const appsMtimeMs = dirMtimeMs(path.join(root, "apps"));
   const packagesMtimeMs = dirMtimeMs(path.join(root, "packages"));
-  const configMtimeMs = dirMtimeMs(path.join(root, ".ade", "ade.yaml"));
+  const configMtimeMs = dirMtimeMs(path.join(root, ".ade", "local.yaml"));
   const cached = projectIconResultCache.get(cacheKey);
   if (
     cached

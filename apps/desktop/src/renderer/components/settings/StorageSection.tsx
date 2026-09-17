@@ -30,7 +30,8 @@ import type {
   LaneCleanupConfig,
   LaneReclaimRisk,
 } from "../../../shared/types";
-import { ScopeChip, SettingsNumber } from "./primitives";
+import { SettingsCard, SettingsGroup, SettingsNumber } from "./primitives";
+import { SettingsDashboardPage } from "./primitives/SettingsDashboardPage";
 import { relativeWhen } from "../../lib/format";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced } from "../../lib/resourcePressure";
 import {
@@ -258,6 +259,11 @@ function DiskGauge({
   );
 }
 
+/**
+ * The body of the disk-usage dashboard. The panel chrome, the title and the
+ * scope chip come from `SettingsDashboardPage` at the call site, so this draws
+ * only the picture: the gauge, the actions, and the category breakdown.
+ */
 function Hero({
   snapshot,
   pressureState,
@@ -274,7 +280,7 @@ function Hero({
   onCleanSafely: (() => void) | null;
 }) {
   return (
-    <section style={{ ...PANEL_STYLE, padding: 20, display: "flex", flexDirection: "column", gap: 18 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
         <DiskGauge snapshot={snapshot} pressureState={pressureState} />
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
@@ -313,7 +319,7 @@ function Hero({
           Some items were skipped to keep this scan fast, so sizes may be slightly under-counted.
         </div>
       ) : null}
-    </section>
+    </div>
   );
 }
 
@@ -757,44 +763,44 @@ function StoragePolicyPanel({
     );
   };
 
+  // The rules are an editable policy, so they are a preference page: one
+  // `SettingsCard` owning the `lane-storage-rules` anchor. The card draws the
+  // title, the description and — crucially — the scope chip, which used to be
+  // a hand-passed `<ScopeChip scope="account-repo" />` that could drift from
+  // the manifest. The four fields stay one control cluster inside it, because
+  // splitting them into four cards would mint four anchors the manifest does
+  // not know and settings search would hide them.
   return (
-    <section
-      id="lane-storage-rules"
-      data-settings-anchor="lane-storage-rules"
-      style={{ ...PANEL_STYLE, display: "flex", flexDirection: "column", gap: 14 }}
-    >
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 14, color: COLORS.textPrimary }}>
-              Lane storage rules
-            </h3>
-            <ScopeChip scope="team" />
+    <SettingsGroup title="Lane storage rules">
+      <SettingsCard
+        anchor="lane-storage-rules"
+        title="Lane storage rules"
+        description="ADE can archive lanes when they are safely idle. It never removes lane folders in the background."
+        control={
+          busy ? (
+            <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, whiteSpace: "nowrap" }}>
+              Saving…
+            </span>
+          ) : undefined
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14 }}>
+            {field("maxActiveLanes", "Maximum active lanes", "Only clean, merged, idle lanes can be archived.", "No limit", "lanes")}
+            {field("autoArchiveAfterHours", "Archive after inactivity", "Hours without lane activity before ADE may archive it.", "Never", "hours")}
+            {field("cleanupIntervalHours", "Check every", "Hours between safety scans. A scan only archives eligible lanes and updates the review list.", "Disabled", "hours")}
+            {field("reclaimArchivedAfterHours", "Review archived files after", "Hours before archived lane folders are marked ready for review. ADE still waits for confirmation.", "Never", "hours")}
           </div>
-          <p style={{ margin: "5px 0 0", fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.5, color: COLORS.textMuted }}>
-            ADE can archive lanes when they are safely idle. It never removes lane folders in the background.
-          </p>
+          <details style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+            <summary style={{ cursor: "pointer", color: COLORS.textSecondary }}>What counts as safe?</summary>
+            <div style={{ marginTop: 8, lineHeight: 1.55 }}>
+              The lane must be ADE-managed, clean, merged, not protected, not part of a PR group, and have no running chat, terminal, or watcher.
+              Attached folders and the primary lane are always left alone.
+            </div>
+          </details>
         </div>
-        {busy ? (
-          <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, whiteSpace: "nowrap" }}>
-            Saving…
-          </span>
-        ) : null}
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14 }}>
-        {field("maxActiveLanes", "Maximum active lanes", "Only clean, merged, idle lanes can be archived.", "No limit", "lanes")}
-        {field("autoArchiveAfterHours", "Archive after inactivity", "Hours without lane activity before ADE may archive it.", "Never", "hours")}
-        {field("cleanupIntervalHours", "Check every", "Hours between safety scans. A scan only archives eligible lanes and updates the review list.", "Disabled", "hours")}
-        {field("reclaimArchivedAfterHours", "Review archived files after", "Hours before archived lane folders are marked ready for review. ADE still waits for confirmation.", "Never", "hours")}
-      </div>
-      <details style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-        <summary style={{ cursor: "pointer", color: COLORS.textSecondary }}>What counts as safe?</summary>
-        <div style={{ marginTop: 8, lineHeight: 1.55 }}>
-          The lane must be ADE-managed, clean, merged, not protected, not part of a PR group, and have no running chat, terminal, or watcher.
-          Attached folders and the primary lane are always left alone.
-        </div>
-      </details>
-    </section>
+      </SettingsCard>
+    </SettingsGroup>
   );
 }
 
@@ -1245,20 +1251,25 @@ export function StorageSection() {
   const description = "What ADE keeps on this computer for this project, and what you can safely clear.";
 
   return (
-    <SettingsSectionShell id="storage" title="Storage" description={description} icon={HardDrives} brandColor={STORAGE_BRAND}>
+    // The `storage` anchor now lives on the disk-usage dashboard rather than on
+    // this shell, so a `#storage` deeplink lands on the figures instead of the
+    // page heading — and so the shell and the dashboard can't both claim the id.
+    // It is rendered in every state (loading, error, loaded) so the anchor is
+    // there for a deeplink that arrives before the scan finishes.
+    <SettingsSectionShell title="Storage" description={description} icon={HardDrives} brandColor={STORAGE_BRAND}>
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        {loading && !snapshot ? (
-          <StorageSkeleton />
-        ) : error && !snapshot ? (
-          <section style={{ ...PANEL_STYLE, display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start" }}>
-            <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>ADE couldn't measure storage right now.</div>
-            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{error}</div>
-            <button type="button" onClick={() => void load({ force: true })} style={outlineButton({ height: 32 })}>
-              <ArrowClockwise size={14} /> Try again
-            </button>
-          </section>
-        ) : snapshot ? (
-          <>
+        <SettingsDashboardPage anchor="storage" title="Disk usage">
+          {loading && !snapshot ? (
+            <StorageSkeleton />
+          ) : error && !snapshot ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start" }}>
+              <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>ADE couldn't measure storage right now.</div>
+              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{error}</div>
+              <button type="button" onClick={() => void load({ force: true })} style={outlineButton({ height: 32 })}>
+                <ArrowClockwise size={14} /> Try again
+              </button>
+            </div>
+          ) : snapshot ? (
             <Hero
               snapshot={snapshot}
               pressureState={pressureState}
@@ -1267,7 +1278,11 @@ export function StorageSection() {
               onRescan={() => void load({ force: true })}
               onCleanSafely={safeConfig ? () => setSafeOpen(true) : null}
             />
+          ) : null}
+        </SettingsDashboardPage>
 
+        {snapshot ? (
+          <>
             <StoragePolicyPanel
               value={policy}
               effectiveValue={effectivePolicy}

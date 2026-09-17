@@ -388,6 +388,9 @@ import type {
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
   AdeAccountSessionRepairResult,
+  AccountSettingRow,
+  AccountSettingsResult,
+  AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -3391,6 +3394,23 @@ declare global {
          */
         repairSession?: () => Promise<AdeAccountSessionRepairResult>;
       };
+      /**
+       * The account settings store (the `account_settings` action domain),
+       * which is what makes "stored in your ADE account" true for the
+       * account-scoped preferences in Settings.
+       *
+       * Optional because the hosted web client and older preloads do not
+       * expose it; callers treat its absence exactly like an unavailable
+       * result and keep the machine-local copy.
+       */
+      accountSettings?: {
+        list: (args?: { scope?: string | null }) => Promise<AccountSettingsResult<AccountSettingRow[]>>;
+        get: (args: { scope: string; key: string }) => Promise<AccountSettingsResult<unknown>>;
+        set: (
+          args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+        ) => Promise<AccountSettingsResult<null>>;
+        sync: () => Promise<AccountSettingsResult<null>>;
+      };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;
         linkToLane: (args: LinkPrToLaneArgs) => Promise<PrSummary>;
@@ -3655,9 +3675,6 @@ declare global {
           candidate: ProjectConfigCandidate,
         ) => Promise<ProjectConfigSnapshot>;
         diffAgainstDisk: () => Promise<ProjectConfigDiff>;
-        confirmTrust: (arg?: {
-          sharedHash?: string;
-        }) => Promise<ProjectConfigTrust>;
       };
       zoom: {
         getLevel: () => number;

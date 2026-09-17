@@ -39126,6 +39126,11 @@ describe("createAgentChatService", () => {
 
         await vi.advanceTimersByTimeAsync(10 * 60_000);
         expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+        // Let the suspended reconcile finish and drop its in-flight lock
+        // before the answer re-arms the timer. Otherwise the second 10-minute
+        // advance can no-op while that first reconcile is still awaiting a
+        // thread/read microtask.
+        for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
 
         await service.respondToInput({
           sessionId: session.id,
@@ -39133,13 +39138,14 @@ describe("createAgentChatService", () => {
           decision: "accept",
         });
         await vi.advanceTimersByTimeAsync(10 * 60_000);
+        for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
         await vi.waitFor(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1"
             && event.event.reason === "no_progress"
           )).toBe(true);
-        });
+        }, { timeout: 5_000 });
       } finally {
         vi.useRealTimers();
       }
@@ -39199,13 +39205,14 @@ describe("createAgentChatService", () => {
         });
 
         await vi.advanceTimersByTimeAsync(10 * 60_000);
+        for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
         await vi.waitFor(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1"
             && event.event.reason === "no_progress"
           )).toBe(true);
-        });
+        }, { timeout: 5_000 });
       } finally {
         vi.useRealTimers();
       }
@@ -47846,6 +47853,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
         timeoutMs: 15_000,
       });
       await vi.advanceTimersByTimeAsync(1_000);
+      for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
       await turn;
 
       await vi.waitFor(() => {
@@ -47859,7 +47867,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
               usage: expect.objectContaining({ percentage: 25 }),
             }),
           ]));
-      });
+      }, { timeout: 5_000 });
       releaseTail();
       await service.dispose({ sessionId: session.id });
     } finally {

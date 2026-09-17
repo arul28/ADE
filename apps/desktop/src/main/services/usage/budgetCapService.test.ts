@@ -94,7 +94,7 @@ function createMockConfigService(usageConfig: BudgetCapConfig = {}) {
   let localUsage = usageConfig;
   return {
     getEffective: () => ({}),
-    get: () => ({ local: { usage: localUsage }, shared: {}, effective: {}, validation: { ok: true, issues: [] }, trust: { sharedHash: "", localHash: "", approvedSharedHash: null, requiresSharedTrust: false }, paths: { sharedPath: "", localPath: "" } }),
+    get: () => ({ local: { usage: localUsage }, shared: {}, effective: {}, validation: { ok: true, issues: [] }, trust: { sharedHash: "", localHash: "" }, paths: { sharedPath: "", localPath: "" } }),
     save: ({ local }: { local?: Record<string, unknown> }) => {
       localUsage = (local?.usage as BudgetCapConfig | undefined) ?? {};
       return { local: { usage: localUsage } };

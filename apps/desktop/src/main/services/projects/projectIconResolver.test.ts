@@ -125,23 +125,24 @@ describe("projectIconResolver", () => {
     expect(resolveProjectIconPath(root)).toBeNull();
   });
 
-  it("uses a tracked project icon override before auto-detection", () => {
+  it("uses a project icon override before auto-detection", () => {
     const root = makeProjectRoot();
     writeFile(root, "apps/web/app/icon.png", Buffer.from("auto"));
     const iconPath = writeFile(root, "brand/custom-logo.svg", "<svg>brand</svg>");
-    writeFile(root, ".ade/ade.yaml", "version: 1\nproject:\n  iconPath: brand/custom-logo.svg\n");
+    writeFile(root, ".ade/local.yaml", "version: 1\nproject:\n  iconPath: brand/custom-logo.svg\n");
 
     expect(resolveProjectIconPath(root)).toBe(iconPath);
   });
 
-  it("persists selected icons as project-relative tracked config", () => {
+  it("persists selected icons as project-relative local config", () => {
     const root = makeProjectRoot();
     const iconPath = writeFile(root, "assets/icon.svg", "<svg>brand</svg>");
 
     const icon = setProjectIconOverride(root, iconPath);
 
     expect(icon.sourcePath).toBe(iconPath);
-    expect(fs.readFileSync(path.join(root, ".ade", "ade.yaml"), "utf8")).toContain("iconPath: assets/icon.svg");
+    expect(fs.readFileSync(path.join(root, ".ade", "local.yaml"), "utf8")).toContain("iconPath: assets/icon.svg");
+    expect(fs.statSync(path.join(root, ".ade", "local.yaml")).mode & 0o777).toBe(0o600);
   });
 
   it("persists a project-relative icon path when the root is spelled non-canonically", () => {
@@ -151,7 +152,7 @@ describe("projectIconResolver", () => {
     // 8.3 short root creates: two spellings of one directory. Resolved icons
     // always come back in the canonical spelling, so a root left in the
     // caller's spelling makes `path.relative` emit a `..` traversal — and that
-    // traversal used to be written into the shared, committed `.ade/ade.yaml`.
+    // traversal is written into the local `.ade/local.yaml`.
     const linkRoot = path.join(path.dirname(realRoot), `link-${path.basename(realRoot)}`);
     linkProjectRoot(realRoot, linkRoot);
     expect(fs.realpathSync.native(linkRoot)).toBe(realRoot);
@@ -159,7 +160,7 @@ describe("projectIconResolver", () => {
     const icon = setProjectIconOverride(linkRoot, path.join(linkRoot, "assets", "icon.svg"));
 
     expect(icon.sourcePath).toBe(iconPath);
-    expect(fs.readFileSync(path.join(realRoot, ".ade", "ade.yaml"), "utf8"))
+    expect(fs.readFileSync(path.join(realRoot, ".ade", "local.yaml"), "utf8"))
       .toContain("iconPath: assets/icon.svg");
   });
 
@@ -172,7 +173,7 @@ describe("projectIconResolver", () => {
 
     expect(icon.sourcePath).toContain(path.join(root, ".ade", "project-icons"));
     expect(fs.existsSync(icon.sourcePath ?? "")).toBe(true);
-    expect(fs.readFileSync(path.join(root, ".ade", "ade.yaml"), "utf8")).toMatch(/iconPath: \.ade\/project-icons\/brand-[a-f0-9]{12}\.png/);
+    expect(fs.readFileSync(path.join(root, ".ade", "local.yaml"), "utf8")).toMatch(/iconPath: \.ade\/project-icons\/brand-[a-f0-9]{12}\.png/);
   });
 
   it("rejects selected icons that are too large to render", () => {
@@ -190,7 +191,7 @@ describe("projectIconResolver", () => {
 
     expect(icon.sourcePath).toBeNull();
     expect(resolveProjectIconPath(root)).toBeNull();
-    expect(fs.readFileSync(path.join(root, ".ade", "ade.yaml"), "utf8")).toContain("iconPath: null");
+    expect(fs.readFileSync(path.join(root, ".ade", "local.yaml"), "utf8")).toContain("iconPath: null");
   });
 
   it("does not resolve linked icons outside the project root", () => {

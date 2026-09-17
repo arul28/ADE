@@ -105,6 +105,14 @@ vi.mock("../../state/appStore", async () => {
     workViewStoreForProject: vi.fn(() => ({ getState: () => appStoreState })),
     AppStoreProvider: ({ children }: { children: React.ReactNode }) => ReactModule.createElement(ReactModule.Fragment, null, children),
     selectActiveProjectRoot: (state: typeof appStoreState) => state.project?.rootPath ?? null,
+    // `App` mounts the account-settings sync against the ROOT store. It makes
+    // no calls without a signed-in account and a preload bridge, neither of
+    // which this test provides, so a stub store is all it needs.
+    rootAppStoreApi: {
+      getState: () => appStoreState,
+      setState: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+    },
   };
 });
 

@@ -72,6 +72,7 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { SyncHostSingletonConflict } from "./services/sync/syncHostSingleton";
 import {
@@ -793,7 +794,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade help <command...>                         Display help for a command
     $ ade connect [--status]                        Link this machine to your ADE account
     $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
+    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
@@ -848,7 +849,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -1898,8 +1899,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   auth: `${ADE_BANNER}
   ADE Account
 
-  ADE accounts are optional. Signing in unlocks remote-machine and account
-  directory features; every local ADE workflow continues to work signed out.
+  ADE requires an account. Signing in carries your settings, secrets, and
+  provider keys to every machine you use, and connects them to each other.
+  Work already on this machine is never blocked while you are signed out.
 
     $ ade login                    Sign in with loopback OAuth or auto-detected device flow
     $ ade login --headless         Print a verification URL + code for another browser
@@ -3418,14 +3420,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
   secrets: `${ADE_BANNER}
   ADE project secrets
 
-  Secrets are encrypted under the active project's .ade/secrets directory and
-  are shared by every ADE lane/agent for that project. List output never reveals
-  values; use get only for the specific secret you need.
+  Secrets are encrypted under the active project's .ade/secrets directory.
+  Account-linked projects default to account storage; pass --storage device to
+  keep a secret on this machine. List output never reveals values and shows
+  where each secret lives; use get only for the specific secret you need.
 
     $ ade secrets list --text                       List secret names and metadata
     $ ade secrets get STRIPE_API_KEY                Print one secret value as JSON
     $ ade secrets get STRIPE_API_KEY --text         Print only the secret value
-    $ ade secrets set STRIPE_API_KEY --value sk_... Save or replace a secret
+    $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
+    $ ade secrets set TOKEN --value local --storage device
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
@@ -4600,6 +4604,15 @@ function readSecretValueInput(args: string[]): string {
   const positionalValue = firstPositional(args);
   if (positionalValue != null) return positionalValue;
   throw new CliUsageError("Secret value is required. Pass --value, --value-file, --stdin, or a positional value.");
+}
+
+function readProjectSecretStorage(args: string[]): ProjectSecretStorage | undefined {
+  const storage = readValue(args, ["--storage"]);
+  if (storage == null) return undefined;
+  if (storage !== "account" && storage !== "device") {
+    throw new CliUsageError("--storage must be account or device.");
+  }
+  return storage;
 }
 
 function readJsonPayloadOption(
@@ -14171,11 +14184,16 @@ function buildSecretsPlan(args: string[]): CliPlan {
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     if (!name) throw new CliUsageError("Secret name is required.");
     const value = readSecretValueInput(args);
+    const storage = readProjectSecretStorage(args);
     return {
       kind: "execute",
       label: "secrets set",
       formatter: "project-secrets",
-      steps: [actionStep("result", "project_secret", "set", { name, value })],
+      steps: [actionStep("result", "project_secret", "set", {
+        name,
+        value,
+        ...(storage ? { storage } : {}),
+      })],
     };
   }
   if (sub === "delete" || sub === "remove" || sub === "rm") {
@@ -16381,7 +16399,6 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
       : {};
   const ai = isRecord(effective.ai) ? effective.ai : {};
   const defaultProvider = asString(ai.defaultProvider) ?? asString(ai.mode);
-  const defaultModel = asString(ai.defaultModel);
   const apiKeys = isRecord(ai.apiKeys) ? ai.apiKeys : {};
   const cliProviders = {
     claude: commandExists("claude"),
@@ -16395,7 +16412,6 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
   );
   const ready = Boolean(
     defaultProvider ||
-    defaultModel ||
     apiKeyProviders.length ||
     Object.values(cliProviders).some(Boolean),
   );
@@ -16410,7 +16426,6 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
       : "Configure AI providers in ADE desktop or install/sign in to a provider CLI.",
     details: {
       defaultProvider,
-      defaultModel,
       apiKeyProviders,
       cliProviders,
     },
@@ -24836,7 +24851,8 @@ function formatProjectSecrets(value: unknown): string {
       : `No ADE secret named ${record.name} was found.`;
   }
   if (typeof record.name === "string") {
-    return `Saved ADE secret ${record.name} (${cell(record.valueLength)} chars).`;
+    const storage = typeof record.storage === "string" ? ` in ${record.storage} storage` : "";
+    return `Saved ADE secret ${record.name} (${cell(record.valueLength)} chars${storage}).`;
   }
   const secrets = Array.isArray(record.secrets)
     ? record.secrets.filter(isRecord)
@@ -24846,15 +24862,16 @@ function formatProjectSecrets(value: unknown): string {
   const rows = secrets.map((secret) => [
     secret.name,
     secret.valueLength,
+    secret.storage,
     secret.updatedAt,
   ]);
   const storage = isRecord(record.storage) ? record.storage : {};
   const header = renderTable(
-    ["name", "chars", "updated"],
+    ["name", "chars", "where", "updated"],
     rows,
     "ADE project secrets\n(no secrets found)",
   );
-  const pathLine = typeof storage.path === "string" ? `\n\nStore: ${storage.path}` : "";
+  const pathLine = typeof storage.path === "string" ? `\n\nLocal cache: ${storage.path}` : "";
   return `${header}${pathLine}`;
 }
 
@@ -25306,9 +25323,9 @@ function formatTextOutput(
           return "ADE couldn't read this computer's saved sign-in — nothing changed. Try again in a moment; if it keeps failing, run `ade login`.";
         }
         if (sessionState === "expired") {
-          return "Your ADE account sign-in expired — run `ade login` again. Local use does not require an account.";
+          return "Your ADE account sign-in expired — run `ade login` again.";
         }
-        return "Not signed in — local use does not require an account.";
+        return "Not signed in — run `ade login`.";
       }
       const identity = asString(value.email)
         ?? asString(value.name)
@@ -26923,6 +26940,33 @@ async function runCli(
       /^(agent spawn|chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
   ) {
     cleanupLegacyBundledAdeSkillsForCli();
+  }
+
+  // Exactly one process per machine may exchange the rotating refresh token,
+  // and that process is the brain. Every other `ade` invocation asks the brain
+  // for a token through this broker instead of running the exchange itself,
+  // which is what removes the `invalid_grant` race by construction.
+  //
+  // Deliberately NOT installed for `serve`/`runtime`/`brain`: those plans host
+  // (or manage) the brain itself, and a brain pointed at its own socket for
+  // refreshes would deadlock rather than refresh. `--headless` is skipped for
+  // the same reason — it runs an in-process runtime that owns its credentials.
+  // Installed here, before any command touches getSharedAccountAuthService.
+  if (
+    plan.kind !== "serve" &&
+    plan.kind !== "runtime" &&
+    plan.kind !== "brain" &&
+    !parsed.options.headless
+  ) {
+    const { installMachineBrainRefreshBroker } = await import(
+      "./services/account/cliRefreshBroker"
+    );
+    await installMachineBrainRefreshBroker({
+      clientName: "ade-cli-refresh-broker",
+      version: VERSION,
+      protocolVersion: PROTOCOL_VERSION,
+      socketPath: parsed.options.socketPath ?? null,
+    });
   }
   const originalConsole = {
     log: console.log,

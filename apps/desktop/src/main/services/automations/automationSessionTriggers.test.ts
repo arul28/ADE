@@ -169,7 +169,7 @@ function makeProjectConfigHarness(rules: AutomationRuleInput[], sharedRules: Aut
   let local: any = { automations: rules.map((rule) => ({ ...rule })) };
   let shared: any = { automations: sharedRules.map((rule) => ({ ...rule })) };
   const snapshot = () => ({
-    trust: { requiresSharedTrust: false },
+    trust: { sharedHash: "", localHash: "" },
     shared,
     local,
     effective: {

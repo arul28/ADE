@@ -20625,8 +20625,18 @@ final class SyncService: ObservableObject {
         let args = try decodeQueuedArgs(operation)
         switch operation.kind {
         case "command":
-          guard commandPolicy(for: operation.action) != nil else {
+          guard supportsRemoteAction(operation.action) else {
             throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Queued action \(operation.action) is no longer available on this machine."])
+          }
+          guard supportsViewerRemoteAction(operation.action) else {
+            throw NSError(
+              domain: "ADE",
+              code: 17,
+              userInfo: [
+                NSLocalizedDescriptionKey: "This action is not available from a viewer device.",
+                "ADEErrorCode": "unsupported_action",
+              ]
+            )
           }
           // Replay with the operation's stored scope — a queued foreign-project
           // command must not silently retarget to whatever project is active
@@ -21790,6 +21800,16 @@ extension SyncService {
         code: 17,
         userInfo: [
           NSLocalizedDescriptionKey: "This action is not available on this machine version. Update ADE on the machine and reconnect.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    guard supportsViewerRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "This action is not available from a viewer device.",
           "ADEErrorCode": "unsupported_action",
         ]
       )

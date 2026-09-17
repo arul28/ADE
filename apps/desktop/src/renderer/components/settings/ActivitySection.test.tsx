@@ -38,6 +38,13 @@ function installAdeMock() {
   (window as unknown as { ade: unknown }).ade = {
     attention: { getPreferences, putPreferences, putMachinePreferences },
     attentionNotch: { updateSettings },
+    // Scheduled work lives on this page now (AiFeaturesSection). It reads the
+    // project config and the live job list on mount; give it empty, resolved
+    // answers so the page renders every anchor the manifest promises.
+    projectConfig: {
+      get: vi.fn(async () => ({ shared: {}, local: {}, effective: { ai: { chat: {} } } })),
+    },
+    agentChat: { listScheduledWork: vi.fn(async () => []) },
   };
   return { getPreferences, putPreferences, putMachinePreferences, updateSettings };
 }

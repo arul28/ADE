@@ -33,8 +33,6 @@ type AdeProjectServiceArgs = {
       trust?: {
         sharedHash: string;
         localHash: string;
-        approvedSharedHash?: string | null;
-        requiresSharedTrust: boolean;
       };
     };
   };
@@ -46,14 +44,6 @@ const SECRET_PATTERNS: Array<{ code: string; regex: RegExp; message: string }> =
   { code: "github-token", regex: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/, message: "Possible GitHub token found in a tracked file." },
   { code: "bearer-token", regex: /Bearer\s+[A-Za-z0-9._-]{20,}/, message: "Possible bearer token found in a tracked file." },
 ];
-
-const DEFAULT_ADE_CONFIG = [
-  "version: 1",
-  "testSuites: []",
-  "laneOverlayPolicies: []",
-  "automations: []",
-  "",
-].join("\n");
 
 const DEFAULT_CTO_IDENTITY = YAML.stringify(
   {
@@ -327,7 +317,9 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
 
   if (shouldRepairSharedScaffold) {
     ensureFile(path.join(paths.adeDir, ".gitignore"), buildAdeGitignore(), ".gitignore", actions);
-    ensureFileIfMissing(paths.sharedConfigPath, DEFAULT_ADE_CONFIG, "ade.yaml", actions);
+    // No `ade.yaml`. The committed shared config is retired: projectConfigService
+    // no longer reads it, carries any legacy file over into local config once,
+    // and deletes it. Recreating it here would resurrect a deleted file.
     ensureFileIfMissing(path.join(paths.ctoDir, "identity.yaml"), DEFAULT_CTO_IDENTITY, "cto/identity.yaml", actions);
     for (const relativePath of TRACKED_PLACEHOLDER_PATHS) {
       ensureFileIfMissing(path.join(paths.adeDir, relativePath), "", relativePath, actions);
@@ -571,8 +563,6 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
         trust: {
           sharedHash: configSnapshot.trust?.sharedHash ?? "",
           localHash: configSnapshot.trust?.localHash ?? "",
-          approvedSharedHash: configSnapshot.trust?.approvedSharedHash ?? null,
-          requiresSharedTrust: configSnapshot.trust?.requiresSharedTrust ?? false,
         },
       },
     };

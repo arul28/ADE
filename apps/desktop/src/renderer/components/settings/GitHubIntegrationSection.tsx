@@ -6,7 +6,6 @@ import { SettingsSectionShell } from "./settingsSectionUi";
 export function GitHubIntegrationSection() {
   return (
     <SettingsSectionShell
-      id="github-connection"
       title="GitHub integration"
       description="Authenticate with GitHub CLI or a personal access token, and install ADE for GitHub for webhook-backed PR updates."
       icon={GithubLogo}

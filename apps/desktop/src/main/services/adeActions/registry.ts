@@ -3334,6 +3334,8 @@ export function getAdeActionDomainServices(
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(runtime.projectSecretService),
+    account_settings: toService(runtime.accountSettingsStore),
+    account_vault: toService(runtime.accountVaultStore),
     linear_credentials: toService(runtime.linearCredentialService),
     linear_oauth: buildLinearOAuthDomainService(runtime),
     linear_issue_tracker: toService(buildLinearIssueTrackerDomainService(runtime)),

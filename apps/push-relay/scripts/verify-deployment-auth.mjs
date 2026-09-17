@@ -15,6 +15,11 @@ const REQUIRED_SECONDARY_SECRETS = [
 // effect is to UN-revoke a machine) fails closed without it, so a deploy that
 // forgets it silently breaks re-pairing — catch it here instead.
 const REQUIRED_DIRECTORY_SECRETS = ["DIRECTORY_AUTH_SECRET"];
+// Seals every vault row at rest. The vault fails closed without it — reads and
+// writes answer 503 rather than storing a credential in the clear — so a deploy
+// that forgets it turns "your keys follow you" into an outage with no data
+// loss. Catching it here makes that a refused deploy instead.
+const REQUIRED_VAULT_SECRETS = ["VAULT_ENCRYPTION_KEY"];
 const DEFAULT_RELAY_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 
 function fail(message) {
@@ -116,6 +121,7 @@ if (mode === "bindings" || mode === "preflight") {
   assertSecretsPresent(names, REQUIRED_PRIMARY_SECRETS);
   assertSecretsPresent(names, REQUIRED_SECONDARY_SECRETS);
   assertSecretsPresent(names, REQUIRED_DIRECTORY_SECRETS);
+  assertSecretsPresent(names, REQUIRED_VAULT_SECRETS);
   if (mode === "preflight") {
     smokeToken("ADE_PUSH_RELAY_SMOKE_TOKEN");
     smokeToken("ADE_PUSH_RELAY_SECONDARY_SMOKE_TOKEN");

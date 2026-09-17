@@ -132,6 +132,22 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("chat", "launchCli")).toBe(false);
   });
 
+  it("gates every account-vault credential mutation and read behind the CTO", () => {
+    // `remove` and `set` reach every machine the user signs in on, a strictly
+    // larger blast radius than a project secret, so an ordinary agent session
+    // may list and sync the vault but never read, write, or revoke a credential.
+    for (const action of ["get", "set", "remove"]) {
+      expect(isAllowedAdeAction("account_vault", action)).toBe(true);
+      expect(isCtoOnlyAdeAction("account_vault", action)).toBe(true);
+    }
+    for (const action of ["list", "sync"]) {
+      expect(isAllowedAdeAction("account_vault", action)).toBe(true);
+      expect(isCtoOnlyAdeAction("account_vault", action)).toBe(false);
+    }
+    // Settings carry no credentials and stay agent-writable end to end.
+    expect(isCtoOnlyAdeAction("account_settings", "set")).toBe(false);
+  });
+
   it("exposes caller lifecycle writes through the runtime session surface", () => {
     expect(isAllowedAdeAction("session", "requestSessionAttention")).toBe(true);
     expect(isAllowedAdeAction("session", "setSessionStatusNote")).toBe(true);
