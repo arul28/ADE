@@ -8662,6 +8662,17 @@ export function createAgentChatService(args: {
    * leaves it undefined and emits nothing.
    */
   getMacDesktopLaneState?: (laneId: string | null) => { enabled?: boolean | null } | null;
+  /**
+   * The turn clip. Opened on the turn's first frame, closed when the turn
+   * settles, and only for a lane that actually has a display — an idle lane
+   * must pay nothing, so both calls sit behind the same synchronous gate the
+   * prompt directive uses.
+   */
+  macDesktopTurnRecorder?: {
+    hasDisplaySync(laneId: string | null | undefined): boolean;
+    beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<unknown>;
+    noteTurnEnded(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<unknown>;
+  } | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
   getGitService?: () => CtoOperatorToolDeps["gitService"];
@@ -8778,6 +8789,7 @@ export function createAgentChatService(args: {
     getProjectSecretService,
     getIosSimulatorService,
     getMacDesktopLaneState,
+    macDesktopTurnRecorder,
     getAppControlService,
     getBuiltInBrowserService,
     getGitService,
@@ -16772,9 +16784,42 @@ export function createAgentChatService(args: {
     }
 
     commitChatEventWithCanonical(managed, normalizedEvent, options);
+    noteMacDesktopTurnBoundary(managed, normalizedEvent);
     if (normalizedEvent.type === "done") {
       notifyTurnSettled(managed, normalizedEvent);
     }
+  };
+
+  /**
+   * Opens and closes the lane's time-lapse clip around one agent turn.
+   *
+   * Hung off the one funnel every provider's events pass through, because
+   * there is no provider-agnostic turn object to hang it off: `status/started`
+   * and `done` are the only two edges Claude, Codex, Cursor, ACP and the rest
+   * all emit. Everything is behind `hasDisplaySync`, so a lane with no screen —
+   * which is nearly all of them — costs one map lookup per event.
+   */
+  const noteMacDesktopTurnBoundary = (
+    managed: ManagedChatSession,
+    event: AgentChatEvent,
+  ): void => {
+    const recorder = macDesktopTurnRecorder;
+    if (!recorder) return;
+    const laneId = managed.session.laneId;
+    if (!laneId || !recorder.hasDisplaySync(laneId)) return;
+    const isStart = event.type === "status" && event.turnStatus === "started";
+    if (!isStart && event.type !== "done") return;
+    const turnId = event.turnId?.trim();
+    if (!turnId) return;
+    const args = { laneId, chatSessionId: managed.session.id, turnId };
+    const call = isStart ? recorder.beginTurn(args) : recorder.noteTurnEnded(args);
+    void Promise.resolve(call).catch((error: unknown) => {
+      logger.debug("mac_desktop.turn_clip_hook_failed", {
+        sessionId: managed.session.id,
+        phase: isStart ? "begin" : "end",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const applyClaudeActiveGoal = (

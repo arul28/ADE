@@ -3950,6 +3950,16 @@ app.whenReady().then(async () => {
       // deliberately NOT reachable from any CTO tool.
       getProjectSecretService: () => ({ list: () => projectSecretService.list() }),
       getIosSimulatorService: () => iosSimulatorService,
+      // Lazy like the rest: `macDesktopService` is constructed further down
+      // this same bootstrap, and both of these are only ever read per-turn.
+      getMacDesktopLaneState: (laneId: string | null) => ({
+        enabled: macDesktopService.hasDisplaySync(laneId),
+      }),
+      macDesktopTurnRecorder: {
+        hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
+        beginTurn: (args) => macDesktopService.beginTurn(args),
+        noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
+      },
       getAppControlService: () => appControlService,
       getBuiltInBrowserService: () => builtInBrowserService,
       getGitService: () => gitServiceRef,

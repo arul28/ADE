@@ -406,10 +406,67 @@ final class DriverRuntime {
         let payload = request.object("payload") ?? [:]
         touch(laneId)
 
+        // `wait` is not an action, so it is not routed by mode: a real-input
+        // lease buys the right to post events, not a different way to look.
+        if command == "wait" {
+            return try waitFor(laneId: laneId, payload: payload)
+        }
         if mode == "real" {
             return try realCommand(laneId: laneId, command: command, payload: payload, request: request)
         }
         return try accessibilityCommand(laneId: laneId, command: command, payload: payload)
+    }
+
+    /// How many elements a wait poll walks. Smaller than the `observe` default
+    /// because a wait runs this walk several times a second.
+    private static let waitObservationLimit = 200
+
+    /// Polls the lane until the condition holds or the timeout lapses.
+    ///
+    /// It answers `ok` itself rather than leaving the service to infer success
+    /// from an index: a `gone` or `windowTitle` wait succeeds with no element,
+    /// so "matched something" and "the wait was satisfied" are two facts.
+    private func waitFor(laneId: String, payload: [String: JSONValue]) throws -> [String: JSONValue] {
+        guard let condition = WaitCondition(
+            text: payload["text"]?.stringValue,
+            gone: payload["gone"]?.stringValue,
+            windowTitle: payload["windowTitle"]?.stringValue,
+            timeoutMs: payload["timeoutMs"]?.intValue
+        ) else {
+            throw DriverError(
+                code: DriverErrorCode.invalidArgument,
+                message: "wait needs one of \"text\", \"gone\", or \"windowTitle\"."
+            )
+        }
+        let deadline = Date().addingTimeInterval(Double(condition.timeoutMs) / 1000)
+        let interval = Double(WaitCondition.pollIntervalMs) / 1000
+        var outcome = WaitOutcome.pending
+        repeat {
+            let parked = windows.listWindows(laneId: laneId)
+            var matchedIndex: Int? = nil
+            if let needle = condition.elementNeedle {
+                let observation = accessibility.observe(
+                    windows: parked,
+                    limit: Self.waitObservationLimit,
+                    windowControl: windows
+                )
+                matchedIndex = observation.elements.first { $0.matches(text: needle) }?.index
+            }
+            outcome = condition.outcome(
+                matchedIndex: matchedIndex,
+                windowTitles: parked.compactMap(\.title)
+            )
+            if case .met = outcome { break }
+            if Date() >= deadline { break }
+            Thread.sleep(forTimeInterval: min(interval, max(0, deadline.timeIntervalSinceNow)))
+        } while Date() < deadline
+        touch(laneId)
+        switch outcome {
+        case .pending:
+            return ["ok": .bool(false), "resolvedIndex": .null]
+        case let .met(index):
+            return ["ok": .bool(true), "resolvedIndex": index.map(JSONValue.int) ?? .null]
+        }
     }
 
     private func accessibilityCommand(

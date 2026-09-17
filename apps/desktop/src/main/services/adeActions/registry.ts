@@ -3160,15 +3160,10 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
 
    One private macOS screen per lane, reached by agents through this domain.
 
-   The runtime property is read through a structural widening rather than off
-   `AdeRuntime` directly, so this file can be written and typechecked before
-   the runtime that creates the service wires it in. The property name is
-   `macDesktopService` and nothing here works until bootstrap sets it.
+   `AdeRuntime.macDesktopService` is the one source; a runtime that built no
+   service (a chat-only brain, or any non-macOS host that still serves actions)
+   leaves it null and the whole domain is simply absent.
    ────────────────────────────────────────────────────────────────────────── */
-
-type MacDesktopCapableRuntime = AdeRuntime & {
-  macDesktopService?: MacDesktopServiceApi | null;
-};
 
 /**
  * The rejection every Mac Desktop action carries off macOS.
@@ -3284,7 +3279,7 @@ function macDesktopRequiredTarget(source: unknown, label: string, action: string
 }
 
 function buildMacDesktopDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const service = (runtime as MacDesktopCapableRuntime).macDesktopService ?? null;
+  const service: MacDesktopServiceApi | null = runtime.macDesktopService ?? null;
   if (!service) return null;
   /**
    * One gate in front of every method but `getStatus`.

@@ -1466,10 +1466,10 @@ export async function createAdeRuntime(args: {
       getAppControlStatus: appControlService
         ? () => appControlService.getStatus()
         : null,
-      // TODO(mac-desktop): wire macDesktopService — the runtime service does not
-      // exist in this process yet. Null is the honest answer meanwhile: every
-      // client hides the tool rather than drawing an empty pane.
-      macDesktopService: null,
+      // The runtime's own Mac Desktop service, read-only: the mirror holds
+      // `getStatus` + `subscribe` and nothing that can start a display or move
+      // a pointer. Null only on a chat-only runtime, which builds no service.
+      macDesktopService,
       onStateChanged: (laneId) =>
         pushEvent("runtime", { type: WORK_TOOLS_STATE_CHANGED_EVENT, laneId }),
       logger,
@@ -1566,6 +1566,19 @@ export async function createAdeRuntime(args: {
         getGitService: () => gitService,
         conflictService,
         computerUseArtifactBrokerService,
+        // One line of system prompt, and only for a lane that has a screen.
+        // Synchronous by contract — the send path must not await a service to
+        // decide to say nothing — so it reads the in-memory display registry.
+        getMacDesktopLaneState: (laneId: string | null) =>
+          (macDesktopService ? { enabled: macDesktopService.hasDisplaySync(laneId) } : null),
+        // The per-turn time-lapse clip. Same gate, so an idle lane pays nothing.
+        macDesktopTurnRecorder: macDesktopService
+          ? {
+            hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
+            beginTurn: (args) => macDesktopService.beginTurn(args),
+            noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
+          }
+          : null,
         laneService,
         sessionService,
         processRegistry,

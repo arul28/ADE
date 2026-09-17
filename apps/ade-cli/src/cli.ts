@@ -12225,6 +12225,13 @@ function buildMacDesktopPlan(args: string[]): CliPlan {
                 backendName: MAC_DESKTOP_PROOF_BACKEND_NAME,
                 toolName: "mac-desktop proof",
                 callerRoot: process.cwd(),
+                // The lane and the calling chat are named explicitly rather
+                // than inferred from the caller's cwd: a display is lane-scoped
+                // and `--lane` may point somewhere the shell is not, so
+                // inferring would file the proof against the wrong owner — or
+                // against none. `resolveComputerUseOwners` reads both, and the
+                // lane owner is what the PR-linked owner then hangs off.
+                ...laneArgs,
                 ...ownerBase,
                 inputs: [
                   {

@@ -190,6 +190,15 @@ const asWindows = (value: unknown): MacDesktopWindow[] =>
  */
 export type MacDesktopRuntimeService = MacDesktopServiceApi & {
   beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void>;
+  /**
+   * Whether the lane has a display right now, answered from memory.
+   *
+   * `getDisplay` is async because it is part of the cross-process contract;
+   * the two callers that need this answer on a hot path — the one-line prompt
+   * directive and the per-turn clip gate — run inside the chat send path and
+   * must not await a service call to decide to do nothing.
+   */
+  hasDisplaySync(laneId: string | null | undefined): boolean;
   readonly resolutionSettingKey: string;
   setResolution(preset: MacDesktopResolutionPreset): void;
   getResolution(): MacDesktopResolutionPreset;
@@ -1232,7 +1241,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       });
       const matchedIndex = typeof reply.resolvedIndex === "number" ? reply.resolvedIndex : null;
       return {
-        ok: reply.ok !== false && matchedIndex != null,
+        // The driver answers `ok` itself: a `gone` or `windowTitle` wait
+        // succeeds with no element, so an index is evidence of a match rather
+        // than the definition of success.
+        ok: reply.ok === true,
         waitedMs: Math.max(0, now() - startedMs),
         matched: matchedIndex != null
           ? observation.elements.find((element) => element.index === matchedIndex) ?? null
@@ -1624,6 +1636,12 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   }
 
   return Object.assign(api, {
+    /** The sync half of `getDisplay`, for the prompt gate and the turn clip. */
+    hasDisplaySync(laneId: string | null | undefined): boolean {
+      const trimmed = laneId?.trim();
+      if (!trimmed || !isDarwin) return false;
+      return ownership.hasDisplay(trimmed);
+    },
     /** Opens the turn clip. Called by the chat runtime on the turn's first act. */
     beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void> {
       if (!isDarwin) return Promise.resolve();
