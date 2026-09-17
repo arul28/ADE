@@ -486,10 +486,6 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
   let askCtoAbort: AbortController | null = null;
 
   /**
-   * Every function call in flight: dedupe, settle-order and the results that
-   * are still waiting on it. See `ctoVoiceToolCalls`.
-   */
-  /**
    * Every voice-side log line is stamped with the call it belongs to, read at
    * write time rather than captured, so a line written while a call is ending
    * names the call that is live then.
@@ -498,6 +494,10 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
     deps.logger?.info(event, { callId: state.callId, ...meta });
   };
 
+  /**
+   * Every function call in flight: dedupe, settle-order and the results that
+   * are still waiting on it. See `ctoVoiceToolCalls`.
+   */
   const functionCalls = createFunctionCallLedger({
     send: (payload) => send(payload),
     requestModelResponse: () => responses.requestModelResponse(),
@@ -786,8 +786,11 @@ export function createCtoVoiceCallService(deps: CtoVoiceCallDeps) {
 
     // The call is over. `endCall` aborts the running turn and empties the
     // queue, but the loop that owns them is still unwinding, and a job it had
-    // already taken would otherwise run a full CTO turn after hang-up. The
-    // record closes with it, under the same `call_ended` outcome `endCall` uses.
+    // already taken would otherwise run a full CTO turn after hang-up. Today
+    // nothing reaches this line: `endCall` drains the queue before the loop
+    // can shift again. It stays because a return that quietly drops a record
+    // is how that stops being true. The record closes under the same
+    // `call_ended` outcome `endCall` uses.
     if (!started) {
       timings.close(timing, "call_ended");
       return;
