@@ -71,9 +71,22 @@ export function useSceneStillLatch({
   const storedStillReady = useSessionStillsReady(sessionId);
 
   const rehydrateRef = useRef<boolean | null>(null);
+  /**
+   * True once this mount has actually SHOWN a picture.
+   *
+   * The re-decision below exists for a promise that was broken — a record whose
+   * bytes never arrived. A mount that already had the bytes is a different
+   * story: if its preview were ever to go away again (a store reset, a cache
+   * eviction, a re-render that lands between two store states) the rule as
+   * written would read that as "no picture" and start running the scene's code
+   * underneath a user who was looking at its still. Cheap insurance against a
+   * class of bug rather than a fix for a known one.
+   */
+  const hadPictureRef = useRef(false);
   const [indexWaitExpired, setIndexWaitExpired] = useState(false);
 
   const hasPicture = Boolean(storedStillSrc);
+  if (hasPicture) hadPictureRef.current = true;
   const pictureComing = Boolean(storedStill?.record) && pictureInFlight;
   // "The index has answered AND no picture is coming."
   const indexAnswered = storedStillReady && !hasPicture && !pictureComing;
@@ -92,8 +105,9 @@ export function useSceneStillLatch({
   // row stayed a blank box that never drew and never retried. One re-decision
   // is allowed, back to the local behaviour: run the scene. The read itself
   // retries on the next mount, since the effect behind it is remounted with
-  // the row.
-  if (rehydrateRef.current === true && !hasPicture && !pictureComing) {
+  // the row. Never for a mount that once displayed a real picture — see
+  // {@link hadPictureRef}.
+  if (rehydrateRef.current === true && !hadPictureRef.current && !hasPicture && !pictureComing) {
     rehydrateRef.current = false;
   }
   const undecided = rehydrateRef.current === null;

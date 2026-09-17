@@ -1027,9 +1027,9 @@ export function createComputerUseArtifactBrokerService(args: {
      * the last reference in a batch still unlinks the bytes.
      */
     const referencesByFilePath = new Map<string, number>();
-    // Three columns, not a whole record: the only question is how many rows
-    // point at each path, and hydrating every file-backed artifact in the
-    // project — metadata blob included — to count them was the expensive part.
+    // One column, not a whole record: the only question is how many rows point
+    // at each path, and hydrating every file-backed artifact in the project —
+    // metadata blob included — to count them was the expensive part.
     for (const candidate of db.all<{ uri: string | null }>(
       `
         select uri

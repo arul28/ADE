@@ -128,6 +128,20 @@ describe("buildSceneDocument", () => {
     expect(doc).toContain("countUp");
     expect(doc).not.toMatch(/<script[^>]+src=/i);
   });
+
+  /**
+   * The document has to be able to name itself, because the host cannot: one
+   * mounted frame shows document after document and its `contentWindow` is the
+   * same object throughout, so only a value carried IN the document tells a
+   * message from the outgoing view apart from one from the incoming view.
+   */
+  it("stamps the document with its nonce and echoes it on every message", () => {
+    const doc = buildSceneDocument({ html: "<p>x</p>", nonce: "doc-7" });
+    expect(doc).toContain('window.__ADE_SCENE_NONCE__ = "doc-7"');
+    expect(doc).toContain("message.nonce = String(window.__ADE_SCENE_NONCE__)");
+    // A caller that has no nonce still gets a document, just an unstamped one.
+    expect(buildSceneDocument({ html: "<p>x</p>" })).toContain("window.__ADE_SCENE_NONCE__ = null");
+  });
 });
 
 describe("parseSceneHostMessage", () => {
@@ -154,6 +168,26 @@ describe("parseSceneHostMessage", () => {
     // Same clamp as every other sizing message: the frame is still untrusted.
     const huge = parseSceneHostMessage({ __adeScene: 1, type: "settled", payload: { height: 99_999 } });
     expect(huge?.payload).toEqual({ height: 4000 });
+  });
+
+  /**
+   * The parser only CARRIES the nonce; deciding whether it is the right one is
+   * the host's job, since only the host knows which document is in the frame.
+   */
+  it("carries a usable nonce through and drops an unusable one", () => {
+    expect(parseSceneHostMessage({ __adeScene: 1, type: "settled", nonce: "doc-7", payload: {} }))
+      .toEqual({ nonce: "doc-7", type: "settled", payload: { height: undefined } });
+    expect(parseSceneHostMessage({ __adeScene: 1, type: "emit", nonce: "doc-7", payload: { name: "go" } }))
+      .toMatchObject({ nonce: "doc-7", type: "emit" });
+    // Neither a wrong type nor an empty string may look like a real nonce.
+    expect(parseSceneHostMessage({ __adeScene: 1, type: "ready", nonce: 7, payload: {} }))
+      .not.toHaveProperty("nonce");
+    expect(parseSceneHostMessage({ __adeScene: 1, type: "ready", nonce: "", payload: {} }))
+      .not.toHaveProperty("nonce");
+    expect(parseSceneHostMessage({ __adeScene: 1, type: "ready", payload: {} }))
+      .not.toHaveProperty("nonce");
+    const long = parseSceneHostMessage({ __adeScene: 1, type: "ready", nonce: "n".repeat(400), payload: {} });
+    expect(long?.nonce?.length).toBe(120);
   });
 
   it("drops an emit with no name and truncates a long error", () => {

@@ -47,6 +47,21 @@ const MAX_HEIGHT = 760;
  */
 const SCENE_FREEZE_DEADLINE_MS = 4_000;
 
+/**
+ * A fresh id for one built document.
+ *
+ * Not a security boundary — the frame is already sandboxed and origin-isolated,
+ * and this only has to separate one of OUR documents from the previous one — so
+ * `randomUUID` where it exists and a counter-plus-random string where it does
+ * not (an older jsdom, a non-secure context) is enough.
+ */
+let sceneNonceCounter = 0;
+function mintSceneNonce(): string {
+  sceneNonceCounter += 1;
+  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+  return `${sceneNonceCounter}-${random}`;
+}
+
 function readSceneTheme(): SceneTheme {
   if (typeof window === "undefined") return SCENE_FALLBACK_THEME;
   try {
@@ -165,9 +180,15 @@ export function SceneFrame({
   const [proofState, setProofState] = useState<"idle" | "saving" | "saved">("idle");
   /**
    * Bumped whenever something worth re-checking happened while a freeze was
-   * waiting for the scene to come fully on screen. Only ever counts up: a
-   * frozen scene never returns to `running` (the `ready` handler promotes from
-   * `loading` only), so there is no transition that should reset it.
+   * waiting for the scene to come fully on screen. Only ever counts up, and
+   * needs no reset on the one path that does leave `frozen` — a latch release,
+   * `frozen → loading → running`.
+   *
+   * Because a rehydrated scene mounts no frame at all: the freeze effect gates
+   * on `status === "running"`, which a rehydrated mount never reaches, so
+   * nothing incremented this while the picture was up. The value a release
+   * comes back to is the value the scene ran with, and the deadline it pairs
+   * with is reset per document anyway.
    */
   const [freezeAttempt, setFreezeAttempt] = useState(0);
   /** When the wait above runs out. Set on the first partial-visibility check. */
@@ -221,10 +242,32 @@ export function SceneFrame({
   // frame that reloads on every tick.
   const doc = useMemo(() => {
     if (failed || streaming || rehydrated || undecided) return null;
-    return buildSceneDocument({ html: parsed.html, title: parsed.title, theme, scopeKey });
+    // Minted here, with the document, because here is the only place that
+    // knows a new document is being built — which is precisely the event the
+    // nonce exists to mark. See {@link prepared} for what it is worth.
+    const nonce = mintSceneNonce();
+    return {
+      nonce,
+      html: buildSceneDocument({ html: parsed.html, title: parsed.title, theme, scopeKey, nonce }),
+    };
   }, [failed, streaming, rehydrated, undecided, parsed, theme, scopeKey]);
 
-  const [src, setSrc] = useState<string | null>(null);
+  /**
+   * The document the frame is currently showing, and the nonce that document
+   * stamps its messages with — one piece of state, never two.
+   *
+   * The pair has to move together. The voice HUD keeps ONE mounted frame for a
+   * whole call and swaps its `src`, and an iframe's `contentWindow` is the SAME
+   * object across that swap — so the `event.source` check below cannot tell the
+   * outgoing document from the incoming one. A `settled` or `ready` the old
+   * document posted after the swap was therefore stamped onto the new one,
+   * marking a barely-painted view settled and burning the one-still latch on
+   * it. Matching the nonce is what makes "which document said this" answerable.
+   */
+  const [prepared, setPrepared] = useState<{ url: string; nonce: string } | null>(null);
+  const src = prepared?.url ?? null;
+  /** The nonce the current `src` was prepared with; see {@link prepared}. */
+  const nonceRef = useRef<string | null>(null);
   // Written in an effect rather than during render: a render can be thrown
   // away (StrictMode, a suspended or abandoned commit) and the ref would then
   // name a document the frame was never handed. `useEffect` and not
@@ -233,7 +276,8 @@ export function SceneFrame({
   // that gave it its `src`.
   useEffect(() => {
     srcRef.current = src;
-  }, [src]);
+    nonceRef.current = prepared?.nonce ?? null;
+  }, [src, prepared]);
   /** True only for a settle this document reported; see {@link settledSrc}. */
   const settled = settledSrc !== null && settledSrc === src;
 
@@ -243,10 +287,14 @@ export function SceneFrame({
     if (!doc) return;
     let revoked: string | null = null;
     let cancelled = false;
+    // The blob path needs no exception from the nonce rule: the blob is built
+    // from these same bytes, so it carries the same stamp the `ade-scene:` URL
+    // would have.
+    const show = (url: string) => setPrepared({ url, nonce: doc.nonce });
     const fallBackToBlob = () => {
-      const blob = new Blob([doc], { type: "text/html" });
+      const blob = new Blob([doc.html], { type: "text/html" });
       revoked = URL.createObjectURL(blob);
-      setSrc(revoked);
+      show(revoked);
     };
     const prepare = window.ade?.scene?.prepare;
     if (typeof prepare === "function") {
@@ -255,10 +303,10 @@ export function SceneFrame({
       // is a function, it resolves, and it resolves `null` — so a bare
       // `typeof === "function"` check passed, `src` became null, and the scene
       // rendered as a blank gap with no error anywhere.
-      void prepare(doc)
+      void prepare(doc.html)
         .then((url) => {
           if (cancelled) return;
-          if (typeof url === "string" && url.length > 0) setSrc(url);
+          if (typeof url === "string" && url.length > 0) show(url);
           else fallBackToBlob();
         })
         .catch(() => { if (!cancelled) fallBackToBlob(); });
@@ -271,13 +319,19 @@ export function SceneFrame({
     };
   }, [doc]);
 
-  // Only messages from this frame's own contentWindow are considered, and every
-  // one is shape-checked before it reaches state.
+  // Only messages from this frame's own contentWindow are considered, every one
+  // is shape-checked before it reaches state, and every one must name the
+  // document currently in the frame.
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
       const message = parseSceneHostMessage(event.data);
       if (!message) return;
+      // A missing nonce is dropped as firmly as a wrong one. Every document
+      // this host builds carries one, so an unstamped message is either a
+      // document from before this check existed — which is exactly the stale
+      // document the check is here to reject — or not one of ours at all.
+      if (!message.nonce || message.nonce !== nonceRef.current) return;
       if (message.type === "error") {
         setSceneError(message.payload.message);
         return;
@@ -622,6 +676,12 @@ export function SceneFrame({
               ref={frameRef}
               title={title}
               data-testid="chat-scene-frame"
+              // The nonce the document in this frame stamps its messages with.
+              // On the element because the frame is the only place the pair is
+              // observable from outside — the frame's own origin cannot read
+              // this attribute, and a test otherwise has no way to speak as the
+              // document actually loaded.
+              data-scene-nonce={prepared?.nonce}
               sandbox="allow-scripts"
               referrerPolicy="no-referrer"
               src={src}

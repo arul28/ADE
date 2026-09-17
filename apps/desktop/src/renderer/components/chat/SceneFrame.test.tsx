@@ -151,12 +151,7 @@ describe("SceneFrame", () => {
       const frame = await screen.findByTestId("chat-scene-frame");
       // The frame reports ready, which is the draw gate: a capture before the
       // first paint snapshots a blank rect.
-      window.dispatchEvent(
-        new MessageEvent("message", {
-          source: (frame as HTMLIFrameElement).contentWindow,
-          data: { __adeScene: 1, type: "ready", payload: { height: 200 } },
-        }),
-      );
+      postSceneMessage(frame, "ready");
       await waitFor(() =>
         expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running"),
       );
@@ -372,12 +367,7 @@ describe("SceneFrame", () => {
       render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       const frame = screen.getByTestId("chat-scene-frame");
-      act(() => {
-        window.dispatchEvent(new MessageEvent("message", {
-          source: (frame as HTMLIFrameElement).contentWindow,
-          data: { __adeScene: 1, type: "ready", payload: { height: 200 } },
-        }));
-      });
+      act(() => { postSceneMessage(frame, "ready"); });
       // An older prepared document, or a script that threw before the watcher
       // was armed: the host runs the same deadline independently.
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
@@ -430,12 +420,7 @@ describe("SceneFrame", () => {
       const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
       const frame = await screen.findByTestId("chat-scene-frame");
       act(() => {
-        for (const type of ["ready", "settled"]) {
-          window.dispatchEvent(new MessageEvent("message", {
-            source: (frame as HTMLIFrameElement).contentWindow,
-            data: { __adeScene: 1, type, payload: { height: 200 } },
-          }));
-        }
+        for (const type of ["ready", "settled"]) postSceneMessage(frame, type);
       });
       await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
 
@@ -495,6 +480,41 @@ describe("SceneFrame", () => {
       await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(2));
       expect(storeStill.mock.calls.map((call) => (call[0] as { scopeKey: string }).scopeKey))
         .toEqual(["view-1", "view-2"]);
+    });
+
+    /**
+     * A settle belongs to the document that sent it.
+     *
+     * An iframe's `contentWindow` is the SAME object across a `src` change, so
+     * the source check cannot tell the outgoing document from the incoming one.
+     * The old document keeps running until the new one loads, and a `settled`
+     * it posted in that window was stamped onto the new view — marking a
+     * barely-painted document settled and burning its one-still latch. The
+     * per-document nonce is what makes the two distinguishable.
+     */
+    it("ignores a settle sent by the document the frame just replaced", async () => {
+      stubShellRect({});
+      const { storeStill, rerender, props } = await renderSettlingScene({
+        scopeKey: "stale-1",
+      });
+      const staleNonce = screen.getByTestId("chat-scene-frame").getAttribute("data-scene-nonce");
+      expect(staleNonce).toBeTruthy();
+
+      // The same frame, a new view — exactly what the HUD does mid-call.
+      rerender(<SceneFrame {...props} source={"<p>second view</p>"} scopeKey="stale-2" />);
+      const frame = await screen.findByTestId("chat-scene-frame");
+      await waitFor(() => expect(frame.getAttribute("src")).toBe("blob:scene-2"));
+      expect(frame.getAttribute("data-scene-nonce")).not.toBe(staleNonce);
+
+      // The outgoing document, still alive, reporting on its own view.
+      act(() => { postSceneMessage(frame, "settled", 200, staleNonce); });
+      await act(async () => { await Promise.resolve(); });
+      expect(storeStill).not.toHaveBeenCalled();
+
+      // The document actually in the frame says the same thing, and is heard.
+      act(() => { postSceneMessage(frame, "settled"); });
+      await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(1));
+      expect((storeStill.mock.calls[0]?.[0] as { scopeKey: string }).scopeKey).toBe("stale-2");
     });
 
     /**

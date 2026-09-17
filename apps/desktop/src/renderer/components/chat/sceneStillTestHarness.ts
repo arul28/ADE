@@ -72,10 +72,22 @@ export function stubShellRect(rect: Partial<DOMRect> = {}): void {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(full as DOMRect);
 }
 
-/** Post one host message as the frame itself. Anything else is dropped. */
-export function postSceneMessage(frame: Element, type: string, height = 200): void {
+/**
+ * Post one host message as the frame itself. Anything else is dropped.
+ *
+ * The nonce defaults to the one the frame currently carries, because that is
+ * what a real document posts: the host ignores any message that does not name
+ * the document now in the frame. Pass `nonce` explicitly to speak as some OTHER
+ * document — a stale one that is still running after a source swap.
+ */
+export function postSceneMessage(
+  frame: Element,
+  type: string,
+  height = 200,
+  nonce: string | null = frame.getAttribute("data-scene-nonce"),
+): void {
   window.dispatchEvent(new MessageEvent("message", {
     source: (frame as HTMLIFrameElement).contentWindow,
-    data: { __adeScene: 1, type, payload: { height } },
+    data: { __adeScene: 1, type, nonce: nonce ?? undefined, payload: { height } },
   }));
 }

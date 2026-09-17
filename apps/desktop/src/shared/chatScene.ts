@@ -448,8 +448,16 @@ const SCENE_SDK_SOURCE = `
     return Math.ceil(body.scrollHeight + parseFloat(style.marginTop || "0") + parseFloat(style.marginBottom || "0"));
   }
 
+  // Every message carries the nonce of the document it was sent from. The host
+  // keeps ONE mounted frame and swaps its src, and a contentWindow's identity
+  // survives that swap — so without this an outgoing document's late 'settled'
+  // is indistinguishable from the incoming one's.
   function post(type, payload) {
-    try { parent.postMessage({ __adeScene: 1, type: type, payload: payload }, "*"); } catch (e) {}
+    var message = { __adeScene: 1, type: type, payload: payload };
+    try {
+      if (window.__ADE_SCENE_NONCE__) message.nonce = String(window.__ADE_SCENE_NONCE__);
+    } catch (e) {}
+    try { parent.postMessage(message, "*"); } catch (e) {}
   }
 
   var ade = {
@@ -646,6 +654,18 @@ export type SceneDocumentArgs = {
    * memo yields the same string and both rows share one frame.
    */
   scopeKey?: string | null;
+  /**
+   * This DOCUMENT's identity, echoed back on every message the frame sends.
+   *
+   * The scope key cannot do this job: it names a scene's position in the
+   * transcript, and the voice HUD swaps document after document into one frame
+   * under one key. What the host has to tell apart is the outgoing document
+   * from the incoming one, and only a value minted per build can do that.
+   *
+   * Carried in the document itself, so it survives both delivery paths — the
+   * `ade-scene:` URL and the blob fallback both serve these exact bytes.
+   */
+  nonce?: string | null;
 };
 
 /**
@@ -683,6 +703,7 @@ export function buildSceneDocument(args: SceneDocumentArgs): string {
     "<script>",
     `window.__ADE_SCENE_DATA__ = ${escapeForScript(args.data ?? null)};`,
     `window.__ADE_SCENE_THEME__ = ${escapeForScript(theme)};`,
+    `window.__ADE_SCENE_NONCE__ = ${escapeForScript(args.nonce ?? null)};`,
     "</script>",
     `<script>${SCENE_SDK_SOURCE}</script>`,
     `</head><body${args.scopeKey ? ` data-scene-scope="${sceneScopeAttribute(args.scopeKey)}"` : ""}>`,
@@ -710,8 +731,15 @@ export type SceneStillRecord = {
   title: string;
 };
 
-/** Messages the frame is allowed to send. Anything else is dropped. */
-export type SceneHostMessage =
+/**
+ * Messages the frame is allowed to send. Anything else is dropped.
+ *
+ * `nonce` is the sending DOCUMENT's id — see {@link SceneDocumentArgs.nonce}.
+ * Optional in the type because the parser cannot require what an older prepared
+ * document, still in main's store, was built without; it is the HOST that
+ * decides an unstamped message is not one of its own.
+ */
+export type SceneHostMessage = { nonce?: string } & (
   | { type: "ready"; payload: { height?: number } }
   | { type: "resize"; payload: { height?: number } }
   /**
@@ -722,7 +750,8 @@ export type SceneHostMessage =
    */
   | { type: "settled"; payload: { height?: number } }
   | { type: "emit"; payload: { name: string; payload?: unknown } }
-  | { type: "error"; payload: { message: string } };
+  | { type: "error"; payload: { message: string } }
+);
 
 const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "emit", "error"]);
 
@@ -737,20 +766,24 @@ export function parseSceneHostMessage(value: unknown): SceneHostMessage | null {
   const type = typeof record.type === "string" ? record.type : "";
   if (!ALLOWED_MESSAGE_TYPES.has(type)) return null;
   const payload = (record.payload && typeof record.payload === "object" ? record.payload : {}) as Record<string, unknown>;
+  // Bounded like every other string off the wire, and absent rather than empty
+  // when it is not a usable one — an empty nonce must never match a real one.
+  const rawNonce = typeof record.nonce === "string" ? record.nonce.slice(0, 120) : "";
+  const nonce = rawNonce.length ? { nonce: rawNonce } : {};
 
   if (type === "emit") {
     const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "";
     if (!name.length) return null;
-    return { type: "emit", payload: { name, payload: payload.payload } };
+    return { ...nonce, type: "emit", payload: { name, payload: payload.payload } };
   }
   if (type === "error") {
     const message = typeof payload.message === "string" ? payload.message.slice(0, 500) : "scene error";
-    return { type: "error", payload: { message } };
+    return { ...nonce, type: "error", payload: { message } };
   }
   const height = typeof payload.height === "number" && Number.isFinite(payload.height)
     ? Math.max(0, Math.min(4000, Math.round(payload.height)))
     : undefined;
-  if (type === "ready") return { type: "ready", payload: { height } };
-  if (type === "settled") return { type: "settled", payload: { height } };
-  return { type: "resize", payload: { height } };
+  if (type === "ready") return { ...nonce, type: "ready", payload: { height } };
+  if (type === "settled") return { ...nonce, type: "settled", payload: { height } };
+  return { ...nonce, type: "resize", payload: { height } };
 }
