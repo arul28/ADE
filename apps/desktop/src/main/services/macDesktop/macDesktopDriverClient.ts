@@ -55,6 +55,7 @@ export const MAC_DESKTOP_DRIVER_OPS = {
   screenshot: "capture.screenshot",
   startStream: "stream.start",
   setStreamRate: "stream.setRate",
+  setStreamCursorVisible: "stream.setCursorVisible",
   stopStream: "stream.stop",
   startRecording: "record.start",
   stopRecording: "record.stop",

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -9,11 +9,16 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type {
   MacDesktopClickArgs,
   MacDesktopDragArgs,
+  MacDesktopMoveArgs,
   MacDesktopPressArgs,
   MacDesktopScrollArgs,
   MacDesktopTypeArgs,
 } from "../../../shared/types/macDesktop";
 import { macDesktopApi } from "./macDesktopApi";
+import {
+  createMacDesktopTakeoverCursorFeed,
+  type MacDesktopTakeoverCursorFeed,
+} from "./MacDesktopTakeoverCursor";
 
 /**
  * Turning a browser event into a real-input call on the lane's Mac.
@@ -39,6 +44,7 @@ export type MacDesktopInputContext = {
 };
 
 export type MacDesktopInputCall =
+  | { kind: "move"; args: MacDesktopMoveArgs }
   | { kind: "click"; args: MacDesktopClickArgs }
   | { kind: "drag"; args: MacDesktopDragArgs }
   | { kind: "scroll"; args: MacDesktopScrollArgs }
@@ -67,6 +73,7 @@ export function macDesktopPointerUpCall(
         from: { x: from.x, y: from.y },
         to: { x: to.x, y: to.y },
         mode: "real",
+        silent: true,
         controllerId: context.controllerId,
         chatSessionId: context.chatSessionId,
       },
@@ -81,6 +88,7 @@ export function macDesktopPointerUpCall(
       mode: "real",
       button: event.button === 2 ? "right" : "left",
       count: event.detail >= 2 ? 2 : 1,
+      silent: true,
       controllerId: context.controllerId,
       chatSessionId: context.chatSessionId,
     },
@@ -102,6 +110,7 @@ export function macDesktopWheelCall(
       mode: "real",
       direction: horizontal ? (delta > 0 ? "right" : "left") : (delta > 0 ? "down" : "up"),
       amount: Math.max(1, Math.round(Math.abs(delta) / 20)),
+      silent: true,
       controllerId: context.controllerId,
       chatSessionId: context.chatSessionId,
     },
@@ -134,6 +143,7 @@ export function macDesktopKeyCall(
         laneId: context.laneId,
         text: event.key,
         mode: "real",
+        silent: true,
         controllerId: context.controllerId,
         chatSessionId: context.chatSessionId,
       },
@@ -146,8 +156,97 @@ export function macDesktopKeyCall(
       key: event.key.toLowerCase(),
       modifiers,
       mode: "real",
+      silent: true,
       controllerId: context.controllerId,
       chatSessionId: context.chatSessionId,
+    },
+  };
+}
+
+export function macDesktopMoveCall(
+  context: MacDesktopInputContext,
+  point: MacDesktopPoint,
+): MacDesktopInputCall {
+  return {
+    kind: "move",
+    args: {
+      laneId: context.laneId,
+      x: point.x,
+      y: point.y,
+      silent: true,
+      controllerId: context.controllerId,
+      chatSessionId: context.chatSessionId,
+    },
+  };
+}
+
+/** Pointer moves forwarded per second while the user drives. */
+export const MAC_DESKTOP_MOVE_HZ = 60;
+export const MAC_DESKTOP_MOVE_INTERVAL_MS = Math.round(1_000 / MAC_DESKTOP_MOVE_HZ);
+
+export type MacDesktopMovePump = {
+  /** Record the pointer's position. Sends now, or at the next tick. */
+  push: (point: MacDesktopPoint) => void;
+  /** Drop anything still pending. The gesture is over. */
+  stop: () => void;
+};
+
+/**
+ * The thing that keeps a moving mouse from becoming a flood of RPCs.
+ *
+ * A pointer over a pane produces an event per compositor frame — 60 a second on
+ * a normal display, 240 on this author's — and each one would otherwise be an
+ * IPC hop, a lease check and a `CGEvent` post, on a link that may be an SSH
+ * forward to another Mac. So: send the first one immediately, because the
+ * latency that matters is the one at the start of a gesture, then at most one
+ * per interval, and only ever the LATEST position. Intermediate points are
+ * dropped rather than queued — a pointer is a position, not a path, and
+ * replaying stale positions behind a live mouse is how a cursor ends up
+ * visibly trailing its own input.
+ *
+ * Pure and injectable so the throttle is a test rather than a stopwatch.
+ */
+export function createMacDesktopMovePump(options: {
+  send: (point: MacDesktopPoint) => void;
+  intervalMs?: number;
+  now?: () => number;
+  schedule?: (fn: () => void, ms: number) => number;
+  cancel?: (handle: number) => void;
+}): MacDesktopMovePump {
+  const intervalMs = options.intervalMs ?? MAC_DESKTOP_MOVE_INTERVAL_MS;
+  const now = options.now ?? (() => Date.now());
+  const schedule = options.schedule
+    ?? ((fn, ms) => globalThis.setTimeout(fn, ms) as unknown as number);
+  const cancel = options.cancel ?? ((handle) => globalThis.clearTimeout(handle));
+  let lastSentAtMs = Number.NEGATIVE_INFINITY;
+  let pending: MacDesktopPoint | null = null;
+  let timer: number | null = null;
+
+  const flush = (): void => {
+    timer = null;
+    const point = pending;
+    pending = null;
+    if (!point) return;
+    lastSentAtMs = now();
+    options.send(point);
+  };
+
+  return {
+    push(point) {
+      pending = point;
+      if (timer != null) return;
+      const waitedMs = now() - lastSentAtMs;
+      if (waitedMs >= intervalMs) {
+        flush();
+        return;
+      }
+      timer = schedule(flush, intervalMs - waitedMs);
+    },
+    stop() {
+      pending = null;
+      if (timer == null) return;
+      cancel(timer);
+      timer = null;
     },
   };
 }
@@ -161,9 +260,14 @@ export function macDesktopInputRefusal(error: unknown): string {
 
 export type UseMacDesktopRealInput = {
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  /** The pointer left the pane: stop drawing the local glyph. */
+  onPointerLeave: () => void;
   onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onWheel: (event: ReactWheelEvent<HTMLDivElement>) => void;
   onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
+  /** Where to draw the local pointer glyph. See `MacDesktopTakeoverCursor`. */
+  cursorFeed: MacDesktopTakeoverCursorFeed;
   /** Null while the host is accepting input. */
   inputError: string | null;
   clearInputError: () => void;
@@ -183,9 +287,16 @@ export function useMacDesktopRealInput(args: {
   const loggedRef = useRef<string | null>(null);
   const [inputError, setInputError] = useState<string | null>(null);
 
+  // One feed for the life of the hook: the cursor component subscribes to it
+  // once, and a new object per render would resubscribe on every keystroke.
+  const cursorFeedRef = useRef<MacDesktopTakeoverCursorFeed | null>(null);
+  cursorFeedRef.current ??= createMacDesktopTakeoverCursorFeed();
+  const cursorFeed = cursorFeedRef.current;
+
   const send = useCallback((call: MacDesktopInputCall) => {
     const api = macDesktopApi();
-    const pending = call.kind === "click" ? api.click(call.args, runtimePin)
+    const pending = call.kind === "move" ? api.move(call.args, runtimePin)
+      : call.kind === "click" ? api.click(call.args, runtimePin)
       : call.kind === "drag" ? api.drag(call.args, runtimePin)
       : call.kind === "scroll" ? api.scroll(call.args, runtimePin)
       : call.kind === "type" ? api.type(call.args, runtimePin)
@@ -204,6 +315,50 @@ export function useMacDesktopRealInput(args: {
       },
     );
   }, [laneId, runtimePin]);
+  // The pump is built once and lives for the hook's life, while `send` is
+  // rebuilt whenever the runtime pin changes. Read through a ref so the pump
+  // never holds a sender bound to a connection that has since moved.
+  const sendRef = useRef(send);
+  sendRef.current = send;
+
+  /**
+   * The throttled forwarder, rebuilt whenever the thing it sends through
+   * changes, and torn down with the hook: an interval still holding a point
+   * after the panel unmounted would post a pointer event for a view nobody is
+   * looking at.
+   */
+  const movePumpRef = useRef<MacDesktopMovePump | null>(null);
+  const contextRef = useRef({ laneId, sessionId, controllerId });
+  contextRef.current = { laneId, sessionId, controllerId };
+  if (!movePumpRef.current) {
+    movePumpRef.current = createMacDesktopMovePump({
+      send: (point) => {
+        const context = contextRef.current;
+        sendRef.current(macDesktopMoveCall(
+          { laneId: context.laneId, chatSessionId: context.sessionId, controllerId: context.controllerId },
+          point,
+        ));
+      },
+    });
+  }
+  useEffect(() => () => movePumpRef.current?.stop(), []);
+
+  const onPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!enabled) return;
+    const point = toDisplayPoint(event.clientX, event.clientY);
+    // The letterbox bars map to nothing, so the glyph is hidden there and no
+    // move is sent: a pointer parked on the black band is not a pointer on the
+    // lane's screen, and clamping it to the nearest pixel of a real window is
+    // the lie `viewPointToDisplayPoint` already refuses to tell.
+    cursorFeed.publish(point);
+    if (!point) return;
+    movePumpRef.current?.push(point);
+  }, [cursorFeed, enabled, toDisplayPoint]);
+
+  const onPointerLeave = useCallback(() => {
+    cursorFeed.publish(null);
+    movePumpRef.current?.stop();
+  }, [cursorFeed]);
 
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!enabled) return;
@@ -249,5 +404,15 @@ export function useMacDesktopRealInput(args: {
     setInputError(null);
   }, []);
 
-  return { onPointerDown, onPointerUp, onWheel, onKeyDown, inputError, clearInputError };
+  return {
+    onPointerDown,
+    onPointerMove,
+    onPointerLeave,
+    onPointerUp,
+    onWheel,
+    onKeyDown,
+    cursorFeed,
+    inputError,
+    clearInputError,
+  };
 }

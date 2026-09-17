@@ -481,6 +481,7 @@ export const IPC = {
   macDesktopPress: "ade.macDesktop.press",
   macDesktopScroll: "ade.macDesktop.scroll",
   macDesktopDrag: "ade.macDesktop.drag",
+  macDesktopMove: "ade.macDesktop.move",
   macDesktopWait: "ade.macDesktop.wait",
   macDesktopScreenshot: "ade.macDesktop.screenshot",
   macDesktopStartRecording: "ade.macDesktop.startRecording",

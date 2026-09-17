@@ -188,18 +188,35 @@ extension DriverRuntime {
         // its holder cannot move the pointer.
         let holderId = request.object("lease")?["holderId"]?.stringValue
         var resolvedIndex: JSONValue = .null
+        // Every real event is a global `CGEvent`: the window server delivers it
+        // wherever the coordinate points, including the user's own screen. So
+        // no point reaches a `post` without passing through here first, and a
+        // lane with no display gets no real events at all rather than events at
+        // an unconstrained coordinate.
+        guard let placement = windows.placement(forLane: laneId) else {
+            throw DriverError(
+                code: DriverErrorCode.noDisplay,
+                message: "Lane \(laneId) has no display to post real input on."
+            )
+        }
         func point(_ key: String) throws -> CGPoint {
+            let raw: CGPoint
             if let object = payload[key]?.objectValue,
                let x = object["x"]?.doubleValue,
                let y = object["y"]?.doubleValue {
-                return CGPoint(x: x, y: y)
+                raw = CGPoint(x: x, y: y)
+            } else if let x = payload["x"]?.doubleValue, let y = payload["y"]?.doubleValue {
+                raw = CGPoint(x: x, y: y)
+            } else {
+                let (_, record) = try resolve(payload: payload)
+                resolvedIndex = .int(record.index)
+                raw = CGPoint(x: record.frame.midX, y: record.frame.midY)
             }
-            if let x = payload["x"]?.doubleValue, let y = payload["y"]?.doubleValue {
-                return CGPoint(x: x, y: y)
-            }
-            let (_, record) = try resolve(payload: payload)
-            resolvedIndex = .int(record.index)
-            return CGPoint(x: record.frame.midX, y: record.frame.midY)
+            // Clamped, not refused: the caller is usually a person whose mouse
+            // wanders off the pane a dozen times a minute, and the requirement
+            // is that the pointer cannot leave this lane's display — not that
+            // they are told off for moving it.
+            return Geometry.clamp(point: raw, to: placement.frame)
         }
 
         switch command {

@@ -75,6 +75,21 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    // The pointer in the picture follows the same transition, and follows it
+    // here rather than at each of the six call sites that move a lease: take
+    // control, give it back, let it lapse, drop it on a clock jump, hand it to
+    // an agent, or lose it with the chat that held it all end in this function.
+    // A failure is logged and not thrown — a stream that keeps drawing the old
+    // cursor state is a cosmetic fault, and failing the takeover over it would
+    // be a real one.
+    try {
+      await provider.setStreamCursorVisible({ laneId, visible: lease?.holder === "user" });
+    } catch (error) {
+      deps.logger.debug("mac_desktop.cursor_visibility_push_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   return {

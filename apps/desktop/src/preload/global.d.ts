@@ -11,7 +11,9 @@ import type {
   MacDesktopDragArgs,
   MacDesktopEventPayload,
   MacDesktopGetStatusArgs,
+  MacDesktopInputResult,
   MacDesktopLeaseState,
+  MacDesktopMoveArgs,
   MacDesktopObservation,
   MacDesktopObserveArgs,
   MacDesktopOpenArgs,
@@ -2585,6 +2587,10 @@ declare global {
           args: MacDesktopDragArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<MacDesktopActionResult>;
+        move: (
+          args: MacDesktopMoveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopInputResult>;
         wait: (
           args: MacDesktopWaitArgs,
           pin?: OpenProjectBinding | null,

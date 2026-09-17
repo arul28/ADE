@@ -248,6 +248,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       mode: inputMode(args, "click"),
       button: enumOf(args, "button", ["left", "right"] as const, "click"),
       count: optionalNumber(args, "count"),
+      silent: optionalBoolean(args, "silent"),
       ...chatSessionId(args),
       ...controllerId(args),
     })),
@@ -261,6 +262,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
         clear: optionalBoolean(args, "clear"),
         mode: inputMode(args, "type"),
         target: Object.keys(target).length ? target : null,
+        silent: optionalBoolean(args, "silent"),
         ...chatSessionId(args),
         ...controllerId(args),
       });
@@ -280,6 +282,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
         key: requiredString(args, "key", "press"),
         modifiers: parsed,
         mode: inputMode(args, "press"),
+        silent: optionalBoolean(args, "silent"),
         ...chatSessionId(args),
         ...controllerId(args),
       });
@@ -293,6 +296,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
         direction,
         amount: optionalNumber(args, "amount"),
         mode: inputMode(args, "scroll"),
+        silent: optionalBoolean(args, "silent"),
         ...chatSessionId(args),
         ...controllerId(args),
       });
@@ -303,9 +307,30 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       to: requiredTargetOf(objectArgs(args).to, "to", "drag"),
       durationMs: optionalNumber(args, "durationMs"),
       mode: inputMode(args, "drag"),
+      silent: optionalBoolean(args, "silent"),
       ...chatSessionId(args),
       ...controllerId(args),
     })),
+    /**
+     * The pointer, moved.
+     *
+     * Two required numbers and nothing else to get wrong: no target grammar,
+     * because "move to the element called Save" is a click's problem, and no
+     * mode, because there is no accessibility way to move a pointer.
+     */
+    move: (args?: unknown) => gated(() => {
+      const x = optionalNumber(args, "x");
+      const y = optionalNumber(args, "y");
+      if (x == null || y == null) throw new Error("macDesktop.move requires x and y.");
+      return service.move({
+        laneId: requiredLaneId(args, "move"),
+        x,
+        y,
+        silent: optionalBoolean(args, "silent"),
+        ...chatSessionId(args),
+        ...controllerId(args),
+      });
+    }),
     wait: (args?: unknown) => gated(() => {
       const text = optionalString(args, "text");
       const gone = optionalString(args, "gone");

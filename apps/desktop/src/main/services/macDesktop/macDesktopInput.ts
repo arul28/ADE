@@ -4,7 +4,7 @@
  * Owns the one path a frame is captured on, how a target becomes a driver
  * payload, who a call claims to be for the lease check, and the eight acting
  * commands built on top of that — observe, click, type, press, scroll, drag,
- * wait and screenshot.
+ * move, wait and screenshot.
  *
  * Split out of `macDesktopService.ts` as pure code motion, with the same deps
  * shape `macDesktopStreaming.ts` uses: the service passes its registries and its
@@ -14,13 +14,14 @@
 import {
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
   type DesktopSeatProvider,
-  type MacDesktopActionResult,
   type MacDesktopClickArgs,
   type MacDesktopDisplay,
   type MacDesktopDragArgs,
   type MacDesktopElement,
   type MacDesktopEventPayload,
   type MacDesktopInputMode,
+  type MacDesktopInputResult,
+  type MacDesktopMoveArgs,
   type MacDesktopObservation,
   type MacDesktopObserveArgs,
   type MacDesktopPressArgs,
@@ -207,6 +208,21 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
   const inputHolderId = (args: { controllerId?: string | null; chatSessionId?: string | null }): string =>
     args.controllerId?.trim() || leaseHolderId(args.chatSessionId);
 
+  /**
+   * May this call skip its own observation?
+   *
+   * Only a human takeover may. `silent` is not honoured on its own, because it
+   * arrives from the same argument object an agent controls: it takes
+   * `mode: "real"` AND a `controllerId`, and a `controllerId` that does not hold
+   * the lease is refused a line later by {@link assertRealInputAllowed}. So the
+   * only caller that can be silent is the one holding the user's lease under a
+   * controller id — which is what a takeover is and what an agent never has.
+   */
+  const isSilent = (
+    args: { silent?: boolean | null; controllerId?: string | null },
+    mode: MacDesktopInputMode,
+  ): boolean => args.silent === true && mode === "real" && Boolean(args.controllerId?.trim());
+
   const assertRealInputAllowed = (laneId: string, holderId: string): void => {
     const decision = leases.checkRealInput({ laneId, holderId });
     if (decision.ok) return;
@@ -224,7 +240,9 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     controllerId?: string | null;
     caption: string;
     target: Record<string, unknown> | null;
-  }): Promise<MacDesktopActionResult> => {
+    /** A human takeover: act, and do not look. */
+    silent?: boolean;
+  }): Promise<MacDesktopInputResult> => {
     const laneId = args.laneId;
     deps.requireDisplay(laneId);
     const seat = await deps.ensureProvider();
@@ -256,6 +274,13 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     ownership.touchDisplay(laneId);
     deps.noteTurnActivity(laneId, args.chatSessionId);
     if (failure) throw failure;
+    // The one early return. Everything above it — the lease check, the driver
+    // call, the activity notes — is identical; what a silent call skips is the
+    // capture, the AX walk, the `observation` event and the caption that would
+    // have narrated the user's own keystroke back at them.
+    if (args.silent) {
+      return { ok: true, action: args.action, mode: args.mode, silent: true, resolved: null, observation: null, trace: null };
+    }
     const observation = await observeInternal({
       laneId,
       chatSessionId: args.chatSessionId ?? null,
@@ -298,7 +323,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     /** The one capture path. The service's `observe` is this plus the gate. */
     observe: observeInternal,
 
-    async click(args: MacDesktopClickArgs): Promise<MacDesktopActionResult> {
+    async click(args: MacDesktopClickArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
       const target = resolveTarget(laneId, args);
       const mode = resolveMode(args.mode, target.needsReal);
@@ -316,12 +341,13 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        silent: isSilent(args, mode),
         caption: `click · ${label}`,
         target: { ...target.payload },
       });
     },
 
-    async type(args: MacDesktopTypeArgs): Promise<MacDesktopActionResult> {
+    async type(args: MacDesktopTypeArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
       const target = args.target ? resolveTarget(laneId, args.target) : { payload: {}, element: null, needsReal: false };
       const mode = resolveMode(args.mode, target.needsReal);
@@ -334,12 +360,13 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        silent: isSilent(args, mode),
         caption: `type · ${args.text.slice(0, 40)}`,
         target: { ...target.payload },
       });
     },
 
-    async press(args: MacDesktopPressArgs): Promise<MacDesktopActionResult> {
+    async press(args: MacDesktopPressArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
       return await runAction({
         laneId,
@@ -350,12 +377,13 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: null,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        silent: isSilent(args, args.mode ?? "accessibility"),
         caption: `press · ${[...(args.modifiers ?? []), args.key].join("+")}`,
         target: { key: args.key, modifiers: args.modifiers ?? [] },
       });
     },
 
-    async scroll(args: MacDesktopScrollArgs): Promise<MacDesktopActionResult> {
+    async scroll(args: MacDesktopScrollArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
       const target = resolveTarget(laneId, args);
       const mode = resolveMode(args.mode, target.needsReal);
@@ -372,12 +400,13 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        silent: isSilent(args, mode),
         caption: `scroll · ${args.direction}`,
         target: { ...target.payload, direction: args.direction },
       });
     },
 
-    async drag(args: MacDesktopDragArgs): Promise<MacDesktopActionResult> {
+    async drag(args: MacDesktopDragArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
       const from = resolveTarget(laneId, args.from);
       const to = resolveTarget(laneId, args.to);
@@ -396,8 +425,35 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: from.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        silent: isSilent(args, "real"),
         caption: "drag",
         target: { from: from.payload, to: to.payload },
+      });
+    },
+
+    /**
+     * The pointer, moved and nothing else.
+     *
+     * Real by construction and silent by construction: the only caller is a
+     * human dragging their mouse across the live view, at up to sixty events a
+     * second, and neither an accessibility "move" nor sixty observations exist.
+     * The lease check is the same one every other real event goes through, so a
+     * move with no lease is refused exactly like a click with no lease.
+     */
+    async move(args: MacDesktopMoveArgs): Promise<MacDesktopInputResult> {
+      const laneId = args.laneId.trim();
+      return await runAction({
+        laneId,
+        action: "move",
+        command: "move",
+        mode: "real",
+        payload: { to: { x: args.x, y: args.y } },
+        resolved: null,
+        chatSessionId: args.chatSessionId ?? null,
+        controllerId: args.controllerId ?? null,
+        silent: args.silent !== false,
+        caption: "move",
+        target: { x: args.x, y: args.y },
       });
     },
 

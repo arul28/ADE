@@ -192,6 +192,7 @@ public final class GestureGate: @unchecked Sendable {
              .screenshot,
              .startStream,
              .setStreamRate,
+             .setStreamCursorVisible,
              .stopStream,
              .startRecording,
              .stopRecording:

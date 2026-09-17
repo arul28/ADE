@@ -7,7 +7,9 @@ import type {
   MacDesktopDragArgs,
   MacDesktopEventPayload,
   MacDesktopGetStatusArgs,
+  MacDesktopInputResult,
   MacDesktopLeaseState,
+  MacDesktopMoveArgs,
   MacDesktopObservation,
   MacDesktopObserveArgs,
   MacDesktopOpenArgs,
@@ -100,6 +102,8 @@ export function createMacDesktopBridge(deps: MacDesktopBridgeDeps) {
     press: call<MacDesktopPressArgs, MacDesktopActionResult>("press", IPC.macDesktopPress),
     scroll: call<MacDesktopScrollArgs, MacDesktopActionResult>("scroll", IPC.macDesktopScroll),
     drag: call<MacDesktopDragArgs, MacDesktopActionResult>("drag", IPC.macDesktopDrag),
+    /** Silent by construction; see `MacDesktopMoveArgs`. */
+    move: call<MacDesktopMoveArgs, MacDesktopInputResult>("move", IPC.macDesktopMove),
     wait: call<MacDesktopWaitArgs, MacDesktopWaitResult>("wait", IPC.macDesktopWait),
     screenshot: call<MacDesktopScreenshotArgs, MacDesktopScreenshotResult>("screenshot", IPC.macDesktopScreenshot),
     startRecording: call<MacDesktopRecordStartArgs, MacDesktopRecordingStatus>("startRecording", IPC.macDesktopStartRecording),

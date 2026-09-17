@@ -158,6 +158,13 @@ export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient):
       fps: args.fps,
     }),
 
+    async setStreamCursorVisible(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.setStreamCursorVisible, {
+        laneId: args.laneId,
+        visible: args.visible,
+      });
+    },
+
     async setStreamRate(args) {
       await request(MAC_DESKTOP_DRIVER_OPS.setStreamRate, { laneId: args.laneId, fps: args.fps });
     },

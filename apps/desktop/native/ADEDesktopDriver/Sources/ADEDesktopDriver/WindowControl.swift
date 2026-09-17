@@ -171,6 +171,9 @@ final class WindowControl {
             return []
         }
         var windows: [DesktopWindow] = []
+        // One AX read per app, at most, and only for apps that have an entry the
+        // window server says is not on screen. See `axWindowMinimizedState`.
+        var axStateByPid: [pid_t: [CGWindowID: Bool]?] = [:]
         for entry in raw {
             guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
             guard let windowNumber = entry[kCGWindowNumber as String] as? UInt32 else { continue }
@@ -194,6 +197,42 @@ final class WindowControl {
                 pid: ownerPid,
                 application: application
             ) else { continue }
+            /*
+              Off screen is three different facts, and reporting them as one is
+              what put an app in the claim picker twice.
+
+              `kCGWindowIsOnscreen` is false for a minimized window, for a
+              hidden app's windows, AND for the surfaces an app keeps at layer 0
+              that are not windows at all: the full-desktop-width 30px menu bar
+              strip it publishes once per display, and its 500x500 / 64x64
+              scratch planes. Those pass `isUserWindow` (their owner is a
+              `.regular` app) and used to be listed as extra untitled
+              "minimized" rows of the same app — a second Activity Monitor, a
+              second Music, three Grok Bots.
+
+              The Accessibility API is the one list that contains only real
+              windows, so an off-screen entry has to appear there to survive,
+              and its `AXMinimized` — not the window server's visibility — is
+              what "minimized" means. An app that cannot be read through AX at
+              all keeps the old reading, because an empty picker is worse than
+              an over-full one.
+            */
+            var minimized = false
+            if !onScreen {
+                let state: [CGWindowID: Bool]?
+                if let cached = axStateByPid[ownerPid] {
+                    state = cached
+                } else {
+                    state = axWindowMinimizedState(pid: ownerPid)
+                    axStateByPid[ownerPid] = state
+                }
+                if let state {
+                    guard let isMinimized = state[windowId] else { continue }
+                    minimized = isMinimized
+                } else {
+                    minimized = true
+                }
+            }
             windows.append(
                 DesktopWindow(
                     id: windowId,
@@ -205,12 +244,39 @@ final class WindowControl {
                     laneId: ownedBy,
                     origin: windowOrigins[windowId] ?? "adopted",
                     onDisplayId: displayId(containing: frame),
-                    minimized: !onScreen,
+                    minimized: minimized,
                     singleInstance: Self.isSingleInstance(bundleId: bundleId, application: application)
                 )
             )
         }
         return windows.sorted { $0.id < $1.id }
+    }
+
+    /// One app's real windows, and which of them are minimized.
+    ///
+    /// `nil` — not an empty dictionary — when the app cannot be read: no
+    /// Accessibility trust, an app that publishes no `AXWindows`, or a system
+    /// without the private `CGWindowID` bridge. The caller must treat that as
+    /// "no opinion" and keep the window server's answer, because a `nil` read
+    /// mistaken for "this app has no windows" hides every window it owns.
+    private func axWindowMinimizedState(pid: pid_t) -> [CGWindowID: Bool]? {
+        guard AXWindowBridge.isAvailable else { return nil }
+        let application = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value) == .success,
+              let elements = value as? [AXUIElement],
+              !elements.isEmpty
+        else { return nil }
+        var state: [CGWindowID: Bool] = [:]
+        for element in elements {
+            guard let id = AXWindowBridge.windowId(of: element) else { continue }
+            var minimizedValue: CFTypeRef?
+            let read = AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &minimizedValue)
+            state[id] = read == .success && (minimizedValue as? Bool ?? false)
+        }
+        // Every element answered without an id is the bridge failing on this
+        // app rather than the app having no windows.
+        return state.isEmpty ? nil : state
     }
 
     /// Whether a CoreGraphics entry is a window a person could point at.

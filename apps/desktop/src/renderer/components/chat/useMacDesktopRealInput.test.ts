@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAC_DESKTOP_DRAG_SLOP_PX,
+  createMacDesktopMovePump,
   macDesktopInputRefusal,
   macDesktopKeyCall,
+  macDesktopMoveCall,
   macDesktopPointerUpCall,
   macDesktopWheelCall,
   type MacDesktopInputContext,
@@ -129,5 +131,123 @@ describe("macDesktopInputRefusal", () => {
     expect(macDesktopInputRefusal(new Error("MAC_DESKTOP_USER_HAS_CONTROL")))
       .toBe("Input refused: MAC_DESKTOP_USER_HAS_CONTROL");
     expect(macDesktopInputRefusal("")).toBe("Input refused: unknown error");
+  });
+});
+
+describe("macDesktopMoveCall", () => {
+  it("is a real, silent move carrying the lease holder", () => {
+    const call = macDesktopMoveCall(context, { x: 42, y: 43 });
+    expect(call.kind).toBe("move");
+    expect(call.args).toMatchObject({
+      laneId: "lane-1",
+      x: 42,
+      y: 43,
+      silent: true,
+      controllerId: "ade-window:abc",
+      chatSessionId: "chat-1",
+    });
+  });
+});
+
+describe("every forwarded event a takeover sends", () => {
+  it("asks for silence, so the user's own input is not observed back at them", () => {
+    // The whole set, named individually: a call added later that forgets
+    // `silent` turns a keystroke into a screenshot, an AX walk and a line in
+    // the chat, and it does it sixty times during one sentence.
+    const calls = [
+      macDesktopMoveCall(context, { x: 1, y: 1 }),
+      macDesktopPointerUpCall(context, { from: null, to: { x: 1, y: 1 }, button: 0, detail: 1 }),
+      macDesktopPointerUpCall(context, {
+        from: { x: 0, y: 0 },
+        to: { x: 100, y: 100 },
+        button: 0,
+        detail: 1,
+      }),
+      macDesktopWheelCall(context, { point: { x: 1, y: 1 }, deltaX: 0, deltaY: 60 }),
+      macDesktopKeyCall(context, { key: "a", metaKey: false, shiftKey: false, altKey: false, ctrlKey: false }),
+      macDesktopKeyCall(context, { key: "Enter", metaKey: false, shiftKey: false, altKey: false, ctrlKey: false }),
+    ];
+    expect(calls.map((call) => call.kind)).toEqual(["move", "click", "drag", "scroll", "type", "press"]);
+    for (const call of calls) expect(call.args.silent).toBe(true);
+  });
+});
+
+describe("createMacDesktopMovePump", () => {
+  /** A clock and a scheduler with no real time in them. */
+  function harness(intervalMs = 16) {
+    const sent: Array<{ x: number; y: number }> = [];
+    let nowMs = 0;
+    let scheduled: { fn: () => void; at: number; handle: number } | null = null;
+    let nextHandle = 1;
+    const pump = createMacDesktopMovePump({
+      intervalMs,
+      send: (point) => sent.push(point),
+      now: () => nowMs,
+      schedule: (fn, ms) => {
+        const handle = nextHandle++;
+        scheduled = { fn, at: nowMs + ms, handle };
+        return handle;
+      },
+      cancel: (handle) => {
+        if (scheduled?.handle === handle) scheduled = null;
+      },
+    });
+    return {
+      pump,
+      sent,
+      advance(ms: number) {
+        nowMs += ms;
+        while (scheduled && scheduled.at <= nowMs) {
+          const due = scheduled;
+          scheduled = null;
+          due.fn();
+        }
+      },
+      get pending() {
+        return scheduled != null;
+      },
+    };
+  }
+
+  it("sends the first move immediately: the start of a gesture is the latency that shows", () => {
+    const { pump, sent } = harness();
+    pump.push({ x: 1, y: 1 });
+    expect(sent).toEqual([{ x: 1, y: 1 }]);
+  });
+
+  it("coalesces a burst into one call carrying only the latest position", () => {
+    const { pump, sent, advance } = harness(16);
+    pump.push({ x: 1, y: 1 });
+    // A 240 Hz trackpad inside one 60 Hz window. Everything but the last one is
+    // a position the pointer has already left.
+    pump.push({ x: 2, y: 2 });
+    pump.push({ x: 3, y: 3 });
+    pump.push({ x: 4, y: 4 });
+    expect(sent).toEqual([{ x: 1, y: 1 }]);
+    advance(16);
+    expect(sent).toEqual([{ x: 1, y: 1 }, { x: 4, y: 4 }]);
+  });
+
+  it("holds at the rate over a long drag rather than drifting up to the event rate", () => {
+    const { pump, sent, advance } = harness(16);
+    for (let step = 0; step < 100; step += 1) {
+      pump.push({ x: step, y: step });
+      advance(4);
+    }
+    // 400 ms of events at 250 Hz. A 60 Hz cap allows about 25.
+    expect(sent.length).toBeLessThanOrEqual(26);
+    expect(sent.length).toBeGreaterThan(20);
+    expect(sent.at(-1)).toEqual({ x: 99, y: 99 });
+  });
+
+  it("drops the pending move when the gesture ends, so nothing posts after unmount", () => {
+    const clock = harness(16);
+    const { pump, sent, advance } = clock;
+    pump.push({ x: 1, y: 1 });
+    pump.push({ x: 2, y: 2 });
+    expect(clock.pending).toBe(true);
+    pump.stop();
+    advance(1_000);
+    expect(sent).toEqual([{ x: 1, y: 1 }]);
   });
 });

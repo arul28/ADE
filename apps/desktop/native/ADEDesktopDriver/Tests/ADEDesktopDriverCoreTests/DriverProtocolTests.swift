@@ -43,7 +43,7 @@ final class DriverProtocolTests: XCTestCase {
                 "app.launch", "present", "observe", "input",
                 "lease.set", "lease.clear",
                 "capture.screenshot",
-                "stream.start", "stream.setRate", "stream.stop",
+                "stream.start", "stream.setRate", "stream.setCursorVisible", "stream.stop",
                 "record.start", "record.stop",
             ]
         )

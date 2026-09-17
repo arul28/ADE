@@ -21,7 +21,8 @@ import {
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
   MAC_DESKTOP_RESOLUTION_PRESETS,
   macDesktopDisplayName,
-  type MacDesktopActionResult,
+  type MacDesktopInputResult,
+  type MacDesktopMoveArgs,
   type DesktopSeatProvider,
   type MacDesktopClaimArgs,
   type MacDesktopClickArgs,
@@ -731,13 +732,20 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     lastSweepAtMs = atMs;
     if (elapsed > IDLE_SWEEP_INTERVAL_MS * SLEEP_JUMP_FACTOR) {
       const dropped = leases.releaseAll();
-      for (const lease of dropped) emit({ type: "lease-changed", laneId: lease.laneId, lease: null });
+      for (const lease of dropped) {
+        emit({ type: "lease-changed", laneId: lease.laneId, lease: null });
+        // The helper has its own TTL, so this is not what makes the lease safe
+        // — it is what puts the captured cursor back where a lease-less display
+        // belongs. Fire-and-forget: the sweep is a timer, not a request.
+        void pushLease(lease.laneId, null);
+      }
       if (dropped.length) {
         deps.logger.info("mac_desktop.leases_dropped_after_clock_jump", { elapsed, dropped: dropped.length });
       }
     }
     for (const expired of leases.sweep()) {
       emit({ type: "lease-changed", laneId: expired.laneId, lease: null });
+      void pushLease(expired.laneId, null);
     }
     for (const display of ownership.listDisplays()) {
       if (display.windowCount > 0) continue;
@@ -838,29 +846,34 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       return await input.observe(args);
     },
 
-    async click(args: MacDesktopClickArgs): Promise<MacDesktopActionResult> {
+    async click(args: MacDesktopClickArgs): Promise<MacDesktopInputResult> {
       assertSupported();
       return await input.click(args);
     },
 
-    async type(args: MacDesktopTypeArgs): Promise<MacDesktopActionResult> {
+    async type(args: MacDesktopTypeArgs): Promise<MacDesktopInputResult> {
       assertSupported();
       return await input.type(args);
     },
 
-    async press(args: MacDesktopPressArgs): Promise<MacDesktopActionResult> {
+    async press(args: MacDesktopPressArgs): Promise<MacDesktopInputResult> {
       assertSupported();
       return await input.press(args);
     },
 
-    async scroll(args: MacDesktopScrollArgs): Promise<MacDesktopActionResult> {
+    async scroll(args: MacDesktopScrollArgs): Promise<MacDesktopInputResult> {
       assertSupported();
       return await input.scroll(args);
     },
 
-    async drag(args: MacDesktopDragArgs): Promise<MacDesktopActionResult> {
+    async drag(args: MacDesktopDragArgs): Promise<MacDesktopInputResult> {
       assertSupported();
       return await input.drag(args);
+    },
+
+    async move(args: MacDesktopMoveArgs): Promise<MacDesktopInputResult> {
+      assertSupported();
+      return await input.move(args);
     },
 
     async wait(args: MacDesktopWaitArgs): Promise<MacDesktopWaitResult> {

@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MAC_DESKTOP_IDLE_RELEASE_MS, type MacDesktopEventPayload } from "../../../shared/types/macDesktop";
+import {
+  MAC_DESKTOP_IDLE_RELEASE_MS,
+  MAC_DESKTOP_LEASE_TTL_MS,
+  type MacDesktopEventPayload,
+} from "../../../shared/types/macDesktop";
 import {
   MAC_DESKTOP_DRIVER_OPS,
   MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE,
@@ -372,6 +376,101 @@ describe("macDesktopService real input and the lease", () => {
     expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input).length)
       .toBe(inputCallsBefore);
     service.dispose();
+  });
+
+  it("acts without looking when a takeover asks for silence", async () => {
+    const driver = createFakeDriver();
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+    driver.calls.length = 0;
+    events.length = 0;
+
+    const result = await service.move({
+      laneId: "lane-1",
+      x: 12,
+      y: 34,
+      controllerId: "ade-window:abc",
+      chatSessionId: "chat-1",
+    });
+
+    // The event reached the driver...
+    const input = driver.calls.find((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input);
+    expect(input?.payload).toMatchObject({ command: "move", mode: "real", lease: { holderId: "ade-window:abc" } });
+    // ...and nothing looked at the screen afterwards. No capture, no AX walk.
+    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.observe)).toBe(false);
+    // And nothing narrated the user's own pointer back into the chat.
+    expect(events.some((event) => event.type === "observation")).toBe(false);
+    expect(result).toMatchObject({ ok: true, silent: true, observation: null, trace: null });
+    service.dispose();
+  });
+
+  it("ignores `silent` from a caller that is not a human takeover", async () => {
+    const driver = createFakeDriver();
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    // An agent chat with its own lease, asking to skip the observation.
+    await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+    await service.returnControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+    driver.calls.length = 0;
+    events.length = 0;
+
+    // No controller id: `silent` is not a thing this caller may ask for, and
+    // the observation happens exactly as it always did.
+    const result = await service.click({
+      laneId: "lane-1",
+      text: "OK",
+      silent: true,
+      chatSessionId: "chat-1",
+    });
+    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.observe)).toBe(true);
+    expect(events.some((event) => event.type === "observation")).toBe(true);
+    expect(result.observation).not.toBeNull();
+    service.dispose();
+  });
+
+  it("shows the captured pointer while a person drives, and hides it again", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    const visibility = () => driver.calls
+      .filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.setStreamCursorVisible)
+      .map((call) => call.payload.visible);
+
+    await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+    expect(visibility()).toEqual([true]);
+
+    // A renewal is not a transition, but it must not contradict one either.
+    await service.renewLease({ laneId: "lane-1", holderId: "ade-window:abc" });
+    expect(visibility()).toEqual([true, true]);
+
+    await service.returnControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+    expect(visibility()).toEqual([true, true, false]);
+    service.dispose();
+  });
+
+  it("hides the captured pointer when a takeover lapses instead of ending", async () => {
+    vi.useFakeTimers();
+    try {
+      let clock = 1_000;
+      const driver = createFakeDriver();
+      const { service } = makeService({ driver, now: () => clock });
+      await service.start({ laneId: "lane-1" });
+      await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+      driver.calls.length = 0;
+
+      // Nobody renewed: the viewer's tab was closed, or the tunnel died. The
+      // lease lapses on its own, and the pointer it made visible must not be
+      // left drawn on a display nobody is driving.
+      clock += MAC_DESKTOP_LEASE_TTL_MS + 1;
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(driver.calls
+        .filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.setStreamCursorVisible)
+        .map((call) => call.payload.visible)).toContain(false);
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sends no lease on an accessibility action", async () => {

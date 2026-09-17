@@ -15,6 +15,26 @@ final class GeometryTests: XCTestCase {
         XCTAssertEqual(Geometry.toLocal(point: global, display: display), CGPoint(x: 100, y: 50))
     }
 
+    /// The rule takeover turns on: a real event cannot land on the user's own
+    /// screen, whatever the viewer sends.
+    func testClampKeepsAPointOnItsOwnDisplay() {
+        let frame = display.frame
+        // Inside is untouched.
+        XCTAssertEqual(Geometry.clamp(point: CGPoint(x: 8100, y: 50), to: frame), CGPoint(x: 8100, y: 50))
+        // Left of the display is the MAIN display on the usual layout — which
+        // is the user's desk, and the one place a lane may never post.
+        XCTAssertEqual(Geometry.clamp(point: CGPoint(x: -400, y: 700), to: frame), CGPoint(x: 8000, y: 700))
+        XCTAssertEqual(Geometry.clamp(point: CGPoint(x: 99_999, y: 99_999), to: frame), CGPoint(x: 10_559, y: 1_439))
+        // The far edges are inset by a point: `maxX` is the first coordinate of
+        // whatever sits to the right, not the last one of this display.
+        XCTAssertEqual(Geometry.clamp(point: CGPoint(x: frame.maxX, y: frame.maxY), to: frame), CGPoint(x: 10_559, y: 1_439))
+        // Its own origin survives a degenerate frame rather than producing NaN.
+        XCTAssertEqual(
+            Geometry.clamp(point: CGPoint(x: 5, y: 5), to: CGRect(x: 1, y: 2, width: 0, height: 0)),
+            CGPoint(x: 1, y: 2)
+        )
+    }
+
     func testGlobalFrameKeepsItsSize() {
         let frame = CGRect(x: 10, y: 20, width: 300, height: 200)
         let global = Geometry.toGlobal(frame: frame, display: display)

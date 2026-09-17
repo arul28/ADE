@@ -219,6 +219,7 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// | `capture.screenshot` | `laneId,windowId?,path` | `MacDesktopScreenshotResult` |
 /// | `stream.start` | `laneId,fps?` | `MacDesktopStreamTransport` + `{port}` |
 /// | `stream.setRate` | `laneId,fps` | `{fps}` |
+/// | `stream.setCursorVisible` | `laneId,visible` | `{visible}` |
 /// | `stream.stop` | `laneId` | `{stopped}` |
 /// | `record.start` | `laneId,fps?,filePath` | `{startedAt}` |
 /// | `record.stop` | `laneId` | `{filePath,durationMs}` |
@@ -239,6 +240,7 @@ public enum DriverOp: String, CaseIterable, Sendable {
     case screenshot = "capture.screenshot"
     case startStream = "stream.start"
     case setStreamRate = "stream.setRate"
+    case setStreamCursorVisible = "stream.setCursorVisible"
     case stopStream = "stream.stop"
     case startRecording = "record.start"
     case stopRecording = "record.stop"

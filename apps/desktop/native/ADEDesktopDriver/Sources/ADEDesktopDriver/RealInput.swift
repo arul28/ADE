@@ -170,6 +170,18 @@ final class RealInput {
         up.post(tap: .cghidEventTap)
     }
 
+    /// A key press, posted to the session rather than to a process.
+    ///
+    /// Deliberately not pid-targeted, which is what the accessibility path in
+    /// `AccessibilityDriver.press` does. A person driving the lane display has
+    /// already decided what they are typing into by clicking on it: the first
+    /// real click on a parked window makes that window key on the virtual
+    /// display, exactly as a click does on any other screen, and every key that
+    /// follows belongs to whatever is key right then — including a window the
+    /// user raised with ⌘` or a sheet that opened over the one they clicked.
+    /// Routing keys to the pid of the last resolved element instead would send
+    /// them to the window the AX tree happened to name, which is the one thing
+    /// the person at the keyboard did not ask for.
     func key(
         laneId: String,
         holderId: String?,
@@ -195,6 +207,8 @@ final class RealInput {
         up.post(tap: .cghidEventTap)
     }
 
+    /// Text, posted to the session for the same reason `key` is: it goes to
+    /// whatever is key on the lane's display, not to a pid this file guessed.
     func text(laneId: String, holderId: String?, text: String) throws {
         try authorize(laneId: laneId, holderId: holderId)
         for character in text {

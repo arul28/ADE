@@ -355,6 +355,7 @@ final class DriverRuntime: NSObject {
         case .screenshot: return try screenshot(request)
         case .startStream: return try startStream(request)
         case .setStreamRate: return try setStreamRate(request)
+        case .setStreamCursorVisible: return try setStreamCursorVisible(request)
         case .stopStream: return try stopStream(request)
         case .startRecording: return try startRecording(request)
         case .stopRecording: return try stopRecording(request)
@@ -672,7 +673,14 @@ final class DriverRuntime: NSObject {
             throw DriverError(code: DriverErrorCode.noDisplay, message: "Lane \(laneId) has no display.")
         }
         let fps = max(1, min(60, request.int("fps") ?? 30))
-        let started = try capture.startStream(laneId: laneId, displayId: handle.displayId, fps: fps)
+        let started = try capture.startStream(
+            laneId: laneId,
+            displayId: handle.displayId,
+            fps: fps,
+            // Absent means "whatever this lane was last told", which is what
+            // keeps a reconnect during a takeover from losing the pointer.
+            showsCursor: request.bool("showsCursor")
+        )
         touch(laneId)
         let result: [String: JSONValue] = [
             "laneId": .string(laneId),
@@ -693,6 +701,21 @@ final class DriverRuntime: NSObject {
         let fps = max(1, min(60, try request.requireInt("fps")))
         try capture.setStreamRate(laneId: laneId, fps: fps)
         return ["fps": .int(fps)]
+    }
+
+    /// Whether the lane's live stream draws the system pointer.
+    ///
+    /// The whole reason this op exists: while an agent drives, the pointer in
+    /// the picture is wherever the machine's one real mouse happens to sit,
+    /// which has nothing to do with the lane — so it is hidden and the viewer
+    /// draws its own glyph from the action it just took. While a *person*
+    /// drives, that same real pointer IS the thing they are moving, and hiding
+    /// it makes the takeover feel like typing with the lights off.
+    private func setStreamCursorVisible(_ request: DriverRequest) throws -> [String: JSONValue] {
+        let laneId = try request.requireString("laneId")
+        let visible = request.bool("visible") ?? false
+        try capture.setStreamCursorVisible(laneId: laneId, visible: visible)
+        return ["laneId": .string(laneId), "visible": .bool(visible)]
     }
 
     private func stopStream(_ request: DriverRequest) throws -> [String: JSONValue] {

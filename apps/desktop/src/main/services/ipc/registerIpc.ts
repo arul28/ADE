@@ -9141,6 +9141,7 @@ export function registerIpc({
   ipcMain.handle(IPC.macDesktopPress, async (_event, arg) => ensureMacDesktop().press(arg));
   ipcMain.handle(IPC.macDesktopScroll, async (_event, arg) => ensureMacDesktop().scroll(arg));
   ipcMain.handle(IPC.macDesktopDrag, async (_event, arg) => ensureMacDesktop().drag(arg));
+  ipcMain.handle(IPC.macDesktopMove, async (_event, arg) => ensureMacDesktop().move(arg));
   ipcMain.handle(IPC.macDesktopWait, async (_event, arg) => ensureMacDesktop().wait(arg));
   ipcMain.handle(IPC.macDesktopScreenshot, async (_event, arg) => ensureMacDesktop().screenshot(arg));
   ipcMain.handle(IPC.macDesktopStartRecording, async (_event, arg) => ensureMacDesktop().startRecording(arg));

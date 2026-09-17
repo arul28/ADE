@@ -332,7 +332,26 @@ export type MacDesktopControllerArgs = {
   controllerId?: string | null;
 };
 
-export type MacDesktopClickArgs = MacDesktopTarget & MacDesktopControllerArgs & {
+/**
+ * "Act, and do not look."
+ *
+ * Every acting command re-observes afterwards, because an agent's next decision
+ * needs the screen it just changed. A human driving the display needs none of
+ * that: they are watching the live stream, the observation costs a full capture
+ * and an AX walk per keystroke, and each one lands in the chat as an
+ * `observation` event with a caption describing what the *user* just did.
+ *
+ * So a takeover asks for silence. It is deliberately not a flag an agent can
+ * set on its own: the service only honours it for `mode: "real"` from a caller
+ * that named a `controllerId`, which is the id a human takeover holds the lease
+ * under and which nothing else can hold while it does.
+ */
+export type MacDesktopSilentArgs = {
+  /** Skip the post-action observation and emit no `observation` event. */
+  silent?: boolean | null;
+};
+
+export type MacDesktopClickArgs = MacDesktopTarget & MacDesktopControllerArgs & MacDesktopSilentArgs & {
   laneId: string;
   mode?: MacDesktopInputMode | null;
   button?: "left" | "right" | null;
@@ -340,7 +359,7 @@ export type MacDesktopClickArgs = MacDesktopTarget & MacDesktopControllerArgs & 
   chatSessionId?: string | null;
 };
 
-export type MacDesktopTypeArgs = MacDesktopControllerArgs & {
+export type MacDesktopTypeArgs = MacDesktopControllerArgs & MacDesktopSilentArgs & {
   laneId: string;
   text: string;
   /** Replace the focused element's value instead of appending to it. */
@@ -350,7 +369,7 @@ export type MacDesktopTypeArgs = MacDesktopControllerArgs & {
   chatSessionId?: string | null;
 };
 
-export type MacDesktopPressArgs = MacDesktopControllerArgs & {
+export type MacDesktopPressArgs = MacDesktopControllerArgs & MacDesktopSilentArgs & {
   laneId: string;
   /** A key name (`return`, `tab`, `escape`, `f5`) or a single character. */
   key: string;
@@ -359,7 +378,7 @@ export type MacDesktopPressArgs = MacDesktopControllerArgs & {
   chatSessionId?: string | null;
 };
 
-export type MacDesktopScrollArgs = MacDesktopTarget & MacDesktopControllerArgs & {
+export type MacDesktopScrollArgs = MacDesktopTarget & MacDesktopControllerArgs & MacDesktopSilentArgs & {
   laneId: string;
   direction: "up" | "down" | "left" | "right";
   /** Scroll lines. The service clamps this. */
@@ -368,13 +387,30 @@ export type MacDesktopScrollArgs = MacDesktopTarget & MacDesktopControllerArgs &
   chatSessionId?: string | null;
 };
 
-export type MacDesktopDragArgs = MacDesktopControllerArgs & {
+export type MacDesktopDragArgs = MacDesktopControllerArgs & MacDesktopSilentArgs & {
   laneId: string;
   from: MacDesktopTarget;
   to: MacDesktopTarget;
   durationMs?: number | null;
   /** Always `real`: a drag has no accessibility action. Kept for symmetry. */
   mode?: MacDesktopInputMode | null;
+  chatSessionId?: string | null;
+};
+
+/**
+ * The pointer, moved and nothing else.
+ *
+ * Only real: there is no accessibility verb for "the mouse is now here", and
+ * the reason to want it is a human driving the display — hover states, tooltips
+ * and the captured system cursor all track the pointer, so a takeover that only
+ * sent clicks looked frozen between them. Always silent for the same reason a
+ * takeover click is: sixty observations a second is not a thing to do.
+ */
+export type MacDesktopMoveArgs = MacDesktopControllerArgs & MacDesktopSilentArgs & {
+  laneId: string;
+  /** Global screen point, the same plane `MacDesktopElement.frame` uses. */
+  x: number;
+  y: number;
   chatSessionId?: string | null;
 };
 
@@ -404,6 +440,26 @@ export type MacDesktopActionResult = {
   observation: MacDesktopObservation;
   trace: AgentActionTraceEntry;
 };
+
+/**
+ * What a silent action answers with.
+ *
+ * Deliberately not a `MacDesktopActionResult` with empty fields: there is no
+ * observation, so there is no `observationId` to put in a trace and no element
+ * to report as resolved. A caller that needs the screen back asks for it.
+ */
+export type MacDesktopSilentActionResult = {
+  ok: true;
+  action: string;
+  mode: MacDesktopInputMode;
+  silent: true;
+  resolved: null;
+  observation: null;
+  trace: null;
+};
+
+/** What every acting command returns: the observed result, or the silent one. */
+export type MacDesktopInputResult = MacDesktopActionResult | MacDesktopSilentActionResult;
 
 export type MacDesktopWaitResult = {
   ok: boolean;
@@ -872,6 +928,16 @@ export type DesktopSeatProvider = {
   /** The backend's own loopback port for this lane's encoder, plus its format. */
   startStream(args: { laneId: string; fps: number }): Promise<DesktopSeatReply>;
   setStreamRate(args: { laneId: string; fps: number }): Promise<void>;
+  /**
+   * Whether the captured stream draws the system pointer.
+   *
+   * Off while an agent drives — the agent's own cursor glyph is drawn by the
+   * viewer from the action it just took, and a real pointer parked wherever the
+   * user left it would be a second, lying one. On the moment a human takes
+   * control, because then the pointer in the picture IS the thing they are
+   * moving.
+   */
+  setStreamCursorVisible(args: { laneId: string; visible: boolean }): Promise<void>;
   stopStream(args: { laneId: string }): Promise<void>;
   startRecording(args: { laneId: string; fps: number; filePath: string }): Promise<void>;
   stopRecording(args: { laneId: string }): Promise<DesktopSeatReply>;
@@ -965,11 +1031,13 @@ export type MacDesktopServiceApi = {
   releaseWindow(args: MacDesktopReleaseArgs): Promise<{ released: number }>;
 
   observe(args: MacDesktopObserveArgs): Promise<MacDesktopObservation>;
-  click(args: MacDesktopClickArgs): Promise<MacDesktopActionResult>;
-  type(args: MacDesktopTypeArgs): Promise<MacDesktopActionResult>;
-  press(args: MacDesktopPressArgs): Promise<MacDesktopActionResult>;
-  scroll(args: MacDesktopScrollArgs): Promise<MacDesktopActionResult>;
-  drag(args: MacDesktopDragArgs): Promise<MacDesktopActionResult>;
+  click(args: MacDesktopClickArgs): Promise<MacDesktopInputResult>;
+  type(args: MacDesktopTypeArgs): Promise<MacDesktopInputResult>;
+  press(args: MacDesktopPressArgs): Promise<MacDesktopInputResult>;
+  scroll(args: MacDesktopScrollArgs): Promise<MacDesktopInputResult>;
+  drag(args: MacDesktopDragArgs): Promise<MacDesktopInputResult>;
+  /** Real-only, always silent. Refused without the lease like any real input. */
+  move(args: MacDesktopMoveArgs): Promise<MacDesktopInputResult>;
   wait(args: MacDesktopWaitArgs): Promise<MacDesktopWaitResult>;
 
   screenshot(args: MacDesktopScreenshotArgs): Promise<MacDesktopScreenshotResult>;

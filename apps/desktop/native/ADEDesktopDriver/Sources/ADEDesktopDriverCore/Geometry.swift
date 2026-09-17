@@ -82,6 +82,29 @@ public enum Geometry {
         return CGPoint(x: local.x * display.scale, y: local.y * display.scale)
     }
 
+    /// The nearest point inside `frame`, for a real event that must not land
+    /// on a display this lane does not own.
+    ///
+    /// Clamping rather than refusing, because the caller is a person dragging a
+    /// mouse across a pane: their pointer leaves the picture constantly, and a
+    /// refusal per stray pixel would be a stream of errors describing normal
+    /// behaviour. What must never happen is the event landing on the user's own
+    /// screen, and a clamped point cannot.
+    ///
+    /// The far edges are inset by a point. `CGRect.maxX` is the first
+    /// coordinate of whatever display sits to the right, so a pointer parked
+    /// exactly there is a pointer on the neighbour — which on the common layout
+    /// is the user's desk.
+    public static func clamp(point: CGPoint, to frame: CGRect) -> CGPoint {
+        guard frame.width > 0, frame.height > 0 else { return frame.origin }
+        let maxX = max(frame.minX, frame.maxX - 1)
+        let maxY = max(frame.minY, frame.maxY - 1)
+        return CGPoint(
+            x: min(max(point.x, frame.minX), maxX),
+            y: min(max(point.y, frame.minY), maxY)
+        )
+    }
+
     public static func center(of frame: CGRect) -> CGPoint {
         CGPoint(x: frame.midX, y: frame.midY)
     }

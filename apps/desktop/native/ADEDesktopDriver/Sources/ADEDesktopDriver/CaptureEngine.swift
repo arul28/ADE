@@ -76,6 +76,8 @@ final class CaptureEngine {
         /// When the encoder last produced an access unit, for the keepalive.
         var lastEncodedAt: Date
         var keepAlive: DispatchSourceTimer?
+        /// Whether the captured picture includes the system pointer.
+        var showsCursor: Bool
     }
 
     struct RecordingState {
@@ -109,6 +111,14 @@ final class CaptureEngine {
     private static let keepAliveInterval: TimeInterval = 1.0
 
     private var streams: [String: StreamState] = [:]
+    /// Whether each lane's stream should draw the system pointer.
+    ///
+    /// Kept per lane rather than only inside `StreamState` because the fact
+    /// outlives any one stream: a lane whose user holds control while the view
+    /// reconnects must come back with the pointer still visible, and the
+    /// service should be able to state the intention whether or not an encoder
+    /// happens to be running at that instant.
+    private var cursorVisibleByLane: [String: Bool] = [:]
     private var recordings: [String: RecordingState] = [:]
     private let lock = NSRecursiveLock()
     private let log: (String) -> Void
@@ -525,10 +535,69 @@ final class CaptureEngine {
     // Live stream
     // -----------------------------------------------------------------------
 
+    /// The one place a live-stream configuration is built.
+    ///
+    /// Written twice before — once for `startStream` and once for
+    /// `setStreamRate` — which is how a stream reconfigured for a new frame
+    /// rate silently lost every other setting it had been given.
+    @available(macOS 12.3, *)
+    private static func streamConfiguration(
+        width: Int,
+        height: Int,
+        fps: Int,
+        showsCursor: Bool
+    ) -> SCStreamConfiguration {
+        let configuration = SCStreamConfiguration()
+        configuration.width = width
+        configuration.height = height
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        configuration.showsCursor = showsCursor
+        configuration.queueDepth = 5
+        return configuration
+    }
+
+    /// Whether this lane's stream draws the system pointer, from now on.
+    ///
+    /// Stored even when no stream is running, and applied to the running one in
+    /// place: `updateConfiguration` keeps the same encoder, the same loopback
+    /// port and the same reader, so a takeover does not blink the picture. It
+    /// deliberately does not throw for a lane with no stream — the caller is
+    /// stating an intention about the lane, not about an encoder, and the
+    /// lease transition that calls it must not fail because the viewer happened
+    /// to be closed.
+    func setStreamCursorVisible(laneId: String, visible: Bool) throws {
+        lock.lock()
+        cursorVisibleByLane[laneId] = visible
+        guard var state = streams[laneId], state.showsCursor != visible else {
+            lock.unlock()
+            return
+        }
+        state.showsCursor = visible
+        streams[laneId] = state
+        lock.unlock()
+        guard #available(macOS 12.3, *) else { return }
+        state.stream.updateConfiguration(
+            Self.streamConfiguration(
+                width: state.width,
+                height: state.height,
+                fps: state.fps,
+                showsCursor: visible
+            )
+        ) { [weak self] error in
+            if let error { self?.log("cursor visibility for lane \(laneId) failed: \(error)") }
+        }
+        // The pointer is not "content", so a still desktop produces no new
+        // frame when it appears or goes. Without this the user takes control
+        // and sees nothing until something else on the screen moves.
+        refreshKeyframe(laneId: laneId)
+    }
+
     func startStream(
         laneId: String,
         displayId: CGDirectDisplayID,
-        fps: Int
+        fps: Int,
+        showsCursor: Bool? = nil
     ) throws -> (port: UInt16, width: Int, height: Int, codec: String?) {
         guard #available(macOS 12.3, *) else {
             throw CaptureError.failed("ScreenCaptureKit needs macOS 12.3 or newer.")
@@ -541,13 +610,16 @@ final class CaptureEngine {
         lock.unlock()
 
         let (_, width, height) = try retryingFilter(displayId: displayId, windowId: nil, label: "stream.start")
-        let configuration = SCStreamConfiguration()
-        configuration.width = max(2, width - width % 2)
-        configuration.height = max(2, height - height % 2)
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        configuration.showsCursor = false
-        configuration.queueDepth = 5
+        lock.lock()
+        let cursorVisible = showsCursor ?? cursorVisibleByLane[laneId] ?? false
+        cursorVisibleByLane[laneId] = cursorVisible
+        lock.unlock()
+        let configuration = Self.streamConfiguration(
+            width: max(2, width - width % 2),
+            height: max(2, height - height % 2),
+            fps: fps,
+            showsCursor: cursorVisible
+        )
 
         let server = StreamByteServer()
         let port = try server.start()
@@ -630,7 +702,8 @@ final class CaptureEngine {
             lastBuffer: nil,
             lastPresentationTime: .zero,
             lastEncodedAt: Date(),
-            keepAlive: nil
+            keepAlive: nil,
+            showsCursor: cursorVisible
         )
         lock.unlock()
         startKeepAlive(laneId: laneId, server: server)
@@ -693,14 +766,17 @@ final class CaptureEngine {
         streams[laneId] = state
         lock.unlock()
         state.encoder.setRate(fps: fps)
-        let configuration = SCStreamConfiguration()
-        configuration.width = state.width
-        configuration.height = state.height
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        configuration.showsCursor = false
-        configuration.queueDepth = 5
-        state.stream.updateConfiguration(configuration) { _ in }
+        guard #available(macOS 12.3, *) else { return }
+        state.stream.updateConfiguration(
+            Self.streamConfiguration(
+                width: state.width,
+                height: state.height,
+                fps: fps,
+                // Carried over rather than re-defaulted: a rate change during a
+                // takeover used to hide the pointer the user was driving with.
+                showsCursor: state.showsCursor
+            )
+        ) { _ in }
     }
 
     func streamStatus(laneId: String) -> (running: Bool, fps: Int, port: UInt16, clients: Int, codec: String?, width: Int, height: Int) {
