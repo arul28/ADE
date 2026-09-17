@@ -8,6 +8,7 @@ import type {
   AccountSettingRecord,
   AccountSettingWrite,
 } from "../push/accountRelayRows";
+import type { AccountSettingsWriteOptions } from "../../../../desktop/src/shared/types/accountSettings";
 
 /**
  * The machine's copy of the account settings store.
@@ -215,7 +216,19 @@ export function createAccountSettingsStore(args: {
      * Record a change. Answers from the cache immediately; the upload is the
      * store's problem, not the caller's.
      */
-    set(scope: string, key: string, value: unknown): boolean {
+    set(
+      scope: string,
+      key: string,
+      value: unknown,
+      options?: AccountSettingsWriteOptions,
+    ): boolean {
+      if (
+        options?.expectedAccountUserId !== undefined
+        && args.getAccountUserId() !== options.expectedAccountUserId
+      ) {
+        logger.warn("account.settings_mutation_dropped", { reason: "owner_changed" });
+        return false;
+      }
       const changedAt = new Date(now()).toISOString();
       return cache.mutate((current, queue) => {
         current.rows[cacheKey(scope, key)] = {
@@ -230,7 +243,14 @@ export function createAccountSettingsStore(args: {
       });
     },
 
-    remove(scope: string, key: string): boolean {
+    remove(scope: string, key: string, options?: AccountSettingsWriteOptions): boolean {
+      if (
+        options?.expectedAccountUserId !== undefined
+        && args.getAccountUserId() !== options.expectedAccountUserId
+      ) {
+        logger.warn("account.settings_mutation_dropped", { reason: "owner_changed" });
+        return false;
+      }
       return cache.mutate((current, queue) => {
         delete current.rows[cacheKey(scope, key)];
         queue({

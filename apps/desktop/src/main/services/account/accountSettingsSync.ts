@@ -24,6 +24,7 @@
 import type {
   AccountSettingRow,
   AccountSettingsResult,
+  AccountSettingsWriteOptions,
 } from "../../../shared/types/accountSettings";
 import {
   createAccountActionBridge,
@@ -86,12 +87,27 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
       return await bridge.call("get", [scope, key], (raw) => raw);
     },
 
-    async set(scope: string, key: string, value: unknown): Promise<AccountSettingsResult<null>> {
-      return await bridge.call("set", [scope, key, value], () => null, { rejectFalse: true });
+    async set(
+      scope: string,
+      key: string,
+      value: unknown,
+      options?: AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> {
+      return await bridge.call("set", [scope, key, value], () => null, {
+        rejectFalse: true,
+        ...options,
+      });
     },
 
-    async remove(scope: string, key: string): Promise<AccountSettingsResult<null>> {
-      return await bridge.call("remove", [scope, key], () => null, { rejectFalse: true });
+    async remove(
+      scope: string,
+      key: string,
+      options?: AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> {
+      return await bridge.call("remove", [scope, key], () => null, {
+        rejectFalse: true,
+        ...options,
+      });
     },
 
     /** Flush this machine's queue and take what changed. */

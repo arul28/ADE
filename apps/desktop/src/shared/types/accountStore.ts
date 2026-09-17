@@ -4,6 +4,11 @@ export type AccountStoreResult<T> =
   | { ok: false; unavailable: true; message: string }
   | { ok: false; rejected: true; message: string };
 
+/** Optional fence for a mutation that was captured under one account owner. */
+export type AccountStoreWriteOptions = {
+  expectedAccountUserId?: string;
+};
+
 export type AccountStoreResultHelpers = {
   unavailable<T>(): AccountStoreResult<T>;
   rejected<T>(): AccountStoreResult<T>;

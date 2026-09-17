@@ -1,4 +1,4 @@
-import type { AccountStoreResult } from "./accountStore";
+import type { AccountStoreResult, AccountStoreWriteOptions } from "./accountStore";
 
 /**
  * The wire shapes of the account settings store, shared by main, preload and
@@ -30,3 +30,6 @@ export type AccountSettingRow = {
  * write. Both keep the local copy safe; the latter must also remain dirty.
  */
 export type AccountSettingsResult<T> = AccountStoreResult<T>;
+
+/** Owner fence accepted by settings mutations crossing the desktop/runtime boundary. */
+export type AccountSettingsWriteOptions = AccountStoreWriteOptions;

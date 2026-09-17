@@ -1,6 +1,7 @@
 import {
   createAccountStoreResultHelpers,
   type AccountStoreResult,
+  type AccountStoreWriteOptions,
 } from "../../../shared/types/accountStore";
 
 type ActionRequest = {
@@ -33,7 +34,7 @@ export type AccountActionBridgeOptions<TRow> = {
   rejectedMessage?: string;
 };
 
-type CallOptions = {
+type CallOptions = AccountStoreWriteOptions & {
   /** Treat a bare false action result as a rejected write. */
   rejectFalse?: boolean;
 };
@@ -70,7 +71,9 @@ export function createAccountActionBridge<TRow>(options: AccountActionBridgeOpti
       const response = await pool.callActionForRoot(rootPath, {
         domain: options.domain,
         action,
-        argsList,
+        argsList: callOptions.expectedAccountUserId === undefined
+          ? argsList
+          : [...argsList, { expectedAccountUserId: callOptions.expectedAccountUserId }],
       });
       const raw = unwrap(response?.result);
       if (callOptions.rejectFalse && raw === false) return rejected<T>();

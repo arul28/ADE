@@ -1,4 +1,4 @@
-import type { AccountStoreResult } from "./accountStore";
+import type { AccountStoreResult, AccountStoreWriteOptions } from "./accountStore";
 
 /**
  * The wire shapes of the account vault store, shared by main, preload and the
@@ -20,3 +20,6 @@ export type AccountVaultItem = {
 
 /** Every account-vault call answers with a value or an ordinary failure result. */
 export type AccountVaultResult<T> = AccountStoreResult<T>;
+
+/** Owner fence accepted by vault mutations crossing the desktop/runtime boundary. */
+export type AccountVaultWriteOptions = AccountStoreWriteOptions;

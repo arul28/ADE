@@ -344,6 +344,20 @@ describe("account vault store", () => {
     expect(logger.warn).toHaveBeenNthCalledWith(2, "account.vault_mutation_dropped", { reason: "signed_out" });
   });
 
+  it("A1: rejects set and remove when the expected owner differs", () => {
+    const store = makeStore();
+
+    expect(store.set("all", "provider_key", "blocked", "must-not-persist", {
+      expectedAccountUserId: "user_grace",
+    })).toBe(false);
+    expect(store.remove("all", "provider_key", "blocked", {
+      expectedAccountUserId: "user_grace",
+    })).toBe(false);
+
+    expect(store.get("all", "provider_key", "blocked")).toBeNull();
+    expect(fs.existsSync(store.cachePathForTests())).toBe(false);
+  });
+
   it("drops a mutation when the owner changes during its entry checks", () => {
     let reads = 0;
     const logger = { info: vi.fn(), warn: vi.fn() };

@@ -83,17 +83,17 @@ function createHeadlessAccountVaultBridge(
         value: store.get(scope, kind as AccountVaultItemKind, key),
       };
     },
-    async set(scope, kind, key, value) {
+    async set(scope, kind, key, value, options) {
       const store = getStore();
       if (!store) return unavailable();
-      return store.set(scope, kind as AccountVaultItemKind, key, value)
+      return store.set(scope, kind as AccountVaultItemKind, key, value, options)
         ? { ok: true, value: null }
         : rejected();
     },
-    async remove(scope, kind, key) {
+    async remove(scope, kind, key, options) {
       const store = getStore();
       if (!store) return unavailable();
-      return store.remove(scope, kind as AccountVaultItemKind, key)
+      return store.remove(scope, kind as AccountVaultItemKind, key, options)
         ? { ok: true, value: null }
         : rejected();
     },

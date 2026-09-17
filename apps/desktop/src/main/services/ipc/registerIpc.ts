@@ -818,10 +818,15 @@ import {
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
 import {
   createAccountMigrationRunner,
+  createAccountMigrationStartRetry,
   getOpenAccountContexts,
 } from "../account/accountMigrationRunner";
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
-import type { AccountSettingRow, AccountSettingsResult } from "../../../shared/types/accountSettings";
+import type {
+  AccountSettingRow,
+  AccountSettingsResult,
+  AccountSettingsWriteOptions,
+} from "../../../shared/types/accountSettings";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
@@ -11091,9 +11096,14 @@ export function registerIpc({
     IPC.accountSettingsSet,
     async (
       _event,
-      args: { scope: string; key: string; value: unknown },
+      args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
     ): Promise<AccountSettingsResult<null>> =>
-      await accountSettingsSyncService.set(args.scope, args.key, args.value),
+      await accountSettingsSyncService.set(
+        args.scope,
+        args.key,
+        args.value,
+        { expectedAccountUserId: args.expectedAccountUserId },
+      ),
   );
 
   ipcMain.handle(
@@ -11114,15 +11124,19 @@ export function registerIpc({
     getContexts: () => getResourceUsageContexts?.() ?? [getCtx()],
     getLogger: () => getCtx().logger,
   });
+  const accountMigrationStartRetry = createAccountMigrationStartRetry({
+    start: () => accountMigrationRunner.start(),
+    isSignedIn: () => accountBridge.status().signedIn,
+  });
 
   // A signed-in launch has no sign-in transition to trigger the work, so seed
   // the same best-effort path immediately after the account/settings services.
-  accountMigrationRunner.start();
+  accountMigrationStartRetry.tryStart();
 
   ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.status();
     if (status.signedIn) productAnalyticsService?.identifyAccount(status.userId);
-    if (status.signedIn) accountMigrationRunner.start();
+    accountMigrationStartRetry.tryStart(status.signedIn);
     return status;
   });
 
@@ -11143,8 +11157,8 @@ export function registerIpc({
       const result = await accountBridge.pollLogin(arg?.sessionId ?? "");
       if (result.authStatus.signedIn) {
         productAnalyticsService?.identifyAccount(result.authStatus.userId);
-        accountMigrationRunner.start();
       }
+      accountMigrationStartRetry.tryStart(result.authStatus.signedIn);
       return result;
     },
   );
@@ -11174,8 +11188,8 @@ export function registerIpc({
       const result = await accountBridge.pollDeviceLogin(arg?.sessionId ?? "");
       if (result.authStatus.signedIn) {
         productAnalyticsService?.identifyAccount(result.authStatus.userId);
-        accountMigrationRunner.start();
       }
+      accountMigrationStartRetry.tryStart(result.authStatus.signedIn);
       return result;
     },
   );

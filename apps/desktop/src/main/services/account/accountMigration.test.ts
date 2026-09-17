@@ -4,7 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pathKey } from "../shared/pathCompare";
 import { runAccountMigration } from "./accountMigration";
-import { createAccountMigrationRunner, getOpenAccountContexts } from "./accountMigrationRunner";
+import {
+  createAccountMigrationRunner,
+  createAccountMigrationStartRetry,
+  getOpenAccountContexts,
+} from "./accountMigrationRunner";
 import type { AdeAccountStatus } from "../../../shared/types/account";
 
 function signedInStatus(userId: string): AdeAccountStatus {
@@ -142,7 +146,13 @@ describe("runAccountMigration", () => {
         ? { ok: false as const, unavailable: true as const, message: "offline" }
         : { ok: true as const, value: [] }),
       get: vi.fn(async () => ({ ok: true as const, value: null })),
-      set: vi.fn(async (_scope: string, _kind: string, _key: string, value: string) => {
+      set: vi.fn(async (
+        _scope: string,
+        _kind: string,
+        _key: string,
+        value: string,
+        _options?: { expectedAccountUserId?: string },
+      ) => {
         const writeGeneration = generation;
         markVaultWriteStarted();
         await vaultWriteGate;
@@ -176,6 +186,7 @@ describe("runAccountMigration", () => {
 
     expect(writes).toEqual([]);
     expect(vault.set).toHaveBeenCalledOnce();
+    expect(vault.set.mock.calls[0]?.[4]).toEqual({ expectedAccountUserId: "user-a" });
     expect(fs.existsSync(path.join(receiptDir, "account-migration.json"))).toBe(false);
   });
 
@@ -218,6 +229,30 @@ describe("runAccountMigration", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(runner.start()).toBe(true);
+  });
+
+  it("A2: retries a declined start on the next account status change and begins", () => {
+    const start = vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    const scheduledRetries: Array<() => void> = [];
+    const retry = createAccountMigrationStartRetry({
+      start,
+      isSignedIn: () => true,
+      schedule: (callback) => {
+        scheduledRetries.push(callback);
+      },
+    });
+
+    expect(retry.tryStart(true)).toBe(false);
+    expect(start).toHaveBeenCalledOnce();
+    expect(retry.tryStart(true)).toBe(true);
+    expect(start).toHaveBeenCalledTimes(2);
+
+    // The timer from the declined attempt is now stale; a run that began must
+    // not be started a third time when that timer eventually fires.
+    scheduledRetries[0]?.();
+    expect(start).toHaveBeenCalledTimes(2);
   });
 
   it("does not record project-secret migration complete while a project scope is unresolved", async () => {
@@ -329,6 +364,7 @@ describe("runAccountMigration", () => {
         "project_secret",
         "first-secret",
         "first-value",
+        { expectedAccountUserId: "user-1" },
       ));
 
       contexts = [contextOne, contextTwo];
@@ -338,6 +374,7 @@ describe("runAccountMigration", () => {
         "project_secret",
         "second-secret",
         "second-value",
+        { expectedAccountUserId: "user-1" },
       ));
     } finally {
       for (const root of roots) fs.rmSync(root, { recursive: true, force: true });

@@ -3707,6 +3707,19 @@ describe("adeRpcServer", () => {
     ]);
     expect(accountSettingsStore.list).toHaveBeenCalledWith("all");
 
+    const settingsSet = await callTool(agentHandler, "run_ade_action", {
+      domain: "account_settings",
+      action: "set",
+      argsList: ["all", "appearance.theme", "light", { expectedAccountUserId: "account-a" }],
+    });
+    expect(settingsSet?.isError).toBeUndefined();
+    expect(accountSettingsStore.set).toHaveBeenCalledWith(
+      "all",
+      "appearance.theme",
+      "light",
+      { expectedAccountUserId: "account-a" },
+    );
+
     const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
     const vaultInventory = await callTool(ctoHandler, "list_ade_actions", { domain: "account_vault" });
@@ -3722,11 +3735,17 @@ describe("adeRpcServer", () => {
     const vaultSet = await callTool(ctoHandler, "run_ade_action", {
       domain: "account_vault",
       action: "set",
-      argsList: ["all", "provider_api_key", "openai", "sk-test"],
+      argsList: ["all", "provider_api_key", "openai", "sk-test", { expectedAccountUserId: "account-a" }],
     });
     expect(vaultSet?.isError).toBeUndefined();
     expect(vaultSet.structuredContent.result).toBe(true);
-    expect(accountVaultStore.set).toHaveBeenCalledWith("all", "provider_api_key", "openai", "sk-test");
+    expect(accountVaultStore.set).toHaveBeenCalledWith(
+      "all",
+      "provider_api_key",
+      "openai",
+      "sk-test",
+      { expectedAccountUserId: "account-a" },
+    );
   });
 
   it("exposes account-wide Attention actions only to CTO callers with discoverable contracts", async () => {

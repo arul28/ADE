@@ -39,7 +39,11 @@ import {
   accountRepoScopeKey,
   isAccountScope,
 } from "../../shared/accountSettingsScope";
-import type { AccountSettingRow, AccountSettingsResult } from "../../shared/types/accountSettings";
+import type {
+  AccountSettingRow,
+  AccountSettingsResult,
+  AccountSettingsWriteOptions,
+} from "../../shared/types/accountSettings";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import type { AppState } from "../state/appStore";
 
@@ -127,7 +131,9 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
 
 export type AccountSettingsApi = {
   list(args?: { scope?: string | null }): Promise<AccountSettingsResult<AccountSettingRow[]>>;
-  set(args: { scope: string; key: string; value: unknown }): Promise<AccountSettingsResult<null>>;
+  set(
+    args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+  ): Promise<AccountSettingsResult<null>>;
   sync(): Promise<AccountSettingsResult<null>>;
 };
 
@@ -372,7 +378,12 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       }
       // Calling set is the queue boundary. Do not move the stamp earlier: a
       // signed-out edit must remain dirty and must not suppress its next pull.
-      const pending = api.set({ scope: scopeKey, key: entry.key, value });
+      const pending = api.set({
+        scope: scopeKey,
+        key: entry.key,
+        value,
+        expectedAccountUserId: userIdAtQueue,
+      });
       if (identityGeneration !== generationAtQueue || resolveAccountUserId() !== userIdAtQueue) {
         markDirtyKey(existingDirtyKey);
         return;

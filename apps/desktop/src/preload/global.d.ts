@@ -390,6 +390,7 @@ import type {
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
+  AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -3405,7 +3406,9 @@ declare global {
       accountSettings?: {
         list: (args?: { scope?: string | null }) => Promise<AccountSettingsResult<AccountSettingRow[]>>;
         get: (args: { scope: string; key: string }) => Promise<AccountSettingsResult<unknown>>;
-        set: (args: { scope: string; key: string; value: unknown }) => Promise<AccountSettingsResult<null>>;
+        set: (
+          args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+        ) => Promise<AccountSettingsResult<null>>;
         sync: () => Promise<AccountSettingsResult<null>>;
       };
       prs: {

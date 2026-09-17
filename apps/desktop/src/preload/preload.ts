@@ -362,6 +362,7 @@ import type {
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
+  AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -10533,7 +10534,9 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountSettingsList, args ?? {}),
     get: (args: { scope: string; key: string }): Promise<AccountSettingsResult<unknown>> =>
       ipcRenderer.invoke(IPC.accountSettingsGet, args),
-    set: (args: { scope: string; key: string; value: unknown }): Promise<AccountSettingsResult<null>> =>
+    set: (
+      args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsSet, args),
     sync: (): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsSync),

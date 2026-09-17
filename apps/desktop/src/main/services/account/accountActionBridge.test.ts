@@ -75,6 +75,28 @@ describe("accountSettingsSync (main)", () => {
     });
   });
 
+  it("A1: forwards the expected owner through settings mutation args", async () => {
+    const pool = poolReturning({ domain: "account_settings", action: "set", result: undefined });
+    const service = createAccountSettingsSyncService({
+      getPool: () => pool,
+      getRootPath: () => "/repo",
+    });
+
+    await service.set("all", "theme", "light", { expectedAccountUserId: "user-ada" });
+    expect(pool.callActionForRoot).toHaveBeenLastCalledWith("/repo", {
+      domain: "account_settings",
+      action: "set",
+      argsList: ["all", "theme", "light", { expectedAccountUserId: "user-ada" }],
+    });
+
+    await service.remove("all", "theme", { expectedAccountUserId: "user-ada" });
+    expect(pool.callActionForRoot).toHaveBeenLastCalledWith("/repo", {
+      domain: "account_settings",
+      action: "remove",
+      argsList: ["all", "theme", { expectedAccountUserId: "user-ada" }],
+    });
+  });
+
   it("A2: distinguishes a rejected write from an unavailable runtime", async () => {
     const service = createAccountSettingsSyncService({
       getPool: () => poolReturning({ domain: "account_settings", action: "set", result: false }),
@@ -222,6 +244,32 @@ describe("accountVaultBridge (main)", () => {
       domain: "account_vault",
       action: "sync",
       argsList: [],
+    });
+  });
+
+  it("A1: forwards the expected owner through vault mutation args", async () => {
+    const pool = poolReturningVault({ domain: "account_vault", action: "set", result: undefined });
+    const bridge = createAccountVaultBridge({
+      getPool: () => pool,
+      getRootPath: () => "/repo",
+    });
+
+    await bridge.set("all", "provider_key", "anthropic", "token", {
+      expectedAccountUserId: "user-ada",
+    });
+    expect(pool.callActionForRoot).toHaveBeenLastCalledWith("/repo", {
+      domain: "account_vault",
+      action: "set",
+      argsList: ["all", "provider_key", "anthropic", "token", { expectedAccountUserId: "user-ada" }],
+    });
+
+    await bridge.remove("all", "provider_key", "anthropic", {
+      expectedAccountUserId: "user-ada",
+    });
+    expect(pool.callActionForRoot).toHaveBeenLastCalledWith("/repo", {
+      domain: "account_vault",
+      action: "remove",
+      argsList: ["all", "provider_key", "anthropic", { expectedAccountUserId: "user-ada" }],
     });
   });
 

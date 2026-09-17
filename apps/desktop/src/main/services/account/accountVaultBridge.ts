@@ -10,6 +10,7 @@
 import type {
   AccountVaultItem,
   AccountVaultResult,
+  AccountVaultWriteOptions,
 } from "../../../shared/types/accountVault";
 import {
   createAccountActionBridge,
@@ -80,12 +81,29 @@ export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {
       );
     },
 
-    async set(scope: string, kind: string, key: string, value: string): Promise<AccountVaultResult<null>> {
-      return await bridge.call("set", [scope, kind, key, value], () => null, { rejectFalse: true });
+    async set(
+      scope: string,
+      kind: string,
+      key: string,
+      value: string,
+      options?: AccountVaultWriteOptions,
+    ): Promise<AccountVaultResult<null>> {
+      return await bridge.call("set", [scope, kind, key, value], () => null, {
+        rejectFalse: true,
+        ...options,
+      });
     },
 
-    async remove(scope: string, kind: string, key: string): Promise<AccountVaultResult<null>> {
-      return await bridge.call("remove", [scope, kind, key], () => null, { rejectFalse: true });
+    async remove(
+      scope: string,
+      kind: string,
+      key: string,
+      options?: AccountVaultWriteOptions,
+    ): Promise<AccountVaultResult<null>> {
+      return await bridge.call("remove", [scope, kind, key], () => null, {
+        rejectFalse: true,
+        ...options,
+      });
     },
 
     /** Flush this machine's queue and take what changed. */

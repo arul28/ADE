@@ -176,7 +176,7 @@ describe("accountSettingsSync (renderer)", () => {
     stop();
   });
 
-  it("writes a local change through with the account scope key", async () => {
+  it("A1: writes a local change with the expected account owner", async () => {
     const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
     const api = createApi();
     const stop = startAccountSettingsSync(
@@ -184,7 +184,12 @@ describe("accountSettingsSync (renderer)", () => {
     );
     await settle();
     state.setTheme("light");
-    expect(api.set).toHaveBeenCalledWith({ scope: "all", key: "theme", value: "light" });
+    expect(api.set).toHaveBeenCalledWith({
+      scope: "all",
+      key: "theme",
+      value: "light",
+      expectedAccountUserId: "__signed-in__",
+    });
     stop();
   });
 
@@ -237,6 +242,7 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "repo:github.com/ade-dev/ade",
       key: "theme",
       value: "light",
+      expectedAccountUserId: "__signed-in__",
     });
     stop();
 
@@ -430,7 +436,12 @@ describe("accountSettingsSync (renderer)", () => {
     notifiers[0]?.();
     await settle();
 
-    expect(api.set).toHaveBeenCalledWith({ scope: "all", key: "theme", value: "light" });
+    expect(api.set).toHaveBeenCalledWith({
+      scope: "all",
+      key: "theme",
+      value: "light",
+      expectedAccountUserId: "account-a",
+    });
     const stamps = JSON.parse(storage.map.get("ade.accountSettings.stamps.v1") ?? "{}");
     expect(stamps["account-a"]).toMatchObject({ "all theme": expect.any(String) });
     expect(JSON.parse(storage.map.get("ade.accountSettings.dirty.v1") ?? "[]")).not.toContain(

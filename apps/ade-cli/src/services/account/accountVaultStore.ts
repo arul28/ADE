@@ -13,6 +13,7 @@ import type {
   AccountVaultItemKind,
   AccountVaultWrite,
 } from "../push/accountRelayRows";
+import type { AccountVaultWriteOptions } from "../../../../desktop/src/shared/types/accountVault";
 
 /**
  * The machine's copy of the vault.
@@ -60,6 +61,11 @@ type PendingWrite = {
   refreshOwner: string | null;
   /** Monotonic per cache; see `AccountCachePending` for why it is not a time. */
   seq: number;
+};
+
+type AccountVaultStoreWriteOptions = AccountVaultWriteOptions & {
+  /** Relay metadata stays local to the brain store and is never a wire arg. */
+  refreshOwner?: string | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -337,8 +343,15 @@ export function createAccountVaultStore(args: {
       kind: AccountVaultItemKind,
       key: string,
       value: string,
-      options?: { refreshOwner?: string | null },
+      options?: AccountVaultStoreWriteOptions,
     ): boolean {
+      if (
+        options?.expectedAccountUserId !== undefined
+        && args.getAccountUserId() !== options.expectedAccountUserId
+      ) {
+        logger.warn("account.vault_mutation_dropped", { reason: "owner_changed" });
+        return false;
+      }
       const refreshOwner = options?.refreshOwner ?? null;
       return cache.mutate((current, queue) => {
         current.rows[cacheKey(scope, kind, key)] = {
@@ -351,7 +364,19 @@ export function createAccountVaultStore(args: {
       });
     },
 
-    remove(scope: string, kind: AccountVaultItemKind, key: string): boolean {
+    remove(
+      scope: string,
+      kind: AccountVaultItemKind,
+      key: string,
+      options?: AccountVaultWriteOptions,
+    ): boolean {
+      if (
+        options?.expectedAccountUserId !== undefined
+        && args.getAccountUserId() !== options.expectedAccountUserId
+      ) {
+        logger.warn("account.vault_mutation_dropped", { reason: "owner_changed" });
+        return false;
+      }
       return cache.mutate((current, queue) => {
         delete current.rows[cacheKey(scope, kind, key)];
         queue({ scope, kind, key, value: null, deleted: true, refreshOwner: null });
