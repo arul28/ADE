@@ -62,7 +62,8 @@ describe("the call HUD's captions", () => {
  * The captions are the only record of what was said and the phase label is the
  * only word for what the call is doing, so both have to be announced; and a
  * strip that can authorise a destructive action must arrive where the keyboard
- * already is rather than somewhere the user has to go and find.
+ * already is rather than somewhere the user has to go and find — without the
+ * destructive answer itself being one keypress away.
  */
 describe("the call HUD's announcements", () => {
   it("announces the captions and the phase without interrupting", () => {
@@ -71,7 +72,16 @@ describe("the call HUD's announcements", () => {
     expect(screen.getByTestId("cto-voice-phase-label").getAttribute("aria-live")).toBe("polite");
   });
 
-  it("raises the confirmation strip as an alert and puts the keyboard on it", () => {
+  it("keeps the caption region in the accessibility tree before anything is said", () => {
+    // `empty:hidden` is `display: none`, which takes a live region back OUT of
+    // the tree — and a region that appears with its content already in it
+    // announces nothing at all, which is the failure it was meant to avoid.
+    renderHud({ captions: [] });
+    const captions = screen.getByTestId("cto-voice-captions");
+    expect(captions.className).not.toContain("empty:hidden");
+  });
+
+  it("raises the confirmation strip as an alert, and puts the keyboard on the strip", () => {
     renderHud({
       phase: "confirming",
       pendingConfirmation: {
@@ -83,7 +93,11 @@ describe("the call HUD's announcements", () => {
         expiresAtMs: 0,
       },
     });
-    expect(screen.getByTestId("cto-voice-confirm").getAttribute("role")).toBe("alert");
-    expect(document.activeElement).toBe(screen.getByTestId("cto-voice-confirm-approve"));
+    const strip = screen.getByTestId("cto-voice-confirm");
+    expect(strip.getAttribute("role")).toBe("alert");
+    // The STRIP, never the approve button: a focused "Yes, do it" turns one
+    // stray Enter or Space into an authorised force-push.
+    expect(document.activeElement).toBe(strip);
+    expect(document.activeElement).not.toBe(screen.getByTestId("cto-voice-confirm-approve"));
   });
 });

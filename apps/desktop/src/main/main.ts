@@ -181,7 +181,6 @@ import type {
   CaptureGestureHealth,
   CaptureGestureShot,
 } from "../shared/types/captureGesture";
-import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { fitCaptureShotToAttachmentLimit } from "./services/capture/captureShotFit";
 import { pickCaptureGestureWindow } from "./services/capture/captureGestureTarget";
 import {
@@ -340,7 +339,11 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoVoiceRuntimeService } from "./services/cto/ctoVoiceRuntimeService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
-import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
+import {
+  buildRendererCspPolicy,
+  isRendererFrameNavigationAllowed,
+  shouldApplyRendererCsp,
+} from "./rendererCsp";
 import {
   RENDERER_RECOVERY_DELAY_MS,
   RENDERER_RECOVERY_WINDOW_MS,
@@ -1105,16 +1108,22 @@ async function createWindow(args: {
    * `frame-src` widened for some unrelated reason must not silently reopen it.
    *
    * Main frames keep the stricter rule above. Subframes get the CSP's own
-   * allowlist restated: ADE's document, the dev server, a scene's two schemes,
-   * and a blank frame.
+   * allowlist restated, and it is restated from the SAME source set the CSP is
+   * built from (`isRendererFrameNavigationAllowed`) rather than hand-copied —
+   * a hand-copied list that missed `file:` and `app:` would have blocked the
+   * packaged spec previews, which are `file://` frames.
    */
   win.webContents.on("will-frame-navigate", (event) => {
     if (event.isMainFrame) return;
     const url = event.url;
-    if (url === getRendererUrl() || url === "about:blank") return;
-    if (url.startsWith("ade-scene:") || url.startsWith("blob:")) return;
-    const frameDevBase = process.env.VITE_DEV_SERVER_URL;
-    if (frameDevBase && url.startsWith(frameDevBase)) return;
+    if (
+      isRendererFrameNavigationAllowed(url, {
+        rendererUrl: getRendererUrl(),
+        devServerUrl: process.env.VITE_DEV_SERVER_URL ?? null,
+      })
+    ) {
+      return;
+    }
     event.preventDefault();
     args.logger?.warn("window.frame_navigation_blocked", { url });
   });
@@ -8367,9 +8376,7 @@ app.whenReady().then(async () => {
     return candidate;
   };
 
-  /** Both halves live in services; main keeps only the two call sites. */
-  const fitShot = (shot: CaptureGestureShot): CaptureGestureShot | null =>
-    fitCaptureShotToAttachmentLimit(shot, { fromBuffer: (bytes) => nativeImage.createFromBuffer(bytes) });
+  /** Both halves live in services; main keeps only the call sites. */
   const reportCapture = (outcome: CaptureGestureOutcome): void =>
     reportCaptureGesture(productAnalyticsService, outcome);
 
@@ -8397,7 +8404,9 @@ app.whenReady().then(async () => {
     onShot: (shot: CaptureGestureShot) => {
       const target = captureGestureWindow();
       if (!target) return;
-      const fitted = fitShot(shot);
+      const fitted = fitCaptureShotToAttachmentLimit(shot, {
+        fromBuffer: (bytes) => nativeImage.createFromBuffer(bytes),
+      });
       if (!fitted) {
         reportCapture("too_large");
         target.webContents.send(IPC.captureGestureFailed, {

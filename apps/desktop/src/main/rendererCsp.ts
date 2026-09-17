@@ -42,6 +42,49 @@ export function shouldApplyRendererCsp(
   );
 }
 
+/**
+ * The schemes `frame-src` allows outright, as data rather than as a string.
+ *
+ * `main.ts`'s `will-frame-navigate` handler is the SECOND door on this same
+ * allowlist, and the two must not drift: a source listed here and missing there
+ * is a frame that renders in dev and is blocked in a packaged build. That is
+ * not hypothetical — the handler first shipped without `file:` and `app:`, and
+ * the packaged spec previews (`SpecPreviewCard`, `PlanMarkdown`, both framing a
+ * `bundleAssetFileUrl`) would have gone blank.
+ *
+ * The union of both modes, deliberately: `frame-src` is `'self' file: app:`
+ * packaged and `'self' http://localhost:* http://127.0.0.1:*` in dev, plus the
+ * same local sources and `ade-scene: blob: about:` in both. A navigation check
+ * that has to answer before it knows which build it is in takes the union; the
+ * CSP itself stays mode-specific, and it is the header the browser enforces.
+ */
+const FRAME_NAVIGATION_SCHEMES = ["ade-scene:", "blob:", "about:", "file:", "app:"] as const;
+
+/**
+ * May a SUBFRAME navigate to this URL?
+ *
+ * Pure so it can be tested without a window. `rendererUrl` is ADE's own
+ * document (`'self'`); `devServerUrl` is the Vite origin when there is one.
+ */
+export function isRendererFrameNavigationAllowed(
+  url: string,
+  options: { rendererUrl: string; devServerUrl?: string | null },
+): boolean {
+  if (!url) return false;
+  if (url === options.rendererUrl) return true;
+  if (FRAME_NAVIGATION_SCHEMES.some((scheme) => url.startsWith(scheme))) return true;
+  if (options.devServerUrl && url.startsWith(options.devServerUrl)) return true;
+  // `http://localhost:*` / `http://127.0.0.1:*`, matching the CSP's local
+  // sources — http only, because the CSP names no https local source.
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:"
+      && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+  } catch {
+    return false;
+  }
+}
+
 export function buildRendererCspPolicy(isDevMode: boolean): string {
   const cspSources = isDevMode
     ? "'self' http://localhost:* http://127.0.0.1:*"

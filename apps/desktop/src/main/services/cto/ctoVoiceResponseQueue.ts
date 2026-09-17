@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { buildCtoVoiceSpeakInstructions } from "../../../shared/types/ctoVoice";
+import { buildCtoVoiceSpeakInstructions } from "../../../shared/types/ctoVoicePrompt";
 
 /**
  * One response at a time, and which side asked for it.
@@ -21,7 +21,7 @@ import { buildCtoVoiceSpeakInstructions } from "../../../shared/types/ctoVoice";
  * the conversation in front of it, which is what a function result needs,
  * because it cannot relay an answer to a call it cannot see.
  */
-export type CtoVoiceQueuedResponse = { kind: "ade"; text: string } | { kind: "model" };
+type CtoVoiceQueuedResponse = { kind: "ade"; text: string } | { kind: "model" };
 
 export type CtoVoiceResponseQueue = ReturnType<typeof createResponseQueue>;
 
@@ -77,6 +77,24 @@ export function createResponseQueue(deps: {
    * interruption a call most needs to honour unheard.
    */
   let cancelWhenNamed = false;
+
+  /**
+   * Nothing is generating any more, whatever the reason.
+   *
+   * One place rather than two, because every one of these flags describes the
+   * SAME response and a call end that cleared five of the six is how the next
+   * call's first barge-in cancelled a stranger.
+   */
+  const clearInflight = (): void => {
+    active = false;
+    inflight = null;
+    // The id belongs to the response that just ended, and a cancel waiting for
+    // an id that will never arrive would fire at whatever is next.
+    activeId = null;
+    activeIsOurs = false;
+    pendingOurs = false;
+    cancelWhenNamed = false;
+  };
 
   const drain = (): void => {
     if (active || !deps.isOpen()) return;
@@ -151,14 +169,7 @@ export function createResponseQueue(deps: {
 
     /** A response ended, however it ended. Let the next one through. */
     release(): void {
-      active = false;
-      inflight = null;
-      // The id belongs to the response that just ended, and a cancel waiting
-      // for an id that will never arrive would fire at whatever is next.
-      activeId = null;
-      activeIsOurs = false;
-      pendingOurs = false;
-      cancelWhenNamed = false;
+      clearInflight();
       drain();
     },
 
@@ -172,9 +183,15 @@ export function createResponseQueue(deps: {
      * was said.
      */
     requeueRefused(): void {
-      if (!inflight) return;
-      queue.unshift(inflight);
+      const refused = inflight;
       inflight = null;
+      // The create that was refused never became a response, so the flag it set
+      // on the way out belongs to nothing. Left true, the next `response.created`
+      // — the server's own, the one that refused us — is recorded as ADE's, and
+      // the next barge-in cancels a response the server is already truncating.
+      pendingOurs = false;
+      if (!refused) return;
+      queue.unshift(refused);
     },
 
     /**
@@ -208,12 +225,7 @@ export function createResponseQueue(deps: {
     /** A call is starting or ending: none of this belongs to the next one. */
     reset(): void {
       queue = [];
-      inflight = null;
-      active = false;
-      activeIsOurs = false;
-      pendingOurs = false;
-      activeId = null;
-      cancelWhenNamed = false;
+      clearInflight();
     },
   };
 }

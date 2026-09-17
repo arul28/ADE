@@ -8,24 +8,22 @@ import { projectAttachmentsDir, stageAttachmentBytes } from "../../../shared/cha
 import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
 import { isContextOverflowFailureText } from "../../../shared/types/chat";
 import {
+  CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
   CTO_VOICE_DEFAULT,
   CTO_VOICE_INITIAL_STATE,
-  CTO_VOICE_OWNER_IDLE_TIMEOUT_MS,
   CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT,
-  CTO_VOICE_USD_PER_MINUTE,
-  CTO_VOICE_VOICES,
-  CTO_VOICE_ACTIONS,
-  CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
+  CTO_VOICE_OWNER_IDLE_TIMEOUT_MS,
   CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW,
   CTO_VOICE_SPOKEN_TURN_FAILED,
-  ctoVoiceStatusLine,
-  describeVoiceApproval,
-  isVoiceCallLive,
-  type CtoVoiceAction,
+  CTO_VOICE_USD_PER_MINUTE,
+  CTO_VOICE_VOICES,
   type CtoVoiceActionResult,
   type CtoVoiceName,
   type CtoVoiceState,
+  ctoVoiceStatusLine,
+  isVoiceCallLive,
 } from "../../../shared/types/ctoVoice";
+import { describeVoiceApproval } from "../../../shared/types/ctoVoiceDestructive";
 import {
   buildCtoVoiceContext,
   buildVoiceSceneContract,
@@ -106,8 +104,6 @@ export type CtoVoiceRuntimeOptions = {
   now?: () => number;
 };
 
-export type { CtoVoiceActionResult };
-
 export type CtoVoicePullAudioResult = CtoVoiceActionResult & {
   chunks: string[];
   /** Chunks the queue had to drop because nobody was draining it. */
@@ -115,15 +111,6 @@ export type CtoVoicePullAudioResult = CtoVoiceActionResult & {
 };
 
 export type CtoVoiceRuntimeService = ReturnType<typeof createCtoVoiceRuntimeService>;
-
-/**
- * Re-exported for the call sites already inside this module's graph.
- *
- * The list itself lives in `shared/types/ctoVoice`, which imports nothing: the
- * policy tables read it there rather than dragging `ws`, the API key store and
- * the chat service graph into the gate that reads an action name.
- */
-export { CTO_VOICE_ACTIONS, type CtoVoiceAction };
 
 /** The event payload the `cto_voice` category carries. State, never audio. */
 export type CtoVoiceRuntimeEvent = {

@@ -19,7 +19,7 @@ export type CtoVoiceSocketFailure = {
   message?: string | null;
 };
 
-export type CtoVoiceSocketFailureReason = {
+type CtoVoiceSocketFailureReason = {
   /** One sentence for the HUD, naming the thing the user can act on. */
   message: string;
   status: number | null;
@@ -109,9 +109,9 @@ const CTO_VOICE_NO_CREDIT_MESSAGE =
   "Your OpenAI account has no credit for voice calls. Add billing at platform.openai.com.";
 
 /** What an `error` event turned out to be about. */
-export type CtoVoiceServerErrorKind = "expired_key" | "rejected_key" | "no_credit" | "other";
+type CtoVoiceServerErrorKind = "expired_key" | "rejected_key" | "no_credit" | "other";
 
-export type CtoVoiceServerErrorReason = {
+type CtoVoiceServerErrorReason = {
   /** One line for the HUD. OpenAI's own words unless we have better ones. */
   message: string;
   kind: CtoVoiceServerErrorKind;
@@ -128,11 +128,11 @@ export type CtoVoiceServerErrorReason = {
  * on, and putting "Cancellation failed: no active response" on screen mid-call
  * would be worse than saying nothing.
  *
- * It does mean this list can hide a real defect, and once did: a `response.cancel`
- * with no `response_id` is answered with exactly that message, because it looks
- * for a response in the default conversation and every response here is
- * out-of-band. Every barge-in failed, silently, and the CTO talked on. Cancels
- * are named now (`stopSpeaking`), so the message can only be the race again.
+ * It does mean this list can hide a real defect: a `response.cancel` with no
+ * `response_id` is answered with exactly that message, because it looks for a
+ * response in the default conversation and every response here is out-of-band,
+ * so every barge-in would fail silently and the CTO would talk on. Cancels are
+ * named (`stopSpeaking`), so the message can only be the race.
  */
 const CTO_VOICE_BENIGN_SERVER_ERRORS: readonly RegExp[] = [
   /no active response/i,

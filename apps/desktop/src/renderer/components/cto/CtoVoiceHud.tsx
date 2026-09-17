@@ -145,12 +145,20 @@ function ConfirmationStrip({
   // must be where the keyboard already is: it appears with no click behind it,
   // so a user who is not looking at the corner of the screen would otherwise
   // have to go hunting for the thing that is waiting on them.
-  const approveRef = useRef<HTMLButtonElement | null>(null);
-  useEffect(() => { approveRef.current?.focus(); }, [confirmation.id]);
+  //
+  // The STRIP takes the focus, never the approve button. This arrives
+  // unannounced under whatever the user was already doing, and a stray Enter or
+  // Space on a focused "Yes, do it" would authorise a force-push nobody read.
+  // `role="alert"` announces it either way, and from the strip one Tab reaches
+  // each answer.
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { stripRef.current?.focus(); }, [confirmation.id]);
   return (
     <div
       data-testid="cto-voice-confirm"
       role="alert"
+      ref={stripRef}
+      tabIndex={-1}
       className="flex flex-col gap-2 rounded-xl px-3 py-2.5"
       style={{
         background: COLORS.cardBgSolid,
@@ -168,7 +176,6 @@ function ConfirmationStrip({
       <div className="flex items-center gap-1.5">
         <button
           type="button"
-          ref={approveRef}
           onClick={onApprove}
           data-testid="cto-voice-confirm-approve"
           className="rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors"
@@ -349,11 +356,14 @@ export function CtoVoiceHud({
             below is the only word for what the call is doing. `polite`, not
             `assertive` — a caption must not interrupt the user's own reader
             mid-sentence. The wrapper is always mounted, because a live region
-            that appears with its content already in it announces nothing. */}
+            that appears with its content already in it announces nothing — and
+            never `display: none`, which takes it back out of the accessibility
+            tree and costs the same announcement. An empty one is a row of
+            nothing instead. */}
         <div
           aria-live="polite"
           aria-atomic="false"
-          className="flex w-full flex-col items-end gap-2 empty:hidden"
+          className="flex min-h-px w-full flex-col items-end gap-2"
           data-testid="cto-voice-captions"
         >
           {/* Caption — one line, the most recent thing said. */}

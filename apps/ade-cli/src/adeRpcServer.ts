@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
 import {
-  REMOTE_RUNTIME_EVENT_CATEGORIES,
   refusesVoiceCategory,
   voiceCategoryRefusalMessage,
   withoutVoiceEvents,
-} from "../../desktop/src/shared/types/remoteRuntime";
+} from "../../desktop/src/shared/runtimeEventPolicy";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import {
   createComputerUseArtifactPath,
@@ -5863,8 +5863,8 @@ async function runTool(args: {
     const cursor = asNumber(toolArgs.cursor, 0);
     const limit = asNumber(toolArgs.limit, 100);
     const category = asOptionalTrimmedString(toolArgs.category);
-    // The rule and its wording live with the category tuple; see
-    // `VOICE_RUNTIME_EVENT_CATEGORY`. Refused by name, filtered when not named.
+    // The rule and its wording live in `shared/runtimeEventPolicy.ts`.
+    // Refused by name, filtered when not named.
     const ctoVoiceVisible = callerHasRoleAtLeast(callerCtx.role, "cto");
     if (refusesVoiceCategory(category, ctoVoiceVisible)) {
       throw new JsonRpcError(
@@ -5890,12 +5890,11 @@ async function runTool(args: {
       };
     }
     const drained = runtime.eventBuffer.drain(cursor, limit);
-    if (ctoVoiceVisible) return drained;
     // Filtered, not refused: every other category is still readable, and the
     // cursor still advances past what was withheld so polling cannot stall.
     return {
       ...drained,
-      events: withoutVoiceEvents(drained.events)
+      events: withoutVoiceEvents(drained.events, ctoVoiceVisible)
     };
   }
 

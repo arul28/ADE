@@ -1,8 +1,8 @@
 import {
   CTO_VOICE_SPOKEN_CONFIRM_WINDOW_MS,
-  isDestructiveVoiceTool,
   type CtoVoiceConfirmation,
 } from "../../../shared/types/ctoVoice";
+import { isDestructiveVoiceTool } from "../../../shared/types/ctoVoiceDestructive";
 
 /**
  * Whether a spoken "yes" counts.

@@ -391,13 +391,16 @@ void ReadCommands() {
         PostThreadMessage(g_main_thread_id, kMsgCapture, 0, 0);
       } else if (JsonHasType(line, "\"settings\"")) {
         g_enabled.store(line.find("\"enabled\":false") == std::string::npos);
-        // Clear the half-state too, not just the chord latch. The hook only
-        // ever learns a key is UP from an event, so a Ctrl held across a
-        // disable/enable leaves its flag stuck down and the very next press of
-        // the OTHER Ctrl fires a capture the user never chorded.
-        g_left_ctrl_down.store(false);
-        g_right_ctrl_down.store(false);
-        g_chord_engaged.store(false);
+        // RE-SEED the half-state, do not clear it. The hook only ever learns
+        // a key is UP from an event, so a latch that disagrees with the real
+        // keyboard stays wrong until that key is released and pressed again.
+        // Storing `false` while the user is holding a Ctrl is the same stuck
+        // key the startup seeding exists to prevent, just in the other
+        // direction: the held side reads up, and the next press of the OTHER
+        // Ctrl never completes a chord. Ask the OS, exactly as startup does.
+        g_left_ctrl_down.store((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0);
+        g_right_ctrl_down.store((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+        g_chord_engaged.store(g_left_ctrl_down.load() && g_right_ctrl_down.load());
       }
     }
     line.clear();

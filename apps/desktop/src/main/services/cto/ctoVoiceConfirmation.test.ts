@@ -8,7 +8,7 @@ import {
 import {
   describeVoiceApproval,
   isDestructiveVoiceCommand,
-} from "../../../shared/types/ctoVoice";
+} from "../../../shared/types/ctoVoiceDestructive";
 
 const NOW = 1_000_000;
 

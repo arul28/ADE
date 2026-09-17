@@ -2864,7 +2864,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     ...(item.nextRunAt ? { nextRunAt: item.nextRunAt } : {}),
     ...(item.lastRunAt ? { lastRunAt: item.lastRunAt } : {}),
     ...(item.late ? { late: true } : {}),
-    ...(item.prompt.trim()
+    // Guarded rather than trusted: these rows come back over the runtime RPC,
+    // where the declared type is a promise about the sender and not about the
+    // bytes. A row from an older brain with no `prompt` threw here and took the
+    // whole listing down.
+    ...(typeof item.prompt === "string" && item.prompt.trim()
       ? { prompt: truncatePreview(item.prompt, SCHEDULED_WORK_PROMPT_PREVIEW_CHARS) }
       : {}),
   });

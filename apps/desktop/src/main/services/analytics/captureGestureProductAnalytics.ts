@@ -5,7 +5,7 @@ import type { ProductAnalyticsService } from "./productAnalyticsService";
  * gesture works for an installation, and a user who fires it four times in a
  * row while something is broken is one fact, not four.
  */
-export const CAPTURE_GESTURE_ANALYTICS_DEDUPE_MS = 60_000;
+const CAPTURE_GESTURE_ANALYTICS_DEDUPE_MS = 60_000;
 
 export type CaptureGestureOutcome = "delivered" | "failed" | "too_large";
 

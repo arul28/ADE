@@ -30,6 +30,17 @@ import { HighlightedCode } from "./CodeHighlighter";
 
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 760;
+/**
+ * How long a freeze waits for a scene to come fully on screen before giving up
+ * and leaving the live frame up uncaptured.
+ *
+ * There has to be a deadline, because "fully visible" is a state some scenes
+ * can never reach: `MAX_HEIGHT` is 760, and in a short window a tall scene is
+ * taller than the viewport no matter where it is scrolled. Without this the
+ * status stays `running` forever and the iframe keeps executing in scrollback,
+ * which is the exact thing freezing exists to stop.
+ */
+const SCENE_FREEZE_DEADLINE_MS = 4_000;
 
 function readSceneTheme(): SceneTheme {
   if (typeof window === "undefined") return SCENE_FALLBACK_THEME;
@@ -119,8 +130,15 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<string | null>(null);
   const [proofState, setProofState] = useState<"idle" | "saving" | "saved">("idle");
-  /** Bumped once when a freeze finds the scene only partly on screen. */
+  /**
+   * Bumped whenever something worth re-checking happened while a freeze was
+   * waiting for the scene to come fully on screen. Only ever counts up: a
+   * frozen scene never returns to `running` (the `ready` handler promotes from
+   * `loading` only), so there is no transition that should reset it.
+   */
   const [freezeAttempt, setFreezeAttempt] = useState(0);
+  /** When the wait above runs out. Set on the first partial-visibility check. */
+  const freezeDeadlineRef = useRef<number | null>(null);
 
   const theme = useMemo(readSceneTheme, []);
   // A fence that is still arriving draws nothing: one placeholder now beats a
@@ -198,6 +216,10 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
     return () => window.clearTimeout(timer);
   }, [status, src]);
 
+  // A new document is a new scene and gets its own wait; an expired deadline
+  // from the previous one would freeze it uncaptured on sight.
+  useEffect(() => { freezeDeadlineRef.current = null; }, [src]);
+
   // Freeze: capture the frame's rect, then swap the image in and drop the frame
   // so nothing keeps executing in scrollback.
   useEffect(() => {
@@ -222,28 +244,54 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
     // files. A partial picture of a view is worse than no picture of it, so
     // this waits instead.
     if (!isSceneRectFullyVisible(rect)) {
-      if (freezeAttempt > 0) {
-        // One retry was enough of a wait. Fall back to the no-capture-route
-        // behaviour: the live frame stays up rather than being replaced by a
-        // cropped still of itself.
+      const now = Date.now();
+      if (freezeDeadlineRef.current == null) freezeDeadlineRef.current = now + SCENE_FREEZE_DEADLINE_MS;
+      if (now >= freezeDeadlineRef.current) {
+        // Waited long enough — and some scenes can never come fully on screen
+        // at all. Fall back to the no-capture-route behaviour: the live frame
+        // stays up rather than being replaced by a cropped still of itself.
         setStatus("frozen");
         return;
       }
-      const retry = () => { if (!cancelled) setFreezeAttempt((attempt) => attempt + 1); };
+      // Re-check, never freeze blind. The earlier version armed a one-shot
+      // listener and then froze on the NEXT scroll whatever the rect said, so
+      // the transcript's own auto-scroll — which fires constantly and usually
+      // leaves the scene no more visible than before — left a live iframe
+      // mounted in scrollback. Nothing here changes state unless the scene is
+      // genuinely visible or the deadline has passed.
+      const retry = () => {
+        if (cancelled) return;
+        const current = shellRef.current?.getBoundingClientRect();
+        const visible = current ? isSceneRectFullyVisible(current) : false;
+        if (visible || Date.now() >= (freezeDeadlineRef.current ?? 0)) {
+          setFreezeAttempt((attempt) => attempt + 1);
+        }
+      };
       // Scroll is captured because the scene sits inside the transcript's own
       // scroller, not the window's; the observer covers the cases scrolling
       // does not, such as a pane resize.
-      window.addEventListener("scroll", retry, { capture: true, passive: true, once: true });
+      window.addEventListener("scroll", retry, { capture: true, passive: true });
       let observer: IntersectionObserver | null = null;
       if (shell && typeof IntersectionObserver === "function") {
+        // `isIntersecting` plus the rect re-check inside `retry`, not
+        // `intersectionRatio >= 1`: a fractional layout reports 0.999… for a
+        // rect that is entirely on screen, and that ratio never fires.
         observer = new IntersectionObserver(
-          (entries) => { if (entries.some((entry) => entry.intersectionRatio >= 1)) retry(); },
-          { threshold: 1 },
+          (entries) => { if (entries.some((entry) => entry.isIntersecting)) retry(); },
+          { threshold: [0, 1] },
         );
         observer.observe(shell);
       }
+      // And the deadline itself has to be able to fire on its own: a scene in a
+      // window too short to ever hold it produces no scroll and no new
+      // intersection, so nothing else would ever wake this up.
+      const deadlineTimer = window.setTimeout(
+        retry,
+        Math.max(0, freezeDeadlineRef.current - now),
+      );
       return () => {
         cancelled = true;
+        window.clearTimeout(deadlineTimer);
         window.removeEventListener("scroll", retry, true);
         observer?.disconnect();
       };

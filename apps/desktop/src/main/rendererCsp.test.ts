@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
+import {
+  buildRendererCspPolicy,
+  isRendererFrameNavigationAllowed,
+  shouldApplyRendererCsp,
+} from "./rendererCsp";
 
 describe("buildRendererCspPolicy", () => {
   it("allows packaged renderer fetches to local simulator stream URLs without blanket HTTPS", () => {
@@ -169,6 +173,72 @@ describe("shouldApplyRendererCsp", () => {
         { url: "file:///Applications/ADE/index.html" },
         { isDevMode: false },
       ),
+    ).toBe(false);
+  });
+});
+
+/**
+ * `will-frame-navigate` is the second door on the same allowlist the CSP is
+ * the first door on, so the thing worth pinning is that it is not NARROWER:
+ * the handler first shipped without `file:`/`app:`, which in a packaged build
+ * is every spec preview (`SpecPreviewCard`, `PlanMarkdown`) going blank.
+ */
+describe("isRendererFrameNavigationAllowed", () => {
+  const options = {
+    rendererUrl: "file:///Applications/ADE.app/renderer/index.html",
+    devServerUrl: "http://localhost:5173",
+  };
+
+  it("allows every source the packaged frame-src names", () => {
+    const packagedFrameSrc = buildRendererCspPolicy(false)
+      .split("; ")
+      .find((directive) => directive.startsWith("frame-src "));
+    // Guards the list below against the CSP quietly gaining a source.
+    expect(packagedFrameSrc).toBe(
+      "frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* ade-scene: blob: about:",
+    );
+
+    for (const url of [
+      options.rendererUrl,
+      "file:///Applications/ADE.app/Contents/Resources/spec-preview.html",
+      "app://ade/spec.html",
+      "http://localhost:7654/stream",
+      "http://127.0.0.1:7654/stream",
+      "ade-scene:scene-1",
+      "blob:file:///abcd",
+      "about:blank",
+      "about:srcdoc",
+    ]) {
+      expect([url, isRendererFrameNavigationAllowed(url, options)]).toEqual([url, true]);
+    }
+  });
+
+  it("still refuses the exfiltration navigation the door exists for", () => {
+    for (const url of [
+      "https://elsewhere.example/?secret=1",
+      "http://elsewhere.example/?secret=1",
+      "http://localhost.evil.example/",
+      "data:text/html,<script>fetch(1)</script>",
+      "",
+    ]) {
+      expect([url, isRendererFrameNavigationAllowed(url, options)]).toEqual([url, false]);
+    }
+  });
+
+  it("allows the dev server only while one is configured", () => {
+    expect(isRendererFrameNavigationAllowed("http://localhost:5173/work", options)).toBe(true);
+    expect(
+      isRendererFrameNavigationAllowed("http://localhost:5173/work", {
+        rendererUrl: options.rendererUrl,
+        devServerUrl: null,
+      }),
+      // Still allowed, but as a local http source rather than as the dev server.
+    ).toBe(true);
+    expect(
+      isRendererFrameNavigationAllowed("https://vite.example/work", {
+        rendererUrl: options.rendererUrl,
+        devServerUrl: null,
+      }),
     ).toBe(false);
   });
 });

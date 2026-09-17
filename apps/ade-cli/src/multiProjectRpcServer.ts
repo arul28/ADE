@@ -1,11 +1,11 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
+import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
 import {
-  isRemoteRuntimeEventCategory,
-  isVoiceRuntimeEvent,
+  hidesVoiceEvent,
   refusesVoiceCategory,
   voiceCategoryRefusalMessage,
   withoutVoiceEvents,
-} from "../../desktop/src/shared/types/remoteRuntime";
+} from "../../desktop/src/shared/runtimeEventPolicy";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -1216,7 +1216,7 @@ export function createMultiProjectRpcRequestHandler(
     const eventEpoch = scope.runtime.eventBuffer.epoch();
     const shouldForward = (event: BufferedEvent): boolean => {
       if (category && event.category !== category) return false;
-      if (!callerIsCto && isVoiceRuntimeEvent(event)) return false;
+      if (hidesVoiceEvent(event, callerIsCto)) return false;
       // Skipped, never queued: the frame after this one is already a better
       // picture of the same screen, so a dropped frame costs nothing and a
       // buffered one costs the transport.
@@ -1308,7 +1308,7 @@ export function createMultiProjectRpcRequestHandler(
     const subscribed = await personalChatScope.subscribeEvents(
       args,
       (event, eventEpoch) => {
-        if (!callerIsCto && isVoiceRuntimeEvent(event)) return;
+        if (hidesVoiceEvent(event, callerIsCto)) return;
         emitRuntimeEvent(subscriptionId, null, event, eventEpoch);
       },
     );
@@ -1968,10 +1968,9 @@ export function createMultiProjectRpcRequestHandler(
       const category = params.category == null ? null : readEventCategory(params.category);
       const callerIsCto = assertVoiceCategoryAllowed(category, "personalChats.streamEvents");
       const result = await personalChatScope.streamEvents(params);
-      if (callerIsCto) return result;
       return {
         ...result,
-        events: withoutVoiceEvents(result.events),
+        events: withoutVoiceEvents(result.events, callerIsCto),
       };
     }
 

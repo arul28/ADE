@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { fitCaptureShotToAttachmentLimit, type CaptureShotImage } from "./captureShotFit";
-import { pickCaptureGestureWindow } from "./captureGestureTarget";
+import {
+  fitCaptureShotToAttachmentLimit,
+  MAX_CAPTURE_SHOT_HALVINGS,
+  type CaptureShotImage,
+} from "./captureShotFit";
 import type { CaptureGestureShot } from "../../../shared/types/captureGesture";
 
 /**
@@ -50,7 +53,7 @@ describe("fitCaptureShotToAttachmentLimit", () => {
    * to stage made the gesture silently do nothing, so the loop has to end in a
    * `too_large` the user can be told about rather than in a bad attachment.
    */
-  it("gives up after four halvings rather than shrinking forever", () => {
+  it("gives up after MAX_CAPTURE_SHOT_HALVINGS halvings rather than shrinking forever", () => {
     let resizes = 0;
     const image = (width: number, height: number): CaptureShotImage => ({
       getSize: () => ({ width, height }),
@@ -60,50 +63,16 @@ describe("fitCaptureShotToAttachmentLimit", () => {
       },
       toPNG: () => Buffer.alloc(width * height, 1),
     });
-    // 4096×4096 against 1000 bytes never fits inside four halvings.
+    // 4096×4096 against 1000 bytes never fits inside the allowed halvings.
     expect(
       fitCaptureShotToAttachmentLimit(shotOf(4096 * 4096), { fromBuffer: () => image(4096, 4096) }, 1_000),
     ).toBeNull();
-    expect(resizes).toBe(4);
+    expect(resizes).toBe(MAX_CAPTURE_SHOT_HALVINGS);
   });
 
   it("stops rather than dividing a one-pixel image", () => {
     expect(
       fitCaptureShotToAttachmentLimit(shotOf(50), { fromBuffer: () => fakeImage(1, 1, 50) }, 10),
-    ).toBeNull();
-  });
-});
-
-describe("pickCaptureGestureWindow", () => {
-  const windows = [{ id: 1 }, { id: 2 }, { id: 3 }];
-
-  it("prefers the focused window", () => {
-    expect(
-      pickCaptureGestureWindow({ liveWindows: windows, focused: windows[2], lastFocusedId: 1 }),
-    ).toBe(windows[2]);
-  });
-
-  /**
-   * The case that matters: the gesture fires over ANOTHER app's window, so
-   * nothing of ADE's is focused. Falling straight to the first window would
-   * pick creation order — an arbitrary project.
-   */
-  it("falls back to the window the user was last in, not the oldest one", () => {
-    expect(
-      pickCaptureGestureWindow({ liveWindows: windows, focused: null, lastFocusedId: 3 }),
-    ).toBe(windows[2]);
-  });
-
-  it("falls back to any live window when the remembered one is gone", () => {
-    expect(
-      pickCaptureGestureWindow({ liveWindows: windows, focused: null, lastFocusedId: 99 }),
-    ).toBe(windows[0]);
-  });
-
-  /** Never a new window: with nothing live there is nowhere to deliver. */
-  it("answers null rather than conjuring a window", () => {
-    expect(
-      pickCaptureGestureWindow({ liveWindows: [], focused: null, lastFocusedId: 3 }),
     ).toBeNull();
   });
 });

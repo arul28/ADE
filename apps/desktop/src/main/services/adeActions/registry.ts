@@ -2,8 +2,6 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { isPathInside } from "../shared/pathCompare";
 import { ingestSceneSnapshot } from "../scenes/sceneSnapshotIngest";
 import {
   addOpenCodeOAuthStatusListener,

@@ -1305,12 +1305,6 @@ function claudeStructuredSubagentResult(value: unknown): ClaudeStructuredSubagen
   };
 }
 
-/** One hand-off line, clipped so a distillation cannot grow without bound. */
-function clipHandoffLine(value: string, maxChars = 200): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars - 1)}…`;
-}
-
 function isClaudeContextOverflowResult(result: Record<string, unknown>, errors: string[]): boolean {
   if (result.terminal_reason === "prompt_too_long") return true;
   return /prompt.{0,20}too long|context.{0,30}(?:overflow|window|length)|maximum context|too many tokens/i.test(errors.join(" "));
@@ -26177,6 +26171,11 @@ export function createAgentChatService(args: {
           managed.runtimeInvalidated = true;
           clearLaneDirectiveKey(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
+          // The provider thread is gone and the next send opens a new one, so
+          // the once-per-thread sections have to be said again. Without this
+          // the refresh below re-reads a doctrine block that is still marked
+          // delivered, and the replacement thread was never told any of it.
+          restageSectionsForNewProviderThread(managed);
           refreshReconstructionContext(managed);
           emitContinuityRecoveryNotice(managed, recovery, turnId);
         }
@@ -40973,7 +40972,16 @@ export function createAgentChatService(args: {
     } | null | undefined,
   ): void => {
     const sdkSessionId = ready?.sessionId?.trim();
+    const previousSdkSessionId = runtime.sdkSessionId;
     if (sdkSessionId) runtime.sdkSessionId = sdkSessionId;
+    // Droid can hand back a DIFFERENT session id on a re-ready of a runtime
+    // that otherwise survived — same handle, new conversation on the other
+    // end. Nothing else notices, because nothing else is watching the id, so
+    // the once-per-thread sections have to be re-armed right here.
+    if (sdkSessionId && previousSdkSessionId && sdkSessionId !== previousSdkSessionId) {
+      restageSectionsForNewProviderThread(managed);
+      refreshReconstructionContext(managed);
+    }
     const availableModelIds = ready?.availableModels
       ?.map((entry) => normalizeDroidReportedModelId(entry?.id ?? entry?.modelId ?? null))
       .filter((entry): entry is string => Boolean(entry)) ?? [];
@@ -49508,7 +49516,6 @@ export function createAgentChatService(args: {
       .map((entry) => entry.text),
     listScheduledWorkLines: (managed) => (scheduledWorkScheduler?.list(managed.session.id) ?? [])
       .map((schedule) => schedule.prompt || schedule.kind),
-    clipLine: clipHandoffLine,
     runSessionTurn: (args) => runSessionTurn(args),
     flushContinuity: (managed, reason) => {
       flushIdentityContinuityDeterministic(managed, reason);

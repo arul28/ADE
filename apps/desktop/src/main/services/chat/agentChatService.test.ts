@@ -10940,6 +10940,27 @@ describe("createAgentChatService", () => {
      * thread from 46k to 237k input tokens in 18 turns and tripped Codex
      * auto-compaction mid-voice-call.
      */
+    /**
+     * One Claude SDK double for every test in this block, typed at the seam
+     * rather than cast to `any` at each site: the handle shape is the contract
+     * these tests depend on, and three hand-rolled copies of it drift.
+     */
+    function installClaudeSdkDouble(args: {
+      sessionId: string;
+      send: ReturnType<typeof vi.fn>;
+      stream: ReturnType<typeof vi.fn>;
+    }): void {
+      const sdkHandle = {
+        send: args.send,
+        stream: args.stream,
+        close: vi.fn(),
+        sessionId: args.sessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ReturnType<typeof claudeSdkCreateSessionCompat>;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+    }
+
     function mockClaudeCtoSdk() {
       const send = vi.fn().mockResolvedValue(undefined);
       let streamCall = 0;
@@ -10957,15 +10978,7 @@ describe("createAgentChatService", () => {
         };
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
-      const sdkHandle = {
-        send,
-        stream,
-        close: vi.fn(),
-        sessionId: "sdk-cto-prefix",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any;
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
-      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+      installClaudeSdkDouble({ sessionId: "sdk-cto-prefix", send, stream });
       return send;
     }
 
@@ -11206,15 +11219,7 @@ describe("createAgentChatService", () => {
         };
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
-      const sdkHandle = {
-        send,
-        stream,
-        close: vi.fn(),
-        sessionId: "sdk-cto-reset-1",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any;
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
-      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+      installClaudeSdkDouble({ sessionId: "sdk-cto-reset-1", send, stream });
 
       const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
       const { service } = createService({ ctoStateService, ctoMemoryService });
@@ -11242,6 +11247,116 @@ describe("createAgentChatService", () => {
       const afterReset = await turn("Who are you?");
       expect(afterReset).toContain("CTO Runtime Identity");
       expect(afterReset).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The other way a Claude thread ends under us: not a reset the provider
+     * announces, but a resume onto a thread that is simply gone. The recovery
+     * clears the SDK session id and the next send opens a brand new
+     * conversation — which has been told none of the doctrine.
+     */
+    it("re-stages the CTO's immutable prefix after Claude's thread goes missing", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let failWithMissingThread = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-cto-missing", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (failWithMissingThread) {
+          failWithMissingThread = false;
+          throw new Error("No conversation found with session ID sdk-cto-missing");
+        }
+        yield {
+          type: "assistant",
+          session_id: "sdk-cto-missing",
+          message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      installClaudeSdkDouble({ sessionId: "sdk-cto-missing", send, stream });
+
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
+      expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
+
+      // The turn the thread goes missing under. It fails, and the recovery runs.
+      failWithMissingThread = true;
+      try {
+        await service.sendMessage({ sessionId: session.id, text: "Carry on." });
+      } catch {
+        // The failure is the point; the recovery is what is under test.
+      }
+      await vi.waitFor(() => { expect(failWithMissingThread).toBe(false); });
+
+      // The chat is now parked on a recovery card; reconnecting is what the
+      // user presses. Whatever thread that lands on has heard nothing.
+      await service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
+
+      const afterRecovery = await turn("Who are you?");
+      expect(afterRecovery).toContain("CTO Runtime Identity");
+      expect(afterRecovery).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * Droid can hand back a DIFFERENT session id on a re-ready of a runtime
+     * that otherwise survived — same handle, new conversation on the other end.
+     * Nothing else watches the id, so nothing else would notice.
+     */
+    it("re-stages the CTO's immutable prefix when Droid re-readies onto a new session id", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        const before = mockState.droidPromptCalls.length;
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => {
+          expect(mockState.droidPromptCalls.length).toBeGreaterThan(before);
+        });
+        return String(mockState.droidPromptCalls.at(-1)?.promptText ?? "");
+      };
+
+      expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
+      expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
+
+      // Same pooled connection, new conversation id.
+      const pooled = mockState.droidPooled;
+      pooled.bridge.onReady?.({
+        sessionId: "droid-sdk-session-re-readied",
+        currentModelId: pooled.currentModelId,
+        availableModels: [],
+      });
+
+      expect(await turn("Who are you?")).toContain("CTO Runtime Identity");
 
       service.forceDisposeAll();
       db.close();

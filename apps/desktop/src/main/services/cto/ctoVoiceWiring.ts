@@ -8,6 +8,8 @@ import {
   CTO_VOICE_INITIAL_STATE,
   isCtoVoiceMicrophoneMessage,
   isVoiceCallLive,
+  type CtoVoiceAction,
+  type CtoVoiceActionResult,
   type CtoVoiceState,
 } from "../../../shared/types/ctoVoice";
 // Type-only, so it is erased at compile time and no import cycle exists at
@@ -15,8 +17,6 @@ import {
 import type { AppContext } from "../ipc/registerIpc";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import type {
-  CtoVoiceAction,
-  CtoVoiceActionResult,
   CtoVoicePullAudioResult,
   CtoVoiceRuntimeEvent,
 } from "./ctoVoiceRuntimeService";

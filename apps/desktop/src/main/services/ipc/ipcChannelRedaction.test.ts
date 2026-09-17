@@ -28,7 +28,8 @@ describe("ipc channel redaction", () => {
   // The machine-scoped OpenAI key travels as a bare `key` field. It was in
   // neither gate: the channel was absent from the map, and the generic
   // field-name guard matched `apikey` but not `key` — so a verbose IPC trace
-  // wrote the user's OpenAI key into the log file verbatim.
+  // wrote the user's OpenAI key into the log file verbatim. These two map
+  // entries are now the only thing redacting it, so this test is the gate.
   it("redacts the raw provider credential on both key-store channels", () => {
     for (const channel of [IPC.aiStoreApiKey, IPC.aiStoreMachineApiKey]) {
       const [redacted] = redactIpcArgsForChannel(channel, [
@@ -40,11 +41,22 @@ describe("ipc channel redaction", () => {
     }
   });
 
-  it("treats a bare `key` field as a secret on any channel", () => {
-    expect(shouldRedactIpcKey("key")).toBe(true);
-    expect(shouldRedactIpcKey("Key")).toBe(true);
+  /**
+   * The generic guard covers families of names and a few exact ones. A bare
+   * `key` is NOT one of them: it is the ordinary word for a lookup key
+   * (`projectSetRecentPinned { key, pinned }`), and blanking it made traces
+   * that exist to explain those calls say nothing. The credential case is
+   * covered above, by the two channels that actually carry one.
+   */
+  it("redacts secret-shaped field names without blanking a bare lookup key", () => {
     expect(shouldRedactIpcKey("apiKey")).toBe(true);
+    expect(shouldRedactIpcKey("API_KEY")).toBe(true);
     expect(shouldRedactIpcKey("accessToken")).toBe(true);
+    expect(shouldRedactIpcKey("refresh_token")).toBe(true);
+    expect(shouldRedactIpcKey("clientSecret")).toBe(true);
+    expect(shouldRedactIpcKey("pairingPin")).toBe(true);
+    expect(shouldRedactIpcKey("key")).toBe(false);
+    expect(shouldRedactIpcKey("Key")).toBe(false);
     expect(shouldRedactIpcKey("keyboardShortcut")).toBe(false);
     expect(shouldRedactIpcKey(undefined)).toBe(false);
   });

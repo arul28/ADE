@@ -25,8 +25,6 @@ export type CtoVoiceTurnTiming = {
   toolCalls: number;
 };
 
-export type CtoVoiceTurnTimingRecorder = ReturnType<typeof createTurnTimingRecorder>;
-
 export function createTurnTimingRecorder(deps: {
   now: () => number;
   /** One finished record, as the fields the log line carries. */
@@ -38,10 +36,9 @@ export function createTurnTimingRecorder(deps: {
    * One slot, because one transcript is accepted at a time. A turn TAKES this
    * record when the model's request is dispatched and then owns it for the rest
    * of its life — which is what stops the next transcript closing a record that
-   * belongs to work still running. The live call of 2026-09-16 wrote
-   * `outcome: "abandoned"` for a request the CTO was still working on
-   * twenty-five seconds later, purely because the user said something else in
-   * the meantime.
+   * belongs to work still running. Without it a request the CTO was still
+   * working on twenty-five seconds later was written down as `abandoned`,
+   * purely because the user said something else in the meantime.
    */
   let pending: CtoVoiceTurnTiming | null = null;
 

@@ -1,5 +1,5 @@
 import { extractSceneFence, SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
-import { CTO_VOICE_CONTEXT_MAX_CHARS } from "../../../shared/types/ctoVoice";
+import { CTO_VOICE_CONTEXT_MAX_CHARS } from "../../../shared/types/ctoVoicePrompt";
 
 /**
  * What a voice call knows, and how a turn's answer is split for the ear.
@@ -72,9 +72,9 @@ export function voiceRequestAsksForVisual(request: string): boolean {
 /**
  * What a scene IS, said to a CTO that has never read the skill.
  *
- * "End your sentences with a ```scene fence" was the whole instruction, and on
- * the call of 2026-09-16 the CTO obeyed it exactly: it drew a box out of
- * box-drawing characters and put the plain text inside the fence. The frame
+ * "End your sentences with a ```scene fence" was the whole instruction, and a
+ * CTO obeyed it exactly: it drew a box out of box-drawing characters and put
+ * the plain text inside the fence. The frame
  * renders HTML, so the user got a picture of a monospace rectangle rendered as
  * a paragraph. Nothing had told it the fence was markup.
  *
@@ -136,26 +136,30 @@ export function describeVoiceActiveWork(snapshot: {
     if (total > shown) lines.push(`  …and ${total - shown} more ${noun}`);
   };
   if (snapshot.approvalsTotal > 0) {
+    const rows = take(snapshot.approvals);
     lines.push(`- Waiting for you (${snapshot.approvalsTotal}):`);
-    for (const row of take(snapshot.approvals)) lines.push(`  · ${row.title}`);
-    more(take(snapshot.approvals).length, snapshot.approvalsTotal, "waiting");
+    for (const row of rows) lines.push(`  · ${row.title}`);
+    more(rows.length, snapshot.approvalsTotal, "waiting");
   }
   if (snapshot.chatsTotal > 0) {
+    const rows = take(snapshot.chats);
     lines.push(`- Work in flight (${snapshot.chatsTotal}):`);
-    for (const row of take(snapshot.chats)) lines.push(`  · ${row.title} — ${row.status}`);
-    more(take(snapshot.chats).length, snapshot.chatsTotal, "running");
+    for (const row of rows) lines.push(`  · ${row.title} — ${row.status}`);
+    more(rows.length, snapshot.chatsTotal, "running");
   }
   if (snapshot.pullRequestsTotal > 0) {
+    const rows = take(snapshot.pullRequests);
     lines.push(`- Open PRs (${snapshot.pullRequestsTotal}):`);
-    for (const row of take(snapshot.pullRequests)) {
+    for (const row of rows) {
       lines.push(`  · #${row.number} ${row.title} — checks ${row.checks}`);
     }
-    more(take(snapshot.pullRequests).length, snapshot.pullRequestsTotal, "PRs");
+    more(rows.length, snapshot.pullRequestsTotal, "PRs");
   }
   if (snapshot.scheduledWorkTotal > 0) {
+    const rows = take(snapshot.scheduledWork);
     lines.push(`- Scheduled (${snapshot.scheduledWorkTotal}):`);
-    for (const row of take(snapshot.scheduledWork)) lines.push(`  · ${row.title} — ${row.status}`);
-    more(take(snapshot.scheduledWork).length, snapshot.scheduledWorkTotal, "scheduled");
+    for (const row of rows) lines.push(`  · ${row.title} — ${row.status}`);
+    more(rows.length, snapshot.scheduledWorkTotal, "scheduled");
   }
   // Said rather than left blank: "nothing is running" is an answer, and an
   // absent section reads to the model as an unknown it has to go and ask about.
@@ -201,7 +205,7 @@ export function readVoiceTodayLog(
  * `ask_cto`, so an unbounded one is paid for again on every refresh — and a
  * durable memory file grows without limit.
  */
-export type CtoVoiceContextInput = {
+type CtoVoiceContextInput = {
   ctoName: string;
   persona: string;
   projectName: string;

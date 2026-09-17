@@ -18,7 +18,7 @@ import {
  */
 
 /** One microphone frame, as the renderer measured it. */
-export type CtoVoiceMicFrame = {
+type CtoVoiceMicFrame = {
   /** When it arrived, on the caller's clock. */
   at: number;
   /** 0..1 peak of that frame. */
@@ -37,8 +37,6 @@ export type CtoVoiceMicReading = {
   framesWhileIdle: number;
 };
 
-export type CtoVoiceMicMeter = ReturnType<typeof createMicMeter>;
-
 /**
  * The recent past of the microphone, frame by frame.
  *
@@ -46,8 +44,8 @@ export type CtoVoiceMicMeter = ReturnType<typeof createMicMeter>;
  * failure: totals were only ever cleared by a judgement, so the first
  * transcript of a call was judged against every frame since the microphone
  * opened. Fifteen seconds of a quiet room contains enough scattered noisy
- * frames to add up to 240 ms, and a phantom "好" walked through a gate that was
- * running. Frames older than {@link CTO_VOICE_MIC_WINDOW_MS} are dropped, so
+ * frames to add up to 240 ms, which is enough for a phantom transcript to walk
+ * through a gate that is running. Frames older than {@link CTO_VOICE_MIC_WINDOW_MS} are dropped, so
  * the evidence is always about the recent past — bounded by the window rather
  * than by the length of the call.
  *

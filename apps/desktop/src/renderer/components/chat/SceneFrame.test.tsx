@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MarkdownBlock } from "./chatMarkdownBlock";
@@ -120,6 +120,7 @@ describe("SceneFrame", () => {
     }
 
     afterEach(() => {
+      vi.useRealTimers();
       vi.restoreAllMocks();
       delete (window as unknown as { ade?: unknown }).ade;
     });
@@ -170,6 +171,53 @@ describe("SceneFrame", () => {
       );
       expect(snapshot).not.toHaveBeenCalled();
       expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
+    });
+
+    /**
+     * The retry has to RE-CHECK, not just fire. The transcript auto-scrolls on
+     * its own, constantly, and usually leaves the scene no more visible than it
+     * was; a retry that froze on the next scroll whatever the rect said either
+     * captured a cropped sliver or gave up while the scene was still partly on
+     * screen and could still have come back.
+     */
+    it("keeps waiting when a scroll leaves the scene still partly off screen", async () => {
+      stubShellRect({ top: -120, y: -120, bottom: 80 });
+      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
+      const rerender = await renderRunningScene(snapshot);
+
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
+
+      // Still partial — a different partial, but partial.
+      stubShellRect({ top: -40, y: -40, bottom: 160 });
+      window.dispatchEvent(new Event("scroll"));
+      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
+      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running");
+    });
+
+    /**
+     * ...and waiting cannot be forever. A scene taller than the window can
+     * never be fully visible, so without a deadline it stays `running` and the
+     * iframe keeps executing in scrollback — the exact thing freezing is for.
+     */
+    it("gives up after the deadline on a scene that can never be fully visible", async () => {
+      stubShellRect({ top: -120, y: -120, bottom: 80 });
+      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
+      const rerender = await renderRunningScene(snapshot);
+
+      vi.useFakeTimers();
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      // No scroll, no new intersection: the deadline timer is the only thing
+      // that can wake this up.
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_100); });
+
+      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("frozen");
+      // Frozen WITHOUT a capture: a cropped still is worse than the live view.
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
+      expect(screen.getByTestId("chat-scene-frame")).toBeTruthy();
     });
 
     /** ...and it tries again when the scroll that hid it scrolls it back. */

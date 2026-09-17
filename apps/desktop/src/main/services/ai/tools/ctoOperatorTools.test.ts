@@ -1265,6 +1265,29 @@ describe("createCtoOperatorTools", () => {
       ]);
     });
 
+    // The row type promises a `prompt`, but these rows arrive over the runtime
+    // RPC and the type is a promise about the sender, not about the bytes. A
+    // row from an older brain without one threw and took the whole listing down.
+    it("survives a row that arrived without a prompt at all", async () => {
+      const result = await listTool([{
+        id: "sched-old",
+        sessionId: "chat-old",
+        kind: "wakeup" as const,
+        status: "scheduled" as const,
+        title: "From an older brain",
+        createdAt: "2026-09-01T09:00:00.000Z",
+        durable: true,
+        cancellable: true,
+      }]).execute({ includeTerminal: true } as never) as {
+        success: boolean;
+        result: Array<Record<string, unknown>>;
+      };
+
+      expect(result.success).toBe(true);
+      expect(result.result[0]).not.toHaveProperty("prompt");
+      expect(result.result[0]!.id).toBe("sched-old");
+    });
+
     it("caps the list at 50 items and says so", async () => {
       const result = await listTool(
         Array.from({ length: 200 }, (_unused, index) => makeItem(index)),

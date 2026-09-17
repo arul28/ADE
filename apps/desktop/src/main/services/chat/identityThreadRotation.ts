@@ -60,8 +60,6 @@ export type IdentityThreadRotationDeps<TManaged> = {
   listUserMessages: (managed: TManaged) => string[];
   /** One line per still-armed scheduled job on this thread. */
   listScheduledWorkLines: (managed: TManaged) => string[];
-  /** Clip one hand-off line so a distillation cannot grow without bound. */
-  clipLine: (value: string, maxChars?: number) => string;
   runSessionTurn: (args: {
     sessionId: string;
     text: string;
@@ -86,6 +84,18 @@ export type IdentityThreadRotationDeps<TManaged> = {
     reuseExisting: boolean;
   }) => Promise<AgentChatSession>;
 };
+
+/**
+ * One hand-off line, clipped so a distillation cannot grow without bound.
+ *
+ * Pure, three lines, and used by nothing outside this module — it was an
+ * injected dep, which made the deps bag describe a formatting detail instead
+ * of the world this module cannot see for itself.
+ */
+function clipHandoffLine(value: string, maxChars = 200): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars - 1)}…`;
+}
 
 export function createIdentityThreadRotation<TManaged>(
   deps: IdentityThreadRotationDeps<TManaged>,
@@ -159,12 +169,12 @@ export function createIdentityThreadRotation<TManaged>(
     const summary = described.summaryOrPreview.trim();
     const recent = deps.listUserMessages(managed)
       .slice(-8)
-      .map((text) => `- ${deps.clipLine(text)}`);
+      .map((text) => `- ${clipHandoffLine(text)}`);
     const scheduled = deps.listScheduledWorkLines(managed)
       .slice(0, 8)
-      .map((line) => `- ${deps.clipLine(line)}`);
+      .map((line) => `- ${clipHandoffLine(line)}`);
     const sections: string[] = [];
-    if (summary.length) sections.push(`Where it left off: ${deps.clipLine(summary, 400)}`);
+    if (summary.length) sections.push(`Where it left off: ${clipHandoffLine(summary, 400)}`);
     if (recent.length) sections.push(["What was asked, most recent last:", ...recent].join("\n"));
     if (scheduled.length) sections.push(["Work still scheduled on this thread:", ...scheduled].join("\n"));
 
