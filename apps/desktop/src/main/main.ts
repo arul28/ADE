@@ -167,9 +167,9 @@ import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
 import {
   AttentionNotchHelper,
-  resolveAttentionNotchExecutablePath,
   type AttentionNotchOutput,
 } from "./services/attention/attentionNotchHelper";
+import { resolveAttentionNotchExecutablePath } from "./services/native/nativeHelperPaths";
 import {
   attentionNotchAppNavigation,
   attentionItemNavigationRequest,
@@ -3951,10 +3951,7 @@ app.whenReady().then(async () => {
       getProjectSecretService: () => ({ list: () => projectSecretService.list() }),
       getIosSimulatorService: () => iosSimulatorService,
       // Lazy like the rest: `macDesktopService` is constructed further down
-      // this same bootstrap, and both of these are only ever read per-turn.
-      getMacDesktopLaneState: (laneId: string | null) => ({
-        enabled: macDesktopService.hasDisplaySync(laneId),
-      }),
+      // this same bootstrap, and every call here is read per-turn.
       macDesktopTurnRecorder: {
         hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
         beginTurn: (args) => macDesktopService.beginTurn(args),
@@ -4550,6 +4547,13 @@ app.whenReady().then(async () => {
       readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
       writeSetting: (key: string, value: unknown) => db.setJson(key, value),
     });
+    // Runs on every platform: off macOS `destroyForLane` is a no-op, so the
+    // teardown step never has to know what host it is on. Without this wiring a
+    // deleted lane left its display, its parked windows and its encoder behind
+    // on the desktop host — the CLI brain has had it since the feature landed.
+    laneTeardownDeps.macDesktopService = {
+      destroyForLane: (laneId: string) => macDesktopService.destroyForLane(laneId),
+    };
     // A chat that ends drops its lease on every platform — the one Mac Desktop
     // call that is not macOS-only, because a lease must never outlive its chat.
     agentChatService.registerChatSessionEndedListener((sessionId) => {

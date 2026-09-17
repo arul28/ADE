@@ -115,7 +115,13 @@ final class RealInput {
             ) {
                 moved.post(tap: .cghidEventTap)
             }
-            Thread.sleep(forTimeInterval: Double(max(1, durationMs)) / 1000.0 / Double(steps))
+            // Pumped rather than slept: a 5-second drag on one lane must not
+            // hold the health ping and every other lane's request behind it.
+            // Every request in this driver is handled on this thread.
+            RunLoopPump.wait(
+                until: { false },
+                timeout: Double(max(1, durationMs)) / 1000.0 / Double(steps)
+            )
         }
         if let up = CGEvent(
             mouseEventSource: nil,

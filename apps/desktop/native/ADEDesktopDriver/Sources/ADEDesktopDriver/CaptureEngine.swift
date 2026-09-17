@@ -1,5 +1,6 @@
 /// Pixels: screenshots, the numbered element map, the H.264 live stream, and
-/// recordings.
+/// recordings. The loopback byte server and the VideoToolbox encoder it drives
+/// live next door in `StreamByteServer.swift` and `H264Encoder.swift`.
 ///
 /// Every capture is display-scoped or window-scoped, never screen-scoped. That
 /// is one of the three rules the whole feature's isolation rests on: a lane
@@ -27,275 +28,6 @@ import ADEDesktopDriverCore
 enum CaptureError: Error {
     case noSurface(String)
     case failed(String)
-}
-
-// ---------------------------------------------------------------------------
-// The loopback byte server
-// ---------------------------------------------------------------------------
-
-/// A plain TCP fan-out on 127.0.0.1.
-///
-/// Loopback-only and unauthenticated by design: the security boundary is the
-/// Node service's token-guarded HTTP endpoint in front of it, exactly as it is
-/// for `iosVideoStreamServer.ts`. Binding anything but loopback here would move
-/// that boundary onto the network, so the host is not configurable.
-final class StreamByteServer {
-    private var listener: NWListener?
-    private var connections: [NWConnection] = []
-    private let queue = DispatchQueue(label: "com.ade.desktop-driver.stream")
-    private let lock = NSLock()
-    private var configRecord: Data?
-
-    private(set) var port: UInt16 = 0
-
-    var clientCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return connections.count
-    }
-
-    func start() throws -> UInt16 {
-        let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
-        let listener = try NWListener(using: parameters)
-        listener.newConnectionHandler = { [weak self] connection in
-            self?.accept(connection)
-        }
-        let ready = DispatchSemaphore(value: 0)
-        listener.stateUpdateHandler = { state in
-            if case .ready = state { ready.signal() }
-            if case .failed = state { ready.signal() }
-        }
-        listener.start(queue: queue)
-        _ = ready.wait(timeout: .now() + 5)
-        guard let assigned = listener.port?.rawValue, assigned != 0 else {
-            listener.cancel()
-            throw CaptureError.failed("The stream server never got a loopback port.")
-        }
-        self.listener = listener
-        self.port = assigned
-        return assigned
-    }
-
-    func setConfig(codec: String) {
-        lock.lock()
-        configRecord = StreamRecord.configRecord(codec: codec)
-        lock.unlock()
-    }
-
-    private func accept(_ connection: NWConnection) {
-        connection.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .cancelled, .failed:
-                self?.drop(connection)
-            default:
-                break
-            }
-        }
-        connection.start(queue: queue)
-        lock.lock()
-        connections.append(connection)
-        let config = configRecord
-        lock.unlock()
-        // A reader that attaches mid-stream needs the codec string before it can
-        // configure its decoder; the next keyframe carries the parameter sets.
-        if let config {
-            connection.send(content: config, completion: .contentProcessed { _ in })
-        }
-    }
-
-    private func drop(_ connection: NWConnection) {
-        lock.lock()
-        connections.removeAll { $0 === connection }
-        lock.unlock()
-    }
-
-    func broadcast(_ data: Data) {
-        lock.lock()
-        let targets = connections
-        lock.unlock()
-        for connection in targets {
-            connection.send(content: data, completion: .contentProcessed { _ in })
-        }
-    }
-
-    func stop() {
-        lock.lock()
-        let targets = connections
-        connections.removeAll()
-        lock.unlock()
-        for connection in targets {
-            connection.cancel()
-        }
-        listener?.cancel()
-        listener = nil
-        port = 0
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The encoder
-// ---------------------------------------------------------------------------
-
-/// VideoToolbox H.264, emitting Annex-B access units.
-///
-/// SPS/PPS are re-emitted in front of every keyframe rather than only once. A
-/// viewer can attach at any moment, and a decoder that joined after the single
-/// copy of the parameter sets went past would sit on a black frame forever.
-final class H264Encoder {
-    private var session: VTCompressionSession?
-    private let width: Int
-    private let height: Int
-    private var codecString: String?
-    private let onAccessUnit: (Data, Bool, String?) -> Void
-
-    init(width: Int, height: Int, fps: Int, onAccessUnit: @escaping (Data, Bool, String?) -> Void) throws {
-        self.width = width
-        self.height = height
-        self.onAccessUnit = onAccessUnit
-
-        var session: VTCompressionSession?
-        let status = VTCompressionSessionCreate(
-            allocator: kCFAllocatorDefault,
-            width: Int32(width),
-            height: Int32(height),
-            codecType: kCMVideoCodecType_H264,
-            encoderSpecification: nil,
-            imageBufferAttributes: nil,
-            compressedDataAllocator: nil,
-            outputCallback: nil,
-            refcon: nil,
-            compressionSessionOut: &session
-        )
-        guard status == noErr, let session else {
-            throw CaptureError.failed("VideoToolbox refused an H.264 session (status \(status)).")
-        }
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(
-            session,
-            key: kVTCompressionPropertyKey_ProfileLevel,
-            value: kVTProfileLevel_H264_High_AutoLevel
-        )
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        // A keyframe every two seconds: the cost of a viewer's cold start.
-        VTSessionSetProperty(
-            session,
-            key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
-            value: NSNumber(value: 2.0)
-        )
-        VTSessionSetProperty(
-            session,
-            key: kVTCompressionPropertyKey_ExpectedFrameRate,
-            value: NSNumber(value: max(1, fps))
-        )
-        VTCompressionSessionPrepareToEncodeFrames(session)
-        self.session = session
-    }
-
-    func setRate(fps: Int) {
-        guard let session else { return }
-        VTSessionSetProperty(
-            session,
-            key: kVTCompressionPropertyKey_ExpectedFrameRate,
-            value: NSNumber(value: max(1, fps))
-        )
-    }
-
-    func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
-        guard let session else { return }
-        VTCompressionSessionEncodeFrame(
-            session,
-            imageBuffer: pixelBuffer,
-            presentationTimeStamp: presentationTime,
-            duration: .invalid,
-            frameProperties: nil,
-            infoFlagsOut: nil
-        ) { [weak self] status, _, sampleBuffer in
-            guard status == noErr, let sampleBuffer, let self else { return }
-            self.handle(sampleBuffer)
-        }
-    }
-
-    private func handle(_ sampleBuffer: CMSampleBuffer) {
-        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
-        let isKeyframe = Self.isKeyframe(sampleBuffer)
-        var payload = Data()
-
-        if isKeyframe, let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) {
-            for index in 0..<2 {
-                var parameterSet: UnsafePointer<UInt8>?
-                var parameterSetSize = 0
-                var parameterSetCount = 0
-                var nalUnitHeaderLength: Int32 = 0
-                let status = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                    formatDescription,
-                    parameterSetIndex: index,
-                    parameterSetPointerOut: &parameterSet,
-                    parameterSetSizeOut: &parameterSetSize,
-                    parameterSetCountOut: &parameterSetCount,
-                    nalUnitHeaderLengthOut: &nalUnitHeaderLength
-                )
-                guard status == noErr, let parameterSet else { continue }
-                payload.append(contentsOf: [0x00, 0x00, 0x00, 0x01])
-                payload.append(parameterSet, count: parameterSetSize)
-                if index == 0, codecString == nil, parameterSetSize >= 4 {
-                    codecString = String(
-                        format: "avc1.%02X%02X%02X",
-                        parameterSet[1],
-                        parameterSet[2],
-                        parameterSet[3]
-                    ).lowercased()
-                }
-            }
-        }
-
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
-        var totalLength = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        guard CMBlockBufferGetDataPointer(
-            blockBuffer,
-            atOffset: 0,
-            lengthAtOffsetOut: nil,
-            totalLengthOut: &totalLength,
-            dataPointerOut: &dataPointer
-        ) == noErr, let dataPointer else { return }
-
-        // AVCC (4-byte big-endian length prefixes) to Annex-B start codes.
-        var offset = 0
-        while offset + 4 <= totalLength {
-            var nalLength: UInt32 = 0
-            memcpy(&nalLength, dataPointer + offset, 4)
-            nalLength = CFSwapInt32BigToHost(nalLength)
-            guard nalLength > 0, offset + 4 + Int(nalLength) <= totalLength else { break }
-            payload.append(contentsOf: [0x00, 0x00, 0x00, 0x01])
-            payload.append(
-                UnsafeBufferPointer(
-                    start: UnsafeRawPointer(dataPointer + offset + 4).assumingMemoryBound(to: UInt8.self),
-                    count: Int(nalLength)
-                )
-            )
-            offset += 4 + Int(nalLength)
-        }
-        guard !payload.isEmpty else { return }
-        onAccessUnit(payload, isKeyframe, codecString)
-    }
-
-    private static func isKeyframe(_ sampleBuffer: CMSampleBuffer) -> Bool {
-        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false),
-              CFArrayGetCount(attachments) > 0
-        else { return true }
-        let first = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFDictionary.self)
-        guard let dictionary = first as? [CFString: Any] else { return true }
-        // "not a sync sample" absent, or false, means this *is* a keyframe.
-        return !((dictionary[kCMSampleAttachmentKey_NotSync] as? Bool) ?? false)
-    }
-
-    func stop() {
-        guard let session else { return }
-        VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
-        VTCompressionSessionInvalidate(session)
-        self.session = nil
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +84,6 @@ final class CaptureEngine {
 
     private var streams: [String: StreamState] = [:]
     private var recordings: [String: RecordingState] = [:]
-    private var lastFrames: [String: CGImage] = [:]
     private let lock = NSRecursiveLock()
     private let log: (String) -> Void
     private let emit: (DriverEvent) -> Void
@@ -421,9 +152,6 @@ final class CaptureEngine {
             throw CaptureError.failed("ScreenCaptureKit needs macOS 12.3 or newer.")
         }
         let image = try captureImage(displayId: displayId, windowId: windowId)
-        lock.lock()
-        lastFrames[laneId] = image
-        lock.unlock()
         try Self.writePNG(image, to: path)
         return (image.width, image.height)
     }
@@ -572,18 +300,6 @@ final class CaptureEngine {
         try Self.writePNG(output, to: mapPath)
     }
 
-    /// The last frame the stream encoded, as a PNG. Feeds the turn time-lapse.
-    func writeLastFrame(laneId: String, path: String) throws -> (width: Int, height: Int) {
-        lock.lock()
-        let image = lastFrames[laneId]
-        lock.unlock()
-        guard let image else {
-            throw CaptureError.noSurface("No frame has been captured for lane \(laneId) yet.")
-        }
-        try Self.writePNG(image, to: path)
-        return (image.width, image.height)
-    }
-
     // -----------------------------------------------------------------------
     // Live stream
     // -----------------------------------------------------------------------
@@ -633,17 +349,12 @@ final class CaptureEngine {
         }
 
         let sink = CaptureFrameSink(
-            onFrame: { [weak self] sampleBuffer in
-                guard let self, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+            onFrame: { sampleBuffer in
+                guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
                 encoder.encode(
                     pixelBuffer: buffer,
                     presentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 )
-                if let image = Self.makeImage(from: buffer) {
-                    self.lock.lock()
-                    self.lastFrames[laneId] = image
-                    self.lock.unlock()
-                }
             },
             onError: { [weak self] error in
                 self?.emit(
@@ -877,22 +588,6 @@ final class CaptureEngine {
         }
         for laneId in recordingLanes {
             _ = try? stopRecording(laneId: laneId)
-        }
-    }
-}
-
-/// Turning an async framework call back into a straight line.
-///
-/// The driver is single-threaded by design — one NDJSON request at a time,
-/// answered in order — but ScreenCaptureKit and AVFoundation only speak
-/// callbacks. Pumping the run loop keeps AppKit, the `AXObserver` sources and
-/// the window watcher alive while a capture is in flight; a bare semaphore wait
-/// on the main thread would deadlock the very callbacks it waits for.
-enum RunLoopPump {
-    static func wait(until condition: () -> Bool, timeout: TimeInterval) {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition(), Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
         }
     }
 }

@@ -16,7 +16,13 @@
 ///     stray `print` would corrupt the stream.
 ///   * Work happens on the main thread. AppKit, the Accessibility API and the
 ///     `AXObserver` run-loop sources all require it, so stdin is read on a
-///     background thread and every request is hopped to the main queue.
+///     background thread and every request is hopped to the main *run loop* —
+///     `perform(onThread:)`, not `DispatchQueue.main.async`. The difference
+///     matters: the main dispatch queue is serial, so a request that has to
+///     wait (`input {command:"wait"}` can hold for two minutes) would pin every
+///     other request behind it, health `ping` included, no matter how the
+///     waiting is done. A run-loop perform can be drained from inside that
+///     wait, which is what `RunLoopPump` does.
 
 import AppKit
 import ApplicationServices
@@ -26,21 +32,34 @@ import ADEDesktopDriverCore
 
 let driverVersion = "1.0.0"
 
-final class DriverRuntime {
+final class DriverRuntime: NSObject {
     private let output = OutputWriter()
     private let ownership = OwnershipRegistry()
     private let handles = HandleRegistry()
     private let leases = InputLeaseStore()
 
-    private lazy var displays = VirtualDisplayHost(log: log)
-    private lazy var windows = WindowControl(ownership: ownership, log: log, emit: emit)
-    private lazy var accessibility = AccessibilityDriver(handles: handles, log: log)
+    lazy var displays = VirtualDisplayHost(log: log)
+    lazy var windows = WindowControl(ownership: ownership, log: log, emit: emit)
+    lazy var accessibility = AccessibilityDriver(handles: handles, log: log)
     private lazy var capture = CaptureEngine(log: log, emit: emit)
-    private lazy var realInput = RealInput(leases: leases, log: log)
-    private let cursor = CursorOverlay()
+    lazy var realInput = RealInput(leases: leases, log: log)
 
     private var lastActivity: [String: Date] = [:]
     private var recordingCaptions: [String: String] = [:]
+
+    /// The last permission pair a probe saw, so the periodic probe can emit a
+    /// `permission-changed` only on a transition.
+    private var lastPermissions: [String: JSONValue]?
+    private var permissionTimer: Timer?
+
+    /// How often the permission probe runs while a display exists. Both probes
+    /// are cheap local calls, but they are not free, and nothing about a
+    /// revoked grant needs sub-10-second latency: the action that follows it
+    /// fails with a permission error of its own either way.
+    private static let permissionProbeInterval: TimeInterval = 10
+
+    private var signalSources: [DispatchSourceSignal] = []
+    private var isShuttingDown = false
 
     // -----------------------------------------------------------------------
     // Lifecycle
@@ -50,8 +69,30 @@ final class DriverRuntime {
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
         startReading()
+        installSignalHandlers()
         log("ade-desktop-driver \(driverVersion) ready (pid \(getpid()))")
         application.run()
+    }
+
+    /// The same shutdown stdin-close runs, for the death the Node client
+    /// actually deals: it kills the process group rather than closing the pipe
+    /// and waiting. Without this, a recording in flight is a half-written MP4 —
+    /// `AVAssetWriter` finalises the moov atom in `finishWriting`, and a file
+    /// that never got it is not a shorter video, it is not a video.
+    ///
+    /// The default disposition is ignored first: a `DispatchSource` signal
+    /// handler runs *alongside* the default one, so without the `SIG_IGN` the
+    /// process would still die on the spot and the handler would never run.
+    private func installSignalHandlers() {
+        for number in [SIGTERM, SIGINT] {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+            source.setEventHandler { [weak self] in
+                self?.shutdown(reason: number == SIGTERM ? "SIGTERM" : "SIGINT")
+            }
+            source.resume()
+            signalSources.append(source)
+        }
     }
 
     private func startReading() {
@@ -61,7 +102,7 @@ final class DriverRuntime {
             while true {
                 let chunk = handle.availableData
                 if chunk.isEmpty {
-                    DispatchQueue.main.async { self?.shutdown(reason: "stdin closed") }
+                    self?.performOnMain(#selector(DriverRuntime.shutdownFromStdin), with: nil)
                     return
                 }
                 buffer.append(chunk)
@@ -71,7 +112,7 @@ final class DriverRuntime {
                     guard let line = String(data: lineData, encoding: .utf8) else { continue }
                     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { continue }
-                    DispatchQueue.main.async { self?.accept(line: trimmed) }
+                    self?.performOnMain(#selector(DriverRuntime.acceptBoxed(_:)), with: trimmed as NSString)
                 }
             }
         }
@@ -79,11 +120,32 @@ final class DriverRuntime {
         thread.start()
     }
 
+    /// Hands one line to the main thread in a way a nested run-loop pump can
+    /// drain. `.common` covers the modes the pump and AppKit's own loops run in.
+    private func performOnMain(_ selector: Selector, with argument: NSObject?) {
+        perform(
+            selector,
+            on: Thread.main,
+            with: argument,
+            waitUntilDone: false,
+            modes: [RunLoop.Mode.common.rawValue, RunLoop.Mode.default.rawValue]
+        )
+    }
+
+    @objc private func shutdownFromStdin() {
+        shutdown(reason: "stdin closed")
+    }
+
     private func shutdown(reason: String) {
+        guard !isShuttingDown else { return }
+        isShuttingDown = true
         log("shutting down: \(reason)")
+        permissionTimer?.invalidate()
+        permissionTimer = nil
+        // Recordings first: `CaptureEngine.dispose` is what finalises each
+        // AVAssetWriter, and everything below it only releases handles.
         capture.dispose()
         windows.dispose()
-        cursor.dispose()
         displays.destroyAll()
         exit(0)
     }
@@ -92,12 +154,26 @@ final class DriverRuntime {
     // Dispatch
     // -----------------------------------------------------------------------
 
+    @objc private func acceptBoxed(_ line: NSString) {
+        accept(line: line as String)
+    }
+
     private func accept(line: String) {
         let input: DriverInput
         do {
             input = try DriverInputDecoder.decode(line: line)
         } catch {
-            output.write(.event(DriverEvent.protocolError("\(error)")))
+            // A line that named an id is owed a reply even when the rest of it
+            // was nonsense; only a line with nobody to answer becomes an event.
+            if let id = DriverInputDecoder.requestId(inLine: line) {
+                output.write(
+                    .reply(
+                        .failure(id: id, code: DriverErrorCode.protocolError, message: "\(error)")
+                    )
+                )
+            } else {
+                output.write(.event(DriverEvent.protocolError("\(error)")))
+            }
             return
         }
         guard case .request(let request) = input else { return }
@@ -139,11 +215,8 @@ final class DriverRuntime {
         }
         switch op {
         case .health: return health()
-        case .probePermissions: return Permissions.snapshot()
-        case .requestPermissions: return Permissions.request(which: request.string("which") ?? "all")
         case .createDisplay: return try createDisplay(request)
         case .destroyDisplay: return try destroyDisplay(request)
-        case .listDisplays: return listDisplays()
         case .reconcileDisplays: return reconcileDisplays(request)
         case .listWindows: return listWindows(request)
         case .parkWindow: return try parkWindow(request)
@@ -158,20 +231,42 @@ final class DriverRuntime {
         case .startStream: return try startStream(request)
         case .setStreamRate: return try setStreamRate(request)
         case .stopStream: return try stopStream(request)
-        case .lastFrame: return try lastFrame(request)
         case .startRecording: return try startRecording(request)
         case .stopRecording: return try stopRecording(request)
-        case .setCursorOverlay: return setCursorOverlay(request)
-        case .idleSeconds: return ["seconds": .double(PhysicalInput.secondsSinceLastEvent())]
-        case .quit:
-            DispatchQueue.main.async { [weak self] in self?.shutdown(reason: "quit op") }
-            return ["stopping": .bool(true)]
         }
     }
 
     // -----------------------------------------------------------------------
     // Health and permissions
     // -----------------------------------------------------------------------
+
+    /// The periodic probe behind `permission-changed`.
+    ///
+    /// Only runs while at least one display exists: with no display there is
+    /// nothing a revoked grant could break, and a helper that is idle should
+    /// stay idle.
+    private func updatePermissionProbe() {
+        let wanted = !displays.all().isEmpty
+        if wanted, permissionTimer == nil {
+            lastPermissions = Permissions.snapshot()
+            let timer = Timer(timeInterval: Self.permissionProbeInterval, repeats: true) { [weak self] _ in
+                self?.probePermissionsForChange()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            permissionTimer = timer
+        } else if !wanted, permissionTimer != nil {
+            permissionTimer?.invalidate()
+            permissionTimer = nil
+            lastPermissions = nil
+        }
+    }
+
+    private func probePermissionsForChange() {
+        let current = Permissions.snapshot()
+        guard current != lastPermissions else { return }
+        lastPermissions = current
+        emit(DriverEvent(event: "permission-changed", fields: ["permissions": .object(current)]))
+    }
 
     private func health() -> [String: JSONValue] {
         [
@@ -205,6 +300,7 @@ final class DriverRuntime {
             windowCount: ownership.windows(forLane: laneId).count,
             lastActivityAt: lastActivity[laneId] ?? Date()
         )
+        updatePermissionProbe()
         emit(DriverEvent(event: "display-created", fields: ["display": .object(json)]))
         return json
     }
@@ -222,19 +318,8 @@ final class DriverRuntime {
                 fields: ["laneId": .string(laneId), "reason": .string(request.string("reason") ?? "stopped")]
             )
         )
+        updatePermissionProbe()
         return ["destroyed": .bool(destroyed), "releasedWindows": .int(released)]
-    }
-
-    private func listDisplays() -> [String: JSONValue] {
-        let list = displays.all().map { handle in
-            JSONValue.object(
-                handle.asJSON(
-                    windowCount: ownership.windows(forLane: handle.laneId).count,
-                    lastActivityAt: lastActivity[handle.laneId] ?? handle.createdAt
-                )
-            )
-        }
-        return ["displays": .array(list)]
     }
 
     private func reconcileDisplays(_ request: DriverRequest) -> [String: JSONValue] {
@@ -245,6 +330,7 @@ final class DriverRuntime {
             _ = windows.releaseLane(laneId)
             destroyed.append(laneId)
         }
+        updatePermissionProbe()
         return ["destroyed": .array(destroyed.map(JSONValue.string))]
     }
 
@@ -396,236 +482,6 @@ final class DriverRuntime {
     }
 
     // -----------------------------------------------------------------------
-    // Input
-    // -----------------------------------------------------------------------
-
-    private func input(_ request: DriverRequest) throws -> [String: JSONValue] {
-        let laneId = try request.requireString("laneId")
-        let command = try request.requireString("command")
-        let mode = request.string("mode") ?? "accessibility"
-        let payload = request.object("payload") ?? [:]
-        touch(laneId)
-
-        // `wait` is not an action, so it is not routed by mode: a real-input
-        // lease buys the right to post events, not a different way to look.
-        if command == "wait" {
-            return try waitFor(laneId: laneId, payload: payload)
-        }
-        if mode == "real" {
-            return try realCommand(laneId: laneId, command: command, payload: payload, request: request)
-        }
-        return try accessibilityCommand(laneId: laneId, command: command, payload: payload)
-    }
-
-    /// How many elements a wait poll walks. Smaller than the `observe` default
-    /// because a wait runs this walk several times a second.
-    private static let waitObservationLimit = 200
-
-    /// Polls the lane until the condition holds or the timeout lapses.
-    ///
-    /// It answers `ok` itself rather than leaving the service to infer success
-    /// from an index: a `gone` or `windowTitle` wait succeeds with no element,
-    /// so "matched something" and "the wait was satisfied" are two facts.
-    private func waitFor(laneId: String, payload: [String: JSONValue]) throws -> [String: JSONValue] {
-        guard let condition = WaitCondition(
-            text: payload["text"]?.stringValue,
-            gone: payload["gone"]?.stringValue,
-            windowTitle: payload["windowTitle"]?.stringValue,
-            timeoutMs: payload["timeoutMs"]?.intValue
-        ) else {
-            throw DriverError(
-                code: DriverErrorCode.invalidArgument,
-                message: "wait needs one of \"text\", \"gone\", or \"windowTitle\"."
-            )
-        }
-        let deadline = Date().addingTimeInterval(Double(condition.timeoutMs) / 1000)
-        let interval = Double(WaitCondition.pollIntervalMs) / 1000
-        var outcome = WaitOutcome.pending
-        repeat {
-            let parked = windows.listWindows(laneId: laneId)
-            var matchedIndex: Int? = nil
-            if let needle = condition.elementNeedle {
-                let observation = accessibility.observe(
-                    windows: parked,
-                    limit: Self.waitObservationLimit,
-                    windowControl: windows
-                )
-                matchedIndex = observation.elements.first { $0.matches(text: needle) }?.index
-            }
-            outcome = condition.outcome(
-                matchedIndex: matchedIndex,
-                windowTitles: parked.compactMap(\.title)
-            )
-            if case .met = outcome { break }
-            if Date() >= deadline { break }
-            Thread.sleep(forTimeInterval: min(interval, max(0, deadline.timeIntervalSinceNow)))
-        } while Date() < deadline
-        touch(laneId)
-        switch outcome {
-        case .pending:
-            return ["ok": .bool(false), "resolvedIndex": .null]
-        case let .met(index):
-            return ["ok": .bool(true), "resolvedIndex": index.map(JSONValue.int) ?? .null]
-        }
-    }
-
-    private func accessibilityCommand(
-        laneId: String,
-        command: String,
-        payload: [String: JSONValue]
-    ) throws -> [String: JSONValue] {
-        switch command {
-        case "click":
-            let (element, record) = try resolve(payload: payload)
-            try accessibility.click(element, record: record)
-            cursor.show(at: CGPoint(x: record.frame.midX, y: record.frame.midY))
-            return ["resolvedIndex": .int(record.index)]
-        case "type":
-            let text = payload["text"]?.stringValue ?? ""
-            let (element, record) = try resolve(payload: payload)
-            try accessibility.type(
-                element,
-                record: record,
-                text: text,
-                clear: payload["clear"]?.boolValue ?? false
-            )
-            cursor.show(at: CGPoint(x: record.frame.midX, y: record.frame.midY))
-            return ["resolvedIndex": .int(record.index)]
-        case "setValue":
-            let (element, record) = try resolve(payload: payload)
-            guard accessibility.setValue(element, to: payload["value"]?.stringValue ?? "") else {
-                throw DriverError(
-                    code: DriverErrorCode.invalidArgument,
-                    message: "\(record.role) refused a value."
-                )
-            }
-            return ["resolvedIndex": .int(record.index)]
-        case "press":
-            let key = payload["key"]?.stringValue ?? ""
-            let modifiers = payload["modifiers"]?.arrayValue?.compactMap(\.stringValue) ?? []
-            let pid: pid_t
-            var resolvedIndex: JSONValue = .null
-            if let resolved = try? resolve(payload: payload) {
-                pid = resolved.1.pid
-                resolvedIndex = .int(resolved.1.index)
-            } else if let first = windows.listWindows(laneId: laneId).first {
-                pid = first.pid
-            } else {
-                throw DriverError(
-                    code: DriverErrorCode.noDisplay,
-                    message: "Lane \(laneId) has no window to send a key to."
-                )
-            }
-            try accessibility.press(pid: pid, key: key, modifiers: modifiers)
-            return ["resolvedIndex": resolvedIndex]
-        case "scroll":
-            let (element, record) = try resolve(payload: payload)
-            try accessibility.scroll(
-                element,
-                record: record,
-                direction: payload["direction"]?.stringValue ?? "down",
-                amount: payload["amount"]?.intValue ?? 3
-            )
-            return ["resolvedIndex": .int(record.index)]
-        case "drag":
-            throw DriverError(
-                code: DriverErrorCode.inputLeaseRequired,
-                message: "A drag has no accessibility equivalent; it needs mode \"real\" and an input lease."
-            )
-        default:
-            throw DriverError(
-                code: DriverErrorCode.invalidArgument,
-                message: "\"\(command)\" is not an input command this driver knows."
-            )
-        }
-    }
-
-    private func realCommand(
-        laneId: String,
-        command: String,
-        payload: [String: JSONValue],
-        request: DriverRequest
-    ) throws -> [String: JSONValue] {
-        // The holder the caller claims to be, if it says. `RealInput` checks it
-        // against the lease the driver itself holds.
-        let holderId = request.object("lease")?["holderId"]?.stringValue
-        var resolvedIndex: JSONValue = .null
-        func point(_ key: String) throws -> CGPoint {
-            if let object = payload[key]?.objectValue,
-               let x = object["x"]?.doubleValue,
-               let y = object["y"]?.doubleValue {
-                return CGPoint(x: x, y: y)
-            }
-            if let x = payload["x"]?.doubleValue, let y = payload["y"]?.doubleValue {
-                return CGPoint(x: x, y: y)
-            }
-            let (_, record) = try resolve(payload: payload)
-            resolvedIndex = .int(record.index)
-            return CGPoint(x: record.frame.midX, y: record.frame.midY)
-        }
-
-        switch command {
-        case "move":
-            let target = try point("to")
-            try realInput.move(laneId: laneId, holderId: holderId, to: target)
-            cursor.show(at: target)
-        case "click":
-            let target = try point("at")
-            try realInput.click(
-                laneId: laneId,
-                holderId: holderId,
-                at: target,
-                button: payload["button"]?.stringValue ?? "left",
-                count: payload["count"]?.intValue ?? 1
-            )
-            cursor.show(at: target)
-        case "drag":
-            let from = try point("from")
-            let to = try point("to")
-            try realInput.drag(
-                laneId: laneId,
-                holderId: holderId,
-                from: from,
-                to: to,
-                durationMs: payload["durationMs"]?.intValue ?? 300
-            )
-            cursor.show(at: to)
-        case "press":
-            try realInput.key(
-                laneId: laneId,
-                holderId: holderId,
-                key: payload["key"]?.stringValue ?? "",
-                modifiers: payload["modifiers"]?.arrayValue?.compactMap(\.stringValue) ?? []
-            )
-        case "type":
-            try realInput.text(laneId: laneId, holderId: holderId, text: payload["text"]?.stringValue ?? "")
-        default:
-            throw DriverError(
-                code: DriverErrorCode.invalidArgument,
-                message: "\"\(command)\" is not a real-input command this driver knows."
-            )
-        }
-        return ["resolvedIndex": resolvedIndex]
-    }
-
-    private func resolve(payload: [String: JSONValue]) throws -> (AXUIElement, ObservedElement) {
-        if let handle = payload["handle"]?.stringValue, !handle.isEmpty {
-            return try accessibility.element(forHandle: handle)
-        }
-        if let text = payload["text"]?.stringValue, !text.isEmpty,
-           let match = try? accessibility.element(matchingText: text) {
-            return match
-        }
-        if let target = payload["target"]?.objectValue {
-            return try resolve(payload: target)
-        }
-        throw DriverError(
-            code: DriverErrorCode.invalidArgument,
-            message: "This command needs a handle or a text match. Observe first."
-        )
-    }
-
-    // -----------------------------------------------------------------------
     // Lease
     // -----------------------------------------------------------------------
 
@@ -721,19 +577,6 @@ final class DriverRuntime {
         return ["stopped": .bool(stopped)]
     }
 
-    private func lastFrame(_ request: DriverRequest) throws -> [String: JSONValue] {
-        let laneId = try request.requireString("laneId")
-        let path = request.string("path")
-            ?? Self.scratchPath(laneId: laneId, suffix: "frame", extension: "png")
-        let size = try capture.writeLastFrame(laneId: laneId, path: path)
-        return [
-            "filePath": .string(path),
-            "width": .int(size.width),
-            "height": .int(size.height),
-            "capturedAt": .string(ISO8601.string(Date())),
-        ]
-    }
-
     private func startRecording(_ request: DriverRequest) throws -> [String: JSONValue] {
         let laneId = try request.requireString("laneId")
         guard let handle = displays.handle(forLane: laneId) else {
@@ -778,21 +621,11 @@ final class DriverRuntime {
         return result
     }
 
-    private func setCursorOverlay(_ request: DriverRequest) -> [String: JSONValue] {
-        let visible = request.bool("visible") ?? true
-        if visible, let x = request.double("x"), let y = request.double("y") {
-            cursor.show(at: CGPoint(x: x, y: y))
-        } else if !visible {
-            cursor.hide()
-        }
-        return ["visible": .bool(cursor.isVisible)]
-    }
-
     // -----------------------------------------------------------------------
     // Plumbing
     // -----------------------------------------------------------------------
 
-    private func touch(_ laneId: String) {
+    func touch(_ laneId: String) {
         lastActivity[laneId] = Date()
     }
 
@@ -804,11 +637,11 @@ final class DriverRuntime {
         return "\(directory)/\(safeLane)-\(suffix)-\(stamp).\(pathExtension)"
     }
 
-    private func emit(_ event: DriverEvent) {
+    func emit(_ event: DriverEvent) {
         output.write(.event(event))
     }
 
-    private func log(_ message: String) {
+    func log(_ message: String) {
         FileHandle.standardError.write(Data("[ade-desktop-driver] \(message)\n".utf8))
     }
 }

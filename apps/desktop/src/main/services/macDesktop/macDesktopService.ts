@@ -14,19 +14,16 @@
  * on any host.
  */
 
-import path from "node:path";
-
 import type { Logger } from "../logging/logger";
 import {
-  MAC_DESKTOP_ACTIVE_FPS,
   MAC_DESKTOP_DEFAULT_RESOLUTION,
-  MAC_DESKTOP_IDLE_FPS,
   MAC_DESKTOP_IDLE_RELEASE_MS,
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
   MAC_DESKTOP_RESOLUTION_PRESETS,
   macDesktopDisplayName,
   type MacDesktopActionResult,
+  type DesktopSeatProvider,
   type MacDesktopClaimArgs,
   type MacDesktopClickArgs,
   type MacDesktopDisplay,
@@ -72,20 +69,22 @@ import type {
   ComputerUseArtifactIngestionRequest,
   ComputerUseArtifactIngestionResult,
 } from "../../../shared/types/computerUseArtifacts";
-import { resolveMacDesktopDriverBinary } from "../attention/attentionNotchHelper";
+import { resolveMacDesktopDriverBinary } from "../native/nativeHelperPaths";
 import {
   createMacDesktopDriverClient,
   MacDesktopDriverError,
-  MAC_DESKTOP_DRIVER_OPS,
   type MacDesktopDriverClient,
 } from "./macDesktopDriverClient";
 import { createMacDesktopLeaseRegistry } from "./macDesktopLease";
+import { createMacDesktopLeaseFlow } from "./macDesktopLeaseFlow";
 import {
   createMacDesktopOwnershipRegistry,
   MacDesktopOwnershipError,
 } from "./macDesktopOwnership";
 import { createMacDesktopObservations, MacDesktopObservationError } from "./macDesktopObservations";
-import { createMacDesktopStreamServer } from "./macDesktopStreamServer";
+import { createMacDesktopRecording } from "./macDesktopRecording";
+import { createMacVirtualDisplayProvider } from "./macDesktopSeatProvider";
+import { createMacDesktopStreaming } from "./macDesktopStreaming";
 
 /** KV key for the lane display size. Read on every `start`. */
 export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
@@ -223,12 +222,21 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   let permissions: MacDesktopPermissions = { screenRecording: "unknown", accessibility: "unknown" };
   let displayMode: MacDesktopDisplayMode = isDarwin ? "virtual" : "unavailable";
   let driver: MacDesktopDriverClient | null = null;
+  /** The one backend. Minted with the driver client it wraps. */
+  let provider: DesktopSeatProvider | null = null;
   let driverEventUnsubscribe: (() => void) | null = null;
   let reconciled = false;
   const startLocks = new Map<string, Promise<MacDesktopStatus>>();
-  const recordings = new Map<string, MacDesktopRecordingStatus>();
-  /** laneId → chat that asked for the current stream, for the idle accounting. */
-  const streamOwners = new Map<string, string | null>();
+  /**
+   * Lanes this process is tearing down right now.
+   *
+   * The helper emits `display-destroyed` for a `display.destroy` ADE asked for,
+   * so without this the service published the event twice: once from the driver
+   * with the generic reason `stopped`, and once from `destroyDisplay` with the
+   * real one. The driver-originated copy is dropped while a destroy of ours is
+   * in flight; a display that dies on its own still reaches clients.
+   */
+  const destroyingLanes = new Set<string>();
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
   let lastSweepAtMs = now();
 
@@ -261,28 +269,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       }
     }
   };
-
-  const streamServer = createMacDesktopStreamServer({
-    logger: deps.logger,
-    now,
-    setRate: async ({ laneId, fps }) => {
-      const client = driver;
-      if (!client) return;
-      await client.request(MAC_DESKTOP_DRIVER_OPS.setStreamRate, { laneId, fps });
-      const status = buildStreamStatus(laneId, { redacted: true });
-      if (status) emit({ type: "stream-status", status });
-    },
-    onZeroClients: (laneId) => {
-      // The encoder stops; the display does not. A lane with parked windows is
-      // still doing work nobody happens to be watching.
-      void stopStreamInternal(laneId, "no-clients").catch((error) => {
-        deps.logger.debug("mac_desktop.stream_idle_stop_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    },
-  });
 
   // -------------------------------------------------------------------------
   // Gates
@@ -322,6 +308,70 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     if (error instanceof MacDesktopDriverError) return new MacDesktopError(error.code, error.message);
     return error instanceof Error ? error : new Error(String(error));
   };
+
+  /**
+   * The backend, started if it is not already.
+   *
+   * Everything the helper can do is reached through the provider; the client
+   * itself is only used for what is not an operation on a seat — starting,
+   * health, and the event stream.
+   */
+  const ensureProvider = async (): Promise<DesktopSeatProvider> => {
+    await ensureDriver();
+    return provider!;
+  };
+
+  /** The backend only when it is already running: teardown must not start one. */
+  const activeProvider = (): DesktopSeatProvider | null =>
+    (driver && driver.isRunning() ? provider : null);
+
+  const streaming = createMacDesktopStreaming({
+    logger: deps.logger,
+    now,
+    isDarwin,
+    emit,
+    ensureProvider,
+    activeProvider,
+    requireDisplay: (laneId) => {
+      requireDisplay(laneId);
+    },
+    assertPermission,
+    touchDisplay: (laneId) => ownership.touchDisplay(laneId),
+    driverUnavailable: (message) => new MacDesktopError("MAC_DESKTOP_DRIVER_UNAVAILABLE", message),
+  });
+  const streamServer = streaming.streamServer;
+
+  const recording = createMacDesktopRecording({
+    logger: deps.logger,
+    now,
+    isDarwin,
+    emit,
+    observations,
+    ensureProvider,
+    activeProvider,
+    requireDisplay: (laneId) => {
+      requireDisplay(laneId);
+    },
+    assertPermission,
+    recordingNotRunning: (laneId) => new MacDesktopError(
+      "MAC_DESKTOP_RECORDING_NOT_RUNNING",
+      `Lane ${laneId} is not recording its desktop.`,
+    ),
+  });
+  const recordings = recording.recordings;
+
+  const leaseFlow = createMacDesktopLeaseFlow({
+    logger: deps.logger,
+    isDarwin,
+    leases,
+    emit,
+    requireDisplay: (laneId) => {
+      requireDisplay(laneId);
+    },
+    activeProvider,
+    ...(deps.requestChatInput ? { requestChatInput: deps.requestChatInput } : {}),
+  });
+  const pushLease = leaseFlow.pushLease;
 
   // -------------------------------------------------------------------------
   // The driver
@@ -363,18 +413,34 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       }
       case "stream-error": {
         if (!laneId) return;
-        const message = asNullableString(event.message) ?? "The desktop encoder failed.";
-        streamServer.recordError(laneId, message);
-        const status = buildStreamStatus(laneId, { redacted: true });
-        if (status) emit({ type: "stream-error", status });
+        streaming.recordError(laneId, asNullableString(event.message) ?? "The desktop encoder failed.");
+        return;
+      }
+      case "window-not-parked": {
+        // The window is still on the user's own screen. Only the surface
+        // watching the lane can say so, so this is forwarded rather than logged.
+        if (!laneId) return;
+        const windowId = asNumber(event.windowId, 0);
+        if (!windowId) return;
+        emit({
+          type: "window-not-parked",
+          laneId,
+          windowId,
+          reason: asNullableString(event.reason) ?? "The window could not be moved to this lane's display.",
+        });
         return;
       }
       case "display-destroyed": {
         if (!laneId) return;
+        // Our own `display.destroy` is echoed back as this event. `destroyDisplay`
+        // publishes the real reason itself, so the echo is dropped rather than
+        // publishing a second, vaguer copy of the same fact.
+        if (destroyingLanes.has(laneId)) return;
         ownership.removeDisplay(laneId);
         leases.releaseLane(laneId);
         observations.forgetLane(laneId);
-        streamServer.stop(laneId);
+        streaming.forgetLane(laneId);
+        recording.forgetLane(laneId);
         emit({ type: "display-destroyed", laneId, reason: "stopped" });
         return;
       }
@@ -401,14 +467,14 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
   const onDriverLost = (reason: string): void => {
     for (const laneId of ownership.laneIds()) {
-      streamServer.stop(laneId);
+      streaming.forgetLane(laneId);
       observations.forgetLane(laneId);
       leases.releaseLane(laneId);
       emit({ type: "display-destroyed", laneId, reason: "driver_lost" });
     }
     ownership.clear();
-    recordings.clear();
-    streamOwners.clear();
+    recording.clear();
+    streaming.clear();
     reconciled = false;
     deps.logger.warn("mac_desktop.driver_lost", { reason });
   };
@@ -427,20 +493,21 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         : createMacDesktopDriverClient({
           logger: deps.logger,
           platform,
-          resolveExecutablePath: () => resolveMacDesktopDriverBinary({ platform }),
+          resolveExecutablePath: () => resolveMacDesktopDriverBinary({ platform, logger: deps.logger }),
           onHealthChanged: (health) => emit({ type: "driver-health", health }),
           onDriverLost,
         });
+      provider = createMacVirtualDisplayProvider(driver);
       driverEventUnsubscribe = driver.onEvent((event) => handleDriverEvent(event));
     }
     await driver.ensureStarted();
-    await refreshDriverHealth(driver);
+    await refreshDriverHealth(driver, provider!);
     return driver;
   };
 
-  const refreshDriverHealth = async (client: MacDesktopDriverClient): Promise<void> => {
+  const refreshDriverHealth = async (client: MacDesktopDriverClient, seat: DesktopSeatProvider): Promise<void> => {
     try {
-      const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.health, {}, { timeoutMs: 5_000 }));
+      const reply = asRecord(await seat.health());
       client.setVersion(asNullableString(reply.version));
       applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
       const mode = asNullableString(reply.displayMode);
@@ -459,13 +526,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
    * behind otherwise, and nothing else would ever notice them — only displays
    * ADE created, tracked by the exact id it received, are ever destroyed.
    */
-  const reconcileDisplays = async (client: MacDesktopDriverClient): Promise<void> => {
+  const reconcileDisplays = async (seat: DesktopSeatProvider): Promise<void> => {
     if (reconciled) return;
     reconciled = true;
     try {
-      await client.request(MAC_DESKTOP_DRIVER_OPS.reconcileDisplays, {
-        liveLaneIds: ownership.laneIds(),
-      });
+      await seat.reconcile({ liveLaneIds: ownership.laneIds() });
     } catch (error) {
       deps.logger.debug("mac_desktop.reconcile_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -476,46 +541,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   // -------------------------------------------------------------------------
   // Status
   // -------------------------------------------------------------------------
-
-  const buildStreamStatus = (
-    laneId: string,
-    options: { redacted?: boolean; transport?: { url: string; token: string; port: number } | null } = {},
-  ): MacDesktopStreamStatus | null => {
-    const metrics = streamServer.metrics(laneId);
-    if (!metrics) {
-      return {
-        laneId,
-        running: false,
-        fps: 0,
-        idle: false,
-        bitrateKbps: null,
-        transport: null,
-        lastError: null,
-        clients: 0,
-      };
-    }
-    const transport = options.transport ?? null;
-    return {
-      laneId,
-      running: true,
-      fps: metrics.fps,
-      idle: metrics.idle,
-      bitrateKbps: metrics.bitrateKbps,
-      transport: {
-        // Redacted on every read but `startStream`: `getStreamStatus` is on the
-        // agent action allowlist, so an unredacted token would be printed into
-        // a durable transcript.
-        url: options.redacted === false && transport ? transport.url : null,
-        port: transport?.port ?? metrics.port,
-        token: options.redacted === false && transport ? transport.token : null,
-        codec: metrics.codec,
-        width: metrics.width,
-        height: metrics.height,
-      },
-      lastError: metrics.lastError,
-      clients: metrics.clients,
-    };
-  };
 
   const buildStatus = async (args: MacDesktopGetStatusArgs = {}): Promise<MacDesktopStatus> => {
     const laneId = args.laneId?.trim() || null;
@@ -529,7 +554,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     const supported = isDarwin && driverHealth.state !== "missing" && driverHealth.state !== "unsupported";
     const display = laneId ? ownership.getDisplay(laneId) : null;
     const windows = laneId ? await listWindowsInternal(laneId).catch(() => []) : [];
-    const streamStatus = laneId ? buildStreamStatus(laneId, { redacted: true }) : null;
+    const streamStatus = laneId ? streaming.buildStreamStatus(laneId, { redacted: true }) : null;
     return {
       platform,
       supported,
@@ -576,15 +601,15 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       ownership.touchDisplay(laneId);
       return await buildStatus({ laneId });
     }
-    const client = await ensureDriver();
-    await reconcileDisplays(client);
+    const seat = await ensureProvider();
+    await reconcileDisplays(seat);
     assertPermission("screenRecording");
     const laneName = args.laneName?.trim()
       || (await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null))
       || null;
     const preset = readResolution(args.resolution);
     const size = MAC_DESKTOP_RESOLUTION_PRESETS[preset];
-    const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.createDisplay, {
+    const reply = asRecord(await seat.create({
       laneId,
       name: macDesktopDisplayName(laneName),
       width: size.width,
@@ -619,26 +644,34 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     reason: "stopped" | "idle" | "lane_removed" | "driver_lost",
   ): Promise<{ destroyed: boolean; releasedWindows: number }> => {
     const had = ownership.hasDisplay(laneId);
-    streamServer.stop(laneId);
-    streamOwners.delete(laneId);
-    recordings.delete(laneId);
-    observations.forgetLane(laneId);
-    leases.releaseLane(laneId);
-    let releasedWindows = ownership.windowCount(laneId);
-    if (isDarwin && driver && driver.isRunning()) {
-      try {
-        const reply = asRecord(await driver.request(MAC_DESKTOP_DRIVER_OPS.destroyDisplay, { laneId }));
-        releasedWindows = asNumber(reply.releasedWindows, releasedWindows);
-      } catch (error) {
-        deps.logger.debug("mac_desktop.destroy_display_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error),
-        });
+    destroyingLanes.add(laneId);
+    try {
+      // Before the display goes: the helper has one recorder per lane, and a
+      // turn clip still writing into it would be a file nobody ever closes.
+      await recording.stopTurnClips(laneId);
+      streaming.forgetLane(laneId);
+      recording.forgetLane(laneId);
+      observations.forgetLane(laneId);
+      leases.releaseLane(laneId);
+      let releasedWindows = ownership.windowCount(laneId);
+      const seat = isDarwin ? activeProvider() : null;
+      if (seat) {
+        try {
+          const reply = asRecord(await seat.destroy({ laneId }));
+          releasedWindows = asNumber(reply.releasedWindows, releasedWindows);
+        } catch (error) {
+          deps.logger.debug("mac_desktop.destroy_display_failed", {
+            laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
+      ownership.removeDisplay(laneId);
+      if (had) emit({ type: "display-destroyed", laneId, reason });
+      return { destroyed: had, releasedWindows };
+    } finally {
+      destroyingLanes.delete(laneId);
     }
-    ownership.removeDisplay(laneId);
-    if (had) emit({ type: "display-destroyed", laneId, reason });
-    return { destroyed: had, releasedWindows };
   };
 
   // -------------------------------------------------------------------------
@@ -686,9 +719,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   // -------------------------------------------------------------------------
 
   const listWindowsInternal = async (laneId?: string | null): Promise<MacDesktopWindow[]> => {
-    if (!isDarwin || !driver || !driver.isRunning()) return [];
-    const reply = asRecord(await driver.request(MAC_DESKTOP_DRIVER_OPS.listWindows, laneId ? { laneId } : {}));
-    const windows = asWindows(reply.windows);
+    const seat = isDarwin ? activeProvider() : null;
+    if (!seat) return [];
+    const windows = await seat.listWindows({ laneId: laneId ?? null });
     if (laneId) ownership.reconcileWindows(laneId, windows);
     return windows;
   };
@@ -700,7 +733,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const observeInternal = async (args: MacDesktopObserveArgs & { caption?: string | null }): Promise<MacDesktopObservation> => {
     const laneId = args.laneId.trim();
     const display = requireDisplay(laneId);
-    const client = await ensureDriver();
+    const seat = await ensureProvider();
     assertPermission("screenRecording");
     const limit = Math.max(1, Math.min(MAX_OBSERVATION_LIMIT, Math.round(args.limit ?? MAX_OBSERVATION_LIMIT)));
     // Frames go to the one root `workToolsStateService.readObservationPreview`
@@ -709,7 +742,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     const stem = `${now()}-${Math.random().toString(36).slice(2, 8)}`;
     const screenshotPath = observations.observationPath(laneId, stem, "png");
     const mapPath = args.map ? observations.observationPath(laneId, `${stem}-map`, "png") : null;
-    const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.observe, {
+    const reply = asRecord(await seat.observe({
       laneId,
       windowId: args.windowId ?? null,
       limit,
@@ -804,8 +837,21 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const leaseHolderId = (chatSessionId: string | null | undefined): string =>
     chatSessionId?.trim() || "anonymous-agent";
 
-  const assertRealInputAllowed = (laneId: string, chatSessionId: string | null | undefined): void => {
-    const decision = leases.checkRealInput({ laneId, holderId: leaseHolderId(chatSessionId) });
+  /**
+   * Who this call claims to be, for the lease check.
+   *
+   * A human takeover holds the lease under the controller id the viewing client
+   * minted (`ade-window:<uuid>`), never under a chat session id — so a panel
+   * that sent only its `chatSessionId` was refused with
+   * `MAC_DESKTOP_USER_HAS_CONTROL` for the very input the user had taken
+   * control to perform. `controllerId` authorizes nothing by itself: an id that
+   * does not hold the lease is refused exactly as before.
+   */
+  const inputHolderId = (args: { controllerId?: string | null; chatSessionId?: string | null }): string =>
+    args.controllerId?.trim() || leaseHolderId(args.chatSessionId);
+
+  const assertRealInputAllowed = (laneId: string, holderId: string): void => {
+    const decision = leases.checkRealInput({ laneId, holderId });
     if (decision.ok) return;
     throw new MacDesktopError(decision.code, decision.message);
   };
@@ -818,24 +864,32 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     payload: Record<string, unknown>;
     resolved: MacDesktopElement | null;
     chatSessionId?: string | null;
+    controllerId?: string | null;
     caption: string;
     target: Record<string, unknown> | null;
   }): Promise<MacDesktopActionResult> => {
     const laneId = args.laneId;
     requireDisplay(laneId);
-    const client = await ensureDriver();
-    assertPermission(args.mode === "real" ? "accessibility" : "accessibility");
-    if (args.mode === "real") assertRealInputAllowed(laneId, args.chatSessionId);
+    const seat = await ensureProvider();
+    // Both modes drive the accessibility API: `real` posts a `CGEvent` at a
+    // point this process resolved through that same tree.
+    assertPermission("accessibility");
+    const holderId = inputHolderId(args);
+    if (args.mode === "real") assertRealInputAllowed(laneId, holderId);
     const startedAt = new Date(now()).toISOString();
     const startedMs = now();
     let resolvedIndex: number | null = null;
     let failure: Error | null = null;
     try {
-      const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.input, {
+      const reply = asRecord(await seat.input({
         laneId,
         command: args.command,
         mode: args.mode,
         payload: args.payload,
+        // The helper keeps its own lease and refuses a `CGEvent` post rather
+        // than trusting its caller. Telling it which holder this process just
+        // authorized is what lets the two agree instead of racing.
+        ...(args.mode === "real" ? { lease: { holderId } } : {}),
       }));
       resolvedIndex = typeof reply.resolvedIndex === "number" ? reply.resolvedIndex : null;
     } catch (error) {
@@ -843,7 +897,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     }
     streamServer.noteActivity(laneId);
     ownership.touchDisplay(laneId);
-    noteTurnActivity(laneId, args.chatSessionId);
+    recording.noteTurnActivity(laneId, args.chatSessionId);
     if (failure) throw failure;
     const observation = await observeInternal({
       laneId,
@@ -884,69 +938,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   ): MacDesktopInputMode => (needsReal ? "real" : requested ?? "accessibility");
 
   // -------------------------------------------------------------------------
-  // The per-turn time-lapse
-  // -------------------------------------------------------------------------
-
-  /**
-   * Starts (or extends) the clip for the turn that is acting right now.
-   *
-   * There is no cheap frame-assembler in the runtime — no ffmpeg, no encoder —
-   * so the clip is the helper's own low-rate recording rather than a pile of
-   * stills stitched later. A user-started recording wins: one lane has one
-   * writer, and the reviewer-facing capture is the one that matters.
-   */
-  function noteTurnActivity(laneId: string, chatSessionId: string | null | undefined): void {
-    const chatId = chatSessionId?.trim();
-    if (!chatId) return;
-    if (recordings.get(laneId)?.running) return;
-    const existing = observations.getTurnRecording(laneId, chatId);
-    if (!existing) return;
-    observations.noteTurnFrame(laneId, chatId);
-  }
-
-  const startTurnClip = async (laneId: string, chatSessionId: string, turnId: string): Promise<void> => {
-    if (recordings.get(laneId)?.running) return;
-    // Under the artifact root, not the scratch root: the thread plays the clip
-    // through `ade-artifact://<path>`, and main only serves that scheme from
-    // inside `.ade/artifacts`. A clip written anywhere else is a 404 in the UI.
-    const filePath = observations.artifactPath(`mac-desktop-turn-${turnId}`, "mp4");
-    const recording = observations.beginTurnRecording({ laneId, chatSessionId, turnId, filePath });
-    if (!recording) return;
-    try {
-      const client = await ensureDriver();
-      await client.request(MAC_DESKTOP_DRIVER_OPS.startRecording, { laneId, fps: 4, filePath });
-    } catch (error) {
-      observations.endTurnRecording(laneId, chatSessionId);
-      deps.logger.debug("mac_desktop.turn_clip_start_failed", {
-        laneId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
-
-  // -------------------------------------------------------------------------
-  // Streaming
-  // -------------------------------------------------------------------------
-
-  const stopStreamInternal = async (laneId: string, reason: string): Promise<MacDesktopStreamStatus> => {
-    const wasStreaming = streamServer.isStreaming(laneId);
-    streamServer.stop(laneId);
-    streamOwners.delete(laneId);
-    if (isDarwin && driver && driver.isRunning()) {
-      await driver.request(MAC_DESKTOP_DRIVER_OPS.stopStream, { laneId }).catch((error: unknown) => {
-        deps.logger.debug("mac_desktop.stop_stream_failed", {
-          laneId,
-          reason,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
-    const status = buildStreamStatus(laneId, { redacted: true })!;
-    if (wasStreaming) emit({ type: "stream-stopped", status });
-    return status;
-  };
-
-  // -------------------------------------------------------------------------
   // The API
   // -------------------------------------------------------------------------
 
@@ -965,8 +956,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
             error: error instanceof Error ? error.message : String(error),
           });
         });
-      } else if (driver.isRunning()) {
-        await refreshDriverHealth(driver);
+      } else if (driver.isRunning() && provider) {
+        await refreshDriverHealth(driver, provider);
       }
       return await buildStatus(args);
     },
@@ -1007,13 +998,13 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       assertSupported();
       const laneId = args.laneId.trim();
       requireDisplay(laneId);
-      const client = await ensureDriver();
+      const seat = await ensureProvider();
       assertPermission("accessibility");
-      const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.launch, {
+      const reply = asRecord(await seat.launch({
         laneId,
         target: args.target,
         args: args.args ?? [],
-      }, { timeoutMs: 60_000 }));
+      }));
       const windows = asWindows(reply.windows);
       const bundleId = asNullableString(reply.bundleId);
       const pid = typeof reply.pid === "number" ? reply.pid : null;
@@ -1053,7 +1044,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       assertSupported();
       const laneId = args.laneId.trim();
       requireDisplay(laneId);
-      const client = await ensureDriver();
+      const seat = await ensureProvider();
       assertPermission("accessibility");
       const existing = ownership.getWindow(args.windowId);
       if (existing && existing.laneId !== laneId && existing.singleInstance && existing.bundleId) {
@@ -1064,11 +1055,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           appName: existing.appName,
         });
       }
-      const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.parkWindow, {
-        laneId,
-        windowId: args.windowId,
-      }));
-      const window = (reply.window ? reply.window : reply) as MacDesktopWindow;
+      const window = await seat.park({ laneId, windowId: args.windowId });
       ownership.claimWindow({
         laneId,
         windowId: window.id ?? args.windowId,
@@ -1086,14 +1073,14 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async releaseWindow(args: MacDesktopReleaseArgs): Promise<{ released: number }> {
       assertSupported();
       const laneId = args.laneId.trim();
-      const client = await ensureDriver();
+      const seat = await ensureProvider();
       const targets = args.windowId != null
         ? [args.windowId]
         : ownership.listWindowRecords(laneId).map((record) => record.windowId);
       let released = 0;
       for (const windowId of targets) {
         try {
-          await client.request(MAC_DESKTOP_DRIVER_OPS.unparkWindow, { windowId });
+          await seat.unpark({ windowId });
           ownership.releaseWindow(windowId);
           released += 1;
         } catch (error) {
@@ -1131,6 +1118,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         },
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
+        controllerId: args.controllerId ?? null,
         caption: `click · ${label}`,
         target: { ...target.payload },
       });
@@ -1149,6 +1137,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         payload: { ...target.payload, text: args.text, clear: args.clear === true },
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
+        controllerId: args.controllerId ?? null,
         caption: `type · ${args.text.slice(0, 40)}`,
         target: { ...target.payload },
       });
@@ -1165,6 +1154,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         payload: { key: args.key, modifiers: args.modifiers ?? [] },
         resolved: null,
         chatSessionId: args.chatSessionId ?? null,
+        controllerId: args.controllerId ?? null,
         caption: `press · ${[...(args.modifiers ?? []), args.key].join("+")}`,
         target: { key: args.key, modifiers: args.modifiers ?? [] },
       });
@@ -1187,6 +1177,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         },
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
+        controllerId: args.controllerId ?? null,
         caption: `scroll · ${args.direction}`,
         target: { ...target.payload, direction: args.direction },
       });
@@ -1211,6 +1202,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         },
         resolved: from.element,
         chatSessionId: args.chatSessionId ?? null,
+        controllerId: args.controllerId ?? null,
         caption: "drag",
         target: { from: from.payload, to: to.payload },
       });
@@ -1220,10 +1212,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       assertSupported();
       const laneId = args.laneId.trim();
       requireDisplay(laneId);
-      const client = await ensureDriver();
+      const seat = await ensureProvider();
       const timeoutMs = Math.max(0, Math.min(MAX_WAIT_TIMEOUT_MS, Math.round(args.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)));
       const startedMs = now();
-      const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.input, {
+      const reply = asRecord(await seat.input({
         laneId,
         command: "wait",
         mode: "accessibility",
@@ -1233,7 +1225,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           windowTitle: args.windowTitle ?? null,
           timeoutMs,
         },
-      }, { timeoutMs: timeoutMs + 5_000 }));
+        timeoutMs: timeoutMs + 5_000,
+      }));
       const observation = await observeInternal({
         laneId,
         chatSessionId: args.chatSessionId ?? null,
@@ -1257,12 +1250,12 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       assertSupported();
       const laneId = args.laneId.trim();
       const display = requireDisplay(laneId);
-      const client = await ensureDriver();
+      const seat = await ensureProvider();
       assertPermission("screenRecording");
       const filePath = args.out
         ? await observations.resolveOutPath({ laneId, out: args.out })
         : observations.scratchPath(`mac-desktop-${laneId}`, "png");
-      const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.screenshot, {
+      const reply = asRecord(await seat.screenshot({
         laneId,
         windowId: args.windowId ?? null,
         path: filePath,
@@ -1279,182 +1272,33 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
     async startRecording(args: MacDesktopRecordStartArgs): Promise<MacDesktopRecordingStatus> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      requireDisplay(laneId);
-      const client = await ensureDriver();
-      assertPermission("screenRecording");
-      const existing = recordings.get(laneId);
-      if (existing?.running) return existing;
-      // Same root as the turn clip: a captioned recording is played back in
-      // the thread before it is ever filed as proof.
-      const filePath = observations.artifactPath(`mac-desktop-recording-${laneId}`, "mp4");
-      const fps = Math.max(1, Math.min(60, Math.round(args.fps ?? 15)));
-      await client.request(MAC_DESKTOP_DRIVER_OPS.startRecording, { laneId, fps, filePath });
-      const status: MacDesktopRecordingStatus = {
-        laneId,
-        running: true,
-        startedAt: new Date(now()).toISOString(),
-        filePath: null,
-        durationMs: null,
-        caption: args.caption?.trim() || null,
-      };
-      recordings.set(laneId, status);
-      emit({ type: "recording-changed", status });
-      return status;
+      return await recording.startRecording(args);
     },
 
     async stopRecording(args: { laneId: string; chatSessionId?: string | null }): Promise<MacDesktopRecordingStatus> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      const existing = recordings.get(laneId);
-      if (!existing?.running) {
-        throw new MacDesktopError(
-          "MAC_DESKTOP_RECORDING_NOT_RUNNING",
-          `Lane ${laneId} is not recording its desktop.`,
-        );
-      }
-      const client = await ensureDriver();
-      const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.stopRecording, { laneId }, { timeoutMs: 60_000 }));
-      const status: MacDesktopRecordingStatus = {
-        ...existing,
-        running: false,
-        filePath: asNullableString(reply.filePath),
-        durationMs: asNumber(reply.durationMs, 0),
-      };
-      recordings.set(laneId, status);
-      emit({ type: "recording-changed", status });
-      // A caption is the opt-in that makes the file reviewer-facing evidence.
-      // Without one it stays a scratch file and nothing reaches the drawer.
-      if (status.caption && status.filePath) {
-        await observations.ingestProof({
-          laneId,
-          chatSessionId: args.chatSessionId ?? null,
-          toolName: "desktop record",
-          title: status.caption,
-          caption: status.caption,
-          filePath: status.filePath,
-          kind: "video_recording",
-          metadata: { durationMs: status.durationMs },
-        }).catch((error: unknown) => {
-          deps.logger.warn("mac_desktop.recording_proof_failed", {
-            laneId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }
-      return status;
+      return await recording.stopRecording(args);
     },
 
     async startStream(args: MacDesktopStartStreamArgs): Promise<MacDesktopStreamStatus> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      requireDisplay(laneId);
-      const client = await ensureDriver();
-      assertPermission("screenRecording");
-      const fps = Math.max(1, Math.min(60, Math.round(args.fps ?? MAC_DESKTOP_ACTIVE_FPS)));
-      const idleFps = Math.max(1, Math.min(fps, Math.round(args.idleFps ?? MAC_DESKTOP_IDLE_FPS)));
-      const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.startStream, { laneId, fps }));
-      const sourcePort = asNumber(reply.port, 0);
-      if (!sourcePort) {
-        throw new MacDesktopError(
-          "MAC_DESKTOP_DRIVER_UNAVAILABLE",
-          "The desktop driver did not hand back a stream port.",
-        );
-      }
-      const transport = await streamServer.start({
-        laneId,
-        sourcePort,
-        codec: asNullableString(reply.codec),
-        width: typeof reply.width === "number" ? reply.width : null,
-        height: typeof reply.height === "number" ? reply.height : null,
-        fps,
-        idleFps,
-      });
-      streamOwners.set(laneId, args.chatSessionId?.trim() || null);
-      ownership.touchDisplay(laneId);
-      // The only call that hands out the token.
-      const status = buildStreamStatus(laneId, { redacted: false, transport })!;
-      emit({ type: "stream-started", status: buildStreamStatus(laneId, { redacted: true })! });
-      return status;
+      return await streaming.startStream(args);
     },
 
     async stopStream(args: { laneId: string }): Promise<MacDesktopStreamStatus> {
       assertSupported();
-      return await stopStreamInternal(args.laneId.trim(), "stopped");
+      return await streaming.stopStream(args.laneId.trim(), "stopped");
     },
 
     async getStreamStatus(args: { laneId: string }): Promise<MacDesktopStreamStatus> {
       assertSupported();
       // Redacted by construction: this read is on the agent action allowlist.
-      return buildStreamStatus(args.laneId.trim(), { redacted: true })!;
+      return streaming.buildStreamStatus(args.laneId.trim(), { redacted: true });
     },
 
     async requestInputLease(args: MacDesktopLeaseRequestArgs): Promise<MacDesktopLeaseRequestResult> {
       assertSupported();
-      const laneId = args.laneId.trim();
-      const chatSessionId = args.chatSessionId.trim();
-      requireDisplay(laneId);
-      if (!chatSessionId) {
-        return {
-          granted: false,
-          code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED",
-          lease: null,
-        };
-      }
-      const grantNow = (): MacDesktopLeaseRequestResult => {
-        const decision = leases.grantToAgent({
-          laneId,
-          holder: "agent",
-          holderId: chatSessionId,
-          holderLabel: null,
-        });
-        if (!decision.ok) return { granted: false, code: decision.code, lease: decision.lease };
-        void pushLease(laneId, decision.lease);
-        emit({ type: "lease-changed", laneId, lease: decision.lease });
-        return { granted: true, code: null, lease: decision.lease };
-      };
-
-      // Asked once per chat, for the chat's whole life. A second request is a
-      // silent re-grant rather than a second card in the user's face.
-      if (leases.isChatApproved(laneId, chatSessionId)) return grantNow();
-
-      const reason = args.reason?.trim() || "drive this display with real pointer and keyboard input";
-      emit({ type: "lease-requested", laneId, chatSessionId, reason: args.reason?.trim() ?? null });
-      if (!deps.requestChatInput) {
-        return { granted: false, code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED", lease: null };
-      }
-      const response = await deps.requestChatInput({
-        chatSessionId,
-        title: "Real input on the lane's display",
-        body: `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this Mac.`,
-        questions: [{
-          id: "mac_desktop_input_lease",
-          header: "Real input",
-          question: `Allow this chat to use real pointer and keyboard input on its Mac Desktop display? (${reason})`,
-          options: [
-            { label: "Allow", value: "allow", recommended: true },
-            { label: "Don't allow", value: "deny" },
-          ],
-          allowsFreeform: true,
-        }],
-        providerMetadata: { macDesktopInputLease: true, laneId },
-        eventDescription: `Allow real input on the Mac Desktop display for ${reason}?`,
-        eventDetail: { macDesktopInputLease: true, laneId },
-      });
-      const answer = [
-        ...(response.answers?.mac_desktop_input_lease ?? []),
-        response.responseText ?? "",
-      ].join(" ").toLowerCase();
-      const denied = response.decision === "decline"
-        || response.decision === "cancel"
-        || answer.includes("deny")
-        || answer.includes("don't allow")
-        || answer.includes("do not allow");
-      if (denied || (!answer.includes("allow") && response.decision !== "accept")) {
-        return { granted: false, code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED", lease: null };
-      }
-      leases.approveChat(laneId, chatSessionId);
-      return grantNow();
+      return await leaseFlow.requestInputLease(args);
     },
 
     async takeControl(args: MacDesktopTakeoverArgs): Promise<MacDesktopLeaseState> {
@@ -1499,11 +1343,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       assertSupported();
       const laneId = args.laneId.trim();
       requireDisplay(laneId);
-      const client = await ensureDriver();
-      const reply = asRecord(await client.request(MAC_DESKTOP_DRIVER_OPS.present, {
-        laneId,
-        destination: args.destination,
-      }));
+      const seat = await ensureProvider();
+      const reply = asRecord(await seat.present({ laneId, destination: args.destination }));
       ownership.touchDisplay(laneId);
       emit({ type: "windows-changed", laneId, windows: await listWindowsInternal(laneId) });
       return { moved: asNumber(reply.moved, 0) };
@@ -1514,34 +1355,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       chatSessionId: string;
       turnId: string;
     }): Promise<MacDesktopTimeLapse | null> {
-      if (!isDarwin) return null;
-      const laneId = args.laneId.trim();
-      const chatSessionId = args.chatSessionId.trim();
-      const recording = observations.endTurnRecording(laneId, chatSessionId);
-      if (!recording || recording.turnId !== args.turnId) return null;
-      if (!driver || !driver.isRunning()) return null;
-      try {
-        const reply = asRecord(await driver.request(MAC_DESKTOP_DRIVER_OPS.stopRecording, { laneId }, { timeoutMs: 60_000 }));
-        const filePath = asNullableString(reply.filePath) ?? recording.filePath;
-        const timeLapse: MacDesktopTimeLapse = {
-          laneId,
-          chatSessionId,
-          turnId: args.turnId,
-          filePath,
-          durationMs: asNumber(reply.durationMs, Math.max(0, now() - recording.startedAtMs)),
-          frameCount: recording.frameCount,
-          createdAt: new Date(now()).toISOString(),
-        };
-        // Context, not proof: it never reaches the artifact broker.
-        emit({ type: "time-lapse", timeLapse });
-        return timeLapse;
-      } catch (error) {
-        deps.logger.debug("mac_desktop.turn_clip_stop_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return null;
-      }
+      return await recording.noteTurnEnded(args);
     },
 
     /** Runs on every platform: a closing chat must drop its lease anywhere. */
@@ -1556,10 +1370,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           // chat from closing; the helper's own TTL covers it.
         });
       }
-      for (const [laneId, owner] of [...streamOwners]) {
-        if (owner !== trimmed) continue;
-        await stopStreamInternal(laneId, "owner-chat-ended").catch(() => {});
-      }
+      await streaming.stopOwnedBy(trimmed);
+      // The chat that opened a turn clip is gone; the helper's one recorder per
+      // lane must not stay held by a turn that can never end.
+      for (const lease of dropped) await recording.stopTurnClips(lease.laneId);
       return { released: dropped.length > 0 };
     },
 
@@ -1596,44 +1410,17 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         clearInterval(sweepTimer);
         sweepTimer = null;
       }
-      streamServer.dispose();
+      streaming.dispose();
       driverEventUnsubscribe?.();
       driverEventUnsubscribe = null;
       driver?.dispose();
       driver = null;
+      provider = null;
       ownership.clear();
       startLocks.clear();
-      recordings.clear();
-      streamOwners.clear();
+      recording.clear();
     },
   };
-
-  /**
-   * Tells the helper who holds the lease.
-   *
-   * The driver refuses a `CGEvent` post itself rather than trusting its caller,
-   * so this is what makes that refusal correct — and why a failure to push is
-   * logged rather than swallowed silently.
-   */
-  async function pushLease(laneId: string, lease: MacDesktopLeaseState | null): Promise<void> {
-    if (!isDarwin || !driver || !driver.isRunning()) return;
-    try {
-      if (lease) {
-        await driver.request(MAC_DESKTOP_DRIVER_OPS.setLease, {
-          laneId,
-          holderId: lease.holderId,
-          expiresAt: lease.expiresAt,
-        });
-      } else {
-        await driver.request(MAC_DESKTOP_DRIVER_OPS.clearLease, { laneId });
-      }
-    } catch (error) {
-      deps.logger.warn("mac_desktop.lease_push_failed", {
-        laneId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
 
   return Object.assign(api, {
     /** The sync half of `getDisplay`, for the prompt gate and the turn clip. */
@@ -1645,7 +1432,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     /** Opens the turn clip. Called by the chat runtime on the turn's first act. */
     beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void> {
       if (!isDarwin) return Promise.resolve();
-      return startTurnClip(args.laneId.trim(), args.chatSessionId.trim(), args.turnId);
+      return recording.startTurnClip(args.laneId.trim(), args.chatSessionId.trim(), args.turnId);
     },
     /** The KV key the resolution preset is stored under. */
     resolutionSettingKey: MAC_DESKTOP_RESOLUTION_SETTING_KEY,

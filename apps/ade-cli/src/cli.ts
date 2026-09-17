@@ -139,6 +139,7 @@ import {
   MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
   MAC_DESKTOP_PROOF_BACKEND_NAME,
   MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE,
+  MAC_DESKTOP_RESOLUTION_PRESETS,
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
   MAC_DESKTOP_USER_HAS_CONTROL_CODE,
   MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
@@ -11828,48 +11829,67 @@ const MAC_DESKTOP_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set(MAC_DESKTOP_V
  * terminal, so only this layer adds the command. The daemon flattens the error
  * to its message, so the `MAC_DESKTOP_*` prefix is the only thing to key on.
  */
-function macDesktopErrorHint(message: string): string | null {
-  if (message.includes(MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE)) {
-    return "Mac Desktop needs a macOS runtime host. Run this against a Mac runtime, or use `ade browser` / `ade app-control` here.";
-  }
-  if (message.includes(MAC_DESKTOP_PERMISSION_REQUIRED_CODE)) {
-    return "Grant the missing permission in System Settings → Privacy & Security → Screen Recording and Accessibility, then re-run: ade mac-desktop status --text";
-  }
-  if (message.includes(MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE)) {
-    return "The ADE desktop driver is not running. Check it with: ade mac-desktop status --text";
-  }
-  if (message.includes(MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE)) {
-    return "No virtual display could be created on this Mac. `ade mac-desktop status --text` reports the mode it fell back to.";
-  }
-  if (message.includes(MAC_DESKTOP_NO_DISPLAY_CODE)) {
-    return "This lane has no display yet — run: ade mac-desktop start";
-  }
-  if (message.includes(MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE)) {
+/**
+ * One row per code, in the order they are checked.
+ *
+ * A table rather than a ladder of ifs: the codes are a closed set that lives in
+ * the shared contract, and a table is the shape that can be read against it.
+ */
+const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: string]> = [
+  [
+    MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
+    "Mac Desktop needs a macOS runtime host. Run this against a Mac runtime, or use `ade browser` / `ade app-control` here.",
+  ],
+  [
+    MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
+    "Grant the missing permission in System Settings → Privacy & Security → Screen Recording and Accessibility, then re-run: ade mac-desktop status --text",
+  ],
+  [
+    MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE,
+    "The ADE desktop driver is not running. Check it with: ade mac-desktop status --text",
+  ],
+  [
+    MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE,
+    "No virtual display could be created on this Mac. `ade mac-desktop status --text` reports the mode it fell back to.",
+  ],
+  [MAC_DESKTOP_NO_DISPLAY_CODE, "This lane has no display yet — run: ade mac-desktop start"],
+  [
     // The message already names the holding lane; the hint does not restate it.
-    return "That app is single-instance and the lane named above holds it. Wait for that lane, or drive a different app.";
-  }
-  if (message.includes(MAC_DESKTOP_WINDOW_NOT_FOUND_CODE)) {
-    return "Window ids die with their process — re-enumerate with: ade mac-desktop windows --text";
-  }
-  if (message.includes(MAC_DESKTOP_HANDLE_EXPIRED_CODE)) {
-    return "That handle belongs to an older observation — re-observe with: ade mac-desktop observe --text";
-  }
-  if (message.includes(MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE)) {
-    return "Real pointer and keyboard input needs the user's approval once per chat — run: ade mac-desktop lease";
-  }
-  if (message.includes(MAC_DESKTOP_USER_HAS_CONTROL_CODE)) {
-    return "The user has control; wait for them to hand it back, then retry.";
-  }
-  if (message.includes(MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE)) {
-    return "Another controller holds the input lease. Wait for it to lapse, or use accessibility input (drop --real).";
-  }
-  if (message.includes(MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE)) {
-    return "No recording is running — start one with: ade mac-desktop record start";
-  }
-  if (message.includes(MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE)) {
-    return "--out must land inside the lane worktree named above — drop --out to use the default scratch path.";
-  }
-  return null;
+    MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
+    "That app is single-instance and the lane named above holds it. Wait for that lane, or drive a different app.",
+  ],
+  [
+    MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
+    "Window ids die with their process — re-enumerate with: ade mac-desktop windows --text",
+  ],
+  [
+    MAC_DESKTOP_HANDLE_EXPIRED_CODE,
+    "That handle belongs to an older observation — re-observe with: ade mac-desktop observe --text",
+  ],
+  [
+    MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+    "Real pointer and keyboard input needs the user's approval once per chat — run: ade mac-desktop lease",
+  ],
+  [
+    MAC_DESKTOP_USER_HAS_CONTROL_CODE,
+    "The user has control; wait for them to hand it back, then retry.",
+  ],
+  [
+    MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE,
+    "Another controller holds the input lease. Wait for it to lapse, or use accessibility input (drop --real).",
+  ],
+  [
+    MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE,
+    "No recording is running — start one with: ade mac-desktop record start",
+  ],
+  [
+    MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
+    "--out must land inside the lane worktree named above — drop --out to use the default scratch path.",
+  ],
+];
+
+function macDesktopErrorHint(message: string): string | null {
+  return MAC_DESKTOP_ERROR_HINTS.find(([code]) => message.includes(code))?.[1] ?? null;
 }
 
 /** `handle` / `x,y` / bare text, as the service's target trio. */
@@ -12150,9 +12170,12 @@ function buildMacDesktopPlan(args: string[]): CliPlan {
     // racing a second one into existence.
     if (!resolution)
       return desktopAction("mac-desktop display", "getStatus", { ...requireLane() }, "mac-desktop-status");
-    if (!["1080p", "1440p", "4k"].includes(resolution)) {
+    // Derived from the shared table: a preset added there and forgotten here
+    // was a resolution the service supports and the CLI refuses.
+    const presets = Object.keys(MAC_DESKTOP_RESOLUTION_PRESETS);
+    if (!presets.includes(resolution)) {
       throw new CliUsageError(
-        `mac-desktop display: unknown resolution '${resolution}'. Valid values: 1080p, 1440p, 4k.`,
+        `mac-desktop display: unknown resolution '${resolution}'. Valid values: ${presets.join(", ")}.`,
       );
     }
     return desktopAction("mac-desktop display", "start", {

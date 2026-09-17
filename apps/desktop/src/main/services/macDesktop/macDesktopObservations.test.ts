@@ -146,11 +146,49 @@ describe("macDesktopObservations out paths", () => {
     expect(code).toBe("MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT");
   });
 
+  it("refuses a leaf that is itself a symlink", async () => {
+    const projectRoot = makeRoot();
+    const worktree = path.join(projectRoot, "worktrees", "lane-1");
+    const outside = path.join(projectRoot, "outside");
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, "secret"), "x", "utf8");
+    // Planted by anything that can write one file in the worktree. Every
+    // directory on the way is inside the root, so only the leaf gives it away
+    // — and the capture would otherwise be written straight through the link.
+    fs.symlinkSync(path.join(outside, "secret"), path.join(worktree, "shot.png"));
+    const store = createMacDesktopObservations({
+      projectRoot,
+      resolveLaneWorktreePath: () => worktree,
+    });
+    await expect(store.resolveOutPath({ laneId: "lane-1", out: "shot.png" })).rejects.toMatchObject({
+      code: "MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT",
+    });
+  });
+
   it("refuses an empty path", async () => {
     const store = createMacDesktopObservations({ projectRoot: makeRoot() });
     await expect(store.resolveOutPath({ laneId: "lane-1", out: "   " })).rejects.toMatchObject({
       code: "MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT",
     });
+  });
+});
+
+describe("macDesktopObservations turn clips", () => {
+  it("finds and ends a lane's clip whichever chat opened it", () => {
+    const store = createMacDesktopObservations({ projectRoot: makeRoot() });
+    store.beginTurnRecording({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      turnId: "turn-1",
+      filePath: "/tmp/a.mp4",
+    });
+    // The helper has one recorder per lane, so "is a clip running here" is a
+    // lane question, not a chat question.
+    expect(store.findTurnRecordingForLane("lane-1")).toMatchObject({ turnId: "turn-1" });
+    expect(store.findTurnRecordingForLane("lane-2")).toBeNull();
+    expect(store.endTurnRecordingsForLane("lane-1").map((entry) => entry.turnId)).toEqual(["turn-1"]);
+    expect(store.findTurnRecordingForLane("lane-1")).toBeNull();
   });
 });
 

@@ -45,12 +45,18 @@ public struct InputLease: Equatable, Sendable {
 }
 
 public enum InputLeaseError: Error, Equatable {
+    case holderRequired(laneId: String)
     case missing(laneId: String)
     case expired(laneId: String)
     case heldByOther(laneId: String, holderId: String)
 
     public var driverError: DriverError {
         switch self {
+        case .holderRequired(let laneId):
+            return DriverError(
+                code: DriverErrorCode.inputLeaseRequired,
+                message: "Real pointer and keyboard input on lane \(laneId) must name the lease holder it is acting as."
+            )
         case .missing(let laneId):
             return DriverError(
                 code: DriverErrorCode.inputLeaseRequired,
@@ -100,37 +106,31 @@ public final class InputLeaseStore: @unchecked Sendable {
 
     /// The whole gate.
     ///
-    /// `holderId` is checked when the caller states one: a request that names a
-    /// holder is claiming to be that holder, and a stale chat replaying its own
-    /// old request line after the lease moved on must not be let through.
+    /// `holderId` is *required*, not merely checked when offered. The service
+    /// sends `lease: {holderId}` on every real-input request, so a line without
+    /// one is not a well-behaved caller being terse — it is a replay, or a
+    /// forgery, and treating an absent holder as "the holder, presumably" would
+    /// let either move the user's pointer. A request that names a holder is
+    /// claiming to be that holder, and a stale chat replaying its own old line
+    /// after the lease moved on is refused by name.
     public func authorize(
         laneId: String,
         holderId: String?,
         now: Date = Date()
     ) throws -> InputLease {
+        guard let holderId, !holderId.isEmpty else {
+            throw InputLeaseError.holderRequired(laneId: laneId)
+        }
         guard let lease = lease(forLane: laneId) else {
             throw InputLeaseError.missing(laneId: laneId)
         }
         guard lease.isValid(now: now) else {
             throw InputLeaseError.expired(laneId: laneId)
         }
-        if let holderId, !holderId.isEmpty, holderId != lease.holderId {
+        if holderId != lease.holderId {
             throw InputLeaseError.heldByOther(laneId: laneId, holderId: lease.holderId)
         }
         return lease
-    }
-
-    /// Reads a `lease: {holderId, expiresAt}` object off a request.
-    ///
-    /// `expiresAt` is accepted as epoch milliseconds or as an ISO-8601 string,
-    /// because the Node side stringifies dates everywhere else in this contract
-    /// and a helper that only accepted one of the two would fail closed in the
-    /// most confusing possible way.
-    public static func parse(laneId: String, from request: DriverRequest) -> InputLease? {
-        guard let object = request.object("lease") else { return nil }
-        guard let holderId = object["holderId"]?.stringValue, !holderId.isEmpty else { return nil }
-        guard let expiresAtMs = expiryMilliseconds(object["expiresAt"]) else { return nil }
-        return InputLease(laneId: laneId, holderId: holderId, expiresAtMs: expiresAtMs)
     }
 
     public static func expiryMilliseconds(_ value: JSONValue?) -> Double? {

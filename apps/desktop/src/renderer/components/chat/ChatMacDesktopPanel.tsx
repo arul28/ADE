@@ -1,13 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowsOut,
   CaretDown,
@@ -21,9 +12,9 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
-  MacDesktopStatus,
   MacDesktopWindow,
 } from "../../../shared/types/macDesktop";
+import type { SystemSettingsPaneId } from "../../../shared/types/systemSettings";
 import { cn } from "../ui/cn";
 import {
   WORK_TOOL_CHROME_CHIP,
@@ -31,19 +22,16 @@ import {
   WORK_TOOL_PRIMARY_BUTTON,
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
-import { IosSimH264Video } from "./IosSimH264Video";
-import { openIosSimSettingsPane } from "./iosSimContracts";
-import {
-  MAC_DESKTOP_CURSOR_FADE_MS,
-  displayPointToViewPoint,
-  viewPointToDisplayPoint,
-} from "./macDesktopGeometry";
+import { H264VideoCanvas } from "./H264VideoCanvas";
+import { macDesktopApi } from "./macDesktopApi";
+import { displayPointToViewPoint, viewPointToDisplayPoint } from "./macDesktopGeometry";
 import {
   createMacDesktopLeaseHeartbeat,
   macDesktopUserHasControl,
 } from "./macDesktopLease";
-import { captionMacDesktopFrame, clearMacDesktopFrame } from "./macDesktopFrameStore";
 import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
+import { useMacDesktopRealInput } from "./useMacDesktopRealInput";
+import { useMacDesktopStatus } from "./useMacDesktopStatus";
 
 /**
  * The lane's private macOS screen, as a Work tools pane tool.
@@ -63,19 +51,6 @@ import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
  */
 
 /**
- * The namespace, or a stated absence.
- *
- * Every call in this panel goes through here so that a surface without the
- * namespace shows the panel's own error line instead of throwing out of an
- * effect and taking the Work pane with it.
- */
-function macDesktopApi(): NonNullable<Window["ade"]["macDesktop"]> {
-  const api = window.ade.macDesktop;
-  if (!api) throw new Error("Mac Desktop is not available on this surface.");
-  return api;
-}
-
-/**
  * This window's identity as a lease controller.
  *
  * Stable for the life of the renderer and unique per window: the lease is held
@@ -92,8 +67,6 @@ function macDesktopControllerId(): string {
   return controllerId;
 }
 
-type AgentCursor = { x: number; y: number; at: number; caption: string | null };
-
 export type ChatMacDesktopPanelProps = {
   laneId: string;
   laneName?: string | null;
@@ -108,23 +81,28 @@ export function ChatMacDesktopPanel({
   sessionId,
   runtimePin,
 }: ChatMacDesktopPanelProps) {
-  const [status, setStatus] = useState<MacDesktopStatus | null>(null);
-  const [startError, setStartError] = useState<string | null>(null);
+  const {
+    status,
+    setStatus,
+    error: statusError,
+    setError: setStatusError,
+    refresh: refreshStatus,
+    cursor,
+  } = useMacDesktopStatus({ laneId, laneName, sessionId, runtimePin });
   const [windowsOpen, setWindowsOpen] = useState(false);
-  const [cursor, setCursor] = useState<AgentCursor | null>(null);
   const [busy, setBusy] = useState(false);
   const [viewRect, setViewRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
 
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const display: MacDesktopDisplay | null = status?.display ?? null;
   const lease: MacDesktopLeaseState | null = status?.lease ?? null;
   const windows: MacDesktopWindow[] = status?.windows ?? [];
   const supported = status?.supported ?? null;
   const iHaveControl = macDesktopUserHasControl(lease, macDesktopControllerId());
+  const anyWindowParked = windows.some((entry) => entry.onDisplayId === display?.displayId);
 
   const live = useMacDesktopLiveView({
     laneId,
@@ -132,131 +110,6 @@ export function ChatMacDesktopPanel({
     enabled: Boolean(display),
     chatSessionId: sessionId,
   });
-
-  /* ── Status: one read, then events ───────────────────────────────────── */
-
-  const refreshStatus = useCallback(async () => {
-    const next = await macDesktopApi().getStatus(
-      { laneId, chatSessionId: sessionId },
-      pinRef.current,
-    );
-    setStatus(next);
-    return next;
-  }, [laneId, sessionId]);
-
-  /**
-   * Auto-start.
-   *
-   * The spec's "there is no intermediate card" is load bearing: a tab that
-   * opens onto a button saying "Start display" is a step nobody can decline
-   * meaningfully. `start` is idempotent and serialized per lane on the host, so
-   * two chats in the lane opening the tab at once both get the first display.
-   */
-  useEffect(() => {
-    let cancelled = false;
-    setStartError(null);
-    void (async () => {
-      try {
-        const current = await refreshStatus();
-        if (cancelled || !current.supported || current.display) return;
-        const started = await macDesktopApi().start(
-          { laneId, laneName: laneName ?? null, chatSessionId: sessionId },
-          pinRef.current,
-        );
-        if (!cancelled) setStatus(started);
-      } catch (error) {
-        if (!cancelled) setStartError(error instanceof Error ? error.message : String(error));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [laneId, laneName, refreshStatus, sessionId]);
-
-  /**
-   * Events, not a poller.
-   *
-   * Every field the strip shows moves on an event the service already emits, so
-   * a `getStatus` interval here would be a second source of truth that is
-   * always a beat behind the first.
-   */
-  useEffect(() => {
-    const api = window.ade.macDesktop;
-    if (!api) return;
-    return api.onEvent((event) => {
-      switch (event.type) {
-        case "display-created":
-          if (event.display.laneId !== laneId) return;
-          setStatus((current) => (current ? { ...current, display: event.display } : current));
-          return;
-        case "display-destroyed":
-          if (event.laneId !== laneId) return;
-          clearMacDesktopFrame(laneId);
-          setStatus((current) => (current ? { ...current, display: null, windows: [] } : current));
-          return;
-        case "windows-changed":
-          if (event.laneId !== laneId) return;
-          setStatus((current) => (current ? { ...current, windows: event.windows } : current));
-          return;
-        case "lease-changed":
-          if (event.laneId !== laneId) return;
-          setStatus((current) => (current ? { ...current, lease: event.lease } : current));
-          return;
-        case "observation": {
-          if (event.laneId !== laneId) return;
-          const caption = event.observation.caption;
-          captionMacDesktopFrame(laneId, caption);
-          // The agent's cursor is the last action's own point. Elements come
-          // back in the same global plane the display's origin uses, so there
-          // is no second coordinate space to reconcile.
-          const focused = event.observation.elements.find((element) => element.focused)
-            ?? event.observation.elements[0]
-            ?? null;
-          if (focused) {
-            setCursor({ x: focused.center.x, y: focused.center.y, at: Date.now(), caption });
-          }
-          return;
-        }
-        case "recording-changed":
-          if (event.status.laneId !== laneId) return;
-          setStatus((current) => (current ? { ...current, recording: event.status } : current));
-          return;
-        case "stream-started":
-        case "stream-status":
-        case "stream-stopped":
-        case "stream-error":
-          if (event.status.laneId !== laneId) return;
-          setStatus((current) => (current
-            ? {
-                ...current,
-                stream: {
-                  running: event.status.running,
-                  idle: event.status.idle,
-                  fps: event.status.fps,
-                  bitrateKbps: event.status.bitrateKbps,
-                  lastError: event.status.lastError,
-                },
-              }
-            : current));
-          return;
-        case "permission-changed":
-          setStatus((current) => (current ? { ...current, permissions: event.permissions } : current));
-          return;
-        case "driver-health":
-          setStatus((current) => (current ? { ...current, driver: event.health } : current));
-          return;
-        default:
-          return;
-      }
-    }, pinRef.current);
-  }, [laneId, runtimePin]);
-
-  /** The cursor glyph fades on its own; no timer runs while nothing happened. */
-  useEffect(() => {
-    if (!cursor) return;
-    const timer = setTimeout(() => setCursor(null), MAC_DESKTOP_CURSOR_FADE_MS);
-    return () => clearTimeout(timer);
-  }, [cursor]);
 
   /* ── Geometry ────────────────────────────────────────────────────────── */
 
@@ -300,7 +153,7 @@ export function ChatMacDesktopPanel({
       // The lease is a deadline: a failed return costs at most one TTL, and
       // surfacing it would be a modal about something already self-healing.
     }
-  }, [laneId]);
+  }, [laneId, setStatus]);
 
   const heartbeat = useMemo(
     () => createMacDesktopLeaseHeartbeat({
@@ -312,7 +165,7 @@ export function ChatMacDesktopPanel({
         setStatus((current) => (current ? { ...current, lease: null } : current));
       },
     }),
-    [laneId],
+    [laneId, setStatus],
   );
 
   useEffect(() => {
@@ -352,93 +205,22 @@ export function ChatMacDesktopPanel({
       );
       setStatus((current) => (current ? { ...current, lease: next } : current));
     } catch (error) {
-      setStartError(error instanceof Error ? error.message : String(error));
+      setStatusError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
-  }, [laneId]);
+  }, [laneId, setStatus, setStatusError]);
 
   /* ── Real input, only while the user holds the lease ──────────────────── */
 
-  const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!iHaveControl) return;
-    const point = toDisplayPoint(event.clientX, event.clientY);
-    if (!point) return;
-    dragStartRef.current = point;
-  }, [iHaveControl, toDisplayPoint]);
-
-  const onPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!iHaveControl) return;
-    const from = dragStartRef.current;
-    dragStartRef.current = null;
-    const to = toDisplayPoint(event.clientX, event.clientY);
-    if (!to) return;
-    // A press and release more than a few points apart is a drag, not a click.
-    // Sending it as a click would drop the gesture the user actually made.
-    const dragged = from
-      && (Math.abs(from.x - to.x) > 4 || Math.abs(from.y - to.y) > 4);
-    if (dragged && from) {
-      void macDesktopApi().drag(
-        { laneId, from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y }, mode: "real", chatSessionId: sessionId },
-        pinRef.current,
-      ).catch(() => {});
-      return;
-    }
-    void macDesktopApi().click(
-      {
-        laneId,
-        x: to.x,
-        y: to.y,
-        mode: "real",
-        button: event.button === 2 ? "right" : "left",
-        count: event.detail >= 2 ? 2 : 1,
-        chatSessionId: sessionId,
-      },
-      pinRef.current,
-    ).catch(() => {});
-  }, [iHaveControl, laneId, sessionId, toDisplayPoint]);
-
-  const onWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!iHaveControl) return;
-    const point = toDisplayPoint(event.clientX, event.clientY);
-    if (!point) return;
-    const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
-    void macDesktopApi().scroll(
-      {
-        laneId,
-        x: point.x,
-        y: point.y,
-        mode: "real",
-        direction: horizontal
-          ? (event.deltaX > 0 ? "right" : "left")
-          : (event.deltaY > 0 ? "down" : "up"),
-        amount: Math.max(1, Math.round(Math.abs(horizontal ? event.deltaX : event.deltaY) / 20)),
-        chatSessionId: sessionId,
-      },
-      pinRef.current,
-    ).catch(() => {});
-  }, [iHaveControl, laneId, sessionId, toDisplayPoint]);
-
-  const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!iHaveControl) return;
-    event.preventDefault();
-    const modifiers: Array<"cmd" | "shift" | "option" | "control"> = [];
-    if (event.metaKey) modifiers.push("cmd");
-    if (event.shiftKey) modifiers.push("shift");
-    if (event.altKey) modifiers.push("option");
-    if (event.ctrlKey) modifiers.push("control");
-    // A bare printable character is text, and typing it as text is what makes
-    // dead keys, IME output and pasted-looking input arrive intact. Everything
-    // else — and anything with a command modifier — is a key press.
-    const printable = event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
-    const call = printable
-      ? macDesktopApi().type({ laneId, text: event.key, mode: "real", chatSessionId: sessionId }, pinRef.current)
-      : macDesktopApi().press(
-          { laneId, key: event.key.toLowerCase(), modifiers, mode: "real", chatSessionId: sessionId },
-          pinRef.current,
-        );
-    void call.catch(() => {});
-  }, [iHaveControl, laneId, sessionId]);
+  const realInput = useMacDesktopRealInput({
+    laneId,
+    sessionId,
+    controllerId: macDesktopControllerId(),
+    enabled: iHaveControl,
+    toDisplayPoint,
+    runtimePin,
+  });
 
   /* ── Recording and presenting ────────────────────────────────────────── */
 
@@ -451,11 +233,11 @@ export function ChatMacDesktopPanel({
         : await macDesktopApi().startRecording({ laneId, chatSessionId: sessionId }, pinRef.current);
       setStatus((current) => (current ? { ...current, recording: next } : current));
     } catch (error) {
-      setStartError(error instanceof Error ? error.message : String(error));
+      setStatusError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
-  }, [laneId, recording?.running, sessionId]);
+  }, [laneId, recording?.running, sessionId, setStatus, setStatusError]);
 
   const present = useCallback(async (destination: "main" | "display") => {
     setBusy(true);
@@ -463,19 +245,41 @@ export function ChatMacDesktopPanel({
       await macDesktopApi().present({ laneId, destination }, pinRef.current);
       await refreshStatus();
     } catch (error) {
-      setStartError(error instanceof Error ? error.message : String(error));
+      setStatusError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
-  }, [laneId, refreshStatus]);
+  }, [laneId, refreshStatus, setStatusError]);
 
   const releaseWindow = useCallback(async (windowId: number) => {
     try {
       await macDesktopApi().releaseWindow({ laneId, windowId }, pinRef.current);
     } catch (error) {
-      setStartError(error instanceof Error ? error.message : String(error));
+      setStatusError(error instanceof Error ? error.message : String(error));
     }
-  }, [laneId]);
+  }, [laneId, setStatusError]);
+
+  /**
+   * The one remediation button, routed through the app-level opener.
+   *
+   * `x-apple.systempreferences:` is outside the external-URL scheme allowlist,
+   * so main resolves a pane ID against `SYSTEM_SETTINGS_PANE_URLS` and opens it
+   * itself. A refusal is reported rather than swallowed: a dead "Open System
+   * Settings" button is exactly how this control broke the last time.
+   */
+  const openSettingsPane = useCallback((paneId: SystemSettingsPaneId) => {
+    const failed = () => {
+      setStatusError("Could not open System Settings on this Mac. Open Privacy & Security yourself.");
+    };
+    const open = window.ade.app.openSystemSettingsPane;
+    if (typeof open !== "function") {
+      failed();
+      return;
+    }
+    void open(paneId).then((result) => {
+      if (!result?.opened) failed();
+    }, failed);
+  }, [setStatusError]);
 
   /* ── Render ──────────────────────────────────────────────────────────── */
 
@@ -495,8 +299,8 @@ export function ChatMacDesktopPanel({
     return (
       <WorkToolEmptyLine
         testId="mac-desktop-starting"
-        title={startError ?? "Starting this lane's screen…"}
-        action={startError ? (
+        title={statusError ?? "Starting this lane's screen…"}
+        action={statusError ? (
           <button type="button" className={WORK_TOOL_PRIMARY_BUTTON} onClick={() => void refreshStatus()}>
             <Monitor size={14} />
             Try again
@@ -511,14 +315,14 @@ export function ChatMacDesktopPanel({
    *
    * Screen Recording first when both are missing: without it there is no
    * picture at all, so it is the grant that changes what the user can see. The
-   * pane ids are the simulator's, deliberately — the two tools want the same
-   * two macOS grants and one opener is one thing to keep working.
+   * pane ids are the app-level ones from `SYSTEM_SETTINGS_PANE_URLS`, which is
+   * the one table main resolves against — the renderer never holds the URL.
    */
-  const blockedPermission: { message: string; pane: "screen-recording" | "accessibility" } | null =
+  const blockedPermission: { message: string; pane: SystemSettingsPaneId } | null =
     status?.permissions.screenRecording === "denied"
-      ? { message: "Screen Recording is off for ADE on the lane's Mac.", pane: "screen-recording" }
+      ? { message: "Screen Recording is off for ADE on the lane's Mac.", pane: "macos-screen-recording" }
       : status?.permissions.accessibility === "denied"
-        ? { message: "Accessibility is off for ADE on the lane's Mac.", pane: "accessibility" }
+        ? { message: "Accessibility is off for ADE on the lane's Mac.", pane: "macos-accessibility" }
         : null;
   const parkedLine = windows.length
     ? windows.map((entry) => [entry.appName, entry.title].filter(Boolean).join(" — ")).join(" · ")
@@ -539,6 +343,19 @@ export function ChatMacDesktopPanel({
           <span className="opacity-60">·</span>
           {iHaveControl ? "You are driving" : lease?.holder === "agent" ? "Agent driving" : "Idle"}
         </span>
+
+        {realInput.inputError ? (
+          <button
+            type="button"
+            className={cn(WORK_TOOL_CHROME_CHIP, "max-w-[280px] truncate text-amber-300")}
+            title={realInput.inputError}
+            data-testid="mac-desktop-input-error"
+            onClick={realInput.clearInputError}
+          >
+            <WarningCircle size={11} />
+            {realInput.inputError}
+          </button>
+        ) : null}
 
         <div className="relative">
           <button
@@ -591,10 +408,10 @@ export function ChatMacDesktopPanel({
             className={WORK_TOOL_CHROME_CHIP}
             disabled={busy}
             data-testid="mac-desktop-present"
-            onClick={() => void present(windows.some((entry) => entry.onDisplayId === display.displayId) ? "main" : "display")}
+            onClick={() => void present(anyWindowParked ? "main" : "display")}
           >
             <ArrowsOut size={11} />
-            {windows.some((entry) => entry.onDisplayId === display.displayId) ? "Bring to my screen" : "Send back"}
+            {anyWindowParked ? "Bring to my screen" : "Send back"}
           </button>
         ) : null}
 
@@ -625,7 +442,7 @@ export function ChatMacDesktopPanel({
             <button
               type="button"
               className="underline underline-offset-2"
-              onClick={() => void openIosSimSettingsPane(blockedPermission.pane).catch(() => {})}
+              onClick={() => openSettingsPane(blockedPermission.pane)}
             >
               Open System Settings
             </button>
@@ -645,16 +462,16 @@ export function ChatMacDesktopPanel({
           "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]",
           iHaveControl && "shadow-[inset_0_0_0_2px_rgb(251_191_36_/_0.8)]",
         )}
-        onPointerDown={onPointerDown}
-        onPointerUp={onPointerUp}
-        onWheel={onWheel}
-        onKeyDown={onKeyDown}
+        onPointerDown={realInput.onPointerDown}
+        onPointerUp={realInput.onPointerUp}
+        onWheel={realInput.onWheel}
+        onKeyDown={realInput.onKeyDown}
         onContextMenu={(event) => {
           if (iHaveControl) event.preventDefault();
         }}
       >
         {live.url ? (
-          <IosSimH264Video
+          <H264VideoCanvas
             url={live.url}
             reconnectNonce={live.reconnectNonce}
             onStatus={live.onStatus}

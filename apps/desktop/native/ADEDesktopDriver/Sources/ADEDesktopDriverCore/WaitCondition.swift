@@ -79,6 +79,21 @@ public struct WaitCondition: Equatable, Sendable {
         }
     }
 
+    /// How long the next poll should pause for, or nil when the wait is over.
+    ///
+    /// Pulled out of the polling loop because it is the one part of waiting that
+    /// is arithmetic rather than accessibility, and because the driver does not
+    /// *sleep* this interval — it pumps the main run loop for it, so every other
+    /// lane's request and the health `ping` are still answered while one lane
+    /// waits two minutes for a button. A sleep on the main thread would starve
+    /// them, and a negative or over-long pause would either spin or overshoot
+    /// the deadline, so the clamp lives here where it can be tested.
+    public static func pollDelaySeconds(now: Date, deadline: Date) -> Double? {
+        let remaining = deadline.timeIntervalSince(now)
+        guard remaining > 0 else { return nil }
+        return min(Double(pollIntervalMs) / 1000, remaining)
+    }
+
     private static func trimmed(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

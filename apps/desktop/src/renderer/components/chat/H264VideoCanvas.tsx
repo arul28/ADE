@@ -6,20 +6,23 @@ import {
 } from "./iosSimVideoRecords";
 
 /**
- * Plays the host-encoded simulator stream.
+ * Plays a host-encoded H.264 stream: the iOS simulator's, or a lane's macOS
+ * display. Both features hand it the same thing — a token-guarded loopback URL
+ * carrying framed access units — so it is named for the transport it reads and
+ * not for either caller.
  *
- * The Simulator window capture path cannot cross a machine boundary, because
- * the renderer captures a window that only exists on the Mac. This component
- * reads H.264 access units over loopback HTTP instead, decodes them with the
- * platform decoder, and draws them to a canvas. The decode is hardware
- * accelerated on Apple silicon and on Windows.
+ * Window capture cannot cross a machine boundary, because the renderer captures
+ * a window that only exists on the host Mac. This component reads access units
+ * over loopback HTTP instead, decodes them with the platform decoder, and draws
+ * them to a canvas. The decode is hardware accelerated on Apple silicon and on
+ * Windows.
  *
- * The frames are the device screen, not the Simulator window, so the canvas has
- * no bezel and no window chrome. A caller that maps a click to a device point
- * therefore needs no heuristic: the canvas IS the screen.
+ * The frames are the screen itself, not a window, so the canvas has no bezel
+ * and no chrome. A caller that maps a click to a screen point therefore needs
+ * no heuristic: the canvas IS the screen.
  */
 
-export type IosSimH264Status = "connecting" | "playing" | "error" | "stopped";
+export type H264VideoStatus = "connecting" | "playing" | "error" | "stopped";
 
 type VideoDecoderLike = {
   configure: (config: { codec: string; optimizeForLatency?: boolean }) => void;
@@ -49,28 +52,28 @@ export function isWebCodecsAvailable(): boolean {
   return typeof scope.VideoDecoder === "function" && typeof scope.EncodedVideoChunk === "function";
 }
 
-export type IosSimH264VideoProps = {
+export type H264VideoCanvasProps = {
   /** The URL `startStream` handed back, already localised for this machine. */
   url: string;
   className?: string;
   /** Bumping this reconnects. Use it after a port forward is rebuilt. */
   reconnectNonce?: number;
-  onStatus?: (status: IosSimH264Status, error: string | null) => void;
+  onStatus?: (status: H264VideoStatus, error: string | null) => void;
   onDimensions?: (size: { width: number; height: number }) => void;
   onCanvas?: (canvas: HTMLCanvasElement | null) => void;
 };
 
-export function IosSimH264Video({
+export function H264VideoCanvas({
   url,
   className,
   reconnectNonce = 0,
   onStatus,
   onDimensions,
   onCanvas,
-}: IosSimH264VideoProps) {
+}: H264VideoCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const contextRef = useRef<CanvasRenderingContext2D | null>(null);
-  const [status, setStatus] = useState<IosSimH264Status>("connecting");
+  const [status, setStatus] = useState<H264VideoStatus>("connecting");
   const [error, setError] = useState<string | null>(null);
   /**
    * The status this component has already reported.
@@ -80,14 +83,14 @@ export function IosSimH264Video({
    * callback thirty times a second, and the parent rebuilds its live-view
    * object on every call — a full drawer re-render per frame.
    */
-  const reportedRef = useRef<{ status: IosSimH264Status; error: string | null } | null>(null);
+  const reportedRef = useRef<{ status: H264VideoStatus; error: string | null } | null>(null);
 
   const statusRef = useRef(onStatus);
   statusRef.current = onStatus;
   const dimensionsRef = useRef(onDimensions);
   dimensionsRef.current = onDimensions;
 
-  const report = useCallback((next: IosSimH264Status, nextError: string | null) => {
+  const report = useCallback((next: H264VideoStatus, nextError: string | null) => {
     const previous = reportedRef.current;
     if (previous && previous.status === next && previous.error === nextError) return;
     reportedRef.current = { status: next, error: nextError };

@@ -751,11 +751,7 @@ export async function revealSimulatorWindow(): Promise<{ ok: boolean; message: s
 /** Opens the macOS privacy pane the blocked capability lives in. */
 export async function openSimulatorPrivacyPane(pane: IosSimulatorPrivacyPane): Promise<{ ok: boolean }> {
   if (hostPlatform !== "darwin") return { ok: false };
-  const anchor = pane === "automation"
-    ? "Privacy_Automation"
-    : pane === "accessibility"
-      ? "Privacy_Accessibility"
-      : "Privacy_ScreenCapture";
+  const anchor = pane === "automation" ? "Privacy_Automation" : "Privacy_ScreenCapture";
   await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${anchor}`);
   return { ok: true };
 }

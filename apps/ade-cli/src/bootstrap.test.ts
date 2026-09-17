@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
 import {
+  bindDeviceReleaseOnChatEnd,
   bindIosSimulatorReleaseOnChatEnd,
   createHeadlessAdeCliAgentEnv,
   emitRuntimePrCardsForChanges,
@@ -187,6 +188,36 @@ describe("createAdeRuntime startup teardown", () => {
 
   it("wires the chat-end simulator release through bindIosSimulatorReleaseOnChatEnd", () => {
     expect(runtimeFn).toContain("bindIosSimulatorReleaseOnChatEnd({");
+  });
+
+  it("releases the Mac Desktop lease under its own log event, not the simulator's", () => {
+    // Both devices bind through the same helper. A Mac Desktop failure logged
+    // as `ios_simulator.*` is a failure nobody looking at Mac Desktop finds.
+    expect(runtimeFn).toContain('logEvent: "mac_desktop.release_on_chat_end_failed"');
+  });
+});
+
+describe("bindDeviceReleaseOnChatEnd", () => {
+  it("logs a failure under the caller's own event name", async () => {
+    const listeners: Array<(sessionId: string) => void> = [];
+    const debug = vi.fn();
+    expect(bindDeviceReleaseOnChatEnd({
+      agentChatService: {
+        registerChatSessionEndedListener(listener: (sessionId: string) => void) {
+          listeners.push(listener);
+        },
+      },
+      device: { releaseIfOwnedBy: () => Promise.reject(new Error("no display")) },
+      logEvent: "mac_desktop.release_on_chat_end_failed",
+      logger: { debug },
+    })).toBe(true);
+    listeners[0]!("chat-1");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(debug).toHaveBeenCalledWith(
+      "mac_desktop.release_on_chat_end_failed",
+      { sessionId: "chat-1", error: "no display" },
+    );
   });
 });
 

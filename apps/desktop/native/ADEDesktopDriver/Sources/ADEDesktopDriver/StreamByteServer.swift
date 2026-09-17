@@ -1,0 +1,103 @@
+import Foundation
+import Network
+import ADEDesktopDriverCore
+
+/// A plain TCP fan-out on 127.0.0.1.
+///
+/// Loopback-only and unauthenticated by design: the security boundary is the
+/// Node service's token-guarded HTTP endpoint in front of it, exactly as it is
+/// for `iosVideoStreamServer.ts`. Binding anything but loopback here would move
+/// that boundary onto the network, so the host is not configurable.
+final class StreamByteServer {
+    private var listener: NWListener?
+    private var connections: [NWConnection] = []
+    private let queue = DispatchQueue(label: "com.ade.desktop-driver.stream")
+    private let lock = NSLock()
+    private var configRecord: Data?
+
+    private(set) var port: UInt16 = 0
+
+    var clientCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return connections.count
+    }
+
+    func start() throws -> UInt16 {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        let listener = try NWListener(using: parameters)
+        listener.newConnectionHandler = { [weak self] connection in
+            self?.accept(connection)
+        }
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.signal() }
+            if case .failed = state { ready.signal() }
+        }
+        listener.start(queue: queue)
+        _ = ready.wait(timeout: .now() + 5)
+        guard let assigned = listener.port?.rawValue, assigned != 0 else {
+            listener.cancel()
+            throw CaptureError.failed("The stream server never got a loopback port.")
+        }
+        self.listener = listener
+        self.port = assigned
+        return assigned
+    }
+
+    func setConfig(codec: String) {
+        lock.lock()
+        configRecord = StreamRecord.configRecord(codec: codec)
+        lock.unlock()
+    }
+
+    private func accept(_ connection: NWConnection) {
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .cancelled, .failed:
+                self?.drop(connection)
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+        lock.lock()
+        connections.append(connection)
+        let config = configRecord
+        lock.unlock()
+        // A reader that attaches mid-stream needs the codec string before it can
+        // configure its decoder; the next keyframe carries the parameter sets.
+        if let config {
+            connection.send(content: config, completion: .contentProcessed { _ in })
+        }
+    }
+
+    private func drop(_ connection: NWConnection) {
+        lock.lock()
+        connections.removeAll { $0 === connection }
+        lock.unlock()
+    }
+
+    func broadcast(_ data: Data) {
+        lock.lock()
+        let targets = connections
+        lock.unlock()
+        for connection in targets {
+            connection.send(content: data, completion: .contentProcessed { _ in })
+        }
+    }
+
+    func stop() {
+        lock.lock()
+        let targets = connections
+        connections.removeAll()
+        lock.unlock()
+        for connection in targets {
+            connection.cancel()
+        }
+        listener?.cancel()
+        listener = nil
+        port = 0
+    }
+}

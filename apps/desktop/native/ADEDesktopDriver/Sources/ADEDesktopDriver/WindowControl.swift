@@ -100,20 +100,20 @@ final class WindowControl {
     /// the driver stops fighting it and says so.
     static let maxReparkAttempts = 3
 
-    private let ownership: OwnershipRegistry
-    private let log: (String) -> Void
-    private let emit: (DriverEvent) -> Void
+    let ownership: OwnershipRegistry
+    let log: (String) -> Void
+    let emit: (DriverEvent) -> Void
 
     private var originalFrames: [CGWindowID: CGRect] = [:]
-    private var reparkAttempts: [CGWindowID: Int] = [:]
+    var reparkAttempts: [CGWindowID: Int] = [:]
     private var windowOrigins: [CGWindowID: String] = [:]
-    private var watchedPids: [pid_t: String] = [:]
-    private var observers: [pid_t: AXObserver] = [:]
-    private var knownWindowsByPid: [pid_t: Set<CGWindowID>] = [:]
-    private var pollTimer: Timer?
+    var watchedPids: [pid_t: String] = [:]
+    var observers: [pid_t: AXObserver] = [:]
+    var knownWindowsByPid: [pid_t: Set<CGWindowID>] = [:]
+    var pollTimer: Timer?
     private var placements: [String: DisplayPlacement] = [:]
     private var displayIds: [String: CGDirectDisplayID] = [:]
-    private let lock = NSRecursiveLock()
+    let lock = NSRecursiveLock()
 
     init(
         ownership: OwnershipRegistry,
@@ -458,183 +458,7 @@ final class WindowControl {
         return moved
     }
 
-    // -----------------------------------------------------------------------
-    // Watching
-    // -----------------------------------------------------------------------
-
-    func startWatching(pid: pid_t, laneId: String) {
-        lock.lock()
-        let alreadyWatching = watchedPids[pid] != nil
-        watchedPids[pid] = laneId
-        knownWindowsByPid[pid] = Set(listWindows(pid: pid).map(\.id))
-        lock.unlock()
-        if !alreadyWatching {
-            installObserver(pid: pid)
-        }
-        ensurePollTimer()
-    }
-
-    func stopWatching(pid: pid_t) {
-        lock.lock()
-        defer { lock.unlock() }
-        watchedPids.removeValue(forKey: pid)
-        knownWindowsByPid.removeValue(forKey: pid)
-        if let observer = observers.removeValue(forKey: pid) {
-            CFRunLoopRemoveSource(
-                CFRunLoopGetMain(),
-                AXObserverGetRunLoopSource(observer),
-                .defaultMode
-            )
-        }
-    }
-
-    private func installObserver(pid: pid_t) {
-        var observer: AXObserver?
-        let callback: AXObserverCallback = { _, _, _, refcon in
-            guard let refcon else { return }
-            let control = Unmanaged<WindowControl>.fromOpaque(refcon).takeUnretainedValue()
-            // The notification fires before the window has its final frame, so
-            // the sweep runs a beat later rather than inline.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                control.sweep()
-            }
-        }
-        guard AXObserverCreate(pid, callback, &observer) == .success, let observer else {
-            log("no AX observer for pid \(pid); falling back to polling")
-            return
-        }
-        let application = AXUIElementCreateApplication(pid)
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        AXObserverAddNotification(observer, application, kAXWindowCreatedNotification as CFString, refcon)
-        AXObserverAddNotification(observer, application, kAXUIElementDestroyedNotification as CFString, refcon)
-        AXObserverAddNotification(observer, application, kAXWindowMovedNotification as CFString, refcon)
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        lock.lock()
-        observers[pid] = observer
-        lock.unlock()
-    }
-
-    /// The 1 s belt to the observer's braces.
-    ///
-    /// An `AXObserver` misses windows created before the observer was installed,
-    /// and apps that create windows in a helper process never fire it at all.
-    private func ensurePollTimer() {
-        guard pollTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.sweep()
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        pollTimer = timer
-    }
-
-    /// Adopt new windows of watched pids, and drag escaped windows back.
-    func sweep() {
-        lock.lock()
-        let watched = watchedPids
-        lock.unlock()
-        var touchedLanes = Set<String>()
-
-        for (pid, laneId) in watched {
-            guard NSRunningApplication(processIdentifier: pid) != nil else {
-                stopWatching(pid: pid)
-                touchedLanes.insert(laneId)
-                continue
-            }
-            let current = listWindows(pid: pid)
-            lock.lock()
-            let known = knownWindowsByPid[pid] ?? []
-            knownWindowsByPid[pid] = Set(current.map(\.id))
-            lock.unlock()
-            for window in current where !known.contains(window.id) && window.laneId == nil {
-                do {
-                    _ = try park(laneId: laneId, windowId: window.id, origin: "ade_launched")
-                    touchedLanes.insert(laneId)
-                } catch {
-                    let code = (error as? DriverError)?.code
-                    if code == DriverErrorCode.windowNotReady {
-                        // Not a failure, a "not yet". Forgetting the window here
-                        // is what makes the next poll try again: `known` is the
-                        // only record that this sweep already considered it.
-                        lock.lock()
-                        knownWindowsByPid[pid]?.remove(window.id)
-                        lock.unlock()
-                        emit(
-                            DriverEvent(
-                                event: "window-not-parked",
-                                fields: [
-                                    "laneId": .string(laneId),
-                                    "windowId": .int(Int(window.id)),
-                                    "reason": .string("not_ready"),
-                                ]
-                            )
-                        )
-                        log("window \(window.id) of pid \(pid) is not ready yet; retrying on the next poll")
-                    } else {
-                        emit(
-                            DriverEvent(
-                                event: "window-not-parked",
-                                fields: [
-                                    "laneId": .string(laneId),
-                                    "windowId": .int(Int(window.id)),
-                                    "reason": .string(code ?? "error"),
-                                    "message": .string((error as? DriverError)?.message ?? "\(error)"),
-                                ]
-                            )
-                        )
-                        log("could not park new window \(window.id) of pid \(pid): \(error)")
-                    }
-                }
-            }
-        }
-
-        for record in ownership.all {
-            let windowId = CGWindowID(record.windowId)
-            guard let placement = placement(forLane: record.laneId) else { continue }
-            guard let window = window(withId: windowId) else {
-                // The window is gone; so is its ownership.
-                ownership.unpark(windowId: record.windowId)
-                touchedLanes.insert(record.laneId)
-                continue
-            }
-            guard Geometry.isFullyOutside(window.frame, of: placement.frame) else {
-                lock.lock()
-                reparkAttempts[windowId] = 0
-                lock.unlock()
-                continue
-            }
-            lock.lock()
-            let attempts = (reparkAttempts[windowId] ?? 0) + 1
-            reparkAttempts[windowId] = attempts
-            lock.unlock()
-            if attempts > Self.maxReparkAttempts {
-                log("window \(windowId) keeps leaving lane \(record.laneId); releasing it")
-                emit(
-                    DriverEvent(
-                        event: "window-escaped",
-                        fields: [
-                            "laneId": .string(record.laneId),
-                            "windowId": .int(record.windowId),
-                            "attempts": .int(attempts - 1),
-                        ]
-                    )
-                )
-                _ = unpark(windowId: windowId)
-                touchedLanes.insert(record.laneId)
-                continue
-            }
-            if let element = axWindow(for: window) {
-                let target = Geometry.cascadeFrame(index: 0, size: window.frame.size, display: placement)
-                _ = Self.setFrame(element, target)
-                touchedLanes.insert(record.laneId)
-            }
-        }
-
-        for laneId in touchedLanes {
-            emitWindowsChanged(laneId: laneId)
-        }
-    }
-
-    private func emitWindowsChanged(laneId: String) {
+    func emitWindowsChanged(laneId: String) {
         let windows = listWindows(laneId: laneId)
         emit(
             DriverEvent(
@@ -644,112 +468,6 @@ final class WindowControl {
                     "windows": .array(windows.map { .object($0.asJSON()) }),
                 ]
             )
-        )
-    }
-
-    // -----------------------------------------------------------------------
-    // Launching
-    // -----------------------------------------------------------------------
-
-    struct LaunchResult {
-        let pid: pid_t?
-        let appName: String?
-        let bundleId: String?
-        let windows: [DesktopWindow]
-        let watching: Bool
-    }
-
-    /// `ade desktop open <app|path|url>`.
-    ///
-    /// The window the app opens usually does not exist yet when this returns,
-    /// which is why the pid is watched rather than the result being awaited.
-    func launch(laneId: String, target: String, arguments: [String]) throws -> LaunchResult {
-        guard placement(forLane: laneId) != nil else {
-            throw DriverError(
-                code: DriverErrorCode.noDisplay,
-                message: "Lane \(laneId) has no display. Start one before opening an app on it."
-            )
-        }
-        let workspace = NSWorkspace.shared
-        guard let url = Self.resolveTarget(target, workspace: workspace) else {
-            throw DriverError(
-                code: DriverErrorCode.invalidArgument,
-                message: "\"\(target)\" is not an app name, a bundle id, a path, or a URL on this Mac."
-            )
-        }
-
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.arguments = arguments
-        configuration.activates = false
-        // A second copy keeps two lanes out of each other's process where the
-        // app allows it. Single-instance apps ignore this and hand back the
-        // running instance, which `OwnershipRegistry` then refuses for the
-        // second lane by name.
-        configuration.createsNewApplicationInstance = true
-
-        var launched: NSRunningApplication?
-        var failure: Error?
-        let semaphore = DispatchSemaphore(value: 0)
-        let completion: (NSRunningApplication?, Error?) -> Void = { application, error in
-            launched = application
-            failure = error
-            semaphore.signal()
-        }
-        if url.isFileURL {
-            workspace.openApplication(at: url, configuration: configuration, completionHandler: completion)
-        } else {
-            workspace.open(url, configuration: configuration, completionHandler: completion)
-        }
-        // The run loop has to keep turning: AppKit delivers the completion on
-        // the main queue, and blocking it outright would deadlock the launch.
-        let deadline = Date().addingTimeInterval(20)
-        while semaphore.wait(timeout: .now()) == .timedOut, Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        }
-        if let failure {
-            throw DriverError(
-                code: DriverErrorCode.internalError,
-                message: "Could not open \"\(target)\": \(failure.localizedDescription)"
-            )
-        }
-        guard let launched else {
-            return LaunchResult(pid: nil, appName: nil, bundleId: nil, windows: [], watching: false)
-        }
-
-        let pid = launched.processIdentifier
-        if let bundleId = launched.bundleIdentifier,
-           Self.isSingleInstance(bundleId: bundleId, application: launched),
-           let holder = ownership.singleInstanceHolder(bundleId: bundleId),
-           holder != laneId
-        {
-            throw OwnershipError.appOwnedByOtherLane(bundleId: bundleId, holderLaneId: holder).driverError
-        }
-
-        startWatching(pid: pid, laneId: laneId)
-        // Park whatever already exists; the watcher catches the rest.
-        var parked: [DesktopWindow] = []
-        let windowDeadline = Date().addingTimeInterval(3)
-        while Date() < windowDeadline, parked.isEmpty {
-            for window in listWindows(pid: pid) where window.laneId == nil {
-                do {
-                    parked.append(try park(laneId: laneId, windowId: window.id, origin: "ade_launched"))
-                } catch {
-                    // A window that is not ready yet is the watcher's problem,
-                    // not the launch's: `launch` answers with what is parked so
-                    // far and `watching: true`, exactly as its result type says.
-                    log("launch could not park window \(window.id) yet: \(error)")
-                }
-            }
-            if parked.isEmpty {
-                RunLoop.current.run(until: Date().addingTimeInterval(0.15))
-            }
-        }
-        return LaunchResult(
-            pid: pid,
-            appName: launched.localizedName,
-            bundleId: launched.bundleIdentifier,
-            windows: parked,
-            watching: true
         )
     }
 
@@ -775,16 +493,5 @@ final class WindowControl {
             }
         }
         return nil
-    }
-
-    func dispose() {
-        pollTimer?.invalidate()
-        pollTimer = nil
-        lock.lock()
-        let pids = Array(watchedPids.keys)
-        lock.unlock()
-        for pid in pids {
-            stopWatching(pid: pid)
-        }
     }
 }

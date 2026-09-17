@@ -20,29 +20,25 @@
  *    keyframe rather than waiting for the next one on a shared pipe.
  */
 
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { connect as netConnect, type AddressInfo, type Socket } from "node:net";
+import { randomBytes } from "node:crypto";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { connect as netConnect, type Socket } from "node:net";
 
 import type { Logger } from "../logging/logger";
+import {
+  ZERO_CLIENT_GRACE_MS,
+  answerLoopbackPreamble,
+  bindLoopbackServer,
+  openStreamBody,
+  pipeWithBacklog,
+  safeEqual,
+} from "../media/loopbackTokenServer";
 import {
   MAC_DESKTOP_ACTIVE_FPS,
   MAC_DESKTOP_IDLE_FPS,
   MAC_DESKTOP_IDLE_STREAM_AFTER_MS,
   MAC_DESKTOP_STREAM_PATH,
 } from "../../../shared/types/macDesktop";
-
-/** A reader this far behind will not catch up; close it and let it reconnect. */
-const MAX_CLIENT_BACKLOG_BYTES = 4 * 1024 * 1024;
-
-/**
- * How long the encoder stays warm after the last reader leaves.
- *
- * A page reload drops and re-adds a client inside a few hundred milliseconds;
- * tearing the encoder down for that costs a restart and a fresh keyframe for
- * nothing.
- */
-const ZERO_CLIENT_GRACE_MS = 3_000;
 
 export type MacDesktopStreamTransportWithSecret = {
   url: string;
@@ -118,13 +114,6 @@ type LaneStream = {
   idleTimer: ReturnType<typeof setTimeout> | null;
 };
 
-function safeEqual(a: string, b: string): boolean {
-  // Hash first so the comparison is constant length whatever the caller sends.
-  const left = createHash("sha256").update(a).digest();
-  const right = createHash("sha256").update(b).digest();
-  return timingSafeEqual(left, right);
-}
-
 const clampFps = (value: number | null | undefined, fallback: number): number => {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.min(60, Math.round(value)));
@@ -193,16 +182,7 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
 
   const handleRequest = (request: IncomingMessage, response: ServerResponse): void => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    // The renderer's origin is opaque (`app:`/`file:`), so a same-origin check
-    // would reject the only legitimate caller. The token is the authorisation.
-    response.setHeader("Access-Control-Allow-Origin", "*");
-    response.setHeader("Cache-Control", "no-store");
-
-    if (request.method === "OPTIONS") {
-      response.writeHead(204, { "Access-Control-Allow-Headers": "*" });
-      response.end();
-      return;
-    }
+    if (answerLoopbackPreamble(request, response)) return;
     if (url.pathname !== MAC_DESKTOP_STREAM_PATH || request.method !== "GET") {
       response.writeHead(404).end();
       return;
@@ -226,16 +206,7 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
       return;
     }
 
-    response.writeHead(200, {
-      "Content-Type": "application/octet-stream",
-      Connection: "keep-alive",
-    });
-    // Nagle trades latency for a saving this bitrate does not need.
-    request.socket.setNoDelay(true);
-    // Node holds the head until the first body write, and the first body write
-    // waits on the helper's first keyframe. Without this a reader cannot tell a
-    // slow encoder start from a dead server.
-    response.flushHeaders();
+    openStreamBody(request, response);
 
     const client: LaneClient = { response, upstream, backlogBytes: 0 };
     lane.clients.add(client);
@@ -244,20 +215,9 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
       lane.graceTimer = null;
     }
 
-    upstream.setNoDelay?.(true);
-    upstream.on("data", (chunk: Buffer) => {
-      recordBytes(lane, chunk.byteLength);
-      client.backlogBytes += chunk.byteLength;
-      if (client.backlogBytes > MAX_CLIENT_BACKLOG_BYTES) {
-        dropClient(lane, client, "backlog");
-        return;
-      }
-      let released = false;
-      client.response.write(chunk, () => {
-        if (released) return;
-        released = true;
-        client.backlogBytes = Math.max(0, client.backlogBytes - chunk.byteLength);
-      });
+    pipeWithBacklog(upstream, client, response, {
+      onBytes: (byteLength) => recordBytes(lane, byteLength),
+      onDrop: (reason) => dropClient(lane, client, reason),
     });
     upstream.on("error", (error: Error) => {
       lane.lastError = error.message;
@@ -269,28 +229,23 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
 
   const ensureServer = async (): Promise<number> => {
     if (server && port) return port;
-    const next = createServer(handleRequest);
-    // A stream that goes quiet must not be torn down by the default timeout.
-    next.keepAliveTimeout = 0;
-    next.headersTimeout = 60_000;
-    next.requestTimeout = 0;
-    await new Promise<void>((resolve, reject) => {
-      next.once("error", reject);
-      next.listen(0, "127.0.0.1", () => {
-        next.removeListener("error", reject);
-        resolve();
-      });
+    const bound = await bindLoopbackServer(handleRequest, {
+      bindErrorMessage: "The Mac Desktop video server could not bind a loopback port.",
     });
-    const address = next.address() as AddressInfo | null;
-    if (!address || typeof address.port !== "number") {
-      next.close();
-      throw new Error("The Mac Desktop video server could not bind a loopback port.");
-    }
-    server = next;
-    port = address.port;
+    server = bound.server;
+    port = bound.port;
     deps.logger.info("mac_desktop.stream_server_listening", { port });
     return port;
   };
+
+  const transportFor = (lane: LaneStream): MacDesktopStreamTransportWithSecret => ({
+    url: `http://127.0.0.1:${port}${MAC_DESKTOP_STREAM_PATH}?lane=${encodeURIComponent(lane.laneId)}&token=${lane.token}`,
+    port,
+    token: lane.token,
+    codec: lane.codec,
+    width: lane.width,
+    height: lane.height,
+  });
 
   const metricsFor = (lane: LaneStream): MacDesktopStreamLaneMetrics => ({
     laneId: lane.laneId,
@@ -326,15 +281,20 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
     /**
      * Starts serving a lane and mints its token.
      *
-     * The token is rotated per start on purpose: it is the only thing between a
+     * A token is minted per *run*, not per call. It is the only thing between a
      * local process and the lane's screen, so one that escapes into a log or a
-     * transcript stops working when the stream it belonged to ends.
+     * transcript stops working when the stream it belonged to ends — but
+     * rotating it while the stream is still running would have made the second
+     * viewer of a lane silently evict the first, whose URL carries the old
+     * token. Starting a lane that is already serving therefore returns the
+     * transport it is already serving on, unchanged; `stop` is the only thing
+     * that ends a run.
      */
     async start(args: MacDesktopStreamStartArgs): Promise<MacDesktopStreamTransportWithSecret> {
       if (disposed) throw new Error("The Mac Desktop video server has been disposed.");
-      const bound = await ensureServer();
+      await ensureServer();
       const existing = lanes.get(args.laneId);
-      if (existing) stopLane(args.laneId, "restarted");
+      if (existing) return transportFor(existing);
       const lane: LaneStream = {
         laneId: args.laneId,
         token: randomBytes(32).toString("hex"),
@@ -355,14 +315,18 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
       };
       lanes.set(args.laneId, lane);
       scheduleIdleDrop(lane);
-      return {
-        url: `http://127.0.0.1:${bound}${MAC_DESKTOP_STREAM_PATH}?lane=${encodeURIComponent(args.laneId)}&token=${lane.token}`,
-        port: bound,
-        token: lane.token,
-        codec: lane.codec,
-        width: lane.width,
-        height: lane.height,
-      };
+      return transportFor(lane);
+    },
+
+    /**
+     * The transport a lane is currently served on, token included, or null.
+     *
+     * The service reads this instead of re-starting a running lane, which is
+     * the same thing `start` now does — this is the read that says so.
+     */
+    getTransport(laneId: string): MacDesktopStreamTransportWithSecret | null {
+      const lane = lanes.get(laneId);
+      return lane ? transportFor(lane) : null;
     },
 
     /**

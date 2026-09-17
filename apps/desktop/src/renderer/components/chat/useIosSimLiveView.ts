@@ -6,7 +6,7 @@ import type {
   IosSimulatorWindowState,
   OpenProjectBinding,
 } from "../../../shared/types";
-import type { IosSimH264Status } from "./IosSimH264Video";
+import type { H264VideoStatus } from "./H264VideoCanvas";
 import {
   resolveIosSimBlocker,
   type IosSimBlocker,
@@ -207,7 +207,7 @@ export type IosSimLiveView = {
   liveBlocker: IosSimBlocker | null;
   handleBlockerAction: (action: IosSimBlockerAction) => void;
   h264ReconnectNonce: number;
-  handleH264Status: (next: IosSimH264Status, nextError: string | null) => void;
+  handleH264Status: (next: H264VideoStatus, nextError: string | null) => void;
   handleH264Dimensions: (size: { width: number; height: number }) => void;
   setVideoNode: (video: HTMLVideoElement | null) => void;
   videoRef: MutableRefObject<HTMLVideoElement | null>;
@@ -594,7 +594,7 @@ export function useIosSimLiveView({
     }
   }, [releaseParkingHold, runtimePinRef]);
 
-  const handleH264Status = useCallback((next: IosSimH264Status, nextError: string | null) => {
+  const handleH264Status = useCallback((next: H264VideoStatus, nextError: string | null) => {
     setLiveVisual((current) => {
       if (current?.kind !== "h264") return current;
       const status = next === "playing"

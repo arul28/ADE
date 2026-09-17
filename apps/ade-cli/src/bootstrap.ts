@@ -628,34 +628,55 @@ type ChatSessionEndedListenerHost = {
   registerChatSessionEndedListener?: (listener: (sessionId: string) => void) => void;
 };
 
-type ChatOwnedSimulator = {
+type ChatOwnedDevice = {
   releaseIfOwnedBy: (sessionId: string) => Promise<unknown>;
 };
 
 /**
+ * Drops a chat's hold on a device when the chat ends.
+ *
  * Headless chat (omitted / headless-stub runtime) has no session-end listener.
  * Calling the desktop method unguarded threw during brain startup and left CLI
  * tests hanging on a runtime that never came up.
+ *
+ * The `logEvent` parameter is not decoration: both the iOS simulator and the
+ * Mac Desktop display bind through here, and a failure logged under the wrong
+ * feature's event name is a failure nobody looking at that feature will find.
  */
-export function bindIosSimulatorReleaseOnChatEnd(args: {
+export function bindDeviceReleaseOnChatEnd(args: {
   agentChatService: ChatSessionEndedListenerHost | null;
-  iosSimulatorService: ChatOwnedSimulator | null;
+  device: ChatOwnedDevice | null;
+  logEvent: string;
   logger: Pick<Logger, "debug">;
 }): boolean {
   const registerChatSessionEndedListener = args.agentChatService?.registerChatSessionEndedListener;
-  if (typeof registerChatSessionEndedListener !== "function" || !args.iosSimulatorService) {
+  if (typeof registerChatSessionEndedListener !== "function" || !args.device) {
     return false;
   }
-  const iosSimulatorService = args.iosSimulatorService;
+  const device = args.device;
   registerChatSessionEndedListener.call(args.agentChatService, (sessionId) => {
-    void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
-      args.logger.debug("ios_simulator.release_on_chat_end_failed", {
+    void device.releaseIfOwnedBy(sessionId).catch((error) => {
+      args.logger.debug(args.logEvent, {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
     });
   });
   return true;
+}
+
+/** The iOS simulator's binding. Kept named for the call sites and the test. */
+export function bindIosSimulatorReleaseOnChatEnd(args: {
+  agentChatService: ChatSessionEndedListenerHost | null;
+  iosSimulatorService: ChatOwnedDevice | null;
+  logger: Pick<Logger, "debug">;
+}): boolean {
+  return bindDeviceReleaseOnChatEnd({
+    agentChatService: args.agentChatService,
+    device: args.iosSimulatorService,
+    logEvent: "ios_simulator.release_on_chat_end_failed",
+    logger: args.logger,
+  });
 }
 
 export async function createAdeRuntime(args: {
@@ -1566,12 +1587,10 @@ export async function createAdeRuntime(args: {
         getGitService: () => gitService,
         conflictService,
         computerUseArtifactBrokerService,
-        // One line of system prompt, and only for a lane that has a screen.
-        // Synchronous by contract — the send path must not await a service to
-        // decide to say nothing — so it reads the in-memory display registry.
-        getMacDesktopLaneState: (laneId: string | null) =>
-          (macDesktopService ? { enabled: macDesktopService.hasDisplaySync(laneId) } : null),
-        // The per-turn time-lapse clip. Same gate, so an idle lane pays nothing.
+        // One line of system prompt and the per-turn time-lapse clip, both
+        // behind the same synchronous gate: the send path must not await a
+        // service to decide to say nothing, so it reads the in-memory display
+        // registry, and an idle lane pays nothing.
         macDesktopTurnRecorder: macDesktopService
           ? {
             hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
@@ -1637,11 +1656,12 @@ export async function createAdeRuntime(args: {
     });
     // A chat that ends must drop its Mac Desktop input lease; otherwise the
     // lane stays un-drivable until the lease TTL lapses.
-    bindIosSimulatorReleaseOnChatEnd({
+    bindDeviceReleaseOnChatEnd({
       agentChatService,
-      iosSimulatorService: macDesktopService
+      device: macDesktopService
         ? { releaseIfOwnedBy: (sessionId: string) => macDesktopService.releaseIfOwnedBy(sessionId) }
         : null,
+      logEvent: "mac_desktop.release_on_chat_end_failed",
       logger,
     });
     if (agentChatService) {

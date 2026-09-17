@@ -15,20 +15,15 @@
  * builders, so the gate can be tested without standing up a chat service.
  */
 
-export type MacDesktopPromptState = {
-  /**
-   * True when this lane has a Mac Desktop display, or the Mac Desktop tool is
-   * enabled for it. False, null, or an absent state all mean "say nothing".
-   */
-  enabled?: boolean | null;
-};
-
 /** The line itself. Exported so a test can assert on it without rebuilding it. */
 export const MAC_DESKTOP_PROMPT_LINE =
   "This lane has a private macOS screen (Mac Desktop). Drive it with `ade mac-desktop` — observe first, act on the handles it returns; read the **ade-desktop** skill before your first action.";
 
-export function buildMacDesktopDirective(
-  state: MacDesktopPromptState | null | undefined,
-): string | null {
-  return state?.enabled === true ? MAC_DESKTOP_PROMPT_LINE : null;
+/**
+ * @param enabled True when this lane has a Mac Desktop display right now. The
+ *   caller asks the runtime service directly, so there is one answer rather
+ *   than a state object two callers could fill in differently.
+ */
+export function buildMacDesktopDirective(enabled: boolean): string | null {
+  return enabled ? MAC_DESKTOP_PROMPT_LINE : null;
 }

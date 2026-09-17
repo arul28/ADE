@@ -24,8 +24,9 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
   const listeners = new Set<(event: { event: string } & Record<string, unknown>) => void>();
   let resolveCreate: (() => void) | null = null;
   const client = {
-    ops: MAC_DESKTOP_DRIVER_OPS,
     calls,
+    /** Lets a test swap an op's answer after the driver was built. */
+    overrides,
     listeners,
     /** Lets a test hold `display.create` open to force a race. */
     blockCreate() {
@@ -281,6 +282,117 @@ describe("macDesktopService lease", () => {
   });
 });
 
+describe("macDesktopService real input and the lease", () => {
+  it("lets the controller who took over drive, and refuses a chat id that did not", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    // The human takeover holds the lease under the window's controller id.
+    await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+
+    const result = await service.click({
+      laneId: "lane-1",
+      x: 10,
+      y: 10,
+      mode: "real",
+      chatSessionId: "chat-1",
+      controllerId: "ade-window:abc",
+    });
+    expect(result.ok).toBe(true);
+    const input = driver.calls.find((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input);
+    // The helper keeps its own lease; it is told which holder we authorized.
+    expect(input?.payload.lease).toEqual({ holderId: "ade-window:abc" });
+
+    // Without the controller id the same panel looks like an agent chat, and
+    // the user's own takeover refuses it.
+    await expect(service.click({
+      laneId: "lane-1",
+      x: 10,
+      y: 10,
+      mode: "real",
+      chatSessionId: "chat-1",
+    })).rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+    service.dispose();
+  });
+
+  it("sends no lease on an accessibility action", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.click({ laneId: "lane-1", text: "OK", chatSessionId: "chat-1" });
+    const input = driver.calls.find((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input);
+    expect(input?.payload.lease).toBeUndefined();
+    service.dispose();
+  });
+});
+
+describe("macDesktopService recordings", () => {
+  it("a user recording stops the turn clip first — one lane, one writer", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording)).toHaveLength(1);
+
+    await service.startRecording({ laneId: "lane-1", caption: "the bug" });
+    const ops = driver.calls.map((call) => call.op);
+    const firstStop = ops.indexOf(MAC_DESKTOP_DRIVER_OPS.stopRecording);
+    const secondStart = ops.lastIndexOf(MAC_DESKTOP_DRIVER_OPS.startRecording);
+    expect(firstStop).toBeGreaterThanOrEqual(0);
+    expect(secondStart).toBeGreaterThan(firstStop);
+
+    // And the turn clip is gone, so the turn ending cannot stop the user's
+    // recording out from under them.
+    driver.calls.length = 0;
+    expect(await service.noteTurnEnded({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" }))
+      .toBeNull();
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(0);
+    service.dispose();
+  });
+
+  it("ends a turn clip whose turn id no longer matches", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 1_200 }),
+    });
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
+    // A turn that never emitted its own `done`: the next one closes the clip
+    // rather than leaving the helper's one recorder held forever.
+    const lapse = await service.noteTurnEnded({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      turnId: "turn-2",
+    });
+    expect(lapse).toMatchObject({ laneId: "lane-1", turnId: "turn-1", filePath: "/tmp/clip.mp4" });
+    expect(events.some((event) => event.type === "time-lapse")).toBe(true);
+    service.dispose();
+  });
+
+  it("stops the turn clip when the lane's display is destroyed", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
+    driver.calls.length = 0;
+    await service.destroyForLane("lane-1");
+    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toBe(true);
+    service.dispose();
+  });
+
+  it("stops the turn clip when the chat that opened it ends", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.takeControl({ laneId: "lane-1", controllerId: "chat-1" });
+    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
+    driver.calls.length = 0;
+    await service.releaseIfOwnedBy("chat-1");
+    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toBe(true);
+    service.dispose();
+  });
+});
+
 describe("macDesktopService streaming", () => {
   it("startStream is the only call that hands out the token", async () => {
     const driver = createFakeDriver({
@@ -301,6 +413,27 @@ describe("macDesktopService streaming", () => {
     const status = await service.getStatus({ laneId: "lane-1" });
     expect(status.stream).toMatchObject({ running: true });
     expect(status.stream).not.toHaveProperty("transport");
+    service.dispose();
+  });
+
+  it("a second startStream on a running lane keeps the same token", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.startStream]: () => ({ port: 65_000, codec: "avc1.640032", width: 2560, height: 1440 }),
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    const first = await service.startStream({ laneId: "lane-1" });
+    // A reconnecting viewer asks again. Minting a second token would evict
+    // every client holding the first one.
+    const second = await service.startStream({ laneId: "lane-1" });
+    expect(second.transport?.token).toBe(first.transport?.token);
+    expect(second.transport?.url).toBe(first.transport?.url);
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startStream)).toHaveLength(1);
+
+    // Only a stopped stream mints one.
+    await service.stopStream({ laneId: "lane-1" });
+    const third = await service.startStream({ laneId: "lane-1" });
+    expect(third.transport?.token).not.toBe(first.transport?.token);
     service.dispose();
   });
 });
@@ -336,6 +469,44 @@ describe("macDesktopService teardown", () => {
     const destroyed = events.filter((event) => event.type === "display-destroyed");
     expect(destroyed).toHaveLength(2);
     expect(destroyed.every((event) => event.type === "display-destroyed" && event.reason === "driver_lost")).toBe(true);
+    service.dispose();
+  });
+
+  it("publishes exactly one display-destroyed when the driver echoes our own destroy", async () => {
+    const driver = createFakeDriver();
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    // The helper emits `display-destroyed` for the destroy ADE asked for. Both
+    // copies reaching clients meant a second, vaguer reason overwrote the real
+    // one, so the echo is dropped while our own destroy is in flight.
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.destroyDisplay] = () => {
+      for (const listener of driver.listeners) {
+        listener({ event: "display-destroyed", laneId: "lane-1" });
+      }
+      return { destroyed: true, releasedWindows: 0 };
+    };
+    await service.stop({ laneId: "lane-1" });
+    const destroyed = events.filter((event) => event.type === "display-destroyed");
+    expect(destroyed).toHaveLength(1);
+    expect(destroyed[0]).toMatchObject({ laneId: "lane-1", reason: "stopped" });
+    service.dispose();
+  });
+
+  it("forwards a window the driver could not park", async () => {
+    const driver = createFakeDriver();
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    for (const listener of driver.listeners) {
+      listener({ event: "window-not-parked", laneId: "lane-1", windowId: 42, reason: "window_not_ready" });
+    }
+    // The window is on the user's own screen until something moves it; only the
+    // surface watching the lane can say so.
+    expect(events).toContainEqual({
+      type: "window-not-parked",
+      laneId: "lane-1",
+      windowId: 42,
+      reason: "window_not_ready",
+    });
     service.dispose();
   });
 

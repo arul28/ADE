@@ -28,10 +28,6 @@ enum ObjCDynamic {
 
     static var isAvailable: Bool { msgSendPointer != nil }
 
-    static func objectClass(_ name: String) -> AnyClass? {
-        NSClassFromString(name)
-    }
-
     /// `[[Cls alloc] init]` for a class with a plain designated initialiser.
     static func makeInstance(_ className: String) -> NSObject? {
         guard let cls = NSClassFromString(className) as? NSObject.Type else { return nil }

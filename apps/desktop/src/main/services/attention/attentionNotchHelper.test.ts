@@ -18,11 +18,7 @@ vi.mock("node:fs", () => ({
   },
 }));
 
-import {
-  AttentionNotchHelper,
-  resolveAttentionNotchExecutablePath,
-  resolveMacDesktopDriverBinary,
-} from "./attentionNotchHelper";
+import { AttentionNotchHelper } from "./attentionNotchHelper";
 
 function fakeChild(): ChildProcessWithoutNullStreams & EventEmitter {
   const child = new EventEmitter() as ChildProcessWithoutNullStreams & EventEmitter;
@@ -49,68 +45,6 @@ describe("AttentionNotchHelper", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     existsSyncMock.mockReturnValue(true);
-  });
-
-  it("resolves packaged and development helper paths", () => {
-    expect(resolveAttentionNotchExecutablePath({
-      isPackaged: true,
-      resourcesPath: "/Applications/ADE.app/Contents/Resources",
-      appPath: "/repo/apps/desktop",
-    })).toBe(path.join(
-      "/Applications/ADE.app/Contents/Resources",
-      "native",
-      "ade-attention-notch",
-    ));
-    expect(resolveAttentionNotchExecutablePath({
-      isPackaged: false,
-      resourcesPath: "/unused",
-      appPath: "/repo/apps/desktop",
-    })).toBe(path.join(
-      "/repo/apps/desktop",
-      "resources",
-      "native",
-      "ade-attention-notch",
-    ));
-  });
-
-  it("resolves the Mac Desktop driver beside the notch helper, and nowhere off macOS", () => {
-    expect(resolveMacDesktopDriverBinary({
-      isPackaged: true,
-      resourcesPath: "/Applications/ADE.app/Contents/Resources",
-      appPath: "/repo/apps/desktop",
-      platform: "darwin",
-    })).toBe(path.join(
-      "/Applications/ADE.app/Contents/Resources",
-      "native",
-      "ade-desktop-driver",
-    ));
-    expect(resolveMacDesktopDriverBinary({
-      isPackaged: false,
-      resourcesPath: "/unused",
-      appPath: "/repo/apps/desktop",
-      platform: "darwin",
-    })).toBe(path.join(
-      "/repo/apps/desktop",
-      "resources",
-      "native",
-      "ade-desktop-driver",
-    ));
-    // Windows and Linux hosts cannot host a display, and must learn that by
-    // reading rather than by catching.
-    // The runtime service asks with nothing but a platform; that must resolve
-    // rather than throw.
-    expect(resolveMacDesktopDriverBinary({ platform: "darwin" })).toContain(
-      path.join("native", "ade-desktop-driver"),
-    );
-    expect(resolveMacDesktopDriverBinary({ platform: "win32" })).toBeNull();
-    for (const platform of ["win32", "linux"] as const) {
-      expect(resolveMacDesktopDriverBinary({
-        isPackaged: true,
-        resourcesPath: "C:\\Program Files\\ADE\\resources",
-        appPath: "C:\\repo\\apps\\desktop",
-        platform,
-      })).toBeNull();
-    }
   });
 
   it("publishes exact helper actions and rejects malformed output", () => {

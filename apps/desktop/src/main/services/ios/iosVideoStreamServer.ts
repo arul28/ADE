@@ -1,6 +1,13 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { randomBytes } from "node:crypto";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import {
+  ZERO_CLIENT_GRACE_MS,
+  answerLoopbackPreamble,
+  bindLoopbackServer,
+  openStreamBody,
+  safeEqual,
+  writeWithBacklog,
+} from "../media/loopbackTokenServer";
 import {
   IOS_VIDEO_RECORD_FLAG_KEYFRAME,
   IOS_VIDEO_RECORD_HEADER_BYTES,
@@ -28,16 +35,8 @@ import { createH264AnnexBParser, type H264AccessUnit } from "./h264AnnexB";
  * per-event ceiling, which is correct for state changes and useless for video.
  */
 
-/**
- * A client this far behind is not going to catch up. Dropping an access unit
- * would corrupt every later frame, because the encoder emits exactly one IDR at
- * the start of a run, so the only honest recovery is to close the response and
- * let the reader reconnect into a fresh keyframe.
- */
-const MAX_CLIENT_BACKLOG_BYTES = 4 * 1024 * 1024;
-
 /** Keep the encoder warm briefly so a reload does not pay a restart. */
-const ENCODER_IDLE_STOP_MS = 3_000;
+const ENCODER_IDLE_STOP_MS = ZERO_CLIENT_GRACE_MS;
 
 /**
  * What `start` returns, as opposed to what a status read reports.
@@ -114,13 +113,6 @@ export function encodeVideoRecord(
   view.setUint32(8, payload.byteLength, false);
   record.set(payload, IOS_VIDEO_RECORD_HEADER_BYTES);
   return record;
-}
-
-function safeEqual(a: string, b: string): boolean {
-  // Hash first so the comparison is constant length whatever the caller sends.
-  const left = createHash("sha256").update(a).digest();
-  const right = createHash("sha256").update(b).digest();
-  return timingSafeEqual(left, right);
 }
 
 export function createIosVideoStreamServer(deps: IosVideoStreamServerDeps) {
@@ -200,20 +192,7 @@ export function createIosVideoStreamServer(deps: IosVideoStreamServerDeps) {
   };
 
   const writeToClient = (client: StreamClient, record: Uint8Array) => {
-    client.backlogBytes += record.byteLength;
-    if (client.backlogBytes > MAX_CLIENT_BACKLOG_BYTES) {
-      dropClient(client, "backlog");
-      return;
-    }
-    // The completion callback fires for a synchronous write too, so subtracting
-    // here as well double-counts the release and pushes the drop threshold far
-    // past the ceiling this rule exists to enforce. Release in one place only.
-    let released = false;
-    client.response.write(record, () => {
-      if (released) return;
-      released = true;
-      client.backlogBytes = Math.max(0, client.backlogBytes - record.byteLength);
-    });
+    writeWithBacklog(client, client.response, record, (reason) => dropClient(client, reason));
   };
 
   const broadcast = (unit: H264AccessUnit) => {
@@ -359,17 +338,7 @@ export function createIosVideoStreamServer(deps: IosVideoStreamServerDeps) {
 
   const handleRequest = (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    // Every request answers CORS: the renderer's origin is `app:` or `file:`,
-    // which is opaque, so a same-origin check would reject the only legitimate
-    // caller. The token is what actually authorises the read.
-    response.setHeader("Access-Control-Allow-Origin", "*");
-    response.setHeader("Cache-Control", "no-store");
-
-    if (request.method === "OPTIONS") {
-      response.writeHead(204, { "Access-Control-Allow-Headers": "*" });
-      response.end();
-      return;
-    }
+    if (answerLoopbackPreamble(request, response)) return;
     if (url.pathname !== IOS_VIDEO_STREAM_PATH || request.method !== "GET") {
       response.writeHead(404).end();
       return;
@@ -384,18 +353,7 @@ export function createIosVideoStreamServer(deps: IosVideoStreamServerDeps) {
       return;
     }
 
-    response.writeHead(200, {
-      "Content-Type": "application/octet-stream",
-      Connection: "keep-alive",
-    });
-    // Nagle batches small writes, which is exactly wrong for a live view: it
-    // trades latency for a saving this bitrate does not need.
-    request.socket.setNoDelay(true);
-    // Node holds the head until the first body write, and the first body write
-    // is the first keyframe. A reader would therefore sit in `fetch` for as
-    // long as the encoder takes to start, unable to tell a slow start from a
-    // dead server.
-    response.flushHeaders();
+    openStreamBody(request, response);
     const client: StreamClient = { response, backlogBytes: 0, sentConfig: false };
     clients.add(client);
     metrics = { ...metrics, clients: clients.size };
@@ -422,25 +380,11 @@ export function createIosVideoStreamServer(deps: IosVideoStreamServerDeps) {
     // as the stream it belonged to ends.
     token = randomBytes(32).toString("hex");
     if (server && port) return { port, token };
-    const next = createServer(handleRequest);
-    // A stream that goes quiet must not be torn down by the default timeout.
-    next.keepAliveTimeout = 0;
-    next.headersTimeout = 60_000;
-    next.requestTimeout = 0;
-    await new Promise<void>((resolve, reject) => {
-      next.once("error", reject);
-      next.listen(0, "127.0.0.1", () => {
-        next.removeListener("error", reject);
-        resolve();
-      });
+    const bound = await bindLoopbackServer(handleRequest, {
+      bindErrorMessage: "The simulator video server could not bind a loopback port.",
     });
-    const address = next.address() as AddressInfo | null;
-    if (!address || typeof address.port !== "number") {
-      next.close();
-      throw new Error("The simulator video server could not bind a loopback port.");
-    }
-    server = next;
-    port = address.port;
+    server = bound.server;
+    port = bound.port;
     deps.logger.info("ios_simulator.video_server_listening", { port });
     return { port, token };
   };

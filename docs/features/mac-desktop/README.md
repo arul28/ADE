@@ -62,26 +62,36 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/HandleRegistry.swift` | Observation handles (`obs-<id>:e:<n>`) and their bounded retention. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/OwnershipRegistry.swift` | Which window belongs to which display, and the single-instance rule. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/VirtualDisplayHost.swift` | The private CoreGraphics virtual-display classes, reached only through the Objective-C runtime, with a fail-closed fallback. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/WindowControl.swift` | Window enumeration, parking, and per-pid window watching. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/WindowControl.swift` | Window enumeration, parking, and the CGWindowID→AXUIElement bridge. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/WindowWatcher.swift` | The per-pid watcher: the AX observer, the 1s poll, and the sweep that parks new windows and drags escaped ones back. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/AppLauncher.swift` | `app.launch`: starting an app for a lane and parking whatever it opens. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/AccessibilityDriver.swift` | The accessibility tree, element actions, value setting, and process-targeted keys. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/CaptureEngine.swift` | ScreenCaptureKit screenshots plus the VideoToolbox H.264 stream and recording. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/CaptureEngine.swift` | ScreenCaptureKit screenshots, the element map, the live stream, and recording. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/StreamByteServer.swift` | The loopback TCP fan-out the live stream is served on. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/H264Encoder.swift` | VideoToolbox H.264, emitting Annex-B access units with the parameter sets in front of every keyframe. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RunLoopPump.swift` | Spending a wait by pumping the main run loop, so one lane's wait never starves another lane's request or the health `ping`. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RealInput.swift` | `CGEvent` pointer and keyboard posts. Refuses every call without a lease. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/CursorOverlay.swift` | The fake cursor the human sees. The real pointer never moves. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/main.swift` | The NDJSON loop and the op dispatcher. stdout is protocol; every log line goes to stderr. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/main.swift` | The NDJSON loop, the op dispatcher, the periodic permission probe, and the signal-handled shutdown. stdout is protocol; every log line goes to stderr. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/InputCommands.swift` | The `input` op: accessibility commands, real-event commands, the wait, and the element resolver they share. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/ObjCDynamic.swift` | The Objective-C runtime calls the private display classes need: `objc_msgSend` by `dlsym`, and KVC that probes the setter first. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/Permissions.swift` | Screen Recording and Accessibility, probed without prompting; `permissions.request` is the one that prompts. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/Permissions.swift` | Screen Recording and Accessibility, probed without ever prompting. The driver only reports; asking for the grant is the app's job. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PhysicalInput.swift` | Seconds since the last physical input, for the idle rate and the takeover check. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/InputLease.swift` | The lease the driver keeps for itself, and the refusal `RealInput` raises. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion and the offscreen-fallback arithmetic. |
 | `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`, beside the notch helper. |
 | `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface a later Linux seat backend implements. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, window ownership, the input lease, idle release, events, and teardown. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, window ownership, idle release, observation and input, events, and teardown. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the one `DesktopSeatProvider` implementation. One method per driver op; the only file that knows the op names. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The two writers of a movie file — the per-turn time-lapse and the captioned recording — serialized against the helper's one recorder per lane. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | The pending-input card that asks for real input, and the lease push that makes the helper's own refusal correct. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopActionDomain.ts` | The `mac_desktop` action domain: its argument readers and its platform gate. `adeActions/registry.ts` keeps one wiring line. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopDriverClient.ts` | The NDJSON client for the helper, with restart backoff and health. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopStreamServer.ts` | The token-guarded loopback HTTP endpoint that serves H.264 access units. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopObservations.ts` | Observation storage, the numbered element map image, and the sidecar that binds a frame to a lane. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopLease.ts` | The input-lease state machine: agent grant per chat, user takeover, heartbeat renewal, TTL expiry, and the three refusal codes. Pure, injectable clock. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopOwnership.ts` | Lane→display, window→lane, window origin, the single-instance rule, and `ade_launched` pid bookkeeping. Pure. |
-| `apps/desktop/src/main/services/attention/attentionNotchHelper.ts` | `resolveMacDesktopDriverBinary` lives beside the notch resolver: both binaries come from the same `resources/native` directory, and it also answers in the daemon, which has no Electron `app`. |
+| `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | Where both native helpers are. `resolveMacDesktopDriverBinary` sits beside the notch resolver because both binaries come from the same `resources/native` directory, and it also answers in the daemon, which has no Electron `app`. `ADE_MAC_DESKTOP_DRIVER_PATH` overrides it, but only when it names a file that can actually be executed. |
 | `apps/ade-cli/src/bootstrap.ts` | Creates the service next to `iosSimulatorService` and `appControlService`. |
 | `apps/ade-cli/src/cli.ts` | The `ade mac-desktop` command family. |
 | `apps/desktop/src/renderer/components/chat/ChatMacDesktopPanel.tsx` | The Work tools pane tool. |
@@ -141,13 +151,15 @@ names the holding lane.
    time an agent is granted the tool, the service creates the display. There is
    no intermediate card.
 2. **Permissions.** Screen Recording and Accessibility are reported by the
-   helper's own `ping`/`permissions.probe` reply — the service never shells out
+   helper's own `ping` reply — the service never shells out
    to probe, so nothing runs ungated on a non-Mac host. A missing grant is one
    inline line with a System Settings opener, reusing the simulator's
    `openSystemSettings` route; `IosSimulatorPrivacyPane` gained an
    `accessibility` pane for the second row rather than growing a second opener.
-   A grant revoked mid-session arrives as a `permission-changed` event and
-   every action then fails with `MAC_DESKTOP_PERMISSION_REQUIRED`.
+   A grant revoked mid-session arrives as a `permission-changed` event — the
+   driver probes every 10 seconds while any display exists and emits only on a
+   transition — and every action then fails with
+   `MAC_DESKTOP_PERMISSION_REQUIRED`.
 3. **Idle release.** A display with no parked windows, no stream reader and no
    running recording for `MAC_DESKTOP_IDLE_RELEASE_MS` is destroyed on a 30s
    sweep. The next open recreates it. The display size comes from the
@@ -292,7 +304,7 @@ release workflow picks all of this up because every `dist:mac:*` script now runs
 `build:mac-native` where it used to run `build:notch`.
 
 The Node side finds it with `resolveMacDesktopDriverBinary` in
-`apps/desktop/src/main/services/attention/attentionNotchHelper.ts`, beside the
+`apps/desktop/src/main/services/native/nativeHelperPaths.ts`, beside the
 notch's resolver: both binaries are produced by one build step into one
 directory, and two resolvers in two files drift the first time that directory
 moves. It returns `null` off macOS rather than throwing, because `getStatus`
@@ -353,6 +365,10 @@ The driver retries the lookup on a bounded backoff (50/100/200/400/800 ms,
 - otherwise → `window_not_ready`, a `window-not-parked` event carrying
   `reason: "not_ready"`, and the window stays on the watch list for the next
   poll.
+
+The service forwards that event as `MacDesktopEventPayload`'s
+`window-not-parked`, because the window is on the user's own screen until
+something moves it and only the surface watching the lane can say so.
 
 Reporting the second as the first is the bug this exists to prevent: it sends
 somebody to System Settings to fix a permission that was never missing.

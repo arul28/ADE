@@ -44,25 +44,42 @@ function macDesktopStatus(overrides: Partial<MacDesktopStatus> = {}): MacDesktop
   };
 }
 
-/** Every method answers a marker, so a call that reached the service is visible. */
+/**
+ * Every allowlisted method answers a marker, so a call that reached the service
+ * is visible — and nothing else exists.
+ *
+ * Built from `ADE_ACTION_ALLOWLIST` rather than from a catch-all proxy: a proxy
+ * that answers every property name cannot fail the test that matters, which is
+ * the domain calling a method the service does not have. Reading an unknown
+ * property here throws with the name.
+ */
 function fakeMacDesktopService(
   status: MacDesktopStatus,
 ): { service: MacDesktopServiceApi; calls: Array<{ method: string; args: unknown }> } {
   const calls: Array<{ method: string; args: unknown }> = [];
-  const record = (method: string) => (args: unknown) => {
-    calls.push({ method, args });
-    return Promise.resolve({ method, args } as never);
+  const methods: Record<string, unknown> = {
+    getStatus: (args: unknown) => {
+      calls.push({ method: "getStatus", args });
+      return Promise.resolve(status);
+    },
+    dispose: () => undefined,
   };
-  const service = new Proxy({} as MacDesktopServiceApi, {
-    get: (_target, property: string) => {
-      if (property === "getStatus") {
-        return (args: unknown) => {
-          calls.push({ method: "getStatus", args });
-          return Promise.resolve(status);
-        };
+  for (const method of ADE_ACTION_ALLOWLIST.mac_desktop ?? []) {
+    if (method in methods) continue;
+    methods[method] = (args: unknown) => {
+      calls.push({ method, args });
+      return Promise.resolve({ method, args });
+    };
+  }
+  const service = new Proxy(methods as MacDesktopServiceApi, {
+    get: (target, property) => {
+      // `then` is probed by `await` on the object itself; a symbol is never a
+      // method name. Neither is the domain reaching for something it needs.
+      if (typeof property === "symbol" || property === "then") return undefined;
+      if (!(property in target)) {
+        throw new Error(`mac_desktop action domain reached for an unimplemented service method: ${property}`);
       }
-      if (property === "dispose") return () => undefined;
-      return record(property);
+      return (target as Record<string, unknown>)[property];
     },
   });
   return { service, calls };

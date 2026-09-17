@@ -43,4 +43,29 @@ final class WaitConditionTests: XCTestCase {
         XCTAssertEqual(condition.outcome(matchedIndex: nil, windowTitles: ["Notes"]), .pending)
         XCTAssertEqual(condition.outcome(matchedIndex: nil, windowTitles: ["Untitled 2"]), .met(index: nil))
     }
+
+    /// The scheduling half of `input {command:"wait"}`. The driver spends this
+    /// interval pumping the main run loop rather than sleeping on it, so every
+    /// other lane's request and the health `ping` are still answered mid-wait.
+    func testPollDelayIsClampedToTheIntervalAndEndsAtTheDeadline() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let interval = Double(WaitCondition.pollIntervalMs) / 1000
+
+        // Plenty of time left: one poll interval, never more.
+        XCTAssertEqual(
+            WaitCondition.pollDelaySeconds(now: now, deadline: now.addingTimeInterval(120)),
+            interval
+        )
+        // Less than an interval left: the remainder, so the wait never
+        // overshoots its own timeout.
+        XCTAssertEqual(
+            WaitCondition.pollDelaySeconds(now: now, deadline: now.addingTimeInterval(0.05)) ?? -1,
+            0.05,
+            accuracy: 0.0001
+        )
+        // At or past the deadline: nil, meaning stop — never a zero-second
+        // pump that would spin the main thread.
+        XCTAssertNil(WaitCondition.pollDelaySeconds(now: now, deadline: now))
+        XCTAssertNil(WaitCondition.pollDelaySeconds(now: now, deadline: now.addingTimeInterval(-5)))
+    }
 }

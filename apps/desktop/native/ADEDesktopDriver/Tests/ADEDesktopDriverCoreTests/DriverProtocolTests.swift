@@ -16,22 +16,48 @@ final class DriverProtocolTests: XCTestCase {
         XCTAssertNil(request.fields["op"])
     }
 
-    func testAcceptsBothOpSpellings() {
-        XCTAssertEqual(DriverOp(wireName: "createDisplay"), .createDisplay)
-        XCTAssertEqual(DriverOp(wireName: "display.create"), .createDisplay)
-        XCTAssertEqual(DriverOp(wireName: "stream.setRate"), .setStreamRate)
-        XCTAssertEqual(DriverOp(wireName: "lease.set"), .setLease)
-        XCTAssertEqual(DriverOp(wireName: "ping"), .health)
-        XCTAssertNil(DriverOp(wireName: "display.teleport"))
+    func testTheWireNameIsTheDottedName() {
+        XCTAssertEqual(DriverOp(rawValue: "display.create"), .createDisplay)
+        XCTAssertEqual(DriverOp(rawValue: "stream.setRate"), .setStreamRate)
+        XCTAssertEqual(DriverOp(rawValue: "lease.set"), .setLease)
+        XCTAssertEqual(DriverOp(rawValue: "ping"), .health)
+        XCTAssertNil(DriverOp(rawValue: "display.teleport"))
+        // The camelCase spelling this enum was born with is gone: the Node
+        // client only ever sent dotted names, and two names for one op is a
+        // contract that drifts.
+        XCTAssertNil(DriverOp(rawValue: "createDisplay"))
+        XCTAssertNil(DriverOp(rawValue: "health"))
     }
 
-    func testEveryOpHasItsOwnDottedName() {
-        let dotted = DriverOp.allCases.map(\.dottedName)
-        XCTAssertEqual(Set(dotted).count, dotted.count, "Two ops share a dotted name")
-        for op in DriverOp.allCases {
-            XCTAssertEqual(DriverOp(wireName: op.dottedName), op)
-            XCTAssertEqual(DriverOp(wireName: op.rawValue), op)
-        }
+    func testTheOpTableIsExactlyWhatTheServiceSends() {
+        // Mirrors MAC_DESKTOP_DRIVER_OPS in
+        // apps/desktop/src/shared/types/macDesktop.ts. A driver that grows an op
+        // the service never calls is dead weight; one that loses an op the
+        // service calls is a hang.
+        XCTAssertEqual(
+            Set(DriverOp.allCases.map(\.rawValue)),
+            [
+                "ping",
+                "display.create", "display.destroy", "display.reconcile",
+                "window.list", "window.park", "window.unpark",
+                "app.launch", "present", "observe", "input",
+                "lease.set", "lease.clear",
+                "capture.screenshot",
+                "stream.start", "stream.setRate", "stream.stop",
+                "record.start", "record.stop",
+            ]
+        )
+    }
+
+    func testALineThatFailsToDecodeStillYieldsItsIdWhenItHadOne() {
+        // A request whose op is missing is owed a reply on its own id; without
+        // it the only thing that settles the caller's promise is a 20s timeout.
+        XCTAssertEqual(DriverInputDecoder.requestId(inLine: #"{"id":"3"}"#), "3")
+        XCTAssertEqual(DriverInputDecoder.requestId(inLine: #"{"id":"3","op":""}"#), "3")
+        XCTAssertNil(DriverInputDecoder.requestId(inLine: #"{"id":"","op":"observe"}"#))
+        XCTAssertNil(DriverInputDecoder.requestId(inLine: #"{"op":"observe"}"#))
+        XCTAssertNil(DriverInputDecoder.requestId(inLine: "not json"))
+        XCTAssertNil(DriverInputDecoder.requestId(inLine: #"{"id":7}"#))
     }
 
     func testUnknownOpIsAnErrorReplyAndNotACrash() throws {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
-import type { IosSimH264Status } from "./IosSimH264Video";
+import type { H264VideoStatus } from "./H264VideoCanvas";
 import { setMacDesktopFrame } from "./macDesktopFrameStore";
 
 /**
@@ -16,8 +16,11 @@ import { setMacDesktopFrame } from "./macDesktopFrameStore";
  * Three things that look like details and are not:
  *
  * - **The URL carries the token, and only `startStream` returns it.** A status
- *   read is redacted (it sits on the agent action allowlist), so the address is
- *   kept in a ref on this side and never re-derived from a status.
+ *   read is redacted (it sits on the agent action allowlist), so a reconnect
+ *   asks `startStream` again rather than replaying a remembered address: the
+ *   host's `startStream` is idempotent while a lane is running and hands back
+ *   the transport it is already serving, so this is a read, not a restart —
+ *   and it is the only way to notice that the run it belonged to has ended.
  * - **A remote lane's address is loopback on the OTHER Mac.** It is resolved
  *   through `resolveStreamUrl`, which builds the SSH forward, and re-resolved
  *   on reconnect because a runtime reconnect closes that forward while the
@@ -53,7 +56,7 @@ export type MacDesktopLiveView = {
   streamStatus: MacDesktopStreamStatus | null;
   /** Pixel size of the decoded picture, once a frame has arrived. */
   dimensions: { width: number; height: number } | null;
-  onStatus: (status: IosSimH264Status, error: string | null) => void;
+  onStatus: (status: H264VideoStatus, error: string | null) => void;
   onDimensions: (size: { width: number; height: number }) => void;
   onCanvas: (canvas: HTMLCanvasElement | null) => void;
   /** Tear the stream down and build it again, budget included. */
@@ -79,8 +82,6 @@ export function useMacDesktopLiveView(args: {
   const [resolveFailures, setResolveFailures] = useState(0);
   const [restartNonce, setRestartNonce] = useState(0);
 
-  /** The host-side address, kept because a status read redacts it. */
-  const hostUrlRef = useRef<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
@@ -95,7 +96,7 @@ export function useMacDesktopLiveView(args: {
     ));
   }, []);
 
-  const onStatus = useCallback((next: IosSimH264Status, nextError: string | null) => {
+  const onStatus = useCallback((next: H264VideoStatus, nextError: string | null) => {
     setStatus(next === "playing" ? "playing" : next === "error" ? "error" : "starting");
     setError(nextError);
   }, []);
@@ -114,7 +115,6 @@ export function useMacDesktopLiveView(args: {
       return;
     }
     let cancelled = false;
-    hostUrlRef.current = null;
     setResolveFailures(0);
     setStatus("starting");
     setError(null);
@@ -127,7 +127,6 @@ export function useMacDesktopLiveView(args: {
       if (cancelled) return;
       setStreamStatus(started);
       const hostUrl = started.transport?.url ?? null;
-      hostUrlRef.current = hostUrl;
       if (!hostUrl) throw new Error(started.lastError ?? "The lane's display returned no stream address.");
       const resolved = await window.ade.macDesktop.resolveStreamUrl(hostUrl, pinRef.current);
       if (cancelled) return;
@@ -154,34 +153,39 @@ export function useMacDesktopLiveView(args: {
 
   useEffect(() => {
     if (status !== "error" || !laneId) return;
-    const hostUrl = hostUrlRef.current;
-    if (!hostUrl) return;
     if (resolveFailures >= RETRY_MAX_ATTEMPTS) return;
     let cancelled = false;
     const timer = setTimeout(() => {
-      void window.ade.macDesktop
-        .resolveStreamUrl(hostUrl, pinRef.current)
-        .then((resolved) => {
-          if (cancelled) return;
-          if (!resolved.url) {
-            setResolveFailures((failures) => failures + 1);
-            return;
-          }
-          setResolveFailures(0);
-          setUrl(resolved.url);
-          setStatus("starting");
-          setError(null);
-          setReconnectNonce((nonce) => nonce + 1);
-        })
-        .catch(() => {
-          if (!cancelled) setResolveFailures((failures) => failures + 1);
-        });
+      void (async () => {
+        // `startStream` again rather than a remembered address: the token is
+        // only ever handed out by this call, and a stream that was restarted
+        // on the host — or taken over by a second viewer — has a different one.
+        // The host returns the running transport untouched when there is one.
+        const started = await window.ade.macDesktop.startStream(
+          { laneId, chatSessionId },
+          pinRef.current,
+        );
+        if (cancelled) return;
+        setStreamStatus(started);
+        const hostUrl = started.transport?.url ?? null;
+        if (!hostUrl) throw new Error(started.lastError ?? "The lane's display returned no stream address.");
+        const resolved = await window.ade.macDesktop.resolveStreamUrl(hostUrl, pinRef.current);
+        if (cancelled) return;
+        if (!resolved.url) throw new Error(resolved.error ?? "The live view returned no address.");
+        setResolveFailures(0);
+        setUrl(resolved.url);
+        setStatus("starting");
+        setError(null);
+        setReconnectNonce((nonce) => nonce + 1);
+      })().catch(() => {
+        if (!cancelled) setResolveFailures((failures) => failures + 1);
+      });
     }, RETRY_MS);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [laneId, resolveFailures, status]);
+  }, [chatSessionId, laneId, resolveFailures, status]);
 
   /* ── The shared last frame ───────────────────────────────────────────── */
 

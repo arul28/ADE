@@ -604,6 +604,7 @@ import {
 } from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { buildMacDesktopDirective } from "../ai/tools/macDesktopPrompt";
+import type { MacDesktopRuntimeService } from "../macDesktop/macDesktopService";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   isExecutablePath,
@@ -8654,25 +8655,20 @@ export function createAgentChatService(args: {
   getProjectSecretService?: () => CtoOperatorToolDeps["projectSecretService"];
   getIosSimulatorService?: () => CtoOperatorToolDeps["iosSimulatorService"];
   /**
-   * Whether a lane has a Mac Desktop display right now.
+   * The Mac Desktop runtime, in the three calls this service makes.
    *
-   * Optional and synchronous on purpose: the answer costs one line of system
-   * prompt, so it must not make the send path wait on a service call, and an
-   * unwired runtime (`ade code`, the headless brain, any non-Mac host) simply
+   * One dependency, not two: whether a lane has a display is the same question
+   * for the one-line prompt directive and for the turn clip, and asking it
+   * twice through two differently-shaped deps was a second answer that could
+   * disagree with the first. Synchronous on purpose — the answer costs one line
+   * of system prompt, so it must not make the send path wait on a service call
+   * — and an unwired runtime (`ade code`, the headless brain, any non-Mac host)
    * leaves it undefined and emits nothing.
    */
-  getMacDesktopLaneState?: (laneId: string | null) => { enabled?: boolean | null } | null;
-  /**
-   * The turn clip. Opened on the turn's first frame, closed when the turn
-   * settles, and only for a lane that actually has a display — an idle lane
-   * must pay nothing, so both calls sit behind the same synchronous gate the
-   * prompt directive uses.
-   */
-  macDesktopTurnRecorder?: {
-    hasDisplaySync(laneId: string | null | undefined): boolean;
-    beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<unknown>;
-    noteTurnEnded(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<unknown>;
-  } | null;
+  macDesktopTurnRecorder?: Pick<
+    MacDesktopRuntimeService,
+    "hasDisplaySync" | "beginTurn" | "noteTurnEnded"
+  > | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
   getGitService?: () => CtoOperatorToolDeps["gitService"];
@@ -8788,7 +8784,6 @@ export function createAgentChatService(args: {
     getBudgetService,
     getProjectSecretService,
     getIosSimulatorService,
-    getMacDesktopLaneState,
     macDesktopTurnRecorder,
     getAppControlService,
     getBuiltInBrowserService,
@@ -39244,7 +39239,7 @@ export function createAgentChatService(args: {
           personalSession
             ? null
             : buildMacDesktopDirective(
-                getMacDesktopLaneState?.(executionContext.laneId ?? null) ?? null,
+                macDesktopTurnRecorder?.hasDisplaySync(executionContext.laneId ?? null) === true,
               ),
           contextAttachmentPrompt || null,
         ]);

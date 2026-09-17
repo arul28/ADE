@@ -177,120 +177,57 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// exhaustive and a typo is a compile error instead of a silent `unknown_op` at
 /// three in the morning.
 ///
-/// Two spellings reach the same case. The raw value is the camelCase name this
-/// enum was born with; `dottedName` is the grouped spelling the feature doc
-/// uses (`display.create`, `stream.setRate`, `lease.set`). Both are accepted on
-/// the wire — see `DriverOp(wireName:)` — because the doc, the CLI and the
-/// service were written at the same time in different rooms and neither
-/// spelling is worth a migration.
+/// The raw value *is* the wire name, and the wire name is the grouped spelling
+/// the feature doc and the Node client both use (`display.create`,
+/// `stream.setRate`, `lease.set`). There was once a second camelCase spelling
+/// accepted alongside it; nothing ever sent it, and two names for one op is a
+/// contract that drifts. Liveness is `ping` because that is the word a process
+/// supervisor reaches for.
 ///
 /// The table, request fields → result shape (result shapes are the types in
 /// `apps/desktop/src/shared/types/macDesktop.ts`):
 ///
-/// | op | dotted | request fields | result |
-/// |---|---|---|---|
-/// | `health` | `ping` | — | `{version, permissions, displayMode, virtualDisplay, idleSeconds, pid}` |
-/// | `probePermissions` | `permissions.probe` | — | `MacDesktopPermissions` |
-/// | `requestPermissions` | `permissions.request` | `which` | `MacDesktopPermissions` |
-/// | `createDisplay` | `display.create` | `laneId,name,width,height,scale` | `MacDesktopDisplay` |
-/// | `destroyDisplay` | `display.destroy` | `laneId` | `{destroyed, releasedWindows}` |
-/// | `listDisplays` | `display.list` | — | `{displays: MacDesktopDisplay[]}` |
-/// | `reconcileDisplays` | `display.reconcile` | `liveLaneIds` | `{destroyed: string[]}` |
-/// | `listWindows` | `window.list` | `laneId?`, `pid?` | `{windows: MacDesktopWindow[]}` |
-/// | `parkWindow` | `window.park` | `laneId,windowId` | `MacDesktopWindow` |
-/// | `unparkWindow` | `window.unpark` | `windowId` | `{window: MacDesktopWindow?}` |
-/// | `launch` | `app.launch` | `laneId,target,args?` | `MacDesktopOpenResult` |
-/// | `present` | `present` | `laneId,destination` | `{moved}` |
-/// | `observe` | `observe` | `laneId,windowId?,limit?,map?,screenshotPath?,mapPath?,caption?` | `MacDesktopObservation` |
-/// | `input` | `input` | `laneId,command,mode,payload,lease?` | `{resolvedIndex}` |
-/// | `setLease` | `lease.set` | `laneId,holderId,expiresAt` | `{laneId,holderId,expiresAt}` |
-/// | `clearLease` | `lease.clear` | `laneId` | `{cleared}` |
-/// | `screenshot` | `capture.screenshot` | `laneId,windowId?,path` | `MacDesktopScreenshotResult` |
-/// | `startStream` | `stream.start` | `laneId,fps?` | `MacDesktopStreamTransport` + `{port}` |
-/// | `setStreamRate` | `stream.setRate` | `laneId,fps` | `{fps}` |
-/// | `stopStream` | `stream.stop` | `laneId` | `{stopped}` |
-/// | `lastFrame` | `stream.lastFrame` | `laneId,path` | `{filePath,width,height,capturedAt}` |
-/// | `startRecording` | `record.start` | `laneId,fps?,filePath` | `{startedAt}` |
-/// | `stopRecording` | `record.stop` | `laneId` | `{filePath,durationMs}` |
-/// | `setCursorOverlay` | `cursor.set` | `laneId,visible?,x?,y?` | `{visible}` |
-/// | `idleSeconds` | `input.idleSeconds` | — | `{seconds}` |
-/// | `quit` | `quit` | — | `{stopping:true}` |
+/// | op | request fields | result |
+/// |---|---|---|
+/// | `ping` | — | `{version, permissions, displayMode, virtualDisplay, idleSeconds, pid}` |
+/// | `display.create` | `laneId,name,width,height,scale` | `MacDesktopDisplay` |
+/// | `display.destroy` | `laneId,reason?` | `{destroyed, releasedWindows}` |
+/// | `display.reconcile` | `liveLaneIds` | `{destroyed: string[]}` |
+/// | `window.list` | `laneId?`, `pid?` | `{windows: MacDesktopWindow[]}` |
+/// | `window.park` | `laneId,windowId` | `MacDesktopWindow` |
+/// | `window.unpark` | `windowId` | `{window: MacDesktopWindow?}` |
+/// | `app.launch` | `laneId,target,args?` | `MacDesktopOpenResult` |
+/// | `present` | `laneId,destination` | `{moved}` |
+/// | `observe` | `laneId,windowId?,limit?,map?,screenshotPath?,mapPath?,caption?` | `MacDesktopObservation` |
+/// | `input` | `laneId,command,mode,payload,lease?` | `{resolvedIndex}` |
+/// | `lease.set` | `laneId,holderId,expiresAt` | `{laneId,holderId,expiresAt}` |
+/// | `lease.clear` | `laneId` | `{cleared}` |
+/// | `capture.screenshot` | `laneId,windowId?,path` | `MacDesktopScreenshotResult` |
+/// | `stream.start` | `laneId,fps?` | `MacDesktopStreamTransport` + `{port}` |
+/// | `stream.setRate` | `laneId,fps` | `{fps}` |
+/// | `stream.stop` | `laneId` | `{stopped}` |
+/// | `record.start` | `laneId,fps?,filePath` | `{startedAt}` |
+/// | `record.stop` | `laneId` | `{filePath,durationMs}` |
 public enum DriverOp: String, CaseIterable, Sendable {
-    case health
-    case probePermissions
-    case requestPermissions
-    case createDisplay
-    case destroyDisplay
-    case listDisplays
-    case reconcileDisplays
-    case listWindows
-    case parkWindow
-    case unparkWindow
-    case launch
+    case health = "ping"
+    case createDisplay = "display.create"
+    case destroyDisplay = "display.destroy"
+    case reconcileDisplays = "display.reconcile"
+    case listWindows = "window.list"
+    case parkWindow = "window.park"
+    case unparkWindow = "window.unpark"
+    case launch = "app.launch"
+    case present
     case observe
     case input
-    case setLease
-    case clearLease
-    case screenshot
-    case startStream
-    case setStreamRate
-    case stopStream
-    case lastFrame
-    case startRecording
-    case stopRecording
-    case setCursorOverlay
-    case idleSeconds
-    case present
-    case quit
-
-    /// The grouped spelling from the feature doc.
-    public var dottedName: String {
-        switch self {
-        case .health: return "ping"
-        case .probePermissions: return "permissions.probe"
-        case .requestPermissions: return "permissions.request"
-        case .createDisplay: return "display.create"
-        case .destroyDisplay: return "display.destroy"
-        case .listDisplays: return "display.list"
-        case .reconcileDisplays: return "display.reconcile"
-        case .listWindows: return "window.list"
-        case .parkWindow: return "window.park"
-        case .unparkWindow: return "window.unpark"
-        case .launch: return "app.launch"
-        case .observe: return "observe"
-        case .input: return "input"
-        case .setLease: return "lease.set"
-        case .clearLease: return "lease.clear"
-        case .screenshot: return "capture.screenshot"
-        case .startStream: return "stream.start"
-        case .setStreamRate: return "stream.setRate"
-        case .stopStream: return "stream.stop"
-        case .lastFrame: return "stream.lastFrame"
-        case .startRecording: return "record.start"
-        case .stopRecording: return "record.stop"
-        case .setCursorOverlay: return "cursor.set"
-        case .idleSeconds: return "input.idleSeconds"
-        case .present: return "present"
-        case .quit: return "quit"
-        }
-    }
-
-    /// Resolves either spelling. `health` also answers to `ping`, because a
-    /// process supervisor reaching for a liveness probe reaches for that word.
-    public init?(wireName: String) {
-        if let direct = DriverOp(rawValue: wireName) {
-            self = direct
-            return
-        }
-        if wireName == "ping" || wireName == "health" {
-            self = .health
-            return
-        }
-        guard let match = DriverOp.allCases.first(where: { $0.dottedName == wireName }) else {
-            return nil
-        }
-        self = match
-    }
+    case setLease = "lease.set"
+    case clearLease = "lease.clear"
+    case screenshot = "capture.screenshot"
+    case startStream = "stream.start"
+    case setStreamRate = "stream.setRate"
+    case stopStream = "stream.stop"
+    case startRecording = "record.start"
+    case stopRecording = "record.stop"
 }
 
 /// One decoded request line.
@@ -310,7 +247,7 @@ public struct DriverRequest: Equatable, Sendable {
     }
 
     /// The known op, or nil when Node is newer than this helper.
-    public var knownOp: DriverOp? { DriverOp(wireName: op) }
+    public var knownOp: DriverOp? { DriverOp(rawValue: op) }
 
     public func string(_ key: String) -> String? { fields[key]?.stringValue }
     public func int(_ key: String) -> Int? { fields[key]?.intValue }
@@ -390,6 +327,21 @@ public enum DriverInputDecoder {
         fields.removeValue(forKey: "id")
         fields.removeValue(forKey: "op")
         return .request(DriverRequest(id: id, op: op, fields: fields))
+    }
+
+    /// The `id` of a line that failed to decode, when it had one.
+    ///
+    /// A line whose `op` is missing or blank still carries a request id, and the
+    /// caller is owed a reply on it: without this, the only thing that ever
+    /// settles that promise is the client's 20-second timeout. A line with no
+    /// parsable id has nobody to answer and becomes a `protocol_error` event
+    /// instead.
+    public static func requestId(inLine line: String, decoder: JSONDecoder = JSONDecoder()) -> String? {
+        guard let decoded = try? decoder.decode(JSONValue.self, from: Data(line.utf8)),
+              let id = decoded.objectValue?["id"]?.stringValue,
+              !id.isEmpty
+        else { return nil }
+        return id
     }
 }
 

@@ -8,6 +8,7 @@ import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared
 // Electron-main module would pull `electron` into it.
 import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/shared/types/builtInBrowser";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
+import { MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS } from "../../../../desktop/src/shared/types/macDesktop";
 import type {
   MacDesktopEventPayload,
   MacDesktopServiceApi,
@@ -76,9 +77,11 @@ const APP_CONTROL_OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "app-contro
  * Where the Mac Desktop service writes its observation screenshots. Listed
  * here so `readObservationPreview` serves a lane-desktop frame through the
  * exact same path-checked route the browser's frames use — a second route
- * would be a second place to get the containment check wrong.
+ * would be a second place to get the containment check wrong. The segments come
+ * from the shared contract the writer joins too: a reader that disagrees with
+ * the writer serves nothing, silently.
  */
-const MAC_DESKTOP_OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "mac-desktop-observations");
+const MAC_DESKTOP_OBSERVATION_CACHE_DIR = path.join(...MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS);
 
 /**
  * How deep to walk an observation root. The browser nests
@@ -459,6 +462,8 @@ function macDesktopEventLaneId(event: MacDesktopEventPayload): string | null {
     case "stream-error":
     case "recording-changed":
       return event.status.laneId;
+    case "window-not-parked":
+      return event.laneId;
     case "time-lapse":
       return event.timeLapse.laneId;
     default:

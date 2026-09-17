@@ -13,6 +13,12 @@ export const SYSTEM_SETTINGS_PANE_URLS = {
   /** macOS Privacy & Security › Full Disk Access. */
   "macos-full-disk-access":
     "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
+  /** macOS Privacy & Security › Screen & System Audio Recording. */
+  "macos-screen-recording":
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+  /** macOS Privacy & Security › Accessibility. */
+  "macos-accessibility":
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
 } as const;
 
 export type SystemSettingsPaneId = keyof typeof SYSTEM_SETTINGS_PANE_URLS;

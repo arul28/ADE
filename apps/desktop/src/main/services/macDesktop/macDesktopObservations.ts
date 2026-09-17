@@ -17,6 +17,7 @@ import path from "node:path";
 
 import {
   MAC_DESKTOP_HANDLE_EXPIRED_CODE,
+  MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS,
   MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
   MAC_DESKTOP_PROOF_BACKEND_NAME,
   type MacDesktopElement,
@@ -39,9 +40,10 @@ import {
  * lane-desktop frame to the phone and the hosted web client through
  * `readObservationPreview`, and that reader only accepts paths inside the
  * roots it knows. Writing anywhere else means the mirror silently has no
- * frame. Kept in sync with `MAC_DESKTOP_OBSERVATION_CACHE_DIR` there.
+ * frame, so both sides join the one segment list in the shared contract rather
+ * than spelling the path out twice.
  */
-export const MAC_DESKTOP_OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "mac-desktop-observations");
+export const MAC_DESKTOP_OBSERVATION_CACHE_DIR = path.join(...MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS);
 
 /** Observations retained per lane. Older handles resolve to "expired". */
 export const MAC_DESKTOP_OBSERVATION_RETENTION = 8;
@@ -193,10 +195,13 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
 
     // -- paths ------------------------------------------------------------
     /**
-     * Where a capture lands when it is not a frame a mirror can preview —
-     * recordings and turn clips. Video is never served by
-     * `readObservationPreview`, so it stays in the computer-use scratch root
-     * the proof broker already lists as an allowed import root.
+     * Where an ad-hoc screenshot lands when the caller named no `out`.
+     *
+     * The computer-use scratch root, which the proof broker already lists as an
+     * allowed import root, so a scratch capture can still be promoted to proof.
+     * Video does NOT come here — recordings and turn clips go to
+     * `artifactPath`, because the thread plays them back over
+     * `ade-artifact://`, which only serves `.ade/artifacts`.
      */
     scratchPath(stem: string, extension: string): string {
       return createComputerUseScratchPath(deps.projectRoot, stem, extension);
@@ -306,6 +311,20 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
         if (real !== realRoot && !isPathInside(realRoot, real)) refuse();
         break;
       }
+      // The loop above only ever inspected directories. A leaf that is itself a
+      // symlink — `shot.png -> ~/.ssh/authorized_keys`, planted by anything that
+      // can write one file in the worktree — passed every check and was then
+      // written through by the driver. `lstat` is the one call that sees the
+      // link rather than its target.
+      // No leaf yet is the normal case — the capture is about to create it —
+      // so the lookup failing is not the refusal; only a link is.
+      let leafIsSymlink = false;
+      try {
+        leafIsSymlink = fs.lstatSync(absolute).isSymbolicLink();
+      } catch {
+        leafIsSymlink = false;
+      }
+      if (leafIsSymlink) refuse();
       fs.mkdirSync(path.dirname(absolute), { recursive: true });
       return absolute;
     },
@@ -403,6 +422,32 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
 
     getTurnRecording(laneId: string, chatSessionId: string): MacDesktopTurnRecording | null {
       return turnRecordings.get(turnKey(laneId, chatSessionId)) ?? null;
+    },
+
+    /**
+     * The turn clip running on this lane, whichever chat opened it.
+     *
+     * One lane has one writer in the helper, so "is a clip recording on this
+     * lane" is a lane question, not a chat question. Asking it per chat is what
+     * let a user recording start on top of a running turn clip and take its
+     * file over.
+     */
+    findTurnRecordingForLane(laneId: string): MacDesktopTurnRecording | null {
+      for (const recording of turnRecordings.values()) {
+        if (recording.laneId === laneId) return recording;
+      }
+      return null;
+    },
+
+    /** Forgets every turn clip on the lane and says which ones there were. */
+    endTurnRecordingsForLane(laneId: string): MacDesktopTurnRecording[] {
+      const ended: MacDesktopTurnRecording[] = [];
+      for (const [key, recording] of [...turnRecordings]) {
+        if (recording.laneId !== laneId) continue;
+        turnRecordings.delete(key);
+        ended.push(recording);
+      }
+      return ended;
     },
 
     endTurnRecording(laneId: string, chatSessionId: string): MacDesktopTurnRecording | null {

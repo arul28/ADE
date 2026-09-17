@@ -49,8 +49,19 @@ final class InputLeaseTests: XCTestCase {
         let input = RealInput(leases: store(expiringIn: 60), log: { _ in })
         let lease = try input.authorize(laneId: "lane-a", holderId: "chat-1", now: now)
         XCTAssertEqual(lease.holderId, "chat-1")
-        // A caller that names no holder is still inside the lease.
-        XCTAssertNoThrow(try input.authorize(laneId: "lane-a", holderId: nil, now: now))
+    }
+
+    /// The service sends `lease: {holderId}` on every real-input request, so a
+    /// line without one is a replay or a forgery — never a terse caller. An
+    /// absent holder must not be read as "the holder, presumably".
+    func testRealInputRefusesALineThatNamesNoHolderAtAll() {
+        let input = RealInput(leases: store(expiringIn: 60), log: { _ in })
+        for holderId in [nil, ""] as [String?] {
+            XCTAssertThrowsError(try input.authorize(laneId: "lane-a", holderId: holderId, now: now)) { error in
+                XCTAssertEqual((error as? DriverError)?.code, DriverErrorCode.inputLeaseRequired)
+                XCTAssertTrue((error as? DriverError)?.message.contains("name the lease holder") == true)
+            }
+        }
     }
 
     func testALeaseOnAnotherLaneIsNoHelp() {
@@ -78,26 +89,5 @@ final class InputLeaseTests: XCTestCase {
         )
         XCTAssertNil(InputLeaseStore.expiryMilliseconds(.string("whenever")))
         XCTAssertNil(InputLeaseStore.expiryMilliseconds(nil))
-    }
-
-    func testAMalformedLeaseObjectGrantsNothing() {
-        let request = DriverRequest(
-            id: "1",
-            op: "input",
-            fields: ["lease": .object(["holderId": .string("chat-1")])]
-        )
-        XCTAssertNil(InputLeaseStore.parse(laneId: "lane-a", from: request))
-
-        let good = DriverRequest(
-            id: "1",
-            op: "input",
-            fields: [
-                "lease": .object([
-                    "holderId": .string("chat-1"),
-                    "expiresAt": .double(1_700_000_060_000),
-                ])
-            ]
-        )
-        XCTAssertEqual(InputLeaseStore.parse(laneId: "lane-a", from: good)?.holderId, "chat-1")
     }
 }

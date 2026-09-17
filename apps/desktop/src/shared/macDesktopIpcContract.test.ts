@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { IPC } from "./ipc";
+import { createMacDesktopBridge } from "../preload/macDesktopPreload";
 
 /**
  * The Mac Desktop IPC surface, checked as a contract rather than as three
@@ -12,9 +13,12 @@ import { IPC } from "./ipc";
  * the main process, and a preload method that can reach it. Drift between them
  * is silent — a missing handler surfaces as "No handler registered for …" in
  * production only, and a missing preload method type-checks fine because the
- * renderer never mentions it. Reading the sources is crude and it is the only
- * check that catches all three; mounting Electron in a unit test is not an
- * option, and a hand-maintained list of expected channels would be the fourth
+ * renderer never mentions it.
+ *
+ * The preload half is exercised, not read: `createMacDesktopBridge` is the
+ * namespace, so this calls every method on it against fakes. The main-process
+ * half is still a text check, because mounting Electron in a unit test is not
+ * an option and a hand-maintained list of expected channels would be the fourth
  * thing to drift.
  */
 
@@ -22,10 +26,63 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (relative: string): string => readFileSync(path.join(here, relative), "utf8");
 
 const registerIpc = read("../main/services/ipc/registerIpc.ts");
-const preload = read("../preload/preload.ts");
-const globals = read("../preload/global.d.ts");
 
 const macDesktopChannelKeys = Object.keys(IPC).filter((key) => key.startsWith("macDesktop"));
+
+/** Every bridge method that routes, with the arguments its signature wants. */
+const ROUTED_CALLS: Array<[string, unknown]> = [
+  ["getStatus", { laneId: "lane-1" }],
+  ["start", { laneId: "lane-1" }],
+  ["stop", { laneId: "lane-1" }],
+  ["listWindows", { laneId: "lane-1" }],
+  ["open", { laneId: "lane-1", app: "Safari" }],
+  ["claimWindow", { laneId: "lane-1", windowId: 1 }],
+  ["releaseWindow", { laneId: "lane-1", windowId: 1 }],
+  ["observe", { laneId: "lane-1" }],
+  ["click", { laneId: "lane-1", x: 1, y: 2 }],
+  ["type", { laneId: "lane-1", text: "hi" }],
+  ["press", { laneId: "lane-1", key: "return" }],
+  ["scroll", { laneId: "lane-1", direction: "down" }],
+  ["drag", { laneId: "lane-1", from: { x: 1, y: 1 }, to: { x: 2, y: 2 } }],
+  ["wait", { laneId: "lane-1", text: "Done" }],
+  ["screenshot", { laneId: "lane-1" }],
+  ["startRecording", { laneId: "lane-1" }],
+  ["stopRecording", { laneId: "lane-1" }],
+  ["startStream", { laneId: "lane-1" }],
+  ["stopStream", { laneId: "lane-1" }],
+  ["getStreamStatus", { laneId: "lane-1" }],
+  ["takeControl", { laneId: "lane-1", controllerId: "ade-window:1" }],
+  ["returnControl", { laneId: "lane-1", controllerId: "ade-window:1" }],
+  ["renewLease", { laneId: "lane-1", holderId: "ade-window:1" }],
+  ["present", { laneId: "lane-1", destination: "main" }],
+];
+
+type Routed = { action: string; args: unknown; pin: unknown };
+
+function harness() {
+  const routed: Routed[] = [];
+  const invoked: Array<{ channel: string; args: unknown }> = [];
+  const resolveStreamUrl = vi.fn(async () => ({ url: null, forwarded: false, error: null }));
+  const onEvent = vi.fn(() => () => {});
+  const bridge = createMacDesktopBridge({
+    callAction: async <T,>(
+      pin: unknown,
+      action: string,
+      request: { args?: Record<string, unknown> },
+      local: () => Promise<T>,
+    ) => {
+      routed.push({ action, args: request.args, pin });
+      return local();
+    },
+    invoke: async (channel: string, args: unknown) => {
+      invoked.push({ channel, args });
+      return null;
+    },
+    resolveStreamUrl,
+    onEvent,
+  });
+  return { bridge, routed, invoked, resolveStreamUrl, onEvent };
+}
 
 describe("Mac Desktop IPC contract", () => {
   it("names a channel for every method the panel drives", () => {
@@ -70,34 +127,60 @@ describe("Mac Desktop IPC contract", () => {
     expect(missing).toEqual([]);
   });
 
-  it("reaches every channel from the preload namespace", () => {
-    const missing = macDesktopChannelKeys.filter((key) => !preload.includes(`IPC.${key}`));
-    expect(missing).toEqual([]);
+  it("exposes exactly the bridge methods the renderer declares", () => {
+    const { bridge } = harness();
+    expect(Object.keys(bridge).sort()).toEqual(
+      [...ROUTED_CALLS.map(([method]) => method), "resolveStreamUrl", "onEvent"].sort(),
+    );
   });
 
-  it("declares every preload method on window.ade.macDesktop", () => {
-    const namespace = preload.slice(preload.indexOf("  macDesktop: {"));
-    const body = namespace.slice(0, namespace.indexOf("\n  appControl: {"));
-    const methods = [...body.matchAll(/^    ([a-zA-Z]+):/gm)].map((match) => match[1]);
-    expect(methods).toContain("startStream");
-    expect(methods).toContain("takeControl");
-    expect(methods).toContain("resolveStreamUrl");
-    const undeclared = methods.filter((method) => !globals.includes(`        ${method}: (`));
-    expect(undeclared).toEqual([]);
-  });
-
-  it("routes every call through the mac_desktop action domain before the local channel", () => {
+  it("routes every call through the mac_desktop action domain before the local channel", async () => {
     // The runtime-backed build has no in-process service. A preload method that
     // called `ipcRenderer.invoke` directly would work in dev and throw in
     // production, which is the single most common way this codebase breaks.
-    const namespace = preload.slice(preload.indexOf("  macDesktop: {"));
-    const body = namespace.slice(0, namespace.indexOf("\n  appControl: {"));
-    const routed = [...body.matchAll(/callMacDesktopActionOr\(/g)].length;
-    const invokes = [...body.matchAll(/ipcRenderer\.invoke\(IPC\.macDesktop/g)].length;
-    expect(routed).toBeGreaterThan(0);
+    const { bridge, routed, invoked } = harness();
+    const methods = bridge as unknown as Record<
+      string,
+      (args: unknown, pin?: unknown) => Promise<unknown>
+    >;
+    for (const [method, args] of ROUTED_CALLS) {
+      await methods[method](args, { kind: "remote" });
+    }
+    expect(routed.map((entry) => entry.action)).toEqual(ROUTED_CALLS.map(([method]) => method));
+    expect(routed.map((entry) => entry.args)).toEqual(ROUTED_CALLS.map(([, args]) => args));
     // Every local invoke is the fallback arm of a routed call, so the counts
-    // match exactly. One more invoke than routes is a direct call.
-    expect(invokes).toBe(routed);
-    expect(preload).toContain('callPinnedOrBoundRuntimeActionOr(pin, "mac_desktop"');
+    // match exactly. One more invoke than routes would be a direct call.
+    expect(invoked).toHaveLength(routed.length);
+    for (const entry of routed) expect(entry.pin).toEqual({ kind: "remote" });
+  });
+
+  it("reaches every channel from the preload bridge", async () => {
+    const { bridge, invoked } = harness();
+    const methods = bridge as unknown as Record<
+      string,
+      (args: unknown, pin?: unknown) => Promise<unknown>
+    >;
+    for (const [method, args] of ROUTED_CALLS) await methods[method](args);
+    const reached = new Set(invoked.map((entry) => entry.channel));
+    const missing = macDesktopChannelKeys
+      .filter((key) => key !== "macDesktopEvent")
+      .filter((key) => !reached.has(IPC[key as keyof typeof IPC]));
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the two calls this process owns off the action domain", () => {
+    const { bridge, routed, resolveStreamUrl, onEvent } = harness();
+    void bridge.resolveStreamUrl("http://127.0.0.1:1/x");
+    bridge.onEvent(() => {});
+    expect(resolveStreamUrl).toHaveBeenCalledTimes(1);
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(routed).toEqual([]);
+  });
+
+  it("defaults the optional-argument reads to an empty payload", async () => {
+    const { bridge, routed } = harness();
+    await bridge.getStatus();
+    await bridge.listWindows();
+    expect(routed.map((entry) => entry.args)).toEqual([{}, {}]);
   });
 });

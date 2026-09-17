@@ -310,7 +310,23 @@ export type MacDesktopTarget = {
   windowId?: number | null;
 };
 
-export type MacDesktopClickArgs = MacDesktopTarget & {
+/**
+ * Who is asking, when it is not a chat.
+ *
+ * Real input is checked against the lease *holder*, and a human takeover holds
+ * the lease under the controller id the viewing client minted
+ * (`ade-window:<uuid>`), never under a chat session id. A panel that sent only
+ * its `chatSessionId` was therefore refused with `MAC_DESKTOP_USER_HAS_CONTROL`
+ * for input the user had just taken control to perform. `controllerId` is that
+ * client saying which holder it is; the service prefers it over
+ * `chatSessionId` when checking the lease, and it authorizes nothing on its
+ * own — an id that does not hold the lease is refused exactly as before.
+ */
+export type MacDesktopControllerArgs = {
+  controllerId?: string | null;
+};
+
+export type MacDesktopClickArgs = MacDesktopTarget & MacDesktopControllerArgs & {
   laneId: string;
   mode?: MacDesktopInputMode | null;
   button?: "left" | "right" | null;
@@ -318,7 +334,7 @@ export type MacDesktopClickArgs = MacDesktopTarget & {
   chatSessionId?: string | null;
 };
 
-export type MacDesktopTypeArgs = {
+export type MacDesktopTypeArgs = MacDesktopControllerArgs & {
   laneId: string;
   text: string;
   /** Replace the focused element's value instead of appending to it. */
@@ -328,7 +344,7 @@ export type MacDesktopTypeArgs = {
   chatSessionId?: string | null;
 };
 
-export type MacDesktopPressArgs = {
+export type MacDesktopPressArgs = MacDesktopControllerArgs & {
   laneId: string;
   /** A key name (`return`, `tab`, `escape`, `f5`) or a single character. */
   key: string;
@@ -337,7 +353,7 @@ export type MacDesktopPressArgs = {
   chatSessionId?: string | null;
 };
 
-export type MacDesktopScrollArgs = MacDesktopTarget & {
+export type MacDesktopScrollArgs = MacDesktopTarget & MacDesktopControllerArgs & {
   laneId: string;
   direction: "up" | "down" | "left" | "right";
   /** Scroll lines. The service clamps this. */
@@ -346,7 +362,7 @@ export type MacDesktopScrollArgs = MacDesktopTarget & {
   chatSessionId?: string | null;
 };
 
-export type MacDesktopDragArgs = {
+export type MacDesktopDragArgs = MacDesktopControllerArgs & {
   laneId: string;
   from: MacDesktopTarget;
   to: MacDesktopTarget;
@@ -624,12 +640,30 @@ export type MacDesktopEventPayload =
   | { type: "stream-error"; status: MacDesktopStreamStatus }
   | { type: "recording-changed"; status: MacDesktopRecordingStatus }
   | { type: "time-lapse"; timeLapse: MacDesktopTimeLapse }
+  /**
+   * The driver could not park a window on the lane's display.
+   *
+   * Forwarded rather than swallowed: the window is on the user's own screen
+   * until something moves it, and the only surface that can say so is the one
+   * watching the lane.
+   */
+  | { type: "window-not-parked"; laneId: string; windowId: number; reason: string }
   | { type: "permission-changed"; permissions: MacDesktopPermissions }
   | { type: "driver-health"; health: MacDesktopDriverHealth };
 
 // ---------------------------------------------------------------------------
 // The seat provider interface
 // ---------------------------------------------------------------------------
+
+/**
+ * A reply the backend passes through for the service to normalize.
+ *
+ * The service knows the display's size, the lane's name, and the clock; the
+ * backend knows only what its helper said. Rather than have the backend invent
+ * fallbacks the service would immediately override, these replies stay raw and
+ * the one normalization lives where the state does.
+ */
+export type DesktopSeatReply = Record<string, unknown>;
 
 /**
  * What a backend has to be able to do to host a lane's screen.
@@ -640,30 +674,50 @@ export type MacDesktopEventPayload =
  * and it is deliberately thin — lifecycle, windows, observation, input,
  * streaming, and health. Ownership, the lease, idle release, proof, and events
  * belong to the service and are the same whatever hosts the screen.
+ *
+ * Every method is one backend operation. `createMacVirtualDisplayProvider` in
+ * `macDesktop/macDesktopSeatProvider.ts` is the one implementation, and the
+ * service reaches its helper through it and nothing else.
  */
 export type DesktopSeatProvider = {
   readonly id: "mac-virtual-display";
-  health(): Promise<{ driver: MacDesktopDriverHealth; permissions: MacDesktopPermissions; displayMode: MacDesktopDisplayMode }>;
-  create(args: { laneId: string; name: string; width: number; height: number; scale: number }): Promise<MacDesktopDisplay>;
-  destroy(args: { laneId: string }): Promise<void>;
-  listDisplays(): Promise<MacDesktopDisplay[]>;
+  health(): Promise<DesktopSeatReply>;
+  create(args: { laneId: string; name: string; width: number; height: number; scale: number }): Promise<DesktopSeatReply>;
+  destroy(args: { laneId: string }): Promise<DesktopSeatReply>;
+  /** Destroys every seat no live lane claims. Runs once per backend start. */
+  reconcile(args: { liveLaneIds: string[] }): Promise<void>;
   listWindows(args: { laneId?: string | null }): Promise<MacDesktopWindow[]>;
   park(args: { laneId: string; windowId: number }): Promise<MacDesktopWindow>;
-  unpark(args: { windowId: number }): Promise<MacDesktopWindow | null>;
-  launch(args: { laneId: string; target: string; args: string[] }): Promise<MacDesktopOpenResult>;
-  observe(args: { laneId: string; windowId: number | null; limit: number; map: boolean }): Promise<MacDesktopObservation>;
+  unpark(args: { windowId: number }): Promise<void>;
+  launch(args: { laneId: string; target: string; args: string[] }): Promise<DesktopSeatReply>;
+  present(args: { laneId: string; destination: "main" | "display" }): Promise<DesktopSeatReply>;
+  observe(args: {
+    laneId: string;
+    windowId: number | null;
+    limit: number;
+    map: boolean;
+    screenshotPath: string;
+    mapPath?: string;
+    caption?: string;
+  }): Promise<DesktopSeatReply>;
   input(args: {
     laneId: string;
     command: string;
     mode: MacDesktopInputMode;
     payload: Record<string, unknown>;
-  }): Promise<{ resolvedIndex: number | null }>;
-  startStream(args: { laneId: string; fps: number }): Promise<MacDesktopStreamTransport>;
+    timeoutMs?: number;
+    /** The holder the service authorized, echoed for the backend's own check. */
+    lease?: { holderId: string } | null;
+  }): Promise<DesktopSeatReply>;
+  screenshot(args: { laneId: string; windowId: number | null; path: string }): Promise<DesktopSeatReply>;
+  setLease(args: { laneId: string; holderId: string; expiresAt: string }): Promise<void>;
+  clearLease(args: { laneId: string }): Promise<void>;
+  /** The backend's own loopback port for this lane's encoder, plus its format. */
+  startStream(args: { laneId: string; fps: number }): Promise<DesktopSeatReply>;
   setStreamRate(args: { laneId: string; fps: number }): Promise<void>;
   stopStream(args: { laneId: string }): Promise<void>;
   startRecording(args: { laneId: string; fps: number; filePath: string }): Promise<void>;
-  stopRecording(args: { laneId: string }): Promise<{ filePath: string; durationMs: number }>;
-  dispose(): void;
+  stopRecording(args: { laneId: string }): Promise<DesktopSeatReply>;
 };
 
 // ---------------------------------------------------------------------------
@@ -687,6 +741,20 @@ export const MAC_DESKTOP_IDLE_STREAM_AFTER_MS = 5_000;
 
 /** Elements returned by one observation before it reports `truncated`. */
 export const MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT = 200;
+
+/**
+ * Where observation frames are written, relative to the project root.
+ *
+ * Segments rather than a joined path because this file is imported by both the
+ * runtime service that writes the frames and the Work tools aggregator that
+ * serves them, and it must not depend on `node:path`. Both join it themselves.
+ * Named once: a reader that disagrees with the writer serves nothing.
+ */
+export const MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS: readonly string[] = [
+  ".ade",
+  "cache",
+  "mac-desktop-observations",
+];
 
 /** The loopback stream path, mirroring `IOS_VIDEO_STREAM_PATH`. */
 export const MAC_DESKTOP_STREAM_PATH = "/mac-desktop-video";

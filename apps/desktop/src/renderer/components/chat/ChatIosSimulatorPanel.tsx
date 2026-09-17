@@ -18,7 +18,7 @@ import type {
 } from "../../../shared/types";
 import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE, inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { IosSimH264Video } from "./IosSimH264Video";
+import { H264VideoCanvas } from "./H264VideoCanvas";
 import { IosSimToolsColumn } from "./IosSimToolsColumn";
 import { IosSimWatchRibbon } from "./IosSimWatchRibbon";
 import { PaneTooltip } from "../ui/PaneTooltip";
@@ -2799,7 +2799,7 @@ export function ChatIosSimulatorPanel({
               liveVisual.url ? (
                 <div className={cn("absolute inset-0", mediaZoom > MEDIA_ZOOM_MIN ? "overflow-auto" : "overflow-hidden")}>
                   <div className="relative h-full w-full" style={mediaZoomStyle}>
-                    <IosSimH264Video
+                    <H264VideoCanvas
                       url={liveVisual.url}
                       reconnectNonce={h264ReconnectNonce}
                       onCanvas={setH264Canvas}

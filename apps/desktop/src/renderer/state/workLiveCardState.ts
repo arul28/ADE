@@ -24,7 +24,9 @@ export const WORK_LIVE_SCREEN_TOOLS: readonly WorkLiveScreenTool[] = [
 ];
 
 export function isWorkLiveScreenTool(tool: string | null | undefined): tool is WorkLiveScreenTool {
-  return tool === "browser" || tool === "app-control" || tool === "ios" || tool === "mac-desktop";
+  // Reads the list above rather than repeating it: the two had already drifted
+  // once, which is the whole reason this module exists.
+  return WORK_LIVE_SCREEN_TOOLS.includes(tool as WorkLiveScreenTool);
 }
 
 /**

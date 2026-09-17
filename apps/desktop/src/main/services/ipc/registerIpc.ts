@@ -9037,12 +9037,12 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.iosSimulatorOpenSystemSettings, async (_event, arg = {}): Promise<{ ok: boolean }> => {
-    // Validated against the union rather than narrowed by one `===`: the pane
-    // list grew a third member (Accessibility, which Mac Desktop needs) and a
-    // hand-rolled ternary silently routed it to Screen Recording instead.
+    // Validated against the union rather than narrowed by one `===`, so a pane
+    // added to the type is a compile error here rather than a silent reroute
+    // to Screen Recording.
     const requested = (arg as { pane?: unknown } | null)?.pane;
     const pane: IosSimulatorPrivacyPane =
-      requested === "automation" || requested === "accessibility" || requested === "screen-recording"
+      requested === "automation" || requested === "screen-recording"
         ? requested
         : "screen-recording";
     return openSimulatorPrivacyPane(pane);

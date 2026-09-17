@@ -33,14 +33,15 @@ import {
  * One table, because the helper's own table lives in another language in
  * another process: a typo here is otherwise an `unknown_op` at runtime, and the
  * only way to reconcile the two lists is to have exactly one of them per side.
+ *
+ * Exactly the ops something calls. An op named here and called nowhere is a
+ * capability the helper has to keep answering for no reader, and the two sides
+ * can only be reconciled against each other if this list is the true one.
  */
 export const MAC_DESKTOP_DRIVER_OPS = {
   health: "ping",
-  probePermissions: "permissions.probe",
-  requestPermissions: "permissions.request",
   createDisplay: "display.create",
   destroyDisplay: "display.destroy",
-  listDisplays: "display.list",
   reconcileDisplays: "display.reconcile",
   listWindows: "window.list",
   parkWindow: "window.park",
@@ -55,12 +56,8 @@ export const MAC_DESKTOP_DRIVER_OPS = {
   startStream: "stream.start",
   setStreamRate: "stream.setRate",
   stopStream: "stream.stop",
-  lastFrame: "stream.lastFrame",
   startRecording: "record.start",
   stopRecording: "record.stop",
-  setCursorOverlay: "cursor.set",
-  idleSeconds: "input.idleSeconds",
-  quit: "quit",
 } as const;
 
 export type MacDesktopDriverOp = (typeof MAC_DESKTOP_DRIVER_OPS)[keyof typeof MAC_DESKTOP_DRIVER_OPS];
@@ -457,8 +454,6 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   };
 
   return {
-    ops: MAC_DESKTOP_DRIVER_OPS,
-
     /** Starts the helper if it is not already up. Idempotent. */
     async ensureStarted(): Promise<void> {
       await start();
@@ -484,23 +479,6 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       if (version === next) return;
       version = next;
       publishHealth();
-    },
-
-    /** Clears the crash-loop counter and tries again, for a settings retry. */
-    retry(): MacDesktopDriverHealth {
-      if (disposed) return publishHealth();
-      restartAttempts = 0;
-      lastProtocolError = null;
-      if (restartTimer) {
-        clearTimeout(restartTimer);
-        restartTimer = null;
-      }
-      if (!child) {
-        void start().catch(() => {
-          // Health already carries the failure.
-        });
-      }
-      return publishHealth();
     },
 
     dispose(): void {

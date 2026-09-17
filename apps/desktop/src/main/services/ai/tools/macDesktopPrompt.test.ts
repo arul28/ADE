@@ -25,19 +25,15 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
 
 describe("buildMacDesktopDirective", () => {
   it("emits exactly one line, and only for a lane whose desktop tool is on", () => {
-    expect(buildMacDesktopDirective({ enabled: true })).toBe(MAC_DESKTOP_PROMPT_LINE);
+    expect(buildMacDesktopDirective(true)).toBe(MAC_DESKTOP_PROMPT_LINE);
     expect(MAC_DESKTOP_PROMPT_LINE.split("\n")).toHaveLength(1);
     // It must name the command and the skill, or the line buys nothing.
     expect(MAC_DESKTOP_PROMPT_LINE).toContain("ade mac-desktop");
     expect(MAC_DESKTOP_PROMPT_LINE).toContain("ade-desktop");
   });
 
-  it("says nothing for a lane with no desktop, however that is expressed", () => {
-    expect(buildMacDesktopDirective(null)).toBeNull();
-    expect(buildMacDesktopDirective(undefined)).toBeNull();
-    expect(buildMacDesktopDirective({})).toBeNull();
-    expect(buildMacDesktopDirective({ enabled: false })).toBeNull();
-    expect(buildMacDesktopDirective({ enabled: null })).toBeNull();
+  it("says nothing for a lane with no desktop", () => {
+    expect(buildMacDesktopDirective(false)).toBeNull();
   });
 
   it("leaves the desktop-off prompt byte-identical to the prompt built without it", () => {
@@ -45,19 +41,19 @@ describe("buildMacDesktopDirective", () => {
     const before = composeLaunchDirectives("ship the thing", otherDirectives);
     const afterOff = composeLaunchDirectives("ship the thing", [
       ...otherDirectives,
-      buildMacDesktopDirective({ enabled: false }),
+      buildMacDesktopDirective(false),
     ]);
     expect(afterOff).toBe(before);
     expect(Buffer.byteLength(afterOff)).toBe(Buffer.byteLength(before));
 
     // And an idle lane with NO other directives still gets the bare prompt.
-    expect(composeLaunchDirectives("ship the thing", [buildMacDesktopDirective(null)]))
+    expect(composeLaunchDirectives("ship the thing", [buildMacDesktopDirective(false)]))
       .toBe("ship the thing");
 
     // On, it costs exactly the line and the separator — nothing else moves.
     const afterOn = composeLaunchDirectives("ship the thing", [
       ...otherDirectives,
-      buildMacDesktopDirective({ enabled: true }),
+      buildMacDesktopDirective(true),
     ]);
     expect(afterOn).toBe(
       before.replace("\n\nUser request:", `\n\n${MAC_DESKTOP_PROMPT_LINE}\n\nUser request:`),

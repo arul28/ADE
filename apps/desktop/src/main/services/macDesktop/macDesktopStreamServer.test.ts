@@ -74,12 +74,43 @@ describe("macDesktopStreamServer", () => {
     await reader!.cancel();
   });
 
-  it("rotates the token on every start, so a leaked one stops working", async () => {
+  it("keeps the token — and the reader — when a second viewer starts the same lane", async () => {
     const upstream = await startUpstream(Buffer.from([1]));
     cleanups.push(upstream.close);
     const server = createMacDesktopStreamServer({ logger });
     cleanups.push(() => server.dispose());
     const first = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    const response = await fetch(first.url);
+    expect(response.status).toBe(200);
+
+    // The second chat opening the same lane's tab must not evict the first:
+    // a rotated token would leave the running reader holding a dead URL.
+    const second = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    expect(second.token).toBe(first.token);
+    expect(second.url).toBe(first.url);
+    expect(server.clientCount("lane-1")).toBe(1);
+    await response.body?.cancel();
+  });
+
+  it("reports the running transport without starting anything", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    expect(server.getTransport("lane-1")).toBeNull();
+    const started = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    expect(server.getTransport("lane-1")).toEqual(started);
+    server.stop("lane-1");
+    expect(server.getTransport("lane-1")).toBeNull();
+  });
+
+  it("mints a new token for a run started after the last one stopped", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const first = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    server.stop("lane-1");
     const second = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
     expect(second.token).not.toBe(first.token);
     const stale = await fetch(`http://127.0.0.1:${second.port}${MAC_DESKTOP_STREAM_PATH}?lane=lane-1&token=${first.token}`);
