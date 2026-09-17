@@ -128,6 +128,22 @@ import {
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
+  MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
+  MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE,
+  MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE,
+  MAC_DESKTOP_HANDLE_EXPIRED_CODE,
+  MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+  MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE,
+  MAC_DESKTOP_NO_DISPLAY_CODE,
+  MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
+  MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
+  MAC_DESKTOP_PROOF_BACKEND_NAME,
+  MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE,
+  MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
+  MAC_DESKTOP_USER_HAS_CONTROL_CODE,
+  MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
+} from "../../desktop/src/shared/types/macDesktop";
+import {
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
   isAdeUsageRangePreset,
@@ -379,6 +395,10 @@ type FormatterId =
   | "ios-sim-snapshot"
   | "ios-sim-selection"
   | "ios-sim-preview"
+  | "mac-desktop-status"
+  | "mac-desktop-windows"
+  | "mac-desktop-observation"
+  | "mac-desktop-action"
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
@@ -801,7 +821,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
-    $ ade desktop                                   Launch the installed desktop app
+    $ ade mac-desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
@@ -2005,7 +2025,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   machine brain and starts it if needed.
 
     $ ade desktop
-    $ ade desktop open
+    $ ade mac-desktop open
 
   Flags:
     --app-name <name>       Installed app name to open. Defaults to ADE, ADE Beta,
@@ -3059,6 +3079,61 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   A coordinate tap is a guess that the layout did not move. Prefer
   tap-element and fill-element; fall back to tap when no query matches.
+`,
+  "mac-desktop": `${ADE_BANNER}
+  Mac Desktop
+
+  Each lane can own a private macOS screen. ADE creates a virtual display named
+  after the lane, parks the lane's windows on it, and drives them through the
+  Accessibility API — the user's real display and real pointer stay untouched.
+  Aliases: \`ade mac-desk\` and \`ade desk\`. NOTE: \`ade desktop\` is the
+  separate ADE desktop-app launcher, not this. macOS runtime hosts only;
+  everywhere else "status" answers supported=false and the rest refuse.
+
+  Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID.
+
+  Display:
+    $ ade mac-desktop status --text                    Host support, display, windows, lease
+    $ ade mac-desktop start --text                     Create this lane's display
+    $ ade mac-desktop display --text                   Show the resolution
+    $ ade mac-desktop display 1440p --text             Set it (1080p, 1440p, 4k)
+    $ ade mac-desktop stop --text                      Destroy it and unpark its windows
+
+  Windows:
+    $ ade mac-desktop open <app|path|url> --text       Launch an app onto the display
+    $ ade mac-desktop open Xcode -- --args here        Everything after -- is the app's argv
+    $ ade mac-desktop windows --text                   List windows
+    $ ade mac-desktop claim --window <id> --text       Move an existing window here
+    $ ade mac-desktop release --window <id> --text     Put it back
+
+  Observe, then act by handle:
+    $ ade mac-desktop observe --text                   Screenshot + numbered elements
+    $ ade mac-desktop observe --map --limit 80 --text  Add a numbered element-map image
+    $ ade mac-desktop click <handle> --text            Click what you observed
+    $ ade mac-desktop click --text "Sign in" --text    Click by visible text
+    $ ade mac-desktop click --x 900 --y 420 --real     Click a point with real input
+    $ ade mac-desktop type "hello" --clear --text      Type into the focused element
+    $ ade mac-desktop press return --cmd --shift --text Modifiers: --cmd --shift
+                                                       --alt (option) --control
+    $ ade mac-desktop scroll down --amount 5 --text    Scroll the display or a target
+    $ ade mac-desktop drag --from <handle> --to 900,420
+    $ ade mac-desktop wait --text "Done" --timeout 8000
+
+  Every acting command re-observes and prints what the screen looks like now.
+  Accessibility input is the default and needs no approval; --real posts real
+  pointer/keyboard events and needs one lease per chat:
+
+    $ ade mac-desktop lease --reason "drag the file onto the dock" --text
+
+  Capture:
+    $ ade mac-desktop screenshot --out shot.png --text Capture without filing proof
+    $ ade mac-desktop record start --caption "<what>"  Record; a caption files it
+    $ ade mac-desktop record stop --text
+    $ ade mac-desktop proof --caption "<what>" --text  Capture, re-observe, file proof
+
+  "mac-desktop proof" refuses without --caption: a proof record nobody can judge is
+  not proof. It re-observes AFTER the capture, so check the state it returns
+  matches your claim before you rely on the record.
 `,
   "app-control": `${ADE_BANNER}
   App Control
@@ -11671,6 +11746,506 @@ function readTrailingCommand(args: string[]): string | null {
   return command.length ? command : null;
 }
 
+
+/* ──────────────────────────────────────────────────────────────────────────
+   MAC DESKTOP — `ade desktop`.
+
+   One private macOS screen per lane: observe it, act on it by handle, and file
+   proof from it. The grammar is `ade browser`'s, not `ade ios-sim`'s, because
+   the unit of work is the same one — observe, act by handle, re-observe — and
+   because `--text "<t>"` has to mean "the element whose text reads this" here
+   the way it does there.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * `ade desktop`'s own value-carrying flags.
+ *
+ * A local table for the same reason `ade browser` has one: `--text` carries a
+ * value here (the element to act on) and must NOT become a CLI-wide carrier,
+ * or `ade session show --text s1` silently reads the ambient session instead
+ * of "s1". Only flags read with `readValue`/`readNumberOption` belong here;
+ * a boolean read with `readFlag` (`--real`, `--map`, `--clear`, `--right`,
+ * `--double`, `--cmd`, `--shift`, `--option`, `--control`) must stay out, or
+ * the next positional is swallowed as its value.
+ */
+const MAC_DESKTOP_VALUE_FLAGS: readonly string[] = [
+  "--amount",
+  "--arg",
+  "--arg-json",
+  "--caption",
+  "--chat-session",
+  "--chat-session-id",
+  "--count",
+  "--desc",
+  "--description",
+  "--duration-ms",
+  "--for",
+  "--fps",
+  "--from",
+  "--gone",
+  "--handle",
+  "--input",
+  "--input-json",
+  "--json-input",
+  "--label",
+  "--lane",
+  "--lane-id",
+  "--limit",
+  "--name",
+  "--out",
+  "--out-path",
+  "--output",
+  "--owner",
+  "--owner-id",
+  "--owner-kind",
+  "--reason",
+  "--resolution",
+  "--session",
+  "--session-id",
+  "--set",
+  "--set-json",
+  "--target",
+  "--text",
+  "--timeout",
+  "--timeout-ms",
+  "--title",
+  "--to",
+  "--window",
+  "--window-id",
+  "--window-title",
+  "--x",
+  "--y",
+];
+
+const MAC_DESKTOP_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set(MAC_DESKTOP_VALUE_FLAGS);
+
+/**
+ * The one home for "what do I run next" on a Mac Desktop failure.
+ *
+ * Same split as `iosSimulatorErrorHint`: the service states the fact and the
+ * code and stops there, because the drawer and the phone read the same string
+ * and cannot run a shell command. Only this layer knows the caller is at a
+ * terminal, so only this layer adds the command. The daemon flattens the error
+ * to its message, so the `MAC_DESKTOP_*` prefix is the only thing to key on.
+ */
+function macDesktopErrorHint(message: string): string | null {
+  if (message.includes(MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE)) {
+    return "Mac Desktop needs a macOS runtime host. Run this against a Mac runtime, or use `ade browser` / `ade app-control` here.";
+  }
+  if (message.includes(MAC_DESKTOP_PERMISSION_REQUIRED_CODE)) {
+    return "Grant the missing permission in System Settings → Privacy & Security → Screen Recording and Accessibility, then re-run: ade mac-desktop status --text";
+  }
+  if (message.includes(MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE)) {
+    return "The ADE desktop driver is not running. Check it with: ade mac-desktop status --text";
+  }
+  if (message.includes(MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE)) {
+    return "No virtual display could be created on this Mac. `ade mac-desktop status --text` reports the mode it fell back to.";
+  }
+  if (message.includes(MAC_DESKTOP_NO_DISPLAY_CODE)) {
+    return "This lane has no display yet — run: ade mac-desktop start";
+  }
+  if (message.includes(MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE)) {
+    // The message already names the holding lane; the hint does not restate it.
+    return "That app is single-instance and the lane named above holds it. Wait for that lane, or drive a different app.";
+  }
+  if (message.includes(MAC_DESKTOP_WINDOW_NOT_FOUND_CODE)) {
+    return "Window ids die with their process — re-enumerate with: ade mac-desktop windows --text";
+  }
+  if (message.includes(MAC_DESKTOP_HANDLE_EXPIRED_CODE)) {
+    return "That handle belongs to an older observation — re-observe with: ade mac-desktop observe --text";
+  }
+  if (message.includes(MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE)) {
+    return "Real pointer and keyboard input needs the user's approval once per chat — run: ade mac-desktop lease";
+  }
+  if (message.includes(MAC_DESKTOP_USER_HAS_CONTROL_CODE)) {
+    return "The user has control; wait for them to hand it back, then retry.";
+  }
+  if (message.includes(MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE)) {
+    return "Another controller holds the input lease. Wait for it to lapse, or use accessibility input (drop --real).";
+  }
+  if (message.includes(MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE)) {
+    return "No recording is running — start one with: ade mac-desktop record start";
+  }
+  if (message.includes(MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE)) {
+    return "--out must land inside the lane worktree named above — drop --out to use the default scratch path.";
+  }
+  return null;
+}
+
+/** `handle` / `x,y` / bare text, as the service's target trio. */
+function macDesktopTargetFromToken(token: string | null): JsonObject {
+  if (!token) return {};
+  if (isMacDesktopHandleToken(token)) return { handle: token };
+  const point = token.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+  if (point) return { x: Number(point[1]), y: Number(point[2]) };
+  return { text: token };
+}
+
+function isMacDesktopHandleToken(value: string): boolean {
+  return /^obs-[A-Za-z0-9_-]+:e:\d+$/.test(value);
+}
+
+function buildMacDesktopPlan(args: string[]): CliPlan {
+  const tail = takeArgsAfterTerminator(args, MAC_DESKTOP_VALUE_CARRIER_FLAGS) ?? [];
+  const positionals = (rest: string[]): string[] => [
+    ...standalonePositionals(rest, MAC_DESKTOP_VALUE_CARRIER_FLAGS),
+    ...tail,
+  ];
+  const sub =
+    firstStandalonePositional(args, MAC_DESKTOP_VALUE_CARRIER_FLAGS) ?? tail.shift() ?? "status";
+  if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND["mac-desktop"]! };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "mac-desktop actions",
+      steps: [listActionsStep("actions", "mac_desktop")],
+    };
+
+  // Every subcommand is lane-scoped: a display belongs to a lane, not to a
+  // chat, so `--lane` (or `ADE_LANE_ID`) is the one argument they all share.
+  const claimArgs = readToolClaimArgs(args);
+  const requireLane = (): JsonObject => {
+    if (!claimArgs.laneId) {
+      throw new CliUsageError(
+        `mac-desktop ${sub} requires --lane <lane-id> or ADE_LANE_ID.`,
+      );
+    }
+    return { ...claimArgs };
+  };
+  // Read ONCE and memoized: `readNumberOption` splices the flag out of argv,
+  // so the second call in `windowId() == null ? {} : { windowId: windowId() }`
+  // would answer null and drop the window the caller named.
+  let windowIdRead = false;
+  let windowIdValue: number | null = null;
+  const windowId = (): number | null => {
+    if (!windowIdRead) {
+      windowIdValue = readNumberOption(args, ["--window", "--window-id"]) ?? null;
+      windowIdRead = true;
+    }
+    return windowIdValue;
+  };
+  const realMode = (): JsonObject =>
+    readFlag(args, ["--real", "--cg-event", "--pointer"]) ? { mode: "real" } : {};
+  const modifiers = (): JsonObject => {
+    const pressed = [
+      ...(readFlag(args, ["--cmd", "--command-key", "--meta"]) ? ["cmd"] : []),
+      ...(readFlag(args, ["--shift"]) ? ["shift"] : []),
+      // `--alt`/`--opt`, never `--option`: `ade browser` reads `--option` as a
+      // VALUE flag (the <select> option to pick), and a flag that is a value
+      // in one family and a boolean in another swallows the next positional.
+      ...(readFlag(args, ["--alt", "--opt"]) ? ["option"] : []),
+      ...(readFlag(args, ["--control", "--ctrl"]) ? ["control"] : []),
+    ];
+    return pressed.length ? { modifiers: pressed } : {};
+  };
+  const desktopAction = (
+    label: string,
+    method: string,
+    payload: JsonObject = {},
+    formatter?: FormatterId,
+  ): CliPlan => ({
+    kind: "execute" as const,
+    label,
+    ...(formatter ? { formatter } : {}),
+    steps: [
+      actionStep("result", "mac_desktop", method, collectGenericObjectArgs(args, payload)),
+    ],
+  });
+
+  if (sub === "status")
+    return desktopAction("mac-desktop status", "getStatus", { ...claimArgs }, "mac-desktop-status");
+  if (sub === "start" || sub === "create")
+    return desktopAction("mac-desktop start", "start", {
+      ...requireLane(),
+      resolution: readValue(args, ["--resolution", "--size"]),
+    }, "mac-desktop-status");
+  if (sub === "stop" || sub === "destroy" || sub === "release-display")
+    return desktopAction("mac-desktop stop", "stop", requireLane());
+  if (sub === "windows" || sub === "list" || sub === "ls")
+    return desktopAction("mac-desktop windows", "listWindows", { ...claimArgs }, "mac-desktop-windows");
+  if (sub === "claim") {
+    const explicit = windowId();
+    const positional = explicit == null ? Number(positionals(args)[0]) : explicit;
+    if (!Number.isFinite(positional)) {
+      throw new CliUsageError(
+        "mac-desktop claim requires --window <id>. Window ids come from `ade mac-desktop windows` and die with their process.",
+      );
+    }
+    return desktopAction("mac-desktop claim", "claimWindow", {
+      ...requireLane(),
+      windowId: positional,
+    });
+  }
+  if (sub === "release")
+    return desktopAction("mac-desktop release", "releaseWindow", {
+      ...requireLane(),
+      ...(windowId() == null ? {} : { windowId: windowId() }),
+    });
+  if (sub === "open" || sub === "launch") {
+    const target = requireValue(
+      readValue(args, ["--target", "--app"]) ?? positionals(args)[0] ?? null,
+      "app, path, or URL",
+    );
+    // Everything after `--` is the launched app's argv, not ours.
+    return desktopAction("mac-desktop open", "open", {
+      ...requireLane(),
+      target,
+      ...(tail.length ? { args: [...tail] } : {}),
+    });
+  }
+  if (sub === "observe" || sub === "snapshot")
+    return desktopAction("mac-desktop observe", "observe", {
+      ...requireLane(),
+      ...(windowId() == null ? {} : { windowId: windowId() }),
+      ...(readFlag(args, ["--map", "--element-map", "--ui-map"]) ? { map: true } : {}),
+      limit: readNumberOption(args, ["--limit"]),
+    }, "mac-desktop-observation");
+  if (sub === "click" || sub === "tap") {
+    const x = readNumberOption(args, ["--x"]);
+    const y = readNumberOption(args, ["--y"]);
+    if ((x == null) !== (y == null)) {
+      throw new CliUsageError("mac-desktop click requires both --x and --y when clicking a point.");
+    }
+    // Read once each: `readValue` SPLICES the flag out of argv, so a second
+    // read of the same flag answers null and the value is silently lost.
+    const handle = readValue(args, ["--handle"]);
+    const text = readValue(args, ["--text", "--label"]);
+    const explicit: JsonObject = {
+      ...(handle ? { handle } : {}),
+      ...(text ? { text } : {}),
+      ...(x == null ? {} : { x, y }),
+    };
+    const target = Object.keys(explicit).length
+      ? explicit
+      : macDesktopTargetFromToken(positionals(args)[0] ?? null);
+    if (Object.keys(target).length === 0) {
+      throw new CliUsageError(
+        "mac-desktop click needs a target: a handle from the last observation, --text \"<label>\", or --x/--y.",
+      );
+    }
+    return desktopAction("mac-desktop click", "click", {
+      ...requireLane(),
+      ...target,
+      ...(windowId() == null ? {} : { windowId: windowId() }),
+      ...realMode(),
+      ...(readFlag(args, ["--right", "--secondary"]) ? { button: "right" } : {}),
+      ...(readFlag(args, ["--double", "--double-click"]) ? { count: 2 } : {}),
+    }, "mac-desktop-action");
+  }
+  if (sub === "type" || sub === "type-text") {
+    const text = requireValue(
+      readValue(args, ["--value", "--input-text"]) ?? positionals(args)[0] ?? null,
+      "text",
+    );
+    const target = macDesktopTargetFromToken(readValue(args, ["--target", "--handle"]));
+    return desktopAction("mac-desktop type", "type", {
+      ...requireLane(),
+      text,
+      ...(readFlag(args, ["--clear", "--replace"]) ? { clear: true } : {}),
+      ...(Object.keys(target).length ? { target } : {}),
+      ...realMode(),
+    }, "mac-desktop-action");
+  }
+  if (sub === "press" || sub === "key") {
+    const key = requireValue(
+      readValue(args, ["--key"]) ?? positionals(args)[0] ?? null,
+      "key",
+    );
+    return desktopAction("mac-desktop press", "press", {
+      ...requireLane(),
+      key,
+      ...modifiers(),
+      ...realMode(),
+    }, "mac-desktop-action");
+  }
+  if (sub === "scroll") {
+    const rest = positionals(args);
+    const direction = requireValue(
+      readValue(args, ["--direction"]) ?? rest[0] ?? null,
+      "direction",
+    );
+    if (!["up", "down", "left", "right"].includes(direction)) {
+      throw new CliUsageError(
+        `mac-desktop scroll: unknown direction '${direction}'. Valid values: up, down, left, right.`,
+      );
+    }
+    return desktopAction("mac-desktop scroll", "scroll", {
+      ...requireLane(),
+      direction,
+      amount: readNumberOption(args, ["--amount", "--lines"]),
+      ...macDesktopTargetFromToken(rest[1] ?? null),
+      ...(windowId() == null ? {} : { windowId: windowId() }),
+      ...realMode(),
+    }, "mac-desktop-action");
+  }
+  if (sub === "drag") {
+    const from = macDesktopTargetFromToken(readValue(args, ["--from", "--start"]));
+    const to = macDesktopTargetFromToken(readValue(args, ["--to", "--end"]));
+    if (!Object.keys(from).length || !Object.keys(to).length) {
+      throw new CliUsageError(
+        "mac-desktop drag requires --from <handle|x,y> and --to <handle|x,y>.",
+      );
+    }
+    return desktopAction("mac-desktop drag", "drag", {
+      ...requireLane(),
+      from,
+      to,
+      durationMs: readNumberOption(args, ["--duration-ms", "--duration"]),
+    }, "mac-desktop-action");
+  }
+  if (sub === "wait" || sub === "wait-for") {
+    const text = readValue(args, ["--text", "--label"]);
+    const gone = readValue(args, ["--gone", "--hidden"]);
+    const windowTitle = readValue(args, ["--window-title"]);
+    if (!text && !gone && !windowTitle) {
+      throw new CliUsageError(
+        "mac-desktop wait requires --text \"<t>\", --gone \"<t>\", or --window-title \"<t>\".",
+      );
+    }
+    return desktopAction("mac-desktop wait", "wait", {
+      ...requireLane(),
+      ...(text ? { text } : {}),
+      ...(gone ? { gone } : {}),
+      ...(windowTitle ? { windowTitle } : {}),
+      timeoutMs: readNumberOption(args, ["--timeout-ms", "--timeout"]),
+    }, "mac-desktop-action");
+  }
+  if (sub === "screenshot" || sub === "capture")
+    return desktopAction("mac-desktop screenshot", "screenshot", {
+      ...requireLane(),
+      ...(windowId() == null ? {} : { windowId: windowId() }),
+      out: readValue(args, ["--out", "--out-path", "--output"]),
+    });
+  if (sub === "record" || sub === "recording") {
+    const mode = (positionals(args)[0] ?? "start").toLowerCase();
+    if (mode === "start")
+      return desktopAction("mac-desktop record start", "startRecording", {
+        ...requireLane(),
+        caption: readValue(args, ["--caption", "--description", "--desc"]),
+        fps: readNumberOption(args, ["--fps"]),
+      });
+    if (mode === "stop")
+      return desktopAction("mac-desktop record stop", "stopRecording", requireLane());
+    throw new CliUsageError(`Unknown mac-desktop record command: ${mode}. Use start or stop.`);
+  }
+  if (sub === "stream" || sub === "live" || sub === "stream-status")
+    return desktopAction("mac-desktop stream status", "getStreamStatus", requireLane());
+  if (sub === "lease" || sub === "request-lease" || sub === "input-lease") {
+    const laneArgs = requireLane();
+    if (!claimArgs.chatSessionId) {
+      throw new CliUsageError(
+        "mac-desktop lease requires --chat-session <id> or ADE_CHAT_SESSION_ID: the approval is remembered per chat.",
+      );
+    }
+    return desktopAction("mac-desktop lease", "requestInputLease", {
+      ...laneArgs,
+      reason: readValue(args, ["--reason", "--for"]),
+    });
+  }
+  if (sub === "display" || sub === "resolution") {
+    const resolution = readValue(args, ["--resolution", "--size"]) ?? positionals(args)[0] ?? null;
+    // `display` with no resolution is the read; with one it is the set, which
+    // is `start` — start is idempotent and serialized per lane, so setting a
+    // resolution on a lane that already has a display re-sizes it rather than
+    // racing a second one into existence.
+    if (!resolution)
+      return desktopAction("mac-desktop display", "getStatus", { ...requireLane() }, "mac-desktop-status");
+    if (!["1080p", "1440p", "4k"].includes(resolution)) {
+      throw new CliUsageError(
+        `mac-desktop display: unknown resolution '${resolution}'. Valid values: 1080p, 1440p, 4k.`,
+      );
+    }
+    return desktopAction("mac-desktop display", "start", {
+      ...requireLane(),
+      resolution,
+    }, "mac-desktop-status");
+  }
+  if (sub === "present" || sub === "bring") {
+    const destination = (positionals(args)[0] ?? "main").toLowerCase();
+    if (!["main", "display"].includes(destination)) {
+      throw new CliUsageError(
+        `mac-desktop present: unknown destination '${destination}'. Use main or display.`,
+      );
+    }
+    return desktopAction("mac-desktop present", "present", {
+      ...requireLane(),
+      destination,
+    });
+  }
+  if (sub === "proof" || sub === "promote") {
+    // Proof is intentional, and a caption is what makes it reviewable. A proof
+    // record with no caption is a screenshot nobody can judge, so this refuses
+    // rather than inventing one — `ade desktop screenshot` is the way to take
+    // a picture without filing it.
+    const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    if (!caption) {
+      throw new CliUsageError(
+        "mac-desktop proof requires --caption \"<what this shows>\". Use `ade mac-desktop screenshot` for a capture you are not filing.",
+      );
+    }
+    const title = readValue(args, ["--title", "--name"]) ?? caption;
+    const ownerBase = readProofOwnerBase(args);
+    const laneArgs = requireLane();
+    const captureArgs = collectGenericObjectArgs(args, {
+      ...laneArgs,
+      ...(windowId() == null ? {} : { windowId: windowId() }),
+      out: readValue(args, ["--out", "--out-path", "--output"]),
+    });
+    return {
+      kind: "execute",
+      label: "mac-desktop proof",
+      steps: [
+        actionStep("screenshot", "mac_desktop", "screenshot", captureArgs),
+        // Re-observe AFTER the capture so the state that is returned is the
+        // state that was filed. The agent checks that state against its claim
+        // before the record stands.
+        actionStep("observation", "mac_desktop", "observe", {
+          ...laneArgs,
+          ...(windowId() == null ? {} : { windowId: windowId() }),
+        }),
+        {
+          key: "result",
+          method: "ade/actions/call",
+          unwrapToolResult: true,
+          params: (values) => {
+            // `ade/actions/call` answers with the `{domain, action, result}`
+            // envelope, so the screenshot record has to be unwrapped before
+            // its written path is readable.
+            const screenshot = unwrapActionEnvelope(values.screenshot);
+            const filePath = isRecord(screenshot) ? asString(screenshot.filePath) : null;
+            if (!filePath) {
+              throw new CliUsageError(
+                "mac-desktop proof could not find the captured screenshot path.",
+              );
+            }
+            return {
+              name: "ingest_computer_use_artifacts",
+              arguments: {
+                backendStyle: "manual",
+                backendName: MAC_DESKTOP_PROOF_BACKEND_NAME,
+                toolName: "mac-desktop proof",
+                callerRoot: process.cwd(),
+                ...ownerBase,
+                inputs: [
+                  {
+                    kind: "screenshot",
+                    title,
+                    description: caption,
+                    path: filePath,
+                  },
+                ],
+              },
+            };
+          },
+        },
+      ],
+    };
+  }
+  throw new CliUsageError(
+    `Unknown mac-desktop subcommand '${sub}'. Run 'ade mac-desktop --help'.`,
+  );
+}
+
 function buildAppControlPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: buildAppControlHelp(args) };
@@ -15580,6 +16155,8 @@ function buildCliPlan(
     artifact: "proof",
     artifacts: "proof",
     ios: "ios-sim",
+    "mac-desk": "mac-desktop",
+    desk: "mac-desktop",
     simulator: "ios-sim",
     app: "app-control",
     apps: "app-control",
@@ -15613,7 +16190,11 @@ function buildCliPlan(
   // The browser grammar carries values the global table does not, and a `--`
   // that belongs to one of them must not fence `--help` out of the scan.
   const helpCarriers =
-    primaryHelpKey === "browser" ? BROWSER_VALUE_CARRIER_FLAGS : VALUE_CARRIER_FLAGS;
+    primaryHelpKey === "browser"
+      ? BROWSER_VALUE_CARRIER_FLAGS
+      : primaryHelpKey === "mac-desktop"
+        ? MAC_DESKTOP_VALUE_CARRIER_FLAGS
+        : VALUE_CARRIER_FLAGS;
   // Remote ADE Code owns a dedicated, beginner-facing help surface in the TUI
   // client. Keep ordinary `ade code --help` on the established top-level help
   // page, but let the remote subcommand render its actual connection guidance.
@@ -15913,6 +16494,14 @@ function buildCliPlan(
   }
   if (primary === "ios-sim" || primary === "ios" || primary === "simulator")
     return buildIosSimulatorPlan(args, options.projectRoot ?? null);
+  // `ade desktop` is the ADE desktop-app launcher and stays that way; the Mac
+  // Desktop family is `ade mac-desktop`.
+  if (
+    primary === "mac-desktop" ||
+    primary === "mac-desk" ||
+    primary === "desk"
+  )
+    return buildMacDesktopPlan(args);
   if (
     primary === "app-control" ||
     primary === "app" ||
@@ -24522,6 +25111,167 @@ function formatBrowserSessions(value: unknown): string {
   ].join("\n");
 }
 
+/* ── Mac Desktop text output ─────────────────────────────────────────────── */
+
+/** `[3] AXButton "Sign in" (912,430)` — the line an agent acts on. */
+function macDesktopElementLine(element: JsonObject): string {
+  const center = firstRecord(element, ["center"]);
+  const x = typeof center?.x === "number" ? Math.round(center.x) : null;
+  const y = typeof center?.y === "number" ? Math.round(center.y) : null;
+  const name = asString(element.title) ?? asString(element.label) ?? asString(element.value);
+  const role = asString(element.role) ?? "?";
+  const subrole = asString(element.subrole);
+  const point = x == null || y == null ? "" : ` (${x},${y})`;
+  const disabled = element.enabled === false ? " [disabled]" : "";
+  const focused = element.focused === true ? " [focused]" : "";
+  return `[${element.index ?? "?"}] ${role}${subrole ? `/${subrole}` : ""}`
+    + `${name ? ` "${name}"` : ""}${point}${disabled}${focused}`;
+}
+
+/** The `windows` footer every observation and action result ends with. */
+function macDesktopWindowsFooter(windows: JsonObject[]): string[] {
+  if (!windows.length) return ["", "windows  (none parked)"];
+  return [
+    "",
+    `windows  ${windows.length}`,
+    ...windows.map((window) => {
+      const title = asString(window.title);
+      return `  #${window.id ?? "?"} ${asString(window.appName) ?? "?"}`
+        + `${title ? ` — ${title}` : ""}`;
+    }),
+  ];
+}
+
+function macDesktopObservationSections(observation: JsonObject): string[] {
+  const elements = firstArray(observation, ["elements"]);
+  const windows = firstArray(observation, ["windows"]);
+  const display = firstRecord(observation, ["display"]);
+  const header = renderKeyValues("ADE Mac Desktop observation", [
+    ["observation", observation.id],
+    ["lane", observation.laneId],
+    ["captured", observation.capturedAt],
+    ["image", observation.screenshotPath],
+    ["element map", observation.mapPath],
+    [
+      "display",
+      display?.width && display?.height ? `${display.width}x${display.height}` : null,
+    ],
+    ["caption", observation.caption],
+    ["elements", `${elements.length}/${observation.elementCount ?? elements.length}`],
+  ]);
+  const sections = [header];
+  if (elements.length) {
+    sections.push("", ...elements.map((element) => macDesktopElementLine(element)));
+  } else {
+    sections.push("", "(no accessibility elements)");
+  }
+  // Truncation is a fact the agent has to act on — it means the element it
+  // wants may simply not be in the list — so it is stated, not implied by two
+  // numbers in the header.
+  if (observation.truncated === true) {
+    sections.push(
+      "",
+      `Truncated: ${elements.length} of ${observation.elementCount ?? "?"} elements shown. Narrow with --window <id>, or raise --limit.`,
+    );
+  }
+  sections.push(...macDesktopWindowsFooter(windows));
+  return sections;
+}
+
+function formatMacDesktopObservation(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const observation = firstRecord(result, ["observation"]) ?? result;
+  return macDesktopObservationSections(observation).join("\n");
+}
+
+function formatMacDesktopStatus(value: unknown): string {
+  const status = isRecord(value) ? value : {};
+  const driver = firstRecord(status, ["driver"]);
+  const permissions = firstRecord(status, ["permissions"]);
+  const display = firstRecord(status, ["display"]);
+  const lease = firstRecord(status, ["lease"]);
+  const stream = firstRecord(status, ["stream"]);
+  const recording = firstRecord(status, ["recording"]);
+  const windows = firstArray(status, ["windows"]);
+  const lanes = firstArray(status, ["lanes"]);
+  const header = renderKeyValues("ADE Mac Desktop", [
+    ["platform", status.platform],
+    ["supported", status.supported],
+    ["reason", status.unsupportedReason],
+    ["driver", driver?.state],
+    ["driver message", driver?.message],
+    ["screen recording", permissions?.screenRecording],
+    ["accessibility", permissions?.accessibility],
+    ["mode", display?.mode ?? status.displayMode],
+    ["display", display?.name],
+    ["display id", display?.displayId],
+    [
+      "size",
+      display?.width && display?.height ? `${display.width}x${display.height}` : null,
+    ],
+    ["windows", windows.length || display?.windowCount],
+    ["lease", lease ? `${lease.holder} ${lease.holderLabel ?? lease.holderId}` : null],
+    ["lease expires", lease?.expiresAt],
+    ["stream", stream ? `${stream.running ? "running" : "stopped"}${stream.idle ? " (idle rate)" : ""} @ ${stream.fps ?? "?"}fps` : null],
+    ["stream error", stream?.lastError],
+    ["recording", recording?.running === true ? `running since ${recording.startedAt ?? "?"}` : null],
+    ["host is local", status.hostIsLocal],
+  ]);
+  const sections = [header];
+  sections.push(...macDesktopWindowsFooter(windows));
+  if (lanes.length) {
+    sections.push(
+      "",
+      renderTable(
+        ["lane", "display", "windows", "streaming"],
+        lanes.map((lane) => [lane.laneName ?? lane.laneId, lane.displayId, lane.windowCount, lane.streaming]),
+        "(no lanes hold a display)",
+      ),
+    );
+  }
+  return sections.join("\n");
+}
+
+function formatMacDesktopWindows(value: unknown): string {
+  const windows = firstArray(value, ["windows", "result"]);
+  return renderTable(
+    ["id", "app", "title", "lane", "origin", "display"],
+    windows.map((window) => [
+      window.id,
+      window.appName,
+      window.title,
+      window.laneId,
+      window.origin,
+      window.onDisplayId,
+    ]),
+    "(no windows)",
+  );
+}
+
+/**
+ * An acting command's answer: what it resolved, then what the screen looks
+ * like now.
+ *
+ * The observation is printed in full rather than summarized to one line,
+ * because the whole point of the contract is that a caller never has to
+ * observe again to learn whether its click landed — a summary would send it
+ * back for the element list it was just handed.
+ */
+function formatMacDesktopAction(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const resolved = firstRecord(result, ["resolved", "matched"]);
+  const observation = firstRecord(result, ["observation"]);
+  const header = renderKeyValues("ADE Mac Desktop action", [
+    ["ok", result.ok ?? true],
+    ["action", result.action],
+    ["mode", result.mode],
+    ["resolved", resolved ? macDesktopElementLine(resolved) : "(no element; acted on a point)"],
+    ["waited", typeof result.waitedMs === "number" ? `${result.waitedMs}ms` : null],
+  ]);
+  if (!observation) return header;
+  return [header, "", ...macDesktopObservationSections(observation)].join("\n");
+}
+
 function formatBrowserObservation(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const observation = firstRecord(result, ["observation"]) ?? result;
@@ -25437,6 +26187,14 @@ function formatTextOutput(
       return formatIosSimSelection(value);
     case "ios-sim-preview":
       return formatIosSimPreview(value);
+    case "mac-desktop-status":
+      return formatMacDesktopStatus(value);
+    case "mac-desktop-windows":
+      return formatMacDesktopWindows(value);
+    case "mac-desktop-observation":
+      return formatMacDesktopObservation(value);
+    case "mac-desktop-action":
+      return formatMacDesktopAction(value);
     case "app-control-status":
       return formatAppControlStatus(value);
     case "app-control-snapshot":
@@ -27257,6 +28015,8 @@ async function main(): Promise<void> {
         iosSimulatorSubcommandFromArgv(process.argv.slice(2)),
       );
       if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
+      const desktopHint = macDesktopErrorHint(error.message);
+      if (desktopHint) await writeProcessOutput(process.stderr, `${desktopHint}\n`);
       if (error.details !== undefined) {
         await writeProcessOutput(
           process.stderr,
@@ -27299,6 +28059,7 @@ if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
 
 export {
   BROWSER_VALUE_FLAGS,
+  MAC_DESKTOP_VALUE_FLAGS,
   VALUE_CARRIER_FLAGS,
   buildCliPlan,
   buildAdeCodeArgs,
@@ -27313,6 +28074,7 @@ export {
   inferFormatter,
   iosSimulatorErrorHint,
   iosSimulatorSubcommandFromArgv,
+  macDesktopErrorHint,
   applySyncWebPairingFlags,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,

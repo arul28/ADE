@@ -603,6 +603,7 @@ import {
   CTO_MEMORY_GARDENER_TITLE,
 } from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
+import { buildMacDesktopDirective } from "../ai/tools/macDesktopPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   isExecutablePath,
@@ -8652,6 +8653,15 @@ export function createAgentChatService(args: {
   /** NAMES ONLY — the type carries no value accessor, so no tool can read a secret. */
   getProjectSecretService?: () => CtoOperatorToolDeps["projectSecretService"];
   getIosSimulatorService?: () => CtoOperatorToolDeps["iosSimulatorService"];
+  /**
+   * Whether a lane has a Mac Desktop display right now.
+   *
+   * Optional and synchronous on purpose: the answer costs one line of system
+   * prompt, so it must not make the send path wait on a service call, and an
+   * unwired runtime (`ade code`, the headless brain, any non-Mac host) simply
+   * leaves it undefined and emits nothing.
+   */
+  getMacDesktopLaneState?: (laneId: string | null) => { enabled?: boolean | null } | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
   getGitService?: () => CtoOperatorToolDeps["gitService"];
@@ -8767,6 +8777,7 @@ export function createAgentChatService(args: {
     getBudgetService,
     getProjectSecretService,
     getIosSimulatorService,
+    getMacDesktopLaneState,
     getAppControlService,
     getBuiltInBrowserService,
     getGitService,
@@ -39180,6 +39191,15 @@ export function createAgentChatService(args: {
             ? null
             : buildComputerUseDirective(
                 computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
+              ),
+          // Exactly one line, and only for a lane that has a screen. A lane
+          // with the tool off contributes `null` here, which
+          // `composeLaunchDirectives` drops — so its prompt is byte-identical
+          // to the pre-Mac-Desktop one.
+          personalSession
+            ? null
+            : buildMacDesktopDirective(
+                getMacDesktopLaneState?.(executionContext.laneId ?? null) ?? null,
               ),
           contextAttachmentPrompt || null,
         ]);

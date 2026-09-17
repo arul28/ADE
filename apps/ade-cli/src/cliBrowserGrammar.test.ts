@@ -583,7 +583,7 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * require and validate an enumerated argument with the same refusal sentence.
  * One reader each is why neither can drift apart.
  */
-const ARGV_READER_COUNT = 105;
+const ARGV_READER_COUNT = 106;
 
 /** The carrier-aware positional readers the browser table must reach. */
 const CARRIER_AWARE_READERS = [

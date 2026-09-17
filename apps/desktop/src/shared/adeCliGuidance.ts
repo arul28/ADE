@@ -5,6 +5,7 @@ export const adeBundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
   "ade-app-control",
+  "ade-desktop",
   "ade-browser",
   "ade-pr-workflows",
   "ade-lanes-git",

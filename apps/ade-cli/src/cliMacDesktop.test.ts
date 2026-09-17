@@ -1,0 +1,345 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
+  MAC_DESKTOP_HANDLE_EXPIRED_CODE,
+  MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+  MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
+  MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
+  MAC_DESKTOP_USER_HAS_CONTROL_CODE,
+} from "../../desktop/src/shared/types/macDesktop";
+import { buildCliPlan, formatOutput, macDesktopErrorHint, parseCliArgs } from "./cli";
+
+/**
+ * `ade mac-desktop`: what argv produces, and what the text output says.
+ *
+ * Plans are read through the real `buildCliPlan`, and text through the real
+ * `formatOutput`, because the two defects this guards are exactly the ones a
+ * stub hides: an argument the builder silently drops (a bare `--force`-shaped
+ * flag that `collectGenericObjectArgs` ignores), and a formatter that renders
+ * a shape the service does not return.
+ */
+
+type ExecutePlan = Extract<ReturnType<typeof buildCliPlan>, { kind: "execute" }>;
+
+function plan(argv: string[]): ExecutePlan {
+  const built = buildCliPlan(argv);
+  if (built.kind !== "execute") {
+    throw new Error(`expected an execute plan for '${argv.join(" ")}', got '${built.kind}'`);
+  }
+  return built;
+}
+
+/** The `run_ade_action` envelope of a plan's named step. */
+function actionArgs(built: ExecutePlan, key = "result"): Record<string, unknown> {
+  const step = built.steps.find((entry) => entry.key === key);
+  const params = step?.params as { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } };
+  expect(params?.arguments?.domain).toBe("mac_desktop");
+  return params?.arguments?.args ?? {};
+}
+
+function actionName(built: ExecutePlan, key = "result"): string {
+  const step = built.steps.find((entry) => entry.key === key);
+  const params = step?.params as { arguments?: { action?: string } };
+  return params?.arguments?.action ?? "";
+}
+
+describe("ade mac-desktop dispatch", () => {
+  const previousLane = process.env.ADE_LANE_ID;
+  const previousChat = process.env.ADE_CHAT_SESSION_ID;
+  beforeEach(() => {
+    process.env.ADE_LANE_ID = "lane-1";
+    process.env.ADE_CHAT_SESSION_ID = "chat-1";
+  });
+  afterEach(() => {
+    if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+    else process.env.ADE_LANE_ID = previousLane;
+    if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+    else process.env.ADE_CHAT_SESSION_ID = previousChat;
+  });
+
+  it("does NOT steal `ade desktop`, which is the desktop-app launcher", () => {
+    // `ade desktop` shipped first and opens the installed ADE app. The Mac
+    // Desktop family is `ade mac-desktop`; taking the shorter word would have
+    // silently changed what a shipped command does.
+    expect(buildCliPlan(["desktop"]).kind).toBe("desktop");
+    expect(buildCliPlan(["mac-desktop", "status"]).kind).toBe("execute");
+    expect(plan(["mac-desk", "status"]).label).toBe("mac-desktop status");
+    expect(plan(["desk", "status"]).label).toBe("mac-desktop status");
+  });
+
+  it("defaults the lane from the session environment, like ios-sim", () => {
+    expect(actionArgs(plan(["mac-desktop", "observe"]))).toMatchObject({ laneId: "lane-1" });
+    expect(actionArgs(plan(["mac-desktop", "observe", "--lane", "lane-9"])))
+      .toMatchObject({ laneId: "lane-9" });
+  });
+
+  it("refuses a lane-scoped subcommand with no lane anywhere", () => {
+    delete process.env.ADE_LANE_ID;
+    expect(() => buildCliPlan(["mac-desktop", "observe"])).toThrow(/requires --lane/);
+    // `status` is the capability read and must answer without a lane.
+    expect(plan(["mac-desktop", "status"]).label).toBe("mac-desktop status");
+  });
+
+  it("maps every subcommand to its action", () => {
+    const cases: Array<[string[], string, string]> = [
+      [["mac-desktop"], "mac-desktop status", "getStatus"],
+      [["mac-desktop", "start"], "mac-desktop start", "start"],
+      [["mac-desktop", "stop"], "mac-desktop stop", "stop"],
+      [["mac-desktop", "windows"], "mac-desktop windows", "listWindows"],
+      [["mac-desktop", "claim", "--window", "42"], "mac-desktop claim", "claimWindow"],
+      [["mac-desktop", "release"], "mac-desktop release", "releaseWindow"],
+      [["mac-desktop", "open", "Preview"], "mac-desktop open", "open"],
+      [["mac-desktop", "observe"], "mac-desktop observe", "observe"],
+      [["mac-desktop", "click", "obs-a1:e:3"], "mac-desktop click", "click"],
+      [["mac-desktop", "type", "hi"], "mac-desktop type", "type"],
+      [["mac-desktop", "press", "return"], "mac-desktop press", "press"],
+      [["mac-desktop", "scroll", "down"], "mac-desktop scroll", "scroll"],
+      [["mac-desktop", "drag", "--from", "obs-a1:e:3", "--to", "1,2"], "mac-desktop drag", "drag"],
+      [["mac-desktop", "wait", "--text", "Done"], "mac-desktop wait", "wait"],
+      [["mac-desktop", "screenshot"], "mac-desktop screenshot", "screenshot"],
+      [["mac-desktop", "record", "start"], "mac-desktop record start", "startRecording"],
+      [["mac-desktop", "record", "stop"], "mac-desktop record stop", "stopRecording"],
+      [["mac-desktop", "stream"], "mac-desktop stream status", "getStreamStatus"],
+      [["mac-desktop", "lease"], "mac-desktop lease", "requestInputLease"],
+      [["mac-desktop", "display"], "mac-desktop display", "getStatus"],
+      [["mac-desktop", "display", "1080p"], "mac-desktop display", "start"],
+      [["mac-desktop", "present", "main"], "mac-desktop present", "present"],
+    ];
+    for (const [argv, label, action] of cases) {
+      const built = plan(argv);
+      expect(built.label, argv.join(" ")).toBe(label);
+      expect(actionName(built), argv.join(" ")).toBe(action);
+    }
+  });
+
+  it("resolves a click target from a handle, from --text, and from a point", () => {
+    expect(actionArgs(plan(["mac-desktop", "click", "obs-a1:e:3"])))
+      .toMatchObject({ handle: "obs-a1:e:3" });
+    // `--text "<t>"` is the element, not the output mode: the trailing bare
+    // `--text` is what asks for text output.
+    // `--text <value>` stays a command argument and the trailing bare `--text`
+    // becomes the output mode — that split is `parseCliArgs`'s, so the real
+    // parser runs here rather than a hand-built command array.
+    const parsed = parseCliArgs(["mac-desktop", "click", "--text", "Sign in", "--text"]);
+    expect(parsed.options.text).toBe(true);
+    expect(actionArgs(plan(parsed.command))).toMatchObject({ text: "Sign in" });
+    expect(actionArgs(plan(["mac-desktop", "click", "--x", "900", "--y", "420"])))
+      .toMatchObject({ x: 900, y: 420 });
+    expect(() => buildCliPlan(["mac-desktop", "click"])).toThrow(/needs a target/);
+    expect(() => buildCliPlan(["mac-desktop", "click", "--x", "900"]))
+      .toThrow(/both --x and --y/);
+  });
+
+  it("carries the input-mode, button and count flags instead of dropping them", () => {
+    // A bare flag `collectGenericObjectArgs` ignores is silently no-op'd, which
+    // is how `claim --force` was refused as if the caller had never said it.
+    expect(actionArgs(plan(["mac-desktop", "click", "obs-a1:e:3", "--real", "--right", "--double"])))
+      .toMatchObject({ mode: "real", button: "right", count: 2 });
+    expect(actionArgs(plan(["mac-desktop", "click", "obs-a1:e:3"])).mode).toBeUndefined();
+    expect(actionArgs(plan(["mac-desktop", "press", "return", "--cmd", "--shift", "--real"])))
+      .toMatchObject({ key: "return", modifiers: ["cmd", "shift"], mode: "real" });
+    // The Option key is `--alt`/`--opt`, never `--option`: `ade browser` reads
+    // `--option` as a value flag, and one spelling cannot be both.
+    expect(actionArgs(plan(["mac-desktop", "press", "a", "--alt", "--control"])))
+      .toMatchObject({ modifiers: ["option", "control"] });
+    expect(actionArgs(plan(["mac-desktop", "type", "hi", "--clear", "--target", "obs-a1:e:7"])))
+      .toMatchObject({ text: "hi", clear: true, target: { handle: "obs-a1:e:7" } });
+    expect(actionArgs(plan(["mac-desktop", "observe", "--map", "--limit", "50"])))
+      .toMatchObject({ map: true, limit: 50 });
+  });
+
+  it("keeps a named window through the whole branch, and refuses a claim with none", () => {
+    // `readNumberOption` splices, so a branch that reads `--window` twice drops
+    // it on the second read and screenshots the whole display instead of the
+    // window the caller named.
+    expect(actionArgs(plan(["mac-desktop", "screenshot", "--window", "91"])))
+      .toMatchObject({ windowId: 91 });
+    expect(actionArgs(plan(["mac-desktop", "observe", "--window", "91"])))
+      .toMatchObject({ windowId: 91 });
+    expect(actionArgs(plan(["mac-desktop", "release", "--window", "91"])))
+      .toMatchObject({ windowId: 91 });
+    expect(actionArgs(plan(["mac-desktop", "claim", "--window", "91"])))
+      .toMatchObject({ windowId: 91 });
+    expect(() => buildCliPlan(["mac-desktop", "claim"])).toThrow(/requires --window/);
+  });
+
+  it("fences an opened app's own argv behind `--`", () => {
+    expect(actionArgs(plan(["mac-desktop", "open", "Xcode", "--", "-foo", "bar"])))
+      .toMatchObject({ target: "Xcode", args: ["-foo", "bar"] });
+  });
+
+  it("validates enumerated arguments at the CLI, before a round trip", () => {
+    expect(() => buildCliPlan(["mac-desktop", "scroll", "sideways"]))
+      .toThrow(/unknown direction 'sideways'/);
+    expect(() => buildCliPlan(["mac-desktop", "display", "720p"]))
+      .toThrow(/unknown resolution '720p'/);
+    expect(() => buildCliPlan(["mac-desktop", "wait"]))
+      .toThrow(/--text .*--gone .*--window-title/s);
+    expect(() => buildCliPlan(["mac-desktop", "drag", "--from", "obs-a1:e:3"]))
+      .toThrow(/requires --from .* and --to/);
+    expect(() => buildCliPlan(["mac-desktop", "nonsense"]))
+      .toThrow(/Unknown mac-desktop subcommand 'nonsense'/);
+  });
+
+  it("refuses proof without a caption, and otherwise captures, re-observes, then ingests", () => {
+    expect(() => buildCliPlan(["mac-desktop", "proof"])).toThrow(/requires --caption/);
+    const built = plan(["mac-desktop", "proof", "--caption", "Login works"]);
+    expect(built.steps.map((step) => step.key)).toEqual(["screenshot", "observation", "result"]);
+    expect(actionName(built, "screenshot")).toBe("screenshot");
+    // Re-observe AFTER the capture, so the state returned is the state filed.
+    expect(actionName(built, "observation")).toBe("observe");
+    const ingest = built.steps.find((step) => step.key === "result");
+    const params = (ingest?.params as (values: Record<string, unknown>) => Record<string, unknown>)({
+      screenshot: { domain: "mac_desktop", action: "screenshot", result: { filePath: "/tmp/shot.png" } },
+    });
+    expect(params).toMatchObject({
+      name: "ingest_computer_use_artifacts",
+      arguments: {
+        backendStyle: "manual",
+        backendName: "ade-mac-desktop",
+        toolName: "mac-desktop proof",
+        inputs: [{ kind: "screenshot", title: "Login works", description: "Login works", path: "/tmp/shot.png" }],
+      },
+    });
+  });
+
+  it("requires a chat session for the input lease, because the approval is per chat", () => {
+    delete process.env.ADE_CHAT_SESSION_ID;
+    expect(() => buildCliPlan(["mac-desktop", "lease"])).toThrow(/requires --chat-session/);
+  });
+});
+
+describe("macDesktopErrorHint", () => {
+  it("turns each service code into the command that unblocks it", () => {
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_PERMISSION_REQUIRED_CODE}: no screen recording`))
+      .toContain("System Settings");
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_USER_HAS_CONTROL_CODE}: taken over`))
+      .toBe("The user has control; wait for them to hand it back, then retry.");
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE}: real input`))
+      .toContain("ade mac-desktop lease");
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE}: Xcode is held by lane-7`))
+      .toContain("single-instance");
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_HANDLE_EXPIRED_CODE}: obs-a1:e:3`))
+      .toContain("ade mac-desktop observe");
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE}: not a Mac`))
+      .toContain("macOS runtime host");
+    expect(macDesktopErrorHint("something else entirely")).toBeNull();
+  });
+
+  it("does not restate the lane the message already names", () => {
+    // The service message carries the holding lane; a hint that repeated it
+    // would print the id twice in two different sentences.
+    const hint = macDesktopErrorHint(`${MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE}: Xcode is held by lane-7`);
+    expect(hint).not.toContain("lane-7");
+  });
+});
+
+describe("ade mac-desktop text output", () => {
+  it("prints the capability, the display, and the windows footer", () => {
+    const text = formatOutput(
+      {
+        platform: "darwin",
+        supported: true,
+        unsupportedReason: null,
+        driver: { state: "running", message: "ready" },
+        permissions: { screenRecording: "granted", accessibility: "denied" },
+        displayMode: "virtual",
+        display: { name: "ADE · lane one", displayId: 7, mode: "virtual", width: 2560, height: 1440 },
+        windows: [{ id: 91, appName: "Preview", title: "shot.png" }],
+        lease: null,
+        stream: { running: true, idle: true, fps: 3, bitrateKbps: 900, lastError: null },
+        recording: null,
+        lanes: [{ laneId: "lane-1", laneName: "lane one", displayId: 7, windowCount: 1, streaming: true }],
+        hostIsLocal: true,
+      },
+      { text: true } as never,
+      "mac-desktop-status",
+    );
+    expect(text).toContain("ADE Mac Desktop");
+    expect(text).toContain("2560x1440");
+    expect(text).toContain("accessibility");
+    expect(text).toContain("denied");
+    expect(text).toContain("running (idle rate) @ 3fps");
+    expect(text).toContain("#91 Preview — shot.png");
+  });
+
+  it("prints observations as a numbered handle list with the truncation note", () => {
+    const text = formatOutput(
+      {
+        observation: {
+          id: "obs-a1",
+          laneId: "lane-1",
+          screenshotPath: "/tmp/obs.png",
+          mapPath: "/tmp/obs-map.png",
+          display: { width: 2560, height: 1440, scale: 2 },
+          elementCount: 412,
+          truncated: true,
+          elements: [
+            {
+              index: 3,
+              handle: "obs-a1:e:3",
+              role: "AXButton",
+              subrole: null,
+              title: "Sign in",
+              center: { x: 912.4, y: 430.2 },
+              enabled: true,
+              focused: false,
+            },
+            {
+              index: 4,
+              handle: "obs-a1:e:4",
+              role: "AXTextField",
+              subrole: "AXSecureTextField",
+              label: "Password",
+              center: { x: 900, y: 380 },
+              enabled: false,
+              focused: true,
+            },
+          ],
+          windows: [{ id: 91, appName: "Safari", title: "Sign in" }],
+        },
+      },
+      { text: true } as never,
+      "mac-desktop-observation",
+    );
+    expect(text).toContain('[3] AXButton "Sign in" (912,430)');
+    expect(text).toContain('[4] AXTextField/AXSecureTextField "Password" (900,380) [disabled] [focused]');
+    expect(text).toContain("/tmp/obs-map.png");
+    expect(text).toMatch(/Truncated: 2 of 412 elements shown/);
+    expect(text).toContain("#91 Safari — Sign in");
+  });
+
+  it("prints an action result as what it resolved plus the state that followed", () => {
+    const text = formatOutput(
+      {
+        ok: true,
+        action: "click",
+        mode: "accessibility",
+        resolved: {
+          index: 3,
+          handle: "obs-a1:e:3",
+          role: "AXButton",
+          title: "Sign in",
+          center: { x: 912, y: 430 },
+          enabled: true,
+        },
+        observation: {
+          id: "obs-a2",
+          laneId: "lane-1",
+          screenshotPath: "/tmp/obs2.png",
+          elementCount: 1,
+          truncated: false,
+          elements: [{ index: 0, handle: "obs-a2:e:0", role: "AXStaticText", title: "Welcome", center: { x: 10, y: 10 } }],
+          windows: [],
+        },
+      },
+      { text: true } as never,
+      "mac-desktop-action",
+    );
+    expect(text).toContain("ADE Mac Desktop action");
+    expect(text).toContain('[3] AXButton "Sign in" (912,430)');
+    // The follow-up observation rides along, so no second round trip is needed.
+    expect(text).toContain('[0] AXStaticText "Welcome" (10,10)');
+    expect(text).toContain("windows  (none parked)");
+  });
+});
