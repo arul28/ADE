@@ -9,10 +9,18 @@ const statSyncMock = vi.fn((_filePath: unknown) => ({ isFile: () => true, size: 
 const readFileSyncMock = vi.fn((_filePath: unknown) => Buffer.from("PNGBYTES"));
 const rmSyncMock = vi.fn();
 const mkdirSyncMock = vi.fn();
+const spawnSyncMock = vi.fn((_command: string, _args: string[], _options: object) => ({
+  error: undefined,
+  status: 0,
+}));
 
 vi.mock("node:child_process", () => ({
   spawn: (command: string, args: string[], options: object) =>
     spawnMock(command, args, options),
+  // The real `terminateChildProcessTree` is used, so its Windows branch needs a
+  // `spawnSync` to reach for; the test asserts the `taskkill` it builds.
+  spawnSync: (command: string, args: string[], options: object) =>
+    spawnSyncMock(command, args, options),
 }));
 
 vi.mock("node:fs", () => ({
@@ -51,6 +59,9 @@ function fakeChild(): FakeChild {
   });
   return child;
 }
+
+/** Mirrors `GRACEFUL_SHUTDOWN_MS` in the supervisor. */
+const GRACE_MS = 500;
 
 const logger = {
   debug: vi.fn(),
@@ -287,6 +298,95 @@ describe("CaptureHelper", () => {
     // synchronously.
     expect(child.kill).not.toHaveBeenCalled();
     expect(rmSyncMock).toHaveBeenCalledWith("/tmp/ade-capture", { recursive: true, force: true });
+  });
+
+  /**
+   * The helper shells out to `/usr/sbin/screencapture` per shot, so killing the
+   * supervisor alone orphans whatever it was waiting on. Reaching that
+   * grandchild needs two halves and neither works without the other: the child
+   * is spawned `detached` so its pid IS a process group id, and the kill
+   * signals the NEGATIVE pid so the whole group goes.
+   */
+  it("spawns the helper as its own process group leader on POSIX", () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const { helper } = createHelper();
+    helper.updateSettings({ enabled: true });
+    expect(spawnMock.mock.calls[0][2]).toMatchObject({ detached: true, windowsHide: true });
+  });
+
+  it("signals the whole process group on POSIX, not just the supervisor", async () => {
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((() => true) as typeof process.kill);
+    try {
+      const child = fakeChild();
+      spawnMock.mockReturnValue(child);
+      const { helper } = createHelper();
+      helper.updateSettings({ enabled: true });
+      child.emit("spawn");
+      helper.dispose();
+
+      // Grace window first: the in-band quit is the mechanism, the signal is
+      // the backstop.
+      expect(killSpy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(GRACE_MS + 1);
+      expect(killSpy).toHaveBeenCalledWith(-4242, "SIGTERM");
+      expect(child.kill).not.toHaveBeenCalled();
+
+      // ...escalating to SIGKILL across the same window if it is still there.
+      await vi.advanceTimersByTimeAsync(GRACE_MS + 1);
+      expect(killSpy).toHaveBeenCalledWith(-4242, "SIGKILL");
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * Windows has no process groups at all — `child.kill()` is a
+   * `TerminateProcess` on the leader alone — so the same backstop has to reach
+   * the tree through `taskkill /T /F` instead. One helper, two mechanisms.
+   */
+  it("still kills the tree through taskkill on Windows", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const child = fakeChild();
+      spawnMock.mockReturnValue(child);
+      const { helper } = createHelper();
+      helper.updateSettings({ enabled: true });
+      child.emit("spawn");
+      child.stdin.write = () => {
+        throw new Error("EPIPE");
+      };
+      helper.dispose();
+
+      const [command, args] = spawnSyncMock.mock.calls[0] as unknown as [string, string[]];
+      expect(command.toLowerCase()).toContain("taskkill");
+      expect(args).toEqual(["/PID", "4242", "/T", "/F"]);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it("kills the group immediately when the quit message cannot be written", () => {
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((() => true) as typeof process.kill);
+    try {
+      const child = fakeChild();
+      spawnMock.mockReturnValue(child);
+      const { helper } = createHelper();
+      helper.updateSettings({ enabled: true });
+      child.emit("spawn");
+      // A wedged or already-broken pipe: there is no orderly path left.
+      child.stdin.write = () => {
+        throw new Error("EPIPE");
+      };
+      helper.dispose();
+      expect(killSpy).toHaveBeenCalledWith(-4242, "SIGTERM");
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 
   it("stops the child when the setting is turned off", () => {

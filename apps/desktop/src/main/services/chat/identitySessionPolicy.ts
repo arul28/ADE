@@ -67,29 +67,24 @@ export function beginIdentityConfirmHold(sessionId?: string | null): () => void 
  * name its session cannot be narrowed after the fact — and losing the gate
  * would be worse than over-applying it. A hold that DID name a session answers
  * only for that one.
+ *
+ * An unnamed READER is answered the same fail-safe way — any hold anywhere
+ * reads as held. That is deliberate: every production caller passes a session
+ * id, so the branch is only reachable from a caller that does not know which
+ * thread it is asking about, and over-applying confirm-first to such a caller
+ * is the safe direction to be wrong in.
+ *
+ * It is also the answer to "is the user on a call right now": the hold is taken
+ * for exactly one reason and released the moment the call hangs up. The
+ * idle status-line refresh reads it that way, because a live call writes that
+ * line itself and an LLM-generated one would land seconds late and overwrite it
+ * with a question the user has already moved past.
  */
 export function isIdentityConfirmHeld(sessionId?: string | null): boolean {
   if ((identityConfirmHolds.get(UNSCOPED_HOLD_KEY) ?? 0) > 0) return true;
   const key = typeof sessionId === "string" ? sessionId.trim() : "";
   if (!key.length) return identityConfirmHolds.size > 0;
   return (identityConfirmHolds.get(key) ?? 0) > 0;
-}
-
-/**
- * Is a voice call live on this session?
- *
- * The confirm-first hold above is taken for exactly one reason and released the
- * moment the call hangs up, so it is also the answer to "is the user on a call
- * right now" — the one question the status-line refresh needs, because a live
- * call writes that line itself and an LLM-generated one would land seconds late
- * and overwrite it with a question the user has already moved past.
- *
- * Its own name rather than a second call to `isIdentityConfirmHeld`: the two
- * readers want different things from the same fact, and a reader asking about
- * permissions should not have to know about status lines.
- */
-export function isVoiceCallLiveOnSession(sessionId?: string | null): boolean {
-  return isIdentityConfirmHeld(sessionId);
 }
 
 export function normalizeIdentityPermissionMode(

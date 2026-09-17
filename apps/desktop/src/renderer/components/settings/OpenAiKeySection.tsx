@@ -19,7 +19,6 @@ import { SettingsCard } from "./primitives";
 import { SourceBadge } from "./providers/providerUi";
 import {
   OPENAI_ENV_VAR,
-  OPENAI_VOICE_PROVIDER,
   OpenAiKeyCostLine,
   OpenAiKeyField,
   openAiEnvHint,
@@ -31,7 +30,7 @@ import {
 export const OPENAI_KEY_ANCHOR = "openai-api-key";
 
 export function OpenAiKeySection() {
-  const { status, loading, supported, error, save, remove } = useMachineOpenAiKey(OPENAI_VOICE_PROVIDER);
+  const { status, loading, supported, error, save, remove } = useMachineOpenAiKey();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
 

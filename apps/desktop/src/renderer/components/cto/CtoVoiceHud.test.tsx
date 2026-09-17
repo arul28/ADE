@@ -55,3 +55,35 @@ describe("the call HUD's captions", () => {
     expect(screen.queryByTestId("cto-voice-caption-cut")).toBeNull();
   });
 });
+
+/**
+ * A call is a surface where nothing is clicked and everything moves on its own.
+ *
+ * The captions are the only record of what was said and the phase label is the
+ * only word for what the call is doing, so both have to be announced; and a
+ * strip that can authorise a destructive action must arrive where the keyboard
+ * already is rather than somewhere the user has to go and find.
+ */
+describe("the call HUD's announcements", () => {
+  it("announces the captions and the phase without interrupting", () => {
+    renderHud({ captions: [{ role: "assistant", text: "Two checks are red.", atMs: 10 }] });
+    expect(screen.getByTestId("cto-voice-captions").getAttribute("aria-live")).toBe("polite");
+    expect(screen.getByTestId("cto-voice-phase-label").getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("raises the confirmation strip as an alert and puts the keyboard on it", () => {
+    renderHud({
+      phase: "confirming",
+      pendingConfirmation: {
+        id: "confirm-1",
+        prompt: "Force-push the sync lane?",
+        toolName: "gitForcePush",
+        destructive: true,
+        utteranceId: null,
+        expiresAtMs: 0,
+      },
+    });
+    expect(screen.getByTestId("cto-voice-confirm").getAttribute("role")).toBe("alert");
+    expect(document.activeElement).toBe(screen.getByTestId("cto-voice-confirm-approve"));
+  });
+});

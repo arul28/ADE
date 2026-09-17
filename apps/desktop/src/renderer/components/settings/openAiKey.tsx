@@ -68,7 +68,7 @@ export type MachineOpenAiKey = {
  * takes one and gives nothing back but success. `status` is the only thing that
  * crosses back, and it carries a source, not a secret.
  */
-export function useMachineOpenAiKey(provider: string = OPENAI_VOICE_PROVIDER): MachineOpenAiKey {
+export function useMachineOpenAiKey(): MachineOpenAiKey {
   const [status, setStatus] = useState<MachineApiKeyStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -91,13 +91,12 @@ export function useMachineOpenAiKey(provider: string = OPENAI_VOICE_PROVIDER): M
       setError(MISSING_BRIDGE_MESSAGE);
       return;
     }
-    // Two guards, because they answer different questions. `mounted` is one
-    // ref for the component's whole life and cannot tell one run of this effect
-    // from the next: change `provider` while a read is in flight and the old
-    // provider's answer still arrives, still passes `mounted`, and writes
-    // itself into the new provider's status. `stale` is per run.
+    // Two guards, because they answer different questions. `mounted` is one ref
+    // for the component's whole life and cannot tell one run of this effect from
+    // the next, so a read still in flight when the effect re-runs passes it and
+    // writes a superseded answer into state. `stale` is per run.
     let stale = false;
-    void read(provider)
+    void read(OPENAI_VOICE_PROVIDER)
       .then((next) => {
         if (stale) return;
         setStatus(next);
@@ -112,7 +111,7 @@ export function useMachineOpenAiKey(provider: string = OPENAI_VOICE_PROVIDER): M
         setLoading(false);
       });
     return () => { stale = true; };
-  }, [bridge, provider]);
+  }, [bridge]);
 
   const save = useCallback(
     async (key: string): Promise<boolean> => {
@@ -128,7 +127,7 @@ export function useMachineOpenAiKey(provider: string = OPENAI_VOICE_PROVIDER): M
       }
       setLoading(true);
       try {
-        const next = await write(provider, trimmed);
+        const next = await write(OPENAI_VOICE_PROVIDER, trimmed);
         if (mounted.current) {
           setStatus(next);
           setError(null);
@@ -143,7 +142,7 @@ export function useMachineOpenAiKey(provider: string = OPENAI_VOICE_PROVIDER): M
         if (mounted.current) setLoading(false);
       }
     },
-    [bridge, provider],
+    [bridge],
   );
 
   const remove = useCallback(async (): Promise<boolean> => {
@@ -154,7 +153,7 @@ export function useMachineOpenAiKey(provider: string = OPENAI_VOICE_PROVIDER): M
     }
     setLoading(true);
     try {
-      const next = await drop(provider);
+      const next = await drop(OPENAI_VOICE_PROVIDER);
       if (mounted.current) {
         setStatus(next);
         setError(null);
@@ -166,7 +165,7 @@ export function useMachineOpenAiKey(provider: string = OPENAI_VOICE_PROVIDER): M
     } finally {
       if (mounted.current) setLoading(false);
     }
-  }, [bridge, provider]);
+  }, [bridge]);
 
   return { status, loading, supported, error, save, remove };
 }

@@ -11052,6 +11052,253 @@ describe("createAgentChatService", () => {
     });
 
     /**
+     * The doc claims the static block re-stages on "rotation, handoff, resume
+     * onto a new thread, provider/model switch, fresh session". Rotation is
+     * pinned above; these pin the rest, because every one of them is a claim
+     * about a thread that has been told nothing, and an unpinned claim about a
+     * ~21 KB block is how the CTO silently loses its own role on a provider.
+     */
+    it("re-stages the CTO's immutable prefix after a provider handoff", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "First." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "Second." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).not.toContain("CTO Runtime Identity");
+
+      // The handoff moves the same ADE chat onto a codex thread that has never
+      // heard a word of it — including the doctrine that makes it the CTO.
+      mockState.codexRequestPayloads = [];
+      await service.updateSession({ sessionId: session.id, modelId: "openai/gpt-5.5" });
+      await service.sendMessage({ sessionId: session.id, text: "Still there?" });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const handedOff = JSON.stringify(turnStart?.params ?? {});
+      expect(handedOff).toContain("CTO Runtime Identity");
+      expect(handedOff).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * A restart wipes the in-memory staging, and the resumed chat may or may
+     * not land on the same provider thread. Re-sending ~21 KB once after a
+     * restart is the cheap side of that bet; leaving a thread believing it was
+     * told its own doctrine is not.
+     */
+    it("re-stages the CTO's immutable prefix on a resume after a restart", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "First." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "Second." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).not.toContain("CTO Runtime Identity");
+      service.forceDisposeAll();
+
+      const resumed = createService({ ctoStateService, ctoMemoryService }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      send.mockClear();
+      await resumed.runSessionTurn({ sessionId: session.id, text: "After the restart.", timeoutMs: 15_000 });
+      const afterResume = String(send.mock.calls.at(-1)?.[0] ?? "");
+      expect(afterResume).toContain("CTO Runtime Identity");
+      expect(afterResume).toContain("CTO Context");
+
+      resumed.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * A same-provider model switch that keeps the SDK session is NOT a new
+     * thread: the model on the other end still holds the doctrine verbatim, so
+     * the block stays put. This is pinned because the obvious reading of "model
+     * switch re-stages" would have it re-sent on every reasoning-tier change.
+     */
+    it("keeps the CTO's immutable prefix off a model switch that keeps the thread", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "First." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+
+      await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-opus-4-8" });
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "After the switch." });
+      // The switch also fires an initialization probe on the same handle, so the
+      // turn is found by its text rather than by being the last call.
+      await vi.waitFor(() => {
+        expect(send.mock.calls.some((call) => String(call[0] ?? "").includes("After the switch."))).toBe(true);
+      });
+      const afterSwitch = String(
+        send.mock.calls.map((call) => String(call[0] ?? "")).find((text) => text.includes("After the switch.")) ?? "",
+      );
+      expect(afterSwitch).toContain("CTO Context");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * A provider-side conversation reset opens a brand-new Claude conversation
+     * under the SAME runtime handle. Nothing the staging looks at moves — the
+     * handle is the thread's identity of last resort — so the doctrine that
+     * makes this thread the CTO was never re-sent, and it went on answering as
+     * a generic coding agent with nothing in the product saying so.
+     */
+    it("re-stages the CTO's immutable prefix after a provider-side conversation reset", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let emitConversationReset = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-cto-reset-1", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (emitConversationReset) {
+          emitConversationReset = false;
+          // Claude discarded the conversation and named its replacement.
+          yield { type: "conversation_reset", new_conversation_id: "sdk-cto-reset-2" };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          session_id: "sdk-cto-reset-1",
+          message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      const sdkHandle = {
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cto-reset-1",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
+      expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
+
+      // This turn is the one the provider resets under.
+      emitConversationReset = true;
+      await turn("Carry on.");
+      await vi.waitFor(() => { expect(emitConversationReset).toBe(false); });
+
+      const afterReset = await turn("Who are you?");
+      expect(afterReset).toContain("CTO Runtime Identity");
+      expect(afterReset).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The tail rule, on the provider whose thread id lives on the session
+     * rather than in a runtime handle. A live intact codex thread holds the
+     * conversation verbatim; replaying 40 turns of it every send is what walks
+     * a long CTO thread into auto-compaction.
+     */
+    it("sends no conversation tail to a live intact codex thread", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        identityKey: "cto",
+      });
+
+      mockState.codexRequestPayloads = [];
+      const turnStarts = () => mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+      // The mock names turns `turn-<n>`; settling one is what lets the next
+      // send start a turn of its own rather than steer into the live one.
+      const settleCodexTurn = (index: number): void => {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: `turn-${index}`, status: "completed" } },
+        });
+      };
+
+      await service.sendMessage({ sessionId: session.id, text: "What is on fire?" });
+      await vi.waitFor(() => { expect(turnStarts().length).toBeGreaterThanOrEqual(1); });
+      settleCodexTurn(mockState.codexTurnCounter);
+
+      // Turn two is the one send that can still carry the tail: the thread was
+      // armed while it had no name and turn one had no conversation to put in
+      // it, and arming is sticky until a send actually delivers the section.
+      await service.sendMessage({ sessionId: session.id, text: "And now?" });
+      await vi.waitFor(() => { expect(turnStarts().length).toBeGreaterThanOrEqual(2); });
+      settleCodexTurn(mockState.codexTurnCounter);
+
+      await service.sendMessage({ sessionId: session.id, text: "Carry on." });
+      await vi.waitFor(() => { expect(turnStarts().length).toBeGreaterThanOrEqual(3); });
+      const third = JSON.stringify(turnStarts()[2]?.params ?? {});
+      expect(third).toContain("Carry on.");
+      expect(third).not.toContain("Recent Conversation Tail");
+      // And the doctrine does not ride again either — same thread, same rule.
+      expect(third).not.toContain("CTO Runtime Identity");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
      * `runSessionTurn` is the headless path, and the CTO voice's `ask_cto`
      * turns run on it. It used to skip `refreshCtoLiveStateForTurn` entirely,
      * so a voice turn reached the model with whatever live state the last

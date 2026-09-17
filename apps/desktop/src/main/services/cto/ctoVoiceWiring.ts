@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { BrowserWindow, type IpcMain } from "electron";
+import { BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from "electron";
 
 import { IPC } from "../../../shared/ipc";
 import {
@@ -100,7 +100,15 @@ type CtoVoiceTransport = {
   call: <T>(action: CtoVoiceAction, args: Record<string, unknown>) => Promise<T>;
   subscribeState: (
     onState: (state: CtoVoiceState) => void,
-    onEnded: () => void,
+    /**
+     * The event STREAM ended, which is a different thing from the call ending:
+     * no terminal state is coming, so the teardown has to invent one.
+     *
+     * Optional because only the runtime transport can ever call it. In-process
+     * the listener set lives in the same process as the call — there is no
+     * stream to break, and a service that went away took this window with it.
+     */
+    onEnded?: () => void,
   ) => Promise<() => void>;
 };
 
@@ -754,21 +762,22 @@ export function registerCtoVoiceIpc(ipcMain: IpcMain, host: CtoVoiceHost): void 
       .catch((error) => host.logger?.warn("cto_voice.set_muted_failed", { error: String(error) }));
   });
 
-  ipcMain.handle(IPC.ctoVoiceApprove, async (event, arg: { id?: unknown }): Promise<void> => {
-    const active = ownedCall(event);
-    if (!active || typeof arg?.id !== "string") return;
-    await active.transport
-      .call("resolveApproval", { ownerToken: active.token, approvalId: arg.id, approved: true })
-      .catch((error) => host.logger?.warn("cto_voice.approve_failed", { error: String(error) }));
-  });
-
-  ipcMain.handle(IPC.ctoVoiceDeny, async (event, arg: { id?: unknown }): Promise<void> => {
-    const active = ownedCall(event);
-    if (!active || typeof arg?.id !== "string") return;
-    await active.transport
-      .call("resolveApproval", { ownerToken: active.token, approvalId: arg.id, approved: false })
-      .catch((error) => host.logger?.warn("cto_voice.deny_failed", { error: String(error) }));
-  });
+  // Yes and no are one handler with one argument flipped. Written twice they
+  // were byte-identical apart from that flag and the log event, which is two
+  // places for a guard to be fixed in and one of them to be forgotten.
+  const resolveApprovalHandler = (approved: boolean) =>
+    async (event: IpcMainInvokeEvent, arg: { id?: unknown }): Promise<void> => {
+      const active = ownedCall(event);
+      if (!active || typeof arg?.id !== "string") return;
+      await active.transport
+        .call("resolveApproval", { ownerToken: active.token, approvalId: arg.id, approved })
+        .catch((error) => host.logger?.warn(
+          approved ? "cto_voice.approve_failed" : "cto_voice.deny_failed",
+          { error: String(error) },
+        ));
+    };
+  ipcMain.handle(IPC.ctoVoiceApprove, resolveApprovalHandler(true));
+  ipcMain.handle(IPC.ctoVoiceDeny, resolveApprovalHandler(false));
 
   ipcMain.handle(IPC.ctoVoiceAttachImage, async (_event, arg: { pngBase64?: unknown; note?: unknown }): Promise<void> => {
     const active = call;

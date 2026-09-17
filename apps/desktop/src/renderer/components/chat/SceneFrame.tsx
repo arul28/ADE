@@ -85,7 +85,22 @@ export type SceneFrameProps = {
   onEmit?: (name: string, payload: unknown) => void;
 };
 
-type Status = "loading" | "running" | "frozen" | "failed";
+type Status = "loading" | "running" | "frozen";
+
+/**
+ * True when the whole shell is inside the viewport.
+ *
+ * Deliberately all-or-nothing rather than "intersects": the snapshot path
+ * crops to what is on screen, so anything less than the whole rect produces a
+ * picture of part of a view with no sign that it is partial.
+ */
+function isSceneRectFullyVisible(rect: DOMRect): boolean {
+  if (rect.width < 1 || rect.height < 1) return false;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  if (!viewportWidth || !viewportHeight) return false;
+  return rect.top >= 0 && rect.left >= 0 && rect.bottom <= viewportHeight && rect.right <= viewportWidth;
+}
 
 export function SceneFrame({ source, live = false, streaming = false, scopeKey, onEmit }: SceneFrameProps) {
   // Proof in ADE is chat-scoped, so a snapshot filed with no owner is an
@@ -104,6 +119,8 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<string | null>(null);
   const [proofState, setProofState] = useState<"idle" | "saving" | "saved">("idle");
+  /** Bumped once when a freeze finds the scene only partly on screen. */
+  const [freezeAttempt, setFreezeAttempt] = useState(0);
 
   const theme = useMemo(readSceneTheme, []);
   // A fence that is still arriving draws nothing: one placeholder now beats a
@@ -190,12 +207,46 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
     if (live || status !== "running" || !src) return;
     let cancelled = false;
     const capture = window.ade?.scene?.snapshot;
-    const rect = shellRef.current?.getBoundingClientRect();
+    const shell = shellRef.current;
+    const rect = shell?.getBoundingClientRect();
     if (typeof capture !== "function" || !rect) {
       // No capture route (browser preview): leave the frame up rather than
       // replacing a working view with nothing.
       setStatus("frozen");
       return;
+    }
+    // A snapshot is a window grab cropped to this rect, and main INTERSECTS
+    // that rect with the content box rather than shifting it — so a scene that
+    // is half scrolled off, or only partly on screen, freezes to the visible
+    // sliver. That crop is permanent, and it is also what the Proof button
+    // files. A partial picture of a view is worse than no picture of it, so
+    // this waits instead.
+    if (!isSceneRectFullyVisible(rect)) {
+      if (freezeAttempt > 0) {
+        // One retry was enough of a wait. Fall back to the no-capture-route
+        // behaviour: the live frame stays up rather than being replaced by a
+        // cropped still of itself.
+        setStatus("frozen");
+        return;
+      }
+      const retry = () => { if (!cancelled) setFreezeAttempt((attempt) => attempt + 1); };
+      // Scroll is captured because the scene sits inside the transcript's own
+      // scroller, not the window's; the observer covers the cases scrolling
+      // does not, such as a pane resize.
+      window.addEventListener("scroll", retry, { capture: true, passive: true, once: true });
+      let observer: IntersectionObserver | null = null;
+      if (shell && typeof IntersectionObserver === "function") {
+        observer = new IntersectionObserver(
+          (entries) => { if (entries.some((entry) => entry.intersectionRatio >= 1)) retry(); },
+          { threshold: 1 },
+        );
+        observer.observe(shell);
+      }
+      return () => {
+        cancelled = true;
+        window.removeEventListener("scroll", retry, true);
+        observer?.disconnect();
+      };
     }
     void capture({
       x: Math.round(rect.x), y: Math.round(rect.y),
@@ -204,7 +255,7 @@ export function SceneFrame({ source, live = false, streaming = false, scopeKey, 
       .then((url) => { if (!cancelled) { setSnapshot(url ?? null); setStatus("frozen"); } })
       .catch(() => { if (!cancelled) setStatus("frozen"); });
     return () => { cancelled = true; };
-  }, [live, src, status]);
+  }, [live, src, status, freezeAttempt]);
 
   const fileProof = useCallback(() => {
     const attach = window.ade?.scene?.attachProof;

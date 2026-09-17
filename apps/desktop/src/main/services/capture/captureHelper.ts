@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isPathInside } from "../shared/pathCompare";
+import { terminateChildProcessTree } from "../shared/utils";
 import fs from "node:fs";
 import path from "node:path";
 import { isCaptureGestureSupported } from "../../../shared/captureGesturePlatformSupport";
@@ -38,6 +39,11 @@ export { resolveCaptureHelperExecutablePath };
  * `{"type":"quit"}` message on stdin, with a forced kill as the fallback if the
  * child has not exited when the grace window closes.
  */
+
+/** Neither escalation timer may hold the event loop open on quit. */
+function unrefTimer(timer: NodeJS.Timeout): void {
+  timer.unref();
+}
 
 const MAX_HELPER_LINE_BYTES = 64 * 1024;
 const MAX_RESTART_ATTEMPTS = 3;
@@ -113,6 +119,15 @@ export class CaptureHelper {
 
     try {
       const child = spawn(this.options.executablePath, [], {
+        // POSIX only: the helper shells out to `/usr/sbin/screencapture` per
+        // shot, and a child of a child is not reachable from the parent unless
+        // the helper LEADS A PROCESS GROUP — `process.kill(-pid)` needs the pid
+        // to be a group id. Without this, a dispose mid-capture killed the
+        // supervisor and orphaned the `screencapture` it was waiting on.
+        // Windows stays attached: it has no process groups, `detached` there
+        // means a new console (which `windowsHide` then has to suppress), and
+        // the tree is reached by `taskkill /T` instead.
+        detached: this.platform !== "win32",
         env: {
           ...process.env,
           LC_ALL: "en_US.UTF-8",
@@ -309,23 +324,28 @@ export class CaptureHelper {
     } catch {
       requestedQuit = false;
     }
+    // `terminateChildProcessTree`, never a bare `child.kill()`. It is the one
+    // canonical helper that reaches the TREE on both platforms
+    // (`windows-quirks.md` §3): `taskkill /PID <pid> /T /F` on Windows, where
+    // `child.kill()` is a `TerminateProcess` on the leader alone; and
+    // `process.kill(-pid, …)` on POSIX, which reaches the `screencapture` the
+    // helper spawned and is why `detached` is set above. It escalates SIGTERM →
+    // SIGKILL across the same grace window, and refuses a child whose
+    // `exitCode` / `signalCode` is already set — the PID-reuse guard, which is
+    // why the live child object is passed rather than a `{ pid }` snapshot.
     if (!requestedQuit) {
-      try {
-        child.kill();
-      } catch {
-        // Already gone.
-      }
+      // No orderly path left, so the grace window has already been spent.
+      unrefTimer(terminateChildProcessTree(child, null, GRACEFUL_SHUTDOWN_MS));
       return;
     }
     const killTimer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) {
-        try {
-          child.kill();
-        } catch {
-          // Already gone.
-        }
-      }
+      unrefTimer(terminateChildProcessTree(child, null, GRACEFUL_SHUTDOWN_MS));
     }, GRACEFUL_SHUTDOWN_MS);
+    // Unref'd deliberately, and it is safe only because the quit message above
+    // ALSO closed stdin: both helpers exit on EOF (`NSApp.terminate` on the
+    // macOS read thread, `WM_QUIT` on the Windows loop), so a detached child
+    // cannot outlive ADE even when the process exits before this timer fires.
+    // The signal path is the fast way out, not the only one.
     killTimer.unref();
   }
 

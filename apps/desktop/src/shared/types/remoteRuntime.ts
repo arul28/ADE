@@ -423,6 +423,58 @@ export function isRemoteRuntimeEventCategory(
   return (REMOTE_RUNTIME_EVENT_CATEGORIES as readonly unknown[]).includes(value);
 }
 
+/* ─────────────────────── the cto_voice visibility rule ─────────────────────── */
+
+/**
+ * The one category that is not readable by whoever can read the rest.
+ *
+ * A voice call's state carries its running transcript, so listening to one is
+ * the same disclosure as reading the CTO thread — and the `cto_voice` ACTION
+ * domain is already fail-closed to the cto role. Without the same gate on the
+ * event buffer an agent that cannot start or drive a call could still sit and
+ * drain one out of it.
+ *
+ * The rule has two halves and they are not the same half twice: a stream asked
+ * for BY NAME is refused, so the caller learns it was denied rather than
+ * quietly receiving nothing; an UNCATEGORISED stream is filtered, so every
+ * other category still arrives and the cursor still advances past what was
+ * withheld (refusing it would stall an innocent poller).
+ *
+ * Lives beside the category tuple because it was hand-written at five call
+ * sites across two RPC servers, each with its own copy of the same paragraph —
+ * and a sixth site that forgets one half is a leak nothing else fails on.
+ */
+export const VOICE_RUNTIME_EVENT_CATEGORY: RemoteRuntimeEventCategory = "cto_voice";
+
+/** True when this event is voice call state, whatever else it carries. */
+export function isVoiceRuntimeEvent(event: { category: string }): boolean {
+  return event.category === VOICE_RUNTIME_EVENT_CATEGORY;
+}
+
+/** True when a caller who is not the CTO named the voice category outright. */
+export function refusesVoiceCategory(
+  category: string | null | undefined,
+  callerIsCto: boolean,
+): boolean {
+  return category === VOICE_RUNTIME_EVENT_CATEGORY && !callerIsCto;
+}
+
+/**
+ * The refusal text, so the two servers cannot drift into two different answers
+ * for the same denial. The caller supplies the method name and wraps this in
+ * whatever error type its transport speaks.
+ */
+export function voiceCategoryRefusalMessage(method: string): string {
+  return `${method} category ${VOICE_RUNTIME_EVENT_CATEGORY} requires the cto role.`;
+}
+
+/** The filtering half: strip voice state out of an uncategorised batch. */
+export function withoutVoiceEvents<T extends { category: string }>(
+  events: readonly T[],
+): T[] {
+  return events.filter((event) => !isVoiceRuntimeEvent(event));
+}
+
 export type RemoteRuntimeBufferedEvent = {
   id: number;
   timestamp: string;

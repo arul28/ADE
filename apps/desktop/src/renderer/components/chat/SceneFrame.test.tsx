@@ -106,6 +106,98 @@ describe("SceneFrame", () => {
     await screen.findByTestId("chat-scene-frame");
   });
 
+  /* ───────────────────────── freeze / snapshot ───────────────────────── */
+
+  /**
+   * The freeze swap had no test at all, and it is the step that decides what a
+   * scene looks like forever: once the turn ends the live frame is replaced by
+   * a still, and that same still is what the Proof button files.
+   */
+  describe("freezing a finished scene", () => {
+    function stubShellRect(rect: Partial<DOMRect>) {
+      const full = { x: 0, y: 0, top: 0, left: 0, width: 400, height: 200, bottom: 200, right: 400, ...rect };
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(full as DOMRect);
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      delete (window as unknown as { ade?: unknown }).ade;
+    });
+
+    async function renderRunningScene(snapshot: (rect: unknown) => Promise<string | null>) {
+      (window as unknown as { ade?: unknown }).ade = { scene: { snapshot } };
+      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live />);
+      const frame = await screen.findByTestId("chat-scene-frame");
+      // The frame reports ready, which is the draw gate: a capture before the
+      // first paint snapshots a blank rect.
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: (frame as HTMLIFrameElement).contentWindow,
+          data: { __adeScene: 1, type: "ready", payload: { height: 200 } },
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running"),
+      );
+      return rerender;
+    }
+
+    it("swaps the live frame for a still once the turn ends", async () => {
+      stubShellRect({});
+      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
+      const rerender = await renderRunningScene(snapshot);
+
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
+      expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
+      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("frozen");
+      expect(snapshot).toHaveBeenCalledWith({ x: 0, y: 0, width: 400, height: 200 });
+    });
+
+    /**
+     * Main INTERSECTS the capture rect with the content box, so a scene that is
+     * half scrolled off freezes to the visible sliver — permanently, and that
+     * crop is what Proof files. Never accept a partial capture.
+     */
+    it("refuses to snapshot a scene that is only partly on screen", async () => {
+      stubShellRect({ top: -120, y: -120, bottom: 80 });
+      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
+      const rerender = await renderRunningScene(snapshot);
+
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      await waitFor(() =>
+        expect(screen.getByTestId("chat-scene-frame")).toBeTruthy(),
+      );
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
+    });
+
+    /** ...and it tries again when the scroll that hid it scrolls it back. */
+    it("captures on the retry once the whole scene is back on screen", async () => {
+      stubShellRect({ top: -120, y: -120, bottom: 80 });
+      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
+      const rerender = await renderRunningScene(snapshot);
+
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
+
+      stubShellRect({});
+      window.dispatchEvent(new Event("scroll"));
+      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
+      expect(snapshot).toHaveBeenCalledTimes(1);
+    });
+
+    /** No capture route at all: keep the working view rather than nothing. */
+    it("leaves the frame mounted when the host cannot snapshot", async () => {
+      stubShellRect({});
+      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live />);
+      await screen.findByTestId("chat-scene-frame");
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
+      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
+    });
+  });
+
   it("leaves other fences alone", () => {
     render(<MarkdownBlock markdown={"```ts\nconst a = 1;\n```"} />);
     expect(screen.queryByTestId("chat-scene")).toBeNull();

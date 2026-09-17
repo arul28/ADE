@@ -195,6 +195,49 @@ describe("CtoVoiceStartSheet", () => {
     expect(screen.getByText(/OpenAI rejected this key/)).toBeTruthy();
   });
 
+  /**
+   * The call store is module-scoped: the last call's error outlives the HUD that
+   * showed it, and a sheet opened afterwards would read it as its own.
+   */
+  it("ignores the error the last call left behind", async () => {
+    callState = {
+      ...CTO_VOICE_INITIAL_STATE,
+      phase: "failed",
+      callId: "c0",
+      error: "OpenAI rejected this key. Check it under CTO settings, Voice.",
+      isCallOwner: true,
+    };
+    render(<CtoVoiceStartSheet onClose={onClose} />);
+
+    await waitFor(() => expect(start).toHaveBeenCalled());
+    expect(screen.getByTestId("cto-voice-sheet-connecting")).toBeTruthy();
+    expect(screen.queryByTestId("cto-voice-sheet-blocked")).toBeNull();
+  });
+
+  it("still blocks on a failure that belongs to this call", async () => {
+    callState = {
+      ...CTO_VOICE_INITIAL_STATE,
+      phase: "failed",
+      callId: "c0",
+      error: "That call failed.",
+      isCallOwner: true,
+    };
+    const { rerender } = render(<CtoVoiceStartSheet onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-connecting")).toBeTruthy());
+
+    callState = {
+      ...CTO_VOICE_INITIAL_STATE,
+      phase: "failed",
+      callId: "c1",
+      error: "The voice connection failed.",
+      isCallOwner: true,
+    };
+    rerender(<CtoVoiceStartSheet onClose={onClose} />);
+
+    await waitFor(() => expect(screen.getByTestId("cto-voice-sheet-blocked")).toBeTruthy());
+    expect(screen.getByText(/The voice connection failed/)).toBeTruthy();
+  });
+
   it("offers a fresh session only when the chat itself is what refused the call", async () => {
     start.mockResolvedValueOnce({
       ok: false,

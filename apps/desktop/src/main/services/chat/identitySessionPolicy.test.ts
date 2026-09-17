@@ -3,7 +3,6 @@ import {
   beginIdentityConfirmHold,
   isIdentityConfirmHeld,
   isPrimaryPinnedIdentity,
-  isVoiceCallLiveOnSession,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
@@ -107,15 +106,15 @@ describe("who owns a session's status line", () => {
     // live call writes that line itself, deterministically and instantly; the
     // generated one costs a model round trip per settled turn and on a call it
     // always described a question the user had already moved past.
-    expect(isVoiceCallLiveOnSession("session-a")).toBe(false);
+    expect(isIdentityConfirmHeld("session-a")).toBe(false);
     const release = beginIdentityConfirmHold("session-a");
     try {
-      expect(isVoiceCallLiveOnSession("session-a")).toBe(true);
-      expect(isVoiceCallLiveOnSession("session-b")).toBe(false);
+      expect(isIdentityConfirmHeld("session-a")).toBe(true);
+      expect(isIdentityConfirmHeld("session-b")).toBe(false);
     } finally {
       release();
     }
-    expect(isVoiceCallLiveOnSession("session-a")).toBe(false);
+    expect(isIdentityConfirmHeld("session-a")).toBe(false);
   });
 });
 

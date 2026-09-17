@@ -5,7 +5,7 @@ import path from "node:path";
 // `AdeRuntime` the same way and for the same reason.
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { projectAttachmentsDir, stageAttachmentBytes } from "../../../shared/chatAttachmentStagingFs";
-import { extractSceneFence, SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
+import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
 import { isContextOverflowFailureText } from "../../../shared/types/chat";
 import {
   CTO_VOICE_DEFAULT,
@@ -16,7 +16,6 @@ import {
   CTO_VOICE_VOICES,
   CTO_VOICE_ACTIONS,
   CTO_VOICE_CHAT_OVER_LIMIT_DETAIL,
-  CTO_VOICE_CONTEXT_MAX_CHARS,
   CTO_VOICE_SPOKEN_CONTEXT_OVERFLOW,
   CTO_VOICE_SPOKEN_TURN_FAILED,
   ctoVoiceStatusLine,
@@ -27,6 +26,14 @@ import {
   type CtoVoiceName,
   type CtoVoiceState,
 } from "../../../shared/types/ctoVoice";
+import {
+  buildCtoVoiceContext,
+  buildVoiceSceneContract,
+  describeVoiceActiveWork,
+  readVoiceTodayLog,
+  splitSpokenSceneAnswer,
+  voiceRequestAsksForVisual,
+} from "./ctoVoiceContext";
 import { getMachineApiKey } from "../ai/apiKeyStore";
 import { beginIdentityConfirmHold } from "../chat/identitySessionPolicy";
 import {
@@ -131,321 +138,6 @@ const NOT_OWNER: CtoVoiceActionResult = {
   detail: "another window is holding this call",
 };
 
-/**
- * What a call says when it drew something and said nothing.
- *
- * A scene-only answer leaves the prose empty, and `session.commentary.append`
- * with an empty string never produces audio — the HUD sits in `speaking` with
- * nothing to hear and no way out. One sentence keeps the phase moving and tells
- * the user to look.
- */
-const CTO_VOICE_SCENE_ONLY_SPOKEN = "Here is what I drew.";
-
-/**
- * Split a turn's answer into what is spoken and what is drawn.
- *
- * The scan itself lives in `chatScene` beside `hasOpenSceneFence`, so the
- * streaming guard and the splitter cannot disagree about what a fence is.
- */
-export function splitSpokenSceneAnswer(outputText: string): {
-  spoken: string;
-  sceneSource?: string;
-} {
-  const split = extractSceneFence(outputText);
-  if (!split.sceneSource) return split;
-  return {
-    spoken: split.spoken.length ? split.spoken : CTO_VOICE_SCENE_ONLY_SPOKEN,
-    sceneSource: split.sceneSource,
-  };
-}
-
-/**
- * Did the user ask to SEE this, rather than to hear it?
- *
- * Deliberately a word list rather than a judgement: the request text is the
- * realtime model's paraphrase of what was said, and it is the one place "show
- * me the PRs merged yesterday" survives intact. A false positive costs one
- * unread fence; a false negative costs the user the picture they asked for,
- * which is the failure this exists to stop.
- */
-const CTO_VOICE_VISUAL_WORDS = [
-  "show me",
-  "show us",
-  "draw",
-  "chart",
-  "graph",
-  "diagram",
-  "visual",
-  "visualise",
-  "visualize",
-  "picture",
-  "timeline",
-  "sketch",
-  "plot",
-  "illustrate",
-] as const;
-
-export function voiceRequestAsksForVisual(request: string): boolean {
-  const text = request.toLowerCase();
-  return CTO_VOICE_VISUAL_WORDS.some((word) => text.includes(word));
-}
-
-/**
- * What a scene IS, said to a CTO that has never read the skill.
- *
- * "End your sentences with a ```scene fence" was the whole instruction, and on
- * the call of 2026-09-16 the CTO obeyed it exactly: it drew a box out of
- * box-drawing characters and put the plain text inside the fence. The frame
- * renders HTML, so the user got a picture of a monospace rectangle rendered as
- * a paragraph. Nothing had told it the fence was markup.
- *
- * This is the `ade-scene` skill distilled to what a one-shot voice turn can act
- * on: the shape of the block, the variables that make it look like ADE, the
- * things the sandbox does not have, the two layouts that are almost always
- * right, and one example short enough to copy. The skill itself stays the long
- * form — a turn on a call cannot be asked to go and read it.
- */
-export function buildVoiceSceneContract(): string {
-  return [
-    `The \`\`\`${SCENE_FENCE_LANGUAGE} fence is real HTML, CSS and JavaScript — ADE renders it in a sandboxed frame. It is NEVER plain text, a code listing, ASCII art or box-drawing characters; text inside the fence renders as an unstyled paragraph.`,
-    `First line of the fence: <!-- @scene title="..." -->. Then your markup.`,
-    "Style it with ADE's own CSS variables, already set on :root: --bg, --surface, --border, --fg, --fg-muted, --accent, --success, --warning, --danger, --font-sans, --font-mono.",
-    "The frame has no network, no libraries, no remote fonts and no remote images: every value you are showing must be written into the markup, and any image must be a data: URL. Call ade.ready() when it is drawn.",
-    "Prefer a table or a grid of cards with real values and real labels. It must be readable when it stops moving — a scene that only makes sense mid-animation means nothing afterwards. Never draw approve, confirm or deny controls; ADE owns permission. Keep the whole fence under about 8 KB.",
-    "A scene looks like this:",
-    `\`\`\`${SCENE_FENCE_LANGUAGE}`,
-    '<!-- @scene title="Merged yesterday" -->',
-    "<style>",
-    "  table { width: 100%; border-collapse: collapse; font: 13px var(--font-sans); color: var(--fg); }",
-    "  th { text-align: left; color: var(--fg-muted); font-weight: 500; padding: 6px 8px; }",
-    "  td { padding: 6px 8px; border-top: 1px solid var(--border); }",
-    "  .ok { color: var(--success); }",
-    "</style>",
-    "<table><thead><tr><th>PR</th><th>Title</th><th>Checks</th></tr></thead>",
-    '<tbody><tr><td>#1237</td><td>Persistent director</td><td class="ok">passed</td></tr></tbody></table>',
-    "<script>ade.ready();</script>",
-    "```",
-  ].join("\n");
-}
-
-/** How many rows of any one kind the work board contributes. */
-const CTO_VOICE_ACTIVE_WORK_MAX_PER_KIND = 4;
-/** How many of today's log entries the block carries. */
-const CTO_VOICE_TODAY_LOG_MAX_ENTRIES = 12;
-
-/**
- * The CTO's live-state snapshot, as lines a voice can read off.
- *
- * Not `renderCtoLiveStateBlock`: that block is built for a thinking model with
- * a 6,000-character budget of its own and spells out lane ids, session ids and
- * check states. What a call needs is the shape of the day in a dozen lines, and
- * the ids are things the CTO looks up rather than things a voice says out loud.
- */
-export function describeVoiceActiveWork(snapshot: {
-  approvals: Array<{ title: string }>;
-  approvalsTotal: number;
-  chats: Array<{ title: string; status: string }>;
-  chatsTotal: number;
-  pullRequests: Array<{ number: number; title: string; checks: string }>;
-  pullRequestsTotal: number;
-  scheduledWork: Array<{ title: string; status: string }>;
-  scheduledWorkTotal: number;
-}): string[] {
-  const lines: string[] = [];
-  const take = <T>(rows: T[]): T[] => rows.slice(0, CTO_VOICE_ACTIVE_WORK_MAX_PER_KIND);
-  const more = (shown: number, total: number, noun: string): void => {
-    if (total > shown) lines.push(`  …and ${total - shown} more ${noun}`);
-  };
-  if (snapshot.approvalsTotal > 0) {
-    lines.push(`- Waiting for you (${snapshot.approvalsTotal}):`);
-    for (const row of take(snapshot.approvals)) lines.push(`  · ${row.title}`);
-    more(take(snapshot.approvals).length, snapshot.approvalsTotal, "waiting");
-  }
-  if (snapshot.chatsTotal > 0) {
-    lines.push(`- Work in flight (${snapshot.chatsTotal}):`);
-    for (const row of take(snapshot.chats)) lines.push(`  · ${row.title} — ${row.status}`);
-    more(take(snapshot.chats).length, snapshot.chatsTotal, "running");
-  }
-  if (snapshot.pullRequestsTotal > 0) {
-    lines.push(`- Open PRs (${snapshot.pullRequestsTotal}):`);
-    for (const row of take(snapshot.pullRequests)) {
-      lines.push(`  · #${row.number} ${row.title} — checks ${row.checks}`);
-    }
-    more(take(snapshot.pullRequests).length, snapshot.pullRequestsTotal, "PRs");
-  }
-  if (snapshot.scheduledWorkTotal > 0) {
-    lines.push(`- Scheduled (${snapshot.scheduledWorkTotal}):`);
-    for (const row of take(snapshot.scheduledWork)) lines.push(`  · ${row.title} — ${row.status}`);
-    more(take(snapshot.scheduledWork).length, snapshot.scheduledWorkTotal, "scheduled");
-  }
-  // Said rather than left blank: "nothing is running" is an answer, and an
-  // absent section reads to the model as an unknown it has to go and ask about.
-  if (!lines.length) lines.push("- Nothing is running, waiting or open right now.");
-  return lines;
-}
-
-/**
- * Today's daily-log entries, newest first.
- *
- * The file's own `# YYYY-MM-DD` header is dropped — the section says "today" —
- * and the order is reversed because a call asks "what have we done today" and
- * the useful end of that list is the recent one.
- */
-export function readVoiceTodayLog(
-  snapshot: { dailyLog?: string | null } | null,
-  maxEntries = CTO_VOICE_TODAY_LOG_MAX_ENTRIES,
-): string[] {
-  const body = (snapshot?.dailyLog ?? "").trim();
-  if (!body.length) return [];
-  return body
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#"))
-    .reverse()
-    .slice(0, Math.max(1, maxEntries))
-    .map((line) => `- ${line}`);
-}
-
-/**
- * Everything the realtime model may answer from without asking the CTO.
- *
- * Pure, and built from plain data rather than from the services, so the two
- * things that actually matter about it — the ORDER of the sections and the
- * BOUND on the whole block — can be tested without a project on disk.
- *
- * The order is most- to least-identifying: who you are, then what project this
- * is, then what you remember, then what is happening today. That is also the
- * order they would be missed in, which matters because the trim below eats the
- * long sections first.
- *
- * The bound is not decoration. This block is re-sent after every completed
- * `ask_cto`, so an unbounded one is paid for again on every refresh — and a
- * durable memory file grows without limit.
- */
-export type CtoVoiceContextInput = {
-  ctoName: string;
-  persona: string;
-  projectName: string;
-  projectRoot: string;
-  /** `provider/model` the CTO thread is running on, or null before the pick. */
-  modelName: string | null;
-  laneNames: string[];
-  lanesTotal: number;
-  /**
-   * What is in flight right now, one line each, from the CTO's live-state
-   * snapshot: chats working, PRs open, approvals waiting, work scheduled.
-   *
-   * The reason small talk was generic. "How's it going?" is a question about
-   * today, and a model whose whole context was an identity and a lane list had
-   * nothing to answer it with but a pleasantry.
-   */
-  activeWork?: string[];
-  /**
-   * Today's daily-log entries, most recent first.
-   *
-   * The memory service's own "Recent daily log" section spans two days and is
-   * oldest-first so a truncation keeps the tail. Today, newest first, is a
-   * different question — "what have we done today" — and is worth the
-   * duplication because it is the one the user actually asks out loud.
-   */
-  todayLog?: string[];
-  /** Durable memory, thread state and the daily log, as the memory service labels them. */
-  memorySections: Array<{ title: string; body: string }>;
-};
-
-/** A section trimmed to the floor still has to say that it was trimmed. */
-const CTO_VOICE_CONTEXT_TRIM_MARKER = "\n…(trimmed)";
-
-/**
- * The smallest a section is allowed to be trimmed to.
- *
- * Below this a section is noise rather than context — half a sentence of
- * durable memory tells the model less than no memory at all, because it reads
- * as a complete fact.
- */
-const CTO_VOICE_CONTEXT_MIN_SECTION_CHARS = 200;
-
-export function buildCtoVoiceContext(
-  input: CtoVoiceContextInput,
-  maxChars = CTO_VOICE_CONTEXT_MAX_CHARS,
-): string {
-  const laneLine = input.lanesTotal === 0
-    ? "- Lanes: none yet"
-    : `- Lanes (${input.lanesTotal}): ${input.laneNames.join(", ")}`;
-  const sections: Array<{ title: string; body: string }> = [
-    {
-      title: "Who you are",
-      body: [
-        `- Name: ${input.ctoName}`,
-        `- Role: CTO of ${input.projectName}`,
-        `- Persona: ${input.persona}`,
-        `- You think on: ${input.modelName ?? "a model the user has not picked yet"}`,
-      ].join("\n"),
-    },
-    {
-      title: "This project",
-      body: [
-        `- Name: ${input.projectName}`,
-        `- Root: ${input.projectRoot}`,
-        laneLine,
-      ].join("\n"),
-    },
-    ...(input.activeWork?.length
-      ? [{ title: "What is happening right now", body: input.activeWork.join("\n") }]
-      : []),
-    ...(input.todayLog?.length
-      ? [{ title: "Today so far (most recent first)", body: input.todayLog.join("\n") }]
-      : []),
-    ...input.memorySections
-      .map((section) => ({ title: section.title, body: section.body.trim() }))
-      .filter((section) => section.body.length > 0),
-  ];
-
-  const render = (): string =>
-    sections.map((section) => `${section.title}\n${section.body}`).join("\n\n");
-
-  // Longest first, and only down to the floor. Trimming evenly would take the
-  // identity apart to save a journal entry; trimming the longest is what makes
-  // a busy project lose the tail of its memory rather than its own name.
-  const atFloor = new Set<number>();
-  let rendered = render();
-  while (rendered.length > maxChars) {
-    let target = -1;
-    for (let index = 0; index < sections.length; index += 1) {
-      if (atFloor.has(index)) continue;
-      if (sections[index]!.body.length <= CTO_VOICE_CONTEXT_MIN_SECTION_CHARS) {
-        atFloor.add(index);
-        continue;
-      }
-      if (target < 0 || sections[index]!.body.length > sections[target]!.body.length) target = index;
-    }
-    if (target < 0) break;
-    const body = sections[target]!.body;
-    const over = rendered.length - maxChars;
-    const keep = Math.max(
-      CTO_VOICE_CONTEXT_MIN_SECTION_CHARS,
-      body.length - over - CTO_VOICE_CONTEXT_TRIM_MARKER.length,
-    );
-    sections[target] = {
-      ...sections[target]!,
-      body: `${body.slice(0, keep).trimEnd()}${CTO_VOICE_CONTEXT_TRIM_MARKER}`,
-    };
-    rendered = render();
-  }
-  // Everything is at the floor and it still does not fit: a project with dozens
-  // of sections. Cut on a line rather than mid-word.
-  if (rendered.length > maxChars) {
-    const kept: string[] = [];
-    let used = 0;
-    for (const line of rendered.split("\n")) {
-      if (used + line.length + 1 > maxChars) break;
-      kept.push(line);
-      used += line.length + 1;
-    }
-    return kept.join("\n");
-  }
-  return rendered;
-}
 
 /** How a call ended, in the closed vocabulary the analytics allowlist holds. */
 type CtoVoiceCallOutcome =
@@ -670,6 +362,13 @@ export function createCtoVoiceRuntimeService(
     apiKey: string,
   ): CtoVoiceCallDeps {
     const ctoMemoryService = host.ctoMemoryService ?? null;
+    // The project record carries no display name at this layer; the folder name
+    // is what the user calls this project everywhere else in ADE.
+    // `path.basename` rather than a hand-rolled split, so a Windows root with a
+    // trailing separator reads the same as a POSIX one. Computed once: the
+    // context block and the session prompt must not be able to disagree about
+    // what this project is called.
+    const projectName = path.basename(host.projectRoot.replace(/[\\/]+$/, "")) || "this project";
 
     /**
      * A call puts the CTO in confirm-first mode, and restores full-auto when it
@@ -817,7 +516,7 @@ export function createCtoVoiceRuntimeService(
           todayLog,
           ctoName: identity.name || "CTO",
           persona: identity.persona || "Persistent project CTO for this ADE workspace.",
-          projectName: path.basename(host.projectRoot.replace(/[\\/]+$/, "")) || "this project",
+          projectName,
           projectRoot: host.projectRoot,
           modelName: preferred ? `${preferred.provider}/${preferred.model}` : null,
           laneNames,
@@ -827,11 +526,7 @@ export function createCtoVoiceRuntimeService(
       },
 
       ctoName: () => ctoStateService.getIdentity().name || "CTO",
-      // The project record carries no display name at this layer; the folder
-      // name is what the user calls this project everywhere else in ADE.
-      // `path.basename` rather than a hand-rolled split, so a Windows root with
-      // a trailing separator reads the same as a POSIX one.
-      projectName: () => path.basename(host.projectRoot.replace(/[\\/]+$/, "")) || "this project",
+      projectName: () => projectName,
       // Read per call from the identity, so a change in settings applies to the
       // next call without a restart.
       backchannelsEnabled: () => ctoStateService.getIdentity().voiceBackchannels !== false,
@@ -1031,7 +726,7 @@ export function createCtoVoiceRuntimeService(
        * owner watched the line read "hey there?" three exchanges later, because
        * each regeneration takes seconds and a spoken turn takes one. A call
        * therefore writes the line itself, deterministically, and the generated
-       * one stands down for the duration (`isVoiceCallLiveOnSession`).
+       * one stands down for the duration (`isIdentityConfirmHeld`).
        *
        * Written with the session the call is HELD on, so a call that never got
        * as far as resolving a session writes nothing at all.

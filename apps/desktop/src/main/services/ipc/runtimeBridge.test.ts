@@ -894,7 +894,7 @@ describe("registerRuntimeBridge", () => {
         eventForSender(sender(102)),
         {
           rootPath: "/other-repo",
-          request: { cursor: 2, limit: 10, category: "sync" },
+          request: { cursor: 2, limit: 10, category: "pty" },
         },
       ),
     ).resolves.toEqual({ events: [], nextCursor: 2, hasMore: false });
@@ -906,7 +906,7 @@ describe("registerRuntimeBridge", () => {
     );
     expect(localRuntimeConnectionPool.subscribeEventsForRoot).toHaveBeenCalledWith(
       "/other-repo",
-      { cursor: 2, limit: 10, category: undefined, replay: undefined },
+      { cursor: 2, limit: 10, category: "pty", replay: undefined },
       expect.any(Function),
       expect.any(Function),
       expect.any(Function),
@@ -1033,6 +1033,59 @@ describe("registerRuntimeBridge", () => {
 
       subscriptions[1].emit(ptyEvent(3), "epoch-1");
       expect(active.webContents.send).toHaveBeenCalledTimes(3);
+    });
+
+    function voiceEvent(id: number) {
+      return {
+        id,
+        timestamp: "2026-08-01T00:00:00.000Z",
+        category: "cto_voice" as const,
+        payload: { type: "cto_voice_state", phase: "listening", caption: "the user said something" },
+      };
+    }
+
+    /**
+     * The `cto_voice` exclusion is written in four places and two of them had
+     * no test at all. It is not one rule checked once: refusing the
+     * SUBSCRIPTION name still lets an uncategorised subscription carry voice
+     * events, and the poller takes a different route out of main than the push
+     * does. Each door is asserted on its own, because each is written to stand
+     * alone rather than trust the one before it.
+     */
+    it("never pushes cto_voice events to a renderer, even on an uncategorised subscription", async () => {
+      const { subscriptions, pool } = recordingLocalRuntimePool();
+      const stream = registerWithPool(pool);
+      const active = destroyableSender(240);
+
+      await stream(eventForSender(active.webContents), {
+        rootPath: "/repo",
+        request: activePumpRequest,
+      });
+
+      subscriptions[0].emit(voiceEvent(1), "epoch-1");
+      expect(active.webContents.send).not.toHaveBeenCalled();
+
+      // ...and the subscription is still live for everything else.
+      subscriptions[0].emit(ptyEvent(2), "epoch-1");
+      expect(active.webContents.send).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses a subscription that names a category a renderer may not have", async () => {
+      const { pool } = recordingLocalRuntimePool();
+      const stream = registerWithPool(pool);
+      const active = destroyableSender(242);
+
+      for (const category of ["cto_voice", "not_a_category"]) {
+        await expect(
+          stream(eventForSender(active.webContents), {
+            rootPath: "/repo",
+            request: { cursor: 0, limit: 100, category },
+          }),
+        ).rejects.toThrow(/Unknown runtime event category/);
+      }
+      // Dropping the field instead would have subscribed to EVERY category.
+      expect(pool.subscribeEventsForRoot).not.toHaveBeenCalled();
+      expect(pool.streamEventsForRoot).not.toHaveBeenCalled();
     });
 
     it("releases every subscription a window holds when its sender is destroyed", async () => {
@@ -1616,6 +1669,38 @@ describe("registerRuntimeBridge", () => {
       expect.any(Function),
       expect.any(Function),
     );
+  });
+
+  /**
+   * The polled route out of main is not the pushed one: `streamEvents` returns
+   * whatever the buffer drained and the preload casts it rather than
+   * normalizing it, so the subscription guard does not cover this path. Voice
+   * state carries a call's running transcript; nothing in the renderer
+   * consumes it.
+   */
+  it("strips cto_voice events out of a polled batch", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteStreamEventsForTargetMock.mockResolvedValue({
+      events: [
+        { id: 1, timestamp: "2026-08-01T00:00:00.000Z", category: "cto_voice", payload: { caption: "the user said something" } },
+        { id: 2, timestamp: "2026-08-01T00:00:01.000Z", category: "runtime", payload: {} },
+      ],
+      nextCursor: 2,
+      hasMore: false,
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    const result = (await ipcHandlers.get(IPC.remoteRuntimeStreamEvents)?.(
+      eventForSender(sender(243)),
+      { id: "target-1", projectId: "project-1", request: { cursor: 0, limit: 100 } },
+    )) as { events: Array<{ id: number }>; nextCursor: number };
+
+    expect(result.events.map((event) => event.id)).toEqual([2]);
+    // The cursor still advances past what was withheld, or the pump stalls.
+    expect(result.nextCursor).toBe(2);
   });
 
   it("cleans a remote event subscription before disconnecting that target", async () => {

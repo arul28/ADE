@@ -21454,6 +21454,14 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workIsSceneFenceLanguage(" Scene "))
     XCTAssertFalse(workIsSceneFenceLanguage("swift"))
     XCTAssertFalse(workIsSceneFenceLanguage(nil))
+    // A multi-word info string is a scene on every other surface: desktop reads
+    // rehype's `language-scene` class and the TUI takes the first token. The
+    // phone comparing the WHOLE string meant ```scene generated dumped raw HTML
+    // into the transcript.
+    XCTAssertTrue(workIsSceneFenceLanguage("scene generated"))
+    XCTAssertTrue(workIsSceneFenceLanguage("  Scene  generated view "))
+    XCTAssertFalse(workIsSceneFenceLanguage("scenery generated"))
+    XCTAssertFalse(workIsSceneFenceLanguage(""))
   }
 
   func testParseWorkChatTranscriptUsesDeterministicFallbackItemIds() {

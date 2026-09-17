@@ -1176,9 +1176,21 @@ let workSceneFenceLanguage = "scene"
 private let workSceneTitleLimit = 120
 
 /// True when a code fence's language marks it as a scene.
+///
+/// The FIRST whitespace-delimited token, not the whole info string. A fence
+/// opened ```` ```scene generated ```` is a scene everywhere else — desktop
+/// reads the language out of rehype's `language-scene` class, which is the
+/// first word, and the TUI splits on whitespace — so comparing the whole
+/// string made the phone the one surface that dumped the raw HTML into the
+/// transcript.
 func workIsSceneFenceLanguage(_ language: String?) -> Bool {
   guard let language else { return false }
-  return language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == workSceneFenceLanguage
+  let token = language
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace })
+    .first
+  guard let token else { return false }
+  return token.lowercased() == workSceneFenceLanguage
 }
 
 /// The title a scene declares in its leading `<!-- @scene title="…" -->` marker.

@@ -13,7 +13,6 @@ import { useCallback, useState } from "react";
 import { CheckCircle } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import {
-  OPENAI_VOICE_PROVIDER,
   OpenAiKeyCostLine,
   OpenAiKeyField,
   openAiEnvShadowNote,
@@ -34,7 +33,7 @@ export function OpenAiKeySheet({
   onCancel?: () => void;
   saveLabel?: string;
 }) {
-  const { status, loading, supported, error, save } = useMachineOpenAiKey(OPENAI_VOICE_PROVIDER);
+  const { status, loading, supported, error, save } = useMachineOpenAiKey();
   const [draft, setDraft] = useState("");
   const [saved, setSaved] = useState(false);
 

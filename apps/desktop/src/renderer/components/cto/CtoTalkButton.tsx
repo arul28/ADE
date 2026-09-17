@@ -216,13 +216,12 @@ export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
   /**
    * Talk opens the sheet. Always, key or no key.
    *
-   * The button used to start the call itself and only open the sheet for a
-   * missing key, which meant every OTHER failure — a microphone that would not
-   * open, a socket that never came up — landed as a one-line notice under the
-   * page header with nothing to press. "No microphone is connected" needs an
-   * "Open sound settings" button next to it, and a header notice cannot carry
-   * one. The sheet is where a failure can be acted on, so the press goes there
-   * first and the sheet does the connecting.
+   * The sheet is the only place a failure can be acted on, so the press goes
+   * there first and the sheet does the connecting. Starting the call from here
+   * and opening the sheet only for a missing key sends every OTHER failure — a
+   * microphone that will not open, a socket that never comes up — to a one-line
+   * notice under the page header with nothing to press, and "No microphone is
+   * connected" needs an "Open sound settings" button beside it.
    */
   const onClick = useCallback(() => {
     if (live || sheetOpen) return;
@@ -255,8 +254,8 @@ export function CtoTalkButton({ onNotice }: CtoTalkButtonProps = {}) {
   }, [state.error, state.phase, state.isCallOwner]);
 
   // The only place the reason is drawn. The HUD says "Call failed" inside its
-  // pill and stops there — the sentence it used to trail below itself had no
-  // border to stay inside and landed on the composer.
+  // pill and stops there: a sentence trailing below the pill has no border to
+  // stay inside and lands on the composer.
   // While the sheet is open it shows its own failures, with buttons that act
   // on them. A page notice saying the same thing behind the modal is how a
   // user learns to read neither.

@@ -55,7 +55,7 @@ import {
 } from "../editors/openPathInEditor";
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import type { AttemptedProjectRoots } from "./knownProjectRoots";
-import { redactIpcArgsForChannel } from "./ipcChannelRedaction";
+import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
   AttentionNotchSettings,
@@ -915,12 +915,12 @@ import type { createProjectScaffoldService } from "../projects/projectScaffoldSe
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { createComputerUseArtifactPath } from "../computerUse/localComputerUse";
+import { sceneDocumentStore } from "../scenes/sceneDocumentStore";
 import {
   clampSceneCaptureRect,
   decodeScenePngDataUrl,
-  sceneDocumentStore,
   type SceneCaptureRect,
-} from "../scenes/sceneDocumentStore";
+} from "../scenes/sceneSnapshot";
 import { SCENE_LIMITS } from "../../../shared/chatScene";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
@@ -2087,19 +2087,6 @@ export function registerIpc({
   const traceIpcInvokes = isPerfRunActive() || !app.isPackaged || process.env.ADE_TRACE_IPC === "1" || process.env.ADE_TRACE_IPC === "verbose";
   const traceEveryIpcInvoke = process.env.ADE_TRACE_IPC === "verbose";
   let ipcInvokeSeq = 0;
-
-  const shouldRedactIpcKey = (key: string | undefined): boolean => {
-    if (!key) return false;
-    const normalized = key.toLowerCase();
-    return normalized.includes("token")
-      || normalized.includes("secret")
-      || normalized.includes("password")
-      || normalized.includes("authorization")
-      || normalized === "apikey"
-      || normalized === "api_key"
-      || normalized === "pairingpin"
-      || normalized === "pairing_pin";
-  };
 
   const summarizeIpcValue = (value: unknown, depth = 0, key?: string): unknown => {
     if (shouldRedactIpcKey(key)) return "[redacted]";

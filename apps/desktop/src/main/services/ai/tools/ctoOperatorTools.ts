@@ -6,6 +6,7 @@ import { getModelById, resolveModelDescriptor, resolveChatProviderForDescriptor 
 import type {
   AgentChatCreateArgs,
   AgentChatInterruptArgs,
+  AgentChatScheduledWorkItem,
   AgentChatSendArgs,
   AgentChatSession,
   AgentChatSessionSummary,
@@ -202,7 +203,7 @@ export interface CtoOperatorToolDeps {
   }) => Promise<any>;
   scheduledWorkService?: {
     create: (args: { sessionId: string; prompt: string; cron?: string; runAt?: string; delaySeconds?: number; recurring?: boolean; reason?: string }) => Promise<any>;
-    list: (args?: { sessionId?: string; includeTerminal?: boolean }) => Promise<any[]>;
+    list: (args?: { sessionId?: string; includeTerminal?: boolean }) => Promise<AgentChatScheduledWorkItem[]>;
     getState: (args: { sessionId: string }) => Promise<any>;
     cancel: (args: { sessionId: string; scheduleId: string }) => Promise<any>;
     setPaused: (args: { sessionId: string; paused: boolean }) => Promise<any>;
@@ -2854,16 +2855,16 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     return collapsed.length > max ? `${collapsed.slice(0, max - 1).trimEnd()}…` : collapsed;
   };
 
-  const toCompactScheduledWorkRecord = (item: any) => ({
-    id: item?.id,
-    sessionId: item?.sessionId,
-    kind: item?.kind,
-    status: item?.status,
-    ...(item?.cron ? { cron: item.cron } : {}),
-    ...(item?.nextRunAt ? { nextRunAt: item.nextRunAt } : {}),
-    ...(item?.lastRunAt ? { lastRunAt: item.lastRunAt } : {}),
-    ...(item?.late ? { late: true } : {}),
-    ...(typeof item?.prompt === "string" && item.prompt.trim()
+  const toCompactScheduledWorkRecord = (item: AgentChatScheduledWorkItem) => ({
+    id: item.id,
+    sessionId: item.sessionId,
+    kind: item.kind,
+    status: item.status,
+    ...(item.cron ? { cron: item.cron } : {}),
+    ...(item.nextRunAt ? { nextRunAt: item.nextRunAt } : {}),
+    ...(item.lastRunAt ? { lastRunAt: item.lastRunAt } : {}),
+    ...(item.late ? { late: true } : {}),
+    ...(item.prompt.trim()
       ? { prompt: truncatePreview(item.prompt, SCHEDULED_WORK_PROMPT_PREVIEW_CHARS) }
       : {}),
   });
@@ -2914,6 +2915,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           ...(sessionId?.trim() ? { sessionId: sessionId.trim() } : {}),
           includeTerminal,
         });
+        // The dep's type says this is an array, but the dep is injected — a
+        // remote or mocked scheduler that returns something else would otherwise
+        // crash the tool instead of reporting an empty list.
         const all = Array.isArray(items) ? items : [];
         const kept = all.slice(0, MAX_SCHEDULED_WORK_ITEMS);
         return {

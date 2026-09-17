@@ -2,7 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
+import {
+  REMOTE_RUNTIME_EVENT_CATEGORIES,
+  refusesVoiceCategory,
+  voiceCategoryRefusalMessage,
+  withoutVoiceEvents,
+} from "../../desktop/src/shared/types/remoteRuntime";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import {
   createComputerUseArtifactPath,
@@ -5858,15 +5863,13 @@ async function runTool(args: {
     const cursor = asNumber(toolArgs.cursor, 0);
     const limit = asNumber(toolArgs.limit, 100);
     const category = asOptionalTrimmedString(toolArgs.category);
-    // A voice call's state carries its running transcript, so listening to one
-    // is the same disclosure as reading the CTO thread — and the `cto_voice`
-    // action domain is fail-closed to the cto role. Without this an agent that
-    // cannot start or drive a call could still drain one out of the buffer.
+    // The rule and its wording live with the category tuple; see
+    // `VOICE_RUNTIME_EVENT_CATEGORY`. Refused by name, filtered when not named.
     const ctoVoiceVisible = callerHasRoleAtLeast(callerCtx.role, "cto");
-    if (category === "cto_voice" && !ctoVoiceVisible) {
+    if (refusesVoiceCategory(category, ctoVoiceVisible)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidRequest,
-        "stream_events category cto_voice requires the cto role."
+        voiceCategoryRefusalMessage("stream_events")
       );
     }
     if (category) {
@@ -5892,7 +5895,7 @@ async function runTool(args: {
     // cursor still advances past what was withheld so polling cannot stall.
     return {
       ...drained,
-      events: drained.events.filter((e) => e.category !== "cto_voice")
+      events: withoutVoiceEvents(drained.events)
     };
   }
 

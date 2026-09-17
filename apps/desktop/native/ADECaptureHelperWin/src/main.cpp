@@ -32,9 +32,12 @@
 //    thread keeps pumping.
 //
 // 3. THE CHORD IS BOTH CTRL KEYS, read from the hook struct's `vkCode`, which
-//    reports VK_LCONTROL and VK_RCONTROL separately. GetAsyncKeyState cannot:
-//    it collapses both into VK_CONTROL, so "both Ctrl keys" is not expressible
-//    there at all.
+//    reports VK_LCONTROL and VK_RCONTROL separately. Polling cannot replace the
+//    hook: GetKeyState collapses both into VK_CONTROL, and polling at all would
+//    mean a timer racing the user's fingers. GetAsyncKeyState(VK_LCONTROL /
+//    VK_RCONTROL) IS side-aware, which is why it seeds the two flags once at
+//    startup - the hook only ever learns a key is up from an event, so a Ctrl
+//    already held when the helper starts would otherwise stay stuck false.
 
 #ifndef UNICODE
 #define UNICODE
@@ -51,8 +54,10 @@
 #include <io.h>
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
 #include <iterator>
 #include <mutex>
@@ -279,6 +284,15 @@ void PerformCapture() {
                      SRCCOPY | CAPTUREBLT);
   }
 
+  // Unselect BEFORE encoding. GDI batches drawing per thread, and an HBITMAP
+  // that is still selected into a DC may have writes outstanding that GDI+
+  // never sees - `Gdiplus::Bitmap(HBITMAP, ...)` reads the bits directly and
+  // does not flush for you. The result is a torn or blank PNG on a machine
+  // fast enough to reach the encode before the batch drains. SelectObject of
+  // the previous object flushes the DC and hands the bitmap back, which is the
+  // supported way to read it.
+  SelectObject(memory_dc, previous);
+
   bool saved = false;
   std::wstring destination;
   if (printed) {
@@ -291,7 +305,6 @@ void PerformCapture() {
     }
   }
 
-  SelectObject(memory_dc, previous);
   DeleteObject(bitmap);
   DeleteDC(memory_dc);
   ReleaseDC(nullptr, screen_dc);
@@ -333,12 +346,29 @@ void PerformCapture() {
 
 /* ───────────────────────────── stdin ───────────────────────────── */
 
+/**
+ * True when the line really is `{"type": <type>}` - not merely a line that
+ * mentions both somewhere.
+ *
+ * A bare substring search anywhere after the key matched `{"type":"settings",
+ * "note":"\"quit\""}` as a quit, so one crafted or simply chatty field ended
+ * the helper. The value has to follow the key and its colon immediately, with
+ * only whitespace between, which is the whole grammar the host ever emits.
+ */
 bool JsonHasType(const std::string& line, const char* type) {
   const std::string needle = std::string("\"type\"");
-  const size_t key = line.find(needle);
-  if (key == std::string::npos) return false;
-  const size_t value = line.find(type, key);
-  return value != std::string::npos;
+  size_t key = line.find(needle);
+  while (key != std::string::npos) {
+    size_t cursor = key + needle.size();
+    while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor]))) cursor += 1;
+    if (cursor < line.size() && line[cursor] == ':') {
+      cursor += 1;
+      while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor]))) cursor += 1;
+      if (line.compare(cursor, std::strlen(type), type) == 0) return true;
+    }
+    key = line.find(needle, key + needle.size());
+  }
+  return false;
 }
 
 void ReadCommands() {
@@ -361,6 +391,12 @@ void ReadCommands() {
         PostThreadMessage(g_main_thread_id, kMsgCapture, 0, 0);
       } else if (JsonHasType(line, "\"settings\"")) {
         g_enabled.store(line.find("\"enabled\":false") == std::string::npos);
+        // Clear the half-state too, not just the chord latch. The hook only
+        // ever learns a key is UP from an event, so a Ctrl held across a
+        // disable/enable leaves its flag stuck down and the very next press of
+        // the OTHER Ctrl fires a capture the user never chorded.
+        g_left_ctrl_down.store(false);
+        g_right_ctrl_down.store(false);
         g_chord_engaged.store(false);
       }
     }
@@ -408,6 +444,15 @@ int main() {
   // the captured bitmap of a window on a scaled display is blurry and the
   // bounds we report do not match what the user saw.
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+  // Seed both latches from the real keyboard state (see note 3 at the top).
+  // They start false and the hook only observes transitions, so a user already
+  // holding a Ctrl when the helper starts - which is how it starts: ADE
+  // launches it while the user is typing - has that side stuck false until
+  // they release and press it again, and the chord silently does not work.
+  g_left_ctrl_down.store((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0);
+  g_right_ctrl_down.store((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+  g_chord_engaged.store(g_left_ctrl_down.load() && g_right_ctrl_down.load());
 
   g_keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
                                       GetModuleHandleW(nullptr), 0);

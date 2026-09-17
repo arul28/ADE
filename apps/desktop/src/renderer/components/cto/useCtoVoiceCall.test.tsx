@@ -282,6 +282,41 @@ describe("local barge-in", () => {
   });
 
   /**
+   * A barge-in the server never confirmed must not mute the call forever.
+   *
+   * Two loud non-speech frames mid-`speaking` — a door, a cough into the desk —
+   * set the latch with no VAD event behind them, and nothing then changes the
+   * phase. Without a deadline the rest of that answer and every answer after it
+   * is silently dropped.
+   */
+  it("stops discarding output once a barge-in the server never saw expires", () => {
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(10_000);
+
+    playVoiceChunk(OUTPUT_CHUNK);
+    noteLocalBargeIn(1);
+    noteLocalBargeIn(1);
+    expect(voicePlaybackActive()).toBe(false);
+
+    // Still inside the window: the queue built before the user spoke is exactly
+    // what the flush was for.
+    now.mockReturnValue(11_400);
+    playVoiceChunk(OUTPUT_CHUNK);
+    expect(voicePlaybackActive()).toBe(false);
+
+    now.mockReturnValue(11_600);
+    playVoiceChunk(OUTPUT_CHUNK);
+    expect(voicePlaybackActive()).toBe(true);
+  });
+
+  /** A chunk that will not decode is a gap in one answer, not a mute call. */
+  it("drops a malformed chunk instead of taking the audio listener down", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(() => playVoiceChunk("not base64 !!!")).not.toThrow();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  /**
    * The flush alone is not enough: the audio pump keeps draining the runtime's
    * queue, and those chunks were generated before the user opened their mouth.
    * Playing them would rebuild the graph a tenth of a second later.

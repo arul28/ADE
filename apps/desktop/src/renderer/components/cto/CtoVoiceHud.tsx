@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useDragControls, useReducedMotion } from "motion/react";
 import { Microphone, MicrophoneSlash, Phone, Warning } from "@phosphor-icons/react";
 
@@ -97,6 +97,41 @@ function LevelMeter({ level, phase, interrupted }: { level: number; phase: CtoVo
   );
 }
 
+/**
+ * One caption bubble, in two tones.
+ *
+ * `final` is something that was said; `pending` is what the transcriber is
+ * still revising, dimmer and italic so it does not read as a fact. They were
+ * two copies of the same bubble, which is how the finished line and the live
+ * one drifted apart by a padding value.
+ */
+function CaptionBubble({
+  tone,
+  testId,
+  colour,
+  children,
+}: {
+  tone: "final" | "pending";
+  testId: string;
+  colour: string;
+  children: React.ReactNode;
+}) {
+  const pending = tone === "pending";
+  return (
+    <div
+      className={`max-w-[420px] rounded-xl px-3 py-1.5 text-[11px] leading-snug${pending ? " italic" : ""}`}
+      style={{
+        background: pending ? "rgba(10,9,14,0.78)" : "rgba(10,9,14,0.94)",
+        border: `1px solid ${COLORS.borderMuted}`,
+        color: colour,
+      }}
+      data-testid={testId}
+    >
+      {children}
+    </div>
+  );
+}
+
 function ConfirmationStrip({
   confirmation,
   onApprove,
@@ -106,9 +141,16 @@ function ConfirmationStrip({
   onApprove: () => void;
   onDeny: () => void;
 }) {
+  // A strip that can authorise a destructive action must be ANNOUNCED, and it
+  // must be where the keyboard already is: it appears with no click behind it,
+  // so a user who is not looking at the corner of the screen would otherwise
+  // have to go hunting for the thing that is waiting on them.
+  const approveRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => { approveRef.current?.focus(); }, [confirmation.id]);
   return (
     <div
       data-testid="cto-voice-confirm"
+      role="alert"
       className="flex flex-col gap-2 rounded-xl px-3 py-2.5"
       style={{
         background: COLORS.cardBgSolid,
@@ -126,6 +168,7 @@ function ConfirmationStrip({
       <div className="flex items-center gap-1.5">
         <button
           type="button"
+          ref={approveRef}
           onClick={onApprove}
           data-testid="cto-voice-confirm-approve"
           className="rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors"
@@ -300,69 +343,76 @@ export function CtoVoiceHud({
           ) : null}
         </AnimatePresence>
 
-        {/* Caption — one line, the most recent thing said. */}
-        <AnimatePresence>
-          {showCaptions && latestCaption ? (
-            <motion.div
-              key={`${latestCaption.role}-${latestCaption.atMs}`}
-              initial={reduced ? false : { opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              className="max-w-[420px] rounded-xl px-3 py-1.5 text-[11px] leading-snug"
-              style={{
-                background: "rgba(10,9,14,0.94)",
-                border: `1px solid ${COLORS.borderMuted}`,
-                color: latestCaption.role === "user" ? COLORS.textSecondary : COLORS.textPrimary,
-              }}
-              data-testid="cto-voice-caption"
-            >
-              {latestCaption.role === "user" ? (
-                <span style={{ color: COLORS.textDim }}>you · </span>
-              ) : null}
-              {latestCaption.text}
-              {/* A response the user talked over stops mid-sentence, and the
-                  transcript is whatever had been said by then. The ellipsis is
-                  the difference between "that is all it said" and "that is
-                  where you cut it off". */}
-              {latestCaption.interrupted ? (
-                <span style={{ color: COLORS.textDim }} data-testid="cto-voice-caption-cut">…</span>
-              ) : null}
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+        {/* The spoken half of the call, announced.
+            Everything a screen reader would otherwise miss is in here: the
+            captions are the only record of what was said, and the phase label
+            below is the only word for what the call is doing. `polite`, not
+            `assertive` — a caption must not interrupt the user's own reader
+            mid-sentence. The wrapper is always mounted, because a live region
+            that appears with its content already in it announces nothing. */}
+        <div
+          aria-live="polite"
+          aria-atomic="false"
+          className="flex w-full flex-col items-end gap-2 empty:hidden"
+          data-testid="cto-voice-captions"
+        >
+          {/* Caption — one line, the most recent thing said. */}
+          <AnimatePresence>
+            {showCaptions && latestCaption ? (
+              <motion.div
+                key={`${latestCaption.role}-${latestCaption.atMs}`}
+                initial={reduced ? false : { opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+              >
+                <CaptionBubble
+                  tone="final"
+                  testId="cto-voice-caption"
+                  colour={latestCaption.role === "user" ? COLORS.textSecondary : COLORS.textPrimary}
+                >
+                  {latestCaption.role === "user" ? (
+                    <span style={{ color: COLORS.textDim }}>you · </span>
+                  ) : null}
+                  {latestCaption.text}
+                  {/* A response the user talked over stops mid-sentence, and the
+                      transcript is whatever had been said by then. The ellipsis is
+                      the difference between "that is all it said" and "that is
+                      where you cut it off". */}
+                  {latestCaption.interrupted ? (
+                    <span style={{ color: COLORS.textDim }} data-testid="cto-voice-caption-cut">…</span>
+                  ) : null}
+                </CaptionBubble>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
 
-        {/* What the user is saying right now, as the transcriber hears it.
-            Dim and italic because it is not yet a fact: it is still being
-            revised. It sits under the captions so the finished line and the
-            one being spoken never swap places. Without it the HUD stayed
-            blank for the seconds a final transcript takes, and the user
-            repeated themselves into a call that had heard them. */}
-        <AnimatePresence>
-          {showCaptions && state.pendingUserText ? (
-            <motion.div
-              key="pending-user-text"
-              initial={reduced ? false : { opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              className="max-w-[420px] rounded-xl px-3 py-1.5 text-[11px] italic leading-snug"
-              style={{
-                background: "rgba(10,9,14,0.78)",
-                border: `1px solid ${COLORS.borderMuted}`,
-                color: COLORS.textDim,
-              }}
-              data-testid="cto-voice-pending-caption"
-            >
-              <span>you · </span>
-              {state.pendingUserText}
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+          {/* What the user is saying right now, as the transcriber hears it.
+              It sits under the captions so the finished line and the one being
+              spoken never swap places. Without it the HUD stayed blank for the
+              seconds a final transcript takes, and the user repeated themselves
+              into a call that had heard them. */}
+          <AnimatePresence>
+            {showCaptions && state.pendingUserText ? (
+              <motion.div
+                key="pending-user-text"
+                initial={reduced ? false : { opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+              >
+                <CaptionBubble tone="pending" testId="cto-voice-pending-caption" colour={COLORS.textDim}>
+                  <span>you · </span>
+                  {state.pendingUserText}
+                </CaptionBubble>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+        </div>
 
-        {/* The pill. Nothing below it: the failure sentence used to hang off
-            the bottom of this stack, outside every border the HUD draws, and
-            landed on the composer's icon row. The reason for a failed call is
-            the page's to tell, under the CTO header, where there is a line's
-            worth of room for it. */}
+        {/* The pill, and nothing below it. A sentence hung off the bottom of
+            this stack sits outside every border the HUD draws and lands on the
+            composer's icon row; the reason for a failed call is the page's to
+            tell, under the CTO header, where there is a line's worth of room
+            for it. */}
         <div
           onPointerDown={(event) => dragControls.start(event)}
           className="flex items-center gap-2.5 rounded-full py-1.5 pl-3 pr-1.5"
@@ -377,8 +427,12 @@ export function CtoVoiceHud({
           <LevelMeter level={state.inputLevel} phase={state.phase} interrupted={state.interrupted} />
 
           <div className="flex min-w-0 max-w-[180px] flex-col leading-none">
+            {/* The only word for what the call is doing, and the meter beside
+                it is `aria-hidden` — so this is the one that has to speak. */}
             <span
               className="truncate text-[11px] font-medium"
+              aria-live="polite"
+              data-testid="cto-voice-phase-label"
               style={{ color: COLORS.textPrimary }}
             >
               {PHASE_LABEL[state.phase]}

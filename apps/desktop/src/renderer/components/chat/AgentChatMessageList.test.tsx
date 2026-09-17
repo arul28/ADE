@@ -5976,6 +5976,18 @@ describe("AgentChatMessageList voice calls", () => {
     expect(rows.textContent).toContain("fix the first one");
   });
 
+  /** The caret is the one thing in the row that LOOKS like a toggle. */
+  it("expands from the caret, not only from the title", () => {
+    renderMessageList(callEvents);
+
+    const caret = screen.getByTestId("voice-call-caret");
+    expect(screen.getByRole("button", { expanded: false, name: /Voice call/ }).contains(caret)).toBe(true);
+
+    fireEvent.click(caret);
+
+    expect(screen.getByTestId("voice-call-rows")).toBeTruthy();
+  });
+
   it("leaves a transcript with no voice events untouched", () => {
     renderMessageList([
       voiceEnvelope(1, { type: "user_message", text: "typed by hand", deliveryState: "delivered" }),

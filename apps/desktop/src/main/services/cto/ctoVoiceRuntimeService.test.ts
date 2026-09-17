@@ -8,15 +8,15 @@ import {
   isVoiceCallLive,
   type CtoVoiceState,
 } from "../../../shared/types/ctoVoice";
+import { createCtoVoiceRuntimeService } from "./ctoVoiceRuntimeService";
 import {
   buildCtoVoiceContext,
-  createCtoVoiceRuntimeService,
+  buildVoiceSceneContract,
   describeVoiceActiveWork,
   readVoiceTodayLog,
   splitSpokenSceneAnswer,
   voiceRequestAsksForVisual,
-  buildVoiceSceneContract,
-} from "./ctoVoiceRuntimeService";
+} from "./ctoVoiceContext";
 import {
   createFakeSocket,
   createVoiceRuntimeHost,
@@ -432,6 +432,47 @@ describe("createCtoVoiceRuntimeService", () => {
     expect(drained.chunks).toEqual([]);
     // Cancelled, not lost: the owner is not told audio went missing.
     expect(drained.dropped).toBe(0);
+    voice.dispose();
+  });
+
+  /**
+   * The drop happens on the false→true EDGE, which is the whole reason the call
+   * service has to let the flag fall back between utterances. It used to stick
+   * true after a failed transcription, and every barge-in after that one
+   * drained nothing at all: the CTO carried on over the user with an answer
+   * that was already in the queue.
+   */
+  it("drops queued audio on the SECOND barge-in too", async () => {
+    const fake = createFakeSocket();
+    const { host } = createVoiceRuntimeHost();
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => fake.socket,
+    });
+
+    await voice.start({ ownerToken: "owner-1" });
+    fake.open();
+    fake.receive({ type: "session.created", session: { id: "sess_1" } });
+
+    fake.receive({ type: "response.created", response: { id: "resp_1" } });
+    fake.receive({ type: "response.output_audio.delta", delta: "AAAA" });
+    fake.receive({ type: "input_audio_buffer.speech_started" });
+    expect(voice.pullAudio({ ownerToken: "owner-1" }).chunks).toEqual([]);
+
+    // The transcript never arrives — this is the path that used to latch.
+    fake.receive({
+      type: "conversation.item.input_audio_transcription.failed",
+      error: { message: "audio was unintelligible" },
+    });
+    expect(voice.getState().interrupted).toBe(false);
+
+    // A second answer, and a second barge-in over it.
+    fake.receive({ type: "response.created", response: { id: "resp_2" } });
+    fake.receive({ type: "response.output_audio.delta", delta: "BBBB" });
+    fake.receive({ type: "input_audio_buffer.speech_started" });
+
+    expect(voice.getState().interrupted).toBe(true);
+    expect(voice.pullAudio({ ownerToken: "owner-1" }).chunks).toEqual([]);
     voice.dispose();
   });
 

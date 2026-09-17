@@ -1,6 +1,8 @@
 import { vi } from "vitest";
 
 import type { BufferedEvent } from "../../../../../ade-cli/src/eventBuffer";
+import type { CtoVoiceState } from "../../../shared/types/ctoVoice";
+import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import type { CtoVoiceSocket } from "./ctoVoiceCallService";
 import type { CtoVoiceRuntimeHost } from "./ctoVoiceRuntimeService";
 
@@ -97,4 +99,75 @@ export function createVoiceRuntimeHost(overrides: Partial<CtoVoiceRuntimeHost> =
   };
   hostEvents.set(host, pushed);
   return { host, pushed };
+}
+
+/**
+ * The runtime connection pool, as the voice router uses it.
+ *
+ * Typed against the real `LocalRuntimeConnectionPool` in ONE place. The router
+ * touches two of its methods, and every test that exercises the runtime path
+ * used to hand-roll both and cast the result with `as unknown as` — nineteen
+ * casts, each one a place where a change to the pool's shape goes unnoticed
+ * because the cast says it is fine.
+ *
+ * `onAction` decides one action's `result`; the envelope around it is the
+ * pool's business, not the test's. Whatever it throws reaches the caller, which
+ * is how a runtime that has gone away is spelled.
+ */
+export function createFakeRuntimePool(options: {
+  onAction?: (request: {
+    action: string;
+    args: Record<string, unknown>;
+  }) => unknown;
+  /** Called when the router subscribes; whatever it returns is the release. */
+  onSubscribe?: () => (() => void) | void;
+} = {}) {
+  /** Every action the router asked for, in order. */
+  const actions: string[] = [];
+  let onEvent: ((event: { payload: Record<string, unknown> }) => void) | null = null;
+  let onEnded: (() => void) | null = null;
+
+  const callActionForRoot = vi.fn(async (
+    _root: string,
+    request: { domain: string; action: string; args?: unknown },
+  ) => {
+    actions.push(request.action);
+    const args = (request.args ?? {}) as Record<string, unknown>;
+    const result = options.onAction
+      ? await options.onAction({ action: request.action, args })
+      // The two defaults a call needs to come up: every action succeeds, and
+      // the audio drain hands back nothing.
+      : request.action === "pullAudio"
+        ? { ok: true, chunks: [], dropped: 0 }
+        : { ok: true };
+    return { domain: request.domain, action: request.action, result, statusHints: {} };
+  });
+
+  const subscribeEventsForRoot = vi.fn(async (
+    _root: string,
+    _request: unknown,
+    handler: (event: { payload: Record<string, unknown> }) => void,
+    ended?: () => void,
+  ) => {
+    onEvent = handler;
+    onEnded = ended ?? null;
+    return options.onSubscribe?.() ?? (() => {});
+  });
+
+  return {
+    pool: { callActionForRoot, subscribeEventsForRoot } as unknown as LocalRuntimeConnectionPool,
+    callActionForRoot,
+    subscribeEventsForRoot,
+    actions,
+    /** One event from the runtime's `cto_voice` category. */
+    emit: (payload: Record<string, unknown>) => { onEvent?.({ payload }); },
+    /** The shape every voice event has. */
+    emitState: (state: CtoVoiceState) => {
+      onEvent?.({ payload: { type: "cto_voice_state", state } });
+    },
+    /** The event stream itself ended: the brain recycled or died. */
+    endStream: () => { onEnded?.(); },
+    /** True once the router has subscribed. */
+    isSubscribed: () => onEvent !== null,
+  };
 }

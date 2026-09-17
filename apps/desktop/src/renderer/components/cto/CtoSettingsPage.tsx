@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ClockCounterClockwise,
@@ -315,17 +315,17 @@ export type CtoSettingsPageProps = {
   onFastModeChange: (enabled: boolean) => void;
   onOpenProviderSettings: () => void;
   /**
-   * Every field on this page is one field of the CTO's identity, voice
-   * included, and they all go to `cto.updateIdentity`. Two props pointed at
-   * the same handler only made it look as though there were two ways in.
-   */
-  /**
    * Retire the live thread and open a new one, hand-off and all.
    *
    * A prop rather than a `window.ade` call inside the page, the way every
    * other action here is: `CtoPage` owns the bridge and this page draws.
    */
   onStartFreshSession?: () => Promise<CtoStartFreshSessionResult>;
+  /**
+   * Every field on this page is one field of the CTO's identity, voice
+   * included, and they all go to `cto.updateIdentity`. Two props pointed at
+   * the same handler only made it look as though there were two ways in.
+   */
   onIdentityChange: (patch: {
     name?: string;
     systemPromptExtension?: string;
@@ -356,6 +356,38 @@ export function CtoSettingsPage({
   const [extra, setExtra] = useState(identity?.systemPromptExtension ?? "");
   const savedRef = useRef({ name: identity?.name ?? "", extra: identity?.systemPromptExtension ?? "" });
   const dirty = name !== savedRef.current.name || extra !== savedRef.current.extra;
+
+  /**
+   * The identity arrives after the page does.
+   *
+   * `CtoPage` draws the gear before the snapshot lands, so this page can mount
+   * with `identity` null — and seeding these fields in the initializers alone
+   * meant Save then wrote an empty `systemPromptExtension` over real standing
+   * instructions. The same happens when the identity changes underneath an open
+   * page, which it does when the phone edits it.
+   *
+   * Per field, not per page: a field the user has not touched follows the
+   * identity, and a field with unsaved edits in it keeps them. `liveRef` is how
+   * the effect reads today's values without depending on them — depending on
+   * them would re-run it on every keystroke.
+   */
+  const liveRef = useRef({ name, extra });
+  liveRef.current = { name, extra };
+  useEffect(() => {
+    const nextName = identity?.name ?? "";
+    const nextExtra = identity?.systemPromptExtension ?? "";
+    const saved = savedRef.current;
+    const nameClean = liveRef.current.name === saved.name;
+    const extraClean = liveRef.current.extra === saved.extra;
+    if (nameClean) setName(nextName);
+    if (extraClean) setExtra(nextExtra);
+    // A dirty field keeps its old baseline, so it stays dirty and Save stays
+    // live; a clean one adopts the new value and has nothing to save.
+    savedRef.current = {
+      name: nameClean ? nextName : saved.name,
+      extra: extraClean ? nextExtra : saved.extra,
+    };
+  }, [identity?.name, identity?.systemPromptExtension]);
 
   /** A model is actually configured, so there are facts worth printing. */
   const modelReady = !loadingModels && availableModelIds.length > 0;

@@ -191,11 +191,21 @@ export function parseCaptureHelperOutput(line: string): CaptureHelperOutput | nu
 /* ────────────────────────── presentation ────────────────────────── */
 
 /**
+ * The macOS remedy, once.
+ *
+ * Two surfaces tell the user this — the refusal a capture returns and the
+ * health card in Settings — and they were two sentences saying the same thing
+ * in different words, which reads as two different problems.
+ */
+export const MAC_OS_SCREEN_RECORDING_REMEDY =
+  "Grant Screen Recording to ADE in System Settings › Privacy & Security › Screen Recording, then restart ADE.";
+
+/**
  * What the capture-gesture IPC answers when no supervisor exists — a runtime
  * mode that never built one, or a platform with no helper. Deliberately the
  * same verdict `captureGestureHealth()` returns for an unsupported platform.
  *
- * It lived in two files. They matched, and nothing kept them matching.
+ * One constant, because two copies of a verdict are two verdicts.
  */
 export const UNAVAILABLE_CAPTURE_GESTURE_HEALTH: CaptureGestureHealth = {
   state: "unsupported",
@@ -214,7 +224,7 @@ export const UNAVAILABLE_CAPTURE_GESTURE_HEALTH: CaptureGestureHealth = {
  */
 function permissionDeniedMessageFor(platform: string): string {
   if (platform === "darwin") {
-    return "ADE needs Screen Recording permission to capture a window. Grant it in System Settings › Privacy & Security › Screen Recording, then restart ADE.";
+    return `ADE needs Screen Recording permission to capture a window. ${MAC_OS_SCREEN_RECORDING_REMEDY}`;
   }
   if (platform === "win32") {
     return "Windows refused the keyboard hook the gesture needs. This is usually endpoint security or a group policy; ADE cannot grant it for you.";
@@ -297,7 +307,7 @@ export function captureGestureHealth(input: CaptureHealthInput): CaptureGestureH
       state: "permission_denied",
       title: "ADE can’t record the screen",
       message: input.platform === "darwin"
-        ? "Grant Screen Recording to ADE in System Settings › Privacy & Security, then restart ADE."
+        ? MAC_OS_SCREEN_RECORDING_REMEDY
         : "Windows refused the screen capture. Restart ADE and try again.",
       recovery: "grant_permission",
     };

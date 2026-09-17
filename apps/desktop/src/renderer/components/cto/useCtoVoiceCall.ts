@@ -5,7 +5,9 @@ import {
   CTO_VOICE_CAPTURE_DEFAULT_NOTE,
   CTO_VOICE_CAPTURE_EVENT,
   CTO_VOICE_INITIAL_STATE,
+  CTO_VOICE_LOCAL_BARGE_IN_FRAMES,
   CTO_VOICE_LOCAL_BARGE_IN_LEVEL,
+  CTO_VOICE_LOCAL_BARGE_IN_RELEASE_MS,
   CTO_VOICE_SAMPLE_RATE,
   ctoVoiceMicrophoneMessage,
   isVoiceCallLive,
@@ -149,10 +151,8 @@ let mediaStream: MediaStream | null = null;
 let processor: ScriptProcessorNode | null = null;
 let playbackContext: AudioContext | null = null;
 let playbackAt = 0;
-/**
- * Frames in a row over {@link CTO_VOICE_LOCAL_BARGE_IN_LEVEL} while the CTO is
- * talking. Two, not one: a single transient is a door, a chair or a key press.
- */
+
+/** Frames in a row over the level, counted against {@link CTO_VOICE_LOCAL_BARGE_IN_FRAMES}. */
 let loudFramesWhileSpeaking = 0;
 /**
  * True from a local barge-in until the main process pushes its next state.
@@ -163,6 +163,8 @@ let loudFramesWhileSpeaking = 0;
  * over the user.
  */
 let bargedInAtPhase: CtoVoiceStatePayload["phase"] | null = null;
+/** When that latch was set, so a barge-in the server never saw expires. */
+let bargedInAtMs = 0;
 
 /** Float32 [-1,1] → PCM16 little-endian, the format the session negotiated. */
 function floatToPcm16(input: Float32Array): Uint8Array {
@@ -338,6 +340,10 @@ async function startCapture() {
 }
 
 function stopCapture() {
+  // Cleared before the node is dropped: `disconnect` does not guarantee the
+  // handler will not run once more, and one more frame after teardown pushes
+  // audio into a call that is over.
+  if (processor) processor.onaudioprocess = null;
   processor?.disconnect();
   processor = null;
   mediaStream?.getTracks().forEach((track) => track.stop());
@@ -376,42 +382,83 @@ export function noteLocalBargeIn(peak: number): void {
     return;
   }
   loudFramesWhileSpeaking += 1;
-  if (loudFramesWhileSpeaking < 2) return;
+  if (loudFramesWhileSpeaking < CTO_VOICE_LOCAL_BARGE_IN_FRAMES) return;
   loudFramesWhileSpeaking = 0;
   bargedInAtPhase = state.phase;
+  bargedInAtMs = Date.now();
   flushVoicePlayback();
+}
+
+/**
+ * Is output still being discarded because of a local barge-in?
+ *
+ * The deadline is checked here rather than on a timer: nothing needs to happen
+ * when it passes except the next chunk being allowed through, and a timer would
+ * have to be cancelled on every phase change, hang-up and unmount.
+ */
+function bargeInStillHolding(): boolean {
+  if (bargedInAtPhase === null) return false;
+  if (Date.now() - bargedInAtMs < CTO_VOICE_LOCAL_BARGE_IN_RELEASE_MS) return true;
+  bargedInAtPhase = null;
+  return false;
+}
+
+/**
+ * Close a playback context, one at a time.
+ *
+ * Serialized because a barge-in closes a context and the very next chunk opens
+ * another, and a document may only have so many: firing the close and forgetting
+ * it left the old ones closing in parallel with the new ones opening, and the
+ * limit is reached by a call with enough interruptions in it.
+ */
+let playbackClosing: Promise<void> = Promise.resolve();
+
+function closePlayback(context: AudioContext | null): void {
+  if (!context) return;
+  // A context closed twice, or closed while a node is still scheduled on it,
+  // rejects; neither is worth a sentence, and neither may break the flush.
+  playbackClosing = playbackClosing.then(() => context.close()).catch(() => {});
 }
 
 /** Queue an output chunk so consecutive deltas play gaplessly. */
 export function playVoiceChunk(base64: string) {
   // Everything already in the runtime's queue was generated before the user
   // started talking, so playing it is exactly the thing the barge-in stopped.
-  if (bargedInAtPhase !== null) return;
-  if (!playbackContext) {
-    playbackContext = new AudioContext({ sampleRate: CTO_VOICE_SAMPLE_RATE });
-    playbackAt = playbackContext.currentTime;
+  if (bargeInStillHolding()) return;
+  // This runs straight off an IPC push, so nothing catches what it throws:
+  // `atob` throws on a malformed chunk and `new AudioContext` throws once a
+  // document has opened too many. A dropped chunk is a gap in one answer; an
+  // uncaught throw here takes the listener with it and the call goes mute.
+  try {
+    if (!playbackContext) {
+      playbackContext = new AudioContext({ sampleRate: CTO_VOICE_SAMPLE_RATE });
+      playbackAt = playbackContext.currentTime;
+    }
+    const binary = atob(base64);
+    const samples = binary.length / 2;
+    const buffer = playbackContext.createBuffer(1, samples, CTO_VOICE_SAMPLE_RATE);
+    const channel = buffer.getChannelData(0);
+    for (let i = 0; i < samples; i += 1) {
+      const lo = binary.charCodeAt(i * 2);
+      const hi = binary.charCodeAt(i * 2 + 1);
+      const value = (hi << 8) | lo;
+      channel[i] = (value >= 0x8000 ? value - 0x10000 : value) / 0x8000;
+    }
+    const node = playbackContext.createBufferSource();
+    node.buffer = buffer;
+    node.connect(playbackContext.destination);
+    playbackAt = Math.max(playbackAt, playbackContext.currentTime);
+    node.start(playbackAt);
+    playbackAt += buffer.duration;
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn("[cto-voice] output chunk dropped", error);
   }
-  const binary = atob(base64);
-  const samples = binary.length / 2;
-  const buffer = playbackContext.createBuffer(1, samples, CTO_VOICE_SAMPLE_RATE);
-  const channel = buffer.getChannelData(0);
-  for (let i = 0; i < samples; i += 1) {
-    const lo = binary.charCodeAt(i * 2);
-    const hi = binary.charCodeAt(i * 2 + 1);
-    const value = (hi << 8) | lo;
-    channel[i] = (value >= 0x8000 ? value - 0x10000 : value) / 0x8000;
-  }
-  const node = playbackContext.createBufferSource();
-  node.buffer = buffer;
-  node.connect(playbackContext.destination);
-  playbackAt = Math.max(playbackAt, playbackContext.currentTime);
-  node.start(playbackAt);
-  playbackAt += buffer.duration;
 }
 
 /** Drop anything still queued. Barge-in has to stop the voice immediately. */
 export function flushVoicePlayback() {
-  void playbackContext?.close();
+  closePlayback(playbackContext);
   playbackContext = null;
   playbackAt = 0;
   loudFramesWhileSpeaking = 0;
@@ -420,6 +467,7 @@ export function flushVoicePlayback() {
 /** Test seam: forget a local barge-in without waiting for a pushed state. */
 export function resetLocalBargeIn(): void {
   bargedInAtPhase = null;
+  bargedInAtMs = 0;
   loudFramesWhileSpeaking = 0;
 }
 

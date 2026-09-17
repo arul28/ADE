@@ -3,8 +3,10 @@ import { CTO_VOICE_VOICES } from "../../../shared/types/ctoVoice";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import YAML from "yaml";
+import { CTO_IDENTITY_SCHEMA_VERSION } from "../../../shared/types/cto";
 import type {
   CtoIdentity,
+  CtoLegacyIdentityFields,
   CtoOnboardingState,
   CtoSessionLogEntry,
   CtoSnapshot,
@@ -85,6 +87,58 @@ const CTO_CURRENT_CONTEXT_RELATIVE_PATH = ".ade/cto/CURRENT.md";
 
 /** The envelope a user turn writes. Matched as text; see `countUserTurns`. */
 const USER_MESSAGE_MARKER = '"type":"user_message"';
+
+/**
+ * Is this transcript line a user turn, rather than a line that merely mentions
+ * one? Parsed only after the cheap marker test has already matched, and a line
+ * that will not parse is not an envelope, so it is not a turn.
+ */
+function isUserTurnLine(line: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(line);
+    return !!parsed
+      && typeof parsed === "object"
+      && (parsed as { type?: unknown }).type === "user_message";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Count `user_message` envelopes without holding the transcript in memory.
+ *
+ * A carry buffer stitches lines across chunk boundaries; the trailing partial
+ * line is counted too, because a transcript written by a process that is still
+ * running may have no final newline yet.
+ */
+function countUserTurnsInTranscript(transcriptPath: string): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const stream = fs.createReadStream(transcriptPath, { encoding: "utf8" });
+    let carry = "";
+    let count = 0;
+    const consume = (line: string): void => {
+      if (!line.includes(USER_MESSAGE_MARKER)) return;
+      if (isUserTurnLine(line)) count += 1;
+    };
+    stream.on("data", (chunk) => {
+      carry += chunk;
+      let newlineAt = carry.indexOf("\n");
+      while (newlineAt !== -1) {
+        consume(carry.slice(0, newlineAt));
+        carry = carry.slice(newlineAt + 1);
+        newlineAt = carry.indexOf("\n");
+      }
+    });
+    stream.on("error", (error) => {
+      stream.destroy();
+      reject(error);
+    });
+    stream.on("end", () => {
+      if (carry.length) consume(carry);
+      resolve(count);
+    });
+  });
+}
 
 /** A transcript larger than this is not counted; a close must not stall. */
 const TRANSCRIPT_SCAN_MAX_BYTES = 32 * 1024 * 1024;
@@ -400,6 +454,77 @@ function normalizeModelPreferences(raw: Record<string, unknown>): CtoIdentity["m
   };
 }
 
+/**
+ * Carry the retired identity fields into the extension the CTO still reads.
+ *
+ * `personality`, `customPersonality`, `communicationStyle` and `constraints`
+ * were removed from `CtoIdentity` in favour of one freeform
+ * `systemPromptExtension`. Nothing migrated them, and because `normalizeIdentity`
+ * drops unknown keys and the very next `writeIdentityToFile` rewrites
+ * identity.yaml from the normalized record, the first load of an older project
+ * DELETED them — including `constraints`, a list the CTO itself could write.
+ * Text a user (or the CTO) wrote must not vanish because a field was renamed,
+ * so it is appended below whatever extension already exists.
+ *
+ * Runs once: the fold only fires while the stored `schemaVersion` is below
+ * `CTO_IDENTITY_SCHEMA_VERSION`, and the normalized record always carries that
+ * version afterwards, so a second load re-reads its own output and appends
+ * nothing.
+ */
+function foldLegacyIdentityFields(
+  source: Record<string, unknown>,
+  systemPromptExtension: string | undefined,
+): string | undefined {
+  const legacy = source as CtoLegacyIdentityFields;
+
+  const constraints = Array.isArray(legacy.constraints)
+    ? legacy.constraints
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter((value) => value.length > 0)
+    : [];
+
+  const personality = typeof legacy.personality === "string" ? legacy.personality.trim() : "";
+  const customPersonality = typeof legacy.customPersonality === "string"
+    ? legacy.customPersonality.trim()
+    : "";
+  const style = legacy.communicationStyle && typeof legacy.communicationStyle === "object"
+    ? legacy.communicationStyle
+    : null;
+  const styleParts = [
+    typeof style?.verbosity === "string" && style.verbosity.trim().length
+      ? `verbosity ${style.verbosity.trim()}`
+      : null,
+    typeof style?.proactivity === "string" && style.proactivity.trim().length
+      ? `proactivity ${style.proactivity.trim()}`
+      : null,
+    typeof style?.escalation === "string" && style.escalation.trim().length
+      ? `escalation ${style.escalation.trim()}`
+      : null,
+  ].filter((part): part is string => part != null);
+
+  const carried: string[] = [];
+  if (constraints.length) {
+    carried.push("Constraints:");
+    for (const constraint of constraints) carried.push(`- ${constraint}`);
+  }
+  // "custom" named no preset of its own — the text lived in `customPersonality`,
+  // which is carried on its own line — so a bare "custom" is nothing to keep.
+  if (personality.length && personality !== "custom") {
+    carried.push(`- Personality preset: ${personality}`);
+  }
+  if (customPersonality.length) {
+    carried.push(`- Personality: ${customPersonality}`);
+  }
+  if (styleParts.length) {
+    carried.push(`- Communication style: ${styleParts.join(", ")}`);
+  }
+
+  if (!carried.length) return systemPromptExtension;
+
+  const block = ["Carried over from an earlier CTO identity:", ...carried].join("\n");
+  return systemPromptExtension ? `${systemPromptExtension}\n\n${block}` : block;
+}
+
 function normalizeIdentity(input: unknown): CtoIdentity | null {
   if (!input || typeof input !== "object") return null;
   const source = input as Record<string, unknown>;
@@ -416,10 +541,14 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
       ? (source.modelPreferences as Record<string, unknown>)
       : {};
   const onboardingState = normalizeOnboardingState(source.onboardingState);
-  const systemPromptExtension =
+  const storedExtension =
     typeof source.systemPromptExtension === "string" && source.systemPromptExtension.trim().length
       ? source.systemPromptExtension.trim()
       : undefined;
+  const schemaVersion = Math.max(1, Math.floor(Number(source.schemaVersion ?? 1)));
+  const systemPromptExtension = schemaVersion < CTO_IDENTITY_SCHEMA_VERSION
+    ? foldLegacyIdentityFields(source, storedExtension)
+    : storedExtension;
 
   // Voice settings are checked against the shipped list rather than trusted: a
   // hand-edited identity.yaml naming a voice OpenAI does not have would fail
@@ -435,6 +564,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
   return {
     name,
     version,
+    schemaVersion: CTO_IDENTITY_SCHEMA_VERSION,
     persona,
     ...(systemPromptExtension ? { systemPromptExtension } : {}),
     modelPreferences: normalizeModelPreferences(modelPreferencesRaw),
@@ -695,6 +825,7 @@ function makeDefaultIdentity(): CtoIdentity {
   return {
     name: "CTO",
     version: 1,
+    schemaVersion: CTO_IDENTITY_SCHEMA_VERSION,
     persona: "Persistent project CTO for this ADE workspace.",
     modelPreferences: null,
     updatedAt: timestamp,
@@ -844,7 +975,16 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     );
   };
 
-  const reconcileSessionLogs = (): void => {
+  /**
+   * Returns the file half of the log as it stands AFTER reconciliation.
+   *
+   * The caller needs those entries (they carry `turnCount`, which the DB table
+   * has no column for), and this function has just parsed them. Handing them
+   * back means sessions.jsonl is read once per `getSessionLogs` instead of
+   * twice — the file grows without bound and the second parse produced exactly
+   * the same rows as the first.
+   */
+  const reconcileSessionLogs = (): CtoSessionLogEntry[] => {
     const dbEntries = listSessionLogsFromDb();
     const fileEntries = listSessionLogsFromFile();
     const dbKeySet = new Set(dbEntries.map((entry) => `${entry.sessionId}::${entry.createdAt}`));
@@ -860,23 +1000,30 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     for (const entry of dbEntries) {
       const key = `${entry.sessionId}::${entry.createdAt}`;
       if (fileKeySet.has(key)) continue;
-      appendSessionLogToFile(entry);
+      fileEntries.push(appendSessionLogToFile(entry));
       fileKeySet.add(key);
     }
+
+    return fileEntries;
   };
 
-  const reconcileAll = (): CtoIdentity => {
+  type ReconciledState = {
+    identity: CtoIdentity;
+    /** The file half of the session log, already parsed by the reconcile. */
+    sessionLogsFromFile: CtoSessionLogEntry[];
+  };
+
+  const reconcileAll = (): ReconciledState => {
     const identity = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
     writeIdentityToFile(identity);
     writeIdentityToDb(identity);
-    reconcileSessionLogs();
-    return identity;
+    return { identity, sessionLogsFromFile: reconcileSessionLogs() };
   };
 
-  const getIdentity = (): CtoIdentity => reconcileAll();
+  const getIdentity = (): CtoIdentity => reconcileAll().identity;
 
   const getSessionLogs = (limit = 20): CtoSessionLogEntry[] => {
-    reconcileAll();
+    const { sessionLogsFromFile } = reconcileAll();
     const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     // The turn count lives in the append-only file half of this log, not in
     // `cto_session_logs` — that table's columns are fixed in the schema and a
@@ -884,7 +1031,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     // and in what order; the file only says how many turns each one had, keyed
     // the way `reconcileSessionLogs` keys them.
     const turnsByKey = new Map<string, number>();
-    for (const entry of listSessionLogsFromFile()) {
+    for (const entry of sessionLogsFromFile) {
       if (typeof entry.turnCount === "number") {
         turnsByKey.set(`${entry.sessionId}::${entry.createdAt}`, entry.turnCount);
       }
@@ -921,7 +1068,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   };
 
   const getSnapshot = (recentLimit = 20): CtoSnapshot => {
-    const identity = reconcileAll();
+    const { identity } = reconcileAll();
     return {
       identity,
       recentSessions: getSessionLogs(recentLimit),
@@ -974,15 +1121,23 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
    * recognise. One indexed row for the path, then one pass counting
    * `user_message` envelopes.
    *
-   * Counted by matching the line rather than parsing it: a transcript line can
-   * be tens of kilobytes of tool output, and `JSON.parse` on every one of them
-   * to read a type field is work this does not need to do. Bounded by
-   * `TRANSCRIPT_SCAN_MAX_BYTES` so a runaway transcript cannot stall a close.
+   * The marker is a PRE-FILTER, not the decision. A transcript line can be tens
+   * of kilobytes of tool output, so `JSON.parse` on every line is work this does
+   * not need to do — but a line that merely QUOTES `"type":"user_message"`
+   * (tool output echoing a transcript, an agent pasting an envelope) satisfies
+   * the substring and is not a turn. Only lines that pass the cheap test are
+   * parsed, and only a parsed object whose own `type` is `user_message` counts.
+   *
+   * Read as a stream rather than in one `readFileSync` + `split`: the cap below
+   * allows 32 MB, and the synchronous version held that much as a string plus
+   * an array of every line in it, on the main process, during a session close.
+   * Bounded by `TRANSCRIPT_SCAN_MAX_BYTES` so a runaway transcript cannot stall
+   * a close.
    *
    * Returns null — never 0 — when the transcript is missing or unreadable, so
    * "we do not know" stays distinguishable from "they said nothing".
    */
-  const countUserTurns = (sessionId: string): number | null => {
+  const countUserTurns = async (sessionId: string): Promise<number | null> => {
     try {
       const row = args.db.get<{ transcript_path?: unknown }>(
         `select transcript_path from terminal_sessions where id = ?`,
@@ -992,18 +1147,18 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
       const stat = fs.statSync(transcriptPath);
       if (stat.size > TRANSCRIPT_SCAN_MAX_BYTES) return null;
-      const raw = fs.readFileSync(transcriptPath, "utf8");
-      let count = 0;
-      for (const line of raw.split(/\r?\n/)) {
-        if (line.includes(USER_MESSAGE_MARKER)) count += 1;
-      }
-      return count;
+      return await countUserTurnsInTranscript(transcriptPath);
     } catch {
       return null;
     }
   };
 
-  const appendSessionLog = (entry: AppendCtoSessionLogArgs): CtoSessionLogEntry => {
+  /**
+   * Async because the turn count is read off the transcript as a stream. The
+   * caller must await it: the log row and the derived context doc are written
+   * inside, and a dropped promise would lose both.
+   */
+  const appendSessionLog = async (entry: AppendCtoSessionLogArgs): Promise<CtoSessionLogEntry> => {
     reconcileAll();
     const next: CtoSessionLogEntry = {
       id: randomUUID(),
@@ -1014,7 +1169,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       provider: entry.provider,
       modelId: entry.modelId,
       capabilityMode: entry.capabilityMode,
-      turnCount: countUserTurns(entry.sessionId),
+      turnCount: await countUserTurns(entry.sessionId),
       createdAt: nowIso(),
     };
     insertSessionLogToDb(next);

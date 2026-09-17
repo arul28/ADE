@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { IPC } from "../../../shared/ipc";
-import { ipcChannelRedactionMap, redactIpcArgsForChannel } from "./ipcChannelRedaction";
+import {
+  ipcChannelRedactionMap,
+  redactIpcArgsForChannel,
+  shouldRedactIpcKey,
+} from "./ipcChannelRedaction";
 
 describe("ipc channel redaction", () => {
   // ADE never reads, stores, or logs a provider credential. When Pi asks for an
@@ -19,6 +23,30 @@ describe("ipc channel redaction", () => {
     expect(JSON.stringify(redacted)).not.toContain("sk-ant-not-a-real-key");
     // Non-secret fields must survive or the trace stops being useful.
     expect(redacted).toMatchObject({ providerId: "anthropic", requestId: "req-1" });
+  });
+
+  // The machine-scoped OpenAI key travels as a bare `key` field. It was in
+  // neither gate: the channel was absent from the map, and the generic
+  // field-name guard matched `apikey` but not `key` — so a verbose IPC trace
+  // wrote the user's OpenAI key into the log file verbatim.
+  it("redacts the raw provider credential on both key-store channels", () => {
+    for (const channel of [IPC.aiStoreApiKey, IPC.aiStoreMachineApiKey]) {
+      const [redacted] = redactIpcArgsForChannel(channel, [
+        { provider: "openai", key: "sk-proj-not-a-real-key" },
+      ]) as Array<Record<string, unknown>>;
+      expect(redacted.key).toBe("[redacted]");
+      expect(JSON.stringify(redacted)).not.toContain("sk-proj-not-a-real-key");
+      expect(redacted.provider).toBe("openai");
+    }
+  });
+
+  it("treats a bare `key` field as a secret on any channel", () => {
+    expect(shouldRedactIpcKey("key")).toBe(true);
+    expect(shouldRedactIpcKey("Key")).toBe(true);
+    expect(shouldRedactIpcKey("apiKey")).toBe(true);
+    expect(shouldRedactIpcKey("accessToken")).toBe(true);
+    expect(shouldRedactIpcKey("keyboardShortcut")).toBe(false);
+    expect(shouldRedactIpcKey(undefined)).toBe(false);
   });
 
   it("leaves channels with no declared secrets untouched", () => {

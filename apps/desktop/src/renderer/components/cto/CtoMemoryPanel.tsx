@@ -3,7 +3,7 @@ import { CalendarBlank, NotePencil } from "@phosphor-icons/react";
 
 import type { CtoMemorySnapshot } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { CopyButton, CtoCard, TextBlock, ctoButtonStyle } from "./ctoSettingsUi";
+import { CopyButton, CtoCard, FactRow, TextBlock, ctoButtonStyle } from "./ctoSettingsUi";
 
 /**
  * The CTO's memory, as four things rather than one wall.
@@ -208,25 +208,7 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
           }}
         >
           {MEMORY_PATHS.map((entry) => (
-            <React.Fragment key={entry.path}>
-              <dt style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
-                {entry.label}
-              </dt>
-              <dd
-                style={{
-                  margin: 0,
-                  fontFamily: MONO,
-                  fontSize: 11,
-                  color: COLORS.textSecondary,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-                title={entry.path}
-              >
-                {entry.path}
-              </dd>
-            </React.Fragment>
+            <FactRow key={entry.path} label={entry.label} value={entry.path} mono title={entry.path} />
           ))}
         </dl>
       </CtoCard>

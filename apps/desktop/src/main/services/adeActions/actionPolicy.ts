@@ -116,6 +116,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * agent already has file read access to it, so this gate is not the boundary.
    * `updateMemory` (the rewrite path) stays CTO-only.
    */
+  cto_memory: { allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] },
   /*
    * `startFreshSession` retires the conversation every other CTO surface is
    * talking to and starts a new one. Nothing it touches is destructive — memory,
@@ -126,7 +127,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * fleet already depends on.
    */
   cto_state: { only: ["startFreshSession"] },
-  cto_memory: { allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] },
   /*
    * Fail-closed, with no exceptions at all.
    *

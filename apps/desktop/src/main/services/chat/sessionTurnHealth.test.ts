@@ -10,7 +10,7 @@ import {
   normalizeLastTurnFailure,
   normalizeSessionContextHealth,
   shouldAdviseSessionRotation,
-} from "./agentChatService";
+} from "./sessionTurnHealth";
 
 /**
  * The bookkeeping behind two promises: a CTO voice call is never started on a

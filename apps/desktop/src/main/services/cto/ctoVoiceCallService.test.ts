@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createCtoVoiceCallService,
+  type CtoVoiceApprovalNotice,
+  type CtoVoiceSocket,
+} from "./ctoVoiceCallService";
+import {
   ctoVoiceFrameDurationMs,
   describeCtoVoiceServerError,
   describeCtoVoiceSocketFailure,
   forwardUnexpectedResponse,
-  type CtoVoiceSocket,
-} from "./ctoVoiceCallService";
+} from "./ctoVoiceFailures";
 import {
   CTO_VOICE_END_CALL_AUDIO_TAIL_MS,
   CTO_VOICE_MIN_SPEECH_MS,
@@ -15,7 +18,6 @@ import {
   CTO_VOICE_TRANSCRIBE_LANGUAGE,
   CTO_VOICE_TRANSCRIBE_MODEL,
   CTO_VOICE_TRANSCRIBE_PROMPT,
-  CTO_VOICE_TOOL_NAMES,
   CTO_VOICE_TURN_BURST_COOLDOWN_MS,
   ctoVoiceStatusLine,
   ctoVoiceTranscriptHasSpeech,
@@ -188,7 +190,7 @@ describe("createCtoVoiceCallService", () => {
     const fake = createFakeSocket();
     const { service } = createService({
       createWebSocket: (url: string) => { urls.push(url); return fake.socket; },
-    } as never);
+    });
     await service.start();
     expect(urls).toEqual([`wss://api.openai.com/v1/realtime?model=${CTO_VOICE_MODEL}`]);
   });
@@ -206,7 +208,7 @@ describe("createCtoVoiceCallService", () => {
     const harness = createService({
       voice: () => "cedar",
       context: async () => "Who you are\n- Name: Ada",
-    } as never);
+    });
     await harness.service.start();
     harness.fake.open();
 
@@ -222,8 +224,10 @@ describe("createCtoVoiceCallService", () => {
     // The five functions, and nothing else: everything a call can DO happens on
     // the other side of `ask_cto`.
     expect(update.session.tool_choice).toBe("auto");
+    // Written out rather than compared to a constant: a list checked against
+    // itself agrees with any change, including one that takes a tool away.
     expect((update.session.tools as Array<{ name: string }>).map((tool) => tool.name))
-      .toEqual([...CTO_VOICE_TOOL_NAMES]);
+      .toEqual(["ask_cto", "cancel_work", "approve_pending_action", "deny_pending_action", "end_call"]);
     // The context block rides in the session prompt, so the model can answer
     // "who are you" without a round trip through the CTO thread.
     expect(String(update.session.instructions)).toContain("- Name: Ada");
@@ -331,7 +335,7 @@ describe("createCtoVoiceCallService", () => {
     let contexts = 0;
     const harness = createService({
       context: async () => `Who you are\n- Name: Ada (read ${(contexts += 1)})`,
-    } as never);
+    });
     await openCall(harness);
     expect(harness.fake.sent.filter((message) => message.type === "session.update")).toHaveLength(1);
 
@@ -357,7 +361,7 @@ describe("createCtoVoiceCallService", () => {
         }
         return { spoken: "FRESH" };
       },
-    } as never);
+    });
     await openCall(harness);
     askCto(harness, "the first question", { callId: "call_1" });
     await tick();
@@ -979,7 +983,7 @@ describe("createCtoVoiceCallService", () => {
     const resolved: Array<{ itemId: string; approved: boolean }> = [];
     const harness = createService({
       resolveApproval: async (args: { itemId: string; approved: boolean }) => { resolved.push(args); },
-    } as never);
+    });
     await openCall(harness);
     harness.fake.receive({ type: "input_audio_buffer.speech_started" });
     harness.service.raiseApproval({ itemId: "item-1", toolName: "openPr", prompt: "Open a pull request?" });
@@ -1005,7 +1009,7 @@ describe("createCtoVoiceCallService", () => {
     const resolved: Array<{ itemId: string; approved: boolean }> = [];
     const harness = createService({
       resolveApproval: async (args: { itemId: string; approved: boolean }) => { resolved.push(args); },
-    } as never);
+    });
     await openCall(harness);
     harness.fake.receive({ type: "input_audio_buffer.speech_started" });
     harness.service.raiseApproval({
@@ -1031,22 +1035,26 @@ describe("createCtoVoiceCallService", () => {
    * to reach that waiter, or the user hears "doing that now" and nothing runs.
    */
   describe("acting on a call", () => {
-    function createCallWithApprovals(overrides: Record<string, unknown> = {}) {
-      let raise: ((a: { itemId: string; toolName: string; prompt: string }) => void) | null = null;
+    function createCallWithApprovals(
+      overrides: Partial<Parameters<typeof createCtoVoiceCallService>[0]> = {},
+    ) {
+      // The service's own notice type, so a field added to an approval breaks
+      // these tests rather than being quietly dropped by a narrower shape.
+      let raise: ((notice: CtoVoiceApprovalNotice) => void) | null = null;
       const resolved: Array<{ itemId: string; approved: boolean }> = [];
       let watcherReleased = false;
       const harness = createService({
-        watchApprovals: (onApproval: (a: { itemId: string; toolName: string; prompt: string }) => void) => {
+        watchApprovals: (onApproval) => {
           raise = onApproval;
           return () => { watcherReleased = true; };
         },
-        resolveApproval: async (args: { itemId: string; approved: boolean }) => { resolved.push(args); },
+        resolveApproval: async (args) => { resolved.push(args); },
         ...overrides,
-      } as never);
+      });
       return {
         ...harness,
         resolved,
-        raise: (a: { itemId: string; toolName: string; prompt: string }) => raise?.(a),
+        raise: (notice: CtoVoiceApprovalNotice) => raise?.(notice),
         wasWatcherReleased: () => watcherReleased,
       };
     }
@@ -1054,7 +1062,7 @@ describe("createCtoVoiceCallService", () => {
     it("asks out loud, then lets the blocked turn through on a spoken yes", async () => {
       // The real sequence: the turn is still running — parked inside
       // `canUseTool` — when the approval is raised, so it has not returned an
-      // answer and the only thing ahead of the question is the filler.
+      // answer and the question is the only thing ADE has said.
       let releaseBackend: () => void = () => {};
       const harness = createCallWithApprovals({
         runBackendTurn: async () => {
@@ -1367,7 +1375,7 @@ describe("createCtoVoiceCallService", () => {
 
   it("hands output audio straight to the renderer", async () => {
     const chunks: string[] = [];
-    const harness = createService({ onOutputAudio: (b64: string) => chunks.push(b64) } as never);
+    const harness = createService({ onOutputAudio: (b64) => chunks.push(b64) });
     await openCall(harness);
     harness.fake.receive({ type: "response.output_audio.delta", delta: "AAAB" });
     // The same event under the name the older surface still uses for it.
@@ -1383,7 +1391,7 @@ describe("createCtoVoiceCallService", () => {
    */
   it("puts the CTO in confirm-first mode for the life of the call, and restores it after", async () => {
     const calls: boolean[] = [];
-    const harness = createService({ setCallConfirmMode: async (v: boolean) => { calls.push(v); } } as never);
+    const harness = createService({ setCallConfirmMode: async (v: boolean) => { calls.push(v); } });
 
     await harness.service.start();
     // Read-only is on BEFORE the socket exists — no audio may be in flight
@@ -1467,14 +1475,25 @@ describe("the transcript gate", () => {
     });
   }
 
+  /**
+   * A call whose log the test can read, and whose clock it can own.
+   *
+   * One factory rather than two: the only difference between "a gated call" and
+   * "a gated call with a clock" was whether `now` was injected, and two of them
+   * meant the frame helper existed on one and not the other.
+   */
   function gatedCall() {
+    let clock = 1_000_000;
     const info = vi.fn();
-    const harness = createService({ logger: { info, warn: vi.fn() } } as never);
+    const harness = createService({ logger: { info, warn: vi.fn() }, now: () => clock });
     return {
       harness,
       info,
       /** What the call wrote down as having been said. */
       captions: () => harness.latest().captions.map((caption) => caption.text),
+      advance: (ms: number) => { clock += ms; },
+      /** One frame, at the current instant, at the level given. */
+      frame: (level: number) => harness.service.pushAudio(MIC_FRAME, level),
     };
   }
 
@@ -1602,16 +1621,13 @@ describe("the transcript gate", () => {
   });
 
   it("shuts the confirmation path on a runaway, and opens it again after quiet", async () => {
-    let clock = 1_000_000;
-    const info = vi.fn();
-    const harness = createService({ logger: { info, warn: vi.fn() }, now: () => clock } as never);
-    const captions = () => harness.latest().captions.map((caption) => caption.text);
+    const { harness, info, captions, advance } = gatedCall();
     await openCall(harness);
 
     // Five accepted transcripts inside the window — faster than a call can
     // physically have exchanges, so the source, not the user, is producing them.
     for (let i = 0; i < 5; i += 1) {
-      clock += 1_500;
+      advance(1_500);
       utter(harness, `question ${i}`);
       await tick();
     }
@@ -1623,7 +1639,7 @@ describe("the transcript gate", () => {
     // running away must not be able to answer a question ADE asked out loud,
     // and it is still allowed to fill the call record.
     askForApproval(harness);
-    clock += 1_500;
+    advance(1_500);
     utter(harness, "yes");
     await tick();
     expect(captions().at(-1)).toBe("yes");
@@ -1632,12 +1648,47 @@ describe("the transcript gate", () => {
 
     // Quiet is what opens it: no transcript for the cooldown, and the user's
     // spoken answer counts again.
-    clock += CTO_VOICE_TURN_BURST_COOLDOWN_MS + 1;
+    advance(CTO_VOICE_TURN_BURST_COOLDOWN_MS + 1);
     utter(harness, "yes");
     await tick();
     expect(harness.latest().pendingConfirmation).toBeNull();
     expect(info.mock.calls.some(([event]) => event === "cto_voice.transcript_valve_cleared"))
       .toBe(true);
+  });
+
+  it("reopens the valve on quiet even when no question was ever asked", async () => {
+    // The latch this fixes: the valve was only ever CLEARED inside the
+    // confirmation branch, and the cooldown is measured from the last
+    // transcript of any kind. So an ordinary talkative call shut it, kept it
+    // shut by carrying on talking, and every spoken yes after that came back
+    // "runaway" — with no question open at the moment quiet actually arrived.
+    const { harness, info, advance } = gatedCall();
+    await openCall(harness);
+
+    for (let i = 0; i < 5; i += 1) {
+      advance(1_500);
+      utter(harness, `question ${i}`);
+      await tick();
+    }
+    expect(info.mock.calls.some(([event]) => event === "cto_voice.transcript_valve_tripped"))
+      .toBe(true);
+
+    // Quiet, and then an ordinary sentence with nothing pending. That is the
+    // transcript the valve has to be judged on.
+    advance(CTO_VOICE_TURN_BURST_COOLDOWN_MS + 1);
+    utter(harness, "still there?");
+    await tick();
+    expect(info.mock.calls.some(([event]) => event === "cto_voice.transcript_valve_cleared"))
+      .toBe(true);
+
+    // And now the conversation carries on at a normal pace: the yes lands a
+    // second and a half later, well inside the cooldown, and is still honoured.
+    askForApproval(harness);
+    advance(1_500);
+    utter(harness, "yes");
+    await tick();
+    expect(harness.latest().pendingConfirmation).toBeNull();
+    expect(rejections(info).map((entry) => entry.reason)).toEqual([]);
   });
 
   it("does not let one segment's silence count against the next one's speech", async () => {
@@ -1661,23 +1712,8 @@ describe("the transcript gate", () => {
    * `voicedMs` was a SUM, which a quiet room reaches given enough seconds.
    * ──────────────────────────────────────────────────────────────────────── */
 
-  /** A gate whose clock the test owns, so frames can be placed in time. */
-  function timedCall() {
-    let clock = 1_000_000;
-    const info = vi.fn();
-    const harness = createService({ logger: { info, warn: vi.fn() }, now: () => clock } as never);
-    return {
-      harness,
-      info,
-      captions: () => harness.latest().captions.map((caption) => caption.text),
-      advance: (ms: number) => { clock += ms; },
-      /** One frame, at the current instant, at the level given. */
-      frame: (level: number) => harness.service.pushAudio(MIC_FRAME, level),
-    };
-  }
-
   it("does not add up transients scattered across a long quiet stretch", async () => {
-    const call = timedCall();
+    const call = gatedCall();
     await openCall(call.harness);
     askForApproval(call.harness);
 
@@ -1705,7 +1741,7 @@ describe("the transcript gate", () => {
   });
 
   it("accepts energy that stays up for a word's length", async () => {
-    const call = timedCall();
+    const call = gatedCall();
     await openCall(call.harness);
 
     // Four frames in a row, ~340 ms: a word. The same four frames with silence
@@ -1729,7 +1765,7 @@ describe("the transcript gate", () => {
   });
 
   it("forgets a loud moment that has fallen out of the window", async () => {
-    const call = timedCall();
+    const call = gatedCall();
     await openCall(call.harness);
     askForApproval(call.harness);
 
@@ -1793,7 +1829,7 @@ describe("what a call tells the CTO row", () => {
     const harness = createService({
       backchannelsEnabled: () => false,
       onExchange: (args: { exchanges: number; live: boolean }) => reports.push(args),
-    } as never);
+    });
     await openCall(harness);
 
     utter(harness, "hey there");
@@ -1829,7 +1865,7 @@ describe("what a call tells the CTO row", () => {
       backchannelsEnabled: () => false,
       logger: { info: vi.fn(), warn: vi.fn() },
       onExchange: (args: { exchanges: number; live: boolean }) => reports.push(args),
-    } as never);
+    });
     await openCall(harness);
 
     utter(harness, "hey there");
@@ -1958,7 +1994,7 @@ describe("end_call", () => {
           },
           warn: vi.fn(),
         },
-      } as never);
+      });
       await openCall(harness);
 
       // The goodbye is spoken in the same response the call arrives in, so its
@@ -2010,7 +2046,7 @@ describe("end_call", () => {
     vi.useFakeTimers();
     try {
       const persistCall = vi.fn(async () => {});
-      const harness = createService({ persistCall } as never);
+      const harness = createService({ persistCall });
       await openCall(harness);
 
       endCallOnWire(harness);
@@ -2101,7 +2137,7 @@ describe("ctoVoiceTranscriptHasSpeech", () => {
 describe("a session that answers with an error", () => {
   it("names an expired key, because 'rejected' sends the user to the wrong fix", async () => {
     const warn = vi.fn();
-    const harness = createService({ logger: { info: () => {}, warn } } as never);
+    const harness = createService({ logger: { info: () => {}, warn } });
     await openCall(harness);
 
     harness.fake.receive({
@@ -2470,5 +2506,214 @@ describe("a question raised before the socket opened", () => {
       .filter((message) => message.type === "response.create")
       .map((message) => String((message.response as { instructions?: unknown }).instructions ?? ""));
     expect(asked.join("\n")).toContain("Open a pull request?");
+  });
+});
+
+/**
+ * What must not survive a hang-up.
+ *
+ * A call is a socket, a lock, a queue and four flags, and every one of them
+ * used to outlive the call that made it: `ws` delivers whatever it had already
+ * queued after the close, and nothing detached the message listener.
+ */
+describe("a call that is over", () => {
+  it("does not start a CTO turn for a function call delivered after hang-up", async () => {
+    const runBackendTurn = vi.fn(async () => ({ spoken: "too late" }));
+    const harness = createService({ runBackendTurn });
+    await openCall(harness);
+    await harness.service.end("owner_end");
+
+    // Exactly what `ws` does with the frames it had already buffered.
+    askCto(harness, "what merged yesterday");
+    harness.fake.receive({
+      type: "response.function_call_arguments.done",
+      response_id: "resp_late",
+      call_id: "call_late",
+      name: "ask_cto",
+      arguments: JSON.stringify({ request: "and this one", mode: "queue" }),
+    });
+    await tick();
+
+    expect(runBackendTurn).not.toHaveBeenCalled();
+  });
+
+  it("leaves the next call no opinion about a response it never created", async () => {
+    // The leak: `pendingOurResponse` is set on the send and cleared on
+    // `response.created`, which never arrived for the line this call was in the
+    // middle of. Carried into the next call it made the FIRST server response
+    // look like one of ADE's own, so the first barge-in cancelled a response the
+    // server was already truncating itself.
+    const sockets = [createFakeSocket(), createFakeSocket()];
+    let index = 0;
+    const harness = createService({ createWebSocket: () => sockets[index++]!.socket });
+
+    await harness.service.start();
+    sockets[0]!.open();
+    sockets[0]!.receive({ type: "session.created", session: { id: "sess_1" } });
+    // A line ADE asked for and the server never named.
+    harness.service.raiseApproval({
+      itemId: "item-1",
+      toolName: "openPr",
+      prompt: "Open a pull request?",
+    });
+    expect(sockets[0]!.typesSent()).toContain("response.create");
+    await harness.service.end("owner_end");
+
+    await harness.service.start();
+    sockets[1]!.open();
+    sockets[1]!.receive({ type: "session.created", session: { id: "sess_2" } });
+    // The server's own response, and the user talking over it.
+    sockets[1]!.receive({ type: "response.created", response: { id: "resp_server" } });
+    sockets[1]!.receive({ type: "input_audio_buffer.speech_started" });
+
+    expect(sockets[1]!.typesSent()).not.toContain("response.cancel");
+  });
+});
+
+/**
+ * The two errors this service's own timing causes, and why they are not one.
+ *
+ * Both are benign and neither is worth a banner, but they say opposite things
+ * about the response lock — and treating them the same burned the whole queue.
+ */
+describe("the benign server errors", () => {
+  /** Two lines ADE wrote: one in flight, one behind it. */
+  async function twoQueuedLines() {
+    const harness = createService();
+    await openCall(harness);
+    harness.service.raiseApproval({ itemId: "a", toolName: "openPr", prompt: "First question?" });
+    harness.service.raiseApproval({ itemId: "b", toolName: "openPr", prompt: "Second question?" });
+    return harness;
+  }
+
+  it("releases the lock when a cancel arrived after the response was over", async () => {
+    const harness = await twoQueuedLines();
+    expect(spoken(harness.fake)).toHaveLength(1);
+
+    harness.fake.receive({
+      type: "error",
+      error: { message: "Cancellation failed: no active response found" },
+    });
+
+    // The lock was stale, so the line waiting behind it goes now.
+    expect(spoken(harness.fake).join("\n")).toContain("Second question?");
+    expect(harness.latest().error).toBeNull();
+  });
+
+  it("keeps the line, and the lock, when the server is still generating", async () => {
+    const harness = await twoQueuedLines();
+
+    harness.fake.receive({
+      type: "error",
+      error: { message: "Conversation already has an active response" },
+    });
+    // Nothing else is sent into a server that just said it is busy.
+    expect(spoken(harness.fake)).toHaveLength(1);
+
+    // And when its own response finishes, the refused line is asked for again,
+    // ahead of the one that was queued behind it.
+    harness.fake.receive({
+      type: "response.done",
+      response: { id: "resp_server", status: "completed", output: [] },
+    });
+    const asked = spoken(harness.fake);
+    expect(asked).toHaveLength(2);
+    expect(asked[1]).toContain("First question?");
+
+    harness.fake.receive({
+      type: "response.done",
+      response: { id: "resp_first", status: "completed", output: [] },
+    });
+    expect(spoken(harness.fake)[2]).toContain("Second question?");
+  });
+});
+
+describe("a function result waiting on the response that asked for it", () => {
+  it("waits for ITS OWN response to finish, not for any response at all", async () => {
+    const harness = createService();
+    await openCall(harness);
+
+    // The call arrives a beat before its own `response.done`, so the
+    // conversation has not written it yet and its result has to wait.
+    harness.fake.receive({
+      type: "response.function_call_arguments.done",
+      response_id: "resp_tool",
+      call_id: "call_tool",
+      name: "cancel_work",
+      arguments: "{}",
+    });
+    expect(functionOutputs(harness.fake)).toHaveLength(0);
+
+    // A DIFFERENT response finishing says nothing about this call: the old code
+    // cleared every unsettled id here and handed the result over early, where
+    // OpenAI refuses it for naming a `call_id` it has not written.
+    harness.fake.receive({
+      type: "response.done",
+      response: { id: "resp_other", status: "completed", output: [] },
+    });
+    expect(functionOutputs(harness.fake)).toHaveLength(0);
+
+    harness.fake.receive({
+      type: "response.done",
+      response: { id: "resp_tool", status: "completed", output: [] },
+    });
+    expect(functionOutputs(harness.fake)).toHaveLength(1);
+  });
+});
+
+describe("the scene on the HUD", () => {
+  it("belongs to the answer being spoken, and is cleared by one that drew nothing", async () => {
+    const answers = [
+      { spoken: "Here is what I drew.", sceneSource: "<p>chart</p>" },
+      { spoken: "Three merged yesterday." },
+    ];
+    const harness = createService({ runBackendTurn: async () => answers.shift()! });
+    await openCall(harness);
+
+    askCto(harness, "show me the prs", { callId: "call_1", responseId: "resp_1" });
+    await tick();
+    expect(harness.latest().sceneSource).toBe("<p>chart</p>");
+
+    askCto(harness, "and what merged", { callId: "call_2", responseId: "resp_2" });
+    await tick();
+    // The picture from four turns ago used to stay on screen for the rest of
+    // the call, because only a result WITH a scene ever wrote this field.
+    expect(harness.latest().sceneSource).toBeNull();
+  });
+});
+
+describe("the interrupted flag", () => {
+  it("falls back between utterances, so the next barge-in is still an edge", async () => {
+    // The runtime drops its queued output audio on the false→true EDGE. A flag
+    // left true by an earlier barge-in makes the next one drop nothing at all,
+    // and the CTO carries on over the user with twenty seconds of stale answer.
+    const harness = createService();
+    await openCall(harness);
+
+    harness.fake.receive({ type: "response.created", response: { id: "resp_1" } });
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    expect(harness.latest().interrupted).toBe(true);
+
+    harness.fake.receive({
+      type: "conversation.item.input_audio_transcription.failed",
+      error: { message: "audio was unintelligible" },
+    });
+    expect(harness.latest().interrupted).toBe(false);
+  });
+
+  it("falls back when the next utterance opens over nothing", async () => {
+    const harness = createService();
+    await openCall(harness);
+
+    harness.fake.receive({ type: "response.created", response: { id: "resp_1" } });
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    expect(harness.latest().interrupted).toBe(true);
+    harness.fake.receive({
+      type: "response.done",
+      response: { id: "resp_1", status: "completed", output: [] },
+    });
+
+    harness.fake.receive({ type: "input_audio_buffer.speech_started" });
+    expect(harness.latest().interrupted).toBe(false);
   });
 });

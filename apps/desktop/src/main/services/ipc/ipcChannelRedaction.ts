@@ -32,7 +32,37 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   // A Pi sign-in prompt answer is the credential itself when Pi asks for an
   // API key, so it must never reach a verbose IPC trace.
   [IPC.aiPiLoginSubmit]: new Set(["value"]),
+  // Both key-store channels carry the raw provider credential as `key`. The
+  // generic field-name guard below also catches it, but the map is the
+  // channel-level statement and neither gate is allowed to be the only one.
+  [IPC.aiStoreApiKey]: new Set(["key"]),
+  [IPC.aiStoreMachineApiKey]: new Set(["key"]),
 };
+
+/**
+ * Field names whose VALUE is a secret whatever channel it arrived on.
+ *
+ * The channel map above is the specific statement; this is the backstop for a
+ * channel nobody remembered to list. `key` is included deliberately: a field
+ * literally named `key` is an API key far more often than it is anything worth
+ * reading in a trace, and a redacted lookup key costs a debugging session
+ * nothing next to a credential written to disk.
+ *
+ * Lives here rather than in `registerIpc` so the contract has a test.
+ */
+export function shouldRedactIpcKey(key: string | undefined): boolean {
+  if (!key) return false;
+  const normalized = key.toLowerCase();
+  return normalized.includes("token")
+    || normalized.includes("secret")
+    || normalized.includes("password")
+    || normalized.includes("authorization")
+    || normalized === "key"
+    || normalized === "apikey"
+    || normalized === "api_key"
+    || normalized === "pairingpin"
+    || normalized === "pairing_pin";
+}
 
 export function redactIpcArgsForChannel(channel: string, args: unknown[]): unknown[] {
   const redactKeys = ipcChannelRedactionMap[channel];

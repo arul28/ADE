@@ -148,11 +148,20 @@ export const CTO_VOICE_OUTPUT_AUDIO_QUEUE_LIMIT = 200;
  * questions the screen said had never been asked.
  *
  * So captions and the exchange count are now unconditional: every non-empty
- * transcript is recorded. The numbers below judge the CONFIRMATION path alone —
- * a spoken "yes" only counts when ADE's own microphone meter agrees somebody
- * spoke — and every one of them is deliberately generous, because the cost of
- * refusing a real "yes" is one tap and the cost of accepting a phantom one is
- * whatever the tool was about to do.
+ * transcript is recorded. The numbers below judge ONE path — the transcript
+ * parser, which reads a spoken "yes" out of the transcriber's text and releases
+ * a blocked tool with it. That yes only counts when ADE's own microphone meter
+ * agrees somebody spoke, and every number here is deliberately generous,
+ * because the cost of refusing a real "yes" is one tap and the cost of
+ * accepting a phantom one is whatever the tool was about to do.
+ *
+ * There is a SECOND path and it is not gated by any of this: the realtime model
+ * hears the audio itself and can call {@link CTO_VOICE_TOOL_APPROVE}. Nothing
+ * below is evidence about that path — the model is listening to the same sound
+ * a person would, not to a transcript, and a meter on this side has no vote on
+ * what it heard. What both paths share is the one rule that cannot be spoken
+ * past: a {@link CTO_VOICE_DESTRUCTIVE_TOOLS} action always needs a tap,
+ * whoever heard the yes.
  *
  * Whisper-family transcribers hallucinate words out of near-silence: a real
  * call on 2026-09-16 produced six CTO turns in thirty-eight seconds from three
@@ -209,6 +218,29 @@ export const CTO_VOICE_MIC_WINDOW_MS = 3_000;
  * speaker, and it is the runtime that cancels the response and aborts the turn.
  */
 export const CTO_VOICE_LOCAL_BARGE_IN_LEVEL = 0.2;
+
+/**
+ * How many CONSECUTIVE frames must reach that level before the speaker is cut.
+ *
+ * A single transient is a door, a chair, or a knuckle on the desk — and cutting
+ * the CTO off mid-word for one of those is worse than a beat of the user's
+ * voice overlapping the answer. Two frames is ~20 ms at the renderer's capture
+ * size: far too short to be heard as a delay, and long enough that a click
+ * cannot reach it.
+ */
+export const CTO_VOICE_LOCAL_BARGE_IN_FRAMES = 2;
+
+/**
+ * How long a local barge-in keeps discarding output before it gives up.
+ *
+ * The latch is normally lifted by a phase change, which is the main process
+ * saying the turn moved on. Two loud non-speech frames mid-`speaking` set it
+ * with no server VAD event behind them, and nothing then changes the phase — so
+ * without a deadline the rest of that answer, and the one after it, are silently
+ * dropped. A second and a half is longer than the queue the flush was meant to
+ * kill and shorter than a sentence.
+ */
+export const CTO_VOICE_LOCAL_BARGE_IN_RELEASE_MS = 1_500;
 
 /**
  * How much CONTIGUOUS voiced audio a segment needs before it can carry a
@@ -541,9 +573,11 @@ export type CtoVoiceConfirmation = {
   toolName: string;
   destructive: boolean;
   /**
-   * The transcript utterance this question belongs to. A spoken yes only counts
-   * when it answers THIS question, inside the window below — otherwise ambient
-   * speech, a podcast, or the CTO's own audio could approve something.
+   * The transcript utterance this question belongs to. A yes read out of a
+   * TRANSCRIPT only counts when it answers THIS question, inside the window
+   * below — otherwise ambient speech, a podcast, or the CTO's own audio could
+   * approve something. The model's own approval tool carries no utterance and
+   * is not bound this way; it heard the room rather than a transcript of it.
    */
   utteranceId: string | null;
   expiresAtMs: number;
@@ -864,16 +898,6 @@ export const CTO_VOICE_TOOL_DENY = "deny_pending_action";
  * while the user waited for a call they had already ended in words.
  */
 export const CTO_VOICE_TOOL_END_CALL = "end_call";
-
-export const CTO_VOICE_TOOL_NAMES = [
-  CTO_VOICE_TOOL_ASK_CTO,
-  CTO_VOICE_TOOL_CANCEL_WORK,
-  CTO_VOICE_TOOL_APPROVE,
-  CTO_VOICE_TOOL_DENY,
-  CTO_VOICE_TOOL_END_CALL,
-] as const;
-
-export type CtoVoiceToolName = (typeof CTO_VOICE_TOOL_NAMES)[number];
 
 /**
  * What a second request means while the first one is still running.

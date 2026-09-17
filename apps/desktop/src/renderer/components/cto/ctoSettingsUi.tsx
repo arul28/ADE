@@ -7,12 +7,11 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
  * The CTO settings' visual vocabulary, borrowed wholesale from the main
  * Settings pages.
  *
- * These panes used to invent their own: hairline borders, 11px greys, nested
- * boxes with uppercase labels. Next to Settings it read as a different app.
- * Everything here is the same 42px accent tile, the same card, the same type
- * ramp — `SettingsSectionShell` is imported directly rather than copied, and
- * what is not shareable (a card that is not a settings row, a block of prompt
- * text) is built here to match it.
+ * Everything here is the same 42px accent tile, the same card and the same type
+ * ramp Settings uses — two surfaces sitting side by side in one app must not
+ * read as two products. `SettingsSectionShell` is imported directly rather than
+ * copied, and what is not shareable (a card that is not a settings row, a block
+ * of prompt text) is built here to match it.
  */
 
 /** One accent per section, the way each Settings section has a brand colour. */
@@ -155,8 +154,8 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
 /**
  * A read-only block of text that cannot grow past a screenful.
  *
- * The memory and prompt panes are the two places where a long file used to be
- * printed in full, which is how one pane became a wall.
+ * The memory and prompt panes both print whole files, and a file printed in
+ * full is how a pane becomes a wall.
  */
 export function TextBlock({
   text,
@@ -215,18 +214,31 @@ export function TextBlock({
 }
 
 /** A quiet key/value line, for facts that are read rather than set. */
-export function FactRow({ label, value }: { label: string; value: React.ReactNode }) {
+export function FactRow({
+  label,
+  value,
+  mono = false,
+  title,
+}: {
+  label: string;
+  value: React.ReactNode;
+  /** A path or an id, which has to line up character by character. */
+  mono?: boolean;
+  /** The untruncated value, for the row whose value is ellipsised. */
+  title?: string;
+}) {
   return (
     <>
       <dt style={{ fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.6, color: COLORS.textMuted }}>
         {label}
       </dt>
       <dd
+        title={title}
         style={{
           margin: 0,
           minWidth: 0,
-          fontFamily: SANS_FONT,
-          fontSize: 11.5,
+          fontFamily: mono ? "var(--font-mono, ui-monospace, SFMono-Regular, monospace)" : SANS_FONT,
+          fontSize: mono ? 11 : 11.5,
           lineHeight: 1.6,
           color: COLORS.textSecondary,
           overflow: "hidden",

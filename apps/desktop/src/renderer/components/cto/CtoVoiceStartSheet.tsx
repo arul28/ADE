@@ -18,12 +18,12 @@ import {
 /**
  * Everything between pressing Talk with no key and hearing the CTO.
  *
- * It is one sheet on purpose. The flow used to end at Save: the sheet closed,
- * the call was started behind it, and whatever went wrong afterwards arrived as
- * a yellow line under the page header with no way to act on it. A modal that
- * asks for a secret and then abandons the user at the first obstacle is worse
- * than no modal — so the sheet stays up through connecting, closes only when
- * the call is actually live, and turns into a card with buttons when it is not.
+ * It is one sheet on purpose. A modal that asks for a secret and then abandons
+ * the user at the first obstacle — closing on Save, starting the call behind
+ * itself, leaving whatever went wrong as a yellow line under the page header —
+ * is worse than no modal. So the sheet stays up through connecting, closes only
+ * when the call is actually live, and turns into a card with buttons when it is
+ * not.
  *
  * Failures render HERE while it is open, and only fall back to the page notice
  * once it has closed. Two places showing the same sentence at once is how a
@@ -178,7 +178,25 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
 
   const live = isVoiceCallLive(state.phase) && state.isCallOwner;
 
+  /**
+   * The verdict that was already on screen when this attempt began.
+   *
+   * The call store is module-scoped and keeps the last call's error for the
+   * life of the window, so a sheet opened after a failed call reads a sentence
+   * about a call that is already over, shows "blocked" over a HUD that is
+   * running fine, and does it before this attempt has had a chance to fail on
+   * its own. Re-latched at the top of every attempt, so Try again is judged the
+   * same way the first press was.
+   */
+  const latestRef = useRef(state);
+  latestRef.current = state;
+  const seenErrorRef = useRef<{ callId: string | null; error: string | null }>({
+    callId: state.callId,
+    error: state.error,
+  });
+
   const run = useCallback(async () => {
+    seenErrorRef.current = { callId: latestRef.current.callId, error: latestRef.current.error };
     setFailure(null);
     // A previous attempt's verdict is not this one's; leaving it set would make
     // the sheet jump straight back to the card it was just dismissed from.
@@ -249,9 +267,12 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (phase !== "connecting") return;
     if (isVoiceCallLive(state.phase) || !state.error) return;
+    // The error this attempt inherited is not this attempt's.
+    const seen = seenErrorRef.current;
+    if (state.callId === seen.callId && state.error === seen.error) return;
     setFailure({ title: START_FAILURE_TITLE, message: state.error, error: null, microphone: null });
     setPhase("blocked");
-  }, [phase, state.phase, state.error]);
+  }, [phase, state.phase, state.error, state.callId]);
 
   if (phase === "key") {
     return (

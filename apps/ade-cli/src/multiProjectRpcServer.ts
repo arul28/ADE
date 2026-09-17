@@ -1,5 +1,11 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
-import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
+import {
+  isRemoteRuntimeEventCategory,
+  isVoiceRuntimeEvent,
+  refusesVoiceCategory,
+  voiceCategoryRefusalMessage,
+  withoutVoiceEvents,
+} from "../../desktop/src/shared/types/remoteRuntime";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -1152,27 +1158,28 @@ export function createMultiProjectRpcRequestHandler(
   };
 
   /**
-   * The `cto_voice` rule, in one place, for every scope that streams events.
+   * The `cto_voice` rule, applied on every scope that streams events.
    *
-   * A call's state carries its running transcript, so listening to one is the
-   * same disclosure as reading the CTO thread — and the `cto_voice` action
-   * domain is fail-closed to the cto role. The project scope has always
-   * enforced this; the PERSONAL scope had no equivalent, and "nothing puts a
-   * voice event in that buffer today" is a property of the producers, not a
-   * guarantee of this boundary. A buffer is a buffer.
+   * The rule itself — why voice state is withheld, and why it is refused by
+   * name but filtered when unnamed — lives with the category tuple in
+   * `shared/types/remoteRuntime.ts`. What is local here is the role lookup and
+   * the transport's error type. Both scopes go through this: the project scope
+   * always enforced it, the PERSONAL scope had no equivalent, and "nothing
+   * puts a voice event in that buffer today" is a property of the producers,
+   * not a guarantee of this boundary. A buffer is a buffer.
    *
-   * Refused outright when asked for by name, filtered out of an uncategorised
-   * stream rather than failing it.
+   * Returns whether the caller may SEE voice events, which is what the
+   * filtering half needs.
    */
   const assertVoiceCategoryAllowed = (
     category: RuntimeEventCategory | null,
     method: string,
   ): boolean => {
     const callerIsCto = callerHasRoleAtLeast(callerRole(), "cto");
-    if (category === "cto_voice" && !callerIsCto) {
+    if (refusesVoiceCategory(category, callerIsCto)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidRequest,
-        `${method} category cto_voice requires the cto role.`,
+        voiceCategoryRefusalMessage(method),
       );
     }
     return callerIsCto;
@@ -1203,19 +1210,13 @@ export function createMultiProjectRpcRequestHandler(
     // past the required-send ceiling and the host closed the whole connection
     // (4001 "Required sync response backpressured"). See `runtimeEventVolume`.
     const includeHighVolumeEvents = params.includeHighVolumeEvents === true;
-    // A voice call's state carries its running transcript, so listening to it is
-    // the same disclosure as reading the CTO thread. The `cto_voice` ACTION
-    // domain is fail-closed to the cto role (see `ADE_ACTION_CTO_ONLY`); without
-    // the same gate here an agent that cannot start or drive a call could still
-    // sit and listen to one. Denied outright when asked for by name, and
-    // filtered out of an uncategorised subscription rather than failing it.
     const callerIsCto = assertVoiceCategoryAllowed(category, "runtimeEvents.subscribe");
     const scope = await scopeRegistry.get(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
     const eventEpoch = scope.runtime.eventBuffer.epoch();
     const shouldForward = (event: BufferedEvent): boolean => {
       if (category && event.category !== category) return false;
-      if (!callerIsCto && event.category === "cto_voice") return false;
+      if (!callerIsCto && isVoiceRuntimeEvent(event)) return false;
       // Skipped, never queued: the frame after this one is already a better
       // picture of the same screen, so a dropped frame costs nothing and a
       // buffered one costs the transport.
@@ -1307,7 +1308,7 @@ export function createMultiProjectRpcRequestHandler(
     const subscribed = await personalChatScope.subscribeEvents(
       args,
       (event, eventEpoch) => {
-        if (!callerIsCto && event.category === "cto_voice") return;
+        if (!callerIsCto && isVoiceRuntimeEvent(event)) return;
         emitRuntimeEvent(subscriptionId, null, event, eventEpoch);
       },
     );
@@ -1968,11 +1969,9 @@ export function createMultiProjectRpcRequestHandler(
       const callerIsCto = assertVoiceCategoryAllowed(category, "personalChats.streamEvents");
       const result = await personalChatScope.streamEvents(params);
       if (callerIsCto) return result;
-      // Filtered, not refused: every other category is still readable, and the
-      // cursor still advances past what was withheld so polling cannot stall.
       return {
         ...result,
-        events: result.events.filter((event) => event.category !== "cto_voice"),
+        events: withoutVoiceEvents(result.events),
       };
     }
 

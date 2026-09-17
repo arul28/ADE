@@ -176,7 +176,15 @@ function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStrea
   if (typeof value.limit === "number" && Number.isFinite(value.limit)) {
     request.limit = value.limit;
   }
-  if (isRendererRuntimeEventCategory(value.category)) {
+  if (value.category !== undefined && value.category !== null) {
+    // REFUSED, not dropped. Silently discarding the category turned a
+    // subscription for one category into an UNCATEGORISED one — every category
+    // the buffer carries, which is the opposite of what the caller asked for
+    // and, for `cto_voice`, the exact stream this guard exists to withhold.
+    // A renderer naming a category it may not have gets an error it can see.
+    if (!isRendererRuntimeEventCategory(value.category)) {
+      throw new Error("Unknown runtime event category.");
+    }
     request.category = value.category;
   }
   if (typeof value.replay === "boolean") {

@@ -2391,28 +2391,31 @@ function VoiceCallGroupCard({
         icon={Microphone}
         align="top"
         meta={duration ?? undefined}
-        action={(
-          <span className="text-fg/40">
-            {expanded
-              ? <CaretDown size={12} weight="bold" aria-hidden />
-              : <CaretRight size={12} weight="bold" aria-hidden />}
-          </span>
-        )}
       >
+        {/* The caret is INSIDE the toggle, not in the row's action slot: the
+            slot sits outside the button, so the one thing in the row that looks
+            like a disclosure control was the one thing that did nothing. */}
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
           aria-expanded={expanded}
-          className="min-w-0 w-full text-left"
+          className="flex min-w-0 w-full items-start gap-2 text-left"
         >
-          <ChatCardTitle>
-            Voice call
-            <ChatCardFaint>
-              {` · ${exchanges}`}
-              {event.hadApproval ? " · approval" : ""}
-            </ChatCardFaint>
-          </ChatCardTitle>
-          {event.openingLine ? <ChatCardSub>{event.openingLine}</ChatCardSub> : null}
+          <span className="min-w-0 flex-1">
+            <ChatCardTitle>
+              Voice call
+              <ChatCardFaint>
+                {` · ${exchanges}`}
+                {event.hadApproval ? " · approval" : ""}
+              </ChatCardFaint>
+            </ChatCardTitle>
+            {event.openingLine ? <ChatCardSub>{event.openingLine}</ChatCardSub> : null}
+          </span>
+          <span className="mt-[3px] shrink-0 text-fg/40" data-testid="voice-call-caret">
+            {expanded
+              ? <CaretDown size={12} weight="bold" aria-hidden />
+              : <CaretRight size={12} weight="bold" aria-hidden />}
+          </span>
         </button>
       </ChatCardRow>
       {expanded ? (

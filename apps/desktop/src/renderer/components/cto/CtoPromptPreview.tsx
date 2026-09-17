@@ -7,10 +7,10 @@ import { CopyButton, ctoButtonStyle } from "./ctoSettingsUi";
 /**
  * Everything the CTO is sent, shown as the document it is.
  *
- * It used to be a disclosure, inside a card, inside a pane — and once opened,
- * five more cards each with an uppercase label like "IMMUTABLE ADE DOCTRINE".
- * Four frames around text nobody could read. This is the text, full width,
- * with a contents list when there is enough of it to get lost in.
+ * The prompt is a document, so it is drawn as one: the text at full width, with
+ * a contents list when there is enough of it to get lost in. Nesting it in a
+ * disclosure inside a card inside a pane is four frames around text nobody can
+ * then read.
  */
 
 const MONO = "var(--font-mono, ui-monospace, SFMono-Regular, monospace)";

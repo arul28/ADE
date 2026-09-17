@@ -8,9 +8,47 @@ import type {
 
 export type CtoCapabilityMode = "full_tooling" | "fallback";
 
+/**
+ * Which shape of identity record the reader is looking at.
+ *
+ * Distinct from `CtoIdentity.version`, which is a revision counter bumped on
+ * every edit and therefore says nothing about the fields present. This one only
+ * moves when the record's shape changes, so a one-time migration can tell "not
+ * converted yet" from "converted, and edited thirty times since".
+ *
+ * 2 = the fold that carried `constraints`, `personality`, `customPersonality`
+ * and `communicationStyle` into `systemPromptExtension`.
+ */
+export const CTO_IDENTITY_SCHEMA_VERSION = 2;
+
+/**
+ * Fields older identity.yaml files still carry.
+ *
+ * They are no longer part of `CtoIdentity` — the preset personalities and the
+ * separate constraint list were replaced by a single freeform
+ * `systemPromptExtension`. They are declared here so the migration that folds
+ * them into that extension has a name for what it is reading, and so nobody
+ * re-adds them to the live type by accident.
+ */
+export type CtoLegacyIdentityFields = {
+  personality?: "professional" | "casual" | "minimal" | "custom" | null;
+  customPersonality?: string | null;
+  communicationStyle?: {
+    verbosity?: string | null;
+    proactivity?: string | null;
+    escalation?: string | null;
+  } | null;
+  constraints?: string[] | null;
+};
+
 export type CtoIdentity = {
   name: string;
   version: number;
+  /**
+   * Shape of the record, not its revision. Absent on anything written before
+   * the legacy fold existed, which is exactly what marks it as needing one.
+   */
+  schemaVersion?: number;
   persona: string;
   systemPromptExtension?: string;
   onboardingState?: CtoOnboardingState;

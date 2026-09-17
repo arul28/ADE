@@ -71,11 +71,20 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // deliberately absent from img-src/media-src/connect-src — there is no
   // legitimate reason for ADE's own document to fetch one.
   // `ade-scene:` serves generated views with their own policy and origin.
-  // `blob:` is SceneFrame's fallback when the scheme is unavailable; it is safe
-  // here because every scene frame carries `sandbox="allow-scripts"` without
-  // `allow-same-origin`, so a blob frame gets an opaque origin exactly like the
-  // custom scheme does. Without it a failed prepare renders a blank frame
-  // instead of degrading.
+  //
+  // `blob:` in frame-src is a DELIBERATE widening, recorded here rather than
+  // only in the component that needs it. It is SceneFrame's fallback for when
+  // `scene.prepare` is unavailable (the hosted web client, a browser preview,
+  // a main process that answered null); without it a failed prepare renders a
+  // blank frame with no error anywhere instead of degrading to a working one.
+  // It is safe for one reason and only that reason: every scene frame carries
+  // `sandbox="allow-scripts"` WITHOUT `allow-same-origin`, so a blob frame gets
+  // an opaque origin exactly as the custom scheme does, and a blob URL is only
+  // ever minted by this renderer from a document it assembled itself — nothing
+  // remote can put one here. `blob:` stays out of connect-src and script-src,
+  // where it would mean something else entirely. Removing `allow-same-origin`
+  // from that sandbox attribute is what would make this line dangerous, which
+  // is why SceneFrame.test.tsx asserts the pair can never appear together.
   const cspFrameSources = `${cspSources}${cspLocalSources} ade-scene: blob: about:`;
   const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
   return [

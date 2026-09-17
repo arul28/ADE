@@ -33,6 +33,23 @@ async function createStateFixture() {
   return { root, adeDir, db, projectId };
 }
 
+/**
+ * A `terminal_sessions` row is all `countUserTurns` needs — it looks the
+ * transcript path up by session id.
+ */
+function insertTranscriptSession(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  sessionId: string,
+  transcriptPath: string,
+): void {
+  db.run(
+    `insert into terminal_sessions(
+      id, lane_id, tracked, pinned, manually_named, title, started_at, transcript_path, status
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [sessionId, "lane-test", 1, 0, 0, "CTO", "2026-03-05T10:00:00.000Z", transcriptPath, "ended"],
+  );
+}
+
 describe("ctoStateService", () => {
   it("creates default CTO identity and current context when absent", async () => {
     const fixture = await createStateFixture();
@@ -209,7 +226,7 @@ describe("ctoStateService", () => {
       adeDir: fixture.adeDir,
     });
 
-    const entry = service.appendSessionLog({
+    const entry = await service.appendSessionLog({
       sessionId: "session-1",
       summary: "First CTO session",
       startedAt: "2026-03-05T10:00:00.000Z",
@@ -278,7 +295,7 @@ describe("ctoStateService", () => {
       adeDir: fixture.adeDir,
     });
 
-    service.appendSessionLog({
+    await service.appendSessionLog({
       sessionId: "session-mobile",
       summary: "Investigated navigation regressions and proposed a stack-level fix.",
       startedAt: "2026-05-22T00:00:00.000Z",
@@ -753,6 +770,209 @@ describe("ctoStateService", () => {
     for (const row of rows) {
       expect(row).toContain("l".repeat(40));
     }
+
+    fixture.db.close();
+  });
+  /**
+   * The count is what the History row prints, so a line that merely QUOTES a
+   * user envelope must not inflate it.
+   */
+  it("counts only real user_message envelopes, not lines that quote the marker", async () => {
+    const fixture = await createStateFixture();
+    const transcriptPath = path.join(fixture.root, "transcript-quoted.jsonl");
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({ type: "assistant_message", text: "hello" }),
+        // Nested, so the marker appears verbatim in the serialized line — the
+        // cheap pre-filter matches it and only the parse rejects it.
+        JSON.stringify({ type: "tool_result", payload: { type: "user_message", text: "quoted" } }),
+        // Not JSON at all, but carries the marker.
+        'raw log spew "type":"user_message" from a tool',
+        // Last line, deliberately without a trailing newline.
+        JSON.stringify({ type: "user_message", text: "the only real turn" }),
+      ].join("\n"),
+      "utf8"
+    );
+    insertTranscriptSession(fixture.db, "session-quoted", transcriptPath);
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const entry = await service.appendSessionLog({
+      sessionId: "session-quoted",
+      summary: "Quoted marker session",
+      startedAt: "2026-03-05T10:00:00.000Z",
+      endedAt: "2026-03-05T10:05:00.000Z",
+      provider: "codex",
+      modelId: "openai/gpt-5.3-codex",
+      capabilityMode: "full_tooling",
+    });
+
+    expect(entry.turnCount).toBe(1);
+
+    fixture.db.close();
+  });
+
+  it("reports no turn count for a transcript past the size cap", async () => {
+    const fixture = await createStateFixture();
+    const transcriptPath = path.join(fixture.root, "transcript-huge.jsonl");
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    // Sparse: the cap is checked from stat(), so no bytes need to be written.
+    fs.truncateSync(transcriptPath, 33 * 1024 * 1024);
+    insertTranscriptSession(fixture.db, "session-huge", transcriptPath);
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const entry = await service.appendSessionLog({
+      sessionId: "session-huge",
+      summary: "Oversized transcript session",
+      startedAt: "2026-03-05T10:00:00.000Z",
+      endedAt: "2026-03-05T10:05:00.000Z",
+      provider: "codex",
+      modelId: "openai/gpt-5.3-codex",
+      capabilityMode: "full_tooling",
+    });
+
+    expect(entry.turnCount).toBeNull();
+
+    fixture.db.close();
+  });
+
+  it("reports no turn count when the transcript is missing", async () => {
+    const fixture = await createStateFixture();
+    insertTranscriptSession(fixture.db, "session-gone", path.join(fixture.root, "nope.jsonl"));
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const entry = await service.appendSessionLog({
+      sessionId: "session-gone",
+      summary: "Missing transcript session",
+      startedAt: "2026-03-05T10:00:00.000Z",
+      endedAt: "2026-03-05T10:05:00.000Z",
+      provider: "codex",
+      modelId: "openai/gpt-5.3-codex",
+      capabilityMode: "full_tooling",
+    });
+
+    expect(entry.turnCount).toBeNull();
+
+    fixture.db.close();
+  });
+
+  /**
+   * `getSessionLogs` reads the DB for which entries exist and the file for how
+   * many turns each one had. The file half is now handed over by the reconcile
+   * rather than re-read; the count must still arrive.
+   */
+  it("surfaces turnCount from the reconciled session log file", async () => {
+    const fixture = await createStateFixture();
+    const transcriptPath = path.join(fixture.root, "transcript-turns.jsonl");
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({ type: "user_message", text: "one" }),
+        JSON.stringify({ type: "assistant_message", text: "..." }),
+        JSON.stringify({ type: "user_message", text: "two" }),
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    insertTranscriptSession(fixture.db, "session-turns", transcriptPath);
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    await service.appendSessionLog({
+      sessionId: "session-turns",
+      summary: "Two turn session",
+      startedAt: "2026-03-05T10:00:00.000Z",
+      endedAt: "2026-03-05T10:05:00.000Z",
+      provider: "codex",
+      modelId: "openai/gpt-5.3-codex",
+      capabilityMode: "full_tooling",
+    });
+
+    expect(service.getSessionLogs(10)[0]?.turnCount).toBe(2);
+
+    // A fresh service re-reads both halves from disk; the count lives only in
+    // the file, so this is the path that proves it was not lost.
+    const reloaded = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    expect(reloaded.getSessionLogs(10)[0]?.turnCount).toBe(2);
+
+    fixture.db.close();
+  });
+
+  /**
+   * The legacy fields were removed from `CtoIdentity`, and the first load of an
+   * older project rewrote identity.yaml without them. The text has to survive
+   * that, and it has to survive it exactly once.
+   */
+  it("folds legacy identity constraints and personality into the prompt extension once", async () => {
+    const fixture = await createStateFixture();
+    const ctoDir = path.join(fixture.adeDir, "cto");
+    fs.mkdirSync(ctoDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(ctoDir, "identity.yaml"),
+      [
+        'name: "CTO"',
+        "version: 7",
+        'persona: "Legacy identity"',
+        'systemPromptExtension: "Original extension text."',
+        'personality: "professional"',
+        "communicationStyle:",
+        '  verbosity: "concise"',
+        '  proactivity: "high"',
+        "constraints:",
+        '  - "Never force-push main."',
+        '  - "Ask before deleting a lane."',
+        "modelPreferences: null",
+        'updatedAt: "2026-03-05T13:00:00.000Z"',
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const extension = service.getIdentity().systemPromptExtension ?? "";
+    expect(extension).toContain("Original extension text.");
+    expect(extension).toContain("Never force-push main.");
+    expect(extension).toContain("Ask before deleting a lane.");
+    expect(extension).toContain("professional");
+    expect(extension).toContain("concise");
+
+    // The rewritten identity.yaml no longer carries the legacy keys...
+    const rewritten = fs.readFileSync(path.join(ctoDir, "identity.yaml"), "utf8");
+    expect(rewritten).not.toContain("constraints:");
+    expect(rewritten).toContain("Never force-push main.");
+
+    // ...so a second load reads its own output and must not append again.
+    const reloaded = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const secondExtension = reloaded.getIdentity().systemPromptExtension ?? "";
+    expect(secondExtension).toBe(extension);
+    expect(secondExtension.split("Carried over from an earlier CTO identity:").length).toBe(2);
 
     fixture.db.close();
   });

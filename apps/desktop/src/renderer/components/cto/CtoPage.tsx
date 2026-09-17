@@ -185,14 +185,11 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * Settings owns model selection for the CTO.
    *
    * The identity preference is the DURABLE record of the choice, and it is
-   * written every time — with a live session as well as without one. It used to
-   * be written only when no session existed, on the theory that `updateSession`
-   * would persist it on the way through. It did not always: the owner picked
-   * Claude Opus 5, the page showed it (because `currentModelId` prefers the live
-   * session's model), and `identity.modelPreferences` silently stayed on
-   * `codex/gpt-5.6-luna` at low effort — so the next fresh thread was created on
-   * a smaller model at a lower reasoning tier than the one on screen, and the CTO
-   * read as vague for reasons nothing in the UI could explain.
+   * written every time — with a live session as well as without one. Leaving it
+   * to `updateSession` to persist on the way through does not hold: the page
+   * shows the live session's model, so a preference that silently stayed behind
+   * is invisible until the next fresh thread is created on a smaller model at a
+   * lower reasoning tier than the one on screen.
    *
    * Preference first, session second, so a failure between them leaves the
    * durable record holding what the user picked rather than what they replaced.

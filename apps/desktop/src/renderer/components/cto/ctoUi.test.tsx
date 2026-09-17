@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter } from "react-router-dom";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
 import { CtoHistoryList, dayLabel, sessionDuration, sessionTitle } from "./CtoHistoryList";
-import { VOICE_GRID_COLUMNS } from "./CtoSettingsPage";
+import { CtoSettingsPage, VOICE_GRID_COLUMNS } from "./CtoSettingsPage";
 import { CtoMemoryPanel } from "./CtoMemoryPanel";
 import { CtoPage } from "./CtoPage";
 import { useAppStore } from "../../state/appStore";
@@ -707,5 +707,91 @@ describe("resolveCtoPrimaryLaneId", () => {
 
   it("returns null when no lanes are available", () => {
     expect(resolveCtoPrimaryLaneId([])).toBeNull();
+  });
+});
+
+/**
+ * The identity fields, against an identity that arrives late.
+ *
+ * `CtoPage` draws the gear before the snapshot lands, so this page mounts with
+ * `identity` null often enough that Save writing an empty standing-instruction
+ * block over a real one is the ordinary case, not the edge one.
+ */
+describe("CtoSettingsPage identity fields", () => {
+  afterEach(cleanup);
+
+  function settingsProps(identity: Record<string, unknown> | null) {
+    return {
+      identity: identity as never,
+      sessionLogs: [],
+      currentModelId: "anthropic/claude-sonnet-5",
+      currentReasoningEffort: null,
+      currentFastMode: false,
+      availableModelIds: ["anthropic/claude-sonnet-5"],
+      loadingModels: false,
+      switchingModel: false,
+      onModelChange: vi.fn(),
+      onFastModeChange: vi.fn(),
+      onOpenProviderSettings: vi.fn(),
+      onIdentityChange: vi.fn(),
+      onClose: vi.fn(),
+    };
+  }
+
+  const LANDED = {
+    version: 2,
+    name: "Ada",
+    persona: "Senior CTO",
+    systemPromptExtension: "We ship on Fridays.",
+  };
+
+  function openIdentity() {
+    // The rail entry, which is the first of the two things called Identity.
+    fireEvent.click(screen.getAllByRole("button", { name: /Identity/ })[0]);
+  }
+
+  it("fills the fields from an identity that arrives after the page", () => {
+    const { rerender } = render(<CtoSettingsPage {...settingsProps(null)} />);
+    openIdentity();
+    expect((screen.getByLabelText("Standing instructions") as HTMLTextAreaElement).value).toBe("");
+
+    rerender(<CtoSettingsPage {...settingsProps(LANDED)} />);
+
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Ada");
+    expect((screen.getByLabelText("Standing instructions") as HTMLTextAreaElement).value)
+      .toBe("We ship on Fridays.");
+    // Nothing was typed, so there is nothing to save.
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("keeps an unsaved edit when the identity changes underneath it", () => {
+    const { rerender } = render(<CtoSettingsPage {...settingsProps(LANDED)} />);
+    openIdentity();
+
+    const extra = screen.getByLabelText("Standing instructions") as HTMLTextAreaElement;
+    fireEvent.change(extra, { target: { value: "Never touch billing." } });
+
+    rerender(<CtoSettingsPage {...settingsProps({ ...LANDED, name: "Grace", systemPromptExtension: "From the phone." })} />);
+
+    // The typed field is the user's; the untouched one follows the identity.
+    expect((screen.getByLabelText("Standing instructions") as HTMLTextAreaElement).value)
+      .toBe("Never touch billing.");
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Grace");
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("saves the standing instructions it was given, not an empty block", () => {
+    const props = settingsProps(null);
+    const { rerender } = render(<CtoSettingsPage {...props} />);
+    openIdentity();
+    rerender(<CtoSettingsPage {...props} identity={LANDED as never} />);
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada L" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(props.onIdentityChange).toHaveBeenCalledWith({
+      name: "Ada L",
+      systemPromptExtension: "We ship on Fridays.",
+    });
   });
 });

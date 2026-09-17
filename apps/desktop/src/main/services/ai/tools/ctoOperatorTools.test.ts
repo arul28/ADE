@@ -1231,6 +1231,40 @@ describe("createCtoOperatorTools", () => {
       expect(JSON.stringify(result).length).toBeLessThan(1_000);
     });
 
+    // The compact record spreads its optional fields in conditionally. If any of
+    // them ever leaked as an explicit `undefined`, the key would still show up
+    // in the model's view of the job and read as a field it should reason about.
+    it("emits only the populated keys for a minimal record", async () => {
+      const result = await listTool([{
+        id: "sched-min",
+        sessionId: "chat-min",
+        kind: "wakeup" as const,
+        status: "scheduled" as const,
+        title: "Minimal job",
+        prompt: "wake up",
+        createdAt: "2026-09-01T09:00:00.000Z",
+        durable: true,
+        cancellable: true,
+      }]).execute({ includeTerminal: true } as never) as {
+        result: Array<Record<string, unknown>>;
+      };
+
+      expect(result.result[0]).toEqual({
+        id: "sched-min",
+        sessionId: "chat-min",
+        kind: "wakeup",
+        status: "scheduled",
+        prompt: "wake up",
+      });
+      expect(Object.keys(result.result[0]!)).toEqual([
+        "id",
+        "sessionId",
+        "kind",
+        "status",
+        "prompt",
+      ]);
+    });
+
     it("caps the list at 50 items and says so", async () => {
       const result = await listTool(
         Array.from({ length: 200 }, (_unused, index) => makeItem(index)),
