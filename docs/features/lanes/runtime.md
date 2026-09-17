@@ -147,13 +147,12 @@ exist, the more specific one wins — a lane runs one setup script.
   `.bat`, `.exe`, `.com` — a `scripts/setup.sh` or an extension-less
   path), with a message naming `windowsScriptPath` / `windowsCommands`
   as the fix, instead of a raw `ENOEXEC` that reads like an ADE bug.
-- **No trust gate, because nothing arrives from the repo.** `laneEnvInit` and
-  `laneTemplates` used to merge in from the repo-committed `.ade/ade.yaml`, so
-  the setup-script step consulted `getExecutableConfig()` first. That file is no
-  longer read — its executable keys are dropped rather than carried over — so a
-  setup script can only be one authored on this machine, and the step runs it
-  without an approval check. A malformed `local.yaml` still propagates its own
-  config error and fails the step.
+- **No trust gate, because nothing arrives from the repo.** `.ade/ade.yaml` is
+  no longer read and its executable keys are dropped during the one-time
+  carry-over. A setup script can only come from the machine-local effective
+  config or a local lane template, so the step runs without an approval check.
+  A malformed `local.yaml` still propagates its own config error and fails the
+  step.
 - **Order.** Configured commands run first, in order, then the script
   file if one is set. `scriptPath` is resolved against the project root
   with the same symlink-aware traversal check as env files.

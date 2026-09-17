@@ -848,7 +848,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -3419,14 +3419,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
   secrets: `${ADE_BANNER}
   ADE project secrets
 
-  Secrets are encrypted under the active project's .ade/secrets directory and
-  are shared by every ADE lane/agent for that project. List output never reveals
-  values; use get only for the specific secret you need.
+  Secrets are encrypted under the active project's .ade/secrets directory.
+  Account-linked projects default to account storage; pass --storage device to
+  keep a secret on this machine. List output never reveals values and shows
+  where each secret lives; use get only for the specific secret you need.
 
     $ ade secrets list --text                       List secret names and metadata
     $ ade secrets get STRIPE_API_KEY                Print one secret value as JSON
     $ ade secrets get STRIPE_API_KEY --text         Print only the secret value
-    $ ade secrets set STRIPE_API_KEY --value sk_... Save or replace a secret
+    $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
+    $ ade secrets set TOKEN --value local --storage device
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
@@ -4601,6 +4603,17 @@ function readSecretValueInput(args: string[]): string {
   const positionalValue = firstPositional(args);
   if (positionalValue != null) return positionalValue;
   throw new CliUsageError("Secret value is required. Pass --value, --value-file, --stdin, or a positional value.");
+}
+
+type ProjectSecretStorage = "account" | "device";
+
+function readProjectSecretStorage(args: string[]): ProjectSecretStorage | undefined {
+  const storage = readValue(args, ["--storage"]);
+  if (storage == null) return undefined;
+  if (storage !== "account" && storage !== "device") {
+    throw new CliUsageError("--storage must be account or device.");
+  }
+  return storage;
 }
 
 function readJsonPayloadOption(
@@ -14172,11 +14185,16 @@ function buildSecretsPlan(args: string[]): CliPlan {
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     if (!name) throw new CliUsageError("Secret name is required.");
     const value = readSecretValueInput(args);
+    const storage = readProjectSecretStorage(args);
     return {
       kind: "execute",
       label: "secrets set",
       formatter: "project-secrets",
-      steps: [actionStep("result", "project_secret", "set", { name, value })],
+      steps: [actionStep("result", "project_secret", "set", {
+        name,
+        value,
+        ...(storage ? { storage } : {}),
+      })],
     };
   }
   if (sub === "delete" || sub === "remove" || sub === "rm") {
@@ -24834,7 +24852,8 @@ function formatProjectSecrets(value: unknown): string {
       : `No ADE secret named ${record.name} was found.`;
   }
   if (typeof record.name === "string") {
-    return `Saved ADE secret ${record.name} (${cell(record.valueLength)} chars).`;
+    const storage = typeof record.storage === "string" ? ` in ${record.storage} storage` : "";
+    return `Saved ADE secret ${record.name} (${cell(record.valueLength)} chars${storage}).`;
   }
   const secrets = Array.isArray(record.secrets)
     ? record.secrets.filter(isRecord)
@@ -24844,15 +24863,16 @@ function formatProjectSecrets(value: unknown): string {
   const rows = secrets.map((secret) => [
     secret.name,
     secret.valueLength,
+    secret.storage,
     secret.updatedAt,
   ]);
   const storage = isRecord(record.storage) ? record.storage : {};
   const header = renderTable(
-    ["name", "chars", "updated"],
+    ["name", "chars", "where", "updated"],
     rows,
     "ADE project secrets\n(no secrets found)",
   );
-  const pathLine = typeof storage.path === "string" ? `\n\nStore: ${storage.path}` : "";
+  const pathLine = typeof storage.path === "string" ? `\n\nLocal cache: ${storage.path}` : "";
   return `${header}${pathLine}`;
 }
 

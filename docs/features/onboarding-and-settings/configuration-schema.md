@@ -1,9 +1,10 @@
 # Configuration Schema
 
-ADE's project configuration is split across two YAML files in every
-project and merged into a single `EffectiveProjectConfig` that
-downstream services read at runtime. This doc describes the shape,
-merge rules, and trust model.
+ADE's project configuration is stored in one machine-local YAML file and
+resolved into a single `EffectiveProjectConfig` that downstream services read
+at runtime. This doc describes the shape and resolution rules. The former
+repository-committed file is accepted only for one-time, non-executable
+carry-over; it is not an input to normal config reads.
 
 Canonical type definitions: `apps/desktop/src/shared/types/config.ts`.
 Canonical service: `apps/desktop/src/main/services/config/projectConfigService.ts`
@@ -15,19 +16,16 @@ Canonical service: `apps/desktop/src/main/services/config/projectConfigService.t
 |---|---|---|---|
 | `.ade/local.yaml` | Local | gitignored | The only project config file ADE reads: every setting, personal to this machine. |
 
-`.ade/ade.yaml` is **no longer read**. The committed file was the one channel
-through which a repository could hand your machine an executable `command`, a
-lane `setupScript`, or an agent prompt; the trust gate that used to guard it is
-retired, and ignoring the file is what makes that retirement safe. If a legacy
-`.ade/ade.yaml` is still in a working tree, the first snapshot read carries its
-non-executable keys over into `local.yaml` — `project`, `environments`,
-`github`, `git`, `ai`, `laneCleanup`, `linearSync`, `ui`,
-`browser`, with local winning every conflict — drops the executable ones
-(`testSuites`, `laneOverlayPolicies`, `automations`, `laneEnvInit`,
-`laneTemplates`, `defaultLaneTemplate`), logs one `projectConfig.carryOver`
-line with both counts, and then deletes the file from the working tree. Deleting
-it is what makes the carry-over idempotent; an unreadable file is left in place,
-logged as `projectConfig.carryOver.unreadable`, and the project still opens.
+`.ade/ade.yaml` is **no longer read**. If a legacy file is still in a working
+tree, the first snapshot read carries only the non-executable keys
+(`project`, `environments`, `github`, `ai`, `linearSync`, `ui`, and `browser`)
+into `local.yaml`, with local values winning conflicts. It drops executable
+keys (`testSuites`, `laneOverlayPolicies`, `automations`, `laneEnvInit`,
+`laneTemplates`, `defaultLaneTemplate`, `git`, and `laneCleanup`), logs one
+`projectConfig.carryOver` line with both counts, and then deletes the legacy
+file. Deleting it makes the carry-over idempotent; an unreadable file is left
+in place, logged as `projectConfig.carryOver.unreadable`, and the project still
+opens.
 
 The carried `ai` value is recursively allowlisted: model ids, feature toggles,
 feature model overrides, session-intelligence model/enabled flags, and local
@@ -40,9 +38,8 @@ carried because its conflict-resolver entries can execute commands.
 resolves into the strict `EffectiveProjectConfig` at read time.
 `projectConfigService.get()` still returns a `ProjectConfigSnapshot` with
 `shared`, `local`, `effective` plus validation and hash metadata — `shared` is
-kept on the shape because dozens of callers round-trip it through `save`, but it
-is always an empty config, and `save` accepts and discards whatever is passed
-for it.
+kept on the compatibility shape because callers round-trip it through `save`,
+but it is always empty. `save` accepts and discards whatever is passed for it.
 
 `projectConfigService.save({ shared, local })` writes `local.yaml` only. It no
 longer promotes a project from the local-only ADE scaffold to the shared one,
@@ -195,15 +192,13 @@ docker-compose services, runs install commands, mounts agent profile
 paths, copies project-level files into the worktree, and finally runs
 the setup script when one is configured.
 
-Every field here, including `copyPaths` and `setupScript`, can be
-authored directly in `ade.yaml` / `local.yaml` as well as carried in
-from a lane template; when both a project-level and a template/overlay
-setup script exist the more specific one wins, and `copyPaths`
-concatenate. Because `ade.yaml` is shared (repo-committed), the
-setup-script step is gated on the shared config being trusted — see
-[`lanes/runtime.md`](../lanes/runtime.md#setup-script-execution) for the
-trust gate, shell semantics, available environment variables, and
-failure behavior.
+Every field here, including `copyPaths` and `setupScript`, can be authored in
+`local.yaml` or carried in from a local lane template. When both a
+project-level and a template/overlay setup script exist the more specific one
+wins, and `copyPaths` concatenate. There is no repository-config trust gate;
+the setup-script step runs from the local effective config. See
+[`lanes/runtime.md`](../lanes/runtime.md#setup-script-execution) for shell
+semantics, available environment variables, and failure behavior.
 
 ```ts
 type LaneSetupScriptConfig = {
@@ -254,7 +249,7 @@ type LaneTemplate = {
 ```
 
 Templates provide a reusable init recipe. `copyPaths` and `setupScript`
-round-trip through `local.yaml` / `ade.yaml` and are applied with the
+round-trip through `local.yaml` and are applied with the
 rest of the recipe. `portRange` is only a fallback for a lane that holds
 no port lease: lane creation takes a lease before the template is
 applied, and the lease always outranks the template value — so hand-
@@ -490,33 +485,17 @@ which together reproduce the pre-setting behavior. `off` is honored in
 remote-tracking fetch and per-lane behind-count rather than just hiding
 the result.
 
-## The trust model is retired
+## No trust gate
 
-Shared config used to be able to introduce commands a user had not approved, so
-`ProjectConfigTrust` carried an `approvedSharedHash` and `getExecutableConfig()`
-refused while `requiresSharedTrust` was true.
+ADE no longer reads repository-committed `.ade/ade.yaml`. The one-time
+carry-over copies only the allowlisted non-executable fields into
+`.ade/local.yaml`, drops executable fields, and deletes the legacy file after a
+successful read. Current configuration is personal, scoped to an account or to
+a machine, and there is no approval verdict to grant or revoke.
 
-That gate is gone, along with the repo-committed `.ade/ade.yaml` it guarded.
-ADE's configuration is personal now — scoped to an account or to a machine —
-so nothing arrives from a repository that could run on your computer, and there
-is no approval left to grant or to revoke.
-
-Two things are worth recording about why it went rather than being fixed:
-
-- **It was unopenable.** The only control that ever called `confirmTrust` was a
-  banner in the Automations tab, and that banner renders solely when the rule
-  list contains a shared (non-`local`) rule. A repository with `automations: []`
-  — ADE's own among them — could therefore reach a state where test runs and
-  lane setup scripts refused, with no user interface anywhere able to clear it.
-  The documented `SettingsPage` trust dialog did not exist, and neither did the
-  `{ skipTrust: true }` escape hatch the old text described.
-- **It was not the boundary it looked like.** `laneEnvInit.dependencies[].command`
-  and the Docker compose path both reached `execCommand` through `getEffective()`,
-  which never checked trust at all. Only test suites, setup scripts, and manual
-  runs of shared automation rules were ever gated.
-
-`ProjectConfigTrust` now carries two content hashes and no verdict. They stay
-because change detection still needs them.
+`ProjectConfigTrust` remains only as compatibility metadata for the two content
+hashes used by change detection; it carries no trust decision and no execution
+permission.
 
 
 ## Validation
@@ -556,13 +535,9 @@ name handled inside `registerIpc.ts`).
   the only `.ade/` paths under version control. The shared
   `.ade/.gitignore` is `*` with explicit allowlist entries, so any new
   runtime file dropped into `.ade/` stays out of git automatically.
-- A project that has only ever saved local-only state (no shared
-  config, no shared icon override, no Linear workflow) keeps `.ade/`
-  ignored via `.git/info/exclude` instead of materializing the shared
-  `.ade/.gitignore`. The first save that changes shared content (or
-  any caller of `ensureSharedAdeProjectScaffold`) promotes the
-  scaffold and removes the local exclude rule. After that the project
-  behaves like a normal shared-scaffold ADE project.
+- A project saves configuration to `.ade/local.yaml`; it does not promote a
+  shared config file. The tracked `.ade/.gitignore` allowlist still controls
+  which authored templates, skills, workflows, and icons may be committed.
 - Hot-reload of config changes is best-effort. Process env, lane
   overlay policies, and AI mode apply to new launches, not live
   ones.

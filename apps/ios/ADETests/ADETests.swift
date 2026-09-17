@@ -11748,6 +11748,36 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testFireAndForgetRemoteCommandDropsLocallyWhenViewerPolicyDeniesAction() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "chat.approve",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: false, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let delivery = await service.sendRemoteCommand(.approveSession, payload: [
+      "sessionId": "session-1",
+      "itemId": "approval-1",
+    ])
+
+    XCTAssertEqual(
+      delivery,
+      .dropped("This action is not available from a viewer device.")
+    )
+    XCTAssertEqual(service.pendingOperationCount, 0)
+    XCTAssertTrue(service.pendingOperationsForTesting().isEmpty)
+  }
+
+  @MainActor
   func testCodexRecoveryIsGatedWhenLegacyHostDoesNotAdvertiseAction() async throws {
     let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
     UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)

@@ -10339,7 +10339,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setRightPane({
       kind: "list",
       title: "Secrets",
-      rows: secrets.map((secret) => `${secret.name} · •••• · ${secret.valueLength} chars`),
+      rows: secrets.map((secret) => `${secret.name} · ${secret.storage === "account" ? "Account" : "This device"} · •••• · ${secret.valueLength} chars`),
       emptyText: "No secrets saved.",
       action: { kind: "copy-secret", ids: secrets.map((secret) => secret.name) },
     });

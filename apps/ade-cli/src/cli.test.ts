@@ -2952,6 +2952,47 @@ describe("ADE CLI", () => {
       },
     });
 
+    const deviceSet = expectExecutePlan(
+      buildCliPlan(["secrets", "set", "TOKEN", "--value", "abc123", "--storage", "device"]),
+    );
+    expect(deviceSet.steps[0]?.params).toMatchObject({
+      name: "run_ade_action",
+      arguments: {
+        domain: "project_secret",
+        action: "set",
+        args: { name: "TOKEN", value: "abc123", storage: "device" },
+      },
+    });
+    const accountSet = expectExecutePlan(
+      buildCliPlan(["secrets", "set", "TOKEN", "--value", "abc123", "--storage", "account"]),
+    );
+    expect(accountSet.steps[0]?.params).toMatchObject({
+      name: "run_ade_action",
+      arguments: {
+        domain: "project_secret",
+        action: "set",
+        args: { name: "TOKEN", value: "abc123", storage: "account" },
+      },
+    });
+    expect(() => buildCliPlan(["secrets", "set", "TOKEN", "--value", "abc123", "--storage", "laptop"]))
+      .toThrow("--storage must be account or device.");
+
+    const listText = formatOutput(
+      {
+        secrets: [
+          { name: "ACCOUNT_TOKEN", valueLength: 8, storage: "account", updatedAt: "2026-09-17T12:00:00.000Z" },
+          { name: "LOCAL_TOKEN", valueLength: 5, storage: "device", updatedAt: "2026-09-17T12:01:00.000Z" },
+        ],
+        storage: { path: "/repo/.ade/secrets/project-secrets.v1.enc" },
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "project-secrets",
+    );
+    expect(listText).toContain("where");
+    expect(listText).toContain("account");
+    expect(listText).toContain("device");
+    expect(listText).toContain("Local cache:");
+
     const remove = expectExecutePlan(buildCliPlan(["secrets", "rm", "TOKEN"]));
     expect(remove.steps[0]?.params).toEqual({
       name: "run_ade_action",

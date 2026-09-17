@@ -13,6 +13,8 @@ import type { createFileService } from "../../desktop/src/main/services/files/fi
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createLinearClient } from "../../desktop/src/main/services/cto/linearClient";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
+import type { AccountVaultBridge } from "../../desktop/src/main/services/account/accountVaultBridge";
+import { describeVaultFailure, fireAndForgetVaultWrite } from "../../desktop/src/main/services/account/vaultWrite";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
@@ -134,11 +136,17 @@ import {
   LinearOAuthRefreshLockTimeoutError,
   withLinearOAuthRefreshLock,
 } from "../../desktop/src/main/services/cto/linearOAuthRefreshLock";
+import {
+  deviceCredentialProvenance,
+  normalizeCredentialProvenance,
+  type CredentialProvenance,
+} from "../../desktop/src/shared/types/credentialProvenance";
 
 // Keep headless runtimes aligned with the desktop credential service so packaged
 // alpha builds can offer the same PKCE-based Linear sign-in flow.
 const BUNDLED_LINEAR_OAUTH_CLIENT_ID =
   process.env.ADE_LINEAR_CLIENT_ID?.trim() || ADE_LINEAR_APP_CLIENT_ID;
+const LINEAR_PROVENANCE_KEY = "linear.credentialProvenance.v1";
 
 type HeadlessLinearCredentialService = ReturnType<typeof createLinearCredentialService>;
 type HeadlessGitHubStatus = GitHubStatus;
@@ -196,6 +204,8 @@ type HeadlessLinearDeps = {
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
   getAccountAccessToken?: () => Promise<string | null>;
+  getAccountVault?: () => AccountVaultBridge | null | undefined;
+  getAccountUserId?: () => string | null;
 };
 
 type HeadlessLinearServices = {
@@ -2522,6 +2532,8 @@ export function createHeadlessGitHubService(
 function createHeadlessLinearCredentialService(args: {
   adeDir: string;
   logger?: Logger;
+  getAccountVault?: () => AccountVaultBridge | null | undefined;
+  getAccountUserId?: () => string | null;
 }): HeadlessLinearCredentialService {
   const secretsDir = path.join(args.adeDir, "secrets");
   const credentialStore = new EncryptedFileCredentialStore({
@@ -2556,6 +2568,82 @@ function createHeadlessLinearCredentialService(args: {
       credentialStore.deleteSync(key);
     }
     tokenDecryptionFailed = false;
+  };
+
+  const readProvenanceMap = (): Record<string, CredentialProvenance> => {
+    const raw = readCredential(LINEAR_PROVENANCE_KEY);
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      const result: Record<string, CredentialProvenance> = {};
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        const normalized = normalizeCredentialProvenance(value);
+        if (normalized) result[key] = normalized;
+      }
+      return result;
+    } catch {
+      return {};
+    }
+  };
+
+  const writeProvenanceMap = (map: Record<string, CredentialProvenance>): void => {
+    writeCredential(LINEAR_PROVENANCE_KEY, JSON.stringify(map));
+  };
+
+  const setCredentialProvenance = (key: string, value: CredentialProvenance): void => {
+    const map = readProvenanceMap();
+    map[key] = value;
+    writeProvenanceMap(map);
+  };
+
+  const deleteCredentialProvenance = (key: string): void => {
+    const map = readProvenanceMap();
+    if (!(key in map)) return;
+    delete map[key];
+    writeProvenanceMap(map);
+  };
+
+  const getCredentialProvenance = (key: string): CredentialProvenance => {
+    return readProvenanceMap()[key] ?? deviceCredentialProvenance();
+  };
+
+  const accountProvenance = (accountUserId?: string | null): CredentialProvenance => {
+    const normalized = accountUserId?.trim() || args.getAccountUserId?.()?.trim() || "";
+    return normalized
+      ? { source: "account", accountUserId: normalized }
+      : deviceCredentialProvenance();
+  };
+
+  const logVaultFailure = (operation: string, detail: unknown): void => {
+    args.logger?.warn("linear_sync.account_vault_sync_failed", {
+      operation,
+      error: describeVaultFailure(detail),
+    });
+  };
+
+  const syncRefreshTokenToVault = (refreshToken: string): void => {
+    fireAndForgetVaultWrite(
+      {
+        getAccountVault: args.getAccountVault,
+        logger: args.logger,
+        logEvent: "linear_sync.account_vault_sync_failed",
+      },
+      "set",
+      (vault) => vault.set("all", "linear_refresh_token", "default", refreshToken),
+    );
+  };
+
+  const removeRefreshTokenFromVault = (): void => {
+    fireAndForgetVaultWrite(
+      {
+        getAccountVault: args.getAccountVault,
+        logger: args.logger,
+        logEvent: "linear_sync.account_vault_sync_failed",
+      },
+      "remove",
+      (vault) => vault.remove("all", "linear_refresh_token", "default"),
+    );
   };
 
   const readToken = (): {
@@ -2640,8 +2728,10 @@ function createHeadlessLinearCredentialService(args: {
           tokenOverride = result.accessToken;
           writeCredential(tokenKey, result.accessToken);
           writeCredential(authModeKey, "oauth");
-          writeCredential(refreshTokenKey, result.refreshToken ?? tokenToRefresh);
+          const nextRefreshToken = result.refreshToken ?? tokenToRefresh;
+          writeCredential(refreshTokenKey, nextRefreshToken);
           writeCredential(tokenExpiresAtKey, result.expiresAt);
+          syncRefreshTokenToVault(nextRefreshToken);
           return;
         }
         if (result.invalidGrant) {
@@ -2663,6 +2753,9 @@ function createHeadlessLinearCredentialService(args: {
           writeCredential(authModeKey, null);
           writeCredential(refreshTokenKey, null);
           writeCredential(tokenExpiresAtKey, null);
+          deleteCredentialProvenance(tokenKey);
+          deleteCredentialProvenance(refreshTokenKey);
+          removeRefreshTokenFromVault();
           return;
         }
       };
@@ -2691,6 +2784,54 @@ function createHeadlessLinearCredentialService(args: {
     await refreshInFlight;
   };
 
+  const hydrateFromVault = async (): Promise<void> => {
+    const accountUserId = args.getAccountUserId?.()?.trim() || null;
+    if (!accountUserId) return;
+
+    try {
+      if (readCredential(refreshTokenKey)) return;
+      const authMode = readCredential(authModeKey);
+      // Manual and environment-provided credentials remain authoritative on
+      // this machine; only an OAuth connection can accept a refresh grant.
+      if (authMode && authMode !== "oauth") return;
+    } catch (error) {
+      logVaultFailure("hydrate", error);
+      return;
+    }
+
+    let vault: AccountVaultBridge | null | undefined;
+    try {
+      vault = args.getAccountVault?.() ?? null;
+    } catch (error) {
+      logVaultFailure("get", error);
+      return;
+    }
+    if (!vault) return;
+
+    let result: Awaited<ReturnType<AccountVaultBridge["get"]>>;
+    try {
+      result = await vault.get("all", "linear_refresh_token", "default");
+    } catch (error) {
+      logVaultFailure("get", error);
+      return;
+    }
+    if (!result.ok) {
+      logVaultFailure("get", result);
+      return;
+    }
+    const refreshToken = result.value?.trim() ?? "";
+    if (!refreshToken.length) return;
+    if ((args.getAccountUserId?.()?.trim() || null) !== accountUserId) return;
+
+    try {
+      if (readCredential(refreshTokenKey)) return;
+      setCredentialProvenance(refreshTokenKey, accountProvenance(accountUserId));
+      writeCredential(refreshTokenKey, refreshToken);
+    } catch (error) {
+      logVaultFailure("hydrate", error);
+    }
+  };
+
   return {
     getToken() {
       const { token } = readToken();
@@ -2702,7 +2843,7 @@ function createHeadlessLinearCredentialService(args: {
         : null;
     },
     getRefreshTokenProvenance() {
-      return { source: "device" as const, accountUserId: null };
+      return getCredentialProvenance(refreshTokenKey);
     },
     getStatus() {
       const { token, source } = readToken();
@@ -2745,6 +2886,9 @@ function createHeadlessLinearCredentialService(args: {
       writeCredential(authModeKey, "manual");
       writeCredential(refreshTokenKey, null);
       writeCredential(tokenExpiresAtKey, null);
+      setCredentialProvenance(tokenKey, deviceCredentialProvenance());
+      deleteCredentialProvenance(refreshTokenKey);
+      removeRefreshTokenFromVault();
     },
     setOAuthToken(args: {
       accessToken: string;
@@ -2756,6 +2900,14 @@ function createHeadlessLinearCredentialService(args: {
       writeCredential(authModeKey, "oauth");
       writeCredential(refreshTokenKey, args.refreshToken);
       writeCredential(tokenExpiresAtKey, args.expiresAt);
+      setCredentialProvenance(tokenKey, deviceCredentialProvenance());
+      if (args.refreshToken?.trim()) {
+        setCredentialProvenance(refreshTokenKey, deviceCredentialProvenance());
+        syncRefreshTokenToVault(args.refreshToken.trim());
+      } else {
+        deleteCredentialProvenance(refreshTokenKey);
+        removeRefreshTokenFromVault();
+      }
     },
     clearToken() {
       tokenOverride = "";
@@ -2763,8 +2915,11 @@ function createHeadlessLinearCredentialService(args: {
       writeCredential(authModeKey, null);
       writeCredential(refreshTokenKey, null);
       writeCredential(tokenExpiresAtKey, null);
+      deleteCredentialProvenance(tokenKey);
+      deleteCredentialProvenance(refreshTokenKey);
+      removeRefreshTokenFromVault();
     },
-    hydrateFromVault: async () => {},
+    hydrateFromVault,
     setOAuthClientCredentials(args: {
       clientId: string;
       clientSecret?: string | null;
@@ -2785,8 +2940,19 @@ function createHeadlessLinearCredentialService(args: {
       writeCredential(oauthClientKey, null);
     },
     purgeAccountCredentials() {
-      // Headless mode has no account-vault hydration; all credentials it owns
-      // are device-origin and therefore intentionally retained.
+      const tokenSource = getCredentialProvenance(tokenKey);
+      const refreshSource = getCredentialProvenance(refreshTokenKey);
+      if (tokenSource.source === "account") {
+        tokenOverride = "";
+        writeCredential(tokenKey, null);
+        writeCredential(authModeKey, null);
+        writeCredential(tokenExpiresAtKey, null);
+        deleteCredentialProvenance(tokenKey);
+      }
+      if (refreshSource.source === "account") {
+        writeCredential(refreshTokenKey, null);
+        deleteCredentialProvenance(refreshTokenKey);
+      }
     },
     getOAuthClientCredentials() {
       // Resolution order lives in readOAuthClientCredentials: user-configured
@@ -3244,6 +3410,8 @@ export function createHeadlessLinearServices(
     createHeadlessLinearCredentialService({
       adeDir: args.adeDir,
       logger: args.logger,
+      getAccountVault: args.getAccountVault,
+      getAccountUserId: args.getAccountUserId,
     });
   const githubService = createHeadlessGitHubService(
     args.projectRoot,

@@ -254,9 +254,10 @@ function printRemoteHelp(): void {
 
 Connect ADE Code to a computer already saved in ADE Connections.
 
-Local network and Tailscale connections work without an ADE account. ADE Relay
-requires both computers to be signed in to the same account. Advanced SSH is used
-only when you explicitly save an SSH connection.
+Sign in to ADE for account-backed connections. Direct local network and Tailscale
+routes stay reachable meanwhile; ADE Relay requires both computers to be signed in
+to the same account. Advanced SSH is used only when you explicitly save an SSH
+connection.
 
 Usage:
   ade code remote [project|session]

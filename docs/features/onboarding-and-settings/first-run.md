@@ -4,6 +4,11 @@ Opening or creating a project goes straight to Work. There is no blocking
 project-setup dashboard. `.ade` layout and `ade.db` are created as soon as ADE
 knows the folder (create/clone scaffold, then the normal project bind).
 
+A fresh launch requires an ADE account sign-in before account-backed work is
+shown. If a phone or desktop already has a paired/local connection, its access
+gate offers the explicit recovery path while signed out; that is not a guest
+account and does not create a new account-less setup mode.
+
 AI runtimes, GitHub, and Linear stay in Settings. A new local repo can stay
 unpublished; the header Publish pill appears until `origin` exists.
 
@@ -18,7 +23,7 @@ The canonical backend is
 | Create project | `CreateProjectForm.tsx` | Name + first-class location; create opens Work. |
 | Work | Work tab / new chat | Default landing for new, existing, and first-open projects. |
 | Publish | header Publish pill | Optional GitHub repo creation when there is no `origin`. |
-| Settings | Agents, Integrations | AI runtimes, GitHub, Linear. |
+| Settings | four scope groups; Agents/Providers, Integrations | AI runtimes, GitHub, Linear, account settings, and machine diagnostics. |
 
 ## Onboarding service API
 
@@ -73,7 +78,7 @@ It also seeds:
 - provider config for `codex` / `claude` context tools and conflict resolvers
 
 `applySuggestedConfig(suggestedConfig)` merges this partial config into the
-shared YAML via `projectConfigService.save`.
+machine-local `.ade/local.yaml` via `projectConfigService.save`.
 
 ## UX contract
 

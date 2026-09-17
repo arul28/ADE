@@ -95,7 +95,7 @@ import {
   publishLinearLaneCard,
 } from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
-import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
+import { initApiKeyStore, purgeAccountApiKeys } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import { createSyncStatusEventPublisher } from "./services/sync/syncStatusEventPublisher";
@@ -110,6 +110,9 @@ import { buildCursorCloudAutomationDispatches } from "../../desktop/src/main/ser
 import { openCursorCloudCredentialStore } from "../../desktop/src/main/services/chat/cursorCloudCreateOptions";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
+import { createAccountMigrationRunner } from "../../desktop/src/main/services/account/accountMigrationRunner";
+import type { AccountVaultBridge } from "../../desktop/src/main/services/account/accountVaultBridge";
+import type { AccountVaultResult } from "../../desktop/src/shared/types/accountVault";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
@@ -191,6 +194,7 @@ import {
   getSharedAccountVaultStore,
   type AccountVaultStore,
 } from "./services/account/accountVaultStore";
+import type { AccountVaultItemKind } from "./services/push/accountRelayRows";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
@@ -226,6 +230,72 @@ import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationA
 
 /** One warm-runtime budget for every project scope this brain opens. */
 const chatRuntimeBudget = createChatRuntimeBudget();
+
+const HEADLESS_ACCOUNT_VAULT_UNAVAILABLE_MESSAGE =
+  "The account vault is unavailable in this runtime.";
+const HEADLESS_ACCOUNT_VAULT_REJECTED_MESSAGE =
+  "The account vault rejected the write because account ownership changed.";
+
+/** Adapt the brain's local vault store to the bridge used by shared services. */
+function createHeadlessAccountVaultBridge(
+  getStore: () => AccountVaultStore | null,
+): AccountVaultBridge {
+  const unavailable = <T>(): AccountVaultResult<T> => ({
+    ok: false,
+    unavailable: true,
+    message: HEADLESS_ACCOUNT_VAULT_UNAVAILABLE_MESSAGE,
+  });
+  const rejected = <T>(): AccountVaultResult<T> => ({
+    ok: false,
+    rejected: true,
+    message: HEADLESS_ACCOUNT_VAULT_REJECTED_MESSAGE,
+  });
+
+  return {
+    async list(scope) {
+      const store = getStore();
+      if (!store) return unavailable();
+      return {
+        ok: true,
+        value: store.list(scope ?? undefined).map((item) => ({
+          scope: item.scope,
+          kind: item.kind,
+          key: item.key,
+          value: null,
+          updatedAt: item.updatedAt,
+        })),
+      };
+    },
+    async get(scope, kind, key) {
+      const store = getStore();
+      if (!store) return unavailable();
+      return {
+        ok: true,
+        value: store.get(scope, kind as AccountVaultItemKind, key),
+      };
+    },
+    async set(scope, kind, key, value) {
+      const store = getStore();
+      if (!store) return unavailable();
+      return store.set(scope, kind as AccountVaultItemKind, key, value)
+        ? { ok: true, value: null }
+        : rejected();
+    },
+    async remove(scope, kind, key) {
+      const store = getStore();
+      if (!store) return unavailable();
+      return store.remove(scope, kind as AccountVaultItemKind, key)
+        ? { ok: true, value: null }
+        : rejected();
+    },
+    async sync() {
+      const store = getStore();
+      if (!store) return unavailable();
+      await store.sync();
+      return { ok: true, value: null };
+    },
+  };
+}
 
 declare const __ADE_VERSION__: string | undefined;
 
@@ -728,7 +798,6 @@ export async function createAdeRuntime(args: {
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);
-  initApiKeyStore(projectRoot, { credentialStore: new EncryptedFileCredentialStore() });
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
@@ -1032,10 +1101,23 @@ export async function createAdeRuntime(args: {
       db,
       logger,
     });
-    const projectSecretService = createProjectSecretService(projectRoot);
     registerAccountConfigProjectRoot(projectRoot);
     const accountAuthService = getSharedAccountAuthService({
       projectRoots: () => [projectRoot],
+      logger,
+    });
+    let accountSettingsStore: AccountSettingsStore | null = null;
+    let accountVaultStore: AccountVaultStore | null = null;
+    const accountVaultBridge = createHeadlessAccountVaultBridge(() => accountVaultStore);
+    initApiKeyStore(projectRoot, {
+      credentialStore: new EncryptedFileCredentialStore(),
+      getAccountVault: () => accountVaultStore ? accountVaultBridge : null,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+    });
+    const projectSecretService = createProjectSecretService(projectRoot, {
+      getAccountVault: () => accountVaultStore ? accountVaultBridge : null,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
     });
     const getAccountAccessToken = (
@@ -1459,6 +1541,8 @@ export async function createAdeRuntime(args: {
       onGitHubStatusChanged: (status) =>
         pushEvent("runtime", { type: "github_status_changed", event: status }),
       getAccountAccessToken,
+      getAccountVault: () => accountVaultStore ? accountVaultBridge : null,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
     });
     teardown.push(() => headlessLinearServices.dispose());
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
@@ -1937,13 +2021,6 @@ export async function createAdeRuntime(args: {
     });
     teardown.push(() => stopCredentialWatch?.());
 
-    // Declared out here so the runtime object below can expose it. Built only
-    // when sync is on: a `--no-sync` brain (manual runtimes, tests) must never
-    // reach the account Worker, and having no store at all is a stronger
-    // guarantee of that than a store with its uploads disabled.
-    let accountSettingsStore: AccountSettingsStore | null = null;
-    let accountVaultStore: AccountVaultStore | null = null;
-
     // Brain → Cloudflare push relay publisher. Owns push registration (from the
     // paired phone via `push.*` sync commands) and fans agent/PR state transitions
     // out as APNs alerts + the aggregate "agent-runs" Live Activity. Machine-level
@@ -2084,10 +2161,66 @@ export async function createAdeRuntime(args: {
       // happened in another process (`ade logout`) and this brain only hears
       // about it through the credential file changing.
       const vaultToPurge = accountVaultStore;
+      const purgeAccountOwnedCredentials = (): void => {
+        try {
+          purgeAccountApiKeys();
+        } catch (error) {
+          logger.warn("account.local_credentials_purge_failed", {
+            source: "provider_api_keys",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        try {
+          projectSecretService.purgeAccountCredentials();
+        } catch (error) {
+          logger.warn("account.local_credentials_purge_failed", {
+            source: "project_secrets",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        try {
+          headlessLinearServices.linearCredentialService.purgeAccountCredentials();
+        } catch (error) {
+          logger.warn("account.local_credentials_purge_failed", {
+            source: "linear_credentials",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
+      const initialAccountStatus = accountAuthService.getStatus();
+      let lastAccountUserId = initialAccountStatus.signedIn
+        ? initialAccountStatus.userId?.trim() || null
+        : null;
       const unsubscribeAccountSignedOut = accountAuthService.onSignedOut?.(() => {
         vaultToPurge.purge();
+        purgeAccountOwnedCredentials();
+        lastAccountUserId = null;
       });
       if (unsubscribeAccountSignedOut) teardown.push(unsubscribeAccountSignedOut);
+
+      // Keep the CLI brain on the same silent, receipt-backed account migration
+      // path as desktop. The callbacks above are late-bound because the
+      // machine-scoped account stores are created after the project services.
+      const accountMigrationRunner = createAccountMigrationRunner({
+        accountBridge: { status: () => accountAuthService.getStatus() },
+        accountVaultBridge,
+        getContexts: () => [{
+          project: { rootPath: projectRoot },
+          linearCredentialService: headlessLinearServices.linearCredentialService,
+          projectSecretService,
+        }],
+        getLogger: () => logger,
+      });
+      accountMigrationRunner.start();
+      teardown.push(accountAuthService.onSignedIn(() => {
+        const nextAccountUserId = accountAuthService.getStatus().userId?.trim() || null;
+        if (lastAccountUserId && nextAccountUserId && lastAccountUserId !== nextAccountUserId) {
+          vaultToPurge.purge();
+          purgeAccountOwnedCredentials();
+        }
+        lastAccountUserId = nextAccountUserId;
+        accountMigrationRunner.start();
+      }));
     }
     const detachPushSources = publishPushEvents
       ? pushPublisherService.attachSources(projectId, {

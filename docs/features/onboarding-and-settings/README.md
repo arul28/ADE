@@ -13,6 +13,11 @@ Two related but distinct flows:
   such as automatic update installation persist in the Electron user-data
   `ade-state.json`.
 
+ADE account identity is required for a fresh launch on every client. The
+desktop, `ade code`, CLI, hosted web client, and iOS gate account-backed
+surfaces on the signed-in account; a lost or unreadable session is reported as
+its actual state rather than being treated as an optional guest account.
+
 The runtime no longer assumes first-run setup must hydrate every
 service. Project open favors a cheap first pass; secondary hydration
 (full lane status and provider modes) happens after the app is
@@ -42,10 +47,10 @@ Main process:
 
 - `apps/desktop/src/main/main.ts`,
   `apps/desktop/src/main/services/ipc/registerIpc.ts` — packaged-launch machine
-  trust migration plus the process-local launch-gate state exposed through
+  trust reset plus the process-local account launch-gate state exposed through
   `ade.app.getLaunchGateState` / `ade.app.resolveLaunchGate`. Resolving the gate
-  applies to every window and renderer reload in that desktop process; the next
-  fresh signed-out launch asks again.
+  applies to every window and renderer reload in that desktop process; a fresh
+  signed-out launch requires account sign-in again.
 - `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
   one-release, packaged-build reset of saved machine connection grants. It
   clears only remote targets, desktop paired-machine credentials, mobile/web
@@ -65,10 +70,27 @@ Main process:
   `sessionState`, the mark-dead-not-delete rejection markers, the attributed
   `account.session_mutation` audit line, and
   `accountSessionRetainsMachineOwnership` — see
-  [Account session state](#account-session-state-is-a-tri-state-not-a-boolean).
+  [Account session state](#account-session-state-is-a-four-state-not-a-boolean).
   `accountBridge.ts` mirrors `sessionState` onto `AdeAccountStatus` for the
   renderer, deriving it from the older `sessionReadState` when the runtime does
   not report one.
+- `apps/ade-cli/src/services/account/accountSettingsStore.ts`,
+  `accountVaultStore.ts`, and `accountCacheStore.ts` — the four-scope,
+  owner-tagged account settings cache and encrypted account-vault cache.
+  Settings are non-secret and survive sign-out; vault credentials are encrypted,
+  purged at deliberate sign-out or account switch, and never exposed through
+  the renderer settings bridge. Both stores keep local reads immediate while
+  the brain and Worker remain the account authority.
+- `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
+  `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
+  receipt-backed sign-in migration and hydration for provider API keys, Linear
+  OAuth refresh credentials, and repository-scoped project secrets. A source is
+  marked complete only after the account confirms the write; crashes and
+  unavailable contexts leave it pending.
+- `apps/ade-cli/src/services/account/sharedAccountAuthService.ts`,
+  `cliRefreshBroker.ts`, and `apps/desktop/src/main/services/account/accountBridge.ts` —
+  the brain-owned refresh broker used by desktop, CLI, and ADE Code; a
+  non-brain local exchange is only the explicit unavailable-brain fallback.
 - `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts` — the
   crash-safe refresh-rotation journal (`account.session.rotation.v1`), kept in
   the same file-backed credential bucket as the session it describes so the
@@ -377,6 +399,8 @@ Renderer — settings:
   `keybindings`, dropped because it pointed at a tab with no keybindings
   UI. Welcome video replay and help preferences live under the Help menu
   in the top bar, not as a Settings tab.
+  The manifest assigns each setting to one of four persistence scopes:
+  `account`, `account-repo`, `machine`, or `machine-repo`.
 - `apps/desktop/src/renderer/components/settings/BrowserLinksSection.tsx`
   — the General tab's **Links** group (`general.link-open-mode`, scope
   `machine`, `web: "hidden"` because a hosted tab has no Electron browser
@@ -411,9 +435,11 @@ Renderer — settings:
   when the block already holds a value and an existing config never
   hides itself. There is **no Save button anywhere in settings**:
   every control persists on change and reports via `SavedFlash`.
-  `ScopeChip` (Team / This Mac / This app) is shown only where the
+  `ScopeChip` uses the shared four-scope copy and is shown only where the
   backing store would surprise — clicking it names the file and who it
-  affects.
+  affects. `SettingsCard`, `SettingsManagerPage`, and
+  `SettingsDashboardPage` are the three page templates; section files choose
+  one instead of drawing their own page layout.
 - `GeneralSection.tsx` and `EnvironmentSection.tsx` were dissolved in the
   IA rewrite — General was a flat stack of 11 unrelated sections, and
   `EnvironmentSection` was App version + ADE CLI (now in General and
@@ -1373,7 +1399,7 @@ banner):
 ## Detail docs
 
 - [configuration-schema.md](./configuration-schema.md) — shape of
-  `.ade/local.yaml` (and the retired `.ade/ade.yaml`) as consumed by
+  `.ade/local.yaml` and the one-time legacy carry-over as consumed by
   `projectConfigService`; types in `shared/types/config.ts`.
 - [first-run.md](./first-run.md) — first launch lands on Work. There is
   no blocking project-setup dashboard; optional integrations live in Settings.
@@ -1747,7 +1773,8 @@ proxy fabricates callable namespaces for missing properties, so
 | Account settings cache | `~/.ade/account-settings.json` | Plaintext, owner-tagged cache; settings survive sign-out and stamps are namespaced by account |
 | Account vault cache | `~/.ade/account-vault.json.enc` | Encrypted with the machine credential-store key, written atomically with `0600`; legacy plaintext is removed after a successful encrypted write |
 | AI provider API keys | Machine credential store plus account vault | Every local value records device/account provenance; account-hydrated keys are purged on sign-out or account switch, while device-origin keys remain |
-| Linear credentials | Machine credential store or active project's `.ade/secrets`, plus account vault | Local token, refresh-token, OAuth-client, and project-secret records carry provenance; account-origin values are purged on sign-out or account switch |
+| Linear credentials | Encrypted machine credential store or active project's `.ade/secrets`, plus account vault | The OAuth refresh token is the `linear_refresh_token` account item and hydrates the local cache; provenance purges account-origin values on sign-out or account switch, while device-origin API keys and custom OAuth-client settings remain local |
+| Repository account secrets | Encrypted project-secret store plus account vault | Repository-scoped `project_secret` values follow the account and are keyed by normalized Git origin; device-only secrets remain local |
 | OpenAI API key (CTO voice) | Machine ADE home — `~/.ade/secrets` (or `$ADE_HOME`) via `resolveMachineAdeLayout` | machine-scoped, never read back to the renderer; an `OPENAI_API_KEY` in the environment is the read-only last tier |
 | Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
 
@@ -1768,13 +1795,15 @@ the migration path but it is idempotent for current configs.
 
 Onboarding and settings follow a simple rule:
 
+- require account sign-in for a fresh launch, while preserving explicit
+  recovery for an existing paired/local session
 - do not block on optional integrations
 - keep setup responsive
 - show the fastest path first
 - defer advanced or heavy configuration to the feature surface that
   owns it
 
-## Account session state is a tri-state, not a boolean
+## Account session state is a four-state, not a boolean
 
 "Not signed in" was one word for three different situations, and treating them
 alike is how a perfectly good session gets destroyed. `AccountAuthStatus`
@@ -1967,7 +1996,7 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
 - **No trust gate, and no committed config.** `.ade/ade.yaml` is no longer read
   at all — it is carried over into `local.yaml` once (non-executable keys only)
   and deleted. The gate went with the file it guarded;
-  see [configuration-schema.md](./configuration-schema.md#the-trust-model-is-retired).
+  see [configuration-schema.md](./configuration-schema.md#no-trust-gate).
   `getExecutableConfig` is gone too — it had become `getEffective` with an extra
   throw.
 - **Phone-sync port 8787.** Bind order always tries 8787 first, even when

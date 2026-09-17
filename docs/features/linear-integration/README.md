@@ -11,7 +11,21 @@ ADE's Linear integration is a **read surface plus a developer-driven write flow*
 The Linear services live under the `cto/` service directory as shared plumbing; they are not CTO-owned workflow machinery.
 
 - `linearAppClient.ts` — the ADE Linear OAuth app constants: the bundled public `ADE_LINEAR_APP_CLIENT_ID` and the `LinearOAuthClientSource` (`"ade-app" | "custom"`) type. This app is the default sign-in client; its authorization auto-provisions the workspace webhook the automations Linear ingress consumes.
-- `linearCredentialService.ts` — personal API key + OAuth client + auth-mode storage in the active project's `.ade/secrets`, with `ensureFreshToken()` for automatic OAuth refresh. `getOAuthClientCredentials()` falls back to the bundled ADE app client (secretless) when no custom client is configured, and `getOAuthClientSource()` reports which is in effect.
+- `linearCredentialService.ts` — encrypted personal API-key/access-token and
+  OAuth-client storage in the active project's `.ade/secrets` or shared machine
+  credential store, with account/device provenance and `ensureFreshToken()` for
+  automatic OAuth refresh. The OAuth refresh token is mirrored as the
+  account-vault `linear_refresh_token` item and can hydrate a missing local
+  refresh token; device-origin API keys and custom OAuth-client settings remain
+  local. `getOAuthClientCredentials()` falls back to the bundled ADE app client
+  (secretless) when no custom client is configured, and
+  `getOAuthClientSource()` reports which is in effect.
+- `apps/desktop/src/main/services/account/accountVaultBridge.ts` and
+  `apps/desktop/src/main/services/account/accountMigrationRunner.ts`
+  — the brain-backed vault bridge plus silent, receipt-backed migration of a
+  device-origin Linear OAuth refresh token into the signed-in account. Account
+  hydration never replaces a device-origin credential, and sign-out purges
+  account-origin local values.
 - `linearOAuthService.ts` / `linearOAuthRefreshLock.ts` / `linearTokenRefresh.ts` — the OAuth flows, the cross-process refresh lock, and the token-refresh exchange. Two authorize paths share the same PKCE code exchange and token storage: `startSession`/`getSession` run the desktop **loopback** flow (ephemeral server on port 19836), while `startExternalSession`/`completeExternalSession` run the **worker-bounce** flow used by mobile — no loopback server; the redirect target is `LINEAR_MOBILE_OAUTH_REDIRECT_URI` (the `ade-github-webhook-relay` Cloudflare worker's `/linear/oauth/callback`, which 302-bounces to `ade://linear-oauth`). In both flows the PKCE verifier and the resulting token stay desktop-side. The authorize URL requests `read,write,admin` for the ADE app client and `read,write` for a custom client.
 - `linearClient.ts` — the GraphQL client shared by desktop and the headless ADE CLI (reads plus the lightweight `updateIssueState` / `updateIssueAssignee` / `createComment` / `addIssueLabel` writes, and the `listWebhooks` / `createWebhook` / `deleteWebhook` methods the automations Linear ingress uses to manage a per-workspace webhook).
 - `linearIssueTracker.ts` / `issueTracker.ts` — normalization into `NormalizedLinearIssue` and the read shims + write helpers renderer/CLI surfaces call through.
@@ -43,19 +57,35 @@ IPC channel names live in `apps/desktop/src/shared/ipc.ts` (registered in `regis
 
 ## Connection model
 
-Credentials are owned by `apps/desktop/src/main/services/cto/linearCredentialService.ts`, backed locally by the active project's `.ade/secrets` store, so separate ADE projects can attach separate Linear workspaces. OAuth refresh tokens are also mirrored to the account vault as `linear_refresh_token`; a missing local OAuth refresh token can hydrate from that account item without replacing local credentials. Two connection paths:
+Credentials are owned by `apps/desktop/src/main/services/cto/linearCredentialService.ts`.
+The active project keeps an encrypted local access-token record so separate ADE
+projects can attach separate Linear workspaces, while the signed-in account is
+the authority for the OAuth refresh credential. The refresh token is mirrored
+to the account vault as `linear_refresh_token`; a missing local OAuth refresh
+token hydrates from that account item without replacing a device-origin local
+credential. A silent, receipt-backed migration moves a device-origin refresh
+token into the account once after sign-in. Two connection paths:
 
 1. **OAuth** (the primary "Sign in with Linear" path; bundled public client with PKCE). By default sign-in uses the **ADE Linear OAuth app** — its public client id (`ADE_LINEAR_APP_CLIENT_ID` in `cto/linearAppClient.ts`) ships with the app, and PKCE means no client secret is bundled. A user-configured custom OAuth client, when present, takes precedence; `linearCredentialService.getOAuthClientSource()` reports `"ade-app"` vs `"custom"` and `oauthConfigured` is now always `true` (the bundled client makes OAuth always available). The ADE app requests the `read,write,admin` scope, while a custom client keeps the narrower `read,write` — the `admin` scope is Linear's requirement for OAuth-app data-change webhooks, so a workspace that authorizes the ADE app gets its Linear webhook auto-provisioned (pointed at the ADE relay) and can drive automation Linear triggers with no manual "Connect Linear events" step. `linearOAuthService.ts` boots an ephemeral loopback server on port 19836, returns the authorize URL for the renderer to open, and finalizes on callback. The sign-in session expires after 10 minutes. The resulting access token (which Linear expires ~24h after sign-in) is refreshed automatically: `linearCredentialService.ensureFreshToken()` exchanges the stored `refresh_token` via `linearTokenRefresh.ts` proactively before requests and reactively on a 401, rotating the refresh token on success. `linearOAuthRefreshLock.ts` serializes refresh across processes. An `invalid_grant` clears the connection so the user re-authorizes; transient failures leave the token in place.
-2. **Personal API key** — pasted into the connection panel, validated by a `viewer` query, stored the same way. It does not expire and is the alternative for headless use.
+2. **Personal API key** — pasted into the connection panel, validated by a
+   `viewer` query, and stored as a device-origin encrypted local credential. It
+   does not expire and is the alternative for headless use; it is not copied to
+   another account or machine automatically.
 
 Until a token is stored, nothing binds and no background work runs — connecting is a deliberate act of storing a token.
 
 ### Connecting and managing from mobile
 
-The phone can connect, reconnect, and disconnect Linear against its paired Mac without a loopback server. Both mobile paths store the token **desktop-side** and are exposed as four `viewerAllowed` sync commands (`cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken`):
+The phone can connect, reconnect, and disconnect Linear against its paired Mac
+without a loopback server. Both mobile paths keep credential material
+desktop/brain-side; the account vault carries the OAuth refresh token and the
+phone never stores it. The OAuth start/complete commands are viewer-allowed;
+direct API-key set/clear commands are host-only (`viewerAllowed: false`):
+(`cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`,
+`cto.setLinearToken`, `cto.clearLinearToken`):
 
 - **Worker-bounce OAuth.** `cto.startLinearMobileOAuth` has the desktop mint a PKCE session (`linearOAuthService.startExternalSession`) whose `redirect_uri` is the `ade-github-webhook-relay` Cloudflare worker's `/linear/oauth/callback`. The phone opens the returned `authorizeUrl` in an `ASWebAuthenticationSession`; after the user authorizes, Linear redirects to the worker, which 302-bounces to `ade://linear-oauth?code&state`. The web-auth session (scheme `ade`) captures that callback in-process, so the phone hands `code` + `state` back through `cto.completeLinearMobileOAuth`, and the desktop performs the token exchange (`completeExternalSession`) and stores it. The PKCE verifier and the token never leave the Mac, so the authorization code is useless in transit.
-- **API key.** `cto.setLinearToken` forwards a pasted personal API key to the desktop `linearCredentialService`; `cto.clearLinearToken` disconnects the workspace for the whole machine.
+- **API key.** `cto.setLinearToken` forwards a pasted personal API key to the desktop `linearCredentialService`; the key remains on that host as a device-origin credential. `cto.clearLinearToken` disconnects the workspace for the whole machine and removes any account-vault refresh item.
 
 Because the four commands are advertised as optional capabilities, the iOS UI gates each affordance on `supportsRemoteAction(...)` — an older brain that never advertises them simply shows no connect/reconnect/disconnect buttons (with a short "update ADE on your Mac" hint) instead of erroring.
 
@@ -139,7 +169,7 @@ State lives in `.ade/ade.db` and replicates through cr-sqlite. Tables the live L
 
 - **Dormant until connected.** Until a token is stored, nothing fires and no listener binds. Tests should stub `getStatus().tokenStored` accordingly.
 - **Desktop OAuth is loopback-only.** The desktop sign-in flow needs port 19836 free; the service does not pick alternatives, and collisions surface as a startup error in the panel. The mobile worker-bounce flow does not use a loopback server (it relies on the relay worker + `ade://` callback), so it is unaffected by port 19836.
-- **Local connection state and account refresh state are separate.** Access tokens and auth mode remain in the active project's local credential store; an OAuth refresh token is account-scoped and hydrates only when the local connection lacks one.
+- **Local connection state and account refresh state are separate.** Access tokens and auth mode remain in the active project's encrypted credential store; an OAuth refresh token is account-scoped, migrates silently once after sign-in, hydrates only when the local connection lacks one, and is removed from account-origin local state on sign-out or account switch.
 - **Live status is off by default.** Nothing writes back to Linear on launch / PR / merge unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`; every hook short-circuits when the flag is unset.
 - **CRR strips non-PK uniqueness.** Linear tables don't rely on secondary UNIQUE constraints for upserts; use explicit select-then-update or the delete-then-insert pattern instead of `ON CONFLICT(some_unique_col)`.
 

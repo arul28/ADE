@@ -40,6 +40,10 @@ commands, file requests, and chat/terminal streams. Browser environments paired
 before this release can still reconnect over their saved local/direct routes,
 but the hosted client no longer creates non-account pairings.
 
+Fresh controller launches require an ADE account. A previously paired device
+may use its explicitly labeled direct/local recovery path while signed out, but
+that path is not a guest account and never becomes an account-wide view.
+
 Account Activity deliberately does **not** follow that selected machine or
 project binding. Every signed-in brain publishes all of its active projects to
 the account relay, while signed-in desktop, hosted web, ADE Code, and iOS read
@@ -366,7 +370,7 @@ See `remote-commands.md` and `../linear-integration/README.md`.
 |---|---|---|
 | Replicated ADE runtime tables in `.ade/ade.db` | cr-sqlite CRRs over WebSocket | All connected devices |
 | Source code files | `git push`/`git pull` | Desktop peers only |
-| Shared ADE scaffold/config (`.ade/.gitignore`, `.ade/ade.yaml`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
+| Shared ADE scaffold/config (`.ade/.gitignore`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
 | Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
 | Worktrees, PTY processes, caches, transcripts, artifacts, sockets, secrets, connection drafts | **Never syncs** | Machine-specific |
 | Product-analytics installation IDs, consent, budgets/deduplication state, and the local `usage_events` export ledger | **Never syncs** | Machine/browser/iOS-client specific; paired-client consent is socket-scoped |
@@ -964,8 +968,10 @@ Runtime support files outside `services/sync/`:
   clock can win an exchange; the caller's own `changedAt` is kept beside it for
   diagnostics and is never authoritative. Machine-scoped settings never arrive
   here at all.
-- `apps/ade-cli/src/services/account/accountSettingsStore.ts` — the machine's
-  copy. Reads never touch the network, because a settings page that waited on a
+- `apps/ade-cli/src/services/account/accountSettingsStore.ts` and
+  `accountCacheStore.ts` — the machine's copy and its shared owner/epoch,
+  queue, cursor, and encrypted-cache primitives. Reads never touch the
+  network, because a settings page that waited on a
   Worker would be unusable on a train. A write lands in the cache, is answered
   at once, and queues; `sync()` uploads the queue and then pulls. Three
   invariants are load-bearing and each is pinned by a test:
@@ -989,11 +995,23 @@ Runtime support files outside `services/sync/`:
   successful encrypted write. Mutations capture the signed-in owner and cache
   generation, so a sign-out or account switch drops a delayed write instead of
   resurrecting another account's credential.
-- `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) —
-  how desktop, `ade code`, the CLI, and iOS all reach the store through the
-  brain rather than each holding their own copy. Deliberately separate from the
-  vault's domain so "change my theme" and "read my API key" cannot share one
-  permission.
+- `apps/push-relay/src/accountVault.ts` and
+  `apps/push-relay/migrations/0009_account_vault.sql` — the authenticated
+  account-vault Worker routes and per-item D1 table. Values are encrypted before
+  they leave the brain; the Worker stores ciphertext and never returns vault
+  values to viewer-allowed clients.
+- `apps/desktop/src/main/services/account/accountVaultBridge.ts` and
+  `apps/desktop/src/main/services/account/accountMigrationRunner.ts` — the
+  desktop-main bridge to the brain vault and the silent, receipt-backed sign-in
+  migration for provider API keys, Linear OAuth refresh credentials, and
+  repository-scoped project secrets. Migration is write-confirmed, per account
+  and per source, and hydrates local stores without replacing device-origin
+  values.
+- `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
+  `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`) — how
+  desktop, `ade code`, the CLI, and iOS reach the stores through the brain.
+  The domains remain separate: settings are non-secret account preferences,
+  while vault reads/writes are host/CTO policy-gated credential operations.
 - `apps/account-directory/src/directory.ts` — the Clerk-scoped machine
   register/list/delete Worker routes. Machine listing selects the owner's 500
   most recently seen rows before computing online-first order and exposes
@@ -3747,9 +3765,12 @@ feature is merged or because a deliberately isolated-port host is running.
   PIN store.
 - **Only explicitly account-owned credentials sync.** `.ade/local.secret.yaml`
   and device-only credentials remain per-machine. Account-scoped AI provider
-  keys use the `provider_api_key` vault kind, and Linear OAuth refresh tokens
-  use `linear_refresh_token`; access tokens, GitHub tokens, and vendor CLI
-  refresh credentials stay on the machine that owns them.
+  keys use the `provider_api_key` vault kind, Linear OAuth refresh tokens use
+  `linear_refresh_token`, and repository account secrets use `project_secret`
+  under the normalized repository scope. Local credential stores retain
+  provenance and purge account-origin values on sign-out or account switch;
+  access tokens, GitHub tokens, and vendor CLI refresh credentials stay on the
+  machine that owns them.
 - **Transport**: WebSocket auth via PIN / paired secret / bootstrap
   token on every connection. Tailscale WireGuard encryption applies
   when over tailnet; LAN connections rely on pairing token validation.
