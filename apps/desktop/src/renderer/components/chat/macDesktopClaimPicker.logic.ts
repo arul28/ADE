@@ -27,6 +27,12 @@ export type MacDesktopClaimRow = {
   window: MacDesktopWindow;
   /** The window's own name, or the app name when it has no title. */
   title: string;
+  /**
+   * True when the window has no name of its own, so `title` is only the app
+   * name again. The row says "Untitled window" rather than printing the app
+   * name twice, once in the group header and once under it.
+   */
+  untitled: boolean;
   appName: string;
   bundleId: string | null;
   location: MacDesktopClaimLocation;
@@ -64,6 +70,37 @@ export function macDesktopHasLease(
 export function macDesktopClaimTitle(window: MacDesktopWindow): string {
   const title = window.title?.trim();
   return title && title.length ? title : window.appName;
+}
+
+/** A window with no name of its own — including one named after its app. */
+export function macDesktopClaimIsUntitled(window: MacDesktopWindow): boolean {
+  const title = window.title?.trim() ?? "";
+  if (!title.length) return true;
+  return title.toLowerCase() === window.appName.trim().toLowerCase();
+}
+
+/**
+ * The apps this picker never offers: ADE itself.
+ *
+ * Claiming ADE's own window drags the window the user is looking at onto a
+ * screen they are not looking at. The dev build runs under Electron's bundle
+ * id and the shipped one under ADE's, and both are ADE.
+ */
+export const MAC_DESKTOP_SELF_BUNDLE_IDS: readonly string[] = [
+  "com.ade.desktop",
+  "com.github.Electron",
+  "com.electron.ade",
+];
+
+export function macDesktopClaimIsSelf(window: MacDesktopWindow): boolean {
+  const bundleId = window.bundleId?.trim().toLowerCase();
+  if (bundleId) {
+    return MAC_DESKTOP_SELF_BUNDLE_IDS.some((id) => id.toLowerCase() === bundleId);
+  }
+  // No bundle id is the Electron dev app's own shape often enough to matter,
+  // and "Electron" is not an app anybody parks on purpose.
+  const appName = window.appName.trim().toLowerCase();
+  return appName === "electron" || appName === "ade";
 }
 
 /**
@@ -123,6 +160,7 @@ export function macDesktopClaimRow(
   return {
     window,
     title: macDesktopClaimTitle(window),
+    untitled: macDesktopClaimIsUntitled(window),
     appName: window.appName,
     bundleId: window.bundleId,
     location: macDesktopClaimLocation(window, args),
@@ -139,6 +177,55 @@ export function macDesktopClaimMatches(row: MacDesktopClaimRow, query: string): 
   if (!needle) return true;
   return [row.appName, row.title, row.bundleId ?? ""]
     .some((value) => value.toLowerCase().includes(needle));
+}
+
+/**
+ * The windows worth showing, before any lane judgement is made.
+ *
+ * The window server's list is not a list of windows a person has: one TextEdit
+ * with one document answered with nine identical rows, its own hidden service
+ * windows, and a Cursor install contributed thirteen `CursorUIViewService`
+ * entries. The driver drops the ones it can see through (dead pids, zero-size
+ * surfaces, untitled windows of non-regular apps); these three rules are the
+ * half that needs the whole list to decide:
+ *
+ * * ADE's own windows never appear — claiming them moves the window the user
+ *   is looking at onto a screen they are not;
+ * * an app's untitled windows are dropped when that app also has a titled
+ *   one, because then the untitled ones are its scratch windows; an app whose
+ *   windows are *all* untitled still gets its rows, or a running app would
+ *   simply be missing;
+ * * windows identical in pid, title and frame collapse to one — the same
+ *   window seen twice is not two things to choose between.
+ */
+export function macDesktopClaimVisibleWindows(
+  windows: readonly MacDesktopWindow[],
+): MacDesktopWindow[] {
+  const candidates = windows.filter((window) => !macDesktopClaimIsSelf(window));
+  const appsWithTitledWindow = new Set(
+    candidates
+      .filter((window) => !macDesktopClaimIsUntitled(window))
+      .map((window) => window.bundleId ?? window.appName),
+  );
+  const seen = new Set<string>();
+  const kept: MacDesktopWindow[] = [];
+  for (const window of candidates) {
+    const appKey = window.bundleId ?? window.appName;
+    if (macDesktopClaimIsUntitled(window) && appsWithTitledWindow.has(appKey)) continue;
+    const { x, y, width, height } = window.frame;
+    const identity = [
+      window.pid,
+      macDesktopClaimTitle(window),
+      x,
+      y,
+      width,
+      height,
+    ].join("\u0000");
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    kept.push(window);
+  }
+  return kept;
 }
 
 /**
@@ -160,7 +247,7 @@ export function macDesktopClaimGroups(
   },
 ): MacDesktopClaimGroup[] {
   const groups = new Map<string, MacDesktopClaimGroup>();
-  for (const window of windows) {
+  for (const window of macDesktopClaimVisibleWindows(windows)) {
     const row = macDesktopClaimRow(window, args);
     if (row.location.kind === "this-lane") continue;
     if (!macDesktopClaimMatches(row, args.query ?? "")) continue;

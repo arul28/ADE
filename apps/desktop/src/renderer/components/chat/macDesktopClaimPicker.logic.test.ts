@@ -8,6 +8,8 @@ import {
   macDesktopClaimGroups,
   macDesktopClaimLocation,
   macDesktopClaimNextIndex,
+  macDesktopClaimRow,
+  macDesktopClaimVisibleWindows,
   macDesktopHasLease,
 } from "./macDesktopClaimPicker.logic";
 
@@ -161,5 +163,72 @@ describe("macDesktopAppInitials", () => {
     expect(macDesktopAppInitials("Visual Studio Code")).toBe("VS");
     expect(macDesktopAppInitials("Safari")).toBe("SA");
     expect(macDesktopAppInitials("")).toBe("?");
+  });
+});
+
+describe("macDesktopClaimVisibleWindows", () => {
+  it("hides ADE's own windows, dev build and shipped build alike", () => {
+    const shipped = makeWindow({ id: 10, appName: "ADE", bundleId: "com.ade.desktop", title: "Work" });
+    const dev = makeWindow({ id: 11, appName: "Electron", bundleId: "com.github.Electron", title: "Work" });
+    const unbranded = makeWindow({ id: 12, appName: "Electron", bundleId: null, title: null });
+    const other = makeWindow({ id: 13 });
+    expect(macDesktopClaimVisibleWindows([shipped, dev, unbranded, other]).map((w) => w.id))
+      .toEqual([13]);
+  });
+
+  it("drops an app's untitled windows when that app also has a titled one", () => {
+    // One TextEdit document showed as nine "TextEdit · minimized" rows: its own
+    // hidden service windows, each untitled.
+    const document = makeWindow({ id: 1, appName: "TextEdit", bundleId: "com.apple.TextEdit", title: "Notes.txt" });
+    const services = [2, 3, 4].map((id) => makeWindow({
+      id,
+      appName: "TextEdit",
+      bundleId: "com.apple.TextEdit",
+      title: null,
+      frame: { x: id, y: 0, width: 10, height: 10 },
+    }));
+    expect(macDesktopClaimVisibleWindows([document, ...services]).map((w) => w.id)).toEqual([1]);
+  });
+
+  it("treats a window titled after its app as untitled", () => {
+    const titled = makeWindow({ id: 1, appName: "TextEdit", bundleId: "com.apple.TextEdit", title: "Notes.txt" });
+    const selfNamed = makeWindow({ id: 2, appName: "TextEdit", bundleId: "com.apple.TextEdit", title: "TextEdit" });
+    expect(macDesktopClaimVisibleWindows([titled, selfNamed]).map((w) => w.id)).toEqual([1]);
+  });
+
+  it("keeps the untitled rows of an app that has no titled window at all", () => {
+    const only = makeWindow({ id: 5, appName: "Preview", bundleId: "com.apple.Preview", title: null });
+    expect(macDesktopClaimVisibleWindows([only]).map((w) => w.id)).toEqual([5]);
+  });
+
+  it("collapses rows that share a pid, a title and a frame", () => {
+    const one = makeWindow({ id: 1, pid: 900, title: "Notes.txt", appName: "TextEdit" });
+    const twin = makeWindow({ id: 2, pid: 900, title: "Notes.txt", appName: "TextEdit" });
+    const elsewhere = makeWindow({
+      id: 3,
+      pid: 900,
+      title: "Notes.txt",
+      appName: "TextEdit",
+      frame: { x: 40, y: 0, width: 800, height: 600 },
+    });
+    expect(macDesktopClaimVisibleWindows([one, twin, elsewhere]).map((w) => w.id)).toEqual([1, 3]);
+  });
+
+  it("is applied by macDesktopClaimGroups", () => {
+    const ade = makeWindow({ id: 10, appName: "ADE", bundleId: "com.ade.desktop", title: "Work" });
+    const groups = macDesktopClaimGroups([ade, makeWindow({ id: 13 })], { laneId: LANE, displayId: DISPLAY });
+    expect(groups.map((group) => group.appName)).toEqual(["Safari"]);
+  });
+});
+
+describe("macDesktopClaimRow untitled", () => {
+  it("marks a window named after its app so the row does not repeat the name", () => {
+    const row = macDesktopClaimRow(
+      makeWindow({ appName: "TextEdit", bundleId: "com.apple.TextEdit", title: "TextEdit" }),
+      { laneId: LANE, displayId: DISPLAY },
+    );
+    expect(row.untitled).toBe(true);
+    expect(macDesktopClaimRow(makeWindow({ title: "Notes.txt" }), { laneId: LANE, displayId: DISPLAY }).untitled)
+      .toBe(false);
   });
 });

@@ -25286,15 +25286,17 @@ function macDesktopIsOffscreenRegion(
 /**
  * `7`, or `—` when there is no CoreGraphics display behind the lane.
  *
- * The service reports `displayId: 0` in `offscreen-region` mode today; `0` is a
- * valid display id on macOS, so it is rendered as "none" rather than echoed.
+ * The service answers `displayId: null` in `offscreen-region` mode. The `0`
+ * case is still folded in: an older runtime on the other end of the wire is a
+ * real shape this CLI meets, and `0` is not a display anybody can open.
  */
 function macDesktopDisplayIdCell(
   display: JsonObject | null,
   status: JsonObject,
 ): string | number | null {
   const raw = display?.displayId;
-  if (typeof raw !== "number") return raw == null ? null : (raw as never);
+  if (raw == null) return display ? "—" : null;
+  if (typeof raw !== "number") return raw as never;
   if (macDesktopIsOffscreenRegion(display, status) || raw === 0) return "—";
   return raw;
 }
@@ -25356,7 +25358,7 @@ function formatMacDesktopStatus(value: unknown): string {
         ["lane", "display", "windows", "streaming"],
         lanes.map((lane) => [
           lane.laneName ?? lane.laneId,
-          lane.displayId === 0 ? "—" : lane.displayId,
+          lane.displayId == null || lane.displayId === 0 ? "—" : lane.displayId,
           lane.windowCount,
           lane.streaming,
         ]),

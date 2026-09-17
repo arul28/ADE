@@ -87,6 +87,13 @@ final class CaptureEngine {
         var filePath: String
         var startedAt: Date
         var firstPresentationTime: CMTime?
+        /// The last timestamp actually handed to the adaptor.
+        ///
+        /// `endSession(atSourceTime:)` needs it: without an explicit end the
+        /// container's duration runs to wherever the writer thinks the session
+        /// went, which is seconds past the final frame, and every player shows
+        /// a clip that ends in a freeze.
+        var lastPresentationTime: CMTime?
     }
 
     /// How long a reader may go without a picture on a screen where nothing is
@@ -598,8 +605,13 @@ final class CaptureEngine {
                     writer.startWriting()
                     writer.startSession(atSourceTime: time)
                 }
+                let willAppend = input.isReadyForMoreMediaData && writer.status == .writing
+                if willAppend {
+                    state.lastPresentationTime = time
+                    self.recordings[laneId] = state
+                }
                 self.lock.unlock()
-                guard input.isReadyForMoreMediaData, writer.status == .writing else { return }
+                guard willAppend else { return }
                 adaptor.append(buffer, withPresentationTime: time)
             },
             onError: { [weak self] error in
@@ -627,7 +639,8 @@ final class CaptureEngine {
             sink: sink,
             filePath: filePath,
             startedAt: startedAt,
-            firstPresentationTime: nil
+            firstPresentationTime: nil,
+            lastPresentationTime: nil
         )
         lock.unlock()
         return startedAt
@@ -647,10 +660,27 @@ final class CaptureEngine {
         state.input.markAsFinished()
         var finished = false
         if state.writer.status == .writing {
+            // Close the session at the last frame we appended. AVFoundation
+            // otherwise leaves the session open to the writer's own idea of
+            // "now", and the mp4 container ends up seconds longer than the
+            // pictures in it.
+            if let last = state.lastPresentationTime {
+                state.writer.endSession(atSourceTime: last)
+            }
             state.writer.finishWriting { finished = true }
             RunLoopPump.wait(until: { finished }, timeout: 15)
         }
-        let durationMs = Int(Date().timeIntervalSince(state.startedAt) * 1000)
+        // The reported duration is the span of frames when there are frames,
+        // so it matches the container the caller is about to open. Wall clock
+        // is the fallback for a recording that never received one.
+        let durationMs: Int
+        if let first = state.firstPresentationTime,
+           let last = state.lastPresentationTime,
+           CMTimeCompare(last, first) > 0 {
+            durationMs = Int(CMTimeGetSeconds(CMTimeSubtract(last, first)) * 1000)
+        } else {
+            durationMs = Int(Date().timeIntervalSince(state.startedAt) * 1000)
+        }
         return (state.filePath, durationMs)
     }
 

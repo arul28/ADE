@@ -256,7 +256,11 @@ export function MacDesktopClaimPicker({
                         {row.disabled && row.disabledReason?.startsWith("held by") ? (
                           <Lock size={10} className="shrink-0" />
                         ) : null}
-                        {row.disabled && row.disabledReason ? row.disabledReason : row.location.label}
+                        {row.disabled && row.disabledReason
+                          ? row.disabledReason
+                          : row.untitled
+                            ? `Untitled window · ${row.location.label}`
+                            : row.location.label}
                         {row.minimized ? " · minimized" : ""}
                       </span>
                     </span>

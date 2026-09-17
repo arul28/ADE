@@ -477,6 +477,19 @@ describe("mac-desktop off-screen fallback", () => {
     expect(text).toContain("off-screen region of the main display");
   });
 
+  it("reports a null display id as none, not as blank", () => {
+    // The service answers `displayId: null` when there is no CoreGraphics
+    // display behind the lane, which is every off-screen-region display.
+    const text = status({
+      name: "ADE · lane one",
+      displayId: null,
+      mode: "offscreen-region",
+      width: 2560,
+      height: 1440,
+    });
+    expect(text).toMatch(/^display id\s+—$/m);
+  });
+
   it("still prints a real CoreGraphics id for a virtual display", () => {
     const text = status({
       name: "ADE · lane one",

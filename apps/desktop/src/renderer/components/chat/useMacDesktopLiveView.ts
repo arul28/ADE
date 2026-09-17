@@ -229,10 +229,15 @@ export function useMacDesktopLiveView(args: {
         caption: null,
       });
     };
+    // `dimensions` is in the dependency list for the blank-mini-view case: the
+    // decoder reports a size as it draws the first frame, and before that the
+    // canvas is 0x0 and `snapshot` has nothing to read. Without it, a pane
+    // opened and closed inside the first second never wrote a frame and the
+    // mini view stayed empty.
     snapshot();
     const timer = setInterval(snapshot, FRAME_SNAPSHOT_MS);
     return () => clearInterval(timer);
-  }, [laneId, status]);
+  }, [dimensions, laneId, status]);
 
   return {
     url,

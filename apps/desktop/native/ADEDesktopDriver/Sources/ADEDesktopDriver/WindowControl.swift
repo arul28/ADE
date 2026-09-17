@@ -187,13 +187,20 @@ final class WindowControl {
                 ?? application?.localizedName
                 ?? "Unknown"
             let onScreen = (entry[kCGWindowIsOnscreen as String] as? Bool) ?? false
+            let title = (entry[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            guard Self.isUserWindow(
+                title: title,
+                frame: frame,
+                pid: ownerPid,
+                application: application
+            ) else { continue }
             windows.append(
                 DesktopWindow(
                     id: windowId,
                     pid: ownerPid,
                     appName: appName,
                     bundleId: bundleId,
-                    title: (entry[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    title: title,
                     frame: frame,
                     laneId: ownedBy,
                     origin: windowOrigins[windowId] ?? "adopted",
@@ -204,6 +211,36 @@ final class WindowControl {
             )
         }
         return windows.sorted { $0.id < $1.id }
+    }
+
+    /// Whether a CoreGraphics entry is a window a person could point at.
+    ///
+    /// `CGWindowListCopyWindowInfo` answers with everything the window server
+    /// knows, and on a normal Mac most of that is not a window: XPC view
+    /// services (`CursorUIViewService` alone contributed thirteen rows to the
+    /// claim picker), zero-size scratch surfaces, and windows belonging to a
+    /// process that has since exited. Three rules cut them:
+    ///
+    /// * the owner must still be running — a dead pid's window can never be
+    ///   claimed, only fail;
+    /// * the window must have a size — a 0x0 surface is bookkeeping;
+    /// * it must either carry a title or belong to a `.regular` app. An
+    ///   accessory or prohibited process (a view service, an agent) with no
+    ///   title has nothing a user would recognise in a list.
+    static func isUserWindow(
+        title: String?,
+        frame: CGRect,
+        pid: pid_t,
+        application: NSRunningApplication?
+    ) -> Bool {
+        if let application {
+            if application.isTerminated { return false }
+        } else if kill(pid, 0) != 0 {
+            return false
+        }
+        if frame.width <= 0 || frame.height <= 0 { return false }
+        if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        return application?.activationPolicy == .regular
     }
 
     func window(withId windowId: CGWindowID) -> DesktopWindow? {

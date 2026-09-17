@@ -135,8 +135,13 @@ export const MAC_DESKTOP_DEFAULT_RESOLUTION: MacDesktopResolutionPreset = "1440p
 
 export type MacDesktopDisplay = {
   laneId: string;
-  /** CoreGraphics display id. Zero in `offscreen-region` mode. */
-  displayId: number;
+  /**
+   * CoreGraphics display id, or `null` when there is no CoreGraphics display
+   * behind the lane — which is every `offscreen-region` display. `0` is a
+   * legal display id on macOS, so absence has to be its own value rather than
+   * a sentinel every reader would have to know about.
+   */
+  displayId: number | null;
   /** "ADE · <lane name>" — what Mission Control and Displays show. */
   name: string;
   mode: MacDesktopDisplayMode;
@@ -156,7 +161,8 @@ export type MacDesktopDisplay = {
 export type MacDesktopLaneSummary = {
   laneId: string;
   laneName: string | null;
-  displayId: number;
+  /** Null in `offscreen-region` mode. See `MacDesktopDisplay.displayId`. */
+  displayId: number | null;
   windowCount: number;
   streaming: boolean;
 };

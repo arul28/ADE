@@ -167,7 +167,13 @@ export type MacDesktopServiceDeps = {
   }) => MacDesktopDriverClient) | null;
 };
 
-type DriverDisplayReply = MacDesktopDisplay & { displayId?: number };
+type DriverDisplayReply = MacDesktopDisplay & { displayId?: number | null };
+
+/** A CoreGraphics display id, or null when the driver reports none. */
+function asNullableDisplayId(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw === 0) return null;
+  return Math.floor(raw);
+}
 
 /**
  * What the runtime actually holds.
@@ -656,7 +662,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     }) as DriverDisplayReply;
     const display: MacDesktopDisplay = {
       laneId,
-      displayId: asNumber(reply.displayId, 0),
+      // `offscreen-region` has no CoreGraphics display, and the driver says so
+      // with a missing or zero id. Both become null here so no reader has to
+      // treat 0 as "none" — 0 is a valid display id on macOS.
+      displayId: asNullableDisplayId(reply.displayId),
       name: asNullableString(reply.name) ?? macDesktopDisplayName(laneName),
       mode: (reply.mode as MacDesktopDisplayMode) ?? displayMode,
       width: asNumber(reply.width, size.width),
