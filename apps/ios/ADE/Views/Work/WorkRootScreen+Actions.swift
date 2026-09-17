@@ -933,7 +933,8 @@ extension WorkRootScreen {
       resumeCommand: nil,
       resumeMetadata: nil,
       chatIdleSinceAt: summary.idleSinceAt,
-      cursorCloudAgentId: summary.cursorCloudAgentId
+      cursorCloudAgentId: summary.cursorCloudAgentId,
+      cursorRuntime: summary.cursorRuntime
     )
   }
 

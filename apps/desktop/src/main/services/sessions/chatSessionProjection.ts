@@ -129,6 +129,7 @@ export function projectChatOntoSession(
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     lastActivityAt: chat.lastActivityAt ?? session.lastActivityAt ?? null,
     ...(chat.cursorCloudAgentId ? { cursorCloudAgentId: chat.cursorCloudAgentId } : {}),
+    ...(chat.cursorRuntime ? { cursorRuntime: chat.cursorRuntime } : {}),
   };
   if (chat.awaitingInput) {
     const pendingInputItemId = chat.pendingInputItemId ?? session.pendingInputItemId ?? null;

@@ -547,6 +547,8 @@ struct WorkChatSummaryRenderContext: Equatable {
   /// Set once a Cursor chat has been promoted to a cloud agent. A cloud run
   /// refuses every inline steer, so the send capability withholds that mode.
   let cursorCloudAgentId: String?
+  /// Host pin for local vs cloud. When present it wins over a leftover agent id.
+  let cursorRuntime: String?
   let fastModeSupported: Bool
   let idleSinceAt: String?
   let endedAt: String?
@@ -579,6 +581,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.effectiveFastMode = false
       self.runtimeMode = ""
       self.cursorCloudAgentId = nil
+      self.cursorRuntime = nil
       self.fastModeSupported = false
       self.idleSinceAt = nil
       self.endedAt = nil
@@ -605,6 +608,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.effectiveFastMode = summary.effectiveFastMode
     self.runtimeMode = workInitialRuntimeMode(summary)
     self.cursorCloudAgentId = summary.cursorCloudAgentId
+    self.cursorRuntime = summary.cursorRuntime
     self.fastModeSupported = workChatComposerSupportsFastMode(summary)
     self.idleSinceAt = summary.idleSinceAt
     self.endedAt = summary.endedAt
@@ -3195,6 +3199,7 @@ private struct WorkChatComposerDraftInput: View {
       liveRedirectOnly: liveRedirectOnlySends,
       runsInCloud: workChatCursorSessionRunsInCloud(
         provider: chatSummary.provider,
+        cursorRuntime: chatSummary.cursorRuntime,
         cursorCloudAgentId: chatSummary.cursorCloudAgentId
       )
     )

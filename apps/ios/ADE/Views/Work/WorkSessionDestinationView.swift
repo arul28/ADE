@@ -107,11 +107,9 @@ func workChatManualSteerDispatchModes(
 ) -> [WorkActiveSendMode] {
   let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType)
   guard let provider else { return [] }
-  // iOS models have no `cursorRuntime`; leftover agent id is treated as cloud.
-  // Desktop's `cursorSessionRunsInCloud` can pin `cursorRuntime: "local"` over
-  // a leftover id — that override is not representable here.
   let runsInCloud = workChatCursorSessionRunsInCloud(
     provider: provider,
+    cursorRuntime: summary?.cursorRuntime ?? session?.cursorRuntime,
     cursorCloudAgentId: summary?.cursorCloudAgentId ?? session?.cursorCloudAgentId
   )
   return WorkActiveSendCapability.forProvider(provider)
@@ -119,9 +117,18 @@ func workChatManualSteerDispatchModes(
     .atomicDispatchModes
 }
 
-/// iOS half of desktop `cursorSessionRunsInCloud`, as far as the models allow.
-func workChatCursorSessionRunsInCloud(provider: String?, cursorCloudAgentId: String?) -> Bool {
+/// iOS half of desktop `cursorSessionRunsInCloud`.
+///
+/// `cursorRuntime` wins when the host sent it, including `"local"` over a
+/// leftover cloud agent id. Absent runtime plus a non-empty agent id is still
+/// cloud, because sessions promoted before that field existed carry only the id.
+func workChatCursorSessionRunsInCloud(
+  provider: String?,
+  cursorRuntime: String? = nil,
+  cursorCloudAgentId: String?
+) -> Bool {
   guard providerFamilyKey(provider ?? "") == "cursor" else { return false }
+  if let runtime = cursorRuntime { return runtime == "cloud" }
   return cursorCloudAgentId?.isEmpty == false
 }
 

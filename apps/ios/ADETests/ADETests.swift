@@ -13994,6 +13994,12 @@ final class ADETests: XCTestCase {
       workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
       [.interrupt]
     )
+    // Host pin wins: leftover agent id on a local session must keep inline.
+    cursorCloudSummary.cursorRuntime = "local"
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
+      [.inline, .interrupt]
+    )
     XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil), [])
   }
 
@@ -14141,6 +14147,16 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: nil))
     XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: ""))
     XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "claude", cursorCloudAgentId: "agent-1"))
+    XCTAssertTrue(workChatCursorSessionRunsInCloud(
+      provider: "cursor",
+      cursorRuntime: "cloud",
+      cursorCloudAgentId: nil
+    ))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(
+      provider: "cursor",
+      cursorRuntime: "local",
+      cursorCloudAgentId: "agent-1"
+    ))
   }
 
   func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {
@@ -14184,6 +14200,30 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.autoContinueAtUsageLimit, false)
     XCTAssertEqual(summary.usageLimitParkedUntil, "2026-07-08T00:47:00.000Z")
     XCTAssertEqual(summary.activeBackgroundTaskCount, 3)
+  }
+
+  func testAgentChatSessionSummaryDecodesCursorRuntimeOverLeftoverCloudAgentId() throws {
+    let data = Data(#"""
+    {
+      "sessionId":"chat-1",
+      "laneId":"lane-1",
+      "provider":"cursor",
+      "model":"composer-2",
+      "status":"idle",
+      "startedAt":"2026-09-17T00:00:00.000Z",
+      "lastActivityAt":"2026-09-17T00:00:03.000Z",
+      "cursorCloudAgentId":"cloud-agent-1",
+      "cursorRuntime":"local"
+    }
+    """#.utf8)
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+    XCTAssertEqual(summary.cursorCloudAgentId, "cloud-agent-1")
+    XCTAssertEqual(summary.cursorRuntime, "local")
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(
+      provider: summary.provider,
+      cursorRuntime: summary.cursorRuntime,
+      cursorCloudAgentId: summary.cursorCloudAgentId
+    ))
   }
 
   func testAgentChatContextUsageCategoryDecodesKindNotName() throws {
@@ -27820,6 +27860,33 @@ final class ADETests: XCTestCase {
     let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
     XCTAssertEqual(session.parentIdentityKey, "cto")
     XCTAssertTrue(session.isCtoChild)
+  }
+
+  func testTerminalSessionSummaryDecodesCursorRuntimeOverLeftoverCloudAgentId() throws {
+    let json = """
+    {
+      "id": "term-cursor-local",
+      "laneId": "lane-1",
+      "laneName": "Feature",
+      "tracked": true,
+      "pinned": false,
+      "title": "Cursor chat",
+      "status": "running",
+      "startedAt": "2026-09-17T00:00:00.000Z",
+      "transcriptPath": "/tmp/transcript.jsonl",
+      "runtimeState": "running",
+      "cursorCloudAgentId": "cloud-agent-1",
+      "cursorRuntime": "local"
+    }
+    """.data(using: .utf8)!
+    let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
+    XCTAssertEqual(session.cursorCloudAgentId, "cloud-agent-1")
+    XCTAssertEqual(session.cursorRuntime, "local")
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(
+      provider: "cursor",
+      cursorRuntime: session.cursorRuntime,
+      cursorCloudAgentId: session.cursorCloudAgentId
+    ))
   }
 
   /// Absent is the no-op value, and it is by far the common case: an older host
