@@ -200,9 +200,13 @@ describe("useCtoVoiceAudioOwner", () => {
     // Hang-up lands while `getUserMedia` is still outstanding. The old start
     // stored whatever arrived, so a live track kept pumping into a call that
     // had already ended. Greptile P1 on PR #1249.
-    let releaseStream: ((stream: MediaStream) => void) | null = null;
+    const pending: { resolve: (stream: MediaStream) => void } = {
+      resolve() {
+        throw new Error("getUserMedia was never called");
+      },
+    };
     const getUserMedia = vi.fn(() => new Promise<MediaStream>((resolve) => {
-      releaseStream = resolve;
+      pending.resolve = resolve;
     }));
     const { end, pushAudio } = installBridge({ getUserMedia });
     class FakeCaptureAudioContext {
@@ -221,7 +225,7 @@ describe("useCtoVoiceAudioOwner", () => {
     rerender(<AudioOwner state={{ ...liveOwner, phase: "ended", callId: null }} />);
 
     const stop = vi.fn();
-    releaseStream?.({
+    pending.resolve({
       getAudioTracks: () => [{ readyState: "live" }],
       getTracks: () => [{ stop }],
     } as unknown as MediaStream);
