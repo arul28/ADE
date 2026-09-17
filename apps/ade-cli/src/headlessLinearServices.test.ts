@@ -996,6 +996,36 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("A1: hydrates the headless Linear refresh token with OAuth mode", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-vault-"));
+    const adeDir = path.join(projectRoot, ".ade");
+    const vault = {
+      get: vi.fn(async () => ({ ok: true, value: "remote-refresh-token" })),
+    };
+    const services = createHeadlessLinearServices(createDeps({
+      projectRoot,
+      adeDir,
+      getAccountVault: () => vault,
+      getAccountUserId: () => "user_ada",
+    }));
+    try {
+      await services.linearCredentialService.hydrateFromVault();
+
+      expect(services.linearCredentialService.getRefreshToken()).toBe("remote-refresh-token");
+      expect(services.linearCredentialService.getRefreshTokenProvenance()).toEqual({
+        source: "account",
+        accountUserId: "user_ada",
+      });
+      expect(services.linearCredentialService.getStatus().authMode).toBe("oauth");
+      expect(new EncryptedFileCredentialStore({ secretsDir: path.join(adeDir, "secrets") })
+        .getSync("linear.authMode.v1"))
+        .toBe("oauth");
+    } finally {
+      services.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("reads Linear credentials from the project store and GitHub credentials from the shared machine store", () => {
     const previousAdeHome = process.env.ADE_HOME;
     const previousAdeLinearApi = process.env.ADE_LINEAR_API;

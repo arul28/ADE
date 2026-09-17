@@ -20,12 +20,14 @@ export type AccountMigrationContext = {
     getRefreshToken(): string | null;
     getRefreshTokenProvenance(): CredentialProvenance;
     hydrateFromVault(): Promise<void>;
+    purgeAccountCredentials?(): void;
   } | null;
   projectSecretService?: {
     list(): { secrets: Array<{ name: string; storage: string }> };
     getSecretProvenance(name: string): CredentialProvenance | null | undefined;
     get(args: { name: string }): { value: string };
     hydrateFromVault(): Promise<void>;
+    purgeAccountCredentials?(): void;
   } | null;
 };
 
@@ -35,6 +37,7 @@ export type AccountMigrationRunnerOptions = {
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
   getLogger: () => AccountMigrationLogger;
   getReceiptDir?: () => string;
+  projectSecretReceiptRoot?: string | null;
 };
 
 export function getOpenAccountContexts<T extends AccountMigrationContext>(
@@ -206,6 +209,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
       }
       await runAccountMigration({
         receiptDir: options.getReceiptDir?.() ?? resolveMachineAdeLayout().adeDir,
+        projectRoot: options.projectSecretReceiptRoot,
         getAccountUserId: () => {
           const current = options.accountBridge.status();
           return current.signedIn ? current.userId : null;

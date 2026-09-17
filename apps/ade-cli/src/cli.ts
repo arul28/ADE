@@ -72,6 +72,7 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { SyncHostSingletonConflict } from "./services/sync/syncHostSingleton";
 import {
@@ -4604,8 +4605,6 @@ function readSecretValueInput(args: string[]): string {
   if (positionalValue != null) return positionalValue;
   throw new CliUsageError("Secret value is required. Pass --value, --value-file, --stdin, or a positional value.");
 }
-
-type ProjectSecretStorage = "account" | "device";
 
 function readProjectSecretStorage(args: string[]): ProjectSecretStorage | undefined {
   const storage = readValue(args, ["--storage"]);

@@ -11,9 +11,9 @@ import {
 import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "./linearAppClient";
 import {
   deviceCredentialProvenance,
-  normalizeCredentialProvenance,
   type CredentialProvenance,
 } from "../../../shared/types/credentialProvenance";
+import { createCredentialProvenanceStore } from "../../../shared/credentialProvenanceStore";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import {
@@ -252,67 +252,30 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   };
 
-  const normalizeProvenanceMap = (value: unknown): Record<string, CredentialProvenance> => {
-    if (!isRecord(value)) return {};
-    const out: Record<string, CredentialProvenance> = {};
-    for (const [key, raw] of Object.entries(value)) {
-      const normalized = normalizeCredentialProvenance(raw);
-      if (normalized) out[key] = normalized;
-    }
-    return out;
-  };
-
-  const readProvenanceMap = (): Record<string, CredentialProvenance> => {
-    if (credentialStore) {
-      const raw = readMachineCredential(MACHINE_PROVENANCE_KEY);
-      if (!raw) return {};
-      try {
-        return normalizeProvenanceMap(JSON.parse(raw));
-      } catch {
-        return {};
+  const provenanceStore = createCredentialProvenanceStore({
+    read: () => {
+      if (credentialStore) return readMachineCredential(MACHINE_PROVENANCE_KEY);
+      const provenancePath = path.join(secretsDir, PROVENANCE_FILE);
+      if (!fs.existsSync(provenancePath) || !safeStorage.isEncryptionAvailable()) return null;
+      return safeStorage.decryptString(fs.readFileSync(provenancePath));
+    },
+    write: (value) => {
+      if (credentialStore) {
+        writeMachineCredential(MACHINE_PROVENANCE_KEY, value);
+        return;
       }
-    }
-    if (!fs.existsSync(path.join(secretsDir, PROVENANCE_FILE)) || !safeStorage.isEncryptionAvailable()) {
-      return {};
-    }
-    try {
-      const raw = safeStorage.decryptString(fs.readFileSync(path.join(secretsDir, PROVENANCE_FILE)));
-      return normalizeProvenanceMap(JSON.parse(raw));
-    } catch {
-      return {};
-    }
-  };
-
-  const writeProvenanceMap = (map: Record<string, CredentialProvenance>): void => {
-    if (credentialStore) {
-      writeMachineCredential(MACHINE_PROVENANCE_KEY, JSON.stringify(map));
-      return;
-    }
-    if (!safeStorage.isEncryptionAvailable()) return;
-    fs.mkdirSync(secretsDir, { recursive: true });
-    writeFileAtomic(
-      path.join(secretsDir, PROVENANCE_FILE),
-      safeStorage.encryptString(JSON.stringify(map)),
-      { mode: 0o600 },
-    );
-  };
-
-  const setCredentialProvenance = (key: string, value: CredentialProvenance): void => {
-    const map = readProvenanceMap();
-    map[key] = value;
-    writeProvenanceMap(map);
-  };
-
-  const deleteCredentialProvenance = (key: string): void => {
-    const map = readProvenanceMap();
-    if (!(key in map)) return;
-    delete map[key];
-    writeProvenanceMap(map);
-  };
-
-  const getCredentialProvenance = (key: string): CredentialProvenance => {
-    return readProvenanceMap()[key] ?? deviceCredentialProvenance();
-  };
+      if (!safeStorage.isEncryptionAvailable()) return;
+      fs.mkdirSync(secretsDir, { recursive: true });
+      writeFileAtomic(
+        path.join(secretsDir, PROVENANCE_FILE),
+        safeStorage.encryptString(value),
+        { mode: 0o600 },
+      );
+    },
+  });
+  const setCredentialProvenance = provenanceStore.set;
+  const deleteCredentialProvenance = provenanceStore.remove;
+  const getCredentialProvenance = provenanceStore.get;
 
   const accountProvenance = (accountUserId?: string | null): CredentialProvenance => {
     const normalized = accountUserId?.trim() || args.getAccountUserId?.()?.trim() || "";

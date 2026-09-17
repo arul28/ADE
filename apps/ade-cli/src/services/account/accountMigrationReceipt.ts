@@ -63,10 +63,18 @@ export type MigrationOutcome = {
   skipped: number;
 };
 
+type ProjectReceiptSources = Partial<Record<MigrationSource, MigrationOutcome>>;
+
 type ReceiptFile = {
   version: number;
   accountUserId: string | null;
   sources: Partial<Record<MigrationSource, MigrationOutcome>>;
+  /** Project-scoped sources are keyed by canonical project root. */
+  projectSources?: Record<string, ProjectReceiptSources>;
+};
+
+export type MigrationReceiptScope = {
+  projectRoot?: string | null;
 };
 
 function emptyReceipt(accountUserId: string | null): ReceiptFile {
@@ -105,7 +113,25 @@ export function createAccountMigrationReceipt(args: {
       version: RECEIPT_VERSION,
       accountUserId,
       sources: loaded.sources && typeof loaded.sources === "object" ? loaded.sources : {},
+      projectSources: loaded.projectSources && typeof loaded.projectSources === "object"
+        ? loaded.projectSources as Record<string, ProjectReceiptSources>
+        : undefined,
     };
+  }
+
+  function scopedProjectRoot(source: MigrationSource, scope?: MigrationReceiptScope): string | null {
+    if (source !== "project_secrets") return null;
+    const root = scope?.projectRoot?.trim();
+    return root ? path.resolve(root) : null;
+  }
+
+  function sourceOutcomes(
+    receipt: ReceiptFile,
+    source: MigrationSource,
+    scope?: MigrationReceiptScope,
+  ): Partial<Record<MigrationSource, MigrationOutcome>> {
+    const projectRoot = scopedProjectRoot(source, scope);
+    return projectRoot ? receipt.projectSources?.[projectRoot] ?? {} : receipt.sources;
   }
 
   function write(receipt: ReceiptFile): void {
@@ -115,8 +141,8 @@ export function createAccountMigrationReceipt(args: {
 
   return {
     /** True when this machine has already finished this source for this account. */
-    isComplete(source: MigrationSource): boolean {
-      return Boolean(read().sources[source]?.completedAt);
+    isComplete(source: MigrationSource, scope?: MigrationReceiptScope): boolean {
+      return Boolean(sourceOutcomes(read(), source, scope)[source]?.completedAt);
     },
 
     /**
@@ -126,32 +152,48 @@ export function createAccountMigrationReceipt(args: {
      * before would turn a failed upload into a permanent skip, and the user's
      * secrets would stay on one machine with nothing left to notice it.
      */
-    complete(source: MigrationSource, counts: { moved: number; skipped: number }): void {
+    complete(
+      source: MigrationSource,
+      counts: { moved: number; skipped: number },
+      scope?: MigrationReceiptScope,
+    ): void {
       const receipt = read();
-      receipt.sources[source] = {
+      const outcome = {
         completedAt: new Date(now()).toISOString(),
         moved: counts.moved,
         skipped: counts.skipped,
       };
+      const projectRoot = scopedProjectRoot(source, scope);
+      if (projectRoot) {
+        receipt.projectSources ??= {};
+        receipt.projectSources[projectRoot] ??= {};
+        receipt.projectSources[projectRoot][source] = outcome;
+      } else {
+        receipt.sources[source] = outcome;
+      }
       write(receipt);
       // Migration is silent by design, so the log is the only record a user or
       // a support conversation can ever consult. It names counts, never values.
-      logger.info("account.migration_completed", { source, ...counts });
+      logger.info("account.migration_completed", {
+        source,
+        ...counts,
+        ...(projectRoot ? { projectRoot } : {}),
+      });
     },
 
     /** Everything this machine has migrated, for the Diagnostics panel. */
-    summary(): Array<{ source: MigrationSource } & MigrationOutcome> {
+    summary(scope?: MigrationReceiptScope): Array<{ source: MigrationSource } & MigrationOutcome> {
       const receipt = read();
       return MIGRATION_SOURCES.flatMap((source) => {
-        const outcome = receipt.sources[source];
+        const outcome = sourceOutcomes(receipt, source, scope)[source];
         return outcome ? [{ source, ...outcome }] : [];
       });
     },
 
     /** Sources this machine has not finished yet. */
-    pending(): MigrationSource[] {
+    pending(scope?: MigrationReceiptScope): MigrationSource[] {
       const receipt = read();
-      return MIGRATION_SOURCES.filter((source) => !receipt.sources[source]?.completedAt);
+      return MIGRATION_SOURCES.filter((source) => !sourceOutcomes(receipt, source, scope)[source]?.completedAt);
     },
 
     receiptPathForTests(): string {

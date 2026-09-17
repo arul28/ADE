@@ -19,6 +19,8 @@ export type AccountMigrationSources = Partial<Record<MigrationSource, AccountMig
 
 export type AccountMigrationArgs = {
   receiptDir: string;
+  /** Scope only the project-secret source; account-wide sources stay shared. */
+  projectRoot?: string | null;
   sources: AccountMigrationSources;
   getAccountUserId?: () => string | null;
   logger?: {
@@ -66,7 +68,7 @@ export async function runAccountMigration(args: AccountMigrationArgs): Promise<A
     if (!run) continue;
 
     try {
-      if (receipt.isComplete(source)) continue;
+      if (receipt.isComplete(source, { projectRoot: args.projectRoot })) continue;
     } catch (error) {
       failed.push(source);
       args.logger?.warn?.("account.migration_receipt_read_failed", {
@@ -86,7 +88,7 @@ export async function runAccountMigration(args: AccountMigrationArgs): Promise<A
         moved: normalizeCount(result && "moved" in result ? result.moved : 0),
         skipped: normalizeCount(result && "skipped" in result ? result.skipped : 0),
       };
-      receipt.complete(source, counts);
+      receipt.complete(source, counts, { projectRoot: args.projectRoot });
       completed.push({ source, ...counts, completedAt: new Date(now()).toISOString() });
     } catch (error) {
       failed.push(source);

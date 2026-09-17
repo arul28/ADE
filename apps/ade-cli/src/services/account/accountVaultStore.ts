@@ -4,6 +4,7 @@ import {
   createAccountCacheStore,
   createStoreRegistry,
   type AccountCacheLogger,
+  type AccountCacheSyncStatus,
 } from "./accountCacheStore";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import type {
@@ -357,7 +358,7 @@ export function createAccountVaultStore(args: {
     },
 
     /** Flush what is queued, then take what changed. Single-flight. */
-    sync(): Promise<void> {
+    sync(): Promise<AccountCacheSyncStatus> {
       return cache.sync();
     },
 

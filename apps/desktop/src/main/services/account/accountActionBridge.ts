@@ -1,4 +1,7 @@
-import type { AccountStoreResult } from "../../../shared/types/accountStore";
+import {
+  createAccountStoreResultHelpers,
+  type AccountStoreResult,
+} from "../../../shared/types/accountStore";
 
 type ActionRequest = {
   domain: string;
@@ -47,15 +50,10 @@ function unwrap(raw: unknown): unknown {
 }
 
 export function createAccountActionBridge<TRow>(options: AccountActionBridgeOptions<TRow>) {
-  const unavailable = <T>(): AccountStoreResult<T> => ({
-    ok: false,
-    unavailable: true,
-    message: options.unavailableMessage,
-  });
-  const rejected = <T>(): AccountStoreResult<T> => ({
-    ok: false,
-    rejected: true,
-    message: options.rejectedMessage ?? "The account store rejected this write because account ownership changed.",
+  const { unavailable, rejected } = createAccountStoreResultHelpers({
+    unavailableMessage: options.unavailableMessage,
+    rejectedMessage: options.rejectedMessage
+      ?? "The account store rejected this write because account ownership changed.",
   });
 
   const call = async <T>(

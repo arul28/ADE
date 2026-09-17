@@ -2,6 +2,7 @@ import {
   createAccountCacheStore,
   createStoreRegistry,
   type AccountCacheLogger,
+  type AccountCacheSyncStatus,
 } from "./accountCacheStore";
 import type {
   AccountSettingRecord,
@@ -243,7 +244,7 @@ export function createAccountSettingsStore(args: {
     },
 
     /** Flush what is queued, then take what changed. Single-flight. */
-    sync(): Promise<void> {
+    sync(): Promise<AccountCacheSyncStatus> {
       return cache.sync();
     },
 

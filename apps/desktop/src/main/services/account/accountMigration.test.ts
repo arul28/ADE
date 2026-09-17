@@ -130,4 +130,47 @@ describe("runAccountMigration", () => {
     expect(projectSecrets).toHaveBeenCalledTimes(2);
     expect(fs.existsSync(path.join(receiptDir, "account-migration.json"))).toBe(false);
   });
+
+  it("A3: records project-secret migration separately for each project root", async () => {
+    const receiptDir = makeReceiptDir();
+    const projectOne = path.join(os.tmpdir(), "ade-project-one");
+    const projectTwo = path.join(os.tmpdir(), "ade-project-two");
+    const migrateOne = vi.fn(() => ({ moved: 1, skipped: 0 }));
+    const migrateTwo = vi.fn(() => ({ moved: 2, skipped: 0 }));
+
+    await runAccountMigration({
+      receiptDir,
+      projectRoot: projectOne,
+      sources: { project_secrets: migrateOne },
+      getAccountUserId: () => "user-1",
+    });
+    await runAccountMigration({
+      receiptDir,
+      projectRoot: projectOne,
+      sources: { project_secrets: migrateOne },
+      getAccountUserId: () => "user-1",
+    });
+    await runAccountMigration({
+      receiptDir,
+      projectRoot: projectTwo,
+      sources: { project_secrets: migrateTwo },
+      getAccountUserId: () => "user-1",
+    });
+    await runAccountMigration({
+      receiptDir,
+      projectRoot: projectTwo,
+      sources: { project_secrets: migrateTwo },
+      getAccountUserId: () => "user-1",
+    });
+
+    expect(migrateOne).toHaveBeenCalledOnce();
+    expect(migrateTwo).toHaveBeenCalledOnce();
+    expect(readReceipt(receiptDir)).toMatchObject({
+      sources: {},
+      projectSources: {
+        [path.resolve(projectOne)]: { project_secrets: { moved: 1, skipped: 0 } },
+        [path.resolve(projectTwo)]: { project_secrets: { moved: 2, skipped: 0 } },
+      },
+    });
+  });
 });

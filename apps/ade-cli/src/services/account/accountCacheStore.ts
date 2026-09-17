@@ -39,6 +39,9 @@ export type AccountCacheRow = { updatedAt: string };
  */
 export type AccountCachePending = { seq: number; deleted: boolean };
 
+/** Result of a cache pass, including whether the remote authority answered. */
+export type AccountCacheSyncStatus = "ready" | "unavailable" | "failed";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -127,7 +130,7 @@ export type AccountCacheStore<
     current: AccountCacheFile<TRow, TPending>,
     queue: (write: Omit<TPending, "seq">) => void,
   ) => void): boolean;
-  sync(): Promise<void>;
+  sync(): Promise<AccountCacheSyncStatus>;
   startPeriodicSync(intervalMs?: number): () => void;
   /** Empty the cache and write the empty file. */
   reset(): void;
@@ -145,7 +148,7 @@ export function createAccountCacheStore<
   const { logger, rowsField } = config;
   let cache: AccountCacheFile<TRow, TPending> | null = null;
   let corruptEntryLogged = false;
-  let syncInFlight: Promise<void> | null = null;
+  let syncInFlight: Promise<AccountCacheSyncStatus> | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   /**
    * How many callers asked for the background sync.
@@ -339,10 +342,10 @@ export function createAccountCacheStore<
     syncTimer = null;
   };
 
-  async function runSync(): Promise<void> {
-    if (!config.hasRelay()) return;
+  async function runSync(): Promise<AccountCacheSyncStatus> {
+    if (!config.hasRelay()) return "unavailable";
     const entryAccountUserId = config.getAccountUserId();
-    if (!entryAccountUserId) return;
+    if (!entryAccountUserId) return "unavailable";
     const entryEpoch = epoch;
     /**
      * A purge or an account switch during an in-flight request invalidates
@@ -363,7 +366,7 @@ export function createAccountCacheStore<
       try {
         const result = await config.upload(pending);
         // `null` means there was no token to ask with. The queue stays.
-        if (result === null) return;
+        if (result === null) return "unavailable";
         uploadedAt = result.updatedAt;
       } catch (error) {
         // Keep the queue. An upload that failed is work still to do, and
@@ -372,9 +375,9 @@ export function createAccountCacheStore<
           pending: pending.length,
           error: error instanceof Error ? error.message : String(error ?? ""),
         });
-        return;
+        return "failed";
       }
-      if (abandoned()) return;
+      if (abandoned()) return "unavailable";
       // Clear only what was actually sent, matched by sequence rather than by
       // key: an edit made while the upload was in flight carries a newer seq
       // for the same key, and dropping it would lose a change the user believes
@@ -397,11 +400,11 @@ export function createAccountCacheStore<
 
     // Then pull.
     try {
-      if (abandoned()) return;
+      if (abandoned()) return "unavailable";
       const before = readCache();
       const page = await config.pull(before.cursor);
-      if (!page) return;
-      if (abandoned()) return;
+      if (!page) return "unavailable";
+      if (abandoned()) return "unavailable";
       const after = readCache();
       const stillPending = new Set(after.pending.map((entry) => config.pendingKey(entry)));
       for (const remote of page.rows) {
@@ -423,10 +426,12 @@ export function createAccountCacheStore<
       if (page.truncated) {
         logger.info(config.events.pullTruncated, { cursor: after.cursor });
       }
+      return "ready";
     } catch (error) {
       logger.warn(config.events.pullFailed, {
         error: error instanceof Error ? error.message : String(error ?? ""),
       });
+      return "failed";
     }
   }
 
@@ -441,7 +446,7 @@ export function createAccountCacheStore<
      * Single-flight: the caller is a 30-second timer plus whatever a user
      * action triggers, and two overlapping syncs would race the cursor.
      */
-    async sync(): Promise<void> {
+    async sync(): Promise<AccountCacheSyncStatus> {
       if (syncInFlight) return syncInFlight;
       syncInFlight = runSync().finally(() => {
         syncInFlight = null;

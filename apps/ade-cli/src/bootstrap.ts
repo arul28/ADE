@@ -95,7 +95,7 @@ import {
   publishLinearLaneCard,
 } from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
-import { initApiKeyStore, purgeAccountApiKeys } from "../../desktop/src/main/services/ai/apiKeyStore";
+import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import { createSyncStatusEventPublisher } from "./services/sync/syncStatusEventPublisher";
@@ -110,9 +110,6 @@ import { buildCursorCloudAutomationDispatches } from "../../desktop/src/main/ser
 import { openCursorCloudCredentialStore } from "../../desktop/src/main/services/chat/cursorCloudCreateOptions";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
-import { createAccountMigrationRunner } from "../../desktop/src/main/services/account/accountMigrationRunner";
-import type { AccountVaultBridge } from "../../desktop/src/main/services/account/accountVaultBridge";
-import type { AccountVaultResult } from "../../desktop/src/shared/types/accountVault";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
@@ -184,17 +181,9 @@ import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/w
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
-import {
-  createAccountSettingsStore,
-  getSharedAccountSettingsStore,
-  type AccountSettingsStore,
-} from "./services/account/accountSettingsStore";
-import {
-  createAccountVaultStore,
-  getSharedAccountVaultStore,
-  type AccountVaultStore,
-} from "./services/account/accountVaultStore";
-import type { AccountVaultItemKind } from "./services/push/accountRelayRows";
+import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
+import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
+import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
@@ -230,72 +219,6 @@ import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationA
 
 /** One warm-runtime budget for every project scope this brain opens. */
 const chatRuntimeBudget = createChatRuntimeBudget();
-
-const HEADLESS_ACCOUNT_VAULT_UNAVAILABLE_MESSAGE =
-  "The account vault is unavailable in this runtime.";
-const HEADLESS_ACCOUNT_VAULT_REJECTED_MESSAGE =
-  "The account vault rejected the write because account ownership changed.";
-
-/** Adapt the brain's local vault store to the bridge used by shared services. */
-function createHeadlessAccountVaultBridge(
-  getStore: () => AccountVaultStore | null,
-): AccountVaultBridge {
-  const unavailable = <T>(): AccountVaultResult<T> => ({
-    ok: false,
-    unavailable: true,
-    message: HEADLESS_ACCOUNT_VAULT_UNAVAILABLE_MESSAGE,
-  });
-  const rejected = <T>(): AccountVaultResult<T> => ({
-    ok: false,
-    rejected: true,
-    message: HEADLESS_ACCOUNT_VAULT_REJECTED_MESSAGE,
-  });
-
-  return {
-    async list(scope) {
-      const store = getStore();
-      if (!store) return unavailable();
-      return {
-        ok: true,
-        value: store.list(scope ?? undefined).map((item) => ({
-          scope: item.scope,
-          kind: item.kind,
-          key: item.key,
-          value: null,
-          updatedAt: item.updatedAt,
-        })),
-      };
-    },
-    async get(scope, kind, key) {
-      const store = getStore();
-      if (!store) return unavailable();
-      return {
-        ok: true,
-        value: store.get(scope, kind as AccountVaultItemKind, key),
-      };
-    },
-    async set(scope, kind, key, value) {
-      const store = getStore();
-      if (!store) return unavailable();
-      return store.set(scope, kind as AccountVaultItemKind, key, value)
-        ? { ok: true, value: null }
-        : rejected();
-    },
-    async remove(scope, kind, key) {
-      const store = getStore();
-      if (!store) return unavailable();
-      return store.remove(scope, kind as AccountVaultItemKind, key)
-        ? { ok: true, value: null }
-        : rejected();
-    },
-    async sync() {
-      const store = getStore();
-      if (!store) return unavailable();
-      await store.sync();
-      return { ok: true, value: null };
-    },
-  };
-}
 
 declare const __ADE_VERSION__: string | undefined;
 
@@ -1106,23 +1029,50 @@ export async function createAdeRuntime(args: {
       projectRoots: () => [projectRoot],
       logger,
     });
-    let accountSettingsStore: AccountSettingsStore | null = null;
-    let accountVaultStore: AccountVaultStore | null = null;
-    const accountVaultBridge = createHeadlessAccountVaultBridge(() => accountVaultStore);
+    const accountStoreAdeDir = resolveMachineAdeLayout().adeDir;
+    const syncDeviceIdPath = path.join(
+      syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+      "sync-device-id",
+    );
+    const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
+    let projectSecretServiceForAccount: ReturnType<typeof createProjectSecretService> | null = null;
+    let linearCredentialServiceForAccount: ReturnType<typeof createLinearCredentialService> | null = null;
+    const getAccountAccessToken = (
+      options?: Parameters<typeof getSignedInAccountAccessToken>[1],
+    ) => getSignedInAccountAccessToken(accountAuthService, options);
+    const accountRuntimeLifecycle = createAccountRuntimeLifecycle({
+      enabled: syncRuntimeOptions?.enabled === true,
+      accountStoreAdeDir,
+      pushRelayFilePath,
+      syncDeviceIdPath,
+      receiptDir: accountStoreAdeDir,
+      logger,
+      accountAuthService,
+      getAccountAccessToken,
+      projectSecretReceiptRoot: projectRoot,
+      getContexts: () => [{
+        project: { rootPath: projectRoot },
+        linearCredentialService: linearCredentialServiceForAccount,
+        projectSecretService: projectSecretServiceForAccount,
+      }],
+      teardown,
+    });
+    const {
+      accountSettingsStore,
+      accountVaultStore,
+    } = accountRuntimeLifecycle;
     initApiKeyStore(projectRoot, {
       credentialStore: new EncryptedFileCredentialStore(),
-      getAccountVault: () => accountVaultStore ? accountVaultBridge : null,
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
     });
     const projectSecretService = createProjectSecretService(projectRoot, {
-      getAccountVault: () => accountVaultStore ? accountVaultBridge : null,
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
     });
-    const getAccountAccessToken = (
-      options?: Parameters<typeof getSignedInAccountAccessToken>[1],
-    ) => getSignedInAccountAccessToken(accountAuthService, options);
+    projectSecretServiceForAccount = projectSecretService;
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -1541,9 +1491,10 @@ export async function createAdeRuntime(args: {
       onGitHubStatusChanged: (status) =>
         pushEvent("runtime", { type: "github_status_changed", event: status }),
       getAccountAccessToken,
-      getAccountVault: () => accountVaultStore ? accountVaultBridge : null,
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
     });
+    linearCredentialServiceForAccount = headlessLinearServices.linearCredentialService;
     teardown.push(() => headlessLinearServices.dispose());
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
@@ -2039,11 +1990,6 @@ export async function createAdeRuntime(args: {
       "sync-cloud-relay.json",
     );
     const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
-    const syncDeviceIdPath = path.join(
-      syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
-      "sync-device-id",
-    );
-    const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
     const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
       const store = createPushRegistrationStore({ filePath: pushRelayFilePath, logger });
       return {
@@ -2089,139 +2035,9 @@ export async function createAdeRuntime(args: {
       syncRuntimeOptions?.activityRosterProvider ?? null,
     );
 
-    // The account settings store and the vault. Both share this Worker and this
-    // machine identity with the push publisher above, and both are keyed by the
-    // machine ADE directory for the same reason: the account is a property of
-    // the machine, not of whichever repository happens to be open, so every
-    // project scope in this brain must reach one store over one cache file.
-    //
-    // Built only when sync is on, which is what the declaration above promises:
-    // a `--no-sync` brain (manual runtimes, tests) must never reach the account
-    // Worker, and having no store at all is a stronger guarantee of that than a
-    // store with its uploads disabled. The runtime fields stay null, and the
-    // registry degrades through `toService(null)` exactly as it already does
-    // for every other optional service.
-    if (syncRuntimeOptions?.enabled === true) {
-      const accountStoreAdeDir = resolveMachineAdeLayout().adeDir;
-      // Hoisted: six copies of this getter and three of the device-id read used
-      // to sit inline in the store and relay literals below, which is three
-      // chances for one of them to drift away from the others.
-      const accountStoreUserId = (): string | null => {
-        const status = accountAuthService.getStatus();
-        return status.signedIn ? status.userId?.trim() || null : null;
-      };
-      const accountStoreDeviceId = (): string | null => {
-        try {
-          return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-        } catch {
-          return null;
-        }
-      };
-      // One relay client for both stores: it is a stateless wrapper over the
-      // same registration file and the same token getter, so a second one buys
-      // nothing but another copy to keep in step.
-      const accountStoreRelay = createPushRelayClient({
-        store: createPushRegistrationStore({ filePath: pushRelayFilePath, logger }),
-        logger,
-        getAccountAccessToken,
-        getAccountUserId: accountStoreUserId,
-      });
-
-      accountSettingsStore = getSharedAccountSettingsStore(
-        accountStoreAdeDir,
-        () =>
-          createAccountSettingsStore({
-            adeDir: accountStoreAdeDir,
-            relay: accountStoreRelay,
-            getAccountUserId: accountStoreUserId,
-            getDeviceId: accountStoreDeviceId,
-            logger,
-          }),
-      );
-      teardown.push(accountSettingsStore.startPeriodicSync());
-
-      // The vault rides the same Worker, the same machine identity, and the
-      // same beat. Kept a separate store rather than a second table on the
-      // settings one, so a credential can never be returned by a settings read
-      // and the two have different permissions, different disk posture, and
-      // different sign-out behaviour.
-      accountVaultStore = getSharedAccountVaultStore(accountStoreAdeDir, () =>
-        createAccountVaultStore({
-          adeDir: accountStoreAdeDir,
-          relay: accountStoreRelay,
-          getAccountUserId: accountStoreUserId,
-          getDeviceId: accountStoreDeviceId,
-          logger,
-        }));
-      teardown.push(accountVaultStore.startPeriodicSync());
-
-      // Settings survive a sign-out; the vault does not. Nothing else calls
-      // this, so without the subscription a signed-out machine keeps every
-      // synced credential readable on disk — including when the sign-out
-      // happened in another process (`ade logout`) and this brain only hears
-      // about it through the credential file changing.
-      const vaultToPurge = accountVaultStore;
-      const purgeAccountOwnedCredentials = (): void => {
-        try {
-          purgeAccountApiKeys();
-        } catch (error) {
-          logger.warn("account.local_credentials_purge_failed", {
-            source: "provider_api_keys",
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        try {
-          projectSecretService.purgeAccountCredentials();
-        } catch (error) {
-          logger.warn("account.local_credentials_purge_failed", {
-            source: "project_secrets",
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        try {
-          headlessLinearServices.linearCredentialService.purgeAccountCredentials();
-        } catch (error) {
-          logger.warn("account.local_credentials_purge_failed", {
-            source: "linear_credentials",
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      };
-      const initialAccountStatus = accountAuthService.getStatus();
-      let lastAccountUserId = initialAccountStatus.signedIn
-        ? initialAccountStatus.userId?.trim() || null
-        : null;
-      const unsubscribeAccountSignedOut = accountAuthService.onSignedOut?.(() => {
-        vaultToPurge.purge();
-        purgeAccountOwnedCredentials();
-        lastAccountUserId = null;
-      });
-      if (unsubscribeAccountSignedOut) teardown.push(unsubscribeAccountSignedOut);
-
-      // Keep the CLI brain on the same silent, receipt-backed account migration
-      // path as desktop. The callbacks above are late-bound because the
-      // machine-scoped account stores are created after the project services.
-      const accountMigrationRunner = createAccountMigrationRunner({
-        accountBridge: { status: () => accountAuthService.getStatus() },
-        accountVaultBridge,
-        getContexts: () => [{
-          project: { rootPath: projectRoot },
-          linearCredentialService: headlessLinearServices.linearCredentialService,
-          projectSecretService,
-        }],
-        getLogger: () => logger,
-      });
-      accountMigrationRunner.start();
-      teardown.push(accountAuthService.onSignedIn(() => {
-        const nextAccountUserId = accountAuthService.getStatus().userId?.trim() || null;
-        if (lastAccountUserId && nextAccountUserId && lastAccountUserId !== nextAccountUserId) {
-          vaultToPurge.purge();
-          purgeAccountOwnedCredentials();
-        }
-        lastAccountUserId = nextAccountUserId;
-        accountMigrationRunner.start();
-      }));
-    }
+    // The lifecycle performs the first vault pull before it allows the
+    // receipt-backed migration to inspect local credentials.
+    await accountRuntimeLifecycle.initialize();
     const detachPushSources = publishPushEvents
       ? pushPublisherService.attachSources(projectId, {
         // The lightweight no-agent headless chat stub intentionally exposes
