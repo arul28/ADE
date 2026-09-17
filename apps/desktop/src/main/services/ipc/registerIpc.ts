@@ -921,7 +921,13 @@ import {
   decodeScenePngDataUrl,
   type SceneCaptureRect,
 } from "../scenes/sceneSnapshot";
-import { fileSceneStill, sceneStillFileLabel } from "../scenes/sceneStills";
+import {
+  fileSceneStill,
+  requireSceneStillScopeKey,
+  resolveSceneStillOwner,
+  sceneStillFileLabel,
+  SceneStillScopeKeyError,
+} from "../scenes/sceneStills";
 import { SCENE_LIMITS, type SceneStillRecord } from "../../../shared/chatScene";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
@@ -8968,25 +8974,17 @@ export function registerIpc({
   /**
    * The chat a scene snapshot may be filed against.
    *
-   * One lookup, not a list. `listSessions` reads persisted state off disk
-   * synchronously for every row it returns and can materialize managed sessions
-   * as a side effect, so validating a single id by listing all of them blocked
-   * the main process on hundreds of file reads per press of a Proof button —
-   * and its 500-row window would have quietly failed a legitimate older chat.
-   * `getSessionSummary` answers the same question against one row, with no
-   * identity or automation filter to defeat: the CTO's own thread is an
-   * identity session and has to pass.
+   * The Proof button's half of `resolveSceneStillOwner`: no call, so no call to
+   * resolve an owner from. `sessionService` is project-scoped, so an id naming
+   * another project's chat simply misses.
    */
-  const resolveSceneProofOwner = async (
+  const resolveSceneProofOwner = (
     ctx: AppContext,
     claimed: unknown,
-  ): Promise<string | null> => {
-    const id = typeof claimed === "string" ? claimed.trim() : "";
-    if (!id.length || !ctx.agentChatService) return null;
-    // `sessionService` is project-scoped, so an id from another project misses.
-    const found = await ctx.agentChatService.getSessionSummary(id).catch(() => null);
-    return found ? id : null;
-  };
+  ): Promise<string | null> => resolveSceneStillOwner({
+    agentChatService: ctx.agentChatService,
+    claimedSessionId: claimed,
+  });
 
   ipcMain.handle(
     IPC.sceneAttachProof,
@@ -9147,15 +9145,21 @@ export function registerIpc({
         const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
         if (!bytes) return null;
         const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
-        const scopeKey = typeof arg?.scopeKey === "string" ? arg.scopeKey.trim() : "";
         const voiceCallId = typeof arg?.voiceCallId === "string" ? arg.voiceCallId.trim() : "";
         // No scope key is no identity, and the two sides disagreed about what
         // to do with one: in process it filed an index row nothing could ever
         // look up, and over the runtime action the missing key is exactly what
         // marks a call as the PROOF button — so the same still landed in the
-        // drawer as evidence. Refused here, before any bytes are written, so
-        // neither side has to guess.
-        if (!scopeKey) return null;
+        // drawer as evidence. One contract now, refused on both sides before
+        // any bytes are written; here that refusal is a no-op answer rather
+        // than a logged failure, because an unkeyed still was never a still.
+        let scopeKey: string;
+        try {
+          scopeKey = requireSceneStillScopeKey(arg?.scopeKey);
+        } catch (error) {
+          if (error instanceof SceneStillScopeKeyError) return null;
+          throw error;
+        }
         // The title reaches the FILE NAME here, and a scene titles itself: see
         // `sceneStillFileLabel` for why that is clamped. The record keeps the
         // whole title; the name on disk is a label.
@@ -9183,9 +9187,13 @@ export function registerIpc({
           // side, and only after the renderer's own claim has failed the same
           // ownership check every other filing goes through.
           if (broker) {
-            const sessionId = (await resolveSceneProofOwner(ctx, arg?.sessionId))
-              ?? ctx.ctoVoiceCallService?.getCallSessionId(voiceCallId)
-              ?? null;
+            const sessionId = await resolveSceneStillOwner({
+              agentChatService: ctx.agentChatService,
+              claimedSessionId: arg?.sessionId,
+              voiceCallId,
+              resolveVoiceCallSessionId: (callId) =>
+                ctx.ctoVoiceCallService?.getCallSessionId(callId) ?? null,
+            });
             record.artifactId = fileSceneStill({
               broker,
               path: artifactPath,

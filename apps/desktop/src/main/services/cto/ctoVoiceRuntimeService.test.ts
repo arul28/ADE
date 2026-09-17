@@ -236,6 +236,62 @@ describe("createCtoVoiceRuntimeService", () => {
     expect(written).toContain("- Lanes — .ade/artifacts/computer-use/lanes.png");
   });
 
+  /**
+   * The state's `sessionId` exists for one caller: the voice HUD, mounted at
+   * the shell outside every chat scope, which owns the pictures the scenes it
+   * draws leave behind.
+   *
+   * It is THIS CALL'S chat, so it is stamped only onto a state that still names
+   * a call. The id it comes from outlives the hang-up on purpose — the call
+   * record is written from it afterwards — so the guard is what keeps a
+   * call-less state from carrying an owner the HUD would file the next id-less
+   * scene under.
+   *
+   * An INVARIANT, not a repro: today the runtime's own pre-flight refuses a
+   * start before a call service can publish a call-less `failed`, so no public
+   * path reaches the stale stamp. This pins the pairing so that a future state
+   * that does arrive without a call cannot quietly acquire an owner.
+   */
+  it("names a chat only while a call is naming itself", async () => {
+    const first = createFakeSocket();
+    const second = createFakeSocket();
+    const sockets = [first.socket, second.socket];
+    const { host } = createVoiceRuntimeHost();
+    const ensureIdentitySession = vi.fn(async () => ({ id: "session-1" }));
+    (host.agentChatService as unknown as { ensureIdentitySession: unknown })
+      .ensureIdentitySession = ensureIdentitySession;
+    const seen: Array<{ callId: string | null; sessionId: string | null }> = [];
+    const voice = createCtoVoiceRuntimeService(host, {
+      getApiKey: async () => "sk-test",
+      createWebSocket: () => sockets.shift()!,
+    });
+    const unsubscribe = voice.subscribeState((state) => {
+      seen.push({ callId: state.callId, sessionId: state.sessionId });
+    });
+
+    await voice.start({ ownerToken: "owner-1" });
+    first.open();
+    const callOne = voice.getState().callId;
+    expect(callOne).toBeTruthy();
+    expect(voice.getState().sessionId).toBe("session-1");
+    await voice.end({ ownerToken: "owner-1" });
+
+    // A second call on a second chat: the stamp follows the call, so nothing
+    // from the first one survives into it.
+    ensureIdentitySession.mockResolvedValue({ id: "session-2" });
+    await voice.start({ ownerToken: "owner-2" });
+    second.open();
+    expect(voice.getState().callId).not.toBe(callOne);
+    expect(voice.getState().sessionId).toBe("session-2");
+
+    unsubscribe();
+    expect(seen.length).toBeGreaterThan(0);
+    // The invariant, over every state either call published: a chat is named
+    // when, and only when, a call is.
+    expect(seen.filter((entry) => Boolean(entry.sessionId) !== Boolean(entry.callId))).toEqual([]);
+    voice.dispose();
+  });
+
   it("clears a dead call silently, so the next call's first word is its own", async () => {
     // The desktop subscribes before it calls `start`, so anything published
     // while a dead service is being cleared lands on the NEW call's slot.

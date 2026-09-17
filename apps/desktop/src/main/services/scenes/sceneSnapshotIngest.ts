@@ -4,7 +4,7 @@ import nodePath from "node:path";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { isPathInside } from "../shared/pathCompare";
-import { fileSceneStill } from "./sceneStills";
+import { fileSceneStill, requireSceneStillScopeKey, resolveSceneStillOwner } from "./sceneStills";
 
 type ComputerUseArtifactBroker = NonNullable<AdeRuntime["computerUseArtifactBrokerService"]>;
 type AgentChatService = AdeRuntime["agentChatService"];
@@ -75,14 +75,12 @@ export async function ingestSceneSnapshot({
 }> {
   const rawPath = typeof args?.path === "string" ? args.path.trim() : "";
   if (!rawPath) throw new Error("path is required.");
-  // The PRESENCE of a scope key is what tells a still from the Proof button,
-  // so a blank one is not a still with no identity — it is a still that would
-  // be filed as evidence. Refused rather than guessed at, which is the same
-  // answer the in-process path gives before it writes any bytes at all.
-  if (args?.sceneScopeKey !== undefined
-    && !(typeof args.sceneScopeKey === "string" && args.sceneScopeKey.trim().length)) {
-    throw new Error("A scene still needs a scene scope key.");
-  }
+  // Absent means the Proof button, which has no scene identity and wants none.
+  // Present-but-blank is the refusal, and it is the same one the desktop
+  // handler makes before it writes any bytes — see `requireSceneStillScopeKey`.
+  const sceneScopeKey = args?.sceneScopeKey === undefined
+    ? ""
+    : requireSceneStillScopeKey(args.sceneScopeKey);
   const artifactsRoot = nodePath.resolve(
     nodePath.join(resolveAdeLayout(projectRoot).artifactsDir, "computer-use"),
   );
@@ -121,25 +119,16 @@ export async function ingestSceneSnapshot({
   if (!stat.isFile() || stat.size === 0) throw new Error("The scene snapshot is missing.");
   const title = (typeof args?.title === "string" ? args.title.trim() : "") || "Generated view";
 
-  // Proof in ADE is chat-scoped. A miss drops the OWNER, never the
-  // artifact — an unattributed snapshot is a smaller loss than a
-  // misattributed one.
-  const claimed = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
-  let ownerSessionId: string | null = null;
-  if (claimed && agentChatService) {
-    const found = await agentChatService.getSessionSummary(claimed).catch(() => null);
-    if (found) ownerSessionId = claimed;
-  }
-
   const voiceCallId = typeof args?.voiceCallId === "string" ? args.voiceCallId.trim() : "";
-  // Second, and only second: a caller that named a chat this project knows has
-  // already been believed. This covers the caller that could not name one —
-  // the voice HUD, which draws outside every chat scope — by asking the call.
-  if (!ownerSessionId && voiceCallId && resolveVoiceCallSessionId) {
-    ownerSessionId = resolveVoiceCallSessionId(voiceCallId);
-  }
+  // The same two-source resolution the desktop handler runs, from the same
+  // function: the two sides file into one drawer and must agree about whose.
+  const ownerSessionId = await resolveSceneStillOwner({
+    agentChatService,
+    claimedSessionId: args?.sessionId,
+    voiceCallId,
+    resolveVoiceCallSessionId,
+  });
 
-  const sceneScopeKey = typeof args?.sceneScopeKey === "string" ? args.sceneScopeKey.trim() : "";
   if (sceneScopeKey) {
     // A still, not proof. Same jail, same owner resolution, different record:
     // tagged so the proof drawer excludes it, and bounded so a long chat's

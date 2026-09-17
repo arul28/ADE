@@ -313,7 +313,15 @@ export function createCtoVoiceRuntimeService(
     // this is the only place that holds both, and the HUD — mounted at the
     // shell, outside every chat scope — has no other way to learn which
     // session owns the stills the scenes it draws leave behind.
-    const next: CtoVoiceState = { ...incoming, sessionId: callStillsSessionId };
+    //
+    // Only for a state that still names a call. `callStillsSessionId` outlives
+    // the hang-up (the record is written from it afterwards), so stamping it
+    // unconditionally left an ended, call-less state advertising a chat that
+    // owns nothing — an owner the HUD would file the next id-less scene under.
+    const next: CtoVoiceState = {
+      ...incoming,
+      sessionId: incoming.callId ? callStillsSessionId : null,
+    };
     const wasInterrupted = state.interrupted;
     state = next;
     // The renderer flushes its own playback graph on a barge-in; this is the

@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { MarkdownBlock } from "./chatMarkdownBlock";
-import { SceneFrame, SCENE_STILL_INDEX_WAIT_MS } from "./SceneFrame";
+import { SceneFrame } from "./SceneFrame";
+import { SCENE_STILL_INDEX_WAIT_MS } from "./useSceneStillLatch";
 import { readSceneStill, rememberSceneStill, resetSceneStillsForTest } from "./sceneStillStore";
 import {
   postSceneMessage,
@@ -36,7 +37,11 @@ const SCENE = [
 afterEach(cleanup);
 
 beforeEach(() => {
-  (globalThis as unknown as { URL: typeof URL }).URL.createObjectURL = vi.fn(() => "blob:scene-1");
+  // One url per prepared document. A constant made a source swap look like no
+  // change at all, so a frame handed a second view never rearmed anything.
+  let documents = 0;
+  (globalThis as unknown as { URL: typeof URL }).URL.createObjectURL =
+    vi.fn(() => `blob:scene-${++documents}`);
   (globalThis as unknown as { URL: typeof URL }).URL.revokeObjectURL = vi.fn();
 });
 
@@ -48,7 +53,7 @@ describe("SceneFrame", () => {
    * a later edit.
    */
   it("sandboxes scripts without ever granting same-origin", async () => {
-    render(<SceneFrame source={'<div id="n">3</div>'} live />);
+    render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
     const frame = await screen.findByTestId("chat-scene-frame");
     const sandbox = frame.getAttribute("sandbox") ?? "";
     expect(sandbox).toContain("allow-scripts");
@@ -57,7 +62,7 @@ describe("SceneFrame", () => {
   });
 
   it("shows the title and marks the view as agent-drawn", async () => {
-    render(<SceneFrame source={'<!-- @scene title="Merged pull requests" -->\n<p>x</p>'} live />);
+    render(<SceneFrame source={'<!-- @scene title="Merged pull requests" -->\n<p>x</p>'} live scopeKey={null} voiceCallId={null} />);
     await screen.findByTestId("chat-scene-frame");
     const scene = screen.getByTestId("chat-scene");
     expect(scene.textContent).toContain("Merged pull requests");
@@ -67,7 +72,7 @@ describe("SceneFrame", () => {
   });
 
   it("falls back to a readable code block when the scene cannot be parsed", () => {
-    render(<SceneFrame source={"   "} live />);
+    render(<SceneFrame source={"   "} live scopeKey={null} voiceCallId={null} />);
     expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
     expect(screen.getByText(/could not be rendered/i)).toBeTruthy();
   });
@@ -89,7 +94,7 @@ describe("SceneFrame", () => {
     const prepare = vi.fn(async () => null);
     (window as unknown as { ade?: unknown }).ade = { scene: { prepare } };
     try {
-      render(<SceneFrame source={'<div id="n">3</div>'} live />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
       const frame = await screen.findByTestId("chat-scene-frame");
       expect(prepare).toHaveBeenCalled();
       expect(frame.getAttribute("src")).toBe("blob:scene-1");
@@ -141,7 +146,7 @@ describe("SceneFrame", () => {
 
     async function renderRunningScene(snapshot: (rect: unknown) => Promise<string | null>) {
       (window as unknown as { ade?: unknown }).ade = { scene: { snapshot } };
-      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live />);
+      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
       const frame = await screen.findByTestId("chat-scene-frame");
       // The frame reports ready, which is the draw gate: a capture before the
       // first paint snapshots a blank rect.
@@ -162,7 +167,7 @@ describe("SceneFrame", () => {
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
       const rerender = await renderRunningScene(snapshot);
 
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
       expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
       expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("frozen");
@@ -179,7 +184,7 @@ describe("SceneFrame", () => {
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
       const rerender = await renderRunningScene(snapshot);
 
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
       await waitFor(() =>
         expect(screen.getByTestId("chat-scene-frame")).toBeTruthy(),
       );
@@ -199,7 +204,7 @@ describe("SceneFrame", () => {
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
       const rerender = await renderRunningScene(snapshot);
 
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
 
       // Still partial — a different partial, but partial.
@@ -222,7 +227,7 @@ describe("SceneFrame", () => {
       const rerender = await renderRunningScene(snapshot);
 
       vi.useFakeTimers();
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
       // No scroll, no new intersection: the deadline timer is the only thing
       // that can wake this up.
       await act(async () => { await vi.advanceTimersByTimeAsync(4_100); });
@@ -240,7 +245,7 @@ describe("SceneFrame", () => {
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
       const rerender = await renderRunningScene(snapshot);
 
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
 
       stubShellRect({});
@@ -252,9 +257,9 @@ describe("SceneFrame", () => {
     /** No capture route at all: keep the working view rather than nothing. */
     it("leaves the frame mounted when the host cannot snapshot", async () => {
       stubShellRect({});
-      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live />);
+      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
       await screen.findByTestId("chat-scene-frame");
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
       expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
     });
@@ -297,7 +302,7 @@ describe("SceneFrame", () => {
         // Always keyed: a scene with no scope key is deliberately never
         // stored, so a default-less harness would test the wrong path.
         scopeKey: options.scopeKey ?? "row-default",
-        ...(options.voiceCallId ? { voiceCallId: options.voiceCallId } : {}),
+        voiceCallId: options.voiceCallId ?? null,
         ...(options.onStill ? { onStill: options.onStill } : {}),
       };
       const { rerender } = render(<SceneFrame {...props} />);
@@ -363,7 +368,7 @@ describe("SceneFrame", () => {
       (window as unknown as { ade?: unknown }).ade = {
         scene: { snapshot: vi.fn(async () => "data:image/png;base64,STILL") },
       };
-      render(<SceneFrame source={'<div id="n">3</div>'} live />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       const frame = screen.getByTestId("chat-scene-frame");
       act(() => {
@@ -398,7 +403,7 @@ describe("SceneFrame", () => {
       rememberSceneStill("row-9", {
         record: { uri: ".ade/artifacts/computer-use/old.png", artifactId: "a9", title: "Merged PRs" },
       });
-      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-9" />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-9" voiceCallId={null} />);
 
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
       expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
@@ -412,7 +417,7 @@ describe("SceneFrame", () => {
       rememberSceneStill("row-10", {
         record: { uri: ".ade/artifacts/computer-use/old.png", artifactId: "a10", title: "Merged PRs" },
       });
-      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey="row-10" />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey="row-10" voiceCallId={null} />);
       expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
     });
 
@@ -421,7 +426,7 @@ describe("SceneFrame", () => {
       const attachProof = vi.fn(async (_args: { dataUrl?: string | null }) => true);
       const snapshot = vi.fn(async () => "data:image/png;base64,STILL");
       (window as unknown as { ade?: unknown }).ade = { scene: { snapshot, attachProof } };
-      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live />);
+      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
       const frame = await screen.findByTestId("chat-scene-frame");
       act(() => {
         for (const type of ["ready", "settled"]) {
@@ -436,7 +441,7 @@ describe("SceneFrame", () => {
       // Out of view at the end of the turn, so `snapshot` state is null — the
       // Proof button used to file nothing at all here.
       stubShellRect({ top: -120, y: -120, bottom: 80 });
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
       act(() => { screen.getByTestId("chat-scene-proof").click(); });
       await waitFor(() => expect(attachProof).toHaveBeenCalledTimes(1));
@@ -463,6 +468,35 @@ describe("SceneFrame", () => {
     });
 
     /**
+     * One mounted frame, many documents — the voice HUD's shape.
+     *
+     * A source swap resets the one-capture latch and the settle flag in the
+     * same commit, and the reset's state update is only SCHEDULED: the capture
+     * effect re-ran first, against the previous document's `settled`, took a
+     * picture of a view that had just been replaced, discarded it when its own
+     * effect was torn down, and left the latch burned — so every document after
+     * the first filed nothing at all.
+     */
+    it("files a still for each document a single frame is handed", async () => {
+      stubShellRect({});
+      const { storeStill, settle, rerender, props } = await renderSettlingScene({
+        scopeKey: "view-1",
+      });
+      settle();
+      await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(1));
+
+      // The same frame, a new view — exactly what the HUD does mid-call.
+      rerender(<SceneFrame {...props} source={"<p>second view</p>"} scopeKey="view-2" />);
+      const frame = await screen.findByTestId("chat-scene-frame");
+      await waitFor(() => expect(frame.getAttribute("src")).toBe("blob:scene-2"));
+      act(() => { postSceneMessage(frame, "settled"); });
+
+      await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(2));
+      expect(storeStill.mock.calls.map((call) => (call[0] as { scopeKey: string }).scopeKey))
+        .toEqual(["view-1", "view-2"]);
+    });
+
+    /**
      * Two scene fences in one message used to share the transcript row key, so
      * whichever settled last overwrote the other's picture and a reopened chat
      * showed the same view twice.
@@ -481,7 +515,7 @@ describe("SceneFrame", () => {
         "<p>two</p>",
         "```",
       ].join("\n");
-      render(<MarkdownBlock markdown={body} mosaicScopeKey="row-7" sceneLive />);
+      render(<MarkdownBlock markdown={body} sceneScopeKey="row-7" sceneLive />);
       const frames = await screen.findAllByTestId("chat-scene-frame");
       expect(frames).toHaveLength(2);
       act(() => {
@@ -518,7 +552,7 @@ describe("SceneFrame", () => {
           laneId={null}
           sessionId="chat-remote"
         >
-          <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-remote" />
+          <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-remote" voiceCallId={null} />
         </ChatRuntimeScopeProvider>,
       );
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src"))
@@ -547,7 +581,7 @@ describe("SceneFrame", () => {
      * — and the latch waited for one forever, leaving a permanently blank box.
      */
     it("runs a settled scene immediately when there is no scope key to look up", async () => {
-      render(<SceneFrame source={'<div id="n">3</div>'} live={false} />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
       expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
     });
 
@@ -561,7 +595,7 @@ describe("SceneFrame", () => {
         // Absolute paths never resolve through `ade-artifact://project/`.
         record: { uri: "/somewhere/else/old.png", artifactId: "a12", title: "Merged PRs" },
       });
-      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-unresolvable" />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-unresolvable" voiceCallId={null} />);
       expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
       expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
     });
@@ -572,6 +606,65 @@ describe("SceneFrame", () => {
      * a placeholder for all of it. Past the local deadline the mount runs the
      * scene; a picture that arrives afterwards still replaces the frozen frame.
      */
+    /**
+     * The other half of the same trade, and the one the deadline got wrong.
+     *
+     * On a remote chat every still needs its OWN cross-machine preview read, so
+     * a transcript of settled scenes raced a single 1.5 s deadline against a
+     * queue of round trips and lost: each row decided "no picture", re-ran the
+     * agent's generated code, and re-filed its still — on every reopen. A
+     * RECORD is proof the code already ran, so a mount that has one waits for
+     * the bytes however long they take. The deadline bounds the index listing
+     * and nothing else.
+     */
+    it("holds a placeholder for a slow picture rather than re-running the scene", async () => {
+      vi.useFakeTimers();
+      try {
+        let deliver: ((value: string | null) => void) | null = null;
+        const bridge = stubSceneCaptureBridge({
+          artifacts: [{
+            id: "a20",
+            uri: ".ade/artifacts/computer-use/slow.png",
+            title: "Generated view",
+            metadata: { kind: "scene_still", sceneScopeKey: "row-slow-bytes" },
+          }],
+          readArtifactPreview: () => new Promise((resolve) => { deliver = resolve; }),
+        });
+        render(
+          <ChatRuntimeScopeProvider
+            pin={REMOTE_BINDING}
+            binding={REMOTE_BINDING}
+            laneId={null}
+            sessionId="chat-slow-bytes"
+          >
+            <SceneFrame
+              source={'<div id="n">3</div>'}
+              live={false}
+              scopeKey="row-slow-bytes"
+              voiceCallId={null}
+            />
+          </ChatRuntimeScopeProvider>,
+        );
+
+        // Well past the index deadline, with the bytes still in flight: a
+        // placeholder, and above all NO frame — the code must not run again.
+        await act(async () => { await vi.advanceTimersByTimeAsync(SCENE_STILL_INDEX_WAIT_MS * 4); });
+        expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
+        expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
+        expect(bridge.storeStill).not.toHaveBeenCalled();
+
+        await act(async () => {
+          deliver?.("data:image/png;base64,SLOW");
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src"))
+          .toBe("data:image/png;base64,SLOW");
+        expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("stops waiting for a slow index and runs the scene", async () => {
       vi.useFakeTimers();
       try {
@@ -586,7 +679,7 @@ describe("SceneFrame", () => {
             laneId={null}
             sessionId="chat-slow"
           >
-            <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-slow" />
+            <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-slow" voiceCallId={null} />
           </ChatRuntimeScopeProvider>,
         );
         expect(screen.queryByTestId("chat-scene-frame")).toBeNull();

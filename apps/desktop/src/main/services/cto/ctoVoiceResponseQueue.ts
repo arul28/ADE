@@ -181,9 +181,8 @@ export function createResponseQueue(deps: {
      * is most of a hybrid call and is exactly the case the hybrid's timing line
      * exists to measure.
      */
-    // Read off the entry in flight rather than mirrored into a flag beside it:
-    // the entry already carries the answer, and a second copy is one more thing
-    // for a teardown to forget to clear.
+    // Read off the entry in flight: it already carries the answer, so there is
+    // no second copy a teardown could forget to clear.
     countsForTurnTiming: (): boolean => (
       inflight === null || inflight.kind === "ade" || inflight.timed
     ),

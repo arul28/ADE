@@ -41,11 +41,104 @@ export const SCENE_STILL_MAX_PER_SESSION = 32;
  * timestamp and extension the store adds. The record keeps the whole title;
  * the file name is only a label for a human reading a directory listing.
  */
-export const SCENE_STILL_FILE_LABEL_MAX = 80;
+const SCENE_STILL_FILE_LABEL_MAX = 80;
 
 export function sceneStillFileLabel(title: string): string {
   return title.slice(0, SCENE_STILL_FILE_LABEL_MAX);
 }
+
+/* ──────────────────── who owns a still, and what names it ──────────────────── */
+
+/**
+ * The blank scope key both filing sides refuse.
+ *
+ * Typed rather than a bare `Error` because the two sides do different things
+ * with it: the runtime action lets it out as the RPC's failure, while the
+ * desktop handler catches it and answers null — a still with no identity is a
+ * no-op button press, not an error to log.
+ */
+export class SceneStillScopeKeyError extends Error {
+  constructor(message = "A scene still needs a scene scope key.") {
+    super(message);
+    this.name = "SceneStillScopeKeyError";
+  }
+}
+
+/**
+ * The scope key a still must carry, or a {@link SceneStillScopeKeyError}.
+ *
+ * The PRESENCE of a scope key is what tells a still from the Proof button, so a
+ * blank one is not a still with no identity — it is a still that would be filed
+ * as evidence. Refused before any bytes are written, on both sides, so neither
+ * has to guess what the other did.
+ */
+export function requireSceneStillScopeKey(value: unknown): string {
+  const key = typeof value === "string" ? value.trim() : "";
+  if (!key) throw new SceneStillScopeKeyError();
+  return key;
+}
+
+/** Just enough of the chat service to check that a claimed chat exists here. */
+export type SceneStillChatService = {
+  getSessionSummary: (sessionId: string) => Promise<unknown>;
+} | null | undefined;
+
+export type ResolveSceneStillOwnerArgs = {
+  agentChatService: SceneStillChatService;
+  /** The chat the RENDERER named. A claim, checked here, never trusted. */
+  claimedSessionId: unknown;
+  /**
+   * The call a scene was drawn on, when it was drawn on one. Omit for the
+   * Proof button, which has no call and must not resolve an owner from one.
+   */
+  voiceCallId?: string | null;
+  /** Answers only for the call that is actually up; see below. */
+  resolveVoiceCallSessionId?: ((callId: string) => string | null) | null;
+};
+
+/**
+ * The chat a scene snapshot may be filed against.
+ *
+ * One function because the desktop handler and the runtime action must agree:
+ * proof in ADE is chat-scoped, and a still filed with the wrong owner is filed
+ * into someone else's drawer while a still filed with none skips both disk
+ * bounds and empties the finished call's "Views drawn" section.
+ *
+ * Two sources, in order. The renderer's claim first, resolved against THIS
+ * project's own sessions — `getSessionSummary` rather than a listing, because
+ * the CTO's own thread is an identity session that every default filter hides,
+ * and because listing every chat to validate one id reads hundreds of files.
+ * Then, only for a claim that did not resolve, the call itself: the voice HUD
+ * is mounted at the shell outside every chat scope, so it often cannot name a
+ * chat at all, and this side owns the call.
+ *
+ * A miss drops the OWNER, never the artifact — an unattributed picture is a
+ * smaller loss than a misattributed one.
+ *
+ * NAMING THE LIVE CALL IS ALL A RENDERER CAN DO WITH THIS, AND THAT IS BY
+ * DESIGN. `resolveVoiceCallSessionId` answers for the call that is actually up
+ * and for nothing else, so the only owner a renderer can reach through it is
+ * the CTO thread that call is already running on — a chat the same handler
+ * would let it file proof against by claiming it outright. There is no wider
+ * reach to close here, so there is no check beyond the live-call one.
+ */
+export async function resolveSceneStillOwner({
+  agentChatService,
+  claimedSessionId,
+  voiceCallId,
+  resolveVoiceCallSessionId,
+}: ResolveSceneStillOwnerArgs): Promise<string | null> {
+  const claimed = typeof claimedSessionId === "string" ? claimedSessionId.trim() : "";
+  if (claimed && agentChatService) {
+    const found = await agentChatService.getSessionSummary(claimed).catch(() => null);
+    if (found) return claimed;
+  }
+  const callId = typeof voiceCallId === "string" ? voiceCallId.trim() : "";
+  if (callId && resolveVoiceCallSessionId) return resolveVoiceCallSessionId(callId) ?? null;
+  return null;
+}
+
+/* ─────────────────────────────── filing them ─────────────────────────────── */
 
 export type FileSceneStillArgs = {
   broker: ComputerUseArtifactBroker;

@@ -16,6 +16,7 @@ import {
   type NormalizedSubagentLifecycleEvent,
 } from "../../../shared/chatSubagents";
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
+import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import { isUsageLimitFailureText } from "../../../shared/usageLimitResumePresentation";
 import {
@@ -384,6 +385,22 @@ export type ChatTranscriptRenderEnvelope = {
    * into a single `voice_call_group` row (see {@link groupVoiceCallRows}).
    */
   voiceCallId?: string;
+  /**
+   * What names this row on disk for a scene drawn in it.
+   *
+   * Derived here, from the row's own event and key, because row identity is a
+   * property of the row: the renderer had been recomputing it at the point of
+   * use, which put the one function whose answer is a FILE NAME in the project
+   * — stable across every rebuild of the transcript, or the scene re-runs and
+   * re-files on every reopen — in a component's render body. See
+   * {@link sceneRowIdentity}.
+   *
+   * Optional only because the row builders below construct envelopes literally;
+   * every row that leaves this module through a collapse entry point has been
+   * stamped, so a reader may treat an absent one as "this row cannot hold a
+   * scene" rather than "not computed yet".
+   */
+  sceneScopeKey?: string;
 };
 
 export type ChatTranscriptGroupedEnvelope = {
@@ -400,6 +417,8 @@ export type ChatTranscriptGroupedEnvelope = {
   repeatCount?: number;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `voiceCallId`. */
   voiceCallId?: string;
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
+  sceneScopeKey?: string;
 };
 
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
@@ -588,7 +607,19 @@ function replaceRowPreservingVoiceCall(
   next: ChatTranscriptRenderEnvelope,
 ): void {
   const voiceCallId = rows[index]?.voiceCallId;
-  rows[index] = voiceCallId ? { ...next, voiceCallId } : next;
+  rows[index] = stampSceneScopeKey(voiceCallId ? { ...next, voiceCallId } : next);
+}
+
+/**
+ * Give a row its scene identity. Recomputed rather than carried, because it is
+ * a pure function of the two fields already on the row and a rewritten row has
+ * a new event.
+ */
+function stampSceneScopeKey<T extends ChatTranscriptRenderEnvelope>(row: T): T {
+  // Read defensively: the row union is every render event, and only some of
+  // them name a message at all. `sceneRowIdentity` falls back to the row key.
+  const event = row.event as { messageId?: string | null; turnId?: string | null; itemId?: string | null };
+  return { ...row, sceneScopeKey: sceneRowIdentity(event, row.key) };
 }
 
 export function summarizeInlineText(value: string, maxChars = 120): string {
@@ -2598,9 +2629,9 @@ function appendCollapsedEventWithVoiceStamp(
   const callId = envelope.provenance?.voiceCallId?.trim() || null;
   const before = rows.length;
   appendCollapsedChatTranscriptEvent(rows, envelope, sequence, context);
-  if (!callId) return;
   for (let index = before; index < rows.length; index += 1) {
-    rows[index] = { ...rows[index]!, voiceCallId: callId };
+    const row = rows[index]!;
+    rows[index] = stampSceneScopeKey(callId ? { ...row, voiceCallId: callId } : row);
   }
 }
 

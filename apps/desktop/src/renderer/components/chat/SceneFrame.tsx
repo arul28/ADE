@@ -16,12 +16,8 @@ import {
 import { COLORS } from "../lanes/laneDesignTokens";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { HighlightedCode } from "./CodeHighlighter";
-import {
-  rememberSceneStill,
-  useSceneStillRecord,
-  useSceneStillSrc,
-  useSessionStillsReady,
-} from "./sceneStillStore";
+import { rememberSceneStill } from "./sceneStillStore";
+import { useSceneStillLatch } from "./useSceneStillLatch";
 
 /**
  * Host for an agent-authored scene.
@@ -50,18 +46,6 @@ const MAX_HEIGHT = 760;
  * which is the exact thing freezing exists to stop.
  */
 const SCENE_FREEZE_DEADLINE_MS = 4_000;
-/**
- * How long a settled mount waits to learn whether it has a still before it
- * gives up and runs the scene instead.
- *
- * Shorter than anything the transport promises on purpose: the read behind it
- * is a broker query that may cross to another machine, where the only bound is
- * the 30 s IPC budget, and the user is looking at a blank box for every second
- * of it. Running the code is the safe end of the trade — it is what every
- * scene did before stills existed — and a late answer is not wasted, because
- * the picture replaces the frozen frame when it lands.
- */
-export const SCENE_STILL_INDEX_WAIT_MS = 1_500;
 
 function readSceneTheme(): SceneTheme {
   if (typeof window === "undefined") return SCENE_FALLBACK_THEME;
@@ -109,29 +93,21 @@ export type SceneFrameProps = {
    */
   streaming?: boolean;
   /**
-   * Stable key for the transcript row. It feeds the document identity below so
-   * two byte-identical scenes at different positions get their own frame rather
-   * than sharing one.
-   */
-  scopeKey?: string | null;
-  /**
-   * The call this scene was drawn on, when it was drawn on one. Stored with the
-   * still so the finished call's card can find its pictures again from the
-   * broker rather than from anything this window kept.
-   */
-  voiceCallId?: string | null;
-  /**
-   * The chat that owns this scene's still, when the caller knows it and the
-   * chat scope does not.
+   * This scene's identity: what its still is filed under and looked up by, and
+   * what separates two byte-identical scenes at different positions.
    *
-   * The voice HUD is the caller. It is mounted at the shell, outside every
-   * `ChatRuntimeScope`, so the scope answered null and every call still was
-   * filed with no owner at all — which skips both of the disk bounds and makes
-   * the call's own "Views drawn" section, an owner query, come back empty.
-   * Overrides the scope rather than falling back to it: a caller that knows
-   * which chat this is knows better than an ambient provider it is not under.
+   * Required, and explicitly null for a scene that has none — a reasoning body,
+   * a scene drawn outside a call. Null means the scene runs and leaves nothing
+   * behind, which is a decision each caller has to make rather than fall into
+   * by omitting a prop.
    */
-  ownerSessionId?: string | null;
+  scopeKey: string | null;
+  /**
+   * The call this scene was drawn on, or null. Stored with the still so the
+   * finished call's card can find its pictures again from the broker rather
+   * than from anything this window kept.
+   */
+  voiceCallId: string | null;
   onEmit?: (name: string, payload: unknown) => void;
   /**
    * Called once, with the stored record, the first time this scene's still
@@ -165,23 +141,22 @@ export function SceneFrame({
   streaming = false,
   scopeKey,
   voiceCallId,
-  ownerSessionId,
   onEmit,
   onStill,
 }: SceneFrameProps) {
   // Proof in ADE is chat-scoped, so a snapshot filed with no owner is an
   // artifact nobody can trace back to a conversation. Read from the chat scope
   // rather than taken as a prop: the value is session-constant, and threading
-  // it here meant two components in between carrying a prop neither reads.
-  // Outside a chat — the voice HUD draws scenes too — the scope answers null,
-  // which is what `ownerSessionId` is for: a caller that is not under a scope
-  // but does know its chat says so, and its answer wins.
-  const { sessionId: scopeSessionId, isRemote } = useChatRuntimeScope();
-  const sessionId = ownerSessionId ?? scopeSessionId;
+  // it here meant two components in between carrying a prop neither reads. A
+  // caller outside a chat subtree that does know its chat — the voice HUD —
+  // says so by providing a scope, not by overriding one from the side.
+  const { sessionId } = useChatRuntimeScope();
   const parsed = useMemo(() => parseSceneFence(source), [source]);
   const failed = isSceneParseFailure(parsed);
 
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  /** The current document, for the two callbacks that stamp a settle with it. */
+  const srcRef = useRef<string | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [height, setHeight] = useState(220);
   const [status, setStatus] = useState<Status>("loading");
@@ -209,8 +184,19 @@ export function SceneFrame({
    * leaves scrollback and every later reopen with no picture at all.
    */
   const [still, setStill] = useState<string | null>(null);
-  /** True once the frame has reported it is done animating, or the cap passed. */
-  const [settled, setSettled] = useState(false);
+  /**
+   * The document that has reported it is done animating — not a boolean.
+   *
+   * The voice HUD is why: it keeps ONE mounted frame for a whole call and swaps
+   * the source each time the CTO draws, and on a swap the reset below and the
+   * capture effect run in the SAME commit, with the reset's `setSettled(false)`
+   * still only scheduled. The capture therefore fired against the previous
+   * view's `settled`, took a picture of a document that had just been replaced,
+   * threw it away (its own effect was torn down a tick later) and burned the
+   * one-capture latch — so every view after the first left nothing behind.
+   * Stamped with the src it belongs to, a stale settle simply is not one.
+   */
+  const [settledSrc, setSettledSrc] = useState<string | null>(null);
   /** Bumped when a settle capture that was waiting for visibility should retry. */
   const [stillAttempt, setStillAttempt] = useState(0);
   /** One still per mounted scene: a second capture would only cost a window grab. */
@@ -221,69 +207,14 @@ export function SceneFrame({
   onStillRef.current = onStill;
 
   /**
-   * The still this scene left behind on a previous mount, or in a previous
-   * window. Present means the code has already run once and produced a picture.
+   * Show the picture this scene already left behind, or run its code? The whole
+   * decision lives in {@link useSceneStillLatch}.
    */
-  const storedStill = useSceneStillRecord(sessionId, scopeKey);
-  const storedStillSrc = useSceneStillSrc(storedStill);
-  /**
-   * Whether the answer above is final. The index lives in main now, so "no
-   * still" and "not asked yet" look identical for the first tick after a mount.
-   */
-  const storedStillReady = useSessionStillsReady(sessionId);
-  /**
-   * True when this mount should show the picture instead of running the code.
-   *
-   * Latched on the FIRST render rather than derived, because `live` going false
-   * at the end of a turn must not yank a frame the user is watching: a scene
-   * that was live on this mount plays out and freezes the way it always did.
-   * Only a mount that begins settled — scrollback, a remount, a reopened chat —
-   * skips execution, and only when there is genuinely a picture to show.
-   */
-  const rehydrateRef = useRef<boolean | null>(null);
-  /** True once the bounded wait below has run out; see it for why there is one. */
-  const [stillWaitExpired, setStillWaitExpired] = useState(false);
-  // Undecided until the index has answered. A settled mount that guessed "no
-  // still" while the query was in flight would run the generated code again,
-  // which is the one thing the still exists to prevent; one placeholder tick is
-  // the price. A live mount never waits — it is going to run either way, and
-  // neither does a mount with no scope key: the index is keyed by that key, so
-  // there is nothing it could ever be asked about and waiting for an answer
-  // left reasoning and plan-approval scenes as a permanently blank box.
-  //
-  // The test is the PICTURE, not the record: a record whose bytes cannot be
-  // resolved on this machine draws nothing, so latching on the record alone
-  // rehydrated to an empty frame that never ran and never showed anything.
-  // `stillAnswered` is therefore "the index has answered AND no picture is
-  // coming" — final on a local chat, where an unresolvable uri is the end of
-  // it, but not on a remote one, where the bytes are read back over IPC and a
-  // record with no picture yet may simply be in flight. The wait below is what
-  // bounds that case.
-  const stillAnswered = storedStillReady && (!storedStill || (!storedStillSrc && !isRemote));
-  if (
-    rehydrateRef.current === null
-    && (live || !scopeKey || Boolean(storedStillSrc) || stillAnswered || stillWaitExpired)
-  ) {
-    rehydrateRef.current = !live && Boolean(storedStillSrc);
-  }
-  const rehydrated = rehydrateRef.current === true;
-  const undecided = rehydrateRef.current === null;
-
-  /**
-   * The wait has a deadline of its own.
-   *
-   * On a remote chat the index read is an IPC round trip whose only bound is
-   * the 30 s call budget, and a chat whose machine is slow to answer held every
-   * settled scene in the transcript at a placeholder for that whole time. Past
-   * this the mount decides "no still" and runs the scene; a picture that turns
-   * up afterwards still swaps in, because the freeze shows the stored still
-   * over the frame the moment it resolves.
-   */
-  useEffect(() => {
-    if (!undecided) return;
-    const timer = window.setTimeout(() => setStillWaitExpired(true), SCENE_STILL_INDEX_WAIT_MS);
-    return () => window.clearTimeout(timer);
-  }, [undecided]);
+  const { rehydrated, undecided, storedStillSrc } = useSceneStillLatch({
+    sessionId,
+    scopeKey,
+    live,
+  });
 
   const theme = useMemo(readSceneTheme, []);
   // A fence that is still arriving draws nothing: one placeholder now beats a
@@ -294,6 +225,9 @@ export function SceneFrame({
   }, [failed, streaming, rehydrated, undecided, parsed, theme, scopeKey]);
 
   const [src, setSrc] = useState<string | null>(null);
+  srcRef.current = src;
+  /** True only for a settle this document reported; see {@link settledSrc}. */
+  const settled = settledSrc !== null && settledSrc === src;
 
   // Prefer the real scheme; blob is the preview path. Both give the frame an
   // origin of its own, which is the property that matters.
@@ -347,7 +281,7 @@ export function SceneFrame({
       if (message.payload.height) {
         setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, message.payload.height)));
       }
-      if (message.type === "settled") setSettled(true);
+      if (message.type === "settled") setSettledSrc(srcRef.current);
       if (message.type === "ready") setStatus((prev) => (prev === "loading" ? "running" : prev));
     };
     window.addEventListener("message", onMessage);
@@ -374,7 +308,6 @@ export function SceneFrame({
     freezeDeadlineRef.current = null;
     stillTakenRef.current = false;
     setStill(null);
-    setSettled(false);
   }, [src]);
 
   /**
@@ -391,7 +324,7 @@ export function SceneFrame({
   useEffect(() => {
     if (status !== "running" || settled || rehydrated) return;
     const timer = window.setTimeout(
-      () => setSettled(true),
+      () => setSettledSrc(srcRef.current),
       SCENE_SETTLE_MAX_MS + SCENE_SETTLE_QUIET_MS,
     );
     return () => window.clearTimeout(timer);

@@ -243,9 +243,8 @@ export function useCallStills(
 /**
  * Where a still's bytes can be shown from, without a round trip.
  *
- * Exported for {@link useSceneStillSrc} and for the one caller that has a bare
- * record and no hook to call from — the tests that assert the uri arithmetic
- * directly, which is the part of this worth pinning on its own.
+ * Exported for its tests: the uri arithmetic is the part of this worth pinning
+ * on its own, and it is not otherwise reachable from outside this module.
  *
  * The data URL if the caller has one — it is already in memory — then the
  * artifact uri, which only resolves through the `ade-artifact://` protocol in a
@@ -281,30 +280,63 @@ export function sceneStillSrc(
  * this window shows its own capture with no round trip at all.
  */
 export function useSceneStillSrc(still: SceneStill | null | undefined): string | null {
+  return useSceneStillPreview(still).src;
+}
+
+/** The same picture, plus whether an answer is still on its way. */
+export type SceneStillPreview = {
+  src: string | null;
+  /**
+   * True only while a cross-machine read of THIS uri is outstanding.
+   *
+   * `SceneFrame` is the caller that needs the distinction: "no picture yet"
+   * and "no picture at all" are the same `null`, and treating the first as the
+   * second re-runs an agent's generated code because a round trip was slow.
+   */
+  pending: boolean;
+};
+
+/**
+ * The picture a still can be drawn from, and whether it is still being fetched.
+ *
+ * The answer is stamped with the uri it answers for, so a still whose record
+ * changes does not read the previous one's bytes as its own for a tick.
+ */
+export function useSceneStillPreview(still: SceneStill | null | undefined): SceneStillPreview {
   const scope = useChatRuntimeScope();
   const dataUrl = still?.dataUrl ?? null;
   const uri = still?.record?.uri?.trim() || "";
   const needsRuntimeRead = !dataUrl && Boolean(uri) && scope.isRemote;
-  const [preview, setPreview] = useState<string | null>(null);
+  const [answer, setAnswer] = useState<{ uri: string; src: string | null } | null>(null);
 
   useEffect(() => {
     if (!needsRuntimeRead) {
-      setPreview(null);
+      setAnswer(null);
       return;
     }
     let cancelled = false;
     const read = window.ade?.computerUse?.readArtifactPreview;
-    if (typeof read !== "function") return;
+    // No route is an answer, not a wait: this host cannot read the bytes back
+    // at all, so a caller holding a placeholder for one would hold it forever.
+    if (typeof read !== "function") {
+      setAnswer({ uri, src: null });
+      return;
+    }
     void read({ uri }, scope.pin)
-      .then((value) => { if (!cancelled) setPreview(typeof value === "string" ? value : null); })
+      .then((value) => {
+        if (!cancelled) setAnswer({ uri, src: typeof value === "string" ? value : null });
+      })
       // Nothing rather than a broken tile: the caller draws no image at all.
-      .catch(() => { if (!cancelled) setPreview(null); });
+      .catch(() => { if (!cancelled) setAnswer({ uri, src: null }); });
     return () => { cancelled = true; };
   }, [needsRuntimeRead, uri, scope.pin]);
 
-  if (dataUrl) return dataUrl;
-  if (needsRuntimeRead) return preview;
-  return sceneStillSrc(still?.record ?? null, null);
+  if (dataUrl) return { src: dataUrl, pending: false };
+  if (needsRuntimeRead) {
+    const answered = answer?.uri === uri;
+    return { src: answered ? answer.src : null, pending: !answered };
+  }
+  return { src: sceneStillSrc(still?.record ?? null, null), pending: false };
 }
 
 /** Test seam: forget everything this window remembers. */
@@ -312,9 +344,7 @@ export function resetSceneStillsForTest(): void {
   stills.clear();
   callStills.clear();
   sessionReads.clear();
-  // Cleared with the reads it mirrors. Left behind, the next test's first
-  // render saw a chat whose stills were already "known" to be none, so a suite
-  // that never asked the broker anything still decided not to wait for it.
+  // Cleared with the reads it mirrors: "asked" and "answered" are one fact.
   settledSessions.clear();
   notifyScenes();
   notifyCalls();

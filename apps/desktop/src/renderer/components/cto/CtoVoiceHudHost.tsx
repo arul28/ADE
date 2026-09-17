@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { SceneStillRecord } from "../../../shared/chatScene";
+import { sceneScopeKeyFor, type SceneStillRecord } from "../../../shared/chatScene";
 import { CTO_VOICE_SCENE_FRAME_HEIGHT, isVoiceCallLive } from "../../../shared/types/ctoVoice";
+import { ChatRuntimeScopeProvider } from "../chat/ChatRuntimeScope";
 import { rememberCallStill } from "../chat/sceneStillStore";
 import { SceneFrame } from "../chat/SceneFrame";
 import { CtoVoiceHud } from "./CtoVoiceHud";
@@ -67,28 +68,40 @@ export function CtoVoiceHudHost() {
   }, []);
 
   const canvas = useMemo(() => {
-    if (!state.sceneSource) return null;
+    const source = state.sceneSource;
+    if (!source) return null;
     return (
-      <div className="overflow-hidden" style={{ maxHeight: CTO_VOICE_SCENE_FRAME_HEIGHT }}>
-        <SceneFrame
-          source={state.sceneSource}
-          live
-          // No call id means no identity to file a still under — a fallback
-          // key would put every id-less scene on top of the same picture — so
-          // the scene draws and simply leaves nothing behind. Null, not an
-          // absent prop: the frame already refuses a still with no scope key,
-          // and a conditional spread said the same thing twice.
-          scopeKey={state.callId}
-          voiceCallId={state.callId}
-          // This host is mounted at the SHELL, outside every chat scope, so
-          // the frame has no ambient session to own the pictures it files.
-          // Without this every call still was filed unowned: both disk bounds
-          // skipped, and the call's own "Views drawn" section — an owner query
-          // — came back empty.
-          ownerSessionId={state.sessionId}
-          onStill={keepStill}
-        />
-      </div>
+      // This host is mounted at the SHELL, outside every chat scope, so the
+      // frame had no ambient session to own the pictures it files and every
+      // call still was filed unowned: both disk bounds skipped, and the call's
+      // own "Views drawn" section — an owner query — empty. The call knows its
+      // chat, so the host supplies the scope rather than reaching past it.
+      //
+      // Unpinned and unbound, which is what the CTO thread is: a local chat on
+      // this machine, so `isRemote` stays false and the frame resolves its
+      // stills through `ade-artifact://` exactly as it does inside a pane.
+      <ChatRuntimeScopeProvider pin={null} binding={null} laneId={null} sessionId={state.sessionId}>
+        <div className="overflow-hidden" style={{ maxHeight: CTO_VOICE_SCENE_FRAME_HEIGHT }}>
+          <SceneFrame
+            source={source}
+            live
+            // PER VIEW, not per call. This host keeps ONE mounted frame for the
+            // whole call and swaps its source as the CTO draws, and main keeps
+            // one still per scope key — so a bare call id meant filing view two
+            // deleted view one, leaving the record naming a single view and the
+            // live card drawing broken tiles. A genuine redraw of the same view
+            // hashes the same and still supersedes itself.
+            //
+            // No call id means no identity to file under — a fallback key would
+            // put every id-less scene on top of the same picture — so the scene
+            // draws and simply leaves nothing behind.
+            scopeKey={state.callId ? sceneScopeKeyFor(state.callId, source) : null}
+            // The bare call id: this is what the finished call's card asks by.
+            voiceCallId={state.callId}
+            onStill={keepStill}
+          />
+        </div>
+      </ChatRuntimeScopeProvider>
     );
   }, [state.sceneSource, state.callId, state.sessionId, keepStill]);
 

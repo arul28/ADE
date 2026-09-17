@@ -143,8 +143,11 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
    * a key. Mosaic answers live in this window and die with it, so the render
    * key is fine; a scene's still is a file in the project, looked up again on
    * every reopen, and the render key moves when the transcript is rebuilt from
-   * a different window of events. See `sceneRowIdentity`. Falls back to the
-   * mosaic key for callers that have no better answer.
+   * a different window of events. See `sceneRowIdentity`.
+   *
+   * Absent means this body's scenes leave no picture behind — the honest answer
+   * for a caller with no row identity. It is never the mosaic key: the two
+   * would be silently interchangeable, and one of them is wrong on disk.
    */
   sceneScopeKey?: string;
   /**
@@ -154,11 +157,6 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
    */
   sceneLive?: boolean;
 }) {
-  // The scene key falls back to the mosaic one so a caller with only a row key
-  // — the tests, and any surface that renders markdown without a transcript
-  // behind it — keeps working; the transcript itself passes the stable one.
-  const sceneRowScope = sceneScopeKey ?? mosaicScopeKey;
-
   // This component knows both halves of "still arriving", so it answers the
   // question once instead of handing the frame two flags to combine. Fence
   // state is read over the WHOLE body — settled prose plus the growing tail —
@@ -244,7 +242,9 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         return (
           <SceneFrame
             source={text}
-            scopeKey={sceneRowScope ? sceneScopeKeyFor(sceneRowScope, text) : undefined}
+            scopeKey={sceneScopeKey ? sceneScopeKeyFor(sceneScopeKey, text) : null}
+            // A transcript scene belongs to a chat, never to a call.
+            voiceCallId={null}
             live={sceneLive}
             streaming={sceneStreaming}
           />
@@ -296,7 +296,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, sceneRowScope, neu, openWorkspacePath, sceneLive, sceneStreaming]);
+  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming]);
 
   return (
     <div

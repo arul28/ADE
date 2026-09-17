@@ -10,6 +10,8 @@ import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { createComputerUseArtifactPath } from "../computerUse/localComputerUse";
 import {
   fileSceneStill,
+  requireSceneStillScopeKey,
+  SceneStillScopeKeyError,
   findVoiceCallStills,
   sceneStillFileLabel,
   SCENE_STILL_MAX_PER_SESSION,
@@ -170,8 +172,8 @@ describe("scene still filing", () => {
    * asked an owner query and got nothing back. Everything here is downstream
    * of one fact: a call still has a `chat_session` owner like any other.
    */
-  it("owns a call's stills by chat, finds them by call, and bounds them like the rest", () => {
-    const first = fileStill({ title: "Lanes", scopeKey: "call-9", callId: "call-9" });
+  it("owns a call's stills by chat and finds them by call", () => {
+    const first = fileStill({ title: "Lanes", scopeKey: "call-9:aa", callId: "call-9" });
 
     const [artifact] = broker.listArtifacts({ artifactId: first.artifactId! });
     expect(artifact?.links).toContainEqual(
@@ -181,14 +183,35 @@ describe("scene still filing", () => {
     expect(findVoiceCallStills(broker, { sessionId: "chat-1", callId: "call-9" })).toEqual([
       expect.objectContaining({ artifactId: first.artifactId, title: "Lanes" }),
     ]);
+  });
 
-    // A call redraws the same scene as it talks, and the per-scope bound is
-    // what keeps that from leaving a trail of pictures on disk.
-    const second = fileStill({ title: "Lanes again", scopeKey: "call-9", callId: "call-9" });
-    expect(second.removedArtifactIds).toEqual([first.artifactId]);
-    expect(fs.existsSync(first.path)).toBe(false);
+  /**
+   * A call is not a scene. It draws several views over its length and the card
+   * shows all of them, so the per-scope bound has to be scoped to the VIEW —
+   * keyed by the call id alone, filing the second view deleted the first, and
+   * the record named one view while the live card drew broken tiles. The HUD
+   * derives that key with `sceneScopeKeyFor(callId, source)`; here the two
+   * shapes are spelled out directly.
+   */
+  it("keeps a picture of every view one call draws, and one per redraw", () => {
+    const lanes = fileStill({ title: "Lanes", scopeKey: "call-9:aa", callId: "call-9" });
+    const prs = fileStill({ title: "PRs", scopeKey: "call-9:bb", callId: "call-9" });
+
+    expect(prs.removedArtifactIds).toEqual([]);
+    expect(fs.existsSync(lanes.path)).toBe(true);
     expect(findVoiceCallStills(broker, { sessionId: "chat-1", callId: "call-9" })).toEqual([
-      expect.objectContaining({ artifactId: second.artifactId, title: "Lanes again" }),
+      expect.objectContaining({ artifactId: lanes.artifactId, title: "Lanes" }),
+      expect.objectContaining({ artifactId: prs.artifactId, title: "PRs" }),
+    ]);
+
+    // The SAME view drawn again is the same key, and supersedes itself rather
+    // than leaving a trail of pictures on disk.
+    const redrawn = fileStill({ title: "Lanes again", scopeKey: "call-9:aa", callId: "call-9" });
+    expect(redrawn.removedArtifactIds).toEqual([lanes.artifactId]);
+    expect(fs.existsSync(lanes.path)).toBe(false);
+    expect(findVoiceCallStills(broker, { sessionId: "chat-1", callId: "call-9" })).toEqual([
+      expect.objectContaining({ artifactId: prs.artifactId, title: "PRs" }),
+      expect.objectContaining({ artifactId: redrawn.artifactId, title: "Lanes again" }),
     ]);
   });
 
@@ -263,6 +286,24 @@ const still = (
       ...(sceneTitle ? { sceneTitle } : {}),
     },
   });
+
+/**
+ * The one contract the desktop handler and the runtime action share about a
+ * missing key, which is what decides whether a picture is an INDEX or EVIDENCE.
+ * Two sides disagreed about it before: in process a blank key filed an index
+ * row nothing could look up, and over the runtime action a missing key is
+ * exactly what marks a call as the Proof button — so the same still landed in
+ * the drawer. Typed, because the desktop handler catches this one and answers
+ * null instead of logging a failure.
+ */
+describe("requireSceneStillScopeKey", () => {
+  it("trims a real key and refuses every spelling of none", () => {
+    expect(requireSceneStillScopeKey("  row-1:aa  ")).toBe("row-1:aa");
+    for (const blank of ["", "   ", null, undefined, 7, {}]) {
+      expect(() => requireSceneStillScopeKey(blank)).toThrow(SceneStillScopeKeyError);
+    }
+  });
+});
 
 describe("findVoiceCallStills", () => {
   it("keeps this call's stills, in the order they were drawn", () => {

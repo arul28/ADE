@@ -15,6 +15,7 @@ import type {
   ComputerUseArtifactKind,
   ComputerUseArtifactLink,
   ComputerUseArtifactListArgs,
+  ComputerUseArtifactMetadataKind,
   ComputerUseArtifactOwner,
   ComputerUseArtifactRecord,
   ComputerUseArtifactReviewArgs,
@@ -405,12 +406,29 @@ function normalizeInputKind(input: ComputerUseArtifactInput): ComputerUseArtifac
  *    against null and would silently drop every untagged row — nearly all of
  *    them.
  */
+/**
+ * The include/exclude tag a list query filters on.
+ *
+ * Read through one function so the SQL filter and the in-memory one below
+ * cannot drift: they answer the same question about the same args, and a guard
+ * spelled differently on each side is how an absent exclude starts matching
+ * every untagged row.
+ */
+function resolveMetadataKindFilters(args: ComputerUseArtifactListArgs): {
+  included: ComputerUseArtifactMetadataKind | null;
+  excluded: ComputerUseArtifactMetadataKind | null;
+} {
+  return {
+    included: args.metadataKind ?? null,
+    excluded: args.excludeMetadataKind ?? null,
+  };
+}
+
 function buildMetadataKindFilter(args: ComputerUseArtifactListArgs): {
   sql: (prefix: string) => string;
   params: string[];
 } {
-  const included = args.metadataKind ?? null;
-  const excluded = args.excludeMetadataKind ?? null;
+  const { included, excluded } = resolveMetadataKindFilters(args);
   const params: string[] = [
     ...(included ? [included] : []),
     ...(excluded ? [excluded] : []),
@@ -436,8 +454,11 @@ function matchesMetadataKindFilter(
   const tag = isRecord(record.metadata) && typeof record.metadata.kind === "string"
     ? record.metadata.kind
     : null;
-  if (args.metadataKind && tag !== args.metadataKind) return false;
-  if (tag && tag === args.excludeMetadataKind) return false;
+  const { included, excluded } = resolveMetadataKindFilters(args);
+  if (included && tag !== included) return false;
+  // Guarded on the ARGUMENT, the same shape as the include above: an absent
+  // exclude must not start matching every untagged row.
+  if (excluded && tag === excluded) return false;
   return true;
 }
 
@@ -717,7 +738,9 @@ export function createComputerUseArtifactBrokerService(args: {
    * is the same one `readArtifactPreview` and the `ade-artifact://` protocol
    * handler enforce — delete must never be able to unlink outside it.
    */
-  const resolveArtifactFilePath = (record: ComputerUseArtifactRecord): string | null => {
+  const resolveArtifactFilePath = (
+    record: Pick<ComputerUseArtifactRecord, "storageKind" | "uri">,
+  ): string | null => {
     if (record.storageKind !== "file") return null;
     const uri = record.uri?.trim();
     if (!uri || isHttpUrl(uri)) return null;
@@ -993,31 +1016,35 @@ export function createComputerUseArtifactBrokerService(args: {
     const failed: Array<{ artifactId: string; reason: string }> = [];
 
     /**
-     * Which artifacts share each stored file, read ONCE for the whole call.
+     * How many records point at each stored file, counted ONCE for the call.
      *
      * Two records can point at one file (an ingest of a path that is already
      * in the store), and unlinking the bytes out from under the survivor would
      * leave the drawer showing a row whose picture is gone. Answering that per
      * id meant a full scan of every file-backed row per id, so pruning a
      * session's stills — which deletes in batches — scanned the table dozens
-     * of times for one bound. Ids removed earlier in this same call are struck
-     * off below, so the answer stays the one the per-id query gave.
+     * of times for one bound. Each delete below decrements its own path, so
+     * the last reference in a batch still unlinks the bytes.
      */
-    const artifactIdsByFilePath = new Map<string, Set<string>>();
-    for (const candidate of readArtifactRows(
+    const referencesByFilePath = new Map<string, number>();
+    // Three columns, not a whole record: the only question is how many rows
+    // point at each path, and hydrating every file-backed artifact in the
+    // project — metadata blob included — to count them was the expensive part.
+    for (const candidate of db.all<{ uri: string | null; storage_kind: string | null }>(
       `
-        select ${ARTIFACT_SELECT_COLUMNS}
+        select uri, storage_kind
         from computer_use_artifacts
         where project_id = ?
           and storage_kind = 'file'
       `,
       [projectId],
     )) {
-      const candidatePath = resolveArtifactFilePath(candidate);
+      const candidatePath = resolveArtifactFilePath({
+        storageKind: (candidate.storage_kind ?? "file") as ComputerUseArtifactRecord["storageKind"],
+        uri: candidate.uri ?? "",
+      });
       if (!candidatePath) continue;
-      const sharers = artifactIdsByFilePath.get(candidatePath) ?? new Set<string>();
-      sharers.add(candidate.id);
-      artifactIdsByFilePath.set(candidatePath, sharers);
+      referencesByFilePath.set(candidatePath, (referencesByFilePath.get(candidatePath) ?? 0) + 1);
     }
 
     for (const artifactId of ids) {
@@ -1039,10 +1066,8 @@ export function createComputerUseArtifactBrokerService(args: {
         const filePath = resolveArtifactFilePath(record);
         let fileRemoved = false;
         let freedBytes = 0;
-        const sharers = filePath && record.storageKind === "file"
-          ? artifactIdsByFilePath.get(filePath)
-          : null;
-        const sharedReference = Boolean(sharers && sharers.size > 1);
+        const references = filePath ? referencesByFilePath.get(filePath) ?? 0 : 0;
+        const sharedReference = references > 1;
         if (filePath && !sharedReference) {
           try {
             const stat = fs.statSync(filePath);
@@ -1063,7 +1088,7 @@ export function createComputerUseArtifactBrokerService(args: {
         db.run("delete from computer_use_artifacts where id = ? and project_id = ?", [artifactId, projectId]);
         // This row no longer holds the file, so a later id in the same batch
         // pointing at it is the last reference and may unlink the bytes.
-        sharers?.delete(artifactId);
+        if (filePath) referencesByFilePath.set(filePath, Math.max(0, references - 1));
         deleted.push({
           artifactId,
           title: record.title,
