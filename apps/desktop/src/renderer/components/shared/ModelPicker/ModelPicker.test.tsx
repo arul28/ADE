@@ -618,7 +618,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={OPENCODE_MODEL.id}
         onChange={vi.fn()}
-        
         models={[OPENCODE_MODEL]}
       />,
     );
@@ -705,7 +704,6 @@ describe("ModelPicker", () => {
     const props = {
       value: tiered.id,
       onChange: vi.fn(),
-      surfaceKey: "cursor-cloud-tier-test",
       models: [tiered],
       serviceTierMode: true,
       onServiceTierChange,

@@ -4124,4 +4124,71 @@ describe("voice call folding", () => {
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.voiceCallId === "call-3")).toBe(true);
   });
+
+  // A settled subagent keeps only its result card: the spawn row is spliced out
+  // and the result row pushed, which nets to zero new rows — so the caller that
+  // stamps "rows this event appended" sees nothing to stamp. An untagged result
+  // row sitting inside a tagged run splits one call into two cards that share
+  // the key `voice-call:${callId}`, so the result row has to claim the call
+  // itself: the dropped spawn row's, or the terminal event's own.
+  it("keeps a settled subagent's result card in the voice call it belongs to, and untagged when there is none", () => {
+    // 1. Spawned and settled inside the call — the tag comes off the spawn row.
+    const spawnedInCall = collapseChatTranscriptEvents([
+      voiceEvent(1, { type: "user_message", text: "look into the flake" }, "call-sub"),
+      voiceEvent(
+        2,
+        { type: "subagent_started", taskId: "agent-voice", agentType: "Explore", description: "Find the flake" },
+        "call-sub",
+      ),
+      voiceEvent(
+        3,
+        { type: "subagent_result", taskId: "agent-voice", status: "completed", summary: "It is a timing assumption." },
+        "call-sub",
+      ),
+      voiceEvent(4, { type: "text", text: "Here is what it found.", itemId: "a-1" }, "call-sub"),
+    ]);
+    expect(spawnedInCall.some((row) => row.event.type === "subagent_spawn_anchor")).toBe(false);
+    expect(spawnedInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBe("call-sub");
+
+    // 2. Spawned BEFORE the call, settled inside it — the spawn row carries no
+    //    tag, so the terminal event's own call id is the only source left.
+    const settledInCall = collapseChatTranscriptEvents([
+      voiceEvent(
+        1,
+        { type: "subagent_started", taskId: "agent-early", agentType: "Explore", description: "Find the flake" },
+        null,
+      ),
+      voiceEvent(2, { type: "user_message", text: "anything from that agent?" }, "call-sub"),
+      voiceEvent(
+        3,
+        { type: "subagent_result", taskId: "agent-early", status: "completed", summary: "It is a timing assumption." },
+        "call-sub",
+      ),
+      voiceEvent(4, { type: "text", text: "Here is what it found.", itemId: "a-1" }, "call-sub"),
+    ]);
+    expect(settledInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBe("call-sub");
+    // One unbroken run, therefore ONE card — not two sharing `voice-call:call-sub`.
+    const grouped = groupChatTranscriptRows(settledInCall);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]!.key).toBe("voice-call:call-sub");
+    if (grouped[0]!.event.type !== "voice_call_group") throw new Error("expected a voice_call_group row");
+    expect(grouped[0]!.event.rows.some((row) => row.event.type === "subagent_result_card")).toBe(true);
+
+    // 3. No call anywhere — the result card comes back untagged and renders inline.
+    const plain = collapseChatTranscriptEvents([
+      voiceEvent(1, { type: "user_message", text: "look into the flake" }, null),
+      voiceEvent(
+        2,
+        { type: "subagent_started", taskId: "agent-plain", agentType: "Explore", description: "Find the flake" },
+        null,
+      ),
+      voiceEvent(
+        3,
+        { type: "subagent_result", taskId: "agent-plain", status: "completed", summary: "It is a timing assumption." },
+        null,
+      ),
+    ]);
+    expect(plain.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBeUndefined();
+    expect(groupChatTranscriptRows(plain).some((row) => row.event.type === "voice_call_group")).toBe(false);
+  });
 });

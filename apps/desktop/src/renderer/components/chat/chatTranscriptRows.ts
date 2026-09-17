@@ -1554,6 +1554,7 @@ function handleSubagentLifecycleEvent(
   event: NormalizedSubagentLifecycleEvent,
   timestamp: string,
   context: CollapseTranscriptContext,
+  eventVoiceCallId: string | undefined,
 ): boolean {
   const anchors = context.subagentAnchors;
   const agentKey = subagentAgentKey(event);
@@ -1733,20 +1734,25 @@ function handleSubagentLifecycleEvent(
     state.error = state.resultSummary ?? state.error;
   }
 
-  let preservedVoiceCallId: string | undefined;
+  // The spawn row is dropped once the result card exists, and a remove-plus-push
+  // nets to zero rows — so `appendCollapsedEventWithVoiceStamp`, which only
+  // stamps rows the event APPENDED, sees no new row and stamps nothing. The
+  // result row therefore has to claim its voice call here: the one the dropped
+  // spawn row carried, or failing that the one this terminal event itself was
+  // spoken under (a subagent started before the call and settling inside it).
+  // Leaving it unstamped would strand an untagged row inside a tagged run and
+  // split one call into two `voice-call:${callId}` cards with the same key.
+  let droppedSpawnVoiceCallId: string | undefined;
   if (state.rowIndex != null) {
     const expectedKey = subagentSpawnKey(state.renderKeyBase);
     const rowIndex = resolveSubagentRowPosition(rows, state, "rowIndex", expectedKey);
     if (rowIndex != null) {
-      // The spawn row is dropped once the result card exists, but it may have
-      // carried the voice call it belongs to. `appendCollapsedEventWithVoiceStamp`
-      // only stamps rows APPENDED by this event, and a remove-plus-push nets to
-      // zero rows, so the tag has to be carried across by hand.
-      preservedVoiceCallId = rows[rowIndex]?.voiceCallId;
+      droppedSpawnVoiceCallId = rows[rowIndex]?.voiceCallId;
       removeCollapsedTranscriptRow(rows, context, rowIndex);
     }
     state.rowIndex = null;
   }
+  const resultVoiceCallId = droppedSpawnVoiceCallId ?? eventVoiceCallId;
 
   const resultEvent: SubagentResultCardRenderEvent = {
     type: "subagent_result_card",
@@ -1768,8 +1774,8 @@ function handleSubagentLifecycleEvent(
   };
   if (state.resultRowIndex == null) {
     state.resultRowIndex = rows.length;
-    rows.push(preservedVoiceCallId
-      ? { key: subagentResultKey(state.renderKeyBase), timestamp, event: resultEvent, voiceCallId: preservedVoiceCallId }
+    rows.push(resultVoiceCallId
+      ? { key: subagentResultKey(state.renderKeyBase), timestamp, event: resultEvent, voiceCallId: resultVoiceCallId }
       : { key: subagentResultKey(state.renderKeyBase), timestamp, event: resultEvent });
   } else {
     const expectedKey = subagentResultKey(state.renderKeyBase);
@@ -2412,7 +2418,13 @@ export function appendCollapsedChatTranscriptEvent(
   const normalizedSubagentEvent = normalizeSubagentLifecycleEvent(event);
   if (normalizedSubagentEvent) {
     const activeContext = context ?? createCollapseTranscriptContext();
-    handleSubagentLifecycleEvent(rows, normalizedSubagentEvent, envelope.timestamp, activeContext);
+    handleSubagentLifecycleEvent(
+      rows,
+      normalizedSubagentEvent,
+      envelope.timestamp,
+      activeContext,
+      envelope.provenance?.voiceCallId?.trim() || undefined,
+    );
     return;
   }
 
