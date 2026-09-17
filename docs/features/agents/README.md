@@ -111,14 +111,27 @@ Each ADE-launched session receives the canonical root through
 `buildAdeBootstrapGuidance`. Provider-native integrations are session-scoped:
 
 - Codex app-server receives `skills/extraRoots/set` and uses
-  `perCwdExtraUserRoots` when listing skills.
+  `perCwdExtraUserRoots` when listing skills. The result is logged: a runtime
+  too old for the method loses every bundled skill, and that must not look
+  like success.
 - Claude Agent SDK loads the bundled root as a local plugin through its
-  `.claude-plugin/plugin.json`; tracked Claude CLI launches receive the same
-  validated root through `--plugin-dir`.
-- OpenCode's currently shipped config schema, Cursor, and Droid do not expose
-  an arbitrary standalone skill-root option ADE can safely set, so they use
-  the catalog plus the provider-independent
-  `ade skill list --text` / `ade skill show <name> --text` activation path.
+  `.claude-plugin/plugin.json`; tracked Claude CLI launches and background
+  `claude --bg` launches receive the same validated root through
+  `--plugin-dir`.
+- OpenCode receives the roots through its own `skills.paths` config key, which
+  ADE sets inside `OPENCODE_CONFIG_CONTENT`. No file is written into the
+  user's OpenCode config home.
+- Pi has its native discovery replaced outright: ADE passes `noSkills: true`
+  plus `additionalSkillPaths`, so a Pi session sees exactly ADE's catalog.
+- Cursor, Droid, and the ACP providers have no extra-skill-root option ADE can
+  set without writing a provider config home, so they use the catalog plus the
+  provider-independent `ade skill list --text` / `ade skill show <name> --text`
+  activation path.
+
+Every root ADE advertises is checked against the disk first
+(`adePromptAgentSkillRoots`). The prompt-facing list is capped, so an
+advertised root that does not exist takes a slot from one that does and sends
+the agent to a path it cannot open.
 
 The same CLI activation path is available to every provider and remains the
 compatibility fallback for older runtime versions. On startup, ADE performs a

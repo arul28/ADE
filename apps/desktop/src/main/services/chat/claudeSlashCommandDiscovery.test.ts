@@ -3,9 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CLAUDE_SKILL_LISTING_MAX_DESC_CHARS,
   discoverClaudeSlashCommands,
+  formatClaudeSlashCommandEntry,
   invalidateClaudeSlashCommandCache,
+  planClaudeSlashCommandInjection,
+  renderClaudeSlashCommandEntries,
   resolveClaudeSlashCommandInvocation,
+  type DiscoveredClaudeSlashCommand,
 } from "./claudeSlashCommandDiscovery";
 
 let tmpRoot: string;
@@ -613,5 +618,80 @@ describe("resolveClaudeSlashCommandInvocation", () => {
     ].join("\n"));
 
     expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/internal")).toBeNull();
+  });
+
+  describe("injection plan", () => {
+    const entry = (
+      over: Partial<DiscoveredClaudeSlashCommand> & { filePath: string; name: string },
+    ): DiscoveredClaudeSlashCommand => ({
+      description: "desc",
+      source: "skill",
+      ...over,
+    });
+
+    it("drops what Claude Code already lists and keeps what only ADE can see", () => {
+      const cwd = path.join(tmpRoot, "lane");
+      const home = path.join(tmpRoot, "home");
+      const pluginRoot = path.join(tmpRoot, "bundled-agent-skills");
+      const plan = planClaudeSlashCommandInjection([
+        entry({ name: "/from-cwd-claude", filePath: path.join(cwd, ".claude", "skills", "a", "SKILL.md") }),
+        entry({ name: "/from-home-claude", filePath: path.join(home, ".claude", "skills", "b", "SKILL.md") }),
+        entry({ name: "/from-plugin", filePath: path.join(pluginRoot, "ade-browser", "SKILL.md") }),
+        entry({ name: "/from-agents", filePath: path.join(cwd, ".agents", "skills", "c", "SKILL.md") }),
+        entry({ name: "/from-codex", filePath: path.join(home, ".codex", "skills", "d", "SKILL.md") }),
+        entry({ name: "/cmd-native", source: "command", filePath: path.join(cwd, ".claude", "commands", "x.md") }),
+        entry({ name: "/cmd-elsewhere", source: "command", filePath: path.join(tmpRoot, "other", ".claude", "commands", "y.md") }),
+      ], { cwd, pluginRoots: [pluginRoot], home });
+
+      expect(plan.skills.map((skill) => skill.name)).toEqual(["/from-agents", "/from-codex"]);
+      expect(plan.commands.map((command) => command.name)).toEqual(["/cmd-elsewhere"]);
+      expect(plan.nativeCount).toBe(4);
+    });
+
+    it("does not treat a plugin root as native when no plugin was registered", () => {
+      const cwd = path.join(tmpRoot, "lane");
+      const pluginRoot = path.join(tmpRoot, "bundled-agent-skills");
+      const plan = planClaudeSlashCommandInjection(
+        [entry({ name: "/from-plugin", filePath: path.join(pluginRoot, "ade-browser", "SKILL.md") })],
+        { cwd, pluginRoots: [], home: path.join(tmpRoot, "home") },
+      );
+
+      expect(plan.skills.map((skill) => skill.name)).toEqual(["/from-plugin"]);
+      expect(plan.nativeCount).toBe(0);
+    });
+
+    it("clips a description to the same cap the Claude SDK uses for its own listing", () => {
+      const rendered = formatClaudeSlashCommandEntry(
+        entry({ name: "/verbose", description: "y".repeat(9000), filePath: "/tmp/verbose/SKILL.md" }),
+      );
+
+      expect(rendered.length).toBeLessThan(CLAUDE_SKILL_LISTING_MAX_DESC_CHARS + 200);
+      expect(rendered).toContain("\u2026");
+    });
+
+    it("reports what a full budget pushed out instead of dropping it silently", () => {
+      const entries = Array.from({ length: 50 }, (_unused, index) =>
+        entry({
+          name: `/skill-${index}`,
+          description: "z".repeat(400),
+          filePath: `/tmp/skills/skill-${index}/SKILL.md`,
+        }));
+
+      const { lines, omitted } = renderClaudeSlashCommandEntries(entries, 2_048);
+
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines.length).toBeLessThan(entries.length);
+      expect(omitted).toBe(entries.length - lines.length);
+    });
+
+    it("always renders at least one entry even when it alone exceeds the budget", () => {
+      const { lines, omitted } = renderClaudeSlashCommandEntries(
+        [entry({ name: "/huge", description: "q".repeat(1200), filePath: "/tmp/huge/SKILL.md" })],
+        16,
+      );
+
+      expect(lines).toHaveLength(1);
+      expect(omitted).toBe(0);
+    });
   });
 });

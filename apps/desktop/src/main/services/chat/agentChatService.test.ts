@@ -1146,6 +1146,7 @@ vi.mock("./droidSdkPool", () => ({
 import {
   buildOpenCodeStreamMessages,
   buildComputerUseDirective,
+  computerUseDirectiveFingerprint,
   buildLinearSessionDirective,
   codexServerSupportsForkBeforeTurn,
   parseCodexServerVersion,
@@ -2668,8 +2669,20 @@ describe("buildComputerUseDirective", () => {
     expect(result).toBeNull();
   });
 
-  it("returns a directive when backendStatus is null (unknown status)", () => {
-    const result = buildComputerUseDirective(null);
+  it("emits no directive when no artifact broker is attached", () => {
+    // `getBackendStatus()` is synchronous and never returns null, so a null
+    // status means the session has no artifact broker — no backends, no local
+    // fallback, no capability. This used to default `hasLocalFallback` to true
+    // and emit the full 2KB directive anyway, telling the agent it could
+    // capture proof on a session that could not. The broker attaches later in
+    // startup, and the fingerprint gate re-sends the directive at that point.
+    expect(buildComputerUseDirective(null)).toBeNull();
+  });
+
+  it("still describes the local fallback when it is the only capability", () => {
+    const result = buildComputerUseDirective(
+      makeBackendStatus({ ghostOs: false, agentBrowser: false, localFallback: true }),
+    );
     expect(result).not.toBeNull();
     expect(result).toContain("Computer Use");
     expect(result).toContain("get_computer_use_backend_status");
@@ -2678,6 +2691,21 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("mcp__computer_use");
     expect(result).toContain("do not bootstrap `@oai/sky`");
     expect(result).toContain("does not passively ingest");
+  });
+
+  it("gives one rendering one fingerprint, and a changed capability set a new one", () => {
+    const localOnly = buildComputerUseDirective(
+      makeBackendStatus({ ghostOs: false, agentBrowser: false, localFallback: true }),
+    );
+    const withGhostOs = buildComputerUseDirective(makeBackendStatus({ ghostOs: true }));
+    expect(localOnly).not.toBeNull();
+    expect(withGhostOs).not.toBeNull();
+    expect(computerUseDirectiveFingerprint(localOnly!)).toBe(
+      computerUseDirectiveFingerprint(localOnly!),
+    );
+    expect(computerUseDirectiveFingerprint(localOnly!)).not.toBe(
+      computerUseDirectiveFingerprint(withGhostOs!),
+    );
   });
 
   it("includes Ghost OS section when Ghost OS backend is available", () => {
@@ -5211,23 +5239,43 @@ describe("createAgentChatService", () => {
       );
     });
 
-    it("appends discovered project slash commands to the Claude system prompt", async () => {
+    it("appends only the slash commands and skills Claude cannot discover itself", async () => {
+      // `.claude/` is Claude Code's own root and this session sets
+      // `settingSources: ["user","project","local"]`, so Claude already lists
+      // these two. Repeating them spent system-prompt budget to say what the
+      // model was about to be told anyway.
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
-      fs.writeFileSync(path.join(commandsDir, "audit.md"), [
+      fs.writeFileSync(path.join(commandsDir, "zz-native-cmd.md"), [
         "---",
-        "description: Audit recent work for bugs and gaps",
+        "description: Claude Code reads this command root itself",
         "---",
         "",
         "Audit the recent changes.",
         "",
       ].join("\n"));
-      fs.writeFileSync(path.join(commandsDir, "ship-lane.md"), [
+      const claudeSkillDir = path.join(tmpRoot, ".claude", "skills", "native-only");
+      fs.mkdirSync(claudeSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(claudeSkillDir, "SKILL.md"), [
         "---",
-        "description: Drive a lane through CI + review",
+        "name: native-only",
+        "description: Claude Code finds this one without ADE",
         "---",
         "",
-        "Ship the active lane.",
+        "Body.",
+        "",
+      ].join("\n"));
+      // `.agents/` is NOT a Claude-native root — verified against the shipped
+      // binary — so this one only reaches the model because ADE lists it.
+      const agentsSkillDir = path.join(tmpRoot, ".agents", "skills", "ade-injected-only");
+      fs.mkdirSync(agentsSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsSkillDir, "SKILL.md"), [
+        "---",
+        "name: ade-injected-only",
+        "description: Only ADE can tell Claude about this one",
+        "---",
+        "",
+        "Body.",
         "",
       ].join("\n"));
 
@@ -5252,10 +5300,47 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("## Project slash commands");
-      expect(opts?.systemPrompt?.append).toContain("pre-expands the file's body");
-      expect(opts?.systemPrompt?.append).toContain("/audit — Audit recent work for bugs and gaps");
-      expect(opts?.systemPrompt?.append).toContain("/ship-lane — Drive a lane through CI + review");
+      const append = opts?.systemPrompt?.append ?? "";
+      expect(append).toContain("## Project slash commands");
+      expect(append).toContain("pre-expands the file's body");
+      expect(append).toContain("/ade-injected-only — Only ADE can tell Claude about this one");
+      expect(append).not.toContain("/zz-native-cmd");
+      expect(append).not.toContain("/native-only");
+    });
+
+    it("clips an over-long skill description instead of letting it set the prompt size", async () => {
+      const agentsSkillDir = path.join(tmpRoot, ".agents", "skills", "verbose-skill");
+      fs.mkdirSync(agentsSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsSkillDir, "SKILL.md"), [
+        "---",
+        "name: verbose-skill",
+        `description: ${"x".repeat(5000)}`,
+        "---",
+        "",
+        "Body.",
+        "",
+      ].join("\n"));
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-verbose-skill",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      const append = opts?.systemPrompt?.append ?? "";
+      expect(append).toContain("/verbose-skill");
+      expect(append).not.toContain("x".repeat(2000));
+      expect(append).toContain("…");
     });
 
     it("lists bundled ADE skills when no lane command files exist", async () => {
@@ -5287,7 +5372,7 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).not.toContain("Commands (file-backed prompts):");
     });
 
-    it("caps discovered command listings in the injected Claude prompt", async () => {
+    it("does not re-list lane commands Claude Code reads for itself", async () => {
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
       for (let index = 0; index < 25; index += 1) {
@@ -5322,10 +5407,15 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("/cmd-00 — Command 0");
-      expect(opts?.systemPrompt?.append).toContain("/cmd-19 — Command 19");
-      expect(opts?.systemPrompt?.append).not.toContain("/cmd-24 — Command 24");
-      expect(opts?.systemPrompt?.append).toContain("5 more command(s) hidden to keep startup context lean");
+      const append = opts?.systemPrompt?.append ?? "";
+      // All 25 live in the lane's own `.claude/commands`, which Claude Code
+      // reads for itself, so none of them belongs in ADE's listing — the cap
+      // that used to hide five of them never had to run. The cap itself is
+      // covered directly in claudeSlashCommandDiscovery.test.ts.
+      expect(append).not.toContain("/cmd-00");
+      expect(append).not.toContain("/cmd-19");
+      expect(append).not.toContain("/cmd-24");
+      expect(append).not.toContain("more command(s) hidden to keep startup context lean");
     });
 
     it("does not attach ADE-owned tool definitions to Claude SDK sessions", async () => {
@@ -37118,10 +37208,42 @@ describe("createAgentChatService", () => {
       await service.sendMessage({ sessionId: session.id, text: "first" }, { awaitDispatch: true });
       await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
       const first = JSON.stringify(mockState.droidPromptCalls[0]);
-      expect(first).toContain("ade chat note");
-      expect(first).toContain("ade chat ask");
+
+      // Droid's SDK takes no system prompt, so ADE prepends the whole harness
+      // prompt to every turn. That harness carries the shared ADE guidance —
+      // the note/ask mechanics included — which is why this asserts the harness
+      // was built for this turn rather than reading the block out of the
+      // payload: `buildCodingAgentSystemPrompt` is mocked to a sentinel here.
+      expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
+        expect.objectContaining({ runtime: "droid-sdk" }),
+      );
+      expect(first).toContain("system prompt");
+
+      // And the per-turn prefix must NOT carry a second copy. It used to, so
+      // every Droid turn paid for the ADE block twice.
+      expect(first.split("ade chat note").length - 1).toBeLessThanOrEqual(1);
       expect(first).not.toContain("Work board is derived");
       expect(first).not.toContain("Work-board column is derived");
+    });
+
+    it("still delivers the status mechanics per turn to a provider whose harness is not resent", async () => {
+      // Cursor has no persistent instruction channel AND no per-turn harness,
+      // so for it the lane guidance is the only delivery path — the Droid
+      // dedupe must not reach it.
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2.5",
+        modelId: "cursor/composer-2.5",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "first" }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(0); });
+      const first = JSON.stringify(mockState.cursorSdkSendCalls[0]);
+      expect(first).toContain("ade chat note");
+      expect(first).toContain("ade chat ask");
     });
 
     it("keeps a durable marker for a plan card the user already answered", async () => {

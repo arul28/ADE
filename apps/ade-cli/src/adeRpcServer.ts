@@ -42,9 +42,9 @@ import {
 } from "../../desktop/src/shared/codedError";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
-  getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
+import { adePromptAgentSkillRoots } from "../../desktop/src/main/services/skills/agentSkillRuntimeService";
 import { isActionablePrIssueComment } from "../../desktop/src/shared/prIssueResolution";
 import {
   type ComputerUseBackendStyle,
@@ -2368,7 +2368,7 @@ async function defaultPrTitleForLane(runtime: AdeRuntime, laneId: string, baseBr
 }
 
 function buildAdeInlineGuidanceForLane(laneWorktreePath: string | null | undefined): string {
-  return buildAdeCliInlineGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath ?? undefined }));
+  return buildAdeCliInlineGuidance(adePromptAgentSkillRoots({ cwd: laneWorktreePath ?? undefined }));
 }
 
 function resolveRunContextLaneId(_runtime: AdeRuntime, _callerCtx: CallerContext): string | null {
@@ -5872,7 +5872,7 @@ async function runTool(args: {
     // command remains a display/resume preview only; the actual launch uses
     // command/args/env so it works on Windows without POSIX inline assignment.
     const workerEnv: Record<string, string> = {};
-    const skillRootsEnv = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
+    const skillRootsEnv = joinAdeAgentSkillRoots(adePromptAgentSkillRoots({ cwd: laneWorktreePath }));
     if (skillRootsEnv) workerEnv[ADE_AGENT_SKILLS_DIRS_ENV] = skillRootsEnv;
     const envPrefixParts: string[] = [];
     const addWorkerEnv = (key: string, value: string | null | undefined) => {

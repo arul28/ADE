@@ -97,6 +97,16 @@ type BuildOpenCodeConfigArgs = {
   /** Dynamically discovered models from local provider endpoints (e.g. LM Studio /v1/models). */
   discoveredLocalModels?: DiscoveredLocalModelEntry[];
   mcp?: OpenCodeConfig["mcp"];
+  /**
+   * Extra skill roots for OpenCode's own `skills.paths` discovery.
+   *
+   * OpenCode never reads `ADE_AGENT_SKILLS_DIRS`, so before this its agents
+   * could only reach ADE's bundled skills by reading a path out of the prompt.
+   * `skills.paths` is its documented config key for exactly this, and ADE
+   * already ships the whole config through `OPENCODE_CONFIG_CONTENT`, so no
+   * file is written into the user's OpenCode config home.
+   */
+  agentSkillRoots?: readonly string[];
   /** Lead servers inherit no user config, so ADE must supply what they need. */
   isolatedConfig?: boolean;
   /**
@@ -558,9 +568,14 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
   // in the server env — ADE does pin the binary, but that does not need the
   // highest-precedence config slot.
   // See services/shared/providerConfigHomes.ts for the rule this follows.
+  const agentSkillRoots = (args.agentSkillRoots ?? []).filter((root) => root.trim().length > 0);
+
   return {
     ...(provider ? { provider } : {}),
     ...(args.mcp ? { mcp: args.mcp } : {}),
+    // `paths` is additive: OpenCode still scans its own project and user skill
+    // roots, so a user skill of the same name keeps winning.
+    ...(agentSkillRoots.length ? { skills: { paths: [...agentSkillRoots] } } : {}),
     agent: {
       // hidden: these are ADE's own modes, not agents the user should see in
       // their Tab-cycle or @-autocomplete. Without a `mode` they would default
