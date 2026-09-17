@@ -31,12 +31,19 @@ export type AccountMigrationContext = {
   } | null;
 };
 
+export type AccountMigrationOwnerToken = {
+  userId: string;
+  generation: number;
+};
+
 export type AccountMigrationRunnerOptions = {
   accountBridge: Pick<AccountBridge, "status">;
   accountVaultBridge: Pick<AccountVaultBridge, "list" | "get" | "set">;
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
   getLogger: () => AccountMigrationLogger;
   getReceiptDir?: () => string;
+  /** Bumped by the account lifecycle whenever its vault ownership is purged. */
+  getAccountMigrationGeneration?: () => number;
 };
 
 export function getOpenAccountContexts<T extends AccountMigrationContext>(
@@ -65,7 +72,21 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     return result.ok ? result.value : null;
   };
 
-  const migrateProviderApiKeys = async (): Promise<AccountMigrationSourceResult> => {
+  const setVaultItem = async (
+    isCurrent: () => boolean,
+    scope: string,
+    kind: string,
+    key: string,
+    value: string,
+  ) => {
+    if (!isCurrent()) return null;
+    const saved = await options.accountVaultBridge.set(scope, kind, key, value);
+    return isCurrent() ? saved : null;
+  };
+
+  const migrateProviderApiKeys = async (
+    isCurrent: () => boolean,
+  ): Promise<AccountMigrationSourceResult> => {
     let keys: Record<string, string>;
     try {
       const { getAllApiKeys, getApiKeyProvenance } = await import("../ai/apiKeyStore");
@@ -79,6 +100,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     }
     const listed = await listVaultItems("all");
     if (!listed) return { moved: 0, skipped: 0, complete: false };
+    if (!isCurrent()) return { moved: 0, skipped: 0, complete: false };
     const present = new Set(
       listed
         .filter((item) => item.scope === "all" && item.kind === "provider_api_key")
@@ -93,14 +115,16 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
         skipped += 1;
         continue;
       }
-      const saved = await options.accountVaultBridge.set("all", "provider_api_key", provider, value);
-      if (!saved.ok) return { moved, skipped, complete: false };
+      const saved = await setVaultItem(isCurrent, "all", "provider_api_key", provider, value);
+      if (!saved?.ok) return { moved, skipped, complete: false };
       moved += 1;
     }
     return { moved, skipped };
   };
 
-  const migrateLinearRefreshToken = async (): Promise<AccountMigrationSourceResult> => {
+  const migrateLinearRefreshToken = async (
+    isCurrent: () => boolean,
+  ): Promise<AccountMigrationSourceResult> => {
     const services = openAccountContexts()
       .map((context) => context.linearCredentialService)
       .filter((service): service is NonNullable<AccountMigrationContext["linearCredentialService"]> => Boolean(service));
@@ -115,20 +139,28 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
 
     const listed = await listVaultItems("all");
     if (!listed) return { moved: 0, skipped: 0, complete: false };
+    if (!isCurrent()) return { moved: 0, skipped: 0, complete: false };
     const present = listed.some(
       (item) => item.scope === "all" && item.kind === "linear_refresh_token" && item.key === "default",
     );
     const existing = await options.accountVaultBridge.get("all", "linear_refresh_token", "default");
     if (!existing.ok) return { moved: 0, skipped: 0, complete: false };
     if (existing.value !== null || present) return { moved: 0, skipped: 1 };
-    const saved = await options.accountVaultBridge.set("all", "linear_refresh_token", "default", refreshToken);
-    return saved.ok
+    const saved = await setVaultItem(
+      isCurrent,
+      "all",
+      "linear_refresh_token",
+      "default",
+      refreshToken,
+    );
+    return saved?.ok
       ? { moved: 1, skipped: 0 }
       : { moved: 0, skipped: 0, complete: false };
   };
 
   const migrateProjectSecrets = async (
     context: AccountMigrationContext,
+    isCurrent: () => boolean,
   ): Promise<AccountMigrationSourceResult> => {
     const service = context.projectSecretService;
     const root = context.project?.rootPath;
@@ -139,6 +171,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     let skipped = 0;
     const listed = await listVaultItems(scope);
     if (!listed) return { moved, skipped, complete: false };
+    if (!isCurrent()) return { moved, skipped, complete: false };
     const present = new Set(
       listed
         .filter((item) => item.scope === scope && item.kind === "project_secret")
@@ -154,8 +187,8 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
         skipped += 1;
         continue;
       }
-      const saved = await options.accountVaultBridge.set(scope, "project_secret", secret.name, local.value);
-      if (!saved.ok) return { moved, skipped, complete: false };
+      const saved = await setVaultItem(isCurrent, scope, "project_secret", secret.name, local.value);
+      if (!saved?.ok) return { moved, skipped, complete: false };
       moved += 1;
     }
     return { moved, skipped };
@@ -170,7 +203,27 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     } catch {
       return;
     }
-    if (!status.signedIn || !status.userId || accountMigrationInFlight) return;
+    const userId = status.userId?.trim() || null;
+    if (!status.signedIn || !userId || accountMigrationInFlight) return;
+    let ownerToken: AccountMigrationOwnerToken;
+    try {
+      ownerToken = {
+        userId,
+        generation: options.getAccountMigrationGeneration?.() ?? 0,
+      };
+    } catch {
+      return;
+    }
+    const isCurrent = (): boolean => {
+      try {
+        const current = options.accountBridge.status();
+        return current.signedIn
+          && (current.userId?.trim() || null) === ownerToken.userId
+          && (options.getAccountMigrationGeneration?.() ?? 0) === ownerToken.generation;
+      } catch {
+        return false;
+      }
+    };
     accountMigrationInFlight = (async () => {
       try {
         const { hydrateApiKeysFromVault } = await import("../ai/apiKeyStore");
@@ -181,7 +234,9 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
           error: errorMessage(error),
         });
       }
+      if (!isCurrent()) return;
       for (const context of openAccountContexts()) {
+        if (!isCurrent()) return;
         try {
           await context.linearCredentialService?.hydrateFromVault();
           await context.projectSecretService?.hydrateFromVault();
@@ -191,32 +246,33 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
             error: errorMessage(error),
           });
         }
+        if (!isCurrent()) return;
       }
       const migrationOptions = () => ({
         receiptDir: options.getReceiptDir?.() ?? resolveMachineAdeLayout().adeDir,
-        getAccountUserId: () => {
-          const current = options.accountBridge.status();
-          return current.signedIn ? current.userId : null;
-        },
+        getAccountUserId: () => isCurrent() ? ownerToken.userId : null,
+        isCurrent,
         logger: {
           info: (message: string, meta?: Record<string, unknown>) => options.getLogger().info?.(message, meta),
           warn: (message: string, meta?: Record<string, unknown>) => options.getLogger().warn?.(message, meta),
         },
       });
+      if (!isCurrent()) return;
       await runAccountMigration({
         ...migrationOptions(),
         sources: {
-          provider_api_keys: migrateProviderApiKeys,
-          linear_credentials: migrateLinearRefreshToken,
+          provider_api_keys: () => migrateProviderApiKeys(isCurrent),
+          linear_credentials: () => migrateLinearRefreshToken(isCurrent),
         },
       });
       for (const context of openAccountContexts()) {
+        if (!isCurrent()) return;
         const projectRoot = context.project?.rootPath;
         if (!projectRoot) continue;
         await runAccountMigration({
           ...migrationOptions(),
           projectRoot,
-          sources: { project_secrets: () => migrateProjectSecrets(context) },
+          sources: { project_secrets: () => migrateProjectSecrets(context, isCurrent) },
         });
       }
     })()

@@ -22,6 +22,8 @@ export type AccountMigrationArgs = {
   /** Scope only the project-secret source; account-wide sources stay shared. */
   projectRoot?: string | null;
   sources: AccountMigrationSources;
+  /** Return false when the account owner changed during this run. */
+  isCurrent?: () => boolean;
   getAccountUserId?: () => string | null;
   logger?: {
     info?(message: string, meta?: Record<string, unknown>): void;
@@ -53,6 +55,13 @@ function normalizeCount(value: unknown): number {
  */
 export async function runAccountMigration(args: AccountMigrationArgs): Promise<AccountMigrationRun> {
   const now = args.now ?? Date.now;
+  const isCurrent = (): boolean => {
+    try {
+      return args.isCurrent?.() ?? true;
+    } catch {
+      return false;
+    }
+  };
   const receipt = createAccountMigrationReceipt({
     adeDir: args.receiptDir,
     getAccountUserId: args.getAccountUserId ?? (() => null),
@@ -66,6 +75,7 @@ export async function runAccountMigration(args: AccountMigrationArgs): Promise<A
   for (const source of MIGRATION_SOURCES) {
     const run = args.sources[source];
     if (!run) continue;
+    if (!isCurrent()) return { completed, pending, failed };
 
     try {
       if (receipt.isComplete(source, { projectRoot: args.projectRoot })) continue;
@@ -80,6 +90,7 @@ export async function runAccountMigration(args: AccountMigrationArgs): Promise<A
 
     try {
       const result = await run();
+      if (!isCurrent()) return { completed, pending, failed };
       if (result && result.complete === false) {
         pending.push(source);
         continue;
@@ -88,9 +99,11 @@ export async function runAccountMigration(args: AccountMigrationArgs): Promise<A
         moved: normalizeCount(result && "moved" in result ? result.moved : 0),
         skipped: normalizeCount(result && "skipped" in result ? result.skipped : 0),
       };
+      if (!isCurrent()) return { completed, pending, failed };
       receipt.complete(source, counts, { projectRoot: args.projectRoot });
       completed.push({ source, ...counts, completedAt: new Date(now()).toISOString() });
     } catch (error) {
+      if (!isCurrent()) return { completed, pending, failed };
       failed.push(source);
       args.logger?.warn?.("account.migration_source_failed", {
         source,

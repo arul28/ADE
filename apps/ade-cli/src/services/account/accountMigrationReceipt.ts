@@ -78,13 +78,28 @@ export type MigrationReceiptScope = {
   projectRoot?: string | null;
 };
 
-function canonicalProjectRoot(root: string, platform: NodeJS.Platform): string {
+type ProjectRootKeys = {
+  canonical: string;
+  legacy: string[];
+};
+
+function projectRootKeys(root: string, platform: NodeJS.Platform): ProjectRootKeys {
   const resolved = path.resolve(root);
+  let canonicalPath = resolved;
   try {
-    return pathKey(fs.realpathSync.native(resolved), platform);
+    canonicalPath = fs.realpathSync.native(resolved);
   } catch {
-    return pathKey(resolved, platform);
+    // A project can be opened before its root exists. The resolved spelling is
+    // still the best canonical key available in that case.
   }
+  return {
+    canonical: pathKey(canonicalPath, platform),
+    legacy: [resolved, pathKey(resolved, platform)],
+  };
+}
+
+function canonicalProjectRoot(root: string, platform: NodeJS.Platform): string {
+  return projectRootKeys(root, platform).canonical;
 }
 
 function emptyReceipt(accountUserId: string | null): ReceiptFile {
@@ -142,8 +157,31 @@ export function createAccountMigrationReceipt(args: {
     source: MigrationSource,
     scope?: MigrationReceiptScope,
   ): Partial<Record<MigrationSource, MigrationOutcome>> {
-    const projectRoot = scopedProjectRoot(source, scope);
-    return projectRoot ? receipt.projectSources?.[projectRoot] ?? {} : receipt.sources;
+    if (source !== "project_secrets") return receipt.sources;
+    const root = scope?.projectRoot?.trim();
+    if (!root) return receipt.sources;
+
+    const keys = projectRootKeys(root, platform);
+    const projectSources = receipt.projectSources;
+    if (!projectSources) return {};
+    const canonicalSources = projectSources[keys.canonical] ?? {};
+    let migratedLegacy = false;
+    for (const legacyKey of keys.legacy) {
+      if (legacyKey === keys.canonical) continue;
+      const legacySources = projectSources[legacyKey];
+      if (!legacySources || typeof legacySources !== "object" || Array.isArray(legacySources)) continue;
+      migratedLegacy = true;
+      for (const [legacySource, legacyOutcome] of Object.entries(legacySources)) {
+        const typedSource = legacySource as MigrationSource;
+        const canonicalOutcome = canonicalSources[typedSource];
+        if (!canonicalOutcome?.completedAt) {
+          canonicalSources[typedSource] = legacyOutcome as MigrationOutcome;
+        }
+      }
+      delete projectSources[legacyKey];
+    }
+    if (migratedLegacy) projectSources[keys.canonical] = canonicalSources;
+    return projectSources[keys.canonical] ?? {};
   }
 
   function write(receipt: ReceiptFile): void {
@@ -177,6 +215,9 @@ export function createAccountMigrationReceipt(args: {
       };
       const projectRoot = scopedProjectRoot(source, scope);
       if (projectRoot) {
+        // Reading also folds a legacy path.resolve key into the in-memory
+        // canonical entry, so this write upgrades it without a second pass.
+        sourceOutcomes(receipt, source, scope);
         receipt.projectSources ??= {};
         receipt.projectSources[projectRoot] ??= {};
         receipt.projectSources[projectRoot][source] = outcome;

@@ -118,6 +118,67 @@ describe("runAccountMigration", () => {
     expect(provider).toHaveBeenCalledTimes(2);
   });
 
+  it("A1: abandons a migration when purge changes its account owner generation", async () => {
+    const receiptDir = makeReceiptDir();
+    const projectRoot = path.join(receiptDir, "project");
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, ".git", "config"),
+      `[remote "origin"]\n\turl = https://github.com/acme/old-secrets.git\n`,
+    );
+    let userId = "user-a";
+    let generation = 0;
+    let releaseVaultWrite = (): void => {};
+    let markVaultWriteStarted = (): void => {};
+    const vaultWriteStarted = new Promise<void>((resolve) => {
+      markVaultWriteStarted = resolve;
+    });
+    const vaultWriteGate = new Promise<void>((resolve) => {
+      releaseVaultWrite = resolve;
+    });
+    const writes: string[] = [];
+    const vault = {
+      list: vi.fn(async (scope?: string | null) => scope === "all"
+        ? { ok: false as const, unavailable: true as const, message: "offline" }
+        : { ok: true as const, value: [] }),
+      get: vi.fn(async () => ({ ok: true as const, value: null })),
+      set: vi.fn(async (_scope: string, _kind: string, _key: string, value: string) => {
+        const writeGeneration = generation;
+        markVaultWriteStarted();
+        await vaultWriteGate;
+        if (writeGeneration === generation) writes.push(value);
+        return { ok: true as const, value: null };
+      }),
+    };
+    const runner = createAccountMigrationRunner({
+      accountBridge: { status: () => signedInStatus(userId) },
+      accountVaultBridge: vault,
+      getContexts: () => [{
+        project: { rootPath: projectRoot },
+        projectSecretService: {
+          list: () => ({ secrets: [{ name: "old-secret", storage: "account" }] }),
+          getSecretProvenance: () => ({ source: "device" as const, accountUserId: null }),
+          get: () => ({ value: "old-secret" }),
+          hydrateFromVault: vi.fn(async () => {}),
+        },
+      }],
+      getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
+      getReceiptDir: () => receiptDir,
+      getAccountMigrationGeneration: () => generation,
+    });
+
+    runner.start();
+    await vaultWriteStarted;
+    userId = "user-b";
+    generation += 1;
+    releaseVaultWrite();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(writes).toEqual([]);
+    expect(vault.set).toHaveBeenCalledOnce();
+    expect(fs.existsSync(path.join(receiptDir, "account-migration.json"))).toBe(false);
+  });
+
   it("does not record project-secret migration complete while a project scope is unresolved", async () => {
     const receiptDir = makeReceiptDir();
     const projectSecrets = vi.fn(() => ({ moved: 0, skipped: 0, complete: false }));

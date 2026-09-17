@@ -184,7 +184,9 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     }
   };
 
+  let accountMigrationGeneration = 0;
   const purgeAccountState = (): void => {
+    accountMigrationGeneration += 1;
     accountVaultStore?.purge();
     purgeAccountOwnedCredentials();
   };
@@ -205,6 +207,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
       getContexts: options.getContexts,
       getLogger: () => options.logger,
       getReceiptDir: () => options.receiptDir,
+      getAccountMigrationGeneration: () => accountMigrationGeneration,
     })
     : null;
 

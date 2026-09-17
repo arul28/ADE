@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { pathKey } from "../../../../desktop/src/main/services/shared/pathCompare";
 import {
   createAccountMigrationReceipt,
   MIGRATION_SOURCES,
@@ -132,6 +133,46 @@ describe("account migration receipt", () => {
       projectSources?: Record<string, unknown>;
     };
     expect(Object.keys(stored.projectSources ?? {})).toHaveLength(1);
+  });
+
+  it("A2: reads and canonicalizes a legacy path.resolve receipt key", () => {
+    const projectRoot = path.join(adeDir, "project");
+    const canonicalRoot = path.join(adeDir, "canonical-project");
+    const platform = process.platform;
+    const legacyResolved = path.resolve(projectRoot);
+    const legacyKeys = [legacyResolved, pathKey(legacyResolved, platform)];
+    const realpath = vi.spyOn(fs.realpathSync, "native").mockReturnValue(canonicalRoot);
+    const receipt = makeReceipt();
+    const outcome = {
+      completedAt: "2026-09-17T12:00:00.000Z",
+      moved: 1,
+      skipped: 0,
+    };
+
+    try {
+      for (const legacyKey of legacyKeys) {
+        fs.writeFileSync(receipt.receiptPathForTests(), JSON.stringify({
+          version: 1,
+          accountUserId,
+          sources: {},
+          projectSources: { [legacyKey]: { project_secrets: outcome } },
+        }));
+
+        expect(receipt.isComplete("project_secrets", { projectRoot })).toBe(true);
+        receipt.complete("project_secrets", { moved: 1, skipped: 0 }, { projectRoot });
+
+        const stored = JSON.parse(fs.readFileSync(receipt.receiptPathForTests(), "utf8")) as {
+          projectSources?: Record<string, unknown>;
+        };
+        expect(stored.projectSources).toEqual({
+          [pathKey(canonicalRoot, platform)]: {
+            project_secrets: expect.objectContaining({ moved: 1, skipped: 0 }),
+          },
+        });
+      }
+    } finally {
+      realpath.mockRestore();
+    }
   });
 
   it("keeps earlier sources when a later one completes", () => {
