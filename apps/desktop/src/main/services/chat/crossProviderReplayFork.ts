@@ -29,9 +29,57 @@ export function replayMaxCharsForProvider(
   return provider === "codex" ? CODEX_REPLAY_MAX_CHARS : undefined;
 }
 
-const CHARS_PER_TOKEN = 4;
-/** Leave room for the next user turn, system prompt, and tool payloads. */
-const CONTEXT_RESERVE_TOKENS = 8_000;
+/**
+ * Characters per token for mixed transcript text.
+ *
+ * A replay is code, diffs and JSON tool output, not English prose. Those run
+ * about 2.5-3 characters per token, so the 4 this used to assume let a 1M-token
+ * window accept ~3.9M characters — about 1.4M real tokens. Estimate low.
+ */
+export const REPLAY_CHARS_PER_TOKEN = 3;
+
+/**
+ * The replay is never the whole prompt. The system prompt, the tool
+ * definitions, the ADE continuity context and the first user message all
+ * arrive with it, and none of them are counted by the fit.
+ */
+export const REPLAY_RESERVE_MIN_TOKENS = 32_000;
+const REPLAY_RESERVE_WINDOW_FRACTION = 0.15;
+
+/** A replay never takes more than this share of the target context window. */
+export const REPLAY_MAX_WINDOW_FRACTION = 0.6;
+
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
+
+/** Conservative token estimate for already-rendered replay text. */
+export function estimateReplayTokens(text: string): number {
+  if (!text) return 0;
+  return Math.ceil(text.length / REPLAY_CHARS_PER_TOKEN);
+}
+
+function normalizeContextWindow(contextWindowTokens: number | null | undefined): number {
+  return Number.isFinite(contextWindowTokens) && (contextWindowTokens ?? 0) > 0
+    ? Math.floor(contextWindowTokens as number)
+    : DEFAULT_CONTEXT_WINDOW_TOKENS;
+}
+
+export function replayReserveTokens(contextWindowTokens: number | null | undefined): number {
+  const window = normalizeContextWindow(contextWindowTokens);
+  return Math.max(
+    REPLAY_RESERVE_MIN_TOKENS,
+    Math.floor(window * REPLAY_RESERVE_WINDOW_FRACTION),
+  );
+}
+
+/** Tokens the replay itself may occupy in the target context window. */
+export function replayBudgetTokens(contextWindowTokens: number | null | undefined): number {
+  const window = normalizeContextWindow(contextWindowTokens);
+  const cap = Math.floor(window * REPLAY_MAX_WINDOW_FRACTION);
+  const usable = Math.min(Math.max(0, window - replayReserveTokens(window)), cap);
+  // A window smaller than the reserve still carries the newest turn or the
+  // header; returning zero would strip a handoff of all of its history.
+  return Math.max(Math.min(4_000, cap), usable);
+}
 
 export type TranscriptReplayTurn = {
   text: string;
@@ -146,12 +194,22 @@ function renderReplayDocument(header: string, turns: readonly TranscriptReplayTu
   return `${header}\n\n${turns.map((turn) => turn.text).join("\n\n")}`;
 }
 
+/**
+ * What share of the target context window a rendered replay takes, as a whole
+ * percent, or null when the window is unknown. Never rounds to 0: a replay that
+ * reached the model occupies some of it.
+ */
+export function replayContextSharePercent(
+  text: string,
+  contextWindowTokens: number | null | undefined,
+): number | null {
+  if (!Number.isFinite(contextWindowTokens) || (contextWindowTokens ?? 0) <= 0) return null;
+  const window = normalizeContextWindow(contextWindowTokens);
+  return Math.max(1, Math.round((estimateReplayTokens(text) / window) * 100));
+}
+
 export function replayBudgetChars(contextWindowTokens: number | null | undefined): number {
-  const window = Number.isFinite(contextWindowTokens) && (contextWindowTokens ?? 0) > 0
-    ? Math.floor(contextWindowTokens as number)
-    : 128_000;
-  const usableTokens = Math.max(4_000, window - CONTEXT_RESERVE_TOKENS);
-  return usableTokens * CHARS_PER_TOKEN;
+  return replayBudgetTokens(contextWindowTokens) * REPLAY_CHARS_PER_TOKEN;
 }
 
 export function fitTranscriptReplayToBudget(

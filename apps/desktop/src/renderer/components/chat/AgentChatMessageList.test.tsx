@@ -96,6 +96,8 @@ import {
 } from "./chatTranscriptRows";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
+import { rememberCallStill, resetSceneStillsForTest } from "./sceneStillStore";
+import { stubSceneCaptureBridge } from "./sceneStillTestHarness";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
@@ -5926,5 +5928,140 @@ describe("usage-limit turn footer", () => {
     // transcript still reads.
     const withoutPill = renderMessageList(events, { usageLimitResumeActive: false });
     expect(withoutPill.container.textContent).toContain("Claude session limit");
+  });
+});
+
+describe("AgentChatMessageList voice calls", () => {
+  function voiceEnvelope(
+    sequence: number,
+    event: AgentChatEventEnvelope["event"],
+    voiceCallId?: string,
+  ): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-voice",
+      timestamp: new Date(Date.UTC(2026, 8, 16, 12, 0, sequence)).toISOString(),
+      sequence,
+      event,
+      ...(voiceCallId ? { provenance: { voiceCallId } } : {}),
+    } as AgentChatEventEnvelope;
+  }
+
+  const callEvents: AgentChatEventEnvelope[] = [
+    voiceEnvelope(1, { type: "user_message", text: "what is failing on main?", deliveryState: "delivered" }, "call-1"),
+    voiceEnvelope(2, { type: "text", text: "Two checks are red.", itemId: "a-1" }, "call-1"),
+    voiceEnvelope(3, { type: "user_message", text: "fix the first one", deliveryState: "delivered" }, "call-1"),
+  ];
+
+  it("renders a whole call collapsed as one card, not as loose bubbles", () => {
+    renderMessageList(callEvents);
+
+    const card = screen.getByTestId("voice-call-card");
+    expect(card.getAttribute("data-voice-call-id")).toBe("call-1");
+    expect(card.textContent).toContain("Voice call");
+    expect(card.textContent).toContain("2 exchanges");
+    expect(card.textContent).toContain("what is failing on main?");
+    // Collapsed is the default: nothing the model said is in the transcript yet.
+    expect(document.body.textContent).not.toContain("Two checks are red.");
+    expect(screen.queryByTestId("voice-call-rows")).toBeNull();
+  });
+
+  it("reveals the call's own rows when expanded", () => {
+    renderMessageList(callEvents);
+
+    const toggle = screen.getByRole("button", { expanded: false, name: /Voice call/ });
+    fireEvent.click(toggle);
+
+    expect(screen.getByRole("button", { name: /Voice call/ }).getAttribute("aria-expanded")).toBe("true");
+    const rows = screen.getByTestId("voice-call-rows");
+    expect(rows.textContent).toContain("what is failing on main?");
+    expect(rows.textContent).toContain("Two checks are red.");
+    expect(rows.textContent).toContain("fix the first one");
+  });
+
+  /** The caret is the one thing in the row that LOOKS like a toggle. */
+  it("expands from the caret, not only from the title", () => {
+    renderMessageList(callEvents);
+
+    const caret = screen.getByTestId("voice-call-caret");
+    expect(screen.getByRole("button", { expanded: false, name: /Voice call/ }).contains(caret)).toBe(true);
+
+    fireEvent.click(caret);
+
+    expect(screen.getByTestId("voice-call-rows")).toBeTruthy();
+  });
+
+  /**
+   * The owner's report: "after an image scene the CTO makes, make sure there is
+   * a still". A call's scene is drawn by the HUD, which is gone by the time the
+   * card exists, so the picture has to be carried into the card or the call
+   * reads as if it never drew anything.
+   */
+  it("shows the views the call drew, collapsed as a thumbnail and expanded in full", () => {
+    rememberCallStill("call-1", {
+      uri: ".ade/artifacts/computer-use/red-checks.png",
+      artifactId: "a1",
+      title: "Red checks",
+    });
+    try {
+      renderMessageList(callEvents);
+
+      const thumb = screen.getByTestId("voice-call-still-thumb");
+      expect(thumb.getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/computer-use/red-checks.png");
+
+      fireEvent.click(screen.getByTestId("voice-call-caret"));
+      expect(screen.queryByTestId("voice-call-still-thumb")).toBeNull();
+      const stills = screen.getByTestId("voice-call-stills");
+      expect(stills.textContent).toContain("Red checks");
+      expect(screen.getByTestId("voice-call-still")).toBeTruthy();
+    } finally {
+      resetSceneStillsForTest();
+    }
+  });
+
+  /**
+   * A reopened window has nothing in memory: the pictures come back from the
+   * artifact index, matched to this call by the id stored with them.
+   */
+  it("finds a finished call's views in the artifact index", async () => {
+    const bridge = stubSceneCaptureBridge({
+      artifacts: [{
+        id: "a1",
+        uri: ".ade/artifacts/computer-use/red-checks.png",
+        title: "Generated view",
+        metadata: { kind: "scene_still", voiceCallId: "call-1", sceneTitle: "Red checks" },
+      }],
+    });
+    try {
+      renderMessageList(callEvents, { sessionId: "chat-1" });
+      await waitFor(() => expect(screen.getByTestId("voice-call-still-thumb")).toBeTruthy());
+      expect(screen.getByTestId("voice-call-still-thumb").getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/computer-use/red-checks.png");
+      expect(bridge.listArtifacts.mock.calls[0]?.[0]).toMatchObject({
+        ownerKind: "chat_session",
+        ownerId: "chat-1",
+        metadataKind: "scene_still",
+      });
+    } finally {
+      resetSceneStillsForTest();
+    }
+  });
+
+  it("draws no tile for a call that never drew anything", () => {
+    renderMessageList(callEvents);
+    expect(screen.queryByTestId("voice-call-still-thumb")).toBeNull();
+    fireEvent.click(screen.getByTestId("voice-call-caret"));
+    expect(screen.queryByTestId("voice-call-stills")).toBeNull();
+  });
+
+  it("leaves a transcript with no voice events untouched", () => {
+    renderMessageList([
+      voiceEnvelope(1, { type: "user_message", text: "typed by hand", deliveryState: "delivered" }),
+      voiceEnvelope(2, { type: "text", text: "answered in text", itemId: "a-1" }),
+    ]);
+
+    expect(screen.queryByTestId("voice-call-card")).toBeNull();
+    expect(document.body.textContent).toContain("typed by hand");
+    expect(document.body.textContent).toContain("answered in text");
   });
 });

@@ -55,7 +55,7 @@ import {
 } from "../editors/openPathInEditor";
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import type { AttemptedProjectRoots } from "./knownProjectRoots";
-import { redactIpcArgsForChannel } from "./ipcChannelRedaction";
+import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
   AttentionNotchSettings,
@@ -629,6 +629,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -654,6 +655,8 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
   CtoGetMemoryArgs,
   CtoUpdateMemoryArgs,
   CtoSearchMemoryArgs,
@@ -800,7 +803,10 @@ import {
   type TranscriptionStatus,
   TranscriptionError,
 } from "../transcription/transcriptionService";
-import { requestMicrophoneAccess } from "../transcription/microphoneAccess";
+import {
+  requestMicrophoneAccess,
+  type MicrophoneAccessResult,
+} from "../transcription/microphoneAccess";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
 import { createAccountBridge, createBrainAccountActionCaller } from "../account/accountBridge";
@@ -872,6 +878,9 @@ import type {
 } from "../../../shared/types/orchestration";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
+import type { CtoVoiceRuntimeService } from "../cto/ctoVoiceRuntimeService";
+import { registerCtoVoiceIpc } from "../cto/ctoVoiceWiring";
+import { UNAVAILABLE_CAPTURE_GESTURE_HEALTH } from "../capture/captureGestureState";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
@@ -905,6 +914,21 @@ import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
+import { sceneDocumentStore } from "../scenes/sceneDocumentStore";
+import {
+  clampSceneCaptureRect,
+  decodeScenePngDataUrl,
+  type SceneCaptureRect,
+} from "../scenes/sceneSnapshot";
+import {
+  fileSceneStill,
+  requireSceneStillScopeKey,
+  resolveSceneStillOwner,
+  sceneStillFileLabel,
+  SceneStillScopeKeyError,
+} from "../scenes/sceneStills";
+import { SCENE_LIMITS, type SceneStillRecord } from "../../../shared/chatScene";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
@@ -1155,6 +1179,17 @@ export type AppContext = {
   sessionDeltaService?: SessionDeltaService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  /**
+   * The in-process CTO voice call.
+   *
+   * Built only under `shouldUseInProcessProjectRuntime()`, and deliberately not
+   * merely "wherever this constructor runs": `ensureProjectContextForMobileSync`
+   * reaches the same constructor in production, and a call brain built there
+   * would be a second one for a project whose daemon already owns the real
+   * one. Null in every real build; the router reaches the runtime's instance
+   * over the `cto_voice` action domain instead.
+   */
+  ctoVoiceCallService?: CtoVoiceRuntimeService | null;
   adeProjectService?: AdeProjectService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
@@ -1698,6 +1733,10 @@ export function registerIpc({
   builtInBrowserService,
   productAnalyticsService,
   autoDiagnosticsService,
+  updateCaptureGestureSettings,
+  getCaptureGestureHealth,
+  retryCaptureGesture,
+  captureGestureNow,
   publishAttentionNotchSnapshot,
   publishAttentionNotchToast,
   updateAttentionNotchSettings,
@@ -1758,6 +1797,18 @@ export function registerIpc({
    * tests and in runtime modes that never built one; every call site guards.
    */
   autoDiagnosticsService?: AutoDiagnosticsService;
+  /**
+   * The global capture gesture supervisor, absent in runtime modes that never
+   * built one (tests, the headless brain). Every handler below guards, and the
+   * `unsupported` health it falls back to is the same sentence a Linux desktop
+   * gets — "there is no helper here" is true in both cases.
+   */
+  updateCaptureGestureSettings?: (
+    settings: import("../../../shared/types/captureGesture").CaptureGestureSettings,
+  ) => import("../../../shared/types/captureGesture").CaptureGestureHealth;
+  getCaptureGestureHealth?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
+  retryCaptureGesture?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
+  captureGestureNow?: () => boolean;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
   publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
@@ -2043,19 +2094,6 @@ export function registerIpc({
   const traceIpcInvokes = isPerfRunActive() || !app.isPackaged || process.env.ADE_TRACE_IPC === "1" || process.env.ADE_TRACE_IPC === "verbose";
   const traceEveryIpcInvoke = process.env.ADE_TRACE_IPC === "verbose";
   let ipcInvokeSeq = 0;
-
-  const shouldRedactIpcKey = (key: string | undefined): boolean => {
-    if (!key) return false;
-    const normalized = key.toLowerCase();
-    return normalized.includes("token")
-      || normalized.includes("secret")
-      || normalized.includes("password")
-      || normalized.includes("authorization")
-      || normalized === "apikey"
-      || normalized === "api_key"
-      || normalized === "pairingpin"
-      || normalized === "pairing_pin";
-  };
 
   const summarizeIpcValue = (value: unknown, depth = 0, key?: string): unknown => {
     if (shouldRedactIpcKey(key)) return "[redacted]";
@@ -3283,6 +3321,24 @@ export function registerIpc({
     app.setBadgeCount(normalized);
     return { ok: true } as const;
   });
+
+  ipcMain.handle(IPC.captureGestureUpdateSettings, async (_event, input: unknown) => {
+    const enabled = typeof input === "object" && input !== null
+      && (input as { enabled?: unknown }).enabled === true;
+    return updateCaptureGestureSettings?.({ enabled })
+      ?? getCaptureGestureHealth?.()
+      ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH;
+  });
+
+  ipcMain.handle(IPC.captureGestureGetHealth, async () =>
+    getCaptureGestureHealth?.() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH);
+
+  ipcMain.handle(IPC.captureGestureRetry, async () =>
+    retryCaptureGesture?.() ?? getCaptureGestureHealth?.() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH);
+
+  ipcMain.handle(IPC.captureGestureCaptureNow, async () => ({
+    started: captureGestureNow?.() ?? false,
+  }));
 
   ipcMain.handle(IPC.attentionNotchPublishSnapshot, async (_event, input: unknown) => {
     const snapshot = parseAttentionNotchSnapshot(input);
@@ -5073,6 +5129,55 @@ export function registerIpc({
     const { listStoredProviders } = await import("../ai/apiKeyStore");
     return listStoredProviders();
   });
+
+  // Machine-scoped keys. Like the agent-CLI cache above, these belong to THIS
+  // machine's install rather than to the bound project's runtime, so they are
+  // deliberately not routed through a project runtime action. Nothing here ever
+  // returns, logs, or echoes the key itself — only whether one resolves and
+  // where from.
+  ipcMain.handle(
+    IPC.aiGetMachineApiKeyStatus,
+    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
+      const { getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
+      return getMachineApiKeyStatus(arg.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiStoreMachineApiKey,
+    async (_event, arg: { provider: string; key: string }): Promise<MachineApiKeyStatus> => {
+      const { getMachineApiKeyStatus, storeMachineApiKey } = await import("../ai/apiKeyStore");
+      storeMachineApiKey(arg.provider, arg.key);
+      try {
+        // The key store mutation already succeeded; invalidation is a freshness
+        // step so a saved key should not fail because a runtime cache is gone.
+        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return getMachineApiKeyStatus(arg.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiDeleteMachineApiKey,
+    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
+      const { deleteMachineApiKey, getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
+      deleteMachineApiKey(arg.provider);
+      try {
+        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return getMachineApiKeyStatus(arg.provider);
+    },
+  );
 
   ipcMain.handle(
     IPC.aiVerifyApiKey,
@@ -7966,8 +8071,13 @@ export function registerIpc({
   // getMediaAccessStatus; Chromium owns any per-origin prompt.
   ipcMain.handle(
     IPC.transcriptionRequestMicAccess,
-    async (): Promise<{ status: "granted" | "denied" | "not-determined" | "restricted" | "unknown" }> => {
-      return requestMicrophoneAccess(process.platform, systemPreferences);
+    async (): Promise<MicrophoneAccessResult> => {
+      // `isPackaged` changes the ANSWER, not the wording: an unsigned build has
+      // no TCC identity, so its refusal is not one the user can grant in
+      // System Settings — the entry they see there belongs to the packaged app.
+      return requestMicrophoneAccess(process.platform, systemPreferences, {
+        isPackaged: app.isPackaged,
+      });
     },
   );
 
@@ -8778,6 +8888,353 @@ export function registerIpc({
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.readArtifactPreview(arg);
   });
+
+  // ── Scenes ─────────────────────────────────────────────────────────────────
+  // Agent-authored HTML, rendered in a sandboxed frame. See
+  // `shared/chatScene.ts` for why a scene never runs in ADE's own renderer.
+
+  // Scene work is best-effort by contract, so a failure is logged and swallowed
+  // — and the logging itself must not be what throws: these channels can be
+  // reached while the window has no project context to read a logger from.
+  const logSceneFailure = (event: string, error: unknown): void => {
+    try {
+      getCtx().logger.warn(event, { err: getErrorMessage(error) });
+    } catch {
+      // No context, no log. The caller still gets its honest false/null.
+    }
+  };
+
+  /** Same defensive shape, for a scene note that carries fields rather than an error. */
+  const logSceneNote = (event: string, fields: Record<string, unknown>): void => {
+    try {
+      getCtx().logger.warn(event, fields);
+    } catch {
+      // No context, no log.
+    }
+  };
+
+  /**
+   * Store a scene document and hand back the URL the frame loads it from.
+   *
+   * Nothing is written to disk and nothing in the URL is a path — the id is a
+   * key into an in-memory map that the `ade-scene:` handler reads.
+   */
+  ipcMain.handle(IPC.scenePrepare, async (_event, arg: { html?: unknown } | string): Promise<string> => {
+    const html = typeof arg === "string" ? arg : typeof arg?.html === "string" ? arg.html : "";
+    if (!html.length) throw new Error("A scene document is required.");
+    // The renderer checks its own ceiling before it ever gets here; this is the
+    // server-side one, and it lives with the rest of the scene limits rather
+    // than as arithmetic at the IPC edge.
+    if (Buffer.byteLength(html, "utf8") > SCENE_LIMITS.maxDocumentBytes) {
+      throw new Error("This scene is too large to render.");
+    }
+    return sceneDocumentStore.put(html).url;
+  });
+
+  /**
+   * Freeze a drawn scene to a PNG so scrollback shows a picture instead of a
+   * frame that keeps executing.
+   *
+   * Captures the window that asked, not the focused one: by the time a long
+   * transcript settles, focus may have moved on. A window that is hidden or
+   * minimized captures empty (the known WebContentsView gotcha), so it answers
+   * null rather than filing a blank image.
+   */
+  ipcMain.handle(
+    IPC.sceneSnapshot,
+    async (event, arg: SceneCaptureRect | null): Promise<string | null> => {
+      try {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return null;
+        const [contentWidth, contentHeight] = win.getContentSize();
+        const rect = clampSceneCaptureRect(arg, { width: contentWidth, height: contentHeight });
+        if (!rect) return null;
+        // Capture the webContents that measured the rect, not the window: the
+        // renderer's `getBoundingClientRect()` is in its own client space.
+        const image = await event.sender.capturePage(rect);
+        if (image.isEmpty()) return null;
+        return image.toDataURL();
+      } catch (error) {
+        logSceneFailure("scene.snapshot_failed", error);
+        return null;
+      }
+    },
+  );
+
+  /**
+   * File a scene snapshot into the proof drawer.
+   *
+   * Reuses the computer-use artifact path rather than writing a second artifact
+   * store: the bytes land in `.ade/artifacts/computer-use/` via
+   * `createComputerUseArtifactPath` and the drawer record comes from the same
+   * broker `ingest` every other proof goes through. Answers false — never
+   * throws — when there is no project, no broker, or no snapshot to file, so a
+   * button press on a scene that was never captured is a no-op, not an error.
+   */
+  /**
+   * The chat a scene snapshot may be filed against.
+   *
+   * The Proof button's half of `resolveSceneStillOwner`: no call, so no call to
+   * resolve an owner from. `sessionService` is project-scoped, so an id naming
+   * another project's chat simply misses.
+   */
+  const resolveSceneProofOwner = (
+    ctx: AppContext,
+    claimed: unknown,
+  ): Promise<string | null> => resolveSceneStillOwner({
+    agentChatService: ctx.agentChatService,
+    claimedSessionId: claimed,
+  });
+
+  ipcMain.handle(
+    IPC.sceneAttachProof,
+    async (_event, arg: { dataUrl?: string | null; title?: string | null; sessionId?: string | null }): Promise<boolean> => {
+      try {
+        const ctx = getCtx();
+        const broker = ctx.computerUseArtifactBrokerService;
+        const projectRoot = ctx.project?.rootPath ?? null;
+        if (!projectRoot) return false;
+        const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
+        if (!bytes) return false;
+        const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
+        const artifactPath = createComputerUseArtifactPath(projectRoot, title, "png");
+        fs.writeFileSync(artifactPath, bytes);
+
+        // The bytes have to be on disk before either route can be taken: the
+        // in-process broker ingests a path, and the runtime action is handed a
+        // path and nothing else. Everything from here therefore runs under a
+        // `finally` — but the rule is NOT "delete unless filed". It is delete
+        // only when we KNOW the record was never created.
+        //
+        // The two failures are not symmetric. An unreferenced file is invisible
+        // and permanent (the store is pruned by drawer record, so nothing ever
+        // collects it) but it is inert. A drawer record pointing at a file that
+        // is gone is a BROKEN ARTIFACT the user sees and cannot open. So a lost
+        // or failed RPC — where `ingestSceneSnapshot` may well have committed
+        // the record before the answer went missing — keeps the file and logs
+        // it, and `listBrokenArtifacts` / `pruneBrokenArtifacts` reconcile the
+        // one case that is genuinely orphaned. Only an outcome we are certain
+        // of deletes.
+        let outcome: "filed" | "not-filed" | "unknown" = "not-filed";
+        try {
+          if (broker) {
+            // Proof in ADE is chat-scoped. A snapshot filed with no owner cannot
+            // be shown against the conversation that drew it, and lane-root
+            // resolution is skipped entirely.
+            //
+            // The id comes from the renderer, so it is checked against this
+            // project's own sessions rather than trusted: an id naming another
+            // project's chat would file the artifact into that chat's drawer. A
+            // miss drops the owner, never the artifact — an unattributed
+            // snapshot is a smaller loss than a misattributed one.
+            //
+            // A throw out of the lookup is still "not-filed": nothing has been
+            // ingested yet.
+            const sessionId = await resolveSceneProofOwner(ctx, arg?.sessionId);
+            // From this line on the record may exist, so a throw out of
+            // `ingest` is an unknown outcome rather than a failure.
+            outcome = "unknown";
+            broker.ingest({
+              backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
+              ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
+              inputs: [{
+                kind: "screenshot",
+                title: title.slice(0, 200),
+                path: artifactPath,
+                mimeType: "image/png",
+                description: "Snapshot of an agent-authored scene.",
+              }],
+            });
+            outcome = "filed";
+            return true;
+          }
+
+          // Runtime-backed build: `computerUseArtifactBrokerService` and
+          // `agentChatService` are BOTH null in this process, so the branch
+          // above could never run and the Proof button answered false every
+          // time — with its ownership check never reached. The bytes are
+          // already on disk in this project's artifact store (the runtime is
+          // the same machine), so the daemon is handed the path and performs
+          // the same ownership resolution against the chat service it owns.
+          //
+          // No pool: nobody was asked to file anything, so this outcome is certain.
+          if (!localRuntimeConnectionPool) return false;
+          let response;
+          try {
+            response = await localRuntimeConnectionPool.callActionForRoot(projectRoot, {
+              domain: "computer_use_artifacts",
+              action: "ingestSceneSnapshot",
+              args: {
+                path: artifactPath,
+                title,
+                sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : null,
+              },
+            });
+          } catch (error) {
+            // A dropped socket after the daemon committed looks exactly like a
+            // daemon that never ran the action. We cannot tell them apart from
+            // here, so we keep the bytes.
+            outcome = "unknown";
+            throw error;
+          }
+          const wasFiled = (response.result as { filed?: unknown } | null)?.filed === true;
+          // An explicit `filed: false` is an answer, not a silence.
+          outcome = wasFiled ? "filed" : "not-filed";
+          return wasFiled;
+        } finally {
+          if (outcome === "not-filed") {
+            try {
+              fs.rmSync(artifactPath, { force: true });
+            } catch {
+              // Best effort. A snapshot we could not file AND could not remove
+              // is not worth failing the button over.
+            }
+          } else if (outcome === "unknown") {
+            logSceneNote("scene.proof_outcome_unknown", { path: artifactPath });
+          }
+        }
+      } catch (error) {
+        logSceneFailure("scene.attach_proof_failed", error);
+        return false;
+      }
+    },
+  );
+
+  /**
+   * Keep a scene's settle-time still.
+   *
+   * The same bytes and the same jail as the Proof button — `attachProof` and
+   * this one write through `createComputerUseArtifactPath` into
+   * `.ade/artifacts/computer-use/` and file through the same broker or the same
+   * CTO-only runtime action — and two deliberate differences.
+   *
+   * THE BYTES ARE NEVER DELETED ON A FAILED FILING. Proof is a drawer record,
+   * so a record that could not be created makes the file pointless; a still is
+   * the picture itself, and the renderer is about to show it back from this
+   * path. A still that could not be filed is an unlisted image, which is
+   * exactly what the caller asked for.
+   *
+   * AND THE RECORD IS NOT PROOF. A still is a picture the transcript shows
+   * inline, so it is tagged `metadata.kind = "scene_still"` and excluded from
+   * every proof surface; the broker holds it because the broker owns the bytes
+   * and is the index the renderer looks the picture up in. `fileSceneStill`
+   * owns that tag and the two disk bounds that go with it.
+   *
+   * The renderer never names a path. It hands over a PNG data URL and gets back
+   * a project-relative uri, so `ade-artifact://project/` can resolve it without
+   * this process ever trusting a path from the other side.
+   */
+  ipcMain.handle(
+    IPC.sceneStoreStill,
+    async (
+      _event,
+      arg: {
+        dataUrl?: string | null;
+        title?: string | null;
+        sessionId?: string | null;
+        /** Identity of the scene the picture is of: one still per key. */
+        scopeKey?: string | null;
+        /** Set when the scene was drawn on a voice call. */
+        voiceCallId?: string | null;
+      },
+    ): Promise<SceneStillRecord | null> => {
+      try {
+        const ctx = getCtx();
+        const projectRoot = ctx.project?.rootPath ?? null;
+        if (!projectRoot) return null;
+        const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
+        if (!bytes) return null;
+        const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
+        const voiceCallId = typeof arg?.voiceCallId === "string" ? arg.voiceCallId.trim() : "";
+        // No scope key is no identity, and the two sides disagreed about what
+        // to do with one: in process it filed an index row nothing could ever
+        // look up, and over the runtime action the missing key is exactly what
+        // marks a call as the PROOF button — so the same still landed in the
+        // drawer as evidence. One contract now, refused on both sides before
+        // any bytes are written; here that refusal is a no-op answer rather
+        // than a logged failure, because an unkeyed still was never a still.
+        let scopeKey: string;
+        try {
+          scopeKey = requireSceneStillScopeKey(arg?.scopeKey);
+        } catch (error) {
+          if (error instanceof SceneStillScopeKeyError) return null;
+          throw error;
+        }
+        // The title reaches the FILE NAME here, and a scene titles itself: see
+        // `sceneStillFileLabel` for why that is clamped. The record keeps the
+        // whole title; the name on disk is a label.
+        const artifactPath = createComputerUseArtifactPath(
+          projectRoot,
+          sceneStillFileLabel(title),
+          "png",
+        );
+        fs.writeFileSync(artifactPath, bytes);
+        const record: SceneStillRecord = {
+          uri: toProjectArtifactUri(projectRoot, artifactPath),
+          artifactId: null,
+          title: title.slice(0, 200),
+        };
+
+        // Filing is best effort and deliberately after the bytes are on disk:
+        // the still is already usable, and an index row that could not be
+        // written must not cost the user the picture.
+        try {
+          const broker = ctx.computerUseArtifactBrokerService;
+          // A scene drawn on a CALL is filed from the HUD, which is mounted at
+          // the shell and outside every chat scope — so the renderer may not
+          // know the owning chat, and when it does it is still a renderer. The
+          // call id is resolved against the call that is actually up, on this
+          // side, and only after the renderer's own claim has failed the same
+          // ownership check every other filing goes through.
+          if (broker) {
+            const sessionId = await resolveSceneStillOwner({
+              agentChatService: ctx.agentChatService,
+              claimedSessionId: arg?.sessionId,
+              voiceCallId,
+              resolveVoiceCallSessionId: (callId) =>
+                ctx.ctoVoiceCallService?.getCallSessionId(callId) ?? null,
+            });
+            record.artifactId = fileSceneStill({
+              broker,
+              path: artifactPath,
+              title: record.title,
+              ownerSessionId: sessionId,
+              sceneScopeKey: scopeKey,
+              voiceCallId,
+            }).artifactId;
+          } else if (localRuntimeConnectionPool) {
+            // Runtime-backed build: this process owns neither the broker nor
+            // the chat service, so the daemon repeats the jail and the owner
+            // resolution against the services it does own.
+            const response = await localRuntimeConnectionPool.callActionForRoot(projectRoot, {
+              domain: "computer_use_artifacts",
+              action: "ingestSceneSnapshot",
+              args: {
+                path: artifactPath,
+                title,
+                sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : null,
+                // Present only here, never on the Proof button's call: it is
+                // what tells the daemon this is a still and not proof.
+                sceneScopeKey: scopeKey,
+                // The daemon owns the call on a runtime-backed build, so it
+                // resolves the owner from this id the same way the branch
+                // above does — the renderer's claim is checked, never trusted.
+                voiceCallId,
+              },
+            });
+            const answered = (response.result as { artifactId?: unknown } | null)?.artifactId;
+            record.artifactId = typeof answered === "string" ? answered : null;
+          }
+        } catch (error) {
+          logSceneNote("scene.still_not_filed", { path: artifactPath, error: String(error) });
+        }
+        return record;
+      } catch (error) {
+        logSceneFailure("scene.store_still_failed", error);
+        return null;
+      }
+    },
+  );
 
   ipcMain.handle(IPC.iosSimulatorGetStatus, async () => ensureIosSimulator().getStatus());
 
@@ -11686,6 +12143,36 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.ctoGetThreadHealth, async (): Promise<CtoThreadHealth> => {
+    const ctx = getCtx();
+    const service = ctx.agentChatService;
+    return service
+      ? await service.getCtoThreadHealth()
+      : {
+          sessionId: null,
+          canTakeTurn: true,
+          blockedReason: null,
+          lastTurnFailure: null,
+          context: null,
+          rotationAdvised: false,
+        };
+  });
+
+  ipcMain.handle(IPC.ctoStartFreshSession, async (): Promise<CtoStartFreshSessionResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["agentChatService"] as const);
+    const laneId = await resolvePrimaryLaneIdOnly(ctx);
+    if (!laneId) {
+      throw new Error("No primary lane is available to host the CTO chat session.");
+    }
+    const result = await ctx.agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
+    return {
+      sessionId: result.session.id,
+      previousSessionId: result.previousSessionId,
+      handoff: result.handoff,
+    };
+  });
+
   ipcMain.handle(IPC.ctoListSessionLogs, async (_event, arg: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) {
@@ -11698,6 +12185,28 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.updateIdentity(arg.patch ?? {});
+  });
+
+  // -- CTO voice call --
+
+  registerCtoVoiceIpc(ipcMain, {
+    getCtx,
+    // Null only when this desktop IS the project runtime. Whenever a pool
+    // exists the daemon owns this project's call, and the router routes there —
+    // `ctx.ctoVoiceCallService` is the fallback for the no-pool case, not a
+    // preference.
+    getLocalRuntimePool: () => localRuntimeConnectionPool ?? null,
+    // A remote-bound window is connected — just not to a runtime on this
+    // machine — so it gets its own sentence instead of the local pool's.
+    getBindingKind: (senderId) => {
+      const windowId = BrowserWindow.getAllWindows()
+        .find((win) => win.webContents.id === senderId)?.id ?? null;
+      return getWindowSession?.(windowId)?.binding?.kind ?? null;
+    },
+    logger: {
+      warn: (msg, meta) => getCtx().logger.warn(msg, meta),
+      info: (msg, meta) => getCtx().logger.info(msg, meta),
+    },
   });
 
   // -- Smart memory --
@@ -11827,18 +12336,6 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.completeOnboardingStep(arg.stepId);
-  });
-
-  ipcMain.handle(IPC.ctoDismissOnboarding, async () => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
-    return ctx.ctoStateService.dismissOnboarding();
-  });
-
-  ipcMain.handle(IPC.ctoResetOnboarding, async () => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
-    return ctx.ctoStateService.resetOnboarding();
   });
 
   ipcMain.handle(IPC.ctoPreviewSystemPrompt, async (_event, arg: { identityOverride?: Record<string, unknown> } = {}) => {

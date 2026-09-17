@@ -5,6 +5,20 @@ export type ComputerUseArtifactKind =
   | "browser_verification"
   | "console_logs";
 
+/**
+ * What an artifact's `metadata.kind` tag says it is FOR.
+ *
+ * Distinct from `ComputerUseArtifactKind`, which says what the bytes are: a
+ * scene still is a `screenshot` like any other capture. `scene_still` is the
+ * picture a generated view left behind, filed through the broker only because
+ * the broker owns the bytes and the index that resolves them — nobody chose to
+ * keep it as evidence, so the proof drawer excludes it.
+ */
+export type ComputerUseArtifactMetadataKind = "scene_still";
+
+/** The one tag above, so the filer and every filter spell it the same way. */
+export const SCENE_STILL_METADATA_KIND: ComputerUseArtifactMetadataKind = "scene_still";
+
 export type ComputerUseArtifactOwnerKind =
   | "lane"
   | "chat_session"
@@ -145,8 +159,36 @@ export type ComputerUseArtifactListArgs = {
   ownerKind?: ComputerUseArtifactOwnerKind;
   ownerId?: string | null;
   kind?: ComputerUseArtifactKind | null;
+  /**
+   * Keep only artifacts with this `metadata.kind`. The scene-still index is the
+   * caller: it wants its own pictures and nothing else, and it must not be
+   * crowded out of a limit by ordinary proof.
+   *
+   * Scalar, like `kind` above and for the same reason: the tag is one value per
+   * artifact, and a list over a one-member union bought nothing but a
+   * normalizer and a cast at every call site.
+   */
+  metadataKind?: ComputerUseArtifactMetadataKind | null;
+  /**
+   * Drop artifacts with this `metadata.kind`. Every proof surface passes
+   * `"scene_still"` — see {@link PROOF_LISTING_ARTIFACT_FILTER}.
+   */
+  excludeMetadataKind?: ComputerUseArtifactMetadataKind | null;
   limit?: number;
 };
+
+/**
+ * What a PROOF listing asks for: everything except the scene stills.
+ *
+ * One object rather than the literal repeated at every listing surface. A
+ * surface that forgets it shows the user pictures a generated view left behind
+ * as though someone had chosen to keep them as evidence, and the drawer, the
+ * CTO's own tools, the agent RPC and search would each have had to remember
+ * separately.
+ */
+export const PROOF_LISTING_ARTIFACT_FILTER: {
+  readonly excludeMetadataKind: ComputerUseArtifactMetadataKind;
+} = { excludeMetadataKind: SCENE_STILL_METADATA_KIND };
 
 export type ComputerUseArtifactDeleteArgs = {
   artifactId?: string | null;

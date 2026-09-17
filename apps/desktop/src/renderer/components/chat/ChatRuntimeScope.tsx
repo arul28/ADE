@@ -27,7 +27,13 @@ import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
  * "this chat lives on the tab's binding" — the unpinned path, byte-for-byte
  * what the surface did before per-chat routing.
  */
-export type ChatRuntimeScope = {
+/**
+ * The machine half, answerable from a pin and a lane alone.
+ *
+ * Split out because `useChatRuntimeScopeForPin` can answer exactly this and no
+ * more — which chat is being rendered is the provider's to add.
+ */
+export type ChatMachineScope = {
   /** Pass to any pin-aware preload call. Null = the tab's bound machine. */
   pin: OpenProjectBinding | null;
   /** The binding the chat actually runs on: `pin ?? projectBinding`. */
@@ -48,10 +54,22 @@ export type ChatRuntimeScope = {
   online: boolean;
 };
 
+export type ChatRuntimeScope = ChatMachineScope & {
+  /**
+   * The chat being rendered. Null outside a chat subtree.
+   *
+   * Session-constant, so it belongs here rather than threaded through the
+   * presentation components between the message list and whatever needs it —
+   * proof filing, for one, is chat-scoped and had been drilled three deep.
+   */
+  sessionId: string | null;
+};
+
 const FALLBACK_SCOPE: ChatRuntimeScope = {
   pin: null,
   binding: null,
   laneId: null,
+  sessionId: null,
   lane: null,
   laneWorktreePath: null,
   rootPath: null,
@@ -85,7 +103,7 @@ export function useChatRuntimeScopeForPin(
   pin: OpenProjectBinding | null,
   laneId: string | null,
   bindingOverride?: OpenProjectBinding | null,
-): ChatRuntimeScope {
+): ChatMachineScope {
   // The pinned machine's own slice of the cross-machine union. A foreign lane
   // is absent from the tab-bound `lanes` array, so its worktree path — and
   // therefore the iOS / App Control project root — is only knowable from here.
@@ -95,7 +113,7 @@ export function useChatRuntimeScopeForPin(
   const boundProjectRoot = useAppStore(selectActiveProjectRoot);
   const boundBinding = useAppStore((state) => state.projectBinding);
 
-  return useMemo<ChatRuntimeScope>(() => {
+  return useMemo<ChatMachineScope>(() => {
     const binding = bindingOverride !== undefined ? bindingOverride : (pin ?? boundBinding ?? null);
     const lanes = pinnedLanes ?? boundLanes;
     const lane = laneId ? lanes.find((entry) => entry.id === laneId) ?? null : null;
@@ -249,6 +267,8 @@ export type ChatRuntimeScopeProviderProps = {
   /** `pin ?? projectBinding`, as the pane computes it. */
   binding: OpenProjectBinding | null;
   laneId: string | null;
+  /** The session the pane is rendering, not the one it has selected. */
+  sessionId: string | null;
   children: React.ReactNode;
 };
 
@@ -256,9 +276,11 @@ export function ChatRuntimeScopeProvider({
   pin,
   binding,
   laneId,
+  sessionId,
   children,
 }: ChatRuntimeScopeProviderProps) {
-  const scope = useChatRuntimeScopeForPin(pin, laneId, binding);
+  const machineScope = useChatRuntimeScopeForPin(pin, laneId, binding);
+  const scope = useMemo(() => ({ ...machineScope, sessionId }), [machineScope, sessionId]);
   return (
     <ChatRuntimeScopeContext.Provider value={scope}>
       {children}

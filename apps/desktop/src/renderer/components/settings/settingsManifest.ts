@@ -152,6 +152,20 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Sleep",
   },
   {
+    id: "general.capture-gesture",
+    label: "Capture with a key gesture",
+    keywords: ["screenshot", "capture", "screen", "gesture", "command", "ctrl", "window", "cto", "shortcut"],
+    tab: "general",
+    anchor: "capture-gesture",
+    scope: "machine",
+    // A browser tab cannot watch the keyboard outside itself or read another
+    // window's pixels, and the setting drives a native helper that only the
+    // desktop main process can run.
+    web: "hidden",
+    showScopeChip: true,
+    group: "Screen capture",
+  },
+  {
     id: "general.link-open-mode",
     label: "Open links",
     keywords: ["browser", "external", "system browser", "in-app", "click", "url", "hyperlink"],
@@ -432,6 +446,21 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "ai-provider-copilot",
     scope: "machine",
     web: "hidden",
+    group: "Connections",
+  },
+  // The only key on this page that follows the MACHINE rather than the project:
+  // it is stored in `~/.ade/secrets`, so it survives switching repos. Hence the
+  // scope chip — "machine" is the surprise here, next to ten project-bound
+  // provider connections.
+  {
+    id: "agents.openai-key",
+    label: "OpenAI API key",
+    keywords: ["openai", "voice", "realtime", "speech", "talk", "cto", "byok", "api key", "platform.openai.com"],
+    tab: "agents",
+    anchor: "openai-api-key",
+    scope: "machine",
+    web: "hidden",
+    showScopeChip: true,
     group: "Connections",
   },
   {

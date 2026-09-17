@@ -1,3 +1,4 @@
+import { bytesToBase64 } from "../../lib/base64";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   attachmentTooLargeMessage,
@@ -110,20 +111,6 @@ export class AttachmentConversionError extends Error {
   }
 }
 
-// btoa takes a string, and spreading a multi-megabyte Uint8Array into
-// String.fromCharCode blows the argument limit, so encode in chunks.
-const BASE64_ENCODE_CHUNK_SIZE = 0x8000;
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  const parts: string[] = [];
-  for (let i = 0; i < bytes.length; i += BASE64_ENCODE_CHUNK_SIZE) {
-    const chunk = bytes.subarray(i, i + BASE64_ENCODE_CHUNK_SIZE);
-    parts.push(String.fromCharCode(...chunk));
-  }
-  return btoa(parts.join(""));
-}
-
 /**
  * The bytes leg of {@link planAttachmentStaging}: read the file in the
  * renderer, convert it first when the host cannot read the format, and hand the
@@ -141,7 +128,7 @@ export async function stageAttachmentBytesFromFile(args: {
 }): Promise<StagedAttachment> {
   const buffer = await args.file.arrayBuffer();
   let filename = args.filename;
-  let data = arrayBufferToBase64(buffer);
+  let data = bytesToBase64(new Uint8Array(buffer));
   let mimeType: string | null = args.file.type || null;
   let previewDataUrl: string | null = null;
   if (args.requiresHeicConversion) {

@@ -59,6 +59,12 @@ export const IPC = {
   appWriteClipboardImage: "ade.app.writeClipboardImage",
   appOpenPathInEditor: "ade.app.openPathInEditor",
   appLogDebugEvent: "ade.app.logDebugEvent",
+  captureGestureUpdateSettings: "ade.captureGesture.updateSettings",
+  captureGestureGetHealth: "ade.captureGesture.getHealth",
+  captureGestureRetry: "ade.captureGesture.retry",
+  captureGestureCaptureNow: "ade.captureGesture.captureNow",
+  captureGestureShot: "ade.captureGesture.shot",
+  captureGestureFailed: "ade.captureGesture.failed",
   attentionNotchPublishSnapshot: "ade.attentionNotch.publishSnapshot",
   attentionNotchPublishToast: "ade.attentionNotch.publishToast",
   attentionNotchUpdateSettings: "ade.attentionNotch.updateSettings",
@@ -382,6 +388,33 @@ export const IPC = {
   agentChatCodexClearGoal: "ade.agentChat.codex.goal.clear",
   agentChatCodexResetMemory: "ade.agentChat.codex.memory.reset",
   agentChatCodexTerminateBackgroundTerminal: "ade.agentChat.codex.backgroundTerminals.terminate",
+  // CTO voice call. The renderer owns only the microphone and the speaker; the
+  // socket, the delegation loop and every confirmation decision stay in main.
+  ctoVoiceStart: "cto-voice:start",
+  ctoVoiceEnd: "cto-voice:end",
+  ctoVoicePushAudio: "cto-voice:push-audio",
+  ctoVoiceSetMuted: "cto-voice:set-muted",
+  ctoVoiceApprove: "cto-voice:approve",
+  ctoVoiceDeny: "cto-voice:deny",
+  ctoVoiceAttachImage: "cto-voice:attach-image",
+  ctoVoiceHasKey: "cto-voice:has-key",
+  /** Main → renderer: the whole call state, on every change. */
+  ctoVoiceState: "cto-voice:state",
+  /** Main → renderer: one chunk of output audio, base64 PCM16. */
+  ctoVoiceAudio: "cto-voice:audio",
+  // Scenes — agent-authored HTML rendered in a sandboxed frame. `prepare` mints
+  // an ade-scene:// URL, `snapshot` freezes the drawn frame, `attachProof`
+  // files that snapshot into the proof drawer.
+  scenePrepare: "ade.scene.prepare",
+  sceneSnapshot: "ade.scene.snapshot",
+  sceneAttachProof: "ade.scene.attachProof",
+  /**
+   * Keep a scene's settle-time still: write the PNG into the project's artifact
+   * store and answer the record the renderer shows it back from. Separate from
+   * `attachProof` because the two want opposite things from a failed filing —
+   * proof deletes bytes it could not file, a still keeps them.
+   */
+  sceneStoreStill: "ade.scene.storeStill",
   orchestrationRunCreate: "ade.orchestration.runCreate",
   orchestrationBundleRead: "ade.orchestration.bundleRead",
   orchestrationManifestReadSection: "ade.orchestration.manifestReadSection",
@@ -702,6 +735,14 @@ export const IPC = {
   aiStoreApiKey: "ade.ai.storeApiKey",
   aiDeleteApiKey: "ade.ai.deleteApiKey",
   aiListApiKeys: "ade.ai.listApiKeys",
+  /**
+   * Machine-scoped API keys — the key follows this machine's ADE home, not the
+   * open project, so these deliberately do NOT route through the project
+   * runtime action the way the `ai` calls above do.
+   */
+  aiGetMachineApiKeyStatus: "ade.ai.getMachineApiKeyStatus",
+  aiStoreMachineApiKey: "ade.ai.storeMachineApiKey",
+  aiDeleteMachineApiKey: "ade.ai.deleteMachineApiKey",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
   aiUpdateConfig: "ade.ai.updateConfig",
   /**
@@ -979,6 +1020,8 @@ export const IPC = {
   ctoGetState: "ade.cto.getState",
   ctoGetAttention: "ade.cto.getAttention",
   ctoEnsureSession: "ade.cto.ensureSession",
+  ctoStartFreshSession: "ade.cto.startFreshSession",
+  ctoGetThreadHealth: "ade.cto.getThreadHealth",
   ctoListSessionLogs: "ade.cto.listSessionLogs",
   ctoUpdateIdentity: "ade.cto.updateIdentity",
   ctoGetMemory: "ade.cto.getMemory",
@@ -989,8 +1032,6 @@ export const IPC = {
   ctoClearLinearToken: "ade.cto.clearLinearToken",
   ctoGetOnboardingState: "ade.cto.getOnboardingState",
   ctoCompleteOnboardingStep: "ade.cto.completeOnboardingStep",
-  ctoDismissOnboarding: "ade.cto.dismissOnboarding",
-  ctoResetOnboarding: "ade.cto.resetOnboarding",
   ctoPreviewSystemPrompt: "ade.cto.previewSystemPrompt",
   ctoGetLinearProjects: "ade.cto.getLinearProjects",
   ctoGetLinearQuickView: "ade.cto.getLinearQuickView",

@@ -32,6 +32,40 @@ function drainDiscoveries(
 }
 
 describe("ctoMemoryService", () => {
+  /**
+   * A call transcript is plaintext on disk that gets re-injected into prompts,
+   * and a spoken call is exactly where a key gets read out loud or pasted. The
+   * doc comment on `writeCallTranscript` claims both of these; neither was
+   * asserted, and a dropped `redactSecrets` call fails nothing else.
+   */
+  it("scrubs secrets out of a call transcript and refuses a path in the call id", () => {
+    const { service, ctoDir } = createFixture();
+
+    service.writeCallTranscript("call-1", [
+      "User: my api_key = sk-proj-abcdefghijklmnopqrstuvwx",
+      "CTO: I will not repeat that.",
+      "CTO: also not ghp_abcdefghijklmnopqrstuvwxyz0123",
+    ].join("\n"));
+
+    const written = fs.readFileSync(path.join(ctoDir, "calls", "call-1.md"), "utf8");
+    expect(written).not.toContain("sk-proj-abcdefghijklmnopqrstuvwx");
+    expect(written).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123");
+    expect(written).toContain("[REDACTED]");
+    // The non-secret half of the transcript has to survive, or the file is
+    // useless and the scrub is indistinguishable from not writing at all.
+    expect(written).toContain("CTO: I will not repeat that.");
+
+    // The call id names the FILE, so it is sanitized rather than trusted: a
+    // traversal must not be able to write outside the calls directory.
+    service.writeCallTranscript("../../../escaped", "body");
+    expect(fs.existsSync(path.join(ctoDir, "..", "..", "..", "escaped.md"))).toBe(false);
+    expect(fs.readdirSync(path.join(ctoDir, "calls")).sort()).toEqual(["call-1.md", "escaped.md"]);
+
+    // An id with nothing left after sanitizing writes no file at all.
+    service.writeCallTranscript("///", "body");
+    expect(fs.readdirSync(path.join(ctoDir, "calls")).sort()).toEqual(["call-1.md", "escaped.md"]);
+  });
+
   it("appends facts under a Facts section and ignores exact duplicates", () => {
     const { service, ctoDir } = createFixture();
 

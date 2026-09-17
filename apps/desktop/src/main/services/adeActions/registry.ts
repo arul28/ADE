@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
+import { ingestSceneSnapshot } from "../scenes/sceneSnapshotIngest";
 import {
   addOpenCodeOAuthStatusListener,
   cancelOAuth as cancelOpenCodeOAuth,
@@ -24,6 +26,12 @@ import {
   loginCursorSdk,
   logoutCursorSdk,
 } from "../ai/cursorSdkAuth";
+import type { CtoVoiceAction } from "../../../shared/types/ctoVoice";
+import {
+  deleteMachineApiKey,
+  getMachineApiKeyStatus,
+  storeMachineApiKey,
+} from "../ai/apiKeyStore";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
@@ -110,6 +118,8 @@ import type {
   CtoAttentionState,
   CtoRunProjectScanResult,
   CursorCloudServiceTier,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -1044,6 +1054,44 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
     getAttention: async (): Promise<CtoAttentionState> =>
       (await runtime.agentChatService?.getCtoAttention())
       ?? { status: "unknown", awaitingInput: false, since: null },
+    /**
+     * Read-only: can the CTO thread take a turn, and should it be rotated?
+     *
+     * Open to every role for the same reason `getAttention` is — it answers a
+     * question about a badge, creates nothing, and returns no content.
+     */
+    getThreadHealth: async (): Promise<CtoThreadHealth> =>
+      (await runtime.agentChatService?.getCtoThreadHealth())
+      ?? {
+        sessionId: null,
+        canTakeTurn: true,
+        blockedReason: null,
+        lastTurnFailure: null,
+        context: null,
+        rotationAdvised: false,
+      },
+    /**
+     * Retire the CTO thread and start a clean one.
+     *
+     * CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`): it ends the conversation
+     * every other surface is talking to. Nothing the CTO remembers is touched —
+     * identity, memory, the daily log and project state all carry over, and the
+     * outgoing thread is distilled into memory before it is retired.
+     */
+    startFreshSession: async (): Promise<CtoStartFreshSessionResult> => {
+      const agentChatService = runtime.agentChatService;
+      if (!agentChatService) throw new Error("The chat service is not available on this machine.");
+      await runtime.laneService?.ensurePrimaryLane();
+      const lanes = (await runtime.laneService?.list()) ?? [];
+      const laneId = lanes.find((lane) => lane.laneType === "primary")?.id;
+      if (!laneId) throw new Error("No primary lane is available to host the CTO chat session.");
+      const result = await agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
+      return {
+        sessionId: result.session.id,
+        previousSessionId: result.previousSessionId,
+        handoff: result.handoff,
+      };
+    },
   };
 }
 
@@ -1088,6 +1136,41 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
 }
 
 /**
+ * The CTO voice call's action surface.
+ *
+ * Thin on purpose: the call brain is a singleton on the runtime (it owns a live
+ * socket, a confirm-first hold and an audio queue that must survive between
+ * action calls), so this domain only names what the desktop router may ask of
+ * it. `getAdeActionDomainServices` is called per action call, which is exactly
+ * why the service itself cannot be built here.
+ *
+ * `pushAudio` and `pullAudio` are the audio path, and deliberately are NOT
+ * events: the runtime event buffer is a bounded, replayable log, and PCM at ten
+ * chunks a second would evict every real event in it.
+ */
+function buildCtoVoiceDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const voice = runtime.ctoVoiceCallService;
+  if (!voice) return null;
+  // Exhaustive by type: a tenth voice action added to `CtoVoiceAction` fails to
+  // compile here until it is published, rather than existing on the service and
+  // being silently unreachable over the bus. `satisfies` rather than an
+  // annotation, because the annotation widened every method to `(args?: never)`
+  // and then needed a cast back out of its own declared type.
+  const domain = {
+    getState: () => voice.getState(),
+    hasKey: () => voice.hasKey(),
+    start: (args?: Parameters<typeof voice.start>[0]) => voice.start(args),
+    end: (args?: Parameters<typeof voice.end>[0]) => voice.end(args),
+    setMuted: (args?: Parameters<typeof voice.setMuted>[0]) => voice.setMuted(args),
+    pushAudio: (args?: Parameters<typeof voice.pushAudio>[0]) => voice.pushAudio(args),
+    pullAudio: (args?: Parameters<typeof voice.pullAudio>[0]) => voice.pullAudio(args),
+    resolveApproval: (args?: Parameters<typeof voice.resolveApproval>[0]) => voice.resolveApproval(args),
+    sendCapture: (args?: Parameters<typeof voice.sendCapture>[0]) => voice.sendCapture(args),
+  } satisfies Record<CtoVoiceAction, (args?: never) => unknown>;
+  return domain as unknown as OpaqueService;
+}
+
+/**
  * Deliberately NOT a spread of the broker.
  *
  * Spreading it published every broker method as an action, including `ingest` —
@@ -1120,6 +1203,33 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
         ...(args.limit !== undefined ? { limit: args.limit } : {}),
       });
     },
+    /**
+     * File a scene snapshot the desktop already wrote into the artifact store.
+     *
+     * The generic `ingest` stays absent for the reason above — agents create
+     * proof only through the validated RPC tool. This is the narrow exception
+     * and it is CTO-only. The path jail, the symlink resolution and the owner
+     * check are the whole of it, so they live in `scenes/sceneSnapshotIngest`
+     * rather than inline in a dispatch table where they read as boilerplate.
+     */
+    ingestSceneSnapshot: async (args?: {
+      path?: unknown;
+      title?: unknown;
+      sessionId?: unknown;
+      sceneScopeKey?: unknown;
+      voiceCallId?: unknown;
+    }): Promise<{ filed: boolean; ownerSessionId: string | null; artifactId: string | null }> =>
+      ingestSceneSnapshot({
+        projectRoot: runtime.projectRoot,
+        broker,
+        agentChatService: runtime.agentChatService ?? null,
+        // The call brain lives in THIS process on a runtime-backed build, so
+        // this is the side that can say which chat a live call is on — the
+        // desktop HUD that files the still cannot.
+        resolveVoiceCallSessionId: (callId) =>
+          runtime.ctoVoiceCallService?.getCallSessionId(callId) ?? null,
+        args,
+      }),
   };
 }
 
@@ -1903,6 +2013,22 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
   const aiIntegrationService = runtime.aiIntegrationService;
   if (!aiIntegrationService) return null;
   ensureAuthStatusRelayBridges(runtime);
+  /**
+   * Drop the readiness caches after a key changed.
+   *
+   * Never throws: the store mutation has already succeeded by the time this
+   * runs, so a missing cache must not turn a saved key into a failed call.
+   */
+  const invalidateReadiness = (provider: string): void => {
+    try {
+      aiIntegrationService.invalidateProviderReadinessCaches();
+    } catch (error) {
+      runtime.logger.warn("ai.machine_api_key_cache_invalidation_failed", {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   const buildOpenCodeAuthDeps = (): OpenCodeAuthDeps => ({
     projectRoot: runtime.projectRoot,
     projectConfig: runtime.projectConfigService.getEffective(),
@@ -2016,6 +2142,37 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     deleteApiKey: (args?: { provider?: string }) =>
       aiIntegrationService.deleteApiKey(requireNonEmptyString(args?.provider, "provider")),
     listApiKeys: () => aiIntegrationService.listApiKeys(),
+    /*
+     * Machine-scoped keys, on the runtime.
+     *
+     * These used to exist only as desktop-main IPC, and that was a
+     * runtime-backed null-service bug wearing a different hat: desktop main
+     * writes through `createDesktopCredentialStore`, whose primary is Electron
+     * `safeStorage`, while the project runtime reads through
+     * `EncryptedFileCredentialStore`. A key saved in Settings therefore landed
+     * in a store the runtime cannot open — so the runtime-hosted voice call
+     * went on answering "no OpenAI key on this machine" with a key visibly
+     * configured in the UI. The renderer now routes the machine trio to the
+     * LOCAL runtime, which puts the write and the read in one process and one
+     * store.
+     *
+     * Nothing here returns, logs, or echoes the key itself: the secret travels
+     * one way, in, on `storeMachineApiKey`, and only a status comes back.
+     */
+    getMachineApiKeyStatus: (args?: { provider?: string }) =>
+      getMachineApiKeyStatus(requireNonEmptyString(args?.provider, "provider")),
+    storeMachineApiKey: (args?: { provider?: string; key?: string }) => {
+      const provider = requireNonEmptyString(args?.provider, "provider");
+      storeMachineApiKey(provider, requireNonEmptyString(args?.key, "key"));
+      invalidateReadiness(provider);
+      return getMachineApiKeyStatus(provider);
+    },
+    deleteMachineApiKey: (args?: { provider?: string }) => {
+      const provider = requireNonEmptyString(args?.provider, "provider");
+      deleteMachineApiKey(provider);
+      invalidateReadiness(provider);
+      return getMachineApiKeyStatus(provider);
+    },
     updateConfig: (partial?: Partial<AiConfig>) => {
       const projectConfigService = requireService(runtime.projectConfigService, "Project config service not available.");
       const snapshot = projectConfigService.get();
@@ -3171,6 +3328,7 @@ export function getAdeActionDomainServices(
     automation_planner: automationsEnabled ? toService(runtime.automationPlannerService) : null,
     cto_state: toService(buildCtoStateDomainService(runtime)),
     cto_memory: toService(buildCtoMemoryDomainService(runtime)),
+    cto_voice: toService(buildCtoVoiceDomainService(runtime)),
     session: toService(buildSessionDomainService(runtime)),
     operation: toService(runtime.operationService),
     ade_project: toService(runtime.adeProjectService),

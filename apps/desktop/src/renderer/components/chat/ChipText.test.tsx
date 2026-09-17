@@ -60,7 +60,7 @@ function renderInChatScope(
     },
   });
   return render(
-    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={null}>
+    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={null} sessionId={null}>
       <ChipText text={text} />
     </ChatRuntimeScopeProvider>,
   );

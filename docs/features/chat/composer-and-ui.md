@@ -601,7 +601,10 @@ that could not work without it.
   GPT-5.6 displays Light / Medium / High / Extra High / Ultra; ordinary Max
   is hidden for that family, and Ultra explains that it can delegate to
   multiple agents and use limits faster.
-- **Voice dictation.** When voice input is enabled and the bundled
+- **Voice dictation.** Dictation types for you. It is not the CTO voice
+  call, which is a spoken conversation started from Talk on the CTO page
+  and driven by `window.ade.ctoVoice`. The two share no code. When voice
+  input is enabled and the bundled
   model is installed, a mic button appears beside Send. Capture is
   owned by the app-global `globalVoiceRecorder`, so recording survives
   composer unmounts and tab/pane navigation. The recorder down-samples
@@ -647,7 +650,7 @@ that could not work without it.
   picker (`onParallelSlotCodexFastModeChange`).
 
   Surfaces not yet migrated (`ModelSelector`, `ReviewLaunchModelControls`,
-  `CtoSettingsPanel`, `ChatModelSelectionPendingCard`, `ProjectlessComposer`)
+  `CtoSettingsPage`, `ChatModelSelectionPendingCard`, `ProjectlessComposer`)
   still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
   which keeps rendering the old sibling chip. Migrating them is a prop
   rename with nothing else to unwind.

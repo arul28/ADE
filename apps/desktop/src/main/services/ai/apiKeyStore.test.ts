@@ -454,3 +454,221 @@ describe("apiKeyStore", () => {
     });
   });
 });
+
+/**
+ * The CTO voice key is not the project's. It pays for calls this MACHINE makes,
+ * so it is stored in the machine ADE home and must be readable from any project
+ * — and, just as importantly, a key sitting in one project's `.ade/secrets`
+ * must NOT leak into it. These tests pin both directions of that boundary.
+ */
+describe("apiKeyStore machine scope", () => {
+  let projectRoot: string;
+  let machineHome: string;
+  let keychain: Map<string, string>;
+
+  const projectStoreFile = () => path.join(projectRoot, ".ade", "secrets", "api-keys.v1.bin");
+  const machineStoreFile = () => path.join(machineHome, "secrets", "api-keys.v1.bin");
+
+  beforeEach(() => {
+    spawnSyncMock.mockReset();
+    safeStorageState.available = false;
+    safeStorageState.decrypted = "{}";
+    safeStorageState.encrypted = Buffer.from("encrypted");
+    keychain = new Map();
+    installSecurityMock(keychain);
+
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-api-key-project-"));
+    machineHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-api-key-machine-"));
+    process.env = {
+      ...originalEnv,
+      ADE_HOME: machineHome,
+      // The three-tier read is covered by the suite above; here the Keychain
+      // tier only adds `security` noise between the two directories under test.
+      ADE_API_KEY_STORE_DISABLE_KEYCHAIN: "1",
+    };
+    delete process.env.OPENAI_API_KEY;
+    setPlatform("darwin");
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(machineHome, { recursive: true, force: true });
+    process.env = { ...originalEnv };
+    setPlatform(originalPlatform);
+    vi.resetModules();
+  });
+
+  it("writes the encrypted fallback to the machine home, never to the project", async () => {
+    safeStorageState.available = true;
+    const store = await loadStoreModule();
+    store.initApiKeyStore(projectRoot);
+
+    store.storeMachineApiKey("openai", " sk-machine-key ");
+
+    expect(store.getMachineApiKey("openai")).toBe("sk-machine-key");
+    expect(fs.existsSync(machineStoreFile())).toBe(true);
+    expect(fs.existsSync(projectStoreFile())).toBe(false);
+    // The project scope is untouched: nothing was written under `.ade/secrets`,
+    // so a project-scoped read has nothing to find.
+    expect(fs.existsSync(path.join(projectRoot, ".ade", "secrets"))).toBe(false);
+  });
+
+  it("survives switching projects, because it never belonged to one", async () => {
+    safeStorageState.available = true;
+    const store = await loadStoreModule();
+    store.initApiKeyStore(projectRoot);
+    store.storeMachineApiKey("openai", "sk-machine-key");
+
+    // Re-reading the machine home is what proves the key outlives the project:
+    // `initApiKeyStore` drops the cached machine view, so this answer comes off
+    // disk rather than out of memory.
+    safeStorageState.decrypted = JSON.stringify({ openai: "sk-machine-key" });
+    const otherProject = fs.mkdtempSync(path.join(os.tmpdir(), "ade-api-key-other-"));
+    try {
+      store.initApiKeyStore(otherProject);
+      expect(store.getMachineApiKey("openai")).toBe("sk-machine-key");
+      expect(fs.existsSync(path.join(otherProject, ".ade", "secrets", "api-keys.v1.bin"))).toBe(false);
+    } finally {
+      fs.rmSync(otherProject, { recursive: true, force: true });
+    }
+  });
+
+  it("does not adopt a key that only exists in the project's .ade/secrets", async () => {
+    // The project-scoped store holds an OpenAI key. The machine scope must not
+    // see it, and must not migrate it into the shared credential store either —
+    // that migration is exactly what makes a key follow a project.
+    fs.mkdirSync(path.join(projectRoot, ".ade", "secrets"), { recursive: true });
+    fs.writeFileSync(projectStoreFile(), Buffer.from("project-encrypted"));
+    safeStorageState.available = true;
+    safeStorageState.decrypted = JSON.stringify({ openai: "sk-project-key" });
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(projectRoot, { credentialStore });
+
+    expect(store.getMachineApiKey("openai")).toBeNull();
+    expect(store.getMachineApiKeyStatus("openai")).toMatchObject({ configured: false, source: null });
+    expect(credentialStore.values.has("ai.api_key.openai.v1")).toBe(false);
+
+    // The project's own copy is genuinely readable, so the null above is a
+    // boundary and not a broken fixture.
+    expect(store.getApiKey("openai")).toBe("sk-project-key");
+  });
+
+  it("re-reads the machine store when another process writes it", async () => {
+    // Three processes share ~/.ade/secrets: the desktop app, the `ade` CLI and
+    // the project runtime. Before this, whichever of them read first cached the
+    // store for its whole life, so a key stored by one was invisible to the
+    // others — which is exactly how a key saved in Settings left the
+    // runtime-hosted voice call still answering "no OpenAI key on this machine".
+    safeStorageState.available = true;
+    const store = await loadStoreModule();
+    store.initApiKeyStore(projectRoot);
+
+    expect(store.getMachineApiKey("openai")).toBeNull();
+
+    // Another process writes the machine store. Different length as well as
+    // different content, so the check does not depend on filesystem mtime
+    // granularity.
+    fs.mkdirSync(path.join(machineHome, "secrets"), { recursive: true });
+    fs.writeFileSync(machineStoreFile(), Buffer.from("encrypted-by-another-process"));
+    safeStorageState.decrypted = JSON.stringify({ openai: "sk-written-elsewhere" });
+
+    // No re-init, no explicit invalidation: the read notices by itself.
+    expect(store.getMachineApiKey("openai")).toBe("sk-written-elsewhere");
+    expect(store.getMachineApiKeyStatus("openai")).toMatchObject({
+      configured: true,
+      source: "store",
+    });
+  });
+
+  it("notices the machine store being deleted out from under it", async () => {
+    // A missing file is a value too: the reverse direction has to work, or a
+    // key revoked by the CLI stays usable in every process that cached it.
+    safeStorageState.available = true;
+    const store = await loadStoreModule();
+    store.initApiKeyStore(projectRoot);
+    store.storeMachineApiKey("openai", "sk-machine-key");
+    expect(store.getMachineApiKey("openai")).toBe("sk-machine-key");
+
+    fs.rmSync(machineStoreFile(), { force: true });
+    safeStorageState.decrypted = "{}";
+
+    expect(store.getMachineApiKey("openai")).toBeNull();
+  });
+
+  it("reports the environment variable as the last tier, and a stored key as replaceable", async () => {
+    process.env.OPENAI_API_KEY = "sk-from-env";
+    safeStorageState.available = true;
+    const store = await loadStoreModule();
+    store.initApiKeyStore(projectRoot);
+
+    expect(store.getMachineApiKeyStatus("openai")).toEqual({
+      provider: "openai",
+      configured: true,
+      source: "env",
+      envVar: "OPENAI_API_KEY",
+    });
+
+    store.storeMachineApiKey("openai", "sk-machine-key");
+
+    // A stored key wins over the environment, and only a stored key is one the
+    // UI may offer to replace or delete.
+    expect(store.getMachineApiKeyStatus("openai")).toMatchObject({ configured: true, source: "store" });
+    expect(store.getMachineApiKey("openai")).toBe("sk-machine-key");
+    expect(store.listMachineStoredProviders()).toEqual(["openai"]);
+
+    store.deleteMachineApiKey("openai");
+
+    expect(store.getMachineApiKeyStatus("openai")).toMatchObject({ configured: true, source: "env" });
+    expect(store.getMachineApiKey("openai")).toBe("sk-from-env");
+  });
+
+  it("writes a machine key with no project open into the shared credential store", async () => {
+    // A window with no project bound — remote-bound, or in-process mode — never
+    // runs `initApiKeyStore`, so the machine scope used to find no credential
+    // store at all: the write landed in an Electron-only safeStorage blob no
+    // runtime can decrypt, and took the working Keychain copy down with it.
+    process.env.ADE_API_KEY_STORE_FORCE_KEYCHAIN = "1";
+    delete process.env.ADE_API_KEY_STORE_DISABLE_KEYCHAIN;
+    keychain.set("openai", "sk-keychain-copy");
+    safeStorageState.available = true;
+    const secretsDir = path.join(machineHome, "secrets");
+    const { EncryptedFileCredentialStore } = await import("../../../../../ade-cli/src/services/credentials/credentialStore");
+    const credentialStore = new EncryptedFileCredentialStore({ secretsDir });
+    const store = await loadStoreModule();
+
+    // Registered at app start, with no project ever opened.
+    store.initMachineApiKeyStore({ credentialStore });
+    store.storeMachineApiKey("openai", " sk-machine-key ");
+
+    expect(store.getMachineApiKey("openai")).toBe("sk-machine-key");
+    expect(store.getMachineApiKeyStatus("openai")).toMatchObject({
+      configured: true,
+      source: "store",
+    });
+    // The shared file the brain and the CLI read, not the safeStorage fallback.
+    expect(fs.existsSync(path.join(secretsDir, "credentials.json.enc"))).toBe(true);
+    expect(fs.existsSync(machineStoreFile())).toBe(false);
+    const persisted = fs.readFileSync(path.join(secretsDir, "credentials.json.enc"), "utf8");
+    expect(persisted).not.toContain("sk-machine-key");
+    // And the Keychain copy survives: a credential-store write has no business
+    // deleting the tier it migrates from.
+    expect(keychain.get("openai")).toBe("sk-keychain-copy");
+    expect(securityCommandCalls("delete-generic-password")).toEqual([]);
+  });
+
+  it("leaves the project scope's own reads working after a machine write", async () => {
+    // The two scopes share one machine-wide credential store, so a write
+    // through either must not strand the other on a cached "no key here".
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(projectRoot, { credentialStore });
+
+    expect(store.getApiKey("openai")).toBeNull();
+    store.storeMachineApiKey("openai", "sk-machine-key");
+
+    expect(store.getApiKey("openai")).toBe("sk-machine-key");
+    expect(store.getMachineApiKey("openai")).toBe("sk-machine-key");
+    expect(fs.existsSync(projectStoreFile())).toBe(false);
+  });
+});

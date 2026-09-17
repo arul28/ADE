@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
+import { sceneRowIdentity, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { prependOlderChatHistoryPage } from "./chatHistoryWindow";
 import {
   collapseChatTranscriptEvents,
@@ -29,6 +30,53 @@ function groupEvents(events: AgentChatEventEnvelope[]) {
 }
 
 describe("chatTranscriptRows", () => {
+  /**
+   * A scene's still is a FILE, named by the key derived here, looked up again
+   * on every reopen.
+   *
+   * The render key cannot be that name. It carries the event's index in the
+   * events array, so scrolling back one page — which prepends older events and
+   * shifts every index — renamed the scene. The lookup missed, the generated
+   * code ran again, and a second still was filed on disk. Every reopen did it
+   * again.
+   */
+  it("names a scene by message identity, so a prepended older page cannot move it", () => {
+    const base = { sessionId: "session-1", timestamp: "2026-09-17T10:00:00.000Z" };
+    const source = "<p>lanes</p>";
+    const sceneEvent = {
+      type: "text" as const,
+      text: "Here is the chart.",
+      messageId: "msg-scene",
+      turnId: "turn-2",
+    };
+    const windowed: AgentChatEventEnvelope[] = [
+      { ...base, sequence: 4, event: { type: "user_message", text: "draw me the lanes" } },
+      { ...base, sequence: 5, event: sceneEvent },
+    ];
+    const withOlderPage: AgentChatEventEnvelope[] = [
+      { ...base, sequence: 1, event: { type: "user_message", text: "an earlier question" } },
+      { ...base, sequence: 2, event: { type: "text", text: "an earlier answer", messageId: "msg-old" } },
+      ...windowed,
+    ];
+
+    const sceneRowIn = (events: AgentChatEventEnvelope[]) => {
+      const row = collapseChatTranscriptEvents(events)
+        .find((candidate) => candidate.event.type === "text"
+          && candidate.event.messageId === "msg-scene");
+      if (!row || row.event.type !== "text") throw new Error("the scene row went missing");
+      return { key: row.key, event: row.event };
+    };
+
+    const before = sceneRowIn(windowed);
+    const after = sceneRowIn(withOlderPage);
+
+    // The hazard itself: the same message, two render keys.
+    expect(before.key).not.toBe(after.key);
+    // And the still's name, which must not move with it.
+    expect(sceneScopeKeyFor(sceneRowIdentity(after.event, after.key), source))
+      .toBe(sceneScopeKeyFor(sceneRowIdentity(before.event, before.key), source));
+  });
+
   it("collapses duplicate semantic failures for the same turn without hiding distinct errors", () => {
     const base = {
       sessionId: "session-1",
@@ -4021,5 +4069,174 @@ describe("text adjacency across an older-history prepend", () => {
     const types = rows.map((row) => row.event.type);
     expect(types.indexOf("text")).toBeLessThan(types.lastIndexOf("text"));
     expect(types.filter((type) => type === "text")).toHaveLength(2);
+  });
+});
+
+describe("voice call folding", () => {
+  function voiceEvent(
+    sequence: number,
+    event: AgentChatEventEnvelope["event"],
+    voiceCallId: string | null,
+  ): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-voice",
+      timestamp: new Date(Date.UTC(2026, 8, 16, 12, 0, sequence)).toISOString(),
+      sequence,
+      event,
+      ...(voiceCallId ? { provenance: { voiceCallId } } : {}),
+    } as AgentChatEventEnvelope;
+  }
+
+  it("folds every row of one call into a single card", () => {
+    const grouped = groupEvents([
+      voiceEvent(1, { type: "user_message", text: "  what is failing on main?  " }, "call-1"),
+      voiceEvent(2, { type: "text", text: "Two checks are red.", itemId: "a-1" }, "call-1"),
+      voiceEvent(3, { type: "user_message", text: "fix the first one" }, "call-1"),
+      voiceEvent(4, { type: "text", text: "On it.", itemId: "a-2" }, "call-1"),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    const row = grouped[0]!;
+    expect(row.key).toBe("voice-call:call-1");
+    if (row.event.type !== "voice_call_group") throw new Error("expected a voice_call_group row");
+    expect(row.event.callId).toBe("call-1");
+    expect(row.event.exchanges).toBe(2);
+    expect(row.event.openingLine).toBe("what is failing on main?");
+    expect(row.event.hadApproval).toBe(false);
+    expect(row.event.durationMs).toBe(3000);
+    expect(row.event.rows).toHaveLength(4);
+    expect(row.timestamp).toBe(row.event.rows[3]!.timestamp);
+  });
+
+  it("marks a call that raised an approval", () => {
+    const grouped = groupEvents([
+      voiceEvent(1, { type: "user_message", text: "delete the branch" }, "call-2"),
+      voiceEvent(
+        2,
+        { type: "approval_request", itemId: "approval-1", kind: "command", description: "git branch -D x" },
+        "call-2",
+      ),
+    ]);
+
+    const card = grouped.find((row) => row.event.type === "voice_call_group");
+    expect(card).toBeTruthy();
+    if (card?.event.type !== "voice_call_group") throw new Error("expected a voice_call_group row");
+    expect(card.event.hadApproval).toBe(true);
+  });
+
+  it("keeps two calls apart and leaves the typed message between them ungrouped", () => {
+    const grouped = groupEvents([
+      voiceEvent(1, { type: "user_message", text: "first call" }, "call-a"),
+      voiceEvent(2, { type: "text", text: "sure", itemId: "a-1" }, "call-a"),
+      voiceEvent(3, { type: "user_message", text: "typed by hand" }, null),
+      voiceEvent(4, { type: "user_message", text: "second call" }, "call-b"),
+      voiceEvent(5, { type: "text", text: "ok", itemId: "a-2" }, "call-b"),
+    ]);
+
+    expect(grouped.map((row) => row.event.type)).toEqual([
+      "voice_call_group",
+      "user_message",
+      "voice_call_group",
+    ]);
+    expect(grouped.map((row) => row.key)).toEqual([
+      "voice-call:call-a",
+      grouped[1]!.key,
+      "voice-call:call-b",
+    ]);
+    const typed = grouped[1]!;
+    if (typed.event.type !== "user_message") throw new Error("expected the typed message to stay a user message");
+    expect(typed.event.text).toBe("typed by hand");
+  });
+
+  it("produces no card at all when nothing carries a voice call id", () => {
+    const events = [
+      voiceEvent(1, { type: "user_message", text: "typed" }, null),
+      voiceEvent(2, { type: "text", text: "answered", itemId: "a-1" }, null),
+    ];
+    const rows = collapseChatTranscriptEvents(events);
+    const grouped = groupChatTranscriptRows(rows);
+
+    expect(grouped.some((row) => row.event.type === "voice_call_group")).toBe(false);
+    // The wrapper must be a no-op on a voice-free transcript: identical rows in
+    // identical order, so today's transcript renders exactly as it did before.
+    expect(grouped.map((row) => ({ key: row.key, timestamp: row.timestamp, type: row.event.type }))).toEqual(
+      rows.map((row) => ({ key: row.key, timestamp: row.timestamp, type: row.event.type })),
+    );
+    expect(rows.every((row) => row.voiceCallId === undefined)).toBe(true);
+  });
+
+  it("stamps the call id onto every row a voice event produced", () => {
+    const rows = collapseChatTranscriptEvents([
+      voiceEvent(1, { type: "user_message", text: "hello" }, "call-3"),
+    ]);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.voiceCallId === "call-3")).toBe(true);
+  });
+
+  // A settled subagent keeps only its result card: the spawn row is spliced out
+  // and the result row pushed, which nets to zero new rows — so the caller that
+  // stamps "rows this event appended" sees nothing to stamp. An untagged result
+  // row sitting inside a tagged run splits one call into two cards that share
+  // the key `voice-call:${callId}`, so the result row has to claim the call
+  // itself: the dropped spawn row's, or the terminal event's own.
+  it("keeps a settled subagent's result card in the voice call it belongs to, and untagged when there is none", () => {
+    // 1. Spawned and settled inside the call — the tag comes off the spawn row.
+    const spawnedInCall = collapseChatTranscriptEvents([
+      voiceEvent(1, { type: "user_message", text: "look into the flake" }, "call-sub"),
+      voiceEvent(
+        2,
+        { type: "subagent_started", taskId: "agent-voice", agentType: "Explore", description: "Find the flake" },
+        "call-sub",
+      ),
+      voiceEvent(
+        3,
+        { type: "subagent_result", taskId: "agent-voice", status: "completed", summary: "It is a timing assumption." },
+        "call-sub",
+      ),
+      voiceEvent(4, { type: "text", text: "Here is what it found.", itemId: "a-1" }, "call-sub"),
+    ]);
+    expect(spawnedInCall.some((row) => row.event.type === "subagent_spawn_anchor")).toBe(false);
+    expect(spawnedInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBe("call-sub");
+
+    // 2. Spawned BEFORE the call, settled inside it — the spawn row carries no
+    //    tag, so the terminal event's own call id is the only source left.
+    const settledInCall = collapseChatTranscriptEvents([
+      voiceEvent(
+        1,
+        { type: "subagent_started", taskId: "agent-early", agentType: "Explore", description: "Find the flake" },
+        null,
+      ),
+      voiceEvent(2, { type: "user_message", text: "anything from that agent?" }, "call-sub"),
+      voiceEvent(
+        3,
+        { type: "subagent_result", taskId: "agent-early", status: "completed", summary: "It is a timing assumption." },
+        "call-sub",
+      ),
+      voiceEvent(4, { type: "text", text: "Here is what it found.", itemId: "a-1" }, "call-sub"),
+    ]);
+    expect(settledInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBe("call-sub");
+    // One unbroken run, therefore ONE card — not two sharing `voice-call:call-sub`.
+    const grouped = groupChatTranscriptRows(settledInCall);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]!.key).toBe("voice-call:call-sub");
+    if (grouped[0]!.event.type !== "voice_call_group") throw new Error("expected a voice_call_group row");
+    expect(grouped[0]!.event.rows.some((row) => row.event.type === "subagent_result_card")).toBe(true);
+
+    // 3. No call anywhere — the result card comes back untagged and renders inline.
+    const plain = collapseChatTranscriptEvents([
+      voiceEvent(1, { type: "user_message", text: "look into the flake" }, null),
+      voiceEvent(
+        2,
+        { type: "subagent_started", taskId: "agent-plain", agentType: "Explore", description: "Find the flake" },
+        null,
+      ),
+      voiceEvent(
+        3,
+        { type: "subagent_result", taskId: "agent-plain", status: "completed", summary: "It is a timing assumption." },
+        null,
+      ),
+    ]);
+    expect(plain.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBeUndefined();
+    expect(groupChatTranscriptRows(plain).some((row) => row.event.type === "voice_call_group")).toBe(false);
   });
 });

@@ -1,16 +1,19 @@
 import fs from "node:fs";
+import { CTO_VOICE_VOICES } from "../../../shared/types/ctoVoice";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import YAML from "yaml";
+import { CTO_IDENTITY_SCHEMA_VERSION } from "../../../shared/types/cto";
 import type {
   CtoIdentity,
+  CtoLegacyIdentityFields,
   CtoOnboardingState,
   CtoSessionLogEntry,
   CtoSnapshot,
+  CtoStaticContextSection,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
 import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
-import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
 import {
   getDefaultModelDescriptor,
   getModelById,
@@ -81,7 +84,64 @@ type PersistedDoc<T> = {
 };
 
 const CTO_CURRENT_CONTEXT_RELATIVE_PATH = ".ade/cto/CURRENT.md";
-const CTO_REQUIRED_ONBOARDING_STEPS = ["identity"] as const;
+
+/** The envelope a user turn writes. Matched as text; see `countUserTurns`. */
+const USER_MESSAGE_MARKER = '"type":"user_message"';
+
+/**
+ * Is this transcript line a user turn, rather than a line that merely mentions
+ * one? Parsed only after the cheap marker test has already matched, and a line
+ * that will not parse is not an envelope, so it is not a turn.
+ */
+function isUserTurnLine(line: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(line);
+    return !!parsed
+      && typeof parsed === "object"
+      && (parsed as { type?: unknown }).type === "user_message";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Count `user_message` envelopes without holding the transcript in memory.
+ *
+ * A carry buffer stitches lines across chunk boundaries; the trailing partial
+ * line is counted too, because a transcript written by a process that is still
+ * running may have no final newline yet.
+ */
+function countUserTurnsInTranscript(transcriptPath: string): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const stream = fs.createReadStream(transcriptPath, { encoding: "utf8" });
+    let carry = "";
+    let count = 0;
+    const consume = (line: string): void => {
+      if (!line.includes(USER_MESSAGE_MARKER)) return;
+      if (isUserTurnLine(line)) count += 1;
+    };
+    stream.on("data", (chunk) => {
+      carry += chunk;
+      let newlineAt = carry.indexOf("\n");
+      while (newlineAt !== -1) {
+        consume(carry.slice(0, newlineAt));
+        carry = carry.slice(newlineAt + 1);
+        newlineAt = carry.indexOf("\n");
+      }
+    });
+    stream.on("error", (error) => {
+      stream.destroy();
+      reject(error);
+    });
+    stream.on("end", () => {
+      if (carry.length) consume(carry);
+      resolve(count);
+    });
+  });
+}
+
+/** A transcript larger than this is not counted; a close must not stall. */
+const TRANSCRIPT_SCAN_MAX_BYTES = 32 * 1024 * 1024;
 
 const CTO_MODEL_PROVIDER_GROUPS: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode"];
 
@@ -135,6 +195,19 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- All ADE internals are fair game. The user can request any action: launching chats, opening terminals, running CLI tools, spawning agents, managing lanes, etc. Never refuse an action that ADE supports.",
   "- When the user asks about something you can look up (lane status, PR checks, test results), call the tool first and report facts. Do not guess.",
   "- When you are unsure which tool to use, consult the capability manifest in your system prompt before asking the user.",
+  "",
+  "How you speak:",
+  "- Lead with the state of things, then your read on it, then what you would do. Full sentences, not headlines.",
+  "- Explain the reasoning before the recommendation when the reasoning is what makes it make sense. Skip it when the answer is obvious.",
+  "- Stay level. No exclamation marks, no 'great question', no 'I'd be happy to', no congratulating the user for asking.",
+  "- When you do not know, say so plainly, say what you would check, and then check it.",
+  "- Disagree when you disagree, once, with the reason. If the user decides otherwise, do it their way and drop it.",
+  "- Never say something is done until you have verified it.",
+  "",
+  "Helping with ADE itself:",
+  "- You know this application, not only this repository. When the user is lost in ADE — where a setting lives, what a tab does, why a control is disabled — treat it as a question about the product and answer it.",
+  "- Consult ADE's own documentation before guessing about ADE's behavior, the same way you would read the repo before guessing about the code.",
+  "- When an answer points at a place in ADE, give the user a deeplink to that place rather than describing how to navigate there.",
   "ADE CLI operating guidance:",
   ADE_CLI_INLINE_GUIDANCE,
 ].join("\n");
@@ -201,7 +274,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "  /lanes — Lane browser showing all lanes, their status, git actions, diffs, stacks, and PR panels.",
   "  /files — File explorer for browsing and editing project files.",
   "  /prs — Pull request management: list, detail view, queue, GitHub integration.",
-  "  /cto — CTO page: your persistent chat thread plus settings (identity, personality, Linear connection).",
+  "  /cto — CTO page: your persistent chat thread plus settings (identity, model, memory, Linear connection).",
   "  /graph — Workspace dependency graph visualization showing lane relationships.",
   "  /history — Operation history timeline showing all past actions.",
   "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
@@ -323,45 +396,9 @@ function normalizeOnboardingState(value: unknown): CtoOnboardingState | undefine
   if (!value || typeof value !== "object") return undefined;
   const source = value as Record<string, unknown>;
   const completedSteps = uniqueStrings(asStringArray(source.completedSteps));
-  const dismissedAt =
-    typeof source.dismissedAt === "string" && source.dismissedAt.trim().length
-      ? source.dismissedAt.trim()
-      : undefined;
-  const completedAt =
-    typeof source.completedAt === "string" && source.completedAt.trim().length
-      ? source.completedAt.trim()
-      : undefined;
   return {
     completedSteps,
-    ...(dismissedAt ? { dismissedAt } : {}),
-    ...(completedAt ? { completedAt } : {}),
   };
-}
-
-function normalizePersonalityPreset(value: unknown): CtoIdentity["personality"] | undefined {
-  return value === "strategic"
-    || value === "professional"
-    || value === "hands_on"
-    || value === "casual"
-    || value === "minimal"
-    || value === "custom"
-    ? value
-    : undefined;
-}
-
-function hasCompletedRequiredOnboardingSteps(state: CtoOnboardingState | null | undefined): boolean {
-  const completedSteps = state?.completedSteps ?? [];
-  return CTO_REQUIRED_ONBOARDING_STEPS.every((stepId) => completedSteps.includes(stepId));
-}
-
-function resolvePersonalityOverlay(identity: CtoIdentity): string {
-  const presetId = identity.personality ?? "strategic";
-  if (presetId === "custom") {
-    const custom = identity.customPersonality?.trim() || identity.persona?.trim();
-    if (custom?.length) return custom;
-    return getCtoPersonalityPreset("custom").systemOverlay;
-  }
-  return getCtoPersonalityPreset(presetId).systemOverlay;
 }
 
 /**
@@ -417,6 +454,77 @@ function normalizeModelPreferences(raw: Record<string, unknown>): CtoIdentity["m
   };
 }
 
+/**
+ * Carry the retired identity fields into the extension the CTO still reads.
+ *
+ * `personality`, `customPersonality`, `communicationStyle` and `constraints`
+ * were removed from `CtoIdentity` in favour of one freeform
+ * `systemPromptExtension`. Nothing migrated them, and because `normalizeIdentity`
+ * drops unknown keys and the very next `writeIdentityToFile` rewrites
+ * identity.yaml from the normalized record, the first load of an older project
+ * DELETED them — including `constraints`, a list the CTO itself could write.
+ * Text a user (or the CTO) wrote must not vanish because a field was renamed,
+ * so it is appended below whatever extension already exists.
+ *
+ * Runs once: the fold only fires while the stored `schemaVersion` is below
+ * `CTO_IDENTITY_SCHEMA_VERSION`, and the normalized record always carries that
+ * version afterwards, so a second load re-reads its own output and appends
+ * nothing.
+ */
+function foldLegacyIdentityFields(
+  source: Record<string, unknown>,
+  systemPromptExtension: string | undefined,
+): string | undefined {
+  const legacy = source as CtoLegacyIdentityFields;
+
+  const constraints = Array.isArray(legacy.constraints)
+    ? legacy.constraints
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter((value) => value.length > 0)
+    : [];
+
+  const personality = typeof legacy.personality === "string" ? legacy.personality.trim() : "";
+  const customPersonality = typeof legacy.customPersonality === "string"
+    ? legacy.customPersonality.trim()
+    : "";
+  const style = legacy.communicationStyle && typeof legacy.communicationStyle === "object"
+    ? legacy.communicationStyle
+    : null;
+  const styleParts = [
+    typeof style?.verbosity === "string" && style.verbosity.trim().length
+      ? `verbosity ${style.verbosity.trim()}`
+      : null,
+    typeof style?.proactivity === "string" && style.proactivity.trim().length
+      ? `proactivity ${style.proactivity.trim()}`
+      : null,
+    typeof style?.escalation === "string" && style.escalation.trim().length
+      ? `escalation ${style.escalation.trim()}`
+      : null,
+  ].filter((part): part is string => part != null);
+
+  const carried: string[] = [];
+  if (constraints.length) {
+    carried.push("Constraints:");
+    for (const constraint of constraints) carried.push(`- ${constraint}`);
+  }
+  // "custom" named no preset of its own — the text lived in `customPersonality`,
+  // which is carried on its own line — so a bare "custom" is nothing to keep.
+  if (personality.length && personality !== "custom") {
+    carried.push(`- Personality preset: ${personality}`);
+  }
+  if (customPersonality.length) {
+    carried.push(`- Personality: ${customPersonality}`);
+  }
+  if (styleParts.length) {
+    carried.push(`- Communication style: ${styleParts.join(", ")}`);
+  }
+
+  if (!carried.length) return systemPromptExtension;
+
+  const block = ["Carried over from an earlier CTO identity:", ...carried].join("\n");
+  return systemPromptExtension ? `${systemPromptExtension}\n\n${block}` : block;
+}
+
 function normalizeIdentity(input: unknown): CtoIdentity | null {
   if (!input || typeof input !== "object") return null;
   const source = input as Record<string, unknown>;
@@ -432,55 +540,37 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     source.modelPreferences && typeof source.modelPreferences === "object"
       ? (source.modelPreferences as Record<string, unknown>)
       : {};
-  const communicationStyleRaw =
-    source.communicationStyle && typeof source.communicationStyle === "object"
-      ? (source.communicationStyle as Record<string, unknown>)
-      : {};
   const onboardingState = normalizeOnboardingState(source.onboardingState);
-  const personality = normalizePersonalityPreset(source.personality);
-  const customPersonality =
-    typeof source.customPersonality === "string" && source.customPersonality.trim().length
-      ? source.customPersonality.trim()
-      : undefined;
-  const communicationStyle: CtoIdentity["communicationStyle"] =
-    typeof communicationStyleRaw.verbosity === "string"
-    && typeof communicationStyleRaw.proactivity === "string"
-    && typeof communicationStyleRaw.escalationThreshold === "string"
-      ? {
-          verbosity:
-            communicationStyleRaw.verbosity === "detailed"
-            || communicationStyleRaw.verbosity === "adaptive"
-              ? communicationStyleRaw.verbosity
-              : "concise",
-          proactivity:
-            communicationStyleRaw.proactivity === "balanced"
-            || communicationStyleRaw.proactivity === "proactive"
-              ? communicationStyleRaw.proactivity
-              : "reactive",
-          escalationThreshold:
-            communicationStyleRaw.escalationThreshold === "low"
-            || communicationStyleRaw.escalationThreshold === "high"
-              ? communicationStyleRaw.escalationThreshold
-              : "medium",
-        }
-      : undefined;
-  const constraints = uniqueStrings(asStringArray(source.constraints));
-  const systemPromptExtension =
+  const storedExtension =
     typeof source.systemPromptExtension === "string" && source.systemPromptExtension.trim().length
       ? source.systemPromptExtension.trim()
       : undefined;
+  const schemaVersion = Math.max(1, Math.floor(Number(source.schemaVersion ?? 1)));
+  const systemPromptExtension = schemaVersion < CTO_IDENTITY_SCHEMA_VERSION
+    ? foldLegacyIdentityFields(source, storedExtension)
+    : storedExtension;
+
+  // Voice settings are checked against the shipped list rather than trusted: a
+  // hand-edited identity.yaml naming a voice OpenAI does not have would fail
+  // the call at connect time, long after the mistake was made.
+  const voiceName = typeof source.voiceName === "string"
+    && (CTO_VOICE_VOICES as readonly string[]).includes(source.voiceName.trim())
+    ? source.voiceName.trim()
+    : undefined;
+  const voiceBackchannels = typeof source.voiceBackchannels === "boolean"
+    ? source.voiceBackchannels
+    : undefined;
 
   return {
     name,
     version,
+    schemaVersion: CTO_IDENTITY_SCHEMA_VERSION,
     persona,
-    ...(personality ? { personality } : {}),
-    ...(customPersonality ? { customPersonality } : {}),
-    ...(communicationStyle ? { communicationStyle } : {}),
-    ...(constraints.length > 0 ? { constraints } : {}),
     ...(systemPromptExtension ? { systemPromptExtension } : {}),
     modelPreferences: normalizeModelPreferences(modelPreferencesRaw),
     ...(onboardingState ? { onboardingState } : {}),
+    ...(voiceName ? { voiceName } : {}),
+    ...(voiceBackchannels === undefined ? {} : { voiceBackchannels }),
     updatedAt,
   };
 }
@@ -508,6 +598,12 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
   const capabilityMode = source.capabilityMode === "full_tooling" || source.capabilityMode === "full_mcp"
     ? "full_tooling"
     : "fallback";
+  // Absent on every entry written before the field existed, and on every entry
+  // whose transcript could not be read. Both are "not recorded", not zero.
+  const rawTurns = source.turnCount;
+  const turnCount = typeof rawTurns === "number" && Number.isFinite(rawTurns) && rawTurns >= 0
+    ? Math.floor(rawTurns)
+    : null;
   return {
     id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
     prevHash: typeof source.prevHash === "string" && source.prevHash.trim().length ? source.prevHash.trim() : null,
@@ -518,6 +614,7 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
     provider,
     modelId: typeof source.modelId === "string" && source.modelId.trim().length ? source.modelId.trim() : null,
     capabilityMode,
+    turnCount,
     createdAt,
   };
 }
@@ -546,6 +643,14 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
  * re-measure rather than silently start truncating.
  */
 export const CTO_LIVE_STATE_MAX_CHARS = 6000;
+
+/**
+ * Heading of the static context section, and the marker the chat service looks
+ * for to decide whether a send actually delivered it. Exported so the two sides
+ * cannot drift into a marker that is never found — which would silently re-stage
+ * 21 KB on every turn.
+ */
+export const CTO_STATIC_CONTEXT_TITLE = "CTO Runtime Identity";
 
 // Per-section row caps. A CTO with 200 lanes needs to know that, not to read
 // 200 lines about it — every section reports its own overflow count.
@@ -706,18 +811,23 @@ export function renderCtoLiveStateBlock(
   return `${kept.join("\n")}\n…(live state truncated)`;
 }
 
+/**
+ * The seed leaves `modelPreferences` null on purpose. This value is what a
+ * brand-new project reconciles to, and it never passes through
+ * `normalizeModelPreferences` (only file and DB reads do), so a hard-coded
+ * provider here cannot be validated away — it simply becomes the user's pick
+ * without the user picking. A null seed is what puts `ModelPickCard` (desktop)
+ * and `.modelPick` (iOS) in front of the thread, which is the documented
+ * contract in [Only providers that can redirect a live turn].
+ */
 function makeDefaultIdentity(): CtoIdentity {
   const timestamp = nowIso();
   return {
     name: "CTO",
     version: 1,
+    schemaVersion: CTO_IDENTITY_SCHEMA_VERSION,
     persona: "Persistent project CTO for this ADE workspace.",
-    personality: "strategic",
-    modelPreferences: {
-      provider: "claude",
-      model: "sonnet",
-      reasoningEffort: "high",
-    },
+    modelPreferences: null,
     updatedAt: timestamp,
   };
 }
@@ -865,7 +975,16 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     );
   };
 
-  const reconcileSessionLogs = (): void => {
+  /**
+   * Returns the file half of the log as it stands AFTER reconciliation.
+   *
+   * The caller needs those entries (they carry `turnCount`, which the DB table
+   * has no column for), and this function has just parsed them. Handing them
+   * back means sessions.jsonl is read once per `getSessionLogs` instead of
+   * twice — the file grows without bound and the second parse produced exactly
+   * the same rows as the first.
+   */
+  const reconcileSessionLogs = (): CtoSessionLogEntry[] => {
     const dbEntries = listSessionLogsFromDb();
     const fileEntries = listSessionLogsFromFile();
     const dbKeySet = new Set(dbEntries.map((entry) => `${entry.sessionId}::${entry.createdAt}`));
@@ -881,24 +1000,42 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     for (const entry of dbEntries) {
       const key = `${entry.sessionId}::${entry.createdAt}`;
       if (fileKeySet.has(key)) continue;
-      appendSessionLogToFile(entry);
+      fileEntries.push(appendSessionLogToFile(entry));
       fileKeySet.add(key);
     }
+
+    return fileEntries;
   };
 
-  const reconcileAll = (): CtoIdentity => {
+  type ReconciledState = {
+    identity: CtoIdentity;
+    /** The file half of the session log, already parsed by the reconcile. */
+    sessionLogsFromFile: CtoSessionLogEntry[];
+  };
+
+  const reconcileAll = (): ReconciledState => {
     const identity = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
     writeIdentityToFile(identity);
     writeIdentityToDb(identity);
-    reconcileSessionLogs();
-    return identity;
+    return { identity, sessionLogsFromFile: reconcileSessionLogs() };
   };
 
-  const getIdentity = (): CtoIdentity => reconcileAll();
+  const getIdentity = (): CtoIdentity => reconcileAll().identity;
 
   const getSessionLogs = (limit = 20): CtoSessionLogEntry[] => {
-    reconcileAll();
+    const { sessionLogsFromFile } = reconcileAll();
     const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    // The turn count lives in the append-only file half of this log, not in
+    // `cto_session_logs` — that table's columns are fixed in the schema and a
+    // count is not worth a migration. The DB still decides which entries exist
+    // and in what order; the file only says how many turns each one had, keyed
+    // the way `reconcileSessionLogs` keys them.
+    const turnsByKey = new Map<string, number>();
+    for (const entry of sessionLogsFromFile) {
+      if (typeof entry.turnCount === "number") {
+        turnsByKey.set(`${entry.sessionId}::${entry.createdAt}`, entry.turnCount);
+      }
+    }
     return args.db
       .all<Record<string, unknown>>(
         `
@@ -923,11 +1060,15 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
           createdAt: row.created_at,
         })
       )
-      .filter((entry): entry is CtoSessionLogEntry => entry != null);
+      .filter((entry): entry is CtoSessionLogEntry => entry != null)
+      .map((entry) => {
+        const turnCount = turnsByKey.get(`${entry.sessionId}::${entry.createdAt}`);
+        return turnCount === undefined ? entry : { ...entry, turnCount };
+      });
   };
 
   const getSnapshot = (recentLimit = 20): CtoSnapshot => {
-    const identity = reconcileAll();
+    const { identity } = reconcileAll();
     return {
       identity,
       recentSessions: getSessionLogs(recentLimit),
@@ -970,7 +1111,54 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     writeTextAtomic(currentContextPath, `${currentContextBody}\n`);
   };
 
-  const appendSessionLog = (entry: AppendCtoSessionLogArgs): CtoSessionLogEntry => {
+  /**
+   * How many turns the user took in a chat session.
+   *
+   * The transcript is the cheapest DURABLE source of this number, and the only
+   * honest one. There is no turn counter anywhere in the schema, and
+   * `usage_events` counts model requests — a single user turn that runs tools
+   * or retries produces several, so it would report a number the user did not
+   * recognise. One indexed row for the path, then one pass counting
+   * `user_message` envelopes.
+   *
+   * The marker is a PRE-FILTER, not the decision. A transcript line can be tens
+   * of kilobytes of tool output, so `JSON.parse` on every line is work this does
+   * not need to do — but a line that merely QUOTES `"type":"user_message"`
+   * (tool output echoing a transcript, an agent pasting an envelope) satisfies
+   * the substring and is not a turn. Only lines that pass the cheap test are
+   * parsed, and only a parsed object whose own `type` is `user_message` counts.
+   *
+   * Read as a stream rather than in one `readFileSync` + `split`: the cap below
+   * allows 32 MB, and the synchronous version held that much as a string plus
+   * an array of every line in it, on the main process, during a session close.
+   * Bounded by `TRANSCRIPT_SCAN_MAX_BYTES` so a runaway transcript cannot stall
+   * a close.
+   *
+   * Returns null — never 0 — when the transcript is missing or unreadable, so
+   * "we do not know" stays distinguishable from "they said nothing".
+   */
+  const countUserTurns = async (sessionId: string): Promise<number | null> => {
+    try {
+      const row = args.db.get<{ transcript_path?: unknown }>(
+        `select transcript_path from terminal_sessions where id = ?`,
+        [sessionId],
+      );
+      const transcriptPath = typeof row?.transcript_path === "string" ? row.transcript_path.trim() : "";
+      if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+      const stat = fs.statSync(transcriptPath);
+      if (stat.size > TRANSCRIPT_SCAN_MAX_BYTES) return null;
+      return await countUserTurnsInTranscript(transcriptPath);
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Async because the turn count is read off the transcript as a stream. The
+   * caller must await it: the log row and the derived context doc are written
+   * inside, and a dropped promise would lose both.
+   */
+  const appendSessionLog = async (entry: AppendCtoSessionLogArgs): Promise<CtoSessionLogEntry> => {
     reconcileAll();
     const next: CtoSessionLogEntry = {
       id: randomUUID(),
@@ -981,6 +1169,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       provider: entry.provider,
       modelId: entry.modelId,
       capabilityMode: entry.capabilityMode,
+      turnCount: await countUserTurns(entry.sessionId),
       createdAt: nowIso(),
     };
     insertSessionLogToDb(next);
@@ -1131,6 +1320,21 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
 
   const getLiveStateSnapshot = (): CtoLiveStateSnapshot | null => liveStateCache;
 
+  /**
+   * The VOLATILE half of the CTO's per-turn context: identity, working context,
+   * memory sections and the live project-state block. Every one of these can
+   * differ between two consecutive turns, so this rides every send.
+   *
+   * Its immutable counterpart is `buildStaticContextSection()`, which the chat
+   * service stages once per provider thread. Keep the two disjoint: anything
+   * that lands in both is paid for on every single turn for nothing.
+   *
+   * This is also why it deliberately does NOT carry
+   * `buildCtoEnvironmentKnowledge()` — the static section's `knowledge` block is
+   * that same ~10 KB document verbatim. Anything that needs the document
+   * standalone should read the prompt preview's `knowledge` section rather than
+   * reintroduce the copy.
+   */
   const buildReconstructionContext = (recentLimit = 8): string => {
     const snapshot = getSnapshot(recentLimit);
     const sections: string[] = [];
@@ -1138,9 +1342,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     sections.push("The CTO state below is already reconstructed by ADE for this session. Do not burn turns trying to rediscover it by shelling into relative .ade/cto paths.");
     sections.push("- Runtime identity and operating doctrine keep you in the CTO role.");
     sections.push(`- Current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH} carries recent sessions through session resumes.`);
-    sections.push("");
-    sections.push("ADE Operational Knowledge");
-    sections.push(buildCtoEnvironmentKnowledge());
     sections.push("");
     sections.push("CTO Identity");
     sections.push(`- Name: ${snapshot.identity.name}`);
@@ -1194,33 +1395,13 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return next;
   };
 
-  const maybeMarkOnboardingComplete = (state: CtoOnboardingState): CtoOnboardingState => {
-    if (hasCompletedRequiredOnboardingSteps(state) && !state.completedAt) {
-      return { ...state, completedAt: nowIso() };
-    }
-    return state;
-  };
-
   const completeOnboardingStep = (stepId: string): CtoOnboardingState => {
     const current = getOnboardingState();
-    if (current.completedSteps.includes(stepId)) {
-      const patched = maybeMarkOnboardingComplete(current);
-      if (patched !== current) return persistOnboardingState(patched);
-      return current;
-    }
-    const next = maybeMarkOnboardingComplete({
+    if (current.completedSteps.includes(stepId)) return current;
+    return persistOnboardingState({
       ...current,
       completedSteps: [...current.completedSteps, stepId],
     });
-    return persistOnboardingState(next);
-  };
-
-  const dismissOnboarding = (): CtoOnboardingState => {
-    return persistOnboardingState({ ...getOnboardingState(), dismissedAt: nowIso() });
-  };
-
-  const resetOnboarding = (): CtoOnboardingState => {
-    return persistOnboardingState({ completedSteps: [] });
   };
 
   /* ── Identity update (full patch) ── */
@@ -1262,11 +1443,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         content: IMMUTABLE_CTO_DOCTRINE,
       },
       {
-        id: "personality",
-        title: "Selected personality overlay",
-        content: resolvePersonalityOverlay(identity),
-      },
-      {
         id: "continuity",
         title: "Continuity model",
         content: CTO_CONTINUITY_OPERATING_MODEL,
@@ -1300,6 +1476,31 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
   };
 
+  /**
+   * The STATIC half of the CTO's per-turn context.
+   *
+   * Doctrine, continuity model, memory guidance, the ADE environment knowledge
+   * document and the capability manifest — ~21 KB that is identical on turn 2
+   * and turn 200 of the same thread. The chat service stages it once per
+   * provider thread rather than on every send, because a live thread already
+   * holds it: re-sending it grew a real CTO thread by ~12k input tokens a turn
+   * and walked it into auto-compaction mid-voice-call.
+   *
+   * `key` is the content identity of the body, so an identity rename or an
+   * edited prompt extension re-stages it on the very next turn instead of being
+   * silently withheld until the thread rotates.
+   */
+  const buildStaticContextSection = (
+    identityOverride?: Partial<CtoIdentity>,
+  ): CtoStaticContextSection => {
+    const body = previewSystemPrompt(identityOverride).prompt;
+    return {
+      title: CTO_STATIC_CONTEXT_TITLE,
+      body,
+      key: createHash("sha256").update(body, "utf8").digest("hex").slice(0, 16),
+    };
+  };
+
   // Ensure the state is initialized as soon as the service is created.
   reconcileAll();
   syncDerivedContextDoc();
@@ -1311,12 +1512,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     updateIdentity,
     appendSessionLog,
     buildReconstructionContext,
+    buildStaticContextSection,
     refreshLiveState,
     getLiveStateSnapshot,
     getOnboardingState,
     completeOnboardingStep,
-    dismissOnboarding,
-    resetOnboarding,
     previewSystemPrompt,
     syncDerivedContextDoc,
   };

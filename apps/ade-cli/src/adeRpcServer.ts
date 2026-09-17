@@ -2,6 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
+import {
+  refusesVoiceCategory,
+  voiceCategoryRefusalMessage,
+  withoutVoiceEvents,
+} from "../../desktop/src/shared/runtimeEventPolicy";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import {
   createComputerUseArtifactPath,
@@ -26,6 +32,7 @@ import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/ut
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../desktop/src/shared/types/computerUseArtifacts";
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
@@ -1184,7 +1191,7 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         cursor: { type: "number", minimum: 0 },
         limit: { type: "number", minimum: 1, maximum: 1000 },
-        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "pty"] }
+        category: { type: "string", enum: [...REMOTE_RUNTIME_EVENT_CATEGORIES] }
       }
     }
   },
@@ -5085,6 +5092,10 @@ async function runTool(args: {
           ownerKind: owner.kind,
           ownerId: owner.id,
           kind,
+          // Proof only. A scene still is the picture a generated view left
+          // behind and is already shown inline in the transcript that drew it;
+          // an agent reading this list is asking what evidence exists.
+          ...PROOF_LISTING_ARTIFACT_FILTER,
           limit,
         })) {
           artifacts.set(artifact.id, artifact);
@@ -5110,6 +5121,8 @@ async function runTool(args: {
         ownerKind: requestedOwnerKind as any,
         ownerId: requestedOwnerId,
         kind: asOptionalTrimmedString(toolArgs.kind) as any,
+        // Same exclusion as the scoped branch above, for the same reason.
+        ...PROOF_LISTING_ARTIFACT_FILTER,
         limit: asNumber(toolArgs.limit, 50),
       }),
     };
@@ -5857,6 +5870,15 @@ async function runTool(args: {
     const cursor = asNumber(toolArgs.cursor, 0);
     const limit = asNumber(toolArgs.limit, 100);
     const category = asOptionalTrimmedString(toolArgs.category);
+    // The rule and its wording live in `shared/runtimeEventPolicy.ts`.
+    // Refused by name, filtered when not named.
+    const ctoVoiceVisible = callerHasRoleAtLeast(callerCtx.role, "cto");
+    if (refusesVoiceCategory(category, ctoVoiceVisible)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        voiceCategoryRefusalMessage("stream_events")
+      );
+    }
     if (category) {
       // When filtering by category, drain a larger batch and filter client-side.
       // Use the last *drained* event's ID (not last *filtered*) as nextCursor
@@ -5874,7 +5896,13 @@ async function runTool(args: {
         oldestCursor: result.oldestCursor ?? null
       };
     }
-    return runtime.eventBuffer.drain(cursor, limit);
+    const drained = runtime.eventBuffer.drain(cursor, limit);
+    // Filtered, not refused: every other category is still readable, and the
+    // cursor still advances past what was withheld so polling cannot stall.
+    return {
+      ...drained,
+      events: withoutVoiceEvents(drained.events, ctoVoiceVisible)
+    };
   }
 
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown ADE action: ${name}`);

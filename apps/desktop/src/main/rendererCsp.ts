@@ -42,6 +42,55 @@ export function shouldApplyRendererCsp(
   );
 }
 
+/**
+ * The non-http schemes `frame-src` allows in BOTH modes, as data rather than
+ * as a string. `buildRendererCspPolicy` interpolates this list into
+ * `frame-src`; `isRendererFrameNavigationAllowed` iterates it.
+ *
+ * `main.ts`'s `will-frame-navigate` handler is the SECOND door on this same
+ * allowlist, and the two must not drift: a source the CSP names and the
+ * handler does not is a frame the browser would render and the handler
+ * cancels. One literal, two readers, so there is nothing to keep in sync.
+ */
+export const FRAME_SRC_EXTRA_SCHEMES = ["ade-scene:", "blob:", "about:"] as const;
+
+/**
+ * The schemes only a packaged build serves its own renderer over. The packaged
+ * spec previews (`SpecPreviewCard`, `PlanMarkdown`) frame a `bundleAssetFileUrl`,
+ * so the navigation door must name them even though the dev CSP does not.
+ */
+export const PACKAGED_FRAME_SCHEMES = ["file:", "app:"] as const;
+
+/**
+ * May a SUBFRAME navigate to this URL?
+ *
+ * Pure so it can be tested without a window. `rendererUrl` is ADE's own
+ * document (`'self'`); `devServerUrl` is the Vite origin when there is one,
+ * and its presence is also what makes this a dev build.
+ */
+export function isRendererFrameNavigationAllowed(
+  url: string,
+  options: { rendererUrl: string; devServerUrl?: string | null },
+): boolean {
+  if (!url) return false;
+  if (url === options.rendererUrl) return true;
+  if (FRAME_SRC_EXTRA_SCHEMES.some((scheme) => url.startsWith(scheme))) return true;
+  if (PACKAGED_FRAME_SCHEMES.some((scheme) => url.startsWith(scheme))) return true;
+  if (!options.devServerUrl) return false;
+  if (url.startsWith(options.devServerUrl)) return true;
+  // Other local http ports, and ONLY while a dev server is configured. A
+  // packaged renderer frames nothing over http, so leaving the door open there
+  // would let a scene navigate itself at any local server the user is running.
+  // http only, because the CSP names no https local source.
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:"
+      && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+  } catch {
+    return false;
+  }
+}
+
 export function buildRendererCspPolicy(isDevMode: boolean): string {
   const cspSources = isDevMode
     ? "'self' http://localhost:* http://127.0.0.1:*"
@@ -66,7 +115,25 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // frame-src exceptions for youtube(-nocookie).com. It's now a thumbnail
   // button that hands off to the system browser (WelcomeVideoGate.tsx), so
   // no external frame-src is needed.
-  const cspFrameSources = `${cspSources}${cspLocalSources} about:`;
+  // `ade-scene:` is framed and nothing else: a scene is agent-authored code, so
+  // it is only ever loaded into a sandboxed iframe with its own origin. It is
+  // deliberately absent from img-src/media-src/connect-src — there is no
+  // legitimate reason for ADE's own document to fetch one.
+  // `ade-scene:` serves generated views with their own policy and origin.
+  //
+  // `blob:` in frame-src is a DELIBERATE widening, recorded here rather than
+  // only in the component that needs it. It is SceneFrame's fallback for when
+  // `scene.prepare` is unavailable (the hosted web client, a browser preview,
+  // a main process that answered null).
+  // It is safe for one reason and only that reason: every scene frame carries
+  // `sandbox="allow-scripts"` WITHOUT `allow-same-origin`, so a blob frame gets
+  // an opaque origin exactly as the custom scheme does, and a blob URL is only
+  // ever minted by this renderer from a document it assembled itself — nothing
+  // remote can put one here. `blob:` stays out of connect-src and script-src,
+  // where it would mean something else entirely. Removing `allow-same-origin`
+  // from that sandbox attribute is what would make this line dangerous, which
+  // is why SceneFrame.test.tsx asserts the pair can never appear together.
+  const cspFrameSources = `${cspSources}${cspLocalSources} ${FRAME_SRC_EXTRA_SCHEMES.join(" ")}`;
   const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
   return [
     `default-src ${cspSources}`,

@@ -22,7 +22,7 @@
     "package:native-deps": "node ./scripts/package-native-deps.mjs",
     "tools:manifest": "node ./scripts/generate-tools-manifest.mjs",
     "tools:manifest:check": "node ./scripts/generate-tools-manifest.mjs --check",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {

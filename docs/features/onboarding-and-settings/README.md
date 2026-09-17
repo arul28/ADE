@@ -91,6 +91,32 @@ Main process:
 - `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
+- `apps/desktop/src/renderer/components/settings/openAiKey.tsx` — the
+  machine-scoped OpenAI key parts, shared by the settings card and the modal
+  the CTO's **Talk** button opens: `useMachineOpenAiKey` (status in, secret
+  only out), `OpenAiKeyCostLine` (`OPENAI_VOICE_COST_LINE` + the
+  `platform.openai.com` link, opened through ADE's own opener so it honours
+  the "open links in" preference), and `OpenAiKeyField`.
+  `OPENAI_VOICE_PROVIDER` is `"openai"` — the same secret as the
+  `OPENAI_API_KEY` provider key, not a second one.
+- `apps/desktop/src/renderer/components/settings/OpenAiKeySheet.tsx` — the
+  modal sheet, composed from those parts.
+- `apps/desktop/src/renderer/components/settings/OpenAiKeySection.tsx` — the
+  card, with `OPENAI_KEY_ANCHOR` pinned to the `agents.openai-key` manifest
+  entry. Add → store → **Connected** → Replace / Delete, and Replace/Delete
+  offered only when `status.source === "store"`.
+- `apps/desktop/src/main/services/ai/apiKeyStore.ts` — the machine-scope half:
+  `initMachineApiKeyStore`, `createMachineScopeState` (store path under
+  `resolveMachineAdeLayout().secretsDir`, `projectRootPath: null`),
+  `storeMachineApiKey` / `deleteMachineApiKey` / `listMachineStoredProviders`,
+  and `getMachineApiKeyStatus`, which reports `store` vs `env` without ever
+  handing the value back. Every helper takes its `ApiKeyScopeState` as the
+  first argument, so each call names the store it reads.
+- `apps/desktop/src/renderer/components/settings/CaptureGestureSection.tsx` —
+  the capture-gesture switch plus the native helper's health line and its
+  retry. Reads `supportsCaptureGesturePlatform()` / `captureGestureBlocker()`
+  from `renderer/lib/platform.ts`, which wrap the shared
+  `captureGesturePlatformSupport` rules.
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
   status, stack detection, existing lane detection, and suggested config
   application. The active renderer
@@ -319,9 +345,10 @@ Renderer — onboarding:
   of internal/public doc URLs that `SmartTooltip`, `HelpMenu`, welcome,
   and account surfaces link to, including the public ADE Relay explainer used by
   account sign-in surfaces.
-- `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
-  single lightweight card covering personality and work-style setup.
-  Model selection and Linear are deferred to the CTO Settings sheet.
+- `apps/desktop/src/renderer/components/cto/...` — CTO first-run is the
+  model picker. There is no setup wizard: a project with no stored model
+  preference opens on `ModelPickCard`, and picking a model is the whole
+  of first run. Linear and the rest live in the CTO Settings sheet.
 
 Renderer — settings:
 
@@ -1476,16 +1503,14 @@ for the full flow and environment overrides.
 
 ### CTO first-run setup
 
-CTO (the agent identity used in the Chat tab) has its own lightweight
-wizard:
-
-1. **Identity** — name, provider/model preference, persona. System
-   prompt preview is generated live, debounced.
-2. **Project context** — seed from repo-detected defaults or existing
-   CTO core continuity; user can edit summary, conventions, focus areas.
-3. **Integrations** — Linear is optional. Primary action finishes
-   onboarding with or without Linear. Fastest path is a personal API
-   key; OAuth is available but not the default recommendation.
+The CTO has no wizard. A project whose `modelPreferences` is null opens
+on `ModelPickCard` instead of the thread, the user picks a model that can
+steer a live turn, and that pick is the entire setup — there is no
+personality question, no project-context step, and nothing to re-run.
+Reasoning effort, Fast mode, and Linear all layer in afterward from the
+CTO's own settings sheet. `CtoOnboardingState` survives only as an
+internal marker list (`intro`, `memory_gardener`) that is never shown.
+See [CTO › The welcome screen](../cto/README.md#the-welcome-screen).
 
 ## Settings responsibilities
 
@@ -1577,6 +1602,96 @@ For what happens when the machine sleeps anyway, see
 [chat → When the host machine sleeps](../chat/README.md#when-the-host-machine-sleeps)
 and [machine power and sleep in the account directory](../sync-and-multi-device/README.md#account-directory-and-connection-leases).
 
+### The OpenAI key follows the machine
+
+**Settings > Agents & Models > Connections > OpenAI API key** (anchor
+`openai-api-key`, `OpenAiKeySection.tsx`) is the only key on that page
+bound to the **machine** rather than the project. It resolves through the
+machine-scoped half of `apiKeyStore.ts`. The machine-scoped exports pass an
+`ApiKeyScopeState` that points at `resolveMachineAdeLayout().secretsDir` —
+`~/.ade/secrets`, or `$ADE_HOME` — instead of `<project>/.ade/secrets`. It
+sets `projectRootPath: null`, so the per-project legacy migration, the one
+step that makes a key follow a project, never runs. `initMachineApiKeyStore`
+registers the credential store at app start, so a window with no project open
+still writes where the runtime and the `ade` CLI read, and it registers an
+`EncryptedFileCredentialStore` over `~/.ade/secrets` rather than
+`createDesktopCredentialStore`'s safeStorage-primary routed store — the headless
+runtime and the `ade` CLI cannot decrypt an Electron safeStorage file, which is
+how Settings once answered `configured: true` while Talk answered "no OpenAI key
+on this machine", both honestly, about two different stores. The
+credential store itself is already machine-wide, so both scopes share it: one
+provider key is one secret, whichever door it came in by.
+
+The scope is the point, not an implementation detail. This key pays for
+CTO voice calls *this machine* makes, and scoping it to a project would
+mean asking the same person for the same secret in every repo they open.
+Hence `scope: "machine"` with `showScopeChip: true` in
+`settingsManifest.ts` — "machine" is the surprise here, sitting next to
+ten project-bound provider connections.
+
+Three rules govern the secret itself:
+
+- **It is never returned to the renderer.** `storeMachineApiKey` takes a
+  key and gives back only a `MachineApiKeyStatus` — `{ provider,
+  configured, source, envVar }` — which carries a *source*, not a value.
+  `useMachineOpenAiKey` drops the draft from React state the instant the
+  save succeeds, so a re-render cannot put it back on screen, and a
+  failed save reports a deliberately generic message because the thrown
+  error can quote the request.
+- **It states its cost before it asks.** `OPENAI_VOICE_COST_LINE` renders
+  above the field in both surfaces: about $0.05 a minute, billed by the
+  second, and — the sentence that actually unblocks people — the CTO's own
+  thinking stays on whatever model and plan it already runs on. One
+  constant, shared by the settings card and the modal sheet, so the two
+  cannot drift.
+- **An inherited key is read-only.** `status.source` distinguishes a key
+  ADE stored (`store`) from an `OPENAI_API_KEY` the machine's environment
+  owns (`env`). Replace and Delete are offered only for the former,
+  because deleting an environment variable from a settings card would
+  delete nothing while leaving the user believing otherwise; the `env`
+  case gets a line saying where to go instead.
+
+`openAiKey.tsx` exports the cost line and the field, and `OpenAiKeySheet.tsx`
+composes them into the modal another surface can mount. The CTO's **Talk**
+button mounts it the first time someone starts a call with no key stored. One
+implementation of the ask, so the never-re-display rule has one enforcement
+point.
+
+The manifest entry is `web: "hidden"`, like every other machine-scoped
+setting on this page: a machine secret has no meaning in a browser tab,
+and the write would resolve against nothing.
+
+### Capturing a window with a key gesture
+
+**Settings > General > Screen capture > "Capture with a key gesture"**
+(anchor `capture-gesture`, `CaptureGestureSection.tsx`) arms the global
+screenshot chord — both ⌘ on macOS, both Ctrl on Windows — described in
+[Capture gesture](../capture-gesture/README.md).
+
+The switch is `scope: "machine"`, `showScopeChip: true`, `web: "hidden"`,
+and it is stored in this renderer's `localStorage` under
+`ade:capture-gesture:enabled` (defaulting **on**) rather than in synced
+settings — for the same reason the activity notch is: what a native
+helper does on *this* computer is not a preference that should travel to
+another machine through the account. A second Mac has its own Screen
+Recording grant and its own opinion about whether a global key gesture is
+welcome. `GlobalCaptureGestureHost` pushes the stored value down through
+`captureGesture.updateSettings` on mount, because the setting lives in the
+renderer and the main process cannot know whether to run the helper until
+a window tells it.
+
+The card shows helper **health**, not just a toggle, because the two
+interesting failures are both things only the user can fix: macOS has not
+been told ADE may record the screen (`permission_denied`, recovery
+`grant_permission`), or the helper is missing from the install
+(`missing`, recovery `reinstall_or_update`). A bare switch that is on
+while the gesture does nothing is the exact state this card exists to
+prevent. On Linux the card renders `CAPTURE_GESTURE_UNSUPPORTED_BLOCKER`
+rather than a toggle, and `captureGestureBridgeAvailable()` is an `in`
+probe rather than a property read — the hosted web adapter's fallback
+proxy fabricates callable namespaces for missing properties, so
+`window.ade.captureGesture` is truthy there even with no helper behind it.
+
 ### Where durable data lives
 
 | What | Location | Notes |
@@ -1590,6 +1705,8 @@ and [machine power and sleep in the account directory](../sync-and-multi-device/
 | Keep-awake level | `GlobalState` in `<userData>/ade-state.json` under `keepAwakePreferences` | machine-scoped; anything unreadable normalizes to `never` |
 | GitHub credentials | Keychain via `safeStorage` | tokens encrypted; a store ADE cannot decrypt reports `credentialStoreUnreadable` rather than "not connected" |
 | Linear credentials | Active project's `.ade/secrets` | project-local token/OAuth state, encrypted on disk |
+| OpenAI API key (CTO voice) | Machine ADE home — `~/.ade/secrets` (or `$ADE_HOME`) via `resolveMachineAdeLayout` | machine-scoped, never read back to the renderer; an `OPENAI_API_KEY` in the environment is the read-only last tier |
+| Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
 
 ## AI mode and provider behavior
 

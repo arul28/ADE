@@ -4792,6 +4792,7 @@ export function AgentChatPane({
     }
   }, [chatActionsOpen, subagentView]);
 
+
   useEffect(() => {
     const applyLocalForkPrefill = (note: string) => {
       pendingHandoffPrefillRef.current = { note };
@@ -5972,7 +5973,23 @@ export function AgentChatPane({
       && !isPersistentIdentitySurface
       && (selectedSession.surface ?? "work") === "work",
   );
+  /**
+   * Whether this surface has a chat-actions drawer at all.
+   *
+   * ONE gate for the button and the pane. They had two, and the CTO tab fell in
+   * the gap: it passes `hideWorkspaceChrome`, so the toolbar button never
+   * rendered — but the pane itself rendered from persisted companion state. The
+   * drawer appeared over the thread with nothing to close it but its own X, and
+   * once closed there was no way back.
+   */
+  const chatActionsAvailable = Boolean((showWorkspaceChrome && laneId) || canShowHandoff);
   const chatActionsHandoffActive = chatActionsOpen && chatActionsTab === "handoff";
+  // Companion UI state is shared across surfaces, so a drawer opened on a Work
+  // chat used to restore itself on the CTO tab, which has no button to close
+  // it with.
+  useEffect(() => {
+    if (!chatActionsAvailable && chatActionsOpen) setChatActionsOpen(false);
+  }, [chatActionsAvailable, chatActionsOpen]);
   const handoffTargetDescriptor = useMemo(
     () => (handoffModelId ? (resolveScopedModelDescriptor(handoffModelId, modelCatalogScopeKey) ?? null) : null),
     [handoffModelId, modelCatalogScopeKey],
@@ -13212,7 +13229,7 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {(showWorkspaceChrome && laneId) || canShowHandoff ? (
+          {chatActionsAvailable ? (
             <SmartTooltip
               content={{
                 label: chatActionsOpen ? "Close chat actions" : "Open chat actions",
@@ -14211,8 +14228,8 @@ export function AgentChatPane({
   const orchestrationPanelOpen = Boolean(orchestrationRunId);
   const heavyRightPaneOpen = appPanelOpen || orchestrationPanelOpen || terminalRightPaneOpen || effectiveCursorCloudPaneOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
-  const chatActionsFloating = chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
-  const chatActionsRightPaneOpen = chatActionsOpen && !chatActionsFloating;
+  const chatActionsFloating = chatActionsAvailable && chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
+  const chatActionsRightPaneOpen = chatActionsAvailable && chatActionsOpen && !chatActionsFloating;
   const prFloating = prPaneOpen && Boolean(laneId) && supportsSplit;
   // Only the right chat-actions pane may reserve gutter space. The PR pane stays
   // a fixed overlay so the transcript and minimap never shift when it opens;
@@ -14339,7 +14356,7 @@ export function AgentChatPane({
   ) : null;
 
   return (
-    <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId}>
+    <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId} sessionId={renderedSessionId}>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
       <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">

@@ -26,6 +26,7 @@ import {
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beginIdentityConfirmHold } from "./identitySessionPolicy";
 import { injectFsFault } from "../../../test/faultInjection";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { loadQwenUserSettings } from "../ai/qwenUserSettings";
@@ -2149,6 +2150,74 @@ async function createClaudeStreamFixture(args: {
   });
 
   return { ...harness, events, session, send };
+}
+
+/**
+ * Claude fixture that withholds the provider's answer to `/compact` until ADE
+ * has actually sent it. Yielding both results up front lets the turn's own
+ * post-result drain swallow the second one, which is not how the SDK behaves.
+ */
+async function createClaudeCompactionFixture(args: {
+  sdkSessionId: string;
+  first: Array<Record<string, unknown>>;
+  afterCompact: Array<Record<string, unknown>>;
+}) {
+  const events: AgentChatEventEnvelope[] = [];
+  const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+  let resolveCompactSent: () => void = () => {};
+  const compactSent = new Promise<void>((resolve) => { resolveCompactSent = resolve; });
+  const send = vi.fn(async (message: unknown) => {
+    if (claudeInputText(message) === "/compact") resolveCompactSent();
+  });
+  let streamCall = 0;
+
+  const stream = vi.fn(() => (async function* () {
+    streamCall += 1;
+    if (streamCall === 1) {
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: args.sdkSessionId,
+        slash_commands: [],
+      };
+      return;
+    }
+    for (const message of args.first) yield message;
+    await compactSent;
+    for (const message of args.afterCompact) yield message;
+  })());
+
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+    send,
+    stream,
+    close: vi.fn(),
+    sessionId: args.sdkSessionId,
+    setPermissionMode,
+  } as any);
+
+  const harness = createService({
+    onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+  });
+  const { service } = harness;
+  const session = await service.createSession({
+    laneId: "lane-1",
+    provider: "claude",
+    model: "claude-sonnet-5",
+    modelId: "anthropic/claude-sonnet-5",
+  });
+
+  await service.runSessionTurn({
+    sessionId: session.id,
+    text: "Exercise Claude streaming text.",
+  });
+
+  return { ...harness, events, session, send };
+}
+
+function claudeNoticeMessages(events: AgentChatEventEnvelope[]): string[] {
+  return events.flatMap((entry) => entry.event.type === "system_notice"
+    ? [entry.event.message]
+    : []);
 }
 
 async function runClaudeStreamFixture(args: {
@@ -6423,6 +6492,744 @@ describe("createAgentChatService", () => {
       expect(textInputs.join("\n")).toContain("Continue from the replay.");
     });
 
+    it("says how much of the handoff the target model received", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(950_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+
+      expect(result.replayFork).toMatchObject({
+        truncated: true,
+        keptTurnCount: 1,
+        truncatedTurnCount: 2,
+      });
+      const notice = events.find((entry) => entry.sessionId === result.session.id
+        && entry.event.type === "system_notice"
+        && typeof (entry.event as { message?: unknown }).message === "string"
+        && (entry.event as { message: string }).message.startsWith("Handoff carried"));
+      expect(notice?.event).toMatchObject({ noticeKind: "info" });
+      expect((notice?.event as { message: string }).message).toMatch(
+        /^Handoff carried the newest 1 of 3 turns, about \d+% of .+'s context\. Older turns are in the original chat\.$/,
+      );
+    });
+
+    it("retries a too-long handoff replay once with half the transcript", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let resolveRetrySent: () => void = () => {};
+      const retrySent = new Promise<void>((resolve) => { resolveRetrySent = resolve; });
+      let promptsSeen = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (claudeInputText(message).includes("Continue from the replay.")) {
+          promptsSeen += 1;
+          if (promptsSeen >= 2) resolveRetrySent();
+        }
+      });
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-replay-overflow", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        // The retry runs on a fresh provider session, not the one that just
+        // rejected the prompt.
+        yield { type: "system", subtype: "init", session_id: "sdk-replay-overflow-2", slash_commands: [] };
+        await retrySent;
+        yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-replay-overflow",
+        setPermissionMode,
+      } as any);
+
+      const onChatHandoffReplay = vi.fn();
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        onChatHandoffReplay,
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3, 4].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(20_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("verbatim replay");
+      onChatHandoffReplay.mockClear();
+
+      const streamCallsBeforeOverflow = stream.mock.calls.length;
+      await service.sendMessage({
+        sessionId: result.session.id,
+        text: "Continue from the replay.",
+      }, { awaitDispatch: true });
+
+      const prompts = await vi.waitFor(() => {
+        const texts = send.mock.calls
+          .map(([message]) => claudeInputText(message))
+          .filter((text) => text.includes("Continue from the replay."));
+        expect(texts).toHaveLength(2);
+        return texts;
+      }, { timeout: 5_000 });
+
+      // Half the budget, so the second attempt carries strictly less history.
+      expect(prompts[1]!.length).toBeLessThan(prompts[0]!.length);
+      // Re-sending onto the session that just rejected the prompt would fail
+      // the same way; the retry needs a fresh one.
+      expect(stream.mock.calls.length).toBeGreaterThan(streamCallsBeforeOverflow);
+      // A single-exchange handoff cannot be compacted; asking would have earned
+      // "Not enough messages to compact" and a notice that lied.
+      expect(send.mock.calls.map(([message]) => claudeInputText(message))).not.toContain("/compact");
+      // The retry re-sends the same message; it must not appear twice in the chat.
+      expect(events.filter((entry) => entry.sessionId === result.session.id
+        && entry.event.type === "user_message"
+        && (entry.event as { text?: string }).text === "Continue from the replay.")).toHaveLength(1);
+      expect(claudeNoticeMessages(events).some((message) =>
+        /^That was too long for .+\. ADE is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
+        .toBe(true);
+      // One coarse product fact when the retry lands, and only then.
+      await vi.waitFor(() => {
+        expect(onChatHandoffReplay).toHaveBeenCalledWith({
+          sessionId: result.session.id,
+          outcome: "retried",
+          provider: "claude",
+        });
+      }, { timeout: 5_000 });
+      expect(onChatHandoffReplay).toHaveBeenCalledTimes(1);
+    });
+
+    it("repairs a chat already stuck on an oversized replay", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const gate = () => {
+        let resolve: () => void = () => {};
+        const promise = new Promise<void>((r) => { resolve = r; });
+        return { promise, resolve };
+      };
+      const secondSent = gate();
+      const retrySent = gate();
+      let secondSends = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (!claudeInputText(message).includes("second message")) return;
+        secondSends += 1;
+        if (secondSends === 1) secondSent.resolve();
+        else retrySent.resolve();
+      });
+      let streamCall = 0;
+      let retryServed = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-stuck-replay", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          // The first turn swallows the oversized replay and succeeds, so no
+          // in-memory replay record survives into the next message.
+          yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+          await secondSent.promise;
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        yield { type: "system", subtype: "init", session_id: "sdk-stuck-replay-2", slash_commands: [] };
+        await retrySent.promise;
+        if (!retryServed) {
+          retryServed = true;
+          yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+        }
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-stuck-replay",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3, 4].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(20_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      // The durable marker is what makes the repair possible one turn later.
+      expect(readPersistedChatState(result.session.id).transcriptReplayOrigin)
+        .toMatchObject({ sourceSessionId: source.id, keptTurnCount: 4, turnCount: 4 });
+
+      await service.runSessionTurn({ sessionId: result.session.id, text: "first message" });
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
+
+      const streamCallsBefore = stream.mock.calls.length;
+      await service.runSessionTurn({ sessionId: result.session.id, text: "second message" });
+
+      await vi.waitFor(() => {
+        expect(send.mock.calls
+          .map(([message]) => claudeInputText(message))
+          .filter((text) => text.includes("second message"))).toHaveLength(2);
+      }, { timeout: 5_000 });
+      // A fresh provider session: resuming the over-full one would overflow again.
+      expect(stream.mock.calls.length).toBeGreaterThan(streamCallsBefore);
+      // The retry carries the rebuilt replay, read back from the source chat.
+      const retryPrompt = send.mock.calls
+        .map(([message]) => claudeInputText(message))
+        .filter((text) => text.includes("second message"))[1]!;
+      expect(retryPrompt).toContain("verbatim replay");
+      expect(send.mock.calls.map(([message]) => claudeInputText(message))).not.toContain("/compact");
+      expect(claudeNoticeMessages(events).some((message) =>
+        /^That was too long for .+\. ADE is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
+        .toBe(true);
+      // One automatic retry, not a loop.
+      expect(send.mock.calls
+        .map(([message]) => claudeInputText(message))
+        .filter((text) => text.includes("second message"))).toHaveLength(2);
+    });
+
+    it("repairs a chat forked before ADE recorded the replay marker", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let resolveRetrySent: () => void = () => {};
+      const retrySent = new Promise<void>((resolve) => { resolveRetrySent = resolve; });
+      let stuckSends = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (!claudeInputText(message).includes("stuck message")) return;
+        stuckSends += 1;
+        if (stuckSends > 1) resolveRetrySent();
+      });
+      let streamCall = 0;
+      let retryServed = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-legacy-stuck", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        yield { type: "system", subtype: "init", session_id: "sdk-legacy-stuck-2", slash_commands: [] };
+        await retrySent;
+        if (!retryServed) {
+          retryServed = true;
+          yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+        }
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-legacy-stuck",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `source turn ${sequence}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const stuck = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      // The state on disk before this fix existed: forked envelopes carry the
+      // source id, but no replay marker was ever written.
+      writeTestTranscriptEnvelopes(stuck.id, [1, 2].map((sequence) => ({
+        sessionId: stuck.id,
+        sequence,
+        timestamp: `2026-07-10T12:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `source turn ${sequence}` },
+        provenance: { providerOrigin: "handoff_fork", sourceSessionId: source.id },
+      })) as AgentChatEventEnvelope[]);
+      expect(readPersistedChatState(stuck.id).transcriptReplayOrigin).toBeUndefined();
+
+      await service.runSessionTurn({ sessionId: stuck.id, text: "stuck message" });
+
+      await vi.waitFor(() => {
+        expect(send.mock.calls
+          .map(([message]) => claudeInputText(message))
+          .filter((text) => text.includes("stuck message"))).toHaveLength(2);
+      }, { timeout: 5_000 });
+      const retryPrompt = send.mock.calls
+        .map(([message]) => claudeInputText(message))
+        .filter((text) => text.includes("stuck message"))[1]!;
+      expect(retryPrompt).toContain("verbatim replay");
+      expect(retryPrompt).toContain("source turn 3");
+      expect(send.mock.calls.map(([message]) => claudeInputText(message))).not.toContain("/compact");
+      expect(readPersistedChatState(stuck.id).transcriptReplayOrigin)
+        .toMatchObject({ sourceSessionId: source.id });
+    });
+
+    it("leaves a natively forked chat alone when it overflows", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-native-fork", slash_commands: [] };
+          return;
+        }
+        yield {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          terminal_reason: "prompt_too_long",
+          errors: ["prompt is too long for this context window"],
+          usage: { input_tokens: 1, output_tokens: 0 },
+        };
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-native-fork",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      writeTestTranscriptEnvelopes(source.id, [{
+        sessionId: source.id,
+        sequence: 1,
+        timestamp: "2026-07-10T11:01:00.000Z",
+        event: { type: "user_message", text: "source turn one" },
+      }] as AgentChatEventEnvelope[]);
+
+      const forked = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      // A Claude → Claude fork is native: the history lives on the provider, so
+      // these imported envelopes are a copy, not the thing to re-seed from.
+      writeTestTranscriptEnvelopes(forked.id, [{
+        sessionId: forked.id,
+        sequence: 1,
+        timestamp: "2026-07-10T12:01:00.000Z",
+        event: { type: "user_message", text: "source turn one" },
+        provenance: { providerOrigin: "handoff_fork", sourceSessionId: source.id },
+      }] as AgentChatEventEnvelope[]);
+
+      await service.runSessionTurn({ sessionId: forked.id, text: "native message" });
+
+      // The normal overflow handling runs instead: no rebuild, no reset.
+      await vi.waitFor(() => {
+        expect(send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+          .toHaveLength(1);
+      }, { timeout: 5_000 });
+      expect(send.mock.calls
+        .map(([message]) => claudeInputText(message))
+        .filter((text) => text.includes("native message"))).toHaveLength(1);
+      expect(send.mock.calls.map(([message]) => claudeInputText(message))
+        .some((text) => text.includes("verbatim replay"))).toBe(false);
+      expect(readPersistedChatState(forked.id).transcriptReplayOrigin).toBeUndefined();
+    });
+
+    it("reports one coarse outcome when the handoff pre-flight resolves", async () => {
+      installRealTranscriptParser();
+      const onChatHandoffReplay = vi.fn();
+      const { service } = createService({ onChatHandoffReplay });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [{
+        sessionId: source.id,
+        sequence: 1,
+        timestamp: "2026-07-10T11:01:00.000Z",
+        event: { type: "user_message", text: "short enough to carry whole" },
+      }] as AgentChatEventEnvelope[]);
+
+      const whole = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      expect(onChatHandoffReplay).toHaveBeenCalledTimes(1);
+      expect(onChatHandoffReplay).toHaveBeenCalledWith({
+        sessionId: whole.session.id,
+        outcome: "fit",
+        provider: "claude",
+      });
+
+      // A transcript the target cannot hold whole reports the truncation, and
+      // one it cannot hold at all reports the refusal against the source chat,
+      // because no target chat was ever created.
+      onChatHandoffReplay.mockClear();
+      writeTestTranscriptEnvelopes(source.id, [1, 2].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T12:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(950_000)}` },
+      })) as AgentChatEventEnvelope[]);
+      const partial = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      expect(onChatHandoffReplay).toHaveBeenCalledWith({
+        sessionId: partial.session.id,
+        outcome: "truncated",
+        provider: "claude",
+      });
+
+      onChatHandoffReplay.mockClear();
+      writeTestTranscriptEnvelopes(source.id, [{
+        sessionId: source.id,
+        sequence: 1,
+        timestamp: "2026-07-10T13:01:00.000Z",
+        event: { type: "user_message", text: "x".repeat(2_400_000) },
+      }] as AgentChatEventEnvelope[]);
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      })).rejects.toThrow(/too long to hand off/i);
+      expect(onChatHandoffReplay).toHaveBeenCalledTimes(1);
+      expect(onChatHandoffReplay).toHaveBeenCalledWith({
+        sessionId: source.id,
+        outcome: "refused",
+        provider: "claude",
+      });
+    });
+
+    it("refuses a handoff whose newest turn cannot fit the target model", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [{
+        sessionId: source.id,
+        sequence: 1,
+        timestamp: "2026-07-10T11:01:00.000Z",
+        event: { type: "user_message", text: "x".repeat(2_400_000) },
+      }] as AgentChatEventEnvelope[]);
+
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      })).rejects.toThrow(/too long to hand off/i);
+    });
+
+    it("re-enters the turn cleanly when it retries a too-long handoff replay", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let resolveRetrySent: () => void = () => {};
+      const retrySent = new Promise<void>((resolve) => { resolveRetrySent = resolve; });
+      let prompts = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (!claudeInputText(message).includes("look at this")) return;
+        prompts += 1;
+        if (prompts > 1) resolveRetrySent();
+      });
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-retry-reentry", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        yield { type: "system", subtype: "init", session_id: "sdk-retry-reentry-2", slash_commands: [] };
+        // The retry dispatches, then its stream dies — the ordinary way a turn
+        // fails for a reason that has nothing to do with the replay.
+        await retrySent;
+        throw new Error("claude stream died mid-retry");
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-retry-reentry",
+        setPermissionMode,
+      } as any);
+
+      const onChatHandoffReplay = vi.fn();
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        onChatHandoffReplay,
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3, 4].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(20_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      onChatHandoffReplay.mockClear();
+
+      const imagePath = path.join(tmpRoot, "retry-attachment.png");
+      fs.writeFileSync(imagePath, Buffer.from(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489",
+        "hex",
+      ));
+      await service.runSessionTurn({
+        sessionId: result.session.id,
+        text: "look at this",
+        attachments: [{ path: imagePath, type: "image" }],
+      });
+
+      await vi.waitFor(() => {
+        expect(send.mock.calls
+          .map(([message]) => claudeInputText(message))
+          .filter((text) => text.includes("look at this"))).toHaveLength(2);
+      }, { timeout: 5_000 });
+
+      // (a) Re-entering while the first turn is still unwinding must not trip
+      // the "turn already active" guard.
+      const errorMessages = events.flatMap((entry) => entry.event.type === "error"
+        ? [entry.event.message]
+        : []);
+      expect(errorMessages.some((message) => /turn already active/i.test(message))).toBe(false);
+
+      // (b) The retry carries the same attachments as the message it repeats.
+      const attachmentBlocks = send.mock.calls
+        .map(([message]) => (message as { message?: { content?: unknown } })?.message?.content)
+        .filter((content): content is Array<Record<string, unknown>> => Array.isArray(content))
+        .filter((content) => content.some((block) => block?.type === "image"));
+      expect(attachmentBlocks).toHaveLength(2);
+
+      // One user message in the transcript: the retry repeats the send, not the bubble.
+      expect(events.filter((entry) => entry.sessionId === result.session.id
+        && entry.event.type === "user_message"
+        && (entry.event as { text?: string }).text === "look at this")).toHaveLength(1);
+
+      // (c) A retry that dies leaves the chat idle, says so, and hands the
+      // conversation back so the next message still carries it.
+      await vi.waitFor(() => {
+        expect(claudeNoticeMessages(events).some((message) =>
+          /^The handoff transcript is too long for .+\. ADE kept the newest \d+ turns?\. Send your message again\.$/.test(message)))
+          .toBe(true);
+      }, { timeout: 5_000 });
+      await vi.waitFor(() => {
+        expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+          .toContain("verbatim replay");
+      }, { timeout: 5_000 });
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(result.session.id))?.status).toBe("idle");
+      }, { timeout: 5_000 });
+      // One coarse product fact for the give-up, and no "retried" claim.
+      expect(onChatHandoffReplay.mock.calls.map(([event]) => event.outcome)).toEqual(["gave_up"]);
+    });
+
+    it("treats a Stop during the retry as a stop, not a length failure", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let resolveRetrySent: () => void = () => {};
+      const retrySent = new Promise<void>((resolve) => { resolveRetrySent = resolve; });
+      let prompts = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (!claudeInputText(message).includes("carry on")) return;
+        prompts += 1;
+        if (prompts > 1) resolveRetrySent();
+      });
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-retry-stop", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        // The retry is dispatched and then simply never answers: the user stops
+        // it by hand.
+        yield { type: "system", subtype: "init", session_id: "sdk-retry-stop-2", slash_commands: [] };
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-retry-stop",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3, 4].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(20_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+
+      await service.runSessionTurn({ sessionId: result.session.id, text: "carry on" });
+      await retrySent;
+      await service.interrupt({ sessionId: result.session.id });
+
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(result.session.id))?.status).toBe("idle");
+      }, { timeout: 5_000 });
+
+      // A Stop is not a prompt that did not fit. Saying so would be a lie, and
+      // re-staging the replay would duplicate what the session already holds.
+      expect(claudeNoticeMessages(events).some((message) =>
+        /^The handoff transcript is too long for /.test(message))).toBe(false);
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
+    });
+
     it("restores the bounded replay when Codex rejects the first turn", async () => {
       installRealTranscriptParser();
       const { service } = createService();
@@ -9557,6 +10364,58 @@ describe("createAgentChatService", () => {
       }));
     });
 
+    it("scopes a CTO confirm hold to the session that is on the call", async () => {
+      // The file-wide mapPermissionToClaude mock collapses every mode to
+      // "plan", which would hide the pinned full-auto entirely.
+      vi.mocked(mapPermissionToClaude).mockImplementation((mode) => {
+        if (mode === "full-auto") return "bypassPermissions";
+        if (mode === "edit") return "acceptEdits";
+        if (mode === "default") return "default";
+        return "plan";
+      });
+      const { service } = createService();
+      const onCall = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+        identityKey: "cto",
+      });
+      const elsewhere = await service.createSession({
+        laneId: "lane-2",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+        identityKey: "cto",
+      });
+      expect(onCall.permissionMode).toBe("full-auto");
+      expect(elsewhere.permissionMode).toBe("full-auto");
+
+      const release = beginIdentityConfirmHold(onCall.id);
+      try {
+        // One brain hosts every open project. A call on one CTO chat must not
+        // make a CTO chat in another project ask before it writes.
+        const held = await service.updateSession({
+          sessionId: onCall.id,
+          permissionMode: "full-auto",
+        });
+        const free = await service.updateSession({
+          sessionId: elsewhere.id,
+          permissionMode: "full-auto",
+        });
+        expect(held.permissionMode).toBe("default");
+        expect(free.permissionMode).toBe("full-auto");
+      } finally {
+        release();
+      }
+
+      const afterCall = await service.updateSession({
+        sessionId: onCall.id,
+        permissionMode: "full-auto",
+      });
+      expect(afterCall.permissionMode).toBe("full-auto");
+    });
+
     it("excludes identity sessions by default", async () => {
       const { service } = createService();
 
@@ -9921,6 +10780,66 @@ describe("createAgentChatService", () => {
       return { db, ctoStateService, ctoMemoryService };
     }
 
+    /**
+     * The escape hatch from a wedged thread. The owner's CTO chat crossed its
+     * context limit by ordinary accumulation over twenty sessions, every turn
+     * failed with "Prompt is too long", and the fallback compaction refused —
+     * so the only way out is a new thread that does not arrive amnesiac.
+     */
+    it("starts a fresh CTO thread while identity, memory and History all survive", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      ctoStateService.updateIdentity({ name: "Ada" });
+      ctoMemoryService.appendMemoryFact("We ship on Fridays.");
+      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      const result = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      // A NEW conversation, and the old one named rather than forgotten.
+      expect(result.session.id).not.toBe(first.id);
+      expect(result.previousSessionId).toBe(first.id);
+      expect(result.session.identityKey).toBe("cto");
+
+      // Nothing the CTO remembers was touched.
+      expect(ctoStateService.getIdentity().name).toBe("Ada");
+      expect(ctoMemoryService.readMemory()).toContain("We ship on Fridays.");
+
+      // The retired thread lands in History with its own row.
+      expect(ctoStateService.getSessionLogs(20).some((entry) => entry.sessionId === first.id)).toBe(true);
+
+      // And the next ensure resolves to the NEW thread, not the retired one.
+      const next = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(next.id).toBe(result.session.id);
+
+      db.close();
+    });
+
+    it("distils the outgoing thread into durable memory without asking a model", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      const result = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      // No provider was reachable in this fixture, and that is the point: the
+      // thread this feature exists for cannot take the turn that would write
+      // its own note, so the deterministic distillation is the one that has to
+      // work — and it did.
+      expect(result.handoff).toMatchObject({ written: true, source: "deterministic" });
+
+      // The note is durable, dated, and names the thread it came from.
+      const memory = ctoMemoryService.readMemory();
+      expect(memory).toContain("hand-off from retired CTO thread");
+      expect(memory).toContain(first.id);
+
+      // And the rolling working summary the next thread reads first was
+      // refreshed from the same text.
+      expect(ctoMemoryService.getSnapshot().threadState).toContain("Work still scheduled");
+
+      db.close();
+    });
+
     it("persists a CTO model switch back into identity model preferences", async () => {
       const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
       const { service } = createService({ ctoStateService, ctoMemoryService });
@@ -10010,6 +10929,571 @@ describe("createAgentChatService", () => {
       expect(reconstruction).toContain("The build long-pole is the Windows runner.");
       expect(session.identityKey).toBe("cto");
 
+      db.close();
+    });
+
+    /**
+     * The CTO prefix is two halves with very different lifetimes, and only one
+     * of them is worth re-sending. The immutable half (doctrine, the ADE
+     * architecture document, the capability manifest) is ~21 KB that a live
+     * provider thread already holds; re-staging it every turn grew a real CTO
+     * thread from 46k to 237k input tokens in 18 turns and tripped Codex
+     * auto-compaction mid-voice-call.
+     */
+    /**
+     * One Claude SDK double for every test in this block, typed at the seam
+     * rather than cast to `any` at each site: the handle shape is the contract
+     * these tests depend on, and three hand-rolled copies of it drift.
+     */
+    function installClaudeSdkDouble(args: {
+      sessionId: string;
+      send: ReturnType<typeof vi.fn>;
+      stream: ReturnType<typeof vi.fn>;
+    }): void {
+      const sdkHandle = {
+        send: args.send,
+        stream: args.stream,
+        close: vi.fn(),
+        sessionId: args.sessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ReturnType<typeof claudeSdkCreateSessionCompat>;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+    }
+
+    function mockClaudeCtoSdk() {
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-cto-prefix", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          session_id: "sdk-cto-prefix",
+          message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      installClaudeSdkDouble({ sessionId: "sdk-cto-prefix", send, stream });
+      return send;
+    }
+
+    it("stages the CTO's immutable prefix once per provider thread and the volatile half every turn", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      const first = await turn("What is on fire?");
+      expect(first).toContain("CTO Runtime Identity");
+      expect(first).toContain("Immutable ADE doctrine");
+      expect(first).toContain("ADE environment knowledge");
+      expect(first).toContain("ADE Architecture");
+      expect(first).toContain("CTO Context");
+
+      // Turn two talks to the same Claude SDK session, which holds all of the
+      // above verbatim. Only the perishable half rides again.
+      const second = await turn("And now?");
+      expect(second).not.toContain("CTO Runtime Identity");
+      expect(second).not.toContain("Immutable ADE doctrine");
+      expect(second).not.toContain("ADE Architecture");
+      expect(second).toContain("CTO Context");
+      expect(Buffer.byteLength(second)).toBeLessThan(Buffer.byteLength(first) / 2);
+
+      // The other way the block goes stale is the prompt changing under a live
+      // thread. That must re-stage on the very next turn rather than wait for a
+      // rotation that may never come.
+      ctoStateService.updateIdentity({ name: "Ada" });
+      const third = await turn("Who are you?");
+      expect(third).toContain("CTO Runtime Identity");
+      expect(third).toContain("You are Ada.");
+
+      const fourth = await turn("Carry on.");
+      expect(fourth).not.toContain("CTO Runtime Identity");
+      expect(fourth).toContain("CTO Context");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    it("re-stages the CTO's immutable prefix onto a thread that has never seen it", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (sessionId: string, text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      expect(await turn(session.id, "First.")).toContain("CTO Runtime Identity");
+      expect(await turn(session.id, "Second.")).not.toContain("CTO Runtime Identity");
+
+      // A rotated thread is a model that has been told nothing. The
+      // reconstruction context has to be complete again.
+      const fresh = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(fresh.session.id).not.toBe(session.id);
+      const afterRotation = await turn(fresh.session.id, "Still there?");
+      expect(afterRotation).toContain("CTO Runtime Identity");
+      expect(afterRotation).toContain("ADE Architecture");
+      expect(afterRotation).toContain("CTO Context");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The doc claims the static block re-stages on "rotation, handoff, resume
+     * onto a new thread, provider/model switch, fresh session". Rotation is
+     * pinned above; these pin the rest, because every one of them is a claim
+     * about a thread that has been told nothing, and an unpinned claim about a
+     * ~21 KB block is how the CTO silently loses its own role on a provider.
+     */
+    it("re-stages the CTO's immutable prefix after a provider handoff", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "First." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "Second." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).not.toContain("CTO Runtime Identity");
+
+      // The handoff moves the same ADE chat onto a codex thread that has never
+      // heard a word of it — including the doctrine that makes it the CTO.
+      mockState.codexRequestPayloads = [];
+      await service.updateSession({ sessionId: session.id, modelId: "openai/gpt-5.5" });
+      await service.sendMessage({ sessionId: session.id, text: "Still there?" });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const handedOff = JSON.stringify(turnStart?.params ?? {});
+      expect(handedOff).toContain("CTO Runtime Identity");
+      expect(handedOff).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * A restart wipes the in-memory staging, and the resumed chat may or may
+     * not land on the same provider thread. Re-sending ~21 KB once after a
+     * restart is the cheap side of that bet; leaving a thread believing it was
+     * told its own doctrine is not.
+     */
+    it("re-stages the CTO's immutable prefix on a resume after a restart", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "First." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "Second." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).not.toContain("CTO Runtime Identity");
+      service.forceDisposeAll();
+
+      const resumed = createService({ ctoStateService, ctoMemoryService }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      send.mockClear();
+      await resumed.runSessionTurn({ sessionId: session.id, text: "After the restart.", timeoutMs: 15_000 });
+      const afterResume = String(send.mock.calls.at(-1)?.[0] ?? "");
+      expect(afterResume).toContain("CTO Runtime Identity");
+      expect(afterResume).toContain("CTO Context");
+
+      resumed.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * A same-provider model switch that keeps the SDK session is NOT a new
+     * thread: the model on the other end still holds the doctrine verbatim, so
+     * the block stays put. This is pinned because the obvious reading of "model
+     * switch re-stages" would have it re-sent on every reasoning-tier change.
+     */
+    it("keeps the CTO's immutable prefix off a model switch that keeps the thread", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "First." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+
+      await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-opus-4-8" });
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "After the switch." });
+      // The switch also fires an initialization probe on the same handle, so the
+      // turn is found by its text rather than by being the last call.
+      await vi.waitFor(() => {
+        expect(send.mock.calls.some((call) => String(call[0] ?? "").includes("After the switch."))).toBe(true);
+      });
+      const afterSwitch = String(
+        send.mock.calls.map((call) => String(call[0] ?? "")).find((text) => text.includes("After the switch.")) ?? "",
+      );
+      expect(afterSwitch).toContain("CTO Context");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * A provider-side conversation reset opens a brand-new Claude conversation
+     * under the SAME runtime handle. Nothing the staging looks at moves — the
+     * handle is the thread's identity of last resort — so the doctrine that
+     * makes this thread the CTO was never re-sent, and it went on answering as
+     * a generic coding agent with nothing in the product saying so.
+     */
+    it("re-stages the CTO's immutable prefix after a provider-side conversation reset", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let emitConversationReset = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-cto-reset-1", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (emitConversationReset) {
+          emitConversationReset = false;
+          // Claude discarded the conversation and named its replacement.
+          yield { type: "conversation_reset", new_conversation_id: "sdk-cto-reset-2" };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          session_id: "sdk-cto-reset-1",
+          message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      installClaudeSdkDouble({ sessionId: "sdk-cto-reset-1", send, stream });
+
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
+      expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
+
+      // This turn is the one the provider resets under.
+      emitConversationReset = true;
+      await turn("Carry on.");
+      await vi.waitFor(() => { expect(emitConversationReset).toBe(false); });
+
+      const afterReset = await turn("Who are you?");
+      expect(afterReset).toContain("CTO Runtime Identity");
+      expect(afterReset).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The other way a Claude thread ends under us: not a reset the provider
+     * announces, but a resume onto a thread that is simply gone. The recovery
+     * clears the SDK session id and the next send opens a brand new
+     * conversation — which has been told none of the doctrine.
+     */
+    it("re-stages the CTO's immutable prefix after Claude's thread goes missing", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let failWithMissingThread = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-cto-missing", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (failWithMissingThread) {
+          failWithMissingThread = false;
+          throw new Error("No conversation found with session ID sdk-cto-missing");
+        }
+        yield {
+          type: "assistant",
+          session_id: "sdk-cto-missing",
+          message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      installClaudeSdkDouble({ sessionId: "sdk-cto-missing", send, stream });
+
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
+      expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
+
+      // The turn the thread goes missing under. It fails, and the recovery runs.
+      failWithMissingThread = true;
+      try {
+        await service.sendMessage({ sessionId: session.id, text: "Carry on." });
+      } catch {
+        // The failure is the point; the recovery is what is under test.
+      }
+      await vi.waitFor(() => { expect(failWithMissingThread).toBe(false); });
+
+      // The chat is now parked on a recovery card; reconnecting is what the
+      // user presses. Whatever thread that lands on has heard nothing.
+      await service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
+
+      const afterRecovery = await turn("Who are you?");
+      expect(afterRecovery).toContain("CTO Runtime Identity");
+      expect(afterRecovery).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * Droid can hand back a DIFFERENT session id on a re-ready of a runtime
+     * that otherwise survived — same handle, new conversation on the other end.
+     * Nothing else watches the id, so nothing else would notice.
+     */
+    it("re-stages the CTO's immutable prefix when Droid re-readies onto a new session id", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        const before = mockState.droidPromptCalls.length;
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => {
+          expect(mockState.droidPromptCalls.length).toBeGreaterThan(before);
+        });
+        return String(mockState.droidPromptCalls.at(-1)?.promptText ?? "");
+      };
+
+      expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
+      expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
+
+      // Same pooled connection, new conversation id.
+      const pooled = mockState.droidPooled;
+      pooled.bridge.onReady?.({
+        sessionId: "droid-sdk-session-re-readied",
+        currentModelId: pooled.currentModelId,
+        availableModels: [],
+      });
+
+      expect(await turn("Who are you?")).toContain("CTO Runtime Identity");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The tail rule, on the provider whose thread id lives on the session
+     * rather than in a runtime handle. A live intact codex thread holds the
+     * conversation verbatim; replaying 40 turns of it every send is what walks
+     * a long CTO thread into auto-compaction.
+     */
+    it("sends no conversation tail to a live intact codex thread", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        identityKey: "cto",
+      });
+
+      mockState.codexRequestPayloads = [];
+      const turnStarts = () => mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+      // The mock names turns `turn-<n>`; settling one is what lets the next
+      // send start a turn of its own rather than steer into the live one.
+      const settleCodexTurn = (index: number): void => {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: `turn-${index}`, status: "completed" } },
+        });
+      };
+
+      await service.sendMessage({ sessionId: session.id, text: "What is on fire?" });
+      await vi.waitFor(() => { expect(turnStarts().length).toBeGreaterThanOrEqual(1); });
+      settleCodexTurn(mockState.codexTurnCounter);
+
+      // Turn two is the one send that can still carry the tail: the thread was
+      // armed while it had no name and turn one had no conversation to put in
+      // it, and arming is sticky until a send actually delivers the section.
+      await service.sendMessage({ sessionId: session.id, text: "And now?" });
+      await vi.waitFor(() => { expect(turnStarts().length).toBeGreaterThanOrEqual(2); });
+      settleCodexTurn(mockState.codexTurnCounter);
+
+      await service.sendMessage({ sessionId: session.id, text: "Carry on." });
+      await vi.waitFor(() => { expect(turnStarts().length).toBeGreaterThanOrEqual(3); });
+      const third = JSON.stringify(turnStarts()[2]?.params ?? {});
+      expect(third).toContain("Carry on.");
+      expect(third).not.toContain("Recent Conversation Tail");
+      // And the doctrine does not ride again either — same thread, same rule.
+      expect(third).not.toContain("CTO Runtime Identity");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * `runSessionTurn` is the headless path, and the CTO voice's `ask_cto`
+     * turns run on it. It used to skip `refreshCtoLiveStateForTurn` entirely,
+     * so a voice turn reached the model with whatever live state the last
+     * interactive send left behind — and with no reconstruction context at all
+     * once that send had consumed it. Stale lanes/PRs/dirty flags are worse
+     * than none here, because the doctrine tells the CTO not to re-derive them.
+     */
+    it("refreshes the CTO's live state on the headless turn path too", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const refreshLiveState = vi.spyOn(ctoStateService, "refreshLiveState");
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      // Turn one goes through the interactive path and stages everything.
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "What is on fire?" });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+
+      // Turn two is headless, on the same intact thread.
+      refreshLiveState.mockClear();
+      send.mockClear();
+      await service.runSessionTurn({ sessionId: session.id, text: "And now?", timeoutMs: 15_000 });
+      const headless = String(send.mock.calls.at(-1)?.[0] ?? "");
+
+      expect(refreshLiveState).toHaveBeenCalled();
+      // The volatile half rides the headless turn exactly as it rides an
+      // interactive one.
+      expect(headless).toContain("CTO Context");
+      expect(headless).toContain("Current working context");
+      // And the thread is intact, so the immutable half does not ride again.
+      expect(headless).not.toContain("CTO Runtime Identity");
+      expect(headless).not.toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The tempting shortcut is "codex already gets the doctrine in its
+     * developer instructions, so skip the thread item entirely". It does not:
+     * `buildCodexDeveloperInstructions` builds the generic coding-agent prompt,
+     * and the CTO doctrine and capability manifest exist in exactly one place —
+     * the static context block. Dropping it for codex would have silently taken
+     * the CTO's whole role away on that provider.
+     */
+    it("does not carry the CTO doctrine in codex developer instructions", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        identityKey: "cto",
+      });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "What is on fire?" });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const threadStart = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      const developerInstructions = String(
+        (threadStart?.params as Record<string, unknown> | undefined)?.developerInstructions ?? "",
+      );
+      expect(developerInstructions.length).toBeGreaterThan(0);
+      expect(developerInstructions).not.toContain("Immutable ADE doctrine");
+      expect(developerInstructions).not.toContain("ADE operator tools");
+
+      const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      expect(JSON.stringify(turnStart?.params ?? {})).toContain("CTO Runtime Identity");
+
+      service.forceDisposeAll();
       db.close();
     });
 
@@ -10425,6 +11909,18 @@ describe("createAgentChatService", () => {
       expect(send).toHaveBeenCalledWith(expect.stringContaining("User: Can you keep the lane warm?"));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Yes, I will keep the lane session alive."));
       expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Continuity Summary"));
+
+      // The tail is re-orientation for a thread that never saw those turns. The
+      // SDK session is unchanged now, so it holds the conversation verbatim and
+      // replaying the tail again is pure duplicated input tokens.
+      send.mockClear();
+      await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "And now?",
+        timeoutMs: 15_000,
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Recent Conversation Tail"));
     });
 
     it("recreates Claude sessions fresh when a resumed SDK session rejects bypassPermissions", async () => {
@@ -46162,6 +47658,233 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     )?.event).toMatchObject({ compactionId: expect.any(String) });
   });
 
+  it("claims a compaction only after the SDK confirms the boundary", async () => {
+    const harness = await createClaudeCompactionFixture({
+      sdkSessionId: "sdk-compact-confirmed",
+      first: [{
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "prompt_too_long",
+        errors: ["prompt is too long for this context window"],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      }],
+      afterCompact: [
+        {
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "manual", pre_tokens: 900_000, post_tokens: 120_000 },
+        },
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+
+    await vi.waitFor(() => {
+      expect(claudeNoticeMessages(harness.events))
+        .toContain("context overflowed — compacted; please re-send your last message");
+    }, { timeout: 5_000 });
+    expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+      .toHaveLength(1);
+  });
+
+  it("says it could not compact when the SDK has too few messages to compact", async () => {
+    const harness = await createClaudeCompactionFixture({
+      sdkSessionId: "sdk-compact-unavailable",
+      first: [{
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "prompt_too_long",
+        errors: ["prompt is too long for this context window"],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      }],
+      afterCompact: [{
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Not enough messages to compact."],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      }],
+    });
+
+    await vi.waitFor(() => {
+      expect(claudeNoticeMessages(harness.events))
+        .toContain("Claude could not compact this conversation. Start a new chat or hand off with a shorter history.");
+    }, { timeout: 5_000 });
+    // The false claim is the bug: ADE told the user to re-send into the same
+    // overflow after a compaction that never happened.
+    expect(claudeNoticeMessages(harness.events))
+      .not.toContain("context overflowed — compacted; please re-send your last message");
+    // One refusal is the answer; ADE must not ask again.
+    expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+      .toHaveLength(1);
+  });
+
+  it("re-arms the fallback compaction after a later turn completes normally", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const gate = (match: string) => {
+      let resolve: () => void = () => {};
+      const promise = new Promise<void>((r) => { resolve = r; });
+      return { match, promise, resolve };
+    };
+    const compactSent = gate("/compact");
+    const secondTurnSent = gate("turn two");
+    const thirdTurnSent = gate("turn three");
+    const send = vi.fn(async (message: unknown) => {
+      const text = claudeInputText(message);
+      for (const entry of [compactSent, secondTurnSent, thirdTurnSent]) {
+        if (text === entry.match || text.includes(entry.match)) entry.resolve();
+      }
+    });
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-compact-rearm", slash_commands: [] };
+        return;
+      }
+      // Turn one overflows, so ADE asks for a compaction.
+      yield {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "prompt_too_long",
+        errors: ["prompt is too long for this context window"],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      };
+      // The SDK refuses: one exchange is not enough to compact.
+      await compactSent.promise;
+      yield {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Not enough messages to compact."],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      };
+      // Turn two completes normally and the conversation has grown.
+      await secondTurnSent.promise;
+      yield {
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "rearm-low", usage: { input_tokens: 1_000, output_tokens: 0 } },
+        },
+      };
+      yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+      // Turn three ends at the fallback threshold.
+      await thirdTurnSent.promise;
+      yield {
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "rearm-high", usage: { input_tokens: 970_000, output_tokens: 0 } },
+        },
+      };
+      yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    })());
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-compact-rearm",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+
+    await service.runSessionTurn({ sessionId: session.id, text: "turn one" });
+    await vi.waitFor(() => {
+      expect(claudeNoticeMessages(events))
+        .toContain("Claude could not compact this conversation. Start a new chat or hand off with a shorter history.");
+    }, { timeout: 5_000 });
+
+    await service.runSessionTurn({ sessionId: session.id, text: "turn two" });
+    await service.runSessionTurn({ sessionId: session.id, text: "turn three" });
+
+    // The refusal described one moment, not the session: a grown conversation
+    // must be compactable again.
+    await vi.waitFor(() => {
+      expect(send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+        .toHaveLength(2);
+    }, { timeout: 5_000 });
+  });
+
+  it("reports a compaction the query teardown threw away", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    // The next turn cannot set its permission mode, so ADE rebuilds the query —
+    // closing the input pump the /compact is still queued on.
+    let failPermissionMode = false;
+    const setPermissionMode = vi.fn(async () => {
+      if (!failPermissionMode) return;
+      failPermissionMode = false;
+      throw new Error("claude query is gone");
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-compact-abandoned", slash_commands: [] };
+        return;
+      }
+      yield {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "prompt_too_long",
+        errors: ["prompt is too long for this context window"],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      };
+      await new Promise<void>(() => {});
+    })());
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-compact-abandoned",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+
+    await service.runSessionTurn({ sessionId: session.id, text: "first message" });
+    await vi.waitFor(() => {
+      expect(send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+        .toHaveLength(1);
+    }, { timeout: 5_000 });
+
+    failPermissionMode = true;
+    await service.runSessionTurn({ sessionId: session.id, text: "second message" }).catch(() => undefined);
+
+    await vi.waitFor(() => {
+      expect(claudeNoticeMessages(events))
+        .toContain("Claude could not compact this conversation. Its session restarted before the compaction ran.");
+    }, { timeout: 5_000 });
+    // The held notice never fires: no compaction happened.
+    expect(claudeNoticeMessages(events))
+      .not.toContain("context overflowed — compacted; please re-send your last message");
+    expect(events.find((entry) => entry.event.type === "context_compact"
+      && entry.event.state === "failed")?.event).toMatchObject({ failReason: "teardown" });
+  });
+
   it("recovers once from prompt_too_long without replaying the failed user message", async () => {
     const harness = await createClaudeStreamFixture({
       sdkSessionId: "sdk-overflow-recovery",
@@ -46179,14 +47902,9 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
         .toHaveLength(1);
     });
-    expect(harness.events.find((entry) =>
-      entry.event.type === "system_notice"
-      && entry.event.message === "context overflowed — compacted; please re-send your last message"
-    )?.event).toMatchObject({
-      type: "system_notice",
-      noticeKind: "info",
-      message: "context overflowed — compacted; please re-send your last message",
-    });
+    // The SDK has not confirmed a boundary, so ADE must not say it compacted.
+    expect(claudeNoticeMessages(harness.events))
+      .not.toContain("context overflowed — compacted; please re-send your last message");
     expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) =>
       text.includes("Exercise Claude streaming text."))).toHaveLength(1);
   });

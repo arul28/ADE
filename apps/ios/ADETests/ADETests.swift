@@ -19317,32 +19317,44 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(emptyMemory.isEmpty)
   }
 
-  func testCtoOnboardingCompletionMirrorsDesktopRequiredStep() {
-    let incomplete = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)
-    XCTAssertFalse(incomplete.isComplete)
-
-    let viaStep = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
-    XCTAssertTrue(viaStep.isComplete)
-
-    let viaTimestamp = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: "2026-07-04T00:00:00Z")
-    XCTAssertTrue(viaTimestamp.isComplete)
-  }
-
-  func testCtoSetupCompletionPreservesHostOnboardingMarkers() {
-    // The host records non-user steps here (e.g. "intro", meaning the CTO's
-    // opening turn was already sent) and updateIdentity replaces the whole
-    // object, so completing setup from iOS must not drop them.
-    XCTAssertEqual(
-      CtoOnboardingState.stepsCompletingSetup(existing: ["intro"]),
-      ["intro", "identity"]
+  func testCtoIdentityPatchPreservesHostOnboardingMarkers() throws {
+    // The host keeps its own non-user markers in `completedSteps` ("intro" =
+    // the CTO's opening turn was already sent, "memory_gardener" = the memory
+    // pass ran) and `cto.updateIdentity` replaces `onboardingState` wholesale.
+    // The phone has no setup flow of its own any more, so the only thing that
+    // keeps those markers alive is a lossless round-trip: whatever the host
+    // sent has to come back out of a patch unchanged.
+    let identity = try JSONDecoder().decode(
+      CtoIdentity.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "name": "CTO",
+        "onboardingState": [
+          "completedSteps": ["intro", "memory_gardener"],
+          // A host that still sends the retired wizard fields must not break
+          // decoding; Swift ignores unknown keys and the markers survive.
+          "dismissedAt": NSNull(),
+          "completedAt": "2026-07-04T00:00:00Z",
+        ],
+      ])
     )
-    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: nil), ["identity"])
-    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: []), ["identity"])
-    // Idempotent: re-saving setup must not duplicate the required step.
-    XCTAssertEqual(
-      CtoOnboardingState.stepsCompletingSetup(existing: ["identity", "intro"]),
-      ["identity", "intro"]
-    )
+    XCTAssertEqual(identity.onboardingState?.completedSteps, ["intro", "memory_gardener"])
+
+    var patch = CtoIdentityPatch()
+    patch.name = "Ada"
+    patch.onboardingState = identity.onboardingState
+
+    let encoded = try JSONSerialization.jsonObject(
+      with: JSONEncoder().encode(patch)
+    ) as? [String: Any]
+    let state = encoded?["onboardingState"] as? [String: Any]
+    XCTAssertEqual(state?["completedSteps"] as? [String], ["intro", "memory_gardener"])
+    // The retired wizard fields are NOT resurrected on the way back: the host's
+    // `normalizeOnboardingState` keeps `completedSteps` and nothing else, so a
+    // phone echoing `completedAt` would be writing a field with no reader.
+    XCTAssertNil(state?["completedAt"])
+    XCTAssertNil(state?["dismissedAt"])
+    // Nothing on the phone injects a step of its own into the host's list.
+    XCTAssertFalse((state?["completedSteps"] as? [String] ?? []).contains("identity"))
   }
 
   func testCtoAttentionDecodesLegacyAndExplicitStatesAndRetainsUnknownProbe() throws {
@@ -19409,26 +19421,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.ctoAttention, .idle)
   }
 
-  func testCtoOnboardingDismissedOnDesktopDoesNotBlockIosTab() {
-    func identity(_ state: CtoOnboardingState?) -> CtoIdentity {
-      CtoIdentity(
-        name: "CTO",
-        onboardingState: state,
-        modelPreferences: CtoModelPreferences(provider: "claude", model: "sonnet", reasoningEffort: nil)
-      )
-    }
-    // Never set up and never dismissed → setup blocks the tab.
-    XCTAssertTrue(identity(nil).isOnboardingBlocking)
-    XCTAssertTrue(identity(CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)).isOnboardingBlocking)
-    // Dismissed on desktop ("Set up later") → chat must open, not the setup card.
-    let dismissed = CtoOnboardingState(completedSteps: [], dismissedAt: "2026-07-05T00:00:00Z", completedAt: nil)
-    XCTAssertFalse(identity(dismissed).isOnboardingBlocking)
-    XCTAssertFalse(identity(dismissed).isOnboardingComplete)
-    // Completed → unlocked too.
-    let complete = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
-    XCTAssertFalse(identity(complete).isOnboardingBlocking)
-  }
-
   /// The host writes `modelPreferences: null` whenever the stored pick is on a
   /// provider that cannot steer a live turn, so the decoder has to survive both
   /// a missing key and an explicit null — a force-unwrap here would crash the
@@ -19464,9 +19456,8 @@ final class ADETests: XCTestCase {
   /// the host defaults to, which is exactly what the null preference exists to
   /// prevent. Mirrors desktop `CtoPage`'s `needsModelPick` branch.
   func testCtoRootShowsModelPickerOnlyWhileNoModelIsPicked() {
-    let setUp = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
     func identity(_ preferences: CtoModelPreferences?) -> CtoIdentity {
-      CtoIdentity(name: "CTO", onboardingState: setUp, modelPreferences: preferences)
+      CtoIdentity(name: "CTO", modelPreferences: preferences)
     }
 
     let unpicked = identity(nil)
@@ -19486,14 +19477,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(
       ctoRootContent(identity: picked, loadError: nil, hostUnreachable: false),
       .thread
-    )
-
-    // Setup still comes first: an unpicked model behind blocking onboarding
-    // shows the setup card, not the picker.
-    let needsSetup = CtoIdentity(name: "CTO", onboardingState: nil, modelPreferences: nil)
-    XCTAssertEqual(
-      ctoRootContent(identity: needsSetup, loadError: nil, hostUnreachable: false),
-      .onboarding
     )
 
     // No identity yet: the offline case stays on the spinner (the top bar owns
@@ -21426,6 +21409,59 @@ final class ADETests: XCTestCase {
       ["Build", "", "ADE"],
       ["Ship", "done", ""],
     ])
+  }
+
+  /// A ```scene fence is agent-authored HTML for the desktop's sandboxed frame.
+  /// iOS has no frame to run it in, so the transcript must collapse it to a
+  /// placeholder — never render, and never dump, up to 96 KB of markup.
+  func testSceneFenceCollapsesToAPlaceholderInsteadOfMarkup() {
+    let markdown = """
+    Here is the shape of it.
+
+    ```scene
+    <!-- @scene title="Lane throughput" -->
+    <div style="color:red">burn chart</div>
+    ```
+    """
+    let blocks = parseMarkdownBlocks(markdown)
+    guard case .code(let language, let code) = blocks.last?.kind else {
+      return XCTFail("Expected the scene fence to parse as a fenced block.")
+    }
+    XCTAssertTrue(workIsSceneFenceLanguage(language))
+    // The source survives in the model (the view is what collapses it), so the
+    // title the placeholder shows has to come out of it.
+    XCTAssertEqual(workSceneFenceTitle(code), "Lane throughput")
+    XCTAssertEqual(workSummarizeSceneFence(code), "[scene: Lane throughput]")
+  }
+
+  /// Mirrors desktop `parseSceneFence`: only the first non-blank line may be
+  /// the marker, `@scene` is a whole word, and a scene with no marker falls
+  /// back to the generic label rather than borrowing text from its markup.
+  func testSceneFenceTitleParsingMirrorsDesktopMarkerRules() {
+    XCTAssertEqual(workSceneFenceTitle("\n\n<!--   @scene   title=\"Spaced\"  -->\n<p>x</p>"), "Spaced")
+    XCTAssertNil(workSceneFenceTitle("<div>no marker</div>"))
+    // A marker that is not the FIRST non-blank line is markup, not a title.
+    XCTAssertNil(workSceneFenceTitle("<div>x</div>\n<!-- @scene title=\"Late\" -->"))
+    // `@scene` must be a whole word.
+    XCTAssertNil(workSceneFenceTitle("<!-- @scenery title=\"Nope\" -->"))
+    // An empty title is no title.
+    XCTAssertNil(workSceneFenceTitle("<!-- @scene title=\"  \" -->"))
+    XCTAssertEqual(workSummarizeSceneFence("<div>x</div>"), "[scene: generated view]")
+    // Capped at the desktop's 120 characters.
+    let long = String(repeating: "a", count: 200)
+    XCTAssertEqual(workSceneFenceTitle("<!-- @scene title=\"\(long)\" -->")?.count, 120)
+    // Language matching is trimmed and case-insensitive; nothing else collapses.
+    XCTAssertTrue(workIsSceneFenceLanguage(" Scene "))
+    XCTAssertFalse(workIsSceneFenceLanguage("swift"))
+    XCTAssertFalse(workIsSceneFenceLanguage(nil))
+    // A multi-word info string is a scene on every other surface: desktop reads
+    // rehype's `language-scene` class and the TUI takes the first token. The
+    // phone comparing the WHOLE string meant ```scene generated dumped raw HTML
+    // into the transcript.
+    XCTAssertTrue(workIsSceneFenceLanguage("scene generated"))
+    XCTAssertTrue(workIsSceneFenceLanguage("  Scene  generated view "))
+    XCTAssertFalse(workIsSceneFenceLanguage("scenery generated"))
+    XCTAssertFalse(workIsSceneFenceLanguage(""))
   }
 
   func testParseWorkChatTranscriptUsesDeterministicFallbackItemIds() {

@@ -2,6 +2,7 @@ import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import { CTO_VOICE_ACTIONS, type CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -82,7 +83,11 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // cancelScheduledCleanup can silently defeat a cleanup policy another
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
-  ai: { only: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  // `storeMachineApiKey` / `deleteMachineApiKey` join the project-scoped pair
+  // for the same reason: writing or destroying a provider credential is
+  // operator work. `getMachineApiKeyStatus` stays open like `getStatus` — it
+  // answers "is a key configured and where from", never the key.
+  ai: { only: ["updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
@@ -112,6 +117,34 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * `updateMemory` (the rewrite path) stays CTO-only.
    */
   cto_memory: { allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] },
+  /*
+   * `startFreshSession` retires the conversation every other CTO surface is
+   * talking to and starts a new one. Nothing it touches is destructive — memory,
+   * identity and the retired transcript all survive — but deciding that a thread
+   * is finished is the operator's call, not an agent's, and an agent that could
+   * make it could quietly drop the context it was being supervised with. Listed
+   * as `only` because every other method on this domain is a read the whole
+   * fleet already depends on.
+   */
+  cto_state: { only: ["startFreshSession"] },
+  /*
+   * Fail-closed, with no exceptions at all.
+   *
+   * A voice call opens a billed socket to OpenAI on the user's own key, puts the
+   * CTO thread into confirm-first mode for its duration, and carries a live
+   * microphone and speaker in a desktop window. None of that is something an
+   * agent has any business starting, driving, or listening to — `pullAudio`
+   * alone would let a session-bound agent drain the audio out from under the
+   * user mid-sentence, and `getState` returns the call's running transcript.
+   *
+   * Desktop main is the only intended caller and reaches this at `cto` role:
+   * `buildLocalRuntimeNodeEnv` launches the project runtime with
+   * `ADE_DEFAULT_ROLE=cto`, and the pool refuses to connect to a runtime whose
+   * default role is anything else. `allExcept: []` therefore denies every
+   * agent-role caller while leaving the router untouched — and a voice action
+   * added later is CTO-only by omission, which is the polarity this gate wants.
+   */
+  cto_voice: { allExcept: [] },
   // Every settle WRITER is CTO-only on purpose. "Is this work actually done?"
   // is a subjective judgment and agents are unreliable at it, so settlement is
   // reachable only from surfaces that connect at cto role — the desktop
@@ -169,6 +202,10 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
     only: [
       "deleteArtifacts",
       "getOwnerSnapshot",
+      // The Proof button on a generated view, and nothing else. It files bytes
+      // the desktop already wrote into this project’s artifact store; agents
+      // still create proof only through the validated RPC tool.
+      "ingestSceneSnapshot",
       "listArtifacts",
       "listBrokenArtifacts",
       "pruneBrokenArtifacts",
@@ -196,6 +233,18 @@ export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, min
   if (!role) return false;
   return ROLE_ORDER[role] >= ROLE_ORDER[minRole];
 }
+
+/**
+ * Every voice action, spread from the one list that defines them.
+ *
+ * Exhaustive by construction rather than by review: a tenth action added to
+ * `CTO_VOICE_ACTIONS` is on the bus the moment it exists, and cannot sit on the
+ * service unreachable because nobody remembered this file. Sorted at read time,
+ * because the allowlist is read as documentation as well as policy — the
+ * ordering is presentation, the membership is not.
+ */
+const CTO_VOICE_ALLOWED_ACTIONS: readonly CtoVoiceAction[] =
+  [...CTO_VOICE_ACTIONS].sort();
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
   account: [
@@ -574,6 +623,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "storeApiKey",
     "deleteApiKey",
     "listApiKeys",
+    // Machine-scoped keys (this install's ADE home, not the project's). On the
+    // bus so the renderer can reach the store the RUNTIME reads — desktop main
+    // writes through a different credential store and the runtime cannot open
+    // it. The secret travels one way, in; only a status comes back.
+    "getMachineApiKeyStatus",
+    "storeMachineApiKey",
+    "deleteMachineApiKey",
     "updateConfig",
     "opencodeAuthMethods",
     "opencodeOAuthStart",
@@ -619,18 +675,22 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   automation_planner: ["parseNaturalLanguage", "saveDraft", "simulate", "validateDraft"],
   cto_state: [
     "completeOnboardingStep",
-    "dismissOnboarding",
     "getAttention",
     "getIdentity",
     "getOnboardingState",
     "getSessionLogs",
     "getSnapshot",
+    "getThreadHealth",
     "previewSystemPrompt",
-    "resetOnboarding",
     "runProjectScan",
+    "startFreshSession",
     "updateIdentity",
   ],
   cto_memory: ["getSnapshot", "searchMemory", "updateMemory", "recordDiscovery"],
+  // The desktop router's whole surface. Every one of these is CTO-only — see
+  // `ADE_ACTION_CTO_ONLY.cto_voice`, which is `allExcept: []` so a voice action
+  // added later is operator-only by omission rather than by remembering.
+  cto_voice: CTO_VOICE_ALLOWED_ACTIONS,
   session: [
     "backfillDeltas",
     "clearWokeMarker",
@@ -765,10 +825,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
   // that wrap it, which validate owner claims and the caller's import root.
+  // `ingestSceneSnapshot` is not a way around that: it is CTO-only, it takes no
+  // bytes, and it accepts only a path already inside this project's artifact
+  // store — the desktop Proof button's one route home in a runtime-backed
+  // build, where the in-process broker does not exist.
   computer_use_artifacts: [
     "deleteArtifacts",
     "getOwnerSnapshot",
     "getBackendStatus",
+    "ingestSceneSnapshot",
     "listArtifacts",
     "listBrokenArtifacts",
     "pruneBrokenArtifacts",

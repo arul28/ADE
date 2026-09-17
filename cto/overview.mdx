@@ -12,7 +12,7 @@ Reach for the CTO when a question or task spans more than one lane, needs planni
 
 <CardGroup cols={2}>
   <Card title="Persistent identity" icon="id-badge">
-    One CTO per project with a name, personality, and continuity that survives long conversations — not a fresh chat each time.
+    One CTO per project, with continuity that survives long conversations — not a fresh chat each time. Its voice is fixed by ADE, so it reads the same on day one and day ninety.
   </Card>
   <Card title="Project-wide context" icon="diagram-project">
     It reasons across every lane, PR, and connected Linear issue, instead of one worktree at a time.
@@ -22,6 +22,9 @@ Reach for the CTO when a question or task spans more than one lane, needs planni
   </Card>
   <Card title="Reads Linear" icon="layers">
     When Linear is connected, the CTO can browse issues, read comments, and post lightweight updates without leaving the thread.
+  </Card>
+  <Card title="Knows ADE itself" icon="circle-question">
+    It knows the application, not only your repository. Ask where a setting lives or why a control is disabled and it answers from ADE's own documentation, with a deeplink to the place.
   </Card>
 </CardGroup>
 
@@ -50,11 +53,13 @@ Ask the CTO to remember something explicitly — "remember that we deploy from `
 
 ## Switch models without losing the thread
 
-You can change the CTO's model at any point from the header badge or Settings. The thread, its transcript, and its memory carry over to the new model — a switch is not a reset. Favor a capable model for project-wide reasoning; drop to a faster one for quick lookups.
+You can change the CTO's model at any point from **Settings → Model**. The thread, its transcript, and its memory carry over to the new model — a switch is not a reset. Favor a capable model for project-wide reasoning; drop to a faster one for quick lookups.
+
+The list is narrower than elsewhere in ADE on purpose: the CTO only runs on models that can take a message into a turn already underway, because it is interrupted constantly by the chats it starts and by its own wake-ups.
 
 <CardGroup cols={2}>
   <Card title="Set up the CTO" icon="wand-magic-sparkles" href="/cto/setup">
-    Pick a personality and work style, then optionally choose a model and connect Linear.
+    Pick a model, then optionally tune reasoning effort and connect Linear.
   </Card>
   <Card title="Linear" icon="layers" href="/integrations/linear">
     Connect Linear so the CTO can browse and update issues.

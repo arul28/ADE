@@ -12,7 +12,6 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 import {
   MODEL_REGISTRY,
-  formatPiProviderLabel,
   modelSupportsFastMode,
   modelSupportsServiceTier,
   resolveCliProviderForModel,
@@ -28,6 +27,7 @@ import {
 import { cn } from "../../ui/cn";
 import { cursorProviderAvailable } from "../../../lib/platform";
 import { ModelListRow } from "./ModelListRow";
+import { isPiRoutedModel, providerLabel, subProviderKey, subProviderLabel } from "./modelFacts";
 import { ModelPickerRail, type RailEntry, type RailSelection, type AuthStatus } from "./ModelPickerRail";
 import { ModelPickerEmptyState, ProviderRefreshError } from "./ModelPickerEmptyState";
 import { useModelFavorites } from "./useModelFavorites";
@@ -45,27 +45,6 @@ import type { AgentChatModelCatalogRefreshProvider, OpenProjectBinding } from ".
 import { refreshProviderForFamily } from "./runtimeCatalogCache";
 
 const MODEL_ROW_ESTIMATED_HEIGHT = 44;
-
-const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
-  anthropic: "Anthropic",
-  openai: "OpenAI",
-  opencode: "OpenCode",
-  google: "Google",
-  mistral: "Mistral",
-  deepseek: "DeepSeek",
-  xai: "Grok",
-  groq: "Groq",
-  together: "Together",
-  openrouter: "OpenRouter",
-  ollama: "Ollama",
-  lmstudio: "LM Studio",
-  cursor: "Cursor",
-  factory: "Droid",
-  pi: "Pi",
-  qwen: "Qwen",
-  moonshot: "Kimi",
-  "github-copilot": "GitHub Copilot",
-};
 
 // Order matters for rail layout — top-tier providers first, then routers,
 // then local runtimes. Listed here (not derived from PROVIDER_LABELS) because
@@ -91,38 +70,6 @@ const ALL_PROVIDER_FAMILIES: readonly ProviderFamily[] = MODEL_PICKER_PROVIDER_O
   (groupKey) => PICKER_FAMILY_BY_GROUP[groupKey],
 );
 
-function providerLabel(family: ProviderFamily | string): string {
-  return PROVIDER_LABELS[family as ProviderFamily] ?? family;
-}
-
-function modelSubProvider(model: ModelDescriptor): string {
-  const sub = (model as ModelDescriptor & { subProvider?: string }).subProvider;
-  if (typeof sub === "string" && sub.trim().length) return sub.trim();
-  if (isPiRoutedModel(model) && model.piProviderId) {
-    const provider = formatPiProviderLabel(model.piProviderId);
-    const profile = model.piProfileId?.trim();
-    return profile && profile !== "default" ? `${provider} · ${profile}` : provider;
-  }
-  if (model.providerRoute === "opencode" && model.openCodeProviderId) {
-    // Sub-header text used in grouped lists. Already inside the OpenCode rail
-    // when this fires, so "via OpenCode" was redundant — show the underlying
-    // provider name only. Title-case so "anthropic" reads as "Anthropic".
-    const id = model.openCodeProviderId;
-    return id.charAt(0).toUpperCase() + id.slice(1);
-  }
-  return "";
-}
-
-function modelSubProviderKey(model: ModelDescriptor): string {
-  const key = (model as ModelDescriptor & { subProviderKey?: string }).subProviderKey;
-  if (typeof key === "string" && key.trim().length) return key.trim();
-  if (isPiRoutedModel(model) && model.piProviderId) {
-    return `${model.piProfileId?.trim() || "default"}:${model.piProviderId}`;
-  }
-  if (model.providerRoute === "opencode" && model.openCodeProviderId) return model.openCodeProviderId;
-  return modelSubProvider(model) || "__default__";
-}
-
 function refreshProviderLabel(provider: AgentChatModelCatalogRefreshProvider): string {
   if (provider === "lmstudio") return "LM Studio";
   if (provider === "droid") return "Droid";
@@ -131,10 +78,6 @@ function refreshProviderLabel(provider: AgentChatModelCatalogRefreshProvider): s
 
 function providerIsReady(status: AuthStatus | undefined): boolean {
   return status === "ok" || status === "limited";
-}
-
-function isPiRoutedModel(model: ModelDescriptor): boolean {
-  return model.providerRoute === "pi-sdk" || model.id.trim().toLowerCase().startsWith("pi/");
 }
 
 /** Picker grouping follows the selected harness; model.family remains the
@@ -403,7 +346,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       name: m.displayName,
       shortName: m.shortId,
       aliases: m.aliases,
-      subProvider: modelSubProvider(m) || undefined,
+      subProvider: subProviderLabel(m) ?? undefined,
       family: pickerFamilyForModel(m),
       providerDisplayName: providerLabel(pickerFamilyForModel(m)),
       isFavorite: favoriteSet.has(m.id),
@@ -481,8 +424,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     if (!activeProviderFamily) return [];
     const byKey = new Map<string, { key: string; label: string; models: ModelDescriptor[]; hasAvailable: boolean }>();
     for (const model of candidateModels) {
-      const key = modelSubProviderKey(model);
-      const label = modelSubProvider(model) || providerLabel(activeProviderFamily);
+      const key = subProviderKey(model);
+      const label = subProviderLabel(model) || providerLabel(activeProviderFamily);
       const existing = byKey.get(key);
       if (existing) {
         existing.models.push(model);
@@ -504,7 +447,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       if (current && providerTabs.some((tab) => tab.key === current)) return current;
       const activeModel = expandedModels.find((model) => model.id === value);
       const activeKey = activeModel && activeProviderFamily === pickerFamilyForModel(activeModel)
-        ? modelSubProviderKey(activeModel)
+        ? subProviderKey(activeModel)
         : null;
       if (activeKey && providerTabs.some((tab) => tab.key === activeKey)) return activeKey;
       return providerTabs.find((tab) => tab.hasAvailable)?.key ?? providerTabs[0]?.key ?? null;

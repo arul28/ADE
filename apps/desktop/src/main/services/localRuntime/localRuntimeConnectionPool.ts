@@ -16,11 +16,11 @@ import type {
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeBufferedEvent,
-  RemoteRuntimeEventCategory,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
 } from "../../../shared/types/remoteRuntime";
+import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
 import type {
   AdeActionRegistryEntry,
   LocalRuntimeStatus,
@@ -3128,10 +3128,6 @@ function clampLimit(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(1, Math.min(1000, Math.floor(value)))
     : 100;
-}
-
-function isRemoteRuntimeEventCategory(value: unknown): value is RemoteRuntimeEventCategory {
-  return value === "orchestrator" || value === "dag_mutation" || value === "runtime" || value === "pty";
 }
 
 function normalizeBufferedEvent(value: unknown): RemoteRuntimeBufferedEvent | null {

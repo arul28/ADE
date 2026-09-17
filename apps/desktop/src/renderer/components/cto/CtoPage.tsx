@@ -1,19 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Desktop, Gear, X } from "@phosphor-icons/react";
+import { Gear, Robot, Strategy } from "@phosphor-icons/react";
 import type {
   AgentChatSession,
   AgentChatSessionSummary,
   ChatSurfacePresentation,
   CtoIdentity,
-  CtoOnboardingState,
   CtoSessionLogEntry,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
 } from "../../../shared/types";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { CtoSettingsPanel } from "./CtoSettingsPanel";
-import { CtoOnboardingCard } from "./CtoOnboardingCard";
-import { getPersonalityTheme } from "./personalityTheme";
+import { CtoTalkButton } from "./CtoTalkButton";
+import { CtoTalkNoticeLine, type CtoTalkNotice } from "./CtoTalkNoticeLine";
+import { CtoSettingsPage } from "./CtoSettingsPage";
 import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
@@ -21,6 +22,8 @@ import { shellBodyCls } from "./shared/designTokens";
 import { TechnicalDetailsFold } from "../app/errorSurfaceKit";
 
 const CTO_ACCENT = "#22D3EE";
+/** `CTO_ACCENT` as an "r, g, b" triplet, for the rgba() tints below. */
+const CTO_ACCENT_RGB = "34, 211, 238";
 const MAX_WAKING_RETRIES = 4;
 
 // The CTO is a single project-level thread. There is only ever one session; the
@@ -37,10 +40,19 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const [wakeAttempt, setWakeAttempt] = useState(0);
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
-  const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
-  const [showOnboarding, setShowOnboarding] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** Why the last call could not start. Its own line, so the header never moves. */
+  const [talkNotice, setTalkNotice] = useState<CtoTalkNotice | null>(null);
   const [switchingModel, setSwitchingModel] = useState(false);
+  /**
+   * Whether ADE thinks this thread should be rotated, and whether it can still
+   * answer at all. Read-only: `getThreadHealth` never materializes a session,
+   * so asking is safe before the thread exists.
+   */
+  const [threadHealth, setThreadHealth] = useState<CtoThreadHealth | null>(null);
+  /** The owner said "not now". Kept per thread, so a new one asks again. */
+  const [rotationDismissedFor, setRotationDismissedFor] = useState<string | null>(null);
+  const [rotating, setRotating] = useState(false);
 
   const historyLoadedRef = useRef(false);
   const wakingRetriesRef = useRef(0);
@@ -49,16 +61,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
   const primaryLaneId = useMemo(() => resolveCtoPrimaryLaneId(lanes), [lanes]);
 
-  const onboardingComplete = Boolean(onboardingState?.completedAt)
-    || Boolean(onboardingState?.completedSteps.includes("identity"));
-  const needsOnboarding = Boolean(
-    onboardingState && !onboardingComplete && !onboardingState.dismissedAt,
-  );
-  const onboardingVisible = showOnboarding || needsOnboarding;
-
   const ctoDisplayName = ctoIdentity?.name?.trim() || "CTO";
-  const personality = ctoIdentity?.personality ?? "strategic";
-  const theme = getPersonalityTheme(personality);
 
   const currentModelId = session?.modelId
     ?? ctoIdentity?.modelPreferences?.modelId
@@ -71,21 +74,20 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // on. The picker takes the thread's place until one is chosen — the session
   // itself is untouched, so a pick resumes the same thread rather than a new one.
   const needsModelPick = Boolean(ctoIdentity) && !ctoIdentity?.modelPreferences;
+  // A null identity means the snapshot has not landed yet — it is not a CTO
+  // that happens to have a model. Waking on it would materialize the session
+  // ahead of the picker, which is the one thing the pick gate exists to stop.
+  const identityLoaded = Boolean(ctoIdentity);
 
   /* ── Data loading ── */
 
   const loadSummary = useCallback(async () => {
     if (!window.ade?.cto) return;
     try {
-      const [snapshot, obState] = await Promise.all([
-        window.ade.cto.getState({ recentLimit: 0 }),
-        window.ade.cto.getOnboardingState(),
-      ]);
+      const snapshot = await window.ade.cto.getState({ recentLimit: 0 });
       setCtoIdentity(snapshot.identity);
-      setOnboardingState(obState);
     } catch {
       // Non-fatal: keep the waking state and let the session/lane effects retry.
-      setOnboardingState((prev) => prev ?? { completedSteps: [] });
     }
   }, []);
 
@@ -101,10 +103,31 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     }
   }, []);
 
+  /**
+   * Ask whether this thread is running out of room.
+   *
+   * Same cadence as the snapshot above — on entering the tab, and again
+   * whenever the session identity changes — rather than a timer. The banner is
+   * an offer, not an alarm, so it does not need to be true to the second.
+   */
+  const loadThreadHealth = useCallback(async () => {
+    if (!window.ade?.cto?.getThreadHealth) return;
+    try {
+      setThreadHealth(await window.ade.cto.getThreadHealth());
+    } catch {
+      // Non-fatal: no banner is better than an error about a banner.
+    }
+  }, []);
+
   useEffect(() => {
     if (!active) return;
     void loadSummary();
   }, [active, loadSummary]);
+
+  useEffect(() => {
+    if (!active) return;
+    void loadThreadHealth();
+  }, [active, loadThreadHealth, session?.id]);
 
   useEffect(() => {
     if (!active || !settingsOpen || historyLoadedRef.current) return;
@@ -115,7 +138,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // race) so a slow lanes store shows the waking state, never an error card.
   useEffect(() => {
     if (!active || !window.ade?.cto) return;
-    if (!onboardingState || onboardingVisible || !primaryLaneId || needsModelPick) return;
+    if (!identityLoaded || needsModelPick || !primaryLaneId) return;
 
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -147,36 +170,52 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [active, needsModelPick, onboardingState, onboardingVisible, primaryLaneId, wakeAttempt]);
+  }, [active, identityLoaded, needsModelPick, primaryLaneId, wakeAttempt]);
 
   /* ── Callbacks ── */
 
   const refreshSession = useCallback(async () => {
-    if (!window.ade?.cto || !primaryLaneId || onboardingVisible) return null;
+    if (!window.ade?.cto || !primaryLaneId) return null;
     const next = await window.ade.cto.ensureSession();
     ctoPrimarySession = next;
     setSession(next);
     return next;
-  }, [onboardingVisible, primaryLaneId]);
+  }, [primaryLaneId]);
 
-  const handleSaveIdentity = useCallback(async (patch: Record<string, unknown>) => {
-    if (!window.ade?.cto) throw new Error("The CTO isn't available right now.");
-    const snapshot = await window.ade.cto.updateIdentity({ patch });
-    setCtoIdentity(snapshot.identity);
-    await refreshSession();
-  }, [refreshSession]);
-
-  // Settings owns model selection for the CTO. With a live session it moves the
-  // running thread via updateSession, which also persists the choice into
-  // identity prefs. Before the session exists it writes identity prefs so
-  // ensureSession reconciles the model in.
+  /**
+   * Settings owns model selection for the CTO.
+   *
+   * The identity preference is the DURABLE record of the choice, and it is
+   * written every time — with a live session as well as without one. Leaving it
+   * to `updateSession` to persist on the way through does not hold: the page
+   * shows the live session's model, so a preference that silently stayed behind
+   * is invisible until the next fresh thread is created on a smaller model at a
+   * lower reasoning tier than the one on screen.
+   *
+   * Preference first, session second, so a failure between them leaves the
+   * durable record holding what the user picked rather than what they replaced.
+   */
   const handleModelChange = useCallback(async (modelId: string, reasoningEffort: string | null) => {
     if (!window.ade?.cto || switchingModel) return;
     const selection = resolveModelSelection(modelId, reasoningEffort);
     if (!selection) return;
+    // Fast mode is a property of the model, not of the picker: carrying a true
+    // onto a model that has no fast tier asks the chat service for a mode that
+    // does not exist there.
+    const nextFastMode = currentFastMode && selection.supportsFastMode;
     setSwitchingModel(true);
     setError(null);
     try {
+      await window.ade.cto.updateIdentity({
+        patch: {
+          modelPreferences: {
+            provider: selection.provider,
+            model: selection.model,
+            modelId: selection.modelId,
+            reasoningEffort: selection.reasoningEffort,
+          },
+        },
+      });
       if (session) {
         const modelUpdate = selection.modelId === session.modelId
           ? { reasoningEffort: selection.reasoningEffort }
@@ -185,21 +224,11 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           sessionId: session.id,
           modelId: selection.modelId,
           ...modelUpdate,
-          fastMode: currentFastMode,
+          fastMode: nextFastMode,
         });
         ctoPrimarySession = updated;
         setSession(updated);
       } else {
-        await window.ade.cto.updateIdentity({
-          patch: {
-            modelPreferences: {
-              provider: selection.provider,
-              model: selection.model,
-              modelId: selection.modelId,
-              reasoningEffort: selection.reasoningEffort,
-            },
-          },
-        });
         await refreshSession();
       }
       const snap = await window.ade.cto.getState({ recentLimit: 0 });
@@ -210,6 +239,29 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       setSwitchingModel(false);
     }
   }, [currentFastMode, refreshSession, session, switchingModel]);
+
+  /**
+   * Save the name and the standing instructions.
+   *
+   * `updateIdentity` answers the whole snapshot, so the local copy is replaced
+   * rather than patched — a merge here would drift from whatever the service
+   * normalized on the way in.
+   */
+  const handleIdentityChange = useCallback(async (patch: {
+    name?: string;
+    systemPromptExtension?: string;
+    voiceName?: string;
+    voiceBackchannels?: boolean;
+  }) => {
+    if (!window.ade?.cto) return;
+    setError(null);
+    try {
+      const snapshot = await window.ade.cto.updateIdentity({ patch });
+      setCtoIdentity(snapshot.identity);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save the CTO's identity.");
+    }
+  }, []);
 
   const handleFastModeChange = useCallback(async (enabled: boolean) => {
     if (!window.ade?.cto || switchingModel) return;
@@ -231,35 +283,33 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [refreshSession, session, switchingModel]);
 
-  const handleOnboardingComplete = useCallback(async () => {
-    setShowOnboarding(false);
-    await loadSummary();
-  }, [loadSummary]);
-
-  const handleOnboardingSkip = useCallback(async () => {
-    const dismissedAt = new Date().toISOString();
-    setOnboardingState((current) => ({
-      completedSteps: current?.completedSteps ?? [],
-      completedAt: current?.completedAt,
-      dismissedAt,
-    }));
-    setShowOnboarding(false);
-    if (!window.ade?.cto) return;
+  /**
+   * Retire the thread and open a fresh one.
+   *
+   * ADE never does this on its own: every caller is a button the owner pressed.
+   * The module-level cache is dropped first, because the session it holds is
+   * the one that was just retired.
+   */
+  const handleStartFreshSession = useCallback(async (): Promise<CtoStartFreshSessionResult> => {
+    const startFresh = window.ade?.cto?.startFreshSession;
+    if (!startFresh) throw new Error("The CTO isn't available in this window.");
+    setRotating(true);
     try {
-      await window.ade.cto.dismissOnboarding();
+      const result = await startFresh();
+      ctoPrimarySession = null;
+      setSession(null);
+      setRotationDismissedFor(null);
+      historyLoadedRef.current = false;
+      wakingRetriesRef.current = 0;
+      setError(null);
+      setWakeAttempt((n) => n + 1);
       await loadSummary();
-    } catch {
-      // Let the user continue even if persistence fails.
+      await loadThreadHealth();
+      return result;
+    } finally {
+      setRotating(false);
     }
-  }, [loadSummary]);
-
-  const handleResetOnboarding = useCallback(async () => {
-    if (!window.ade?.cto) return;
-    setSettingsOpen(false);
-    await window.ade.cto.resetOnboarding();
-    setShowOnboarding(true);
-    await loadSummary();
-  }, [loadSummary]);
+  }, [loadSummary, loadThreadHealth]);
 
   const lockedSessionSummary = useMemo<AgentChatSessionSummary | null>(() => {
     if (!session) return null;
@@ -304,71 +354,83 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
   const bridgeMissing = active && typeof window !== "undefined" && !window.ade?.cto;
 
-  // First-run: a single setup card owns the whole surface.
-  if (!bridgeMissing && onboardingVisible && onboardingState) {
-    return (
-      <div className={cn(shellBodyCls, "flex-col")}>
-        <CtoOnboardingCard onComplete={handleOnboardingComplete} onSkip={handleOnboardingSkip} />
-      </div>
-    );
-  }
-
-  const avatarInitial = ctoDisplayName.charAt(0).toUpperCase();
   const sessionReady = Boolean(session) && Boolean(primaryLaneId);
+
+  /**
+   * The offer to rotate, and the one rule about it: ADE never rotates on its
+   * own. It is advice with a button, dismissible per thread, and it stays out
+   * of the way while settings is the thing on screen.
+   */
+  const showRotationPrompt = Boolean(threadHealth?.rotationAdvised)
+    && !settingsOpen
+    && rotationDismissedFor !== (threadHealth?.sessionId ?? "none");
 
   return (
     <div className={cn(shellBodyCls, "relative flex-col")}>
       {/* Header */}
-      <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-2.5">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <div
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold"
-            style={{
-              background: `rgba(${theme.rgb}, 0.14)`,
-              border: `1px solid rgba(${theme.rgb}, 0.32)`,
-              color: theme.hex,
-            }}
-          >
-            {avatarInitial}
+      <div className="flex flex-col border-b border-white/[0.06]">
+        <div className="flex items-center gap-3 px-4 py-2.5">
+          <div className="flex min-w-0 items-center gap-2.5">
+            {/* The same glyph as the tab rail and as iOS, not the first character
+                of whatever the user renamed the CTO to. One mark, every surface. */}
+            <Robot size={22} weight="regular" className="shrink-0" style={{ color: CTO_ACCENT }} />
+            <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
           </div>
-          <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
-        </div>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {/* The CTO thread is pinned to the local primary lane by design, so
-              the machine is stated as a fact — never offered as a choice. */}
-          <span
-            data-testid="cto-machine-indicator"
-            title="The CTO thread is pinned to This computer and cannot be moved."
-            className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-dashed border-white/[0.12] px-2 font-sans text-[10px] font-medium text-muted-fg/55"
-            style={{ whiteSpace: "nowrap" }}
-          >
-            <Desktop size={11} aria-hidden />
-            Always runs on This computer
-          </span>
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(true)}
-            aria-label="CTO settings"
-            className={cn(
-              "flex h-7 w-7 items-center justify-center rounded-lg border transition-colors",
-              settingsOpen
-                ? "border-white/15 bg-white/[0.06] text-fg"
-                : "border-white/[0.07] text-muted-fg/55 hover:bg-white/[0.04] hover:text-fg",
-            )}
-          >
-            <Gear size={15} weight={settingsOpen ? "fill" : "regular"} />
-          </button>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <CtoTalkButton onNotice={setTalkNotice} />
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="CTO settings"
+              className={cn(
+                "flex h-8 w-8 items-center justify-center rounded-full border transition-colors",
+                settingsOpen
+                  ? "border-white/15 bg-white/[0.06] text-fg"
+                  : "border-white/[0.07] text-muted-fg/55 hover:bg-white/[0.04] hover:text-fg",
+              )}
+            >
+              <Gear size={15} weight={settingsOpen ? "fill" : "regular"} />
+            </button>
+          </div>
         </div>
+        {talkNotice ? <CtoTalkNoticeLine notice={talkNotice} /> : null}
       </div>
 
+      {showRotationPrompt && threadHealth ? (
+        <CtoRotationPrompt
+          blocked={!threadHealth.canTakeTurn}
+          busy={rotating}
+          onStart={() => { void handleStartFreshSession().catch(() => {}); }}
+          onDismiss={() => setRotationDismissedFor(threadHealth.sessionId ?? "none")}
+        />
+      ) : null}
+
+      {settingsOpen ? (
+        <CtoSettingsPage
+          identity={ctoIdentity}
+          sessionLogs={sessionLogs}
+          currentModelId={currentModelId}
+          currentReasoningEffort={currentReasoningEffort}
+          currentFastMode={currentFastMode}
+          availableModelIds={availableModelIds}
+          loadingModels={loadingModels}
+          switchingModel={switchingModel}
+          onModelChange={(modelId, reasoningEffort) => void handleModelChange(modelId, reasoningEffort)}
+          onFastModeChange={(enabled) => void handleFastModeChange(enabled)}
+          onOpenProviderSettings={openProviderSettings}
+          onStartFreshSession={handleStartFreshSession}
+          onIdentityChange={(patch) => void handleIdentityChange(patch)}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
+
       {/* Thread / waking */}
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className={cn("min-h-0 flex-1 overflow-hidden", settingsOpen && "hidden")}>
         {bridgeMissing ? (
-          <WakingState theme={theme} title="The CTO isn't available" subtitle="Reopen ADE to reconnect." />
+          <WakingState title="The CTO isn't available" subtitle="Reopen ADE to reconnect." />
         ) : needsModelPick ? (
           <ModelPickCard
-            theme={theme}
             availableModelIds={availableModelIds}
             loadingModels={loadingModels}
             switchingModel={switchingModel}
@@ -391,7 +453,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           />
         ) : error ? (
           <WakingState
-            theme={theme}
             title="Couldn't reach the CTO"
             subtitle="ADE tried a few times and the CTO didn't answer. Nothing was lost — your thread is still here."
             detail={error}
@@ -406,68 +467,25 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           />
         ) : (
           <WakingState
-            theme={theme}
             title="Opening the CTO"
             pulsing
           />
         )}
       </div>
 
-      {/* Settings overlay */}
-      {settingsOpen && (
-        <>
-          <button
-            type="button"
-            aria-label="Close settings"
-            onClick={() => setSettingsOpen(false)}
-            className="absolute inset-0 z-30 cursor-default bg-black/40"
-          />
-          <div
-            role="dialog"
-            aria-label="CTO settings"
-            className="absolute inset-y-0 right-0 z-40 flex w-[440px] max-w-full flex-col border-l border-white/[0.08] bg-[#0C0B12] shadow-[-16px_0_44px_rgba(0,0,0,0.5)]"
-          >
-            <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-3">
-              <div className="text-[13px] font-semibold text-fg">Settings</div>
-              <button
-                type="button"
-                onClick={() => setSettingsOpen(false)}
-                aria-label="Close settings"
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg"
-              >
-                <X size={15} />
-              </button>
-            </div>
-            <CtoSettingsPanel
-              identity={ctoIdentity}
-              sessionLogs={sessionLogs}
-              currentModelId={currentModelId}
-              currentReasoningEffort={currentReasoningEffort}
-              currentFastMode={currentFastMode}
-              availableModelIds={availableModelIds}
-              loadingModels={loadingModels}
-              switchingModel={switchingModel}
-              onSaveIdentity={handleSaveIdentity}
-              onModelChange={(modelId, reasoningEffort) => void handleModelChange(modelId, reasoningEffort)}
-              onFastModeChange={(enabled) => void handleFastModeChange(enabled)}
-              onOpenProviderSettings={openProviderSettings}
-              onResetOnboarding={handleResetOnboarding}
-            />
-          </div>
-        </>
-      )}
     </div>
   );
 }
 
 /**
- * Shown in place of the thread while the CTO has no model preference — either a
- * fresh identity or one whose stored model was on a provider that cannot steer
- * a live turn. The session is deliberately untouched: picking here moves the
- * existing thread rather than starting a second one.
+ * The CTO's welcome screen, and the one decision first run asks for.
+ *
+ * There is no setup wizard: personality, work style and name are not choices
+ * any more, and the only thing ADE genuinely cannot infer is which model should
+ * do the thinking. So the CTO introduces itself in its own voice and the picker
+ * is the reply affordance — a first turn, not a form.
  */
 function ModelPickCard({
-  theme,
   availableModelIds,
   loadingModels,
   switchingModel,
@@ -475,7 +493,6 @@ function ModelPickCard({
   onPick,
   onOpenProviderSettings,
 }: {
-  theme: ReturnType<typeof getPersonalityTheme>;
   availableModelIds: string[];
   loadingModels: boolean;
   switchingModel: boolean;
@@ -483,24 +500,34 @@ function ModelPickCard({
   onPick: (modelId: string) => void;
   onOpenProviderSettings: () => void;
 }) {
-  const Icon = theme.icon;
   return (
     <div className="flex h-full items-center justify-center p-6" data-testid="cto-model-pick">
-      <div className="flex w-full max-w-[420px] flex-col items-center text-center">
-        <div
-          className="flex h-12 w-12 items-center justify-center rounded-2xl"
-          style={{
-            background: `rgba(${theme.rgb}, 0.12)`,
-            border: `1px solid rgba(${theme.rgb}, 0.28)`,
-          }}
-        >
-          <Icon size={20} weight="duotone" style={{ color: theme.hex }} />
+      <div className="flex w-full max-w-[460px] flex-col">
+        <div className="flex items-center gap-2.5">
+          <div
+            className="flex h-9 w-9 items-center justify-center rounded-xl"
+            style={{
+              background: `rgba(${CTO_ACCENT_RGB}, 0.12)`,
+              border: `1px solid rgba(${CTO_ACCENT_RGB}, 0.28)`,
+            }}
+          >
+            <Strategy size={17} weight="duotone" style={{ color: CTO_ACCENT }} />
+          </div>
+          <span className="text-[13px] font-semibold text-fg">CTO</span>
         </div>
-        <div className="mt-4 text-[14px] font-semibold text-fg">Pick a model that can steer live turns</div>
-        <div className="mt-1 text-[12.5px] leading-5 text-muted-fg/50">
-          The CTO is interrupted constantly — by the chats it starts, by its own wake-ups. It can only run on a
-          model that accepts a message into a turn already underway.
-        </div>
+
+        <p className="mt-4 text-[13.5px] leading-6 text-fg/85">
+          I run point on this project. I know the lanes, the pull requests, the history and the
+          memory, and I can drive ADE for you — including explaining ADE itself when something
+          is not where you expected it.
+        </p>
+
+        <p className="mt-3 text-[12.5px] leading-5 text-muted-fg/60">
+          Pick a model that can steer live turns and I will get started. I get interrupted
+          constantly — by the chats I start, by my own wake-ups — so I can only run on a model
+          that accepts a message into a turn already underway.
+        </p>
+
         <div className="mt-5">
           <ModelPicker
             value=""
@@ -511,33 +538,31 @@ function ModelPickCard({
             onOpenSignIn={onOpenProviderSettings}
           />
         </div>
+
         {loadingModels ? (
           <div className="mt-3 text-[11px] text-muted-fg/40">Checking configured models…</div>
         ) : availableModelIds.length === 0 ? (
           <div className="mt-3 rounded-lg border border-amber-500/18 bg-amber-500/[0.06] px-3 py-2 text-[11px] leading-4 text-amber-200/90">
-            No model the CTO can run on is configured yet. Sign in to Claude, Codex, or Cursor under Settings → AI →
-            Providers.
+            No model I can run on is configured yet. Sign in to Claude, Codex, or Cursor under
+            Settings → AI → Providers.
           </div>
         ) : switchingModel ? (
           <div className="mt-3 text-[11px] text-muted-fg/45">Moving the thread to the new model…</div>
         ) : null}
-        {error ? (
-          <TechnicalDetailsFold text={error} className="mt-4 w-full text-left" />
-        ) : null}
+
+        {error ? <TechnicalDetailsFold text={error} className="mt-4 w-full text-left" /> : null}
       </div>
     </div>
   );
 }
 
 function WakingState({
-  theme,
   title,
   subtitle,
   detail = null,
   pulsing = false,
   action,
 }: {
-  theme: ReturnType<typeof getPersonalityTheme>;
   title: string;
   subtitle?: string;
   /** Raw failure text. Never on the main line — it goes in the fold. */
@@ -546,7 +571,6 @@ function WakingState({
   /** A failure pane with no way out is a dead end; give it one. */
   action?: { label: string; onClick: () => void };
 }) {
-  const Icon = theme.icon;
   return (
     <div className="flex h-full items-center justify-center p-6" data-testid="cto-waking">
       <div className="flex flex-col items-center text-center">
@@ -556,11 +580,11 @@ function WakingState({
             pulsing && "motion-safe:animate-pulse",
           )}
           style={{
-            background: `rgba(${theme.rgb}, 0.12)`,
-            border: `1px solid rgba(${theme.rgb}, 0.28)`,
+            background: `rgba(${CTO_ACCENT_RGB}, 0.12)`,
+            border: `1px solid rgba(${CTO_ACCENT_RGB}, 0.28)`,
           }}
         >
-          <Icon size={20} weight="duotone" style={{ color: theme.hex }} />
+          <Strategy size={20} weight="duotone" style={{ color: CTO_ACCENT }} />
         </div>
         <div className="mt-4 text-[14px] font-semibold text-fg">{title}</div>
         {/* A failure sentence is long — `max-w-xs` broke it into four ragged
@@ -587,6 +611,70 @@ function WakingState({
         {detail ? (
           <TechnicalDetailsFold text={detail} className="mt-4 w-full max-w-[420px] text-left" />
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "This thread is getting full, and here is the way out."
+ *
+ * Quiet, one line of prose, and never in the way: it does not block the
+ * composer, it does not reappear once dismissed for this thread, and pressing
+ * it is the only thing that retires anything.
+ */
+function CtoRotationPrompt({
+  blocked,
+  busy,
+  onStart,
+  onDismiss,
+}: {
+  blocked: boolean;
+  busy: boolean;
+  onStart: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      data-testid="cto-rotation-prompt"
+      role="status"
+      className={cn(
+        "flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2",
+        blocked
+          ? "border-amber-500/15 bg-amber-500/[0.06]"
+          : "border-white/[0.05] bg-white/[0.02]",
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <div className={cn("text-[12px] font-medium", blocked ? "text-amber-200/90" : "text-fg/85")}>
+          {blocked
+            ? "This conversation is over its context limit"
+            : "This conversation is getting full"}
+        </div>
+        <div className="mt-0.5 text-[11.5px] leading-[1.5] text-muted-fg/60">
+          {blocked
+            ? "The CTO can't answer until you start a fresh session. Nothing it remembers is lost, and this conversation moves to Past threads."
+            : "Starting a fresh session keeps everything the CTO remembers — this conversation moves to Past threads. ADE won't do it on its own."}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          data-testid="cto-rotation-start"
+          disabled={busy}
+          onClick={onStart}
+          className="rounded-lg border border-white/[0.1] px-2.5 py-1 text-[11.5px] font-medium text-fg/85 transition-colors hover:bg-white/[0.05] disabled:opacity-60"
+        >
+          {busy ? "Starting…" : "Start a fresh session"}
+        </button>
+        <button
+          type="button"
+          data-testid="cto-rotation-dismiss"
+          onClick={onDismiss}
+          className="rounded-lg px-2 py-1 text-[11.5px] text-muted-fg/55 transition-colors hover:text-fg/80"
+        >
+          Not now
+        </button>
       </div>
     </div>
   );

@@ -26,7 +26,7 @@ import type {
   IosSimulatorWindowState,
   IosSimulatorWindowSource,
 } from "../../../shared/types";
-import type { ChatRuntimeScope } from "./ChatRuntimeScope";
+import type { ChatMachineScope, ChatRuntimeScope } from "./ChatRuntimeScope";
 
 /**
  * The chat's machine, as the panel sees it.
@@ -35,7 +35,7 @@ import type { ChatRuntimeScope } from "./ChatRuntimeScope";
  * here populates, so the remote live view would be unreachable without this
  * seam. Every other export of the module stays real.
  */
-const LOCAL_SCOPE: ChatRuntimeScope = {
+const LOCAL_SCOPE: ChatMachineScope = {
   pin: null,
   binding: null,
   laneId: null,
@@ -47,13 +47,13 @@ const LOCAL_SCOPE: ChatRuntimeScope = {
   online: true,
 };
 
-let chatScopeOverride: Partial<ChatRuntimeScope> | null = null;
+let chatScopeOverride: Partial<ChatMachineScope> | null = null;
 
 vi.mock("./ChatRuntimeScope", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("./ChatRuntimeScope");
   return {
     ...actual,
-    useChatRuntimeScopeForPin: (pin: ChatRuntimeScope["pin"], laneId: string | null): ChatRuntimeScope => ({
+    useChatRuntimeScopeForPin: (pin: ChatRuntimeScope["pin"], laneId: string | null): ChatMachineScope => ({
       ...LOCAL_SCOPE,
       pin,
       laneId,

@@ -1489,38 +1489,15 @@ struct CtoModelPreferences: Codable, Hashable {
   var reasoningEffort: String?
 }
 
-struct CtoCommunicationStyle: Codable, Hashable {
-  var verbosity: String
-  var proactivity: String
-  var escalationThreshold: String
-}
-
-/// Mirrors desktop `CtoOnboardingState`. Onboarding is complete once the
-/// required `"identity"` step lands in `completedSteps` (the desktop also
-/// stamps `completedAt` at that point).
+/// Mirrors desktop `CtoOnboardingState`. There is no iOS setup flow any more,
+/// but the host keeps its own non-user markers in `completedSteps` (e.g.
+/// `"intro"`, recording that the CTO's opening turn was already sent, and
+/// `"memory_gardener"`). `cto.updateIdentity` replaces `onboardingState`
+/// wholesale, so the phone has to round-trip whatever the host sent rather
+/// than drop it. The old `dismissedAt` / `completedAt` went with their last
+/// writer on the host.
 struct CtoOnboardingState: Codable, Hashable {
   var completedSteps: [String]
-  var dismissedAt: String?
-  var completedAt: String?
-
-  /// Mirror of desktop `hasCompletedRequiredOnboardingSteps`: the only
-  /// required step is `"identity"`.
-  var isComplete: Bool {
-    completedAt != nil || completedSteps.contains("identity")
-  }
-
-  /// Steps to send when marking setup complete from this device.
-  ///
-  /// `cto.updateIdentity` replaces `onboardingState` wholesale, and the desktop
-  /// keeps non-user markers in this same list (e.g. `"intro"`, recording that
-  /// the CTO's opening turn was already sent). Sending a bare `["identity"]`
-  /// would erase those and make the host redo work it had already done, so the
-  /// required step is unioned into whatever the host already recorded.
-  static func stepsCompletingSetup(existing: [String]?) -> [String] {
-    var steps = existing ?? []
-    if !steps.contains("identity") { steps.append("identity") }
-    return steps
-  }
 }
 
 /// Mirrors desktop `CtoIdentity`. The server has no top-level `id`; we
@@ -1530,10 +1507,6 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   var name: String
   var version: Int?
   var persona: String?
-  var personality: String?
-  var customPersonality: String?
-  var communicationStyle: CtoCommunicationStyle?
-  var constraints: [String]?
   var systemPromptExtension: String?
   var onboardingState: CtoOnboardingState?
   /// Null until a model the CTO can steer live has been picked. The host
@@ -1552,30 +1525,12 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   /// True while no model has been picked — the CTO surface shows its picker
   /// instead of the thread.
   var needsModelPick: Bool { modelPreferences == nil }
-
-  /// True once the CTO has been set up. Mirrors desktop: onboarding is complete
-  /// when the required `"identity"` step has landed (or `completedAt` is set).
-  var isOnboardingComplete: Bool {
-    onboardingState?.isComplete ?? false
-  }
-
-  /// Mirrors the desktop gate (`needsOnboarding` in CtoPage): setup blocks the
-  /// CTO surface only when it is neither complete nor dismissed. A user who
-  /// tapped "Set up later" on any device must still reach the chat here.
-  var isOnboardingBlocking: Bool {
-    guard let state = onboardingState else { return true }
-    return !state.isComplete && state.dismissedAt == nil
-  }
 }
 
 /// Patch sent to `cto.updateIdentity`. Nested `modelPreferences` so the
 /// desktop can merge cleanly.
 struct CtoIdentityPatch: Codable, Hashable {
   var name: String?
-  var personality: String?
-  var customPersonality: String?
-  var communicationStyle: CtoCommunicationStyle?
-  var constraints: [String]?
   var systemPromptExtension: String?
   var onboardingState: CtoOnboardingState?
   var modelPreferences: CtoModelPreferences?
@@ -1591,6 +1546,9 @@ struct CtoRecentSession: Codable, Hashable, Identifiable {
   var provider: String?
   var modelId: String?
   var capabilityMode: String?
+  /// Optional: hosts released before the count shipped omit it, and so does any
+  /// session whose transcript could not be read.
+  var turnCount: Int?
   var createdAt: String?
 }
 

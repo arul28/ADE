@@ -162,14 +162,40 @@ import {
   buildTranscriptReplayDocument,
   CODEX_APP_SERVER_INPUT_MAX_CHARS,
   fitTranscriptReplayTextToBudget,
+  replayContextSharePercent,
   replayMaxCharsForProvider,
   toReplayForkDisclosure,
+  type TranscriptReplayFit,
 } from "./crossProviderReplayFork";
 import {
+  createClaudeReplayOverflowRecovery,
+  normalizeTranscriptReplayOrigin,
+  type ReplayForkProvenance,
+  type TranscriptReplayOrigin,
+} from "./claudeReplayOverflowRecovery";
+import {
   isPrimaryPinnedIdentity,
+  isIdentityConfirmHeld,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
+import { createIdentityThreadRotation } from "./identityThreadRotation";
+import {
+  armIfStale,
+  newStagedSection,
+  resetStagedSection,
+  suppressStagedSection,
+  persistedPointerState,
+  pointerFingerprint,
+  providerThreadRef,
+  type ProviderThreadRef,
+  type StagedSection,
+} from "./providerThreadContinuity";
+import {
+  nextSessionTurnHealth,
+  normalizeLastTurnFailure,
+  normalizeSessionContextHealth,
+} from "./sessionTurnHealth";
 import type { Logger } from "../logging/logger";
 import type { GithubService } from "../github/githubService";
 import {
@@ -297,6 +323,8 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatEventMetadata,
+  AgentChatLastTurnFailure,
+  AgentChatSessionContextHealth,
   AgentChatSpawnCompletion,
   AgentChatSpawnKind,
   AgentChatSetSpawnKindArgs,
@@ -426,6 +454,7 @@ import type {
   SessionLinearIssueLink,
   CursorCloudServiceTier,
 } from "../../../shared/types";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import {
   applyClaudePlanModeTransition as applyClaudePlanModeTransitionShared,
   isSessionInPlanMode,
@@ -446,6 +475,8 @@ import {
   spawnCompletedNoticeMessage,
   spawnCompletionDeliveryFailedNoticeMessage,
   spawnParentGoneNoticeMessage,
+  AgentChatBackgroundTurnResult,
+  AgentChatBackgroundTurnStatus,
   activeTurnDispatchModes,
   defaultActiveTurnDispatchMode,
   providerSupportsLiveRedirect,
@@ -1498,6 +1529,24 @@ type PersistedChatState = {
   spawnKind?: AgentChatSession["spawnKind"];
   subagentTakeoverPromptShownAt?: string | null;
   pendingTranscriptReplay?: string | null;
+  /**
+   * Durable record that this chat was born from a replay-fork handoff. It
+   * outlives the replay text itself, because the failure it repairs — the
+   * provider session is already too full — only shows up on a later turn, long
+   * after the in-memory record of the replay is gone.
+   */
+  transcriptReplayOrigin?: TranscriptReplayOrigin | null;
+  /**
+   * How the last settled turn ended, when it ended badly.
+   *
+   * Durable because the one failure that matters here — the thread is over its
+   * context limit — is a property of the CONVERSATION, and survives every
+   * restart until the thread is rotated. It is what the CTO voice pre-flight
+   * reads to refuse a call the thread could not answer.
+   */
+  lastTurnFailure?: AgentChatLastTurnFailure | null;
+  /** How full the thread was at the last settled turn. See the type. */
+  contextHealth?: AgentChatSessionContextHealth | null;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -1634,46 +1683,6 @@ function normalizeUnprocessedMessageResolutionReceipts(
     });
   }
   return [...bySteerId.values()].slice(-64);
-}
-
-function normalizedPersistedPointer(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length ? value.trim() : null;
-}
-
-function persistedPointerState(state: Pick<PersistedChatState,
-  "provider" | "threadId" | "sdkSessionId" | "providerSessionId" | "droidSdkSessionId" | "piSessionId" | "piSessionFile" | "cursorSdkAgentId" | "cursorCloudAgentId" | "acpSessionId"
->): { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null } {
-  // Every ACP provider stores its pointer in the same field, so they share one
-  // arm rather than four identical ones.
-  if (isAcpChatProvider(state.provider)) {
-    return { provider: state.provider, pointer: normalizedPersistedPointer(state.acpSessionId) };
-  }
-  switch (state.provider) {
-    case "codex":
-      return { provider: state.provider, pointer: normalizedPersistedPointer(state.threadId) };
-    case "claude":
-      return { provider: state.provider, pointer: normalizedPersistedPointer(state.sdkSessionId) };
-    case "opencode":
-      return { provider: state.provider, pointer: normalizedPersistedPointer(state.providerSessionId) };
-    case "unified":
-      return { provider: "opencode", pointer: normalizedPersistedPointer(state.providerSessionId) };
-    case "droid":
-      return { provider: state.provider, pointer: normalizedPersistedPointer(state.droidSdkSessionId) };
-    case "pi":
-      return { provider: state.provider, pointer: normalizedPersistedPointer(state.piSessionId ?? state.piSessionFile) };
-    case "cursor":
-      return {
-        provider: state.provider,
-        pointer: normalizedPersistedPointer(state.cursorSdkAgentId)
-          ?? normalizedPersistedPointer(state.cursorCloudAgentId),
-      };
-    default:
-      return { provider: "opencode", pointer: normalizedPersistedPointer(state.providerSessionId) };
-  }
-}
-
-function pointerFingerprint(state: { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null }): string {
-  return JSON.stringify([state.provider, state.pointer]);
 }
 
 type PersistedPendingSteer = {
@@ -1964,6 +1973,21 @@ type ClaudeContextGuardrailState = {
   fallbackIssuedThisEpisode: boolean;
   pendingInternalCompactionTrigger: "ade_fallback" | "recovery" | null;
   pendingInternalCompactionId: string | null;
+  /**
+   * The notice ADE will show *if* the SDK confirms the compaction it was asked
+   * for. Held until the compact_boundary lands, because claiming a compaction
+   * that never happened is how a chat ends up telling the user to re-send a
+   * message into the same overflow.
+   */
+  pendingInternalCompactionNotice: { message: string; turnId?: string } | null;
+  /**
+   * Set when the SDK answered a /compact with "Not enough messages to compact".
+   * It means "too few messages right now", not "never": the next turn that
+   * completes normally clears it so the boundary fallback works again.
+   */
+  compactionUnavailable: boolean;
+  /** The turn that carried the refusal, so clearing it cannot happen on that turn. */
+  compactionUnavailableTurnId: string | null;
   lastUsageEmitAt: number | null;
   lastUsageEmitPct: number | null;
   nextSampleId: number;
@@ -3626,6 +3650,16 @@ async function resolveClaudeDaemonControlSocket(): Promise<string | null> {
   return null;
 }
 
+/** Which staged section a span of the rendered turn prefix belongs to. */
+type ReconstructionSectionId = "static" | "tail";
+
+/** Where one attributable section starts in the rendered turn prefix. */
+type ReconstructionSectionSpan = {
+  id: ReconstructionSectionId;
+  /** Character offset of the section's first character within the prefix. */
+  start: number;
+};
+
 type ManagedChatSession = {
   session: AgentChatSession;
   transcriptPath: string;
@@ -3641,7 +3675,55 @@ type ManagedChatSession = {
   deleted: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
+  /**
+   * Where each section of `pendingReconstructionContext` sits inside it.
+   *
+   * The turn prefix is truncated to a budget before it is sent, and only a
+   * section that actually survived that cut counts as delivered. Offsets answer
+   * that exactly; searching the rendered prefix for a section heading does not,
+   * because a conversation tail can quote one.
+   *
+   * In memory only. The staged string is persisted and the offsets are not, so
+   * a prefix restored from disk attributes nothing — see
+   * `consumePendingTurnContextPrefix`, which then only counts a prefix that was
+   * not truncated at all.
+   */
+  pendingReconstructionSections: ReconstructionSectionSpan[] | null;
+  /**
+   * The conversation tail: ~10 KB of re-orientation that is only worth sending
+   * to a provider thread which has not already heard it verbatim.
+   */
+  conversationTail: StagedSection;
+  /**
+   * The CTO's static context block: doctrine, the ADE architecture document and
+   * the capability manifest, ~21 KB that never change between two turns of one
+   * thread. Staged once per thread; its `contentKey` is the second trigger, for
+   * an identity rename or an edited prompt extension that changes the prompt
+   * under a live thread and must not wait for a rotation.
+   */
+  ctoStaticContext: StagedSection;
   pendingTranscriptReplay: string | null;
+  /** See PersistedChatState.transcriptReplayOrigin. */
+  transcriptReplayOrigin: TranscriptReplayOrigin | null;
+  /** See PersistedChatState.lastTurnFailure. */
+  lastTurnFailure: AgentChatLastTurnFailure | null;
+  /** See PersistedChatState.contextHealth. */
+  contextHealth: AgentChatSessionContextHealth | null;
+  /**
+   * The newest error text this turn produced, whether it arrived as an `error`
+   * event or as a failed `status`. Held only until the turn's `done` lands,
+   * which is where it becomes the durable `lastTurnFailure`.
+   */
+  liveTurnErrorText: string | null;
+  /**
+   * The CTO voice call whose turn is running on this session right now.
+   *
+   * Set for the life of one `runSessionTurn` call and stamped onto every
+   * envelope committed while it is set, so the transcript can fold a call into
+   * one card without anybody fabricating a message. Never persisted: a call
+   * does not survive a restart.
+   */
+  activeVoiceCallId: string | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -3847,22 +3929,7 @@ function deterministicChatSessionId(idempotencyKey: string): string {
 }
 
 type SessionTurnCollector = {
-  resolve: (value: {
-    sessionId: string;
-    provider: AgentChatProvider;
-    model: string;
-    modelId?: string;
-    outputText: string;
-    usage?: {
-      inputTokens?: number | null;
-      outputTokens?: number | null;
-      cacheReadTokens?: number | null;
-      cacheCreationTokens?: number | null;
-    };
-    turnId?: string;
-    threadId?: string;
-    sdkSessionId?: string | null;
-  }) => void;
+  resolve: (value: AgentChatBackgroundTurnResult) => void;
   reject: (error: Error) => void;
   outputText: string;
   turnId: string | null;
@@ -7515,6 +7582,50 @@ function syncLegacyPermissionMode(session: Pick<
   }
 }
 
+/**
+ * The one way out of plan mode.
+ *
+ * Three paths leave plan mode — approving an `ExitPlanMode`, typing the
+ * approval, and the safety net that follows the SDK's own status report — and
+ * every one of them must re-assert the identity policy afterwards. As three
+ * separate `applyClaudePlanModeTransition` calls, the third was written without
+ * the re-assert and silently handed a held CTO its write access back.
+ *
+ * The exit itself always takes: a held CTO lands in confirm-first mode, where a
+ * mutation asks out loud, rather than in plan mode, which refused writes
+ * outright and left spoken confirmation unreachable.
+ */
+function exitPlanModeForSession(session: AgentChatSession): void {
+  applyClaudePlanModeTransition(session, "default");
+  reassertIdentityPermissionMode(session);
+}
+
+/**
+ * Put the identity policy back after a direct write to `permissionMode`.
+ *
+ * Plan approval and the `ExitPlanMode` interception both hand a session full
+ * access without going through `normalizeIdentityPermissionMode`. That is right
+ * for an ordinary chat, and wrong for an identity session that something is
+ * holding read-only: during a CTO voice call, one click on an approval card in
+ * the chat would give the call write access for the rest of the turn.
+ *
+ * A no-op whenever the policy agrees with what was just written, which is every
+ * session that is not a held identity.
+ */
+function reassertIdentityPermissionMode(session: AgentChatSession): void {
+  if (!session.identityKey) return;
+  const next = normalizeIdentityPermissionMode(
+    session.identityKey,
+    session.permissionMode,
+    session.provider,
+    // Named, because a voice call on one project's CTO must not change the
+    // access mode of a CTO chat in another.
+    session.id,
+  );
+  if (next === session.permissionMode) return;
+  applyLegacyPermissionModeToNativeControls(session, next);
+}
+
 function applyLegacyPermissionModeToNativeControls(
   session: Pick<
     AgentChatSession,
@@ -8557,6 +8668,17 @@ function personalChatUserPromptFallback(
   }
 }
 
+/**
+ * What became of a handoff's transcript replay.
+ *
+ * `fit` and `truncated` are the pre-flight: the whole conversation reached the
+ * new model, or only its newest turns did. `refused` is a handoff that could
+ * not be made at all. `retried` and `gave_up` are the two ends of the
+ * overflow recovery — ADE re-sent the message with less history and the model
+ * took it, or it ran out of room and handed the turn back to the user.
+ */
+export type ChatHandoffReplayOutcome = "fit" | "truncated" | "refused" | "retried" | "gave_up";
+
 export type AgentChatTurnSettledEvent = Readonly<{
   sessionId: string;
   turnId: string;
@@ -8704,6 +8826,17 @@ export function createAgentChatService(args: {
   onClaudeHooksIgnored?: (event: { sessionId: string }) => void;
   /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
   onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
+  /**
+   * Content-free hook for the one product question a handoff replay raises: did
+   * the conversation reach the new model whole, in part, or not at all. Fired
+   * once when the handoff pre-flight resolves, and once per overflow-recovery
+   * terminal. Never a model name, a turn count, or any transcript.
+   */
+  onChatHandoffReplay?: (event: {
+    sessionId: string;
+    outcome: ChatHandoffReplayOutcome;
+    provider: AgentChatProvider;
+  }) => void;
   /** Content-free hook fired after an explicit session-metadata generation request. */
   onSessionMetadataRegenerated?: (event: {
     sessionId: string;
@@ -8790,6 +8923,7 @@ export function createAgentChatService(args: {
     onTurnSettled,
     onClaudeHooksIgnored,
     onChatMentionsExpanded,
+    onChatHandoffReplay,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onUsageLimitAutoResumed,
@@ -9837,7 +9971,7 @@ export function createAgentChatService(args: {
         // Transition out of plan mode so the UI reflects the change,
         // matching the state update performed after manual approval.
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
-          applyClaudePlanModeTransition(managed.session, "default");
+          exitPlanModeForSession(managed.session);
           persistChatState(managed);
           // Surface the transition so the composer's mode chip updates — parity
           // with the manual-approval branch below. Without this, full-auto plan
@@ -9928,7 +10062,7 @@ export function createAgentChatService(args: {
         });
         // Switch session out of plan mode so the UI reflects the transition.
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
-          applyClaudePlanModeTransition(managed.session, "default");
+          exitPlanModeForSession(managed.session);
           persistChatState(managed);
         }
 
@@ -9939,7 +10073,9 @@ export function createAgentChatService(args: {
         try {
           const sessionControl = getClaudeQueryControl(runtime.query);
           if (typeof sessionControl.setPermissionMode === "function") {
-            await sessionControl.setPermissionMode(resolveSessionClaudePermissionMode(managed.session, "default"));
+            await sessionControl.setPermissionMode(
+              resolveSessionClaudePermissionMode(managed.session, "default"),
+            );
           }
         } catch { /* best-effort — the SDK's own restore path is the source of truth */ }
 
@@ -12258,8 +12394,40 @@ export function createAgentChatService(args: {
     return combined;
   };
 
+  const RECENT_CONVERSATION_TAIL_TITLE = "Recent Conversation Tail";
+
   const buildRecentConversationContext = (managed: ManagedChatSession, limit = 20): string => {
     return formatConversationTranscript(collectConversationEntries(managed).slice(-limit));
+  };
+
+  /**
+   * The provider thread the next send on this chat will land on.
+   *
+   * Which field holds the pointer is NOT decided here: `persistedPointerState`
+   * in `providerThreadContinuity.ts` is the one complete mapping, and this
+   * feeds it the live pointers. The session's own fields cover the providers
+   * that persist their pointer there — codex's thread id, pi's session file,
+   * the cursor cloud agent — so the ref survives a runtime that is not up yet;
+   * the live handle is the only source for the ones that keep theirs in memory.
+   */
+  const providerThreadContinuityKey = (managed: ManagedChatSession): ProviderThreadRef => {
+    const runtime = managed.runtime;
+    return providerThreadRef({
+      provider: managed.session.provider,
+      threadId: managed.session.threadId ?? undefined,
+      sdkSessionId: runtime?.kind === "claude" ? runtime.sdkSessionId ?? undefined : undefined,
+      providerSessionId: runtime?.kind === "opencode" ? runtime.handle.sessionId : undefined,
+      droidSdkSessionId: runtime?.kind === "droid" ? runtime.sdkSessionId ?? undefined : undefined,
+      piSessionId: managed.session.piSessionId ?? undefined,
+      piSessionFile: managed.session.piSessionFile ?? undefined,
+      cursorSdkAgentId: runtime?.kind === "cursor" ? runtime.sdkAgentId ?? undefined : undefined,
+      cursorCloudAgentId: managed.session.cursorCloudAgentId ?? undefined,
+      acpSessionId: runtime?.kind === "acp" ? runtime.session.sessionId : undefined,
+    // The live runtime handle rides along as the thread's identity of last
+    // resort: a fresh Claude thread renames itself once when the SDK reports
+    // the id back, and the pointer disappears entirely while the runtime is
+    // down. The object is the thread; its name is not.
+    }, runtime);
   };
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
@@ -12337,7 +12505,7 @@ export function createAgentChatService(args: {
   // rely on it having flushed before teardown.
   const flushIdentityContinuityDeterministic = (
     managed: ManagedChatSession,
-    reason: "compaction" | "provider_reset",
+    reason: "compaction" | "provider_reset" | "session_rotation",
   ): string | null => {
     if (!usesIdentityContinuity(managed)) return null;
     const deterministic = buildDeterministicContinuitySummary(managed);
@@ -12439,30 +12607,87 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * The provider thread is gone and the next send opens a new one: re-stage
+   * everything that is only ever said to a thread once.
+   *
+   * Called from the reset paths rather than left to `armIfStale`, because a
+   * reset keeps the SAME runtime handle — and the handle is what tells "one
+   * thread learning its name" from "a second thread". Without this, a
+   * provider-side conversation reset or a cleared SDK session id opened a new
+   * conversation that was never told the CTO's doctrine, and nothing in the
+   * product said so.
+   */
+  const restageSectionsForNewProviderThread = (managed: ManagedChatSession): void => {
+    resetStagedSection(managed.conversationTail);
+    resetStagedSection(managed.ctoStaticContext);
+  };
+
   const refreshReconstructionContext = (managed: ManagedChatSession): void => {
-    const sections: string[] = [];
+    // Sections carry an id so the send path can say which ones a truncated
+    // prefix actually delivered. Only the two once-per-thread sections need an
+    // id; the rest ride every turn and nothing has to attribute them.
+    const sections: Array<{ id: ReconstructionSectionId | null; text: string }> = [];
     const isCto = managed.session.identityKey === "cto";
+    // One key for both once-per-thread decisions below. See
+    // `providerThreadContinuityKey`: it names the provider-side thread the next
+    // send lands on, so a change means the model on the other end has seen none
+    // of what this chat already said to it.
+    const threadKey = providerThreadContinuityKey(managed);
 
     if (isCto && ctoStateService) {
-      sections.push([
-        "CTO Runtime Identity",
-        ctoStateService.previewSystemPrompt().prompt,
-      ].join("\n"));
-      sections.push(ctoStateService.buildReconstructionContext(8));
+      // The CTO prefix is two halves with very different lifetimes.
+      //
+      // STATIC — doctrine, continuity model, memory guidance, the ADE
+      // architecture document and the capability manifest. ~21 KB, byte
+      // identical on turn 2 and turn 200, and a live provider thread holds it
+      // from the first send. Re-sending it every turn is what grew a real CTO
+      // thread from 46k to 237k input tokens in 18 turns and tripped codex
+      // auto-compaction mid-voice-call. It is staged once per provider thread
+      // and re-staged when the thread changes (rotation, handoff, resume onto a
+      // new thread, provider/model switch, fresh session) or when the prompt's
+      // own content changes — the section's `key` covers an identity rename or
+      // an edited prompt extension, which must not wait for a rotation.
+      //
+      // VOLATILE — everything `buildReconstructionContext` returns: identity
+      // line, working context, memory sections, the live project-state block.
+      // Perishable by construction, so it rides every send exactly as before.
+      const staticSection = ctoStateService.buildStaticContextSection();
+      armIfStale(managed.ctoStaticContext, threadKey, staticSection.key);
+      if (managed.ctoStaticContext.pending) {
+        sections.push({ id: "static", text: [staticSection.title, staticSection.body].join("\n") });
+      }
+      sections.push({ id: null, text: ctoStateService.buildReconstructionContext(8) });
     }
 
     if (usesIdentityContinuity(managed) && managed.continuitySummary?.trim()) {
-      sections.push([
-        "Continuity Summary",
-        managed.continuitySummary.trim(),
-      ].join("\n"));
+      sections.push({
+        id: null,
+        text: ["Continuity Summary", managed.continuitySummary.trim()].join("\n"),
+      });
     }
 
+    // The conversation tail is re-orientation, not context: a live provider
+    // thread already holds those turns verbatim, so replaying them on every
+    // send bought nothing and cost ~10 KB (CTO) of input tokens per turn —
+    // enough on a long CTO thread to walk the window into auto-compaction.
+    //
+    // The rule: push the tail only when the provider thread the next send will
+    // land on is NOT the one those turns happened on — a rotated agent, a torn
+    // down or reset runtime, a model/provider switch, a fresh resume, or a
+    // thread that has not opened yet. Every one of those paths already calls
+    // this function, so the key comparison catches them without new plumbing.
+    armIfStale(managed.conversationTail, threadKey);
     // The CTO thread carries a deeper tail (40 vs the generic 20) since it is a
     // long-living, memory-backed thread that survives model/provider switches.
-    const recentConversation = buildRecentConversationContext(managed, isCto ? 40 : 20);
+    const recentConversation = managed.conversationTail.pending
+      ? buildRecentConversationContext(managed, isCto ? 40 : 20)
+      : "";
     if (recentConversation.length) {
-      sections.push(["Recent Conversation Tail", recentConversation].join("\n"));
+      sections.push({
+        id: "tail",
+        text: [RECENT_CONVERSATION_TAIL_TITLE, recentConversation].join("\n"),
+      });
     }
 
     // The one memory section that is NOT CTO-gated. Every project chat gets the
@@ -12489,12 +12714,22 @@ export function createAgentChatService(args: {
         ? ctoMemoryService.buildLaneMemoryContextSection(executionLaneId)
         : null;
       if (laneMemory) {
-        sections.push([laneMemory.title, laneMemory.body].join("\n"));
+        sections.push({ id: null, text: [laneMemory.title, laneMemory.body].join("\n") });
       }
     }
 
-    const nextContext = sections.map((section) => section.trim()).filter((section) => section.length > 0).join("\n\n");
+    const kept = sections
+      .map((section) => ({ ...section, text: section.text.trim() }))
+      .filter((section) => section.text.length > 0);
+    const spans: ReconstructionSectionSpan[] = [];
+    let offset = 0;
+    for (const section of kept) {
+      if (section.id) spans.push({ id: section.id, start: offset });
+      offset += section.text.length + 2; // the "\n\n" the join below inserts
+    }
+    const nextContext = kept.map((section) => section.text).join("\n\n");
     managed.pendingReconstructionContext = nextContext.length ? nextContext : null;
+    managed.pendingReconstructionSections = nextContext.length ? spans : null;
   };
 
   /**
@@ -12573,6 +12808,28 @@ export function createAgentChatService(args: {
     return toReplayForkDisclosure(fit);
   };
 
+  /**
+   * Say, in plain words, how much of the old chat the new model actually got.
+   * The fit counts turns, so the share is converted with the same conservative
+   * characters-per-token estimate the budget uses.
+   */
+  const emitHandoffReplayNotice = (
+    target: ManagedChatSession,
+    fit: TranscriptReplayFit,
+    modelLabel: string,
+    contextWindowTokens: number | null | undefined,
+  ): void => {
+    if (!fit.truncated) return;
+    const share = replayContextSharePercent(fit.text, contextWindowTokens);
+    emitChatEvent(target, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: `Handoff carried the newest ${fit.keptTurnCount} of ${fit.turnCount} turns${
+        share != null ? `, about ${share}% of ${modelLabel}'s context` : ""
+      }. Older turns are in the original chat.`,
+    });
+  };
+
   type ConsumedTurnContextPrefix = {
     composed: string;
     replay: string;
@@ -12605,8 +12862,31 @@ export function createAgentChatService(args: {
       reconstruction = truncateTailToLineBoundary(reconstruction, reconstructionBudget);
     }
 
+    // Only a section that survived the budget counts as delivered. If
+    // truncation ate it the flag stays armed and the next send carries it
+    // again, so a thread is never left believing it was told its own doctrine.
+    //
+    // Survival is decided by offset, not by searching the rendered prefix for
+    // the section's heading: a conversation tail that quotes a heading — which
+    // it can, because the CTO reads its own prefix back — would otherwise clear
+    // a flag for a section that was cut. `truncateTailToLineBoundary` keeps the
+    // END of the prefix, so a section survives whole exactly when it begins at
+    // or after the cut, and the static block (first in the prefix) is the first
+    // thing a tight budget drops.
+    const droppedChars = (managed.pendingReconstructionContext?.trim().length ?? 0) - reconstruction.length;
+    const delivered = new Set<ReconstructionSectionId>();
+    if (hadReconstruction && reconstruction.length) {
+      for (const span of managed.pendingReconstructionSections ?? []) {
+        if (span.start >= droppedChars) delivered.add(span.id);
+      }
+    }
     if (hadReplay) managed.pendingTranscriptReplay = null;
-    if (hadReconstruction) managed.pendingReconstructionContext = null;
+    if (hadReconstruction) {
+      managed.pendingReconstructionContext = null;
+      managed.pendingReconstructionSections = null;
+    }
+    if (delivered.has("tail")) managed.conversationTail.pending = false;
+    if (delivered.has("static")) managed.ctoStaticContext.pending = false;
     // Consumption has to be durable: `pendingTranscriptReplay` is restored on
     // reconstruct, so clearing it in memory alone would replay the whole
     // transcript a second time after a restart.
@@ -14955,6 +15235,11 @@ export function createAgentChatService(args: {
       pendingTranscriptReplay: managed.pendingTranscriptReplay?.trim()
         ? managed.pendingTranscriptReplay
         : null,
+      ...(managed.transcriptReplayOrigin
+        ? { transcriptReplayOrigin: managed.transcriptReplayOrigin }
+        : {}),
+      ...(managed.lastTurnFailure ? { lastTurnFailure: managed.lastTurnFailure } : {}),
+      ...(managed.contextHealth ? { contextHealth: managed.contextHealth } : {}),
       ...(eventSequenceHighWaterMark > 0 ? { eventSequence: eventSequenceHighWaterMark } : {}),
       updatedAt: nowIso()
     };
@@ -15856,6 +16141,12 @@ export function createAgentChatService(args: {
   ): void => {
     if (!turnStartedAt) return;
     if (managed.deleted) return;
+    // A live voice call owns this row's second line and writes it itself
+    // ("Voice call · 3 exchanges"). Generating one here takes a model round trip
+    // per settled turn, which on a call always lands after the next question has
+    // already been asked — that is how the row came to read "hey there?" three
+    // exchanges into a call. The generated line resumes when the call ends.
+    if (isIdentityConfirmHeld(managed.session.id)) return;
     const noteUpdatedAt = sessionService.getStatusNoteUpdatedAt?.(managed.session.id);
     if (noteUpdatedAt) {
       const noteMs = Date.parse(noteUpdatedAt);
@@ -16270,6 +16561,83 @@ export function createAgentChatService(args: {
     setUsageLimitResume(managed, null);
   };
 
+  /**
+   * How full the thread is right now, 0..100, or null when nothing says.
+   *
+   * Two sources, in order of authority: Claude's own context guardrail, which
+   * is maintained live from the SDK's usage reports, and — for every other
+   * provider — the settled turn's own usage against the context window it
+   * reported. Both are approximations of the same fact, and either is enough
+   * for a threshold whose job is to speak one turn before it is too late.
+   */
+  const readTurnOccupancyPct = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "done" }>,
+  ): number | null => {
+    if (managed.runtime?.kind === "claude") {
+      const pct = managed.runtime.contextGuardrail.occupancyPct;
+      if (typeof pct === "number" && Number.isFinite(pct)) return Math.max(0, Math.min(100, pct));
+    }
+    const usage = event.usage;
+    const window = typeof usage?.contextWindow === "number" && usage.contextWindow > 0 ? usage.contextWindow : null;
+    if (!window) return null;
+    const used = (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0) + (usage?.cacheCreationTokens ?? 0);
+    if (used <= 0) return null;
+    return Math.max(0, Math.min(100, (used / window) * 100));
+  };
+
+  const claudeCompactionSeen = (managed: ManagedChatSession): boolean => {
+    if (managed.runtime?.kind !== "claude") return false;
+    const guardrail = managed.runtime.contextGuardrail;
+    return guardrail.naturalCompactSeen
+      || guardrail.fallbackIssuedThisEpisode
+      || guardrail.compactionUnavailable;
+  };
+
+  /**
+   * THE single writer of a session's durable turn health.
+   *
+   * Called from `commitChatEvent` on every `done`, which is the one place all
+   * providers agree a turn is over. It answers two different questions with one
+   * write: "can this thread take another turn at all" (the overflow verdict,
+   * which outlives restarts) and "is this thread getting close" (the occupancy
+   * streak the CTO page offers a rotation on). A completed turn clears the
+   * failure, because a thread that just answered is not over its limit.
+   */
+  const recordSettledTurnHealth = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "done" }>,
+  ): void => {
+    const errorText = managed.liveTurnErrorText;
+    managed.liveTurnErrorText = null;
+    const previousFailure = managed.lastTurnFailure;
+    const occupancyPct = readTurnOccupancyPct(managed, event);
+    // The decision itself is pure and lives in `sessionTurnHealth.ts`. Only the
+    // reading of the live session, the log line and the write stay here.
+    const next = nextSessionTurnHealth({
+      status: event.status,
+      turnId: event.turnId ?? null,
+      errorText,
+      previewText: managed.preview ?? null,
+      occupancyPct,
+      compactionSeen: claudeCompactionSeen(managed),
+      previousFailure,
+      previousContext: managed.contextHealth,
+      now: nowIso(),
+    });
+    if (!next.changed) return;
+    managed.lastTurnFailure = next.failure;
+    managed.contextHealth = next.context;
+    if (next.failure?.kind === "context_overflow" && previousFailure?.kind !== "context_overflow") {
+      logger.warn("agent_chat.session_context_overflow", {
+        sessionId: managed.session.id,
+        provider: managed.session.provider,
+        occupancyPct,
+      });
+    }
+    persistChatState(managed);
+  };
+
   type CommitChatEventOptions = {
     liveEvent?: AgentChatEvent;
   };
@@ -16309,6 +16677,21 @@ export function createAgentChatService(args: {
       }
     }
 
+    // Durable turn health. The error text is remembered as it streams past and
+    // spent on the `done` — the same two signals the blocking-turn collector
+    // reads, recorded here so they outlive the turn and the process.
+    if (storedEvent.type === "error") {
+      managed.liveTurnErrorText = storedEvent.message;
+    } else if (
+      storedEvent.type === "status"
+      && storedEvent.turnStatus === "failed"
+      && storedEvent.message
+    ) {
+      managed.liveTurnErrorText = storedEvent.message;
+    } else if (storedEvent.type === "done") {
+      recordSettledTurnHealth(managed, storedEvent);
+    }
+
     // Session summaries are generated only when the chat is explicitly ended in ADE,
     // so "done" events intentionally do not produce a summary here.
 
@@ -16319,6 +16702,13 @@ export function createAgentChatService(args: {
       timestamp,
       event: storedEvent,
       sequence,
+      // A voice call's turns are real turns on the CTO's real thread, so they
+      // are written exactly like every other event — and carry the call they
+      // belong to, which is all the transcript needs to fold them into one
+      // card instead of a stream of messages nobody typed.
+      ...(managed.activeVoiceCallId
+        ? { provenance: { voiceCallId: managed.activeVoiceCallId } }
+        : {}),
     };
     const liveEnvelope: AgentChatEventEnvelope = liveEvent === storedEvent
       ? storedEnvelope
@@ -16327,6 +16717,9 @@ export function createAgentChatService(args: {
           timestamp,
           event: liveEvent,
           sequence,
+          ...(managed.activeVoiceCallId
+            ? { provenance: { voiceCallId: managed.activeVoiceCallId } }
+            : {}),
         };
 
     writeTranscript(managed, storedEnvelope);
@@ -16390,6 +16783,12 @@ export function createAgentChatService(args: {
       model: managed.session.model,
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       outputText: collector.outputText.trim() || managed.preview?.trim() || "",
+      // The turn's own verdict, not a guess made from its text. On a failed
+      // turn `outputText` above falls through to the session preview, which is
+      // the provider's error sentence — a caller must be able to tell that
+      // apart from an answer without pattern-matching English.
+      status: liveEvent.status,
+      errorMessage: collector.lastError,
       ...(collector.usage ? { usage: collector.usage } : {}),
       ...(liveEvent.turnId ? { turnId: liveEvent.turnId } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
@@ -17096,8 +17495,105 @@ export function createAgentChatService(args: {
         occupancyPctAtTrigger,
       });
     }
+    // The compact_boundary is the SDK's confirmation that a compaction really
+    // happened. Only now may ADE say so.
+    const heldNotice = guardrail.pendingInternalCompactionNotice;
     guardrail.pendingInternalCompactionTrigger = null;
     guardrail.pendingInternalCompactionId = null;
+    guardrail.pendingInternalCompactionNotice = null;
+    guardrail.compactionUnavailable = false;
+    guardrail.compactionUnavailableTurnId = null;
+    if (heldNotice) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        severity: "info",
+        message: heldNotice.message,
+        ...(heldNotice.turnId ? { turnId: heldNotice.turnId } : {}),
+      });
+    }
+  };
+
+  /**
+   * The Claude SDK refuses to compact a conversation that has fewer than two
+   * message groups — a fresh handoff is exactly that. Retract the compaction
+   * ADE asked for, say what actually happened, and never ask again for this
+   * session until a real compaction lands.
+   */
+  const observeClaudeCompactionUnavailable = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    texts: readonly (string | null | undefined)[],
+    turnId?: string,
+  ): boolean => {
+    const guardrail = runtime.contextGuardrail;
+    if (!guardrail.pendingInternalCompactionTrigger) return false;
+    const matched = texts.some((text) => typeof text === "string"
+      && /not enough messages to compact/i.test(text));
+    if (!matched) return false;
+    const compactionId = guardrail.pendingInternalCompactionId;
+    guardrail.pendingInternalCompactionTrigger = null;
+    guardrail.pendingInternalCompactionId = null;
+    guardrail.pendingInternalCompactionNotice = null;
+    guardrail.compactionUnavailable = true;
+    guardrail.compactionUnavailableTurnId = turnId ?? null;
+    emitChatEvent(managed, {
+      type: "context_compact",
+      trigger: "ade_fallback",
+      state: "failed",
+      ...(compactionId ? { compactionId } : {}),
+      ...(turnId ? { turnId } : {}),
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: "Claude could not compact this conversation. Start a new chat or hand off with a shorter history.",
+      ...(turnId ? { turnId } : {}),
+    });
+    logger.info("agent_chat.claude_context_compaction_unavailable", {
+      sessionId: managed.session.id,
+      occupancyPctAtTrigger: guardrail.occupancyPct,
+    });
+    return true;
+  };
+
+  /**
+   * A `/compact` that can never be answered. The message sits in an input pump
+   * that is about to be closed, so the boundary it was waiting for will never
+   * arrive — and the pending trigger would otherwise make every later fallback
+   * a no-op for the life of this runtime.
+   */
+  const abandonPendingInternalCompaction = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    reason: string,
+  ): void => {
+    const guardrail = runtime.contextGuardrail;
+    if (!guardrail.pendingInternalCompactionTrigger) return;
+    const compactionId = guardrail.pendingInternalCompactionId;
+    guardrail.pendingInternalCompactionTrigger = null;
+    guardrail.pendingInternalCompactionId = null;
+    guardrail.pendingInternalCompactionNotice = null;
+    // The compaction never ran, so this episode has not used its one fallback.
+    guardrail.fallbackIssuedThisEpisode = false;
+    emitChatEvent(managed, {
+      type: "context_compact",
+      trigger: "ade_fallback",
+      state: "failed",
+      failReason: "teardown",
+      ...(compactionId ? { compactionId } : {}),
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: "Claude could not compact this conversation. Its session restarted before the compaction ran.",
+    });
+    logger.warn("agent_chat.claude_context_compaction_abandoned", {
+      sessionId: managed.session.id,
+      reason,
+    });
   };
 
   const issueClaudeInternalCompaction = async (
@@ -17108,6 +17604,9 @@ export function createAgentChatService(args: {
   ): Promise<boolean> => {
     const guardrail = runtime.contextGuardrail;
     if (guardrail.pendingInternalCompactionTrigger) return true;
+    // One refusal is the answer for the whole session: asking again would loop
+    // the same "Not enough messages to compact" forever.
+    if (guardrail.compactionUnavailable) return false;
     if (!runtime.inputPump) await ensureClaudeQuery(managed, runtime);
     if (!runtime.inputPump) return false;
     const message = await buildClaudeV2MessageAsync("/compact", [], {
@@ -17131,21 +17630,135 @@ export function createAgentChatService(args: {
       compactionId: guardrail.pendingInternalCompactionId,
       ...(turnId ? { turnId } : {}),
     });
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "info",
-      severity: "info",
+    guardrail.pendingInternalCompactionNotice = {
       message: trigger === "recovery"
         ? "context overflowed — compacted; please re-send your last message"
         : "ADE compacted the context because Claude's automatic compaction had not run.",
       ...(turnId ? { turnId } : {}),
-    });
+    };
     logger.info("agent_chat.claude_context_compaction_observed", {
       sessionId: managed.session.id,
       trigger,
       occupancyPctAtTrigger: guardrail.occupancyPct,
     });
     return true;
+  };
+
+  /**
+   * "Not enough messages to compact" describes the conversation at that moment,
+   * not forever. Once a later turn finishes normally the conversation has grown
+   * and the boundary fallback is valid again, so re-arm it. The refusal turn
+   * itself never clears the flag, which keeps the no-loop guarantee inside a
+   * single attempt.
+   */
+  const maybeClearClaudeCompactionUnavailable = (
+    runtime: ClaudeRuntime,
+    turnId: string,
+    status: string,
+  ): void => {
+    const guardrail = runtime.contextGuardrail;
+    if (!guardrail.compactionUnavailable) return;
+    if (status !== "completed") return;
+    // A /compact still in flight has not told us anything yet.
+    if (guardrail.pendingInternalCompactionTrigger) return;
+    if (guardrail.compactionUnavailableTurnId === turnId) return;
+    guardrail.compactionUnavailable = false;
+    guardrail.compactionUnavailableTurnId = null;
+  };
+
+  /**
+   * Claude-only replay-overflow repair. See claudeReplayOverflowRecovery.ts —
+   * every other provider caps its replay at a wire limit it cannot exceed.
+   */
+  const claudeReplayOverflow = createClaudeReplayOverflowRecovery<ManagedChatSession, ClaudeRuntime>({
+    logger,
+    emitNotice: (managed, notice) => {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: notice.kind,
+        severity: notice.kind,
+        message: notice.message,
+        turnId: notice.turnId,
+      });
+    },
+    persist: (managed) => persistChatState(managed),
+    describeSession: (managed) => {
+      const descriptor = resolveSessionModelDescriptor(managed.session);
+      return {
+        id: managed.session.id,
+        modelLabel: descriptor?.displayName ?? managed.session.model ?? "this model",
+        contextWindowTokens: descriptor?.contextWindow
+          ?? managed.transcriptReplayOrigin?.contextWindowTokens
+          ?? null,
+      };
+    },
+    readOrigin: (managed) => managed.transcriptReplayOrigin,
+    writeOrigin: (managed, origin) => { managed.transcriptReplayOrigin = origin; },
+    readForkProvenance: (managed) => readReplayForkProvenance(managed),
+    stageReplay: (managed, replay) => { managed.pendingTranscriptReplay = replay; },
+    buildSourceReplay: (sourceSessionId, contextWindowTokens, budgetChars) => {
+      let envelopes: AgentChatEventEnvelope[];
+      try {
+        envelopes = readTranscriptEnvelopes(
+          ensureManagedSession(sourceSessionId),
+          { includeBuffered: true },
+        );
+      } catch (error) {
+        logger.warn("agent_chat.claude_replay_source_unreadable", {
+          sourceSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+      return buildFittedTranscriptReplay(envelopes, contextWindowTokens, budgetChars);
+    },
+    resetProviderSession: async (managed, runtime) => {
+      await resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
+    },
+    onGaveUp: (managed) => {
+      onChatHandoffReplay?.({
+        sessionId: managed.session.id,
+        outcome: "gave_up",
+        provider: managed.session.provider,
+      });
+    },
+    clearContinuityContext: (managed) => {
+      // The reset stages a transcript tail for continuity. The replay carries
+      // the same conversation in full, so the tail is pure duplication here —
+      // and duplication is what overflowed this chat in the first place. The
+      // flag is stood down as well as the text: the reset just re-armed it for
+      // the new provider session, and a rebuild would put the tail straight
+      // back. The static block is deliberately left armed — the replay is the
+      // conversation, not the doctrine, and the new session has neither.
+      managed.pendingReconstructionContext = null;
+      managed.pendingReconstructionSections = null;
+      suppressStagedSection(managed.conversationTail);
+    },
+  });
+
+  /**
+   * The `handoff_fork` stamp the import writes onto every envelope it copies.
+   * `replayFork` tells a replay fork from a native one; forks that predate it
+   * are told apart by the source chat's provider instead.
+   */
+  const readReplayForkProvenance = (managed: ManagedChatSession): ReplayForkProvenance | null => {
+    for (const envelope of readTranscriptEnvelopes(managed)) {
+      if (envelope.provenance?.providerOrigin !== "handoff_fork") continue;
+      const sourceSessionId = envelope.provenance.sourceSessionId?.trim() ?? "";
+      if (!sourceSessionId || sourceSessionId === managed.session.id) continue;
+      let sourceProvider: string | null = null;
+      try {
+        sourceProvider = ensureManagedSession(sourceSessionId).session.provider ?? null;
+      } catch {
+        sourceProvider = null;
+      }
+      return {
+        sourceSessionId,
+        replayFork: envelope.provenance.replayFork === true,
+        sourceProvider,
+      };
+    }
+    return null;
   };
 
   const maybeIssueClaudeBoundaryCompaction = async (
@@ -17952,8 +18565,12 @@ export function createAgentChatService(args: {
     managed.runtimeTitleAdopted = false;
     managed.recentConversationEntries = [];
     managed.pendingReconstructionContext = null;
+    managed.pendingReconstructionSections = null;
     managed.continuitySummary = null;
     managed.continuitySummaryUpdatedAt = null;
+    // The provider threw the conversation away and opened another one. Nothing
+    // staged once-per-thread has been said to it.
+    restageSectionsForNewProviderThread(managed);
     if (!sessionIsManuallyNamed(managed)) {
       const title = defaultChatSessionTitle("claude");
       if ((sessionService.get(managed.session.id)?.title?.trim() ?? "") !== title) {
@@ -19371,6 +19988,9 @@ export function createAgentChatService(args: {
     if (artifactBroker) {
       services.listProofArtifacts = async (args): Promise<OrchestrationLeadReadResult> => {
         const artifacts = artifactBroker.listArtifacts({
+          // Proof only: a scene still is a picture the transcript already
+          // shows inline, not something anyone chose to keep as evidence.
+          ...PROOF_LISTING_ARTIFACT_FILTER,
           ...(args.limit ? { limit: args.limit } : {}),
         });
         return { ok: true, artifacts };
@@ -20255,7 +20875,10 @@ export function createAgentChatService(args: {
 
     if (managed.session.identityKey === "cto" && ctoStateService) {
       try {
-        ctoStateService.appendSessionLog({
+        // Awaited so a failed write still reaches the warn below rather than
+        // escaping as an unhandled rejection: the turn count it records is
+        // counted by streaming the transcript, which made this call async.
+        await ctoStateService.appendSessionLog({
           ...sessionLogArgs,
           summary: explicitSummary || fallbackSummary || "CTO session ended.",
           startedAt: managed.ctoSessionStartedAt ?? managed.session.createdAt,
@@ -20446,7 +21069,15 @@ export function createAgentChatService(args: {
       deleted: false,
       ctoSessionStartedAt: row.status === "running" ? row.startedAt : null,
       pendingReconstructionContext: null,
+      pendingReconstructionSections: null,
+      conversationTail: newStagedSection(),
+      ctoStaticContext: newStagedSection(),
       pendingTranscriptReplay: null,
+      transcriptReplayOrigin: null,
+      lastTurnFailure: null,
+      contextHealth: null,
+      liveTurnErrorText: null,
+      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
@@ -20525,6 +21156,9 @@ export function createAgentChatService(args: {
     if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
       managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
     }
+    managed.transcriptReplayOrigin = normalizeTranscriptReplayOrigin(persisted?.transcriptReplayOrigin);
+    managed.lastTurnFailure = normalizeLastTurnFailure(persisted?.lastTurnFailure);
+    managed.contextHealth = normalizeSessionContextHealth(persisted?.contextHealth);
 
     managedSessions.set(sessionId, managed);
     // Deferred until the scheduler has read its durable rows back: before that,
@@ -21804,6 +22438,7 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
     }
     persistChatState(managed);
+    maybeClearClaudeCompactionUnavailable(runtime, turnId, status);
     const compactionIssued = await maybeIssueClaudeBoundaryCompaction(managed, runtime, {
       recoverFromOverflow,
       turnId,
@@ -22831,6 +23466,16 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, { type: "error", message: error, turnId });
         }
       }
+      observeClaudeCompactionUnavailable(
+        managed,
+        runtime,
+        [
+          ...resultErrors.all,
+          state.assistantText,
+          typeof resultMsg.result === "string" ? resultMsg.result : null,
+        ],
+        state.turnId ?? undefined,
+      );
       await finishClaudeIdleTurn(
         managed,
         runtime,
@@ -23076,6 +23721,10 @@ export function createAgentChatService(args: {
       messageUuid?: string;
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
+      /** This run is the single automatic retry after a too-long handoff replay. */
+      replayOverflowRetry?: boolean;
+      /** The user message is already in the transcript; do not echo it again. */
+      suppressUserEcho?: boolean;
     },
   ): Promise<void> => {
     const runtime = managed.runtime;
@@ -23128,18 +23777,22 @@ export function createAgentChatService(args: {
       preview: claudeQueuedMessagePreview(displayText),
       ...(args.steerId ? { steerId: args.steerId } : {}),
     });
-    emitPreparedUserMessage(managed, {
-      text: userText,
-      displayText,
-      attachments,
-      contextAttachments,
-      metadata: args.metadata,
-      turnId,
-      messageId: userMessageId,
-      steerId: args.steerId,
-      laneDirectiveKey: args.laneDirectiveKey,
-      onDispatched: args.onDispatched,
-    });
+    if (!args.suppressUserEcho) {
+      emitPreparedUserMessage(managed, {
+        text: userText,
+        displayText,
+        attachments,
+        contextAttachments,
+        metadata: args.metadata,
+        turnId,
+        messageId: userMessageId,
+        steerId: args.steerId,
+        laneDirectiveKey: args.laneDirectiveKey,
+        onDispatched: args.onDispatched,
+      });
+    } else {
+      args.onDispatched?.();
+    }
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
     captureTurnBeforeSha(managed);
     emitChatEvent(managed, {
@@ -23308,7 +23961,20 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed ?? "";
+      const consumedTurnContext = consumePendingTurnContextPrefix(managed, providerSlashCommand);
+      // Remember the handoff replay this turn carries: an overflow on a turn
+      // that carried one is fixed by shortening the replay, not by compacting.
+      if (consumedTurnContext?.replay) {
+        claudeReplayOverflow.noteConsumedReplay(
+          runtime,
+          turnId,
+          consumedTurnContext.replay,
+          args.replayOverflowRetry === true,
+        );
+      } else {
+        claudeReplayOverflow.forgetConsumedReplay(runtime);
+      }
+      const reconstructionContext = consumedTurnContext?.composed ?? "";
       const basePromptText = providerSlashCommand
         ? args.promptText
         : [
@@ -23643,7 +24309,8 @@ export function createAgentChatService(args: {
             const wasPlan = managed.session.permissionMode === "plan";
             const nowPlan = reportedMode === "plan";
             if (wasPlan !== nowPlan) {
-              applyClaudePlanModeTransition(managed.session, nowPlan ? "plan" : "default");
+              if (nowPlan) applyClaudePlanModeTransition(managed.session, "plan");
+              else exitPlanModeForSession(managed.session);
               persistChatState(managed);
               emitChatEvent(managed, {
                 type: "system_notice",
@@ -25000,6 +25667,16 @@ export function createAgentChatService(args: {
           resultTerminalStatus = classifyClaudeResultStatus(resultMsg);
           resultTerminalReason = compactString(resultMsg.terminal_reason);
           recoverFromContextOverflow = isClaudeContextOverflowResult(resultMsg, resultErrors.all);
+          observeClaudeCompactionUnavailable(
+            managed,
+            runtime,
+            [
+              ...resultErrors.all,
+              assistantText,
+              typeof resultMsg.result === "string" ? resultMsg.result : null,
+            ],
+            turnId,
+          );
           if (resultErrors.internalDiagnostics.length > 0) {
             logger.debug("agent_chat.claude_internal_diagnostic", {
               ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
@@ -25264,7 +25941,32 @@ export function createAgentChatService(args: {
       }
 
       persistChatState(managed);
-      const compactionIssued = runtimeStillCurrent
+      if (runtimeStillCurrent) {
+        maybeClearClaudeCompactionUnavailable(runtime, turnId, finalStatus);
+      }
+      // A too-long handoff replay is repaired by re-fitting the replay, never
+      // by a compaction the SDK will refuse on a single-exchange conversation.
+      const replayRecovery = runtimeStillCurrent && recoverFromContextOverflow
+        ? await claudeReplayOverflow.recoverFromOverflow(managed, runtime, turnId, {
+          isRetryTurn: args.replayOverflowRetry === true,
+        })
+        : null;
+      if (args.replayOverflowRetry === true && !replayRecovery) {
+        // "interrupted" is a user pressing Stop, not a prompt that did not fit:
+        // the replay is already in the session, and blaming its length would be
+        // a lie about what just happened.
+        if (finalStatus === "failed") {
+          claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
+        } else if (finalStatus === "completed") {
+          claudeReplayOverflow.noteRetrySucceeded(runtime);
+          onChatHandoffReplay?.({
+            sessionId: managed.session.id,
+            outcome: "retried",
+            provider: managed.session.provider,
+          });
+        }
+      }
+      const compactionIssued = runtimeStillCurrent && !replayRecovery
         ? await maybeIssueClaudeBoundaryCompaction(managed, runtime, {
             recoverFromOverflow: recoverFromContextOverflow,
             turnId,
@@ -25273,7 +25975,22 @@ export function createAgentChatService(args: {
 
       // Process queued steers (skip if session was disposed during execution)
       if (managed.runtime === runtime) {
-        if (compactionIssued) {
+        if (replayRecovery === "retry") {
+          void runClaudeTurn(managed, {
+            ...args,
+            replayOverflowRetry: true,
+            suppressUserEcho: true,
+            onDispatched: undefined,
+            onBackendDispatched: undefined,
+          }).catch((retryError) => {
+            logger.warn("agent_chat.claude_replay_overflow_retry_failed", {
+              sessionId: managed.session.id,
+              turnId,
+              error: retryError instanceof Error ? retryError.message : String(retryError),
+            });
+            claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
+          });
+        } else if (compactionIssued) {
           startClaudeIdleReader(managed, runtime, "turn_completed");
         } else if (runtime.pendingSteers.length) {
           const delivered = await deliverNextQueuedSteer(managed, runtime);
@@ -25308,6 +26025,7 @@ export function createAgentChatService(args: {
       // success path starts the idle reader. Abort throws still land here —
       // do not close() or an idle-reader terminate would reap those jobs.
       if (!runtime.interrupted) {
+        abandonPendingInternalCompaction(managed, runtime, "turn_failed");
         try { runtime.query?.close(); } catch { /* ignore */ }
         runtime.inputPump?.close();
         runtime.queryGeneration += 1;
@@ -25457,11 +26175,19 @@ export function createAgentChatService(args: {
           managed.runtimeInvalidated = true;
           clearLaneDirectiveKey(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
+          // The provider thread is gone and the next send opens a new one, so
+          // the once-per-thread sections have to be said again. Without this
+          // the refresh below re-reads a doctrine block that is still marked
+          // delivered, and the replacement thread was never told any of it.
+          restageSectionsForNewProviderThread(managed);
           refreshReconstructionContext(managed);
           emitContinuityRecoveryNotice(managed, recovery, turnId);
         }
       }
 
+      if (args.replayOverflowRetry === true && !runtime.interrupted) {
+        claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
+      }
       persistChatState(managed);
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
       if (failedBeforeBackendDispatch) throw effectiveError;
@@ -28716,9 +29442,9 @@ export function createAgentChatService(args: {
       // An approved plan hands the session straight to full access — the user
       // already reviewed exactly what will happen, so gating every file change
       // behind another approval round just relitigates the plan.
-      managed.session.permissionMode = "full-auto";
       applyLegacyPermissionModeToNativeControls(managed.session, "full-auto");
       managed.session.interactionMode = "default";
+      reassertIdentityPermissionMode(managed.session);
       runtime.threadResumed = false;
       runtime.canAttachResumedTurnStart = false;
       persistChatState(managed);
@@ -33783,6 +34509,7 @@ export function createAgentChatService(args: {
       ? runtime.sdkSessionId?.trim() || null
       : null;
     cancelClaudeWarmup(managed, runtime, reason);
+    abandonPendingInternalCompaction(managed, runtime, `query_reset:${reason}`);
     if (!options.preserveInitialInputDispatchGate) {
       settleClaudeInitialInputDispatch(runtime, new Error(`Claude query reset before turn input dispatch (${reason}).`));
     }
@@ -33853,6 +34580,9 @@ export function createAgentChatService(args: {
       runtime.sdkSessionId = null;
       runtime.forkFromSdkSessionId = null;
       managed.runtimeInvalidated = true;
+      // The id is gone, so the next query opens a session that has heard none
+      // of this chat — including the doctrine that makes a CTO thread the CTO.
+      restageSectionsForNewProviderThread(managed);
       refreshReconstructionContext(managed);
       void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
       clearLaneDirectiveKey(managed);
@@ -34881,6 +35611,9 @@ export function createAgentChatService(args: {
         fallbackIssuedThisEpisode: false,
         pendingInternalCompactionTrigger: null,
         pendingInternalCompactionId: null,
+        pendingInternalCompactionNotice: null,
+        compactionUnavailable: false,
+        compactionUnavailableTurnId: null,
         lastUsageEmitAt: null,
         lastUsageEmitPct: null,
         nextSampleId: 0,
@@ -34942,7 +35675,15 @@ export function createAgentChatService(args: {
       bufferedReasoning: null,
       ctoSessionStartedAt: null,
       pendingReconstructionContext: null,
+      pendingReconstructionSections: null,
+      conversationTail: newStagedSection(),
+      ctoStaticContext: newStagedSection(),
       pendingTranscriptReplay: null,
+      transcriptReplayOrigin: null,
+      lastTurnFailure: null,
+      contextHealth: null,
+      liveTurnErrorText: null,
+      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -35914,7 +36655,7 @@ export function createAgentChatService(args: {
     const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
     const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
     let effectivePermissionMode = identityKey
-      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
+      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider, sessionId)
       : requestedPermMode;
     if (orchestrationLeadRequested) {
       effectivePermissionMode = "plan";
@@ -36122,7 +36863,15 @@ export function createAgentChatService(args: {
       deleted: false,
       ctoSessionStartedAt: identityKey === "cto" ? startedAt : null,
       pendingReconstructionContext: null,
+      pendingReconstructionSections: null,
+      conversationTail: newStagedSection(),
+      ctoStaticContext: newStagedSection(),
       pendingTranscriptReplay: null,
+      transcriptReplayOrigin: null,
+      lastTurnFailure: null,
+      contextHealth: null,
+      liveTurnErrorText: null,
+      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -36484,6 +37233,30 @@ export function createAgentChatService(args: {
       usedFallbackSummary = generatedBrief.usedFallbackSummary;
     }
 
+    // Pre-flight. Fit the replay before the new chat exists, so a transcript
+    // that cannot fit at all refuses the handoff instead of creating a chat
+    // whose very first message is guaranteed to be rejected.
+    const targetModelLabel = targetDescriptor.displayName?.trim() || targetDescriptor.id;
+    const replayFit = replayFork
+      ? buildFittedTranscriptReplay(
+        readTranscriptEnvelopes(managed, { includeBuffered: true }),
+        targetDescriptor.contextWindow,
+        replayMaxCharsForProvider(targetProvider),
+      )
+      : null;
+    // The header alone always fits, so an empty string is not the signal: a
+    // replay that kept none of the conversation is.
+    if (replayFit && replayFit.turnCount > 0 && replayFit.keptTurnCount === 0) {
+      // No target chat exists yet, so this one is filed under the chat the user
+      // was handing off.
+      onChatHandoffReplay?.({
+        sessionId: sourceId,
+        outcome: "refused",
+        provider: targetProvider,
+      });
+      throw new Error(`This chat is too long to hand off to ${targetModelLabel}. Start a new chat on ${targetModelLabel} instead.`);
+    }
+
     const created = await createSession({
       laneId: targetLaneId,
       provider: targetProvider,
@@ -36582,28 +37355,43 @@ export function createAgentChatService(args: {
           ...(envelope.provenance ?? {}),
           providerOrigin: "handoff_fork",
           sourceSessionId: sourceId,
+          // A native fork keeps its history on the provider; only a replay fork
+          // may ever be re-seeded from this source transcript.
+          ...(replayFit ? { replayFork: true } : {}),
         },
       }));
       if (sourceEnvelopes.length) await appendImportedChatEvents(createdManaged, sourceEnvelopes);
     }
 
     let replayForkDisclosure: AgentChatReplayForkDisclosure | undefined;
-    if (replayFork) {
-      const fit = buildFittedTranscriptReplay(
-        readTranscriptEnvelopes(managed, { includeBuffered: true }),
-        targetDescriptor.contextWindow,
-        replayMaxCharsForProvider(targetProvider),
-      );
-      createdManaged.pendingTranscriptReplay = fit.text;
+    if (replayFit) {
+      createdManaged.pendingTranscriptReplay = replayFit.text;
+      // Durable: the replay text is consumed by the first turn, but the fact
+      // that this chat was rebuilt from another one has to outlive it.
+      createdManaged.transcriptReplayOrigin = {
+        sourceSessionId: sourceId,
+        budgetChars: replayFit.text.length,
+        keptTurnCount: replayFit.keptTurnCount,
+        turnCount: replayFit.turnCount,
+        ...(targetDescriptor.contextWindow
+          ? { contextWindowTokens: targetDescriptor.contextWindow }
+          : {}),
+      };
       persistChatState(createdManaged);
-      replayForkDisclosure = toReplayForkDisclosure(fit);
-      if (fit.truncated) {
-        emitChatEvent(createdManaged, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: `Forked with a full transcript replay. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window or provider input limit.`,
-        });
-      }
+      replayForkDisclosure = toReplayForkDisclosure(replayFit);
+      emitHandoffReplayNotice(
+        createdManaged,
+        replayFit,
+        targetModelLabel,
+        targetDescriptor.contextWindow,
+      );
+      // The pre-flight has resolved: the conversation either reached the new
+      // model whole or only in part. One fact, once per handoff.
+      onChatHandoffReplay?.({
+        sessionId: createdManaged.session.id,
+        outcome: replayFit.truncated ? "truncated" : "fit",
+        provider: targetProvider,
+      });
     }
 
     if (handoffMode === "brief" || handoffNote) {
@@ -40188,7 +40976,16 @@ export function createAgentChatService(args: {
     } | null | undefined,
   ): void => {
     const sdkSessionId = ready?.sessionId?.trim();
+    const previousSdkSessionId = runtime.sdkSessionId;
     if (sdkSessionId) runtime.sdkSessionId = sdkSessionId;
+    // Droid can hand back a DIFFERENT session id on a re-ready of a runtime
+    // that otherwise survived — same handle, new conversation on the other
+    // end. Nothing else notices, because nothing else is watching the id, so
+    // the once-per-thread sections have to be re-armed right here.
+    if (sdkSessionId && previousSdkSessionId && sdkSessionId !== previousSdkSessionId) {
+      restageSectionsForNewProviderThread(managed);
+      refreshReconstructionContext(managed);
+    }
     const availableModelIds = ready?.availableModels
       ?.map((entry) => normalizeDroidReportedModelId(entry?.id ?? entry?.modelId ?? null))
       .filter((entry): entry is string => Boolean(entry)) ?? [];
@@ -48572,6 +49369,7 @@ export function createAgentChatService(args: {
         args.identityKey,
         args.permissionMode ?? managed.session.permissionMode,
         managed.session.provider,
+        managed.session.id,
       );
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       enforceManagedLocalHarnessPermissionMode(managed);
@@ -48695,6 +49493,63 @@ export function createAgentChatService(args: {
     }
     return managed.session;
   };
+
+  /**
+   * Turn health, hand-off distillation and the rotation out of a finished
+   * thread. The policy lives in `identityThreadRotation.ts` over an injected
+   * deps bag; these are the closures that give it this service's world.
+   */
+  const identityThreadRotation = createIdentityThreadRotation<ManagedChatSession>({
+    logger,
+    nowIso,
+    ensureManagedSession,
+    listIdentitySessions: (identityKey) => listIdentitySessions(identityKey),
+    describeSession: (managed) => ({
+      id: managed.session.id,
+      status: managed.session.status,
+      summaryOrPreview: sessionService.get(managed.session.id)?.summary?.trim()
+        ?? managed.preview?.trim()
+        ?? "",
+    }),
+    readTurnHealthRecord: (managed) => ({
+      failure: managed.lastTurnFailure,
+      context: managed.contextHealth,
+    }),
+    listUserMessages: (managed) => collectConversationEntries(managed)
+      .filter((entry) => entry.role === "user")
+      .map((entry) => entry.text),
+    listScheduledWorkLines: (managed) => (scheduledWorkScheduler?.list(managed.session.id) ?? [])
+      .map((schedule) => schedule.prompt || schedule.kind),
+    runSessionTurn: (args) => runSessionTurn(args),
+    flushContinuity: (managed, reason) => {
+      flushIdentityContinuityDeterministic(managed, reason);
+    },
+    writeContinuitySummary: (managed, summary) => {
+      managed.continuitySummary = summary;
+      managed.continuitySummaryUpdatedAt = nowIso();
+      persistChatState(managed);
+    },
+    writeThreadState: (managed, summary, reason) => {
+      writeCtoThreadStateFromSummary(managed, summary, reason);
+    },
+    // Read once at construction rather than per rotation: the memory service is
+    // wired when the chat service is built and never swapped under it.
+    memory: ctoMemoryService
+      ? {
+        appendDailyEntry: (line) => ctoMemoryService.appendDailyEntry(line),
+        appendMemoryFact: (line) => ctoMemoryService.appendMemoryFact(line),
+      }
+      : null,
+    // The same pair `hasActiveWorkloads` uses: the session row carries the
+    // foreground turn, the runtime carries background tasks and turns that
+    // have not reached their start edge yet.
+    isTurnActive: (managed) =>
+      managed.session.status === "active" || hasRuntimeActiveWorkload(managed.runtime),
+    dispose: (args) => dispose(args),
+    ensureIdentitySession: (args) => ensureIdentitySession(args),
+  });
+
+  const { getSessionTurnHealth, getCtoThreadHealth, startFreshIdentitySession } = identityThreadRotation;
 
   /**
    * Cancel every pending-input surface before a user settles the session.
@@ -50748,6 +51603,7 @@ export function createAgentChatService(args: {
           managed.session.identityKey,
           managed.session.permissionMode,
           nextProvider,
+          managed.session.id,
         );
         applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       }
@@ -50906,7 +51762,12 @@ export function createAgentChatService(args: {
     if (permissionMode !== undefined) {
       managed.session.permissionMode = orchestrationLockedMode
         ?? (isIdentitySession
-        ? normalizeIdentityPermissionMode(managed.session.identityKey, permissionMode, managed.session.provider)
+        ? normalizeIdentityPermissionMode(
+          managed.session.identityKey,
+          permissionMode,
+          managed.session.provider,
+          managed.session.id,
+        )
           : permissionMode);
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
     }
@@ -52927,22 +53788,18 @@ export function createAgentChatService(args: {
     reasoningEffort,
     executionMode,
     timeoutMs,
-  }: AgentChatSendArgs & { timeoutMs?: number | null }): Promise<{
-    sessionId: string;
-    provider: AgentChatProvider;
-    model: string;
-    modelId?: string;
-    outputText: string;
-    usage?: {
-      inputTokens?: number | null;
-      outputTokens?: number | null;
-      cacheReadTokens?: number | null;
-      cacheCreationTokens?: number | null;
-    };
-    turnId?: string;
-    threadId?: string;
-    sdkSessionId?: string | null;
-  }> => {
+    voiceCallId,
+  }: AgentChatSendArgs & {
+    timeoutMs?: number | null;
+    /**
+     * The CTO voice call this turn belongs to, when one is driving it.
+     *
+     * Stamped onto every envelope the turn commits so the transcript can fold
+     * the call into one card. Nothing else changes: the turn runs on the same
+     * session, with the same tools and the same approvals.
+     */
+    voiceCallId?: string | null;
+  }): Promise<AgentChatBackgroundTurnResult> => {
     const managed = ensureManagedSession(sessionId);
     const trimmed = text.trim();
     if (!trimmed.length) {
@@ -52952,6 +53809,8 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         outputText: "",
+        status: "skipped" as const,
+        errorMessage: null,
         ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
         ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
       };
@@ -52975,6 +53834,8 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         outputText: "",
+        status: "skipped" as const,
+        errorMessage: null,
         ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
         ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
       };
@@ -52987,7 +53848,15 @@ export function createAgentChatService(args: {
         : Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
           ? Math.max(15_000, Math.floor(Number(timeoutMs)))
           : DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS;
-    return await new Promise((resolve, reject) => {
+    // Held for the life of the turn, and given back however it ends: an
+    // abandoned id would stamp the user's NEXT typed message with a call that
+    // is already over.
+    const trimmedVoiceCallId = typeof voiceCallId === "string" && voiceCallId.trim().length
+      ? voiceCallId.trim()
+      : null;
+    if (trimmedVoiceCallId) managed.activeVoiceCallId = trimmedVoiceCallId;
+    try {
+      return await new Promise<AgentChatBackgroundTurnResult>((resolve, reject) => {
       const collector: SessionTurnCollector = {
         resolve,
         reject,
@@ -53016,16 +53885,42 @@ export function createAgentChatService(args: {
 
       sessionTurnCollectors.set(sessionId, collector);
 
-      void executePreparedSendMessage(prepared).catch((error) => {
-        if (collector.timeout) {
-          clearTimeout(collector.timeout);
-        }
-        if (sessionTurnCollectors.get(sessionId) === collector) {
-          sessionTurnCollectors.delete(sessionId);
-        }
-        reject(error instanceof Error ? error : new Error(String(error)));
+      // The headless path is a real CTO turn, not a side channel: the voice's
+      // `ask_cto` reaches the thread through here, and without this refresh it
+      // answered off whatever the live-state block held when the last
+      // interactive send ran — lanes, PR state, dirty flags and scheduled work
+      // as they were minutes or hours ago. That is worse than no block, because
+      // the doctrine tells the CTO not to re-derive them. It is the same call
+      // the interactive send makes, so the static half is still staged once per
+      // provider thread and only the volatile half is rebuilt; and it is
+      // idempotent, because it REPLACES the pending context rather than
+      // appending to it and the static block stays armed until a send actually
+      // consumes it.
+      //
+      // It runs HERE, on the way into the dispatch, rather than before
+      // `prepareSendMessage`: `runSessionTurn` has to reach this line
+      // synchronously, since a `forceDisposeAll` racing a just-started headless
+      // turn can only reject a collector that is already registered. The prefix
+      // is consumed downstream inside `executePreparedSendMessage`, so this is
+      // early enough. Failures are already swallowed inside the refresh — a
+      // slow PR round-trip must not be able to fail the turn.
+      void refreshCtoLiveStateForTurn(sessionId)
+        .then(() => executePreparedSendMessage(prepared))
+        .catch((error) => {
+          if (collector.timeout) {
+            clearTimeout(collector.timeout);
+          }
+          if (sessionTurnCollectors.get(sessionId) === collector) {
+            sessionTurnCollectors.delete(sessionId);
+          }
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
       });
-    });
+    } finally {
+      if (trimmedVoiceCallId && managed.activeVoiceCallId === trimmedVoiceCallId) {
+        managed.activeVoiceCallId = null;
+      }
+    }
   };
 
   /**
@@ -53890,6 +54785,9 @@ export function createAgentChatService(args: {
     getChatEventHistory,
     getChatEventHistoryPage,
     ensureIdentitySession,
+    startFreshIdentitySession,
+    getSessionTurnHealth,
+    getCtoThreadHealth,
     getCtoAttention,
     approveToolUse,
     listPendingInputs,

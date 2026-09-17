@@ -23,6 +23,7 @@ import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { DictationSection } from "../settings/DictationSection";
 import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
 import { KeepAwakeSection } from "../settings/KeepAwakeSection";
+import { CaptureGestureSection } from "../settings/CaptureGestureSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
@@ -32,6 +33,7 @@ import { BrowserLinksSection } from "../settings/BrowserLinksSection";
 import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
 import { ProjectSection } from "../settings/ProjectSection";
+import { OpenAiKeySection } from "../settings/OpenAiKeySection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { providerDescriptor } from "../settings/providers/descriptors";
 import { SecretsSection } from "../settings/SecretsSection";
@@ -181,6 +183,9 @@ function AgentsTabContent() {
       <WebSettingsSection entryIds={["agents.providers"]}>
         <ProvidersSection forceRefreshOnMount providerParam={null} onProviderChange={handleProviderChange} />
       </WebSettingsSection>
+      <WebSettingsSection entryIds={["agents.openai-key"]}>
+        <OpenAiKeySection />
+      </WebSettingsSection>
       <WebSettingsSection entryIds={["agents.background-jobs", "agents.scheduled-work", "agents.budget"]}>
         <AiFeaturesSection />
       </WebSettingsSection>
@@ -217,6 +222,9 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
           </WebSettingsSection>
           <WebSettingsSection entryIds={["general.keep-awake"]}>
             <KeepAwakeSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["general.capture-gesture"]}>
+            <CaptureGestureSection />
           </WebSettingsSection>
           <WebSettingsSection entryIds={["general.link-open-mode"]}>
             <BrowserLinksSection />

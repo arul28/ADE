@@ -6,6 +6,7 @@ import { buildAdeGitignore } from "../../../shared/adeLayout";
 import { openKvDb } from "../state/kvDb";
 import {
   CTO_LIVE_STATE_MAX_CHARS,
+  CTO_STATIC_CONTEXT_TITLE,
   createCtoStateService,
   renderCtoLiveStateBlock,
   type CtoLiveStateSnapshot,
@@ -32,6 +33,23 @@ async function createStateFixture() {
   return { root, adeDir, db, projectId };
 }
 
+/**
+ * A `terminal_sessions` row is all `countUserTurns` needs — it looks the
+ * transcript path up by session id.
+ */
+function insertTranscriptSession(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  sessionId: string,
+  transcriptPath: string,
+): void {
+  db.run(
+    `insert into terminal_sessions(
+      id, lane_id, tracked, pinned, manually_named, title, started_at, transcript_path, status
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [sessionId, "lane-test", 1, 0, 0, "CTO", "2026-03-05T10:00:00.000Z", transcriptPath, "ended"],
+  );
+}
+
 describe("ctoStateService", () => {
   it("creates default CTO identity and current context when absent", async () => {
     const fixture = await createStateFixture();
@@ -50,6 +68,29 @@ describe("ctoStateService", () => {
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "sessions.jsonl"))).toBe(false);
     expect(buildAdeGitignore()).not.toContain("!cto/identity.yaml");
     expect(buildAdeGitignore()).not.toContain("cto/CURRENT.md");
+
+    fixture.db.close();
+  });
+
+  /**
+   * The seed never passes through `normalizeModelPreferences` — only file and
+   * DB reads do — so a hard-coded provider in `makeDefaultIdentity` could not
+   * be validated away, and a fresh project silently opened on it. A null seed
+   * is the only value that puts the model picker in front of the thread.
+   */
+  it("seeds a fresh identity with no model pick", async () => {
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    expect(service.getIdentity().modelPreferences).toBeNull();
+    // The reconciled seed is written to both stores, so re-reading it must not
+    // resurrect a pick the user never made.
+    expect(service.getSnapshot().identity.modelPreferences).toBeNull();
+    expect(service.buildReconstructionContext()).toContain("- Preferred model: not picked yet");
 
     fixture.db.close();
   });
@@ -185,7 +226,7 @@ describe("ctoStateService", () => {
       adeDir: fixture.adeDir,
     });
 
-    const entry = service.appendSessionLog({
+    const entry = await service.appendSessionLog({
       sessionId: "session-1",
       summary: "First CTO session",
       startedAt: "2026-03-05T10:00:00.000Z",
@@ -254,7 +295,7 @@ describe("ctoStateService", () => {
       adeDir: fixture.adeDir,
     });
 
-    service.appendSessionLog({
+    await service.appendSessionLog({
       sessionId: "session-mobile",
       summary: "Investigated navigation regressions and proposed a stack-level fix.",
       startedAt: "2026-05-22T00:00:00.000Z",
@@ -277,7 +318,7 @@ describe("ctoStateService", () => {
     fixture.db.close();
   });
 
-  it("preserves onboarding state and extended identity fields across reloads", async () => {
+  it("preserves onboarding state and the prompt extension across reloads", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
@@ -286,16 +327,9 @@ describe("ctoStateService", () => {
     });
 
     service.updateIdentity({
-      personality: "casual",
-      constraints: ["no force push", "write tests"],
       systemPromptExtension: "Stay calm under pressure.",
-      communicationStyle: {
-        verbosity: "adaptive",
-        proactivity: "balanced",
-        escalationThreshold: "low",
-      },
     });
-    service.completeOnboardingStep("identity");
+    service.completeOnboardingStep("intro");
 
     const reloaded = createCtoStateService({
       db: fixture.db,
@@ -303,21 +337,13 @@ describe("ctoStateService", () => {
       adeDir: fixture.adeDir,
     });
 
-    expect(reloaded.getOnboardingState().completedSteps).toEqual(["identity"]);
-    expect(reloaded.getOnboardingState().completedAt).toBeTruthy();
-    expect(reloaded.getIdentity().personality).toBe("casual");
-    expect(reloaded.getIdentity().constraints).toEqual(["no force push", "write tests"]);
+    expect(reloaded.getOnboardingState().completedSteps).toEqual(["intro"]);
     expect(reloaded.getIdentity().systemPromptExtension).toBe("Stay calm under pressure.");
-    expect(reloaded.getIdentity().communicationStyle).toEqual({
-      verbosity: "adaptive",
-      proactivity: "balanced",
-      escalationThreshold: "low",
-    });
 
     fixture.db.close();
   });
 
-  it("builds a structured CTO prompt preview with immutable doctrine and preset overlay", async () => {
+  it("builds a structured CTO prompt preview around the single immutable doctrine", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
@@ -326,35 +352,51 @@ describe("ctoStateService", () => {
     });
 
     const preview = service.previewSystemPrompt();
-    expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "personality", "continuity", "memory", "knowledge", "capabilities"]);
+    expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "continuity", "memory", "knowledge", "capabilities"]);
     expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside ADE.");
-    expect(preview.sections[1]?.content).toContain("Operate as a strategic CTO.");
-    expect(preview.sections[2]?.content).toContain("Immutable doctrine");
-    expect(preview.sections[2]?.content).toContain("Do not write ephemeral turn-by-turn status");
+    // The doctrine is the only voice instruction there is — there is no
+    // per-user overlay to fall back on, so it has to carry the tone rules.
+    expect(preview.sections[0]?.content).toContain("How you speak:");
+    expect(preview.sections[0]?.content).toContain("Helping with ADE itself:");
+    expect(preview.sections[1]?.content).toContain("Immutable doctrine");
+    expect(preview.sections[1]?.content).toContain("Do not write ephemeral turn-by-turn status");
     // Memory section: teaches persistent memory + saveMemory/searchMemory usage
-    expect(preview.sections[3]?.content).toContain("persistent memory");
-    expect(preview.sections[3]?.content).toContain("saveMemory");
+    expect(preview.sections[2]?.content).toContain("persistent memory");
+    expect(preview.sections[2]?.content).toContain("saveMemory");
     // Knowledge section: ADE architecture, chat vs terminal disambiguation, task routing, model selection
-    expect(preview.sections[4]?.content).toContain("ADE Architecture");
-    expect(preview.sections[4]?.content).toContain("spawnChat");
-    expect(preview.sections[4]?.content).toContain("createTerminal");
-    expect(preview.sections[4]?.content).toContain("Model Selection");
-    expect(preview.sections[4]?.content).toContain("ade actions run <domain.action>");
-    expect(preview.sections[4]?.content).toContain("bundled `ade-*` skills");
+    expect(preview.sections[3]?.content).toContain("ADE Architecture");
+    expect(preview.sections[3]?.content).toContain("spawnChat");
+    expect(preview.sections[3]?.content).toContain("createTerminal");
+    expect(preview.sections[3]?.content).toContain("Model Selection");
+    expect(preview.sections[3]?.content).toContain("ade actions run <domain.action>");
+    expect(preview.sections[3]?.content).toContain("bundled `ade-*` skills");
     // Capabilities section: schema authority plus cross-tool operating rules
-    expect(preview.sections[5]?.content).toContain("ADE operator tools");
-    expect(preview.sections[5]?.content).toContain("registered ADE operator tool schemas");
-    expect(preview.sections[5]?.content).not.toContain("listLanes —");
-    expect(preview.sections[5]?.content).toContain("UI navigation is suggestion-only.");
+    expect(preview.sections[4]?.content).toContain("ADE operator tools");
+    expect(preview.sections[4]?.content).toContain("registered ADE operator tool schemas");
+    expect(preview.sections[4]?.content).not.toContain("listLanes —");
+    expect(preview.sections[4]?.content).toContain("UI navigation is suggestion-only.");
     expect(preview.prompt).toContain("Immutable ADE doctrine");
-    expect(preview.prompt).toContain("Selected personality overlay");
     expect(preview.prompt).toContain("ADE environment knowledge");
     expect(preview.prompt).toContain("ADE operator tools");
+
+    // The knowledge document lives in the system prompt and NOWHERE else. The
+    // per-turn reconstruction context used to repeat it verbatim, and since the
+    // chat service concatenates the two, every CTO user turn carried ~10 KB of
+    // the same architecture doc twice.
+    const reconstruction = service.buildReconstructionContext(8);
+    expect(reconstruction).not.toContain("ADE Architecture");
+    expect(reconstruction).not.toContain("ADE Operational Knowledge");
+    expect(reconstruction).toContain("CTO Identity");
 
     fixture.db.close();
   });
 
-  it("uses the custom personality overlay without removing the immutable doctrine", async () => {
+  /**
+   * The per-turn prefix is split by lifetime, and the split has to be a real
+   * partition: anything that lands in both halves is paid for on every single
+   * turn for nothing, and anything in neither is simply lost.
+   */
+  it("splits the CTO prefix into an immutable half and a volatile half", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
@@ -362,17 +404,33 @@ describe("ctoStateService", () => {
       adeDir: fixture.adeDir,
     });
 
-    const snapshot = service.updateIdentity({
-      personality: "custom",
-      customPersonality: "Be sharp, skeptical, and deeply execution-focused.",
-      persona: "Legacy custom note",
-    });
-    const preview = service.previewSystemPrompt(snapshot.identity);
+    const staticSection = service.buildStaticContextSection();
+    expect(staticSection.title).toBe(CTO_STATIC_CONTEXT_TITLE);
+    expect(staticSection.body).toBe(service.previewSystemPrompt().prompt);
+    // The immutable half is where the doctrine and the architecture document
+    // live, and it is the bulk of the prefix.
+    expect(staticSection.body).toContain("Immutable ADE doctrine");
+    expect(staticSection.body).toContain("ADE Architecture");
+    expect(staticSection.body).toContain("ADE operator tools");
+    expect(staticSection.body.length).toBeGreaterThan(10_000);
 
-    expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside ADE.");
-    expect(preview.sections[1]?.content).toContain("Be sharp, skeptical, and deeply execution-focused.");
-    expect(preview.prompt).toContain("Immutable ADE doctrine");
-    expect(preview.prompt).toContain("Be sharp, skeptical, and deeply execution-focused.");
+    // The volatile half repeats none of it.
+    const volatileSection = service.buildReconstructionContext(8);
+    expect(volatileSection).toContain("CTO Context");
+    expect(volatileSection).not.toContain("Immutable ADE doctrine");
+    expect(volatileSection).not.toContain("ADE Architecture");
+    expect(volatileSection).not.toContain("registered ADE operator tool schemas");
+
+    // Same prompt, same key — that is what lets the chat service stage it once
+    // per provider thread instead of once per turn.
+    expect(service.buildStaticContextSection().key).toBe(staticSection.key);
+
+    // A changed prompt is a changed key, so a live thread is told again rather
+    // than left holding a stale name or an edited extension.
+    service.updateIdentity({ name: "Ada" });
+    const renamed = service.buildStaticContextSection();
+    expect(renamed.key).not.toBe(staticSection.key);
+    expect(renamed.body).toContain("You are Ada.");
 
     fixture.db.close();
   });
@@ -712,6 +770,209 @@ describe("ctoStateService", () => {
     for (const row of rows) {
       expect(row).toContain("l".repeat(40));
     }
+
+    fixture.db.close();
+  });
+  /**
+   * The count is what the History row prints, so a line that merely QUOTES a
+   * user envelope must not inflate it.
+   */
+  it("counts only real user_message envelopes, not lines that quote the marker", async () => {
+    const fixture = await createStateFixture();
+    const transcriptPath = path.join(fixture.root, "transcript-quoted.jsonl");
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({ type: "assistant_message", text: "hello" }),
+        // Nested, so the marker appears verbatim in the serialized line — the
+        // cheap pre-filter matches it and only the parse rejects it.
+        JSON.stringify({ type: "tool_result", payload: { type: "user_message", text: "quoted" } }),
+        // Not JSON at all, but carries the marker.
+        'raw log spew "type":"user_message" from a tool',
+        // Last line, deliberately without a trailing newline.
+        JSON.stringify({ type: "user_message", text: "the only real turn" }),
+      ].join("\n"),
+      "utf8"
+    );
+    insertTranscriptSession(fixture.db, "session-quoted", transcriptPath);
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const entry = await service.appendSessionLog({
+      sessionId: "session-quoted",
+      summary: "Quoted marker session",
+      startedAt: "2026-03-05T10:00:00.000Z",
+      endedAt: "2026-03-05T10:05:00.000Z",
+      provider: "codex",
+      modelId: "openai/gpt-5.3-codex",
+      capabilityMode: "full_tooling",
+    });
+
+    expect(entry.turnCount).toBe(1);
+
+    fixture.db.close();
+  });
+
+  it("reports no turn count for a transcript past the size cap", async () => {
+    const fixture = await createStateFixture();
+    const transcriptPath = path.join(fixture.root, "transcript-huge.jsonl");
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    // Sparse: the cap is checked from stat(), so no bytes need to be written.
+    fs.truncateSync(transcriptPath, 33 * 1024 * 1024);
+    insertTranscriptSession(fixture.db, "session-huge", transcriptPath);
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const entry = await service.appendSessionLog({
+      sessionId: "session-huge",
+      summary: "Oversized transcript session",
+      startedAt: "2026-03-05T10:00:00.000Z",
+      endedAt: "2026-03-05T10:05:00.000Z",
+      provider: "codex",
+      modelId: "openai/gpt-5.3-codex",
+      capabilityMode: "full_tooling",
+    });
+
+    expect(entry.turnCount).toBeNull();
+
+    fixture.db.close();
+  });
+
+  it("reports no turn count when the transcript is missing", async () => {
+    const fixture = await createStateFixture();
+    insertTranscriptSession(fixture.db, "session-gone", path.join(fixture.root, "nope.jsonl"));
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const entry = await service.appendSessionLog({
+      sessionId: "session-gone",
+      summary: "Missing transcript session",
+      startedAt: "2026-03-05T10:00:00.000Z",
+      endedAt: "2026-03-05T10:05:00.000Z",
+      provider: "codex",
+      modelId: "openai/gpt-5.3-codex",
+      capabilityMode: "full_tooling",
+    });
+
+    expect(entry.turnCount).toBeNull();
+
+    fixture.db.close();
+  });
+
+  /**
+   * `getSessionLogs` reads the DB for which entries exist and the file for how
+   * many turns each one had. The file half is now handed over by the reconcile
+   * rather than re-read; the count must still arrive.
+   */
+  it("surfaces turnCount from the reconciled session log file", async () => {
+    const fixture = await createStateFixture();
+    const transcriptPath = path.join(fixture.root, "transcript-turns.jsonl");
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({ type: "user_message", text: "one" }),
+        JSON.stringify({ type: "assistant_message", text: "..." }),
+        JSON.stringify({ type: "user_message", text: "two" }),
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    insertTranscriptSession(fixture.db, "session-turns", transcriptPath);
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    await service.appendSessionLog({
+      sessionId: "session-turns",
+      summary: "Two turn session",
+      startedAt: "2026-03-05T10:00:00.000Z",
+      endedAt: "2026-03-05T10:05:00.000Z",
+      provider: "codex",
+      modelId: "openai/gpt-5.3-codex",
+      capabilityMode: "full_tooling",
+    });
+
+    expect(service.getSessionLogs(10)[0]?.turnCount).toBe(2);
+
+    // A fresh service re-reads both halves from disk; the count lives only in
+    // the file, so this is the path that proves it was not lost.
+    const reloaded = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    expect(reloaded.getSessionLogs(10)[0]?.turnCount).toBe(2);
+
+    fixture.db.close();
+  });
+
+  /**
+   * The legacy fields were removed from `CtoIdentity`, and the first load of an
+   * older project rewrote identity.yaml without them. The text has to survive
+   * that, and it has to survive it exactly once.
+   */
+  it("folds legacy identity constraints and personality into the prompt extension once", async () => {
+    const fixture = await createStateFixture();
+    const ctoDir = path.join(fixture.adeDir, "cto");
+    fs.mkdirSync(ctoDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(ctoDir, "identity.yaml"),
+      [
+        'name: "CTO"',
+        "version: 7",
+        'persona: "Legacy identity"',
+        'systemPromptExtension: "Original extension text."',
+        'personality: "professional"',
+        "communicationStyle:",
+        '  verbosity: "concise"',
+        '  proactivity: "high"',
+        "constraints:",
+        '  - "Never force-push main."',
+        '  - "Ask before deleting a lane."',
+        "modelPreferences: null",
+        'updatedAt: "2026-03-05T13:00:00.000Z"',
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const extension = service.getIdentity().systemPromptExtension ?? "";
+    expect(extension).toContain("Original extension text.");
+    expect(extension).toContain("Never force-push main.");
+    expect(extension).toContain("Ask before deleting a lane.");
+    expect(extension).toContain("professional");
+    expect(extension).toContain("concise");
+
+    // The rewritten identity.yaml no longer carries the legacy keys...
+    const rewritten = fs.readFileSync(path.join(ctoDir, "identity.yaml"), "utf8");
+    expect(rewritten).not.toContain("constraints:");
+    expect(rewritten).toContain("Never force-push main.");
+
+    // ...so a second load reads its own output and must not append again.
+    const reloaded = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const secondExtension = reloaded.getIdentity().systemPromptExtension ?? "";
+    expect(secondExtension).toBe(extension);
+    expect(secondExtension.split("Carried over from an earlier CTO identity:").length).toBe(2);
 
     fixture.db.close();
   });

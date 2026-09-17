@@ -7,9 +7,9 @@ import {
   Graph,
   GitPullRequest,
   MagnifyingGlass,
-  ClockCounterClockwise,
+  Clock,
+  HourglassSimple,
   Robot,
-  Brain,
   ChatCircleDots,
   GearSix,
 } from "@phosphor-icons/react";
@@ -85,7 +85,7 @@ const mainItems: TabNavItem[] = [
   {
     to: "/cto",
     label: "CTO",
-    icon: Brain,
+    icon: Robot,
     description: "Chat with the persistent project CTO and manage its identity and settings.",
     docUrl: docs.ctoOverview,
   },
@@ -99,14 +99,14 @@ const mainItems: TabNavItem[] = [
   {
     to: "/history",
     label: "History",
-    icon: ClockCounterClockwise,
+    icon: HourglassSimple,
     description: "Explore commit history, lane operations, branch links, and recent project movement.",
     docUrl: docs.historyOverview,
   },
   {
     to: "/automations",
     label: "Automations",
-    icon: Robot,
+    icon: Clock,
     description: "Manage automation rules that trigger ADE work from events, schedules, and guarded actions.",
     docUrl: docs.automationsOverview,
   },

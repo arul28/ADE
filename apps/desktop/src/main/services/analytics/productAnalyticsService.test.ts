@@ -17,6 +17,7 @@ import {
   captureSessionMetadataRegeneratedAnalytics,
 } from "./agentTurnProductAnalytics";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
+import { reportCaptureGesture } from "./captureGestureProductAnalytics";
 import {
   captureDailyUsageAnalytics,
   completedDailyUsageAnalyticsTarget,
@@ -553,6 +554,74 @@ describe("productAnalyticsService", () => {
       outcome: "idle_only",
     });
     expect(JSON.stringify(harness.messages)).not.toContain("private");
+  });
+
+  it("accepts a CTO voice call outcome and drops everything about the call itself", () => {
+    const harness = makeHarness();
+
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "cto",
+        action: "voice_call",
+        outcome: "rejected_key",
+        duration_bucket: "under_1m",
+        transcript: "we should force push",
+        project_path: "/Users/someone/secret-repo",
+      },
+      dedupeKey: "cto_voice_call:call-1",
+    })).toEqual({ accepted: true, reason: "accepted" });
+
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "cto",
+      action: "voice_call",
+      outcome: "rejected_key",
+      duration_bucket: "under_1m",
+    });
+    const wire = JSON.stringify(harness.messages);
+    expect(wire).not.toContain("force push");
+    expect(wire).not.toContain("secret-repo");
+  });
+
+  it("refuses a voice outcome the allowlist does not name", () => {
+    const harness = makeHarness();
+
+    harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "cto",
+        action: "voice_call",
+        // The sentence the user read, which is exactly what must never travel.
+        outcome: "OpenAI rejected this key",
+      },
+    });
+
+    expect(harness.messages[0]?.properties).not.toHaveProperty("outcome");
+    expect(JSON.stringify(harness.messages)).not.toContain("OpenAI");
+  });
+
+  it("accepts the three capture-gesture outcomes and nothing about the window", () => {
+    const harness = makeHarness();
+
+    for (const outcome of ["delivered", "failed", "too_large"]) {
+      harness.service.captureInternal({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: {
+          feature: "cto",
+          action: "capture_gesture",
+          outcome,
+          window_title: "Bank of Somewhere — Statement",
+        },
+        dedupeKey: `capture_gesture:${outcome}`,
+      });
+    }
+
+    expect(harness.messages.map((message) => (message.properties as { outcome?: string } | undefined)?.outcome))
+      .toEqual(["delivered", "failed", "too_large"]);
+    expect(JSON.stringify(harness.messages)).not.toContain("Bank of Somewhere");
   });
 
   it("accepts a failed update transaction as a coarse step name and dedupes it per hour", () => {
@@ -1542,6 +1611,45 @@ describe("product analytics producers", () => {
     })).toMatchObject({ provider: "pi" });
   });
 
+  /**
+   * The capture gesture is a chord: a user whose screen recording permission is
+   * off can fire it four times in a row, and that is one product fact rather
+   * than four. The producer owns the per-outcome key and the minute window that
+   * makes it one — the policy layer above it counts events, not presses.
+   */
+  it("reports one capture gesture per outcome per minute, and nothing when analytics is off", () => {
+    const captures: Array<Record<string, unknown>> = [];
+    const service = {
+      captureInternal: (input: Record<string, unknown>) => { captures.push(input); },
+    } as unknown as ProductAnalyticsService;
+
+    reportCaptureGesture(service, "delivered");
+    reportCaptureGesture(service, "failed");
+    reportCaptureGesture(service, "too_large");
+
+    expect(captures.map((capture) => capture.dedupeKey)).toEqual([
+      "capture_gesture:delivered",
+      "capture_gesture:failed",
+      "capture_gesture:too_large",
+    ]);
+    for (const capture of captures) {
+      expect(capture.event).toBe("ade_feature_used");
+      expect(capture.surface).toBe("desktop");
+      expect(capture.minimumIntervalMs).toBe(60_000);
+      // No window, title, app, path, or image can ride along: the producer
+      // names every property it sends.
+      expect(Object.keys(capture.properties as Record<string, unknown>).sort())
+        .toEqual(["action", "feature", "outcome"]);
+      expect(capture.properties).toMatchObject({ feature: "cto", action: "capture_gesture" });
+    }
+
+    // A desktop built without analytics has no service at all, and the gesture
+    // still has to deliver its shot.
+    expect(() => { reportCaptureGesture(null, "delivered"); }).not.toThrow();
+    expect(() => { reportCaptureGesture(undefined, "failed"); }).not.toThrow();
+    expect(captures).toHaveLength(3);
+  });
+
   it("keeps the settle-teardown properties through the sanitizer", () => {
     // Both of these were silently dropped when first added: `action` is
     // allowlisted separately from the event's key list, and `count_bucket` was
@@ -1637,6 +1745,56 @@ describe("product analytics producers", () => {
       action: "ios_live_view",
       outcome: "backend_host_encoded",
       source: "renderer_route",
+    });
+  });
+
+  it("keeps the five handoff-replay outcomes and nothing that names the chat", () => {
+    // The funnel only answers "does a handoff carry the conversation?" if all
+    // five ends survive the sanitizer under one filter.
+    for (const outcome of ["fit", "truncated", "refused", "retried", "gave_up"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "chat",
+        action: "handoff_replay",
+        outcome,
+        provider: "claude",
+        source: "runtime",
+      })).toEqual({
+        feature: "chat",
+        action: "handoff_replay",
+        outcome,
+        provider: "claude",
+        source: "runtime",
+      });
+    }
+
+    // A sixth spelling is dropped, not widened.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action: "handoff_replay",
+      outcome: "halved",
+    })).not.toHaveProperty("outcome");
+
+    // The transcript is the whole risk here: the model it went to, how many
+    // turns survived, how much of the window they took, and the text itself are
+    // all off the key list, so none of them can ride along.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action: "handoff_replay",
+      outcome: "truncated",
+      provider: "claude",
+      source: "runtime",
+      model: "claude-opus-5",
+      kept_turn_count: 41,
+      turn_count: 118,
+      share_bucket: "half",
+      replay_text: "[user]\nthe whole conversation",
+      target_session_id: "chat-9f2a",
+    })).toEqual({
+      feature: "chat",
+      action: "handoff_replay",
+      outcome: "truncated",
+      provider: "claude",
+      source: "runtime",
     });
   });
 

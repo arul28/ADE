@@ -44,6 +44,7 @@ docs/
     ├── agents/                            # agent identity, tools, personas
     ├── ade-code/                          # terminal Work chat docs; source lives in apps/ade-cli/src/tuiClient
     ├── automations/                       # rule triggers + actions + guardrails
+    ├── capture-gesture/                    # global screenshot chord (both ⌘ / both Ctrl) → CTO
     ├── chat/                              # multi-provider agent chat
     ├── computer-use/                      # proof control plane, backends, broker
     ├── conflicts/                         # detection + simulation + resolution

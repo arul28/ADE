@@ -86,6 +86,7 @@ import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../de
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
+import { createCtoVoiceRuntimeService } from "../../desktop/src/main/services/cto/ctoVoiceRuntimeService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -338,6 +339,16 @@ export type AdeRuntime = {
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
+  /**
+   * The CTO voice call, hosted here rather than in desktop main.
+   *
+   * The call brain needs the chat service, the CTO identity and durable memory,
+   * and in every real build those are THIS process's instances — the desktop
+   * AppContext holds nulls outside `NODE_ENV=test`. Desktop main routes to it
+   * through the `cto_voice` action domain and keeps only the window, the
+   * microphone and the HUD.
+   */
+  ctoVoiceCallService?: ReturnType<typeof createCtoVoiceRuntimeService> | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
@@ -2313,6 +2324,26 @@ export async function createAdeRuntime(args: {
       ...(chatImportedRefsProvider ? { chatImportedRefsProvider } : {}),
     });
 
+    // Constructed below the chat service on purpose: a call reaches the CTO
+    // thread through it, so this must not run while that binding is still null.
+    const ctoVoiceCallService = createCtoVoiceRuntimeService({
+      projectRoot,
+      logger,
+      laneService,
+      ctoStateService,
+      agentChatService,
+      // The views a call drew: it reads its own stills back out of the store
+      // at hang-up, to name them in the durable record.
+      computerUseArtifactBrokerService,
+      ctoMemoryService,
+      // The CTO row's status line during a call is written straight to the
+      // session row: the generated one is always a turn behind on a call.
+      sessionService,
+      productAnalyticsService,
+      eventBuffer,
+    });
+    teardown.push(() => ctoVoiceCallService.dispose());
+
     const runtime: AdeRuntime = {
       projectRoot,
       workspaceRoot,
@@ -2355,6 +2386,7 @@ export async function createAdeRuntime(args: {
       orchestrationService,
       ctoStateService,
       ctoMemoryService,
+      ctoVoiceCallService,
       adeProjectService,
       githubService: headlessLinearServices.githubService,
       accountAuthService,

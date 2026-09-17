@@ -1,3 +1,4 @@
+import type { CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import type { AdeActionDomain } from "./domains";
 
 /**
@@ -13,7 +14,27 @@ export type AdeActionInputContract = {
   example?: string;
 };
 
-const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record<string, AdeActionInputContract>>>> = {
+type AdeActionInputContractTable =
+  & Partial<Record<AdeActionDomain, Partial<Record<string, AdeActionInputContract>>>>
+  & { cto_voice: Record<CtoVoiceAction, AdeActionInputContract> };
+
+const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
+  cto_state: {
+    getThreadHealth: {
+      description:
+        "Report whether the CTO thread can take a turn: the session id, the last turn failure, context occupancy, "
+        + "and whether a rotation is advised. Open to every role; never changes state.",
+      input: "none",
+      example: "ade actions run cto_state.getThreadHealth --json",
+    },
+    startFreshSession: {
+      description:
+        "Retire the CTO's live conversation into History and start a fresh one on the primary lane. "
+        + "Identity, memory and the daily log carry over; a hand-off note is written first. CTO-only.",
+      input: "none",
+      example: "ade --role cto actions run cto_state.startFreshSession --json",
+    },
+  },
   cto_memory: {
     recordDiscovery: {
       description:
@@ -22,6 +43,76 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
         + "Tag it so it can be found later.",
       input: "object { fact: string, tags?: { lane?: string, pr?: string | number, path?: string, topic?: string } }",
       example: "ade actions run cto_memory.recordDiscovery --input-json '{\"fact\":\"Vitest localStorage suites need Node 22\",\"tags\":{\"topic\":\"testing\",\"path\":\"apps/desktop\"}}'",
+    },
+  },
+  ai: {
+    getMachineApiKeyStatus: {
+      description:
+        "Report whether this MACHINE has a provider key and where it resolves from (\"store\" or \"env\"). Scoped to this install's ADE home, not the project. Never returns the key.",
+      input: "object { provider: string }",
+      example: "ade --role cto actions run ai.getMachineApiKeyStatus --input-json '{\"provider\":\"openai\"}' --json",
+    },
+    storeMachineApiKey: {
+      description:
+        "Store a provider key for this machine, in the credential store the project runtime reads. The secret travels one way: only a status comes back.",
+      input: "object { provider: string, key: string }",
+    },
+    deleteMachineApiKey: {
+      description: "Remove this machine's stored provider key and return the resulting status.",
+      input: "object { provider: string }",
+      example: "ade --role cto actions run ai.deleteMachineApiKey --input-json '{\"provider\":\"openai\"}'",
+    },
+  },
+  // Exhaustive by type: a voice action with no documented shape fails to
+  // compile rather than reaching `ade actions list` as a blank row.
+  cto_voice: {
+    getState: {
+      description: "Read the CTO voice call's current state: phase, elapsed time, captions and any pending confirmation.",
+      input: "no input",
+      example: "ade --role cto actions run cto_voice.getState --json",
+    },
+    hasKey: {
+      description: "Report whether this machine has an OpenAI key a voice call could bill to. Never returns the key.",
+      input: "no input",
+      example: "ade --role cto actions run cto_voice.hasKey --json",
+    },
+    start: {
+      description:
+        "Open a CTO voice call on this project. The caller mints an owner token and must present it on every later voice action, "
+        + "because exactly one window may hold the microphone and drain the speaker.",
+      input: "object { ownerToken: string, callSessionId?: string }",
+      example: "ade --role cto actions run cto_voice.start --input-json '{\"ownerToken\":\"...\"}'",
+    },
+    end: {
+      description: "Hang up the CTO voice call, restoring the CTO's full-auto permission mode and writing the transcript.",
+      input: "object { ownerToken: string }",
+      example: "ade --role cto actions run cto_voice.end --input-json '{\"ownerToken\":\"...\"}'",
+    },
+    setMuted: {
+      description: "Mute or unmute the call's microphone. Muted calls keep streaming silence, because a Live session stalls without input.",
+      input: "object { ownerToken: string, muted: boolean }",
+      example: "ade --role cto actions run cto_voice.setMuted --input-json '{\"ownerToken\":\"...\",\"muted\":true}'",
+    },
+    pushAudio: {
+      description:
+        "Feed base64 PCM16 microphone chunks at the session sample rate into the live call. Batched by the caller; not an event, because "
+        + "audio on the event buffer would evict every real runtime event.",
+      input: "object { ownerToken: string, chunks: string[], level?: number 0..1, levels?: number[] 0..1, one per chunk }",
+    },
+    pullAudio: {
+      description:
+        "Drain the call's queued output audio, returning base64 PCM16 chunks and how many the queue had to drop. The owner polls this "
+        + "roughly ten times a second while a call is live; draining is also the heartbeat that proves the owning window is still there.",
+      input: "object { ownerToken: string }",
+    },
+    resolveApproval: {
+      description: "Answer the confirmation the call is holding, releasing or refusing the CTO turn parked inside canUseTool.",
+      input: "object { ownerToken: string, approvalId: string, approved: boolean }",
+      example: "ade --role cto actions run cto_voice.resolveApproval --input-json '{\"ownerToken\":\"...\",\"approvalId\":\"...\",\"approved\":true}'",
+    },
+    sendCapture: {
+      description: "Attach a window the user captured to the call's next backend turn. The image reaches the CTO thread, never the voice model.",
+      input: "object { ownerToken: string, pngBase64: string, note?: string }",
     },
   },
   account: {
@@ -535,7 +626,7 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
   computer_use_artifacts: {
     listArtifacts: {
       description: "List computer-use proof artifacts (screenshots, recordings, traces, logs) across the project.",
-      input: "object { kind?, ownerKind?, ownerId?, artifactId?, limit? }",
+      input: "object { kind?, ownerKind?, ownerId?, artifactId?, metadataKind?, excludeMetadataKind?, limit? }",
       example: "ade actions run computer_use_artifacts.listArtifacts --input-json '{\"kind\":\"screenshot\",\"limit\":20}' --json",
     },
     ingest: {
@@ -544,6 +635,13 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
         + "Additive: never removes or overwrites an artifact.",
       input: "object { backend: { name, style?, toolName? }, inputs: Array<{ kind?, title?, description?, path?, uri?, text? }>, owners?: Array<{ kind, id, relation? }>, callerRoot?: string }",
       example: "ade actions run computer_use_artifacts.ingest --input-json '{\"backend\":{\"name\":\"cto\",\"style\":\"manual\"},\"inputs\":[{\"kind\":\"screenshot\",\"title\":\"Lanes tab\",\"path\":\"/tmp/shot.png\"}],\"owners\":[{\"kind\":\"lane\",\"id\":\"lane-1\"}]}' --json",
+    },
+    ingestSceneSnapshot: {
+      description:
+        "File a scene snapshot the desktop already wrote into this project's artifact store as proof. "
+        + "CTO-only, and the path must already be inside `.ade/artifacts/computer-use`.",
+      input: "object { path: string, title?: string, sessionId?: string | null, sceneScopeKey?: string, voiceCallId?: string }",
+      example: "ade --role cto actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{\"path\":\"/repo/.ade/artifacts/computer-use/scene.png\",\"title\":\"Merged pull requests\"}' --json",
     },
     readArtifactPreview: {
       description: "Read one artifact's bytes as a bounded preview, for artifacts small enough to inline.",

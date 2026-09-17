@@ -23,6 +23,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "automation_planner",
   "cto_state",
   "cto_memory",
+  "cto_voice",
   "session",
   "operation",
   "ade_project",

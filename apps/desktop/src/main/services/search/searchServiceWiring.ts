@@ -4,6 +4,7 @@ import type {
   FilesSearchTextArgs,
   FilesSearchTextMatch
 } from "../../../shared/types";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import type { LaneSummary } from "../../../shared/types/lanes";
 import type { GitBranchSummary, GitCommitSummary } from "../../../shared/types/git";
 import type { PrComment, PrDetail, PrSummary } from "../../../shared/types/prs";
@@ -131,7 +132,13 @@ export function createProjectSearchService(args: ProjectSearchServiceArgs): Sear
       : null,
     artifacts: args.artifactBroker
       ? {
-          list: (limit) => args.artifactBroker!.listArtifacts({ limit })
+          // Search over PROOF. A scene still has an agent-authored title and
+          // no other text, so every generated view a chat ever drew would rank
+          // alongside the evidence the user is actually looking for.
+          list: (limit) => args.artifactBroker!.listArtifacts({
+            ...PROOF_LISTING_ARTIFACT_FILTER,
+            limit,
+          })
         }
       : null,
     linear: args.linearIssueTracker
