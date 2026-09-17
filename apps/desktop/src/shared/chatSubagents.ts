@@ -3,6 +3,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
   AgentChatSubagentTranscriptMessage,
+  AgentChatWorkflowProgress,
 } from "./types/chat";
 import { resolveModelDescriptor } from "./modelRegistry";
 
@@ -21,6 +22,7 @@ export type SubagentSnapshot = {
   background?: boolean;
   taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
   workflowName?: string;
+  workflowProgress?: AgentChatWorkflowProgress;
   startedAt?: string | null;
   endedAt?: string | null;
   tokens?: number;
@@ -67,6 +69,62 @@ export const SCHEDULE_ACTIVE_CAP = 10;
 export const PROGRESS_CAP = 14;
 export const TASKS_CAP = 12;
 export const SUBAGENT_PANE_ROSTER_CAPACITY = 5;
+
+const MAX_WORKFLOW_AGENT_ENTRIES = 300;
+const MAX_WORKFLOW_PHASE_ENTRIES = 50;
+const MAX_WORKFLOW_TEXT_CHARS = 240;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isBoundedString(value: unknown): value is string {
+  return typeof value === "string" && value.length <= MAX_WORKFLOW_TEXT_CHARS;
+}
+
+function isWorkflowAgent(value: unknown): value is AgentChatWorkflowProgress["agents"][number] {
+  if (!isRecord(value)) return false;
+  if (
+    !isBoundedString(value.key)
+    || !isFiniteNonNegativeNumber(value.index)
+    || !isBoundedString(value.name)
+    || (value.status !== "running" && value.status !== "completed" && value.status !== "failed" && value.status !== "stopped")
+    || !isBoundedString(value.summary)
+  ) return false;
+  for (const key of ["agentId", "agentType", "model", "phaseTitle", "lastToolName"] as const) {
+    if (value[key] !== undefined && !isBoundedString(value[key])) return false;
+  }
+  for (const key of ["tokens", "toolCalls", "durationMs"] as const) {
+    if (value[key] !== undefined && !isFiniteNonNegativeNumber(value[key])) return false;
+  }
+  return true;
+}
+
+/**
+ * Runtime guard for workflow telemetry crossing a stored-event or remote
+ * client boundary. The main-process parser clips and caps provider input, but
+ * older history and paired clients can still hand the renderer an arbitrary
+ * object. Keep malformed telemetry inert instead of letting it crash the chat
+ * pane while preserving the ordinary subagent row.
+ */
+export function isAgentChatWorkflowProgress(value: unknown): value is AgentChatWorkflowProgress {
+  if (!isRecord(value)) return false;
+  if (!Array.isArray(value.phases) || value.phases.length > MAX_WORKFLOW_PHASE_ENTRIES) return false;
+  if (!Array.isArray(value.agents) || value.agents.length > MAX_WORKFLOW_AGENT_ENTRIES) return false;
+  if (!value.phases.every((phase) => (
+    isRecord(phase)
+    && isFiniteNonNegativeNumber(phase.index)
+    && isBoundedString(phase.title)
+  ))) return false;
+  if (!value.agents.every(isWorkflowAgent)) return false;
+  return ["queuedCount", "runningCount", "doneCount", "failedCount"].every((key) => (
+    isFiniteNonNegativeNumber(value[key])
+  ));
+}
 
 export type PaneSectionKey = "progress" | "tasks" | "subagents" | "background" | "schedule";
 
@@ -891,6 +949,13 @@ export function subagentSnapshotsFromEvents(rawEvents: AgentChatEventEnvelope[])
     const incomingWorkflowName = typeof event.workflowName === "string" && event.workflowName.trim().length
       ? event.workflowName.trim()
       : undefined;
+    const incomingWorkflowProgress = "workflowProgress" in event
+      && isAgentChatWorkflowProgress(event.workflowProgress)
+      ? event.workflowProgress
+      : undefined;
+    const existingWorkflowProgress = isAgentChatWorkflowProgress(existing?.workflowProgress)
+      ? existing.workflowProgress
+      : undefined;
     const base: SubagentSnapshot = {
       id,
       name: typeof event.description === "string" ? event.description : existing?.name ?? agentType,
@@ -909,6 +974,9 @@ export function subagentSnapshotsFromEvents(rawEvents: AgentChatEventEnvelope[])
         : {}),
       ...(incomingWorkflowName || existing?.workflowName
         ? { workflowName: incomingWorkflowName ?? existing?.workflowName }
+        : {}),
+      ...(incomingWorkflowProgress ?? existingWorkflowProgress
+        ? { workflowProgress: incomingWorkflowProgress ?? existingWorkflowProgress }
         : {}),
       startedAt,
       endedAt,

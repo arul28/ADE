@@ -572,6 +572,47 @@ describe("deriveChatSubagentSnapshots", () => {
     }));
   });
 
+  it("retains the latest workflow snapshot on the parent row", () => {
+    const workflowProgress = {
+      phases: [{ index: 0, title: "Verify" }],
+      agents: [{
+        key: "workflow-1::a0",
+        index: 0,
+        name: "testbench",
+        status: "running" as const,
+        summary: "Verify · running tests",
+        phaseTitle: "Verify",
+        toolCalls: 3,
+      }],
+      queuedCount: 1,
+      runningCount: 1,
+      doneCount: 0,
+      failedCount: 0,
+    };
+    const events: AgentChatEventEnvelope[] = [{
+      sessionId: "session-1",
+      timestamp: "2026-03-10T12:00:00.000Z",
+      event: {
+        type: "subagent_progress",
+        taskId: "workflow-1",
+        taskType: "local_workflow",
+        workflowName: "review",
+        description: "Run review workflow",
+        summary: "Verify",
+        workflowProgress,
+      },
+    }];
+
+    expect(deriveChatSubagentSnapshots(events)).toEqual([
+      expect.objectContaining({
+        taskId: "workflow-1",
+        taskType: "local_workflow",
+        workflowName: "review",
+        workflowProgress,
+      }),
+    ]);
+  });
+
   // A spawned ADE child chat emits BOTH the underscore `subagent_started`
   // (taskId `chat:<id>`, spawnKind) AND a canonical dot-form `subagent.started`
   // twin that normalizes to a BARE taskId (= agentId). Both share the identity

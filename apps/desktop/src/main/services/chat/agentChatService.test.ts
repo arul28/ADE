@@ -16075,7 +16075,7 @@ describe("createAgentChatService", () => {
           usage: { total_tokens: 100, tool_uses: 1, duration_ms: 50 },
           workflow_progress: [
             { type: "workflow_phase", index: 0, title: "Scan" },
-            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "scan:auth", agentId: "agent-a", tokens: 100 },
+            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "scan:auth", agentId: "agent-a", model: "claude-opus-5", tokens: 100 },
             { type: "workflow_agent", index: 1, state: "start", label: "scan:db" },
           ],
         };
@@ -16088,7 +16088,7 @@ describe("createAgentChatService", () => {
           usage: { total_tokens: 900, tool_uses: 4, duration_ms: 900 },
           workflow_progress: [
             { type: "workflow_phase", index: 0, title: "Scan" },
-            { type: "workflow_agent", index: 0, state: "done", startedAt: 1, label: "scan:auth", agentId: "agent-a", tokens: 900, durationMs: 800 },
+            { type: "workflow_agent", index: 0, state: "done", startedAt: 1, label: "scan:auth", agentId: "agent-a", model: "claude-opus-5", tokens: 900, durationMs: 800 },
             { type: "workflow_agent", index: 1, state: "start", startedAt: 5, label: "scan:db" },
           ],
         };
@@ -16133,6 +16133,7 @@ describe("createAgentChatService", () => {
       expect((started[0]!.event as any).taskId).toBe("wf-1::a0");
       expect((started[0]!.event as any).description).toBe("scan:auth");
       expect((started[0]!.event as any).workflowName).toBe("review");
+      expect((started[0]!.event as any).model).toBe("claude-opus-5");
       expect((started[0]!.event as any).background).toBe(true);
       expect((results[0]!.event as any).status).toBe("completed");
       expect((results[0]!.event as any).usage?.totalTokens).toBe(900);
@@ -16145,11 +16146,26 @@ describe("createAgentChatService", () => {
       expect((dbResult?.event as any)?.status).toBe("stopped");
       expect((dbResult?.event as any)?.finalSummary).toContain("Workflow ended");
 
-      // Parent workflow row derives a phase/count summary when the SDK sends none.
-      const parentProgress = events.find(
-        (e) => e.event.type === "subagent_progress" && (e.event as any).taskId === "wf-1",
+      // The terminal parent result carries a reconciled workflow snapshot even
+      // when the SDK's last progress tick still reports an active agent.
+      const parentResult = events.find(
+        (e) => e.event.type === "subagent_result" && (e.event as any).taskId === "wf-1",
       );
-      expect((parentProgress?.event as any)?.summary).toContain("Scan");
+      expect((parentResult?.event as any)?.summary).toBe("workflow done");
+      expect((parentResult?.event as any)?.workflowProgress).toMatchObject({
+        phases: [{ index: 0, title: "Scan" }],
+        queuedCount: 0,
+        runningCount: 0,
+        doneCount: 1,
+        agents: [
+          expect.objectContaining({ status: "completed" }),
+          expect.objectContaining({ status: "stopped" }),
+        ],
+      });
+      expect((await service.listSubagents({ sessionId: session.id })).find((row) => row.taskId === "wf-1"))
+        .toEqual(expect.objectContaining({
+          workflowProgress: expect.objectContaining({ runningCount: 0, doneCount: 1 }),
+        }));
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();

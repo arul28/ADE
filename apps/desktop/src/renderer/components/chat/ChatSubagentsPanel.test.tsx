@@ -89,6 +89,130 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByText("Run focused checks")).toBeTruthy();
   });
 
+  it("opens workflow details from the active card with phases and agent telemetry", () => {
+    const workflow: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-1",
+      description: "Run the review workflow",
+      status: "running",
+      taskType: "local_workflow",
+      workflowName: "CodeReview",
+      workflowProgress: {
+        phases: [
+          { index: 0, title: "Foundation" },
+          { index: 1, title: "CodeReview" },
+        ],
+        agents: [
+          {
+            key: "agent-1",
+            index: 0,
+            name: "cloud:security",
+            status: "running",
+            summary: "CodeReview · running rg",
+            agentId: "agent-1",
+            agentType: "security",
+            phaseTitle: "CodeReview",
+            tokens: 4_200,
+            toolCalls: 12,
+            lastToolName: "rg",
+          },
+        ],
+        queuedCount: 2,
+        runningCount: 1,
+        doneCount: 3,
+        failedCount: 0,
+      },
+    };
+    const workflowAgent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-1::a0",
+      agentId: "agent-1",
+      description: "cloud:security",
+      agentType: "security",
+      workflowName: "CodeReview",
+      taskType: "subagent",
+      parentToolUseId: null,
+      status: "running",
+      model: "claude-opus-5",
+    };
+    const stopWorkflow = vi.fn();
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[workflow, workflowAgent]}
+        events={[]}
+        variant="pane"
+        onStopSubagent={stopWorkflow}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("chat-workflow-active-card"));
+
+    expect(screen.getByTestId("chat-workflow-details-dialog")).toBeTruthy();
+    expect(screen.getByText("Foundation")).toBeTruthy();
+    expect(screen.getAllByText("CodeReview").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("cloud:security").length).toBeGreaterThan(0);
+    expect(screen.getByText("2 agents queued behind the current phase")).toBeTruthy();
+    expect(screen.getByText("1,234 total tokens reported by the workflow")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Stop cloud:security" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
+    expect(stopWorkflow).toHaveBeenCalledWith(workflow);
+
+    fireEvent.keyDown(screen.getByTestId("chat-workflow-details-dialog"), { key: "Escape" });
+    expect(screen.queryByTestId("chat-workflow-details-dialog")).toBeNull();
+  });
+
+  it("settles a provider-running workflow row when the parent has ended", () => {
+    const workflow: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-ended",
+      description: "Run the review workflow",
+      status: "completed",
+      taskType: "local_workflow",
+      workflowName: "CodeReview",
+      workflowProgress: {
+        phases: [{ index: 0, title: "CodeReview" }],
+        agents: [{
+          key: "workflow-ended::a0",
+          index: 0,
+          name: "cloud:security",
+          status: "running",
+          summary: "CodeReview · running rg",
+        }],
+        queuedCount: 0,
+        runningCount: 1,
+        doneCount: 0,
+        failedCount: 0,
+      },
+    };
+    const workflowAgent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-ended::a0",
+      agentId: "workflow-agent-0",
+      description: "cloud:security",
+      taskType: "subagent",
+      parentToolUseId: null,
+      workflowName: "CodeReview",
+      status: "stopped",
+      finalSummary: "Workflow ended before this agent finished.",
+    };
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[workflow, workflowAgent]}
+        events={[]}
+        variant="pane"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("chat-workflow-active-card"));
+
+    expect(screen.getByText("0/1 agents complete · 1 stopped")).toBeTruthy();
+    expect(screen.getByText("1 stopped when the workflow ended")).toBeTruthy();
+    expect(screen.getByText("Workflow ended before this agent finished.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Stop workflow" })).toBeNull();
+  });
+
   it("merges foreground and background-run agents into one Subagents list with a background chip", () => {
     const foregroundSnapshot: ChatSubagentSnapshot = {
       ...baseSnapshot,

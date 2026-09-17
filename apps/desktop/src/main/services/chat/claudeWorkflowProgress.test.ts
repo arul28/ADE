@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   drainRunningClaudeWorkflowAgents,
+  finalizeClaudeWorkflowProgress,
   parseClaudeWorkflowProgress,
   planClaudeWorkflowAgentTransitions,
   summarizeClaudeWorkflowRun,
@@ -68,20 +69,38 @@ describe("parseClaudeWorkflowProgress", () => {
 
   it("builds stable synthetic keys and prefers real agent ids", () => {
     const snapshot = parseClaudeWorkflowProgress([
-      agentEntry({ index: 0 }),
+      agentEntry({ index: 0, model: "claude-opus-5" }),
       agentEntry({ index: 1, agentId: "a-real" }),
     ], TASK_ID);
     expect(snapshot!.agents[0]!.key).toBe(`${TASK_ID}::a0`);
+    expect(snapshot!.agents[0]!.model).toBe("claude-opus-5");
     expect(snapshot!.agents[1]!.key).toBe("a-real");
   });
 
   it("clips oversized previews and surfaces blocked agents", () => {
     const snapshot = parseClaudeWorkflowProgress([
-      agentEntry({ label: "x".repeat(1000), blocked: true, lastToolSummary: "y".repeat(1000) }),
+      agentEntry({
+        label: "x".repeat(1000),
+        blocked: true,
+        lastToolSummary: "y".repeat(1000),
+        lastToolName: "z".repeat(1000),
+      }),
     ], TASK_ID);
     const agent = snapshot!.agents[0]!;
     expect(agent.name.length).toBeLessThanOrEqual(241);
     expect(agent.summary).toContain("blocked by safety filter");
+    expect(agent.lastToolName?.length).toBeLessThanOrEqual(241);
+  });
+
+  it("marks provider-running agents stopped when a terminal workflow snapshot is finalized", () => {
+    const snapshot = parseClaudeWorkflowProgress([
+      agentEntry({ index: 0, state: "start" }),
+      agentEntry({ index: 1, state: "done" }),
+    ], TASK_ID)!;
+    const finalized = finalizeClaudeWorkflowProgress(snapshot);
+    expect(finalized.runningCount).toBe(0);
+    expect(finalized.agents.map((agent) => agent.status)).toEqual(["stopped", "completed"]);
+    expect(finalized.agents[0]!.summary).toContain("Workflow ended");
   });
 
   it("names agents from label, agentType, then index", () => {

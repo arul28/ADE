@@ -17,6 +17,7 @@ import {
   subagentModelAttribution,
   subagentSnapshotsFromEvents,
   collapseLegacySubagentEndEvents,
+  isAgentChatWorkflowProgress,
   type SubagentSnapshot,
 } from "./chatSubagents";
 
@@ -32,6 +33,26 @@ function paneSnapshot(id: string, status: SubagentSnapshot["status"], overrides:
 }
 
 describe("chat pane scalability helpers", () => {
+  it("rejects malformed workflow telemetry while preserving the subagent row", () => {
+    const events: AgentChatEventEnvelope[] = [{
+      sessionId: "session-workflow-boundary",
+      timestamp: "2026-09-17T12:00:00.000Z",
+      event: {
+        type: "subagent_progress",
+        taskId: "workflow-1",
+        description: "Run workflow",
+        summary: "Working",
+        workflowProgress: { agents: "not-an-array" } as never,
+      },
+    }];
+
+    const snapshots = subagentSnapshotsFromEvents(events);
+    expect(isAgentChatWorkflowProgress((events[0]!.event as { workflowProgress?: unknown }).workflowProgress)).toBe(false);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toEqual(expect.objectContaining({ id: "workflow-1", status: "running", name: "Run workflow" }));
+    expect(snapshots[0]?.workflowProgress).toBeUndefined();
+  });
+
   it("keeps a child active after its parent turn ends until the child emits a result", () => {
     const parentDoneEvents: AgentChatEventEnvelope[] = [
       {
