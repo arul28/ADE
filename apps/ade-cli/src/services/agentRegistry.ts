@@ -1,5 +1,6 @@
 import { CURSOR_CLI_EXECUTABLES } from "../../../desktop/src/shared/providerCliExecutables";
 import { resolveProviderRemediation } from "../../../desktop/src/shared/providerRemediation";
+import { COPILOT_NPM_PACKAGE_SPEC } from "../../../desktop/src/shared/acpProviderMetadata";
 import type { ShippedProvider } from "../../../desktop/src/shared/providers";
 
 export type AgentCliErrorCategory = "missing" | "unauthenticated";
@@ -230,7 +231,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "copilot",
     displayName: "GitHub Copilot CLI",
     binaryNames: ["copilot"],
-    installCommand: npmGlobalInstallCommand("@github/copilot"),
+    installCommand: npmGlobalInstallCommand(COPILOT_NPM_PACKAGE_SPEC),
     authCommand: "copilot login",
     missingErrorPatterns: [
       /\bcopilot\b.*\b(command not found|not recognized|not found|enoent)\b/i,

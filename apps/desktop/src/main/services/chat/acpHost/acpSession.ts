@@ -58,7 +58,10 @@ import {
 } from "./acpSupervisionGuard";
 import {
   ACP_METHOD,
+  hasAcpLoadSessionCapability,
+  hasAcpSessionCapability,
   normalizeAcpConfigOptions,
+  type AcpAgentCapabilities,
   type AcpContentBlock,
   type AcpMcpServer,
   type AcpNewSessionResponse,
@@ -92,6 +95,8 @@ export function resolveAcpSessionEntry(args: {
   dialect: AcpDialect;
   existingSessionId: string | null;
   adeHasTranscript: boolean;
+  /** Handshake capabilities. Omit only for dialect-only planning tests. */
+  agentCapabilities?: AcpAgentCapabilities | null;
 }): AcpSessionEntryPlan {
   if (!args.existingSessionId) {
     return { mode: "new", suppressReplay: false, reason: "no stored session id" };
@@ -99,8 +104,25 @@ export function resolveAcpSessionEntry(args: {
   if (args.dialect.loadPolicy === "never") {
     return { mode: "new", suppressReplay: false, reason: "dialect cannot rejoin a session" };
   }
-  if (args.dialect.loadPolicy === "resume_preferred" && args.dialect.resumeSession.declared) {
+  const agentSupportsResume = args.agentCapabilities === undefined
+    ? args.dialect.resumeSession.declared
+    : hasAcpSessionCapability(args.agentCapabilities, "resume");
+  const agentSupportsLoad = args.agentCapabilities === undefined
+    ? args.dialect.loadSession.declared
+    : hasAcpLoadSessionCapability(args.agentCapabilities);
+  if (
+    args.dialect.loadPolicy === "resume_preferred"
+    && args.dialect.resumeSession.declared
+    && agentSupportsResume
+  ) {
     return { mode: "resume", suppressReplay: false, reason: "agent advertises session/resume" };
+  }
+  if (!args.dialect.loadSession.declared || !agentSupportsLoad) {
+    return {
+      mode: "new",
+      suppressReplay: false,
+      reason: "agent does not advertise a supported session rejoin method",
+    };
   }
   return {
     mode: "load",
@@ -312,6 +334,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     dialect,
     existingSessionId: args.existingSessionId ?? null,
     adeHasTranscript: args.adeHasTranscript ?? false,
+    agentCapabilities,
   });
 
   let initialConfigOptions: AcpSessionConfigOption[] = [];
@@ -447,7 +470,9 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       if (closed) return;
       closed = true;
       permissionBridge.cancelAll(reason);
-      const closeBehavior = behaviorOf(dialect.closeSession);
+      const closeBehavior = hasAcpSessionCapability(agentCapabilities, "close")
+        ? behaviorOf(dialect.closeSession)
+        : null;
       if (closeBehavior) {
         const call = closeBehavior({ sessionId });
         try {
@@ -462,10 +487,12 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
         leased.release();
         return;
       }
-      // No `session/close` on this agent. The process IS the session, and the
-      // pool gave this session a private process, so ending it is safe.
+      // No `session/close` was advertised by this agent. A shared process must
+      // stay alive for its other sessions; only a private process is safe to
+      // evict here.
       detach();
-      leased.evict(reason);
+      if (dialect.oneProcessPerSession) leased.evict(reason);
+      else leased.release();
     },
   };
 
