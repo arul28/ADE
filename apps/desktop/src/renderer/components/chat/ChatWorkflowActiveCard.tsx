@@ -83,6 +83,7 @@ export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatW
     ),
   );
   const directParentIds = new Set(directParents.map((snapshot) => snapshot.taskId));
+  const snapshotIds = new Set(snapshots.map((snapshot) => snapshot.taskId));
   const lineageParentIds = new Set(
     snapshots
       .map((snapshot) => workflowLineageParentTaskId(snapshot.taskId))
@@ -106,6 +107,10 @@ export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatW
     if (directParentIds.has(snapshot.taskId)) continue;
     const lineageParentId = workflowLineageParentTaskId(snapshot.taskId);
     if (lineageParentId && directParentIds.has(lineageParentId)) continue;
+    // A synthetic child without its parent is incomplete history, not a
+    // stoppable workflow. Keep it out of the fallback so the renderer never
+    // routes a stop action to the child's task ID.
+    if (lineageParentId && !snapshotIds.has(lineageParentId)) continue;
     const groupKey = lineageParentId
       ? "lineage:" + lineageParentId
       : lineageParentIds.has(snapshot.taskId)

@@ -286,6 +286,19 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     ]);
   });
 
+  it("does not promote an orphaned synthetic workflow agent to a stoppable parent", () => {
+    const orphanedAgent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "review-42::a0",
+      description: "cloud:security",
+      taskType: "subagent",
+      workflowName: "CodeReview",
+      status: "running",
+    };
+
+    expect(deriveChatWorkflowRuns([orphanedAgent])).toEqual([]);
+  });
+
   it("settles a provider-running workflow row when the parent has ended", () => {
     const workflow: ChatSubagentSnapshot = {
       ...baseSnapshot,
