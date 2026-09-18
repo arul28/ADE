@@ -15,8 +15,8 @@ import {
 } from "../../../shared/types/chat";
 import {
   backgroundWorkFromSummary,
+  canonicalBoardColumnForPhase,
   canonicalSessionState,
-  canonicalStatusBucket,
   isSessionFiledAsSnoozed,
 } from "../../../shared/sessionCanonicalState";
 import { isChatToolType } from "../sessions/chatSessionProjection";
@@ -131,10 +131,7 @@ export function deriveWorkBoardColumn(
     isChatTool: isChatToolType,
   }).phase;
   if (isSessionFiledAsSnoozed(session, phase, nowMs)) return "waiting";
-  const bucket = canonicalStatusBucket(phase);
-  if (bucket === "running") return "working";
-  if (bucket === "awaiting-input") return "needs_you";
-  return "done";
+  return canonicalBoardColumnForPhase(phase);
 }
 
 /**

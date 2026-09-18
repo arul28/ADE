@@ -27,6 +27,11 @@ import { sessionActivityInstant } from "../../lib/sessions";
      Waiting     neutral  var(--color-muted-fg)  true, but not actionable
      Done        emerald  var(--color-success)   finished, you have not looked
 
+   "and nothing else" is load-bearing for the first column. It takes only the
+   `needs_you` phase, never the list's whole `awaiting-input` bucket — a `ready`
+   or `idle` row is emerald Done on its own card, so it files under Done here
+   too. See `canonicalBoardColumnForPhase`.
+
    They are taken as CSS variables rather than as the Tailwind hue classes the
    status slot uses, because those are fixed hues and these have to survive the
    light theme (`index.css` redefines all three variables under
@@ -91,7 +96,10 @@ export const WORK_BOARD_COLUMNS: readonly BoardColumnSpec[] = [
     emptyHint: "Nothing has finished yet.",
     accent: COLORS.success,
     droppable: true,
-    hint: "Finished or settled",
+    // Also the resting tier: a chat whose agent finished its turn and is asking
+    // nothing reads emerald "Done" on its own card, so this is the column that
+    // matches it. It is not only the ended ones.
+    hint: "Finished, idle, or settled",
   },
 ] as const;
 
