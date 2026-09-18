@@ -380,20 +380,24 @@ export function useDraftMachineRouting({
    */
   const laneReadFailed = unionSlice != null && unionSlice.error != null && unionSlice.lanes.length === 0;
   /**
-   * Whether holding the selection is warranted RIGHT NOW: a foreign machine is
-   * picked, its lanes have not been read, the union still intends to read them,
-   * and no read has failed.
+   * Whether holding the selection is warranted RIGHT NOW: a known foreign
+   * machine is picked, its lanes have not been read, the union still intends to
+   * read them, and no read has failed.
    *
-   * The timer below and the flag below it both key on this single condition so
-   * they can never disagree. Keying the timer on a weaker condition let an
-   * expiry be recorded during a window when the hold was not warranted at all
-   * (the machine was briefly outside the intended read set); because the effect
-   * then had no reason to re-run, that stale expiry latched and permanently
-   * suppressed the pull-forward read once the machine became eligible again.
+   * This is deliberately the EXACT condition under which the pull-forward read
+   * below can run. The hold timer, the loading flag and the request all derive
+   * from this one expression so they cannot disagree — and every way they have
+   * disagreed was the same defect: a hold started on weaker terms than the
+   * request it waits for expires against a request that never fired, leaving
+   * the composer reporting a machine unavailable while never asking for its
+   * lanes. `machineIsKnown` is part of it for that reason, and the timer also
+   * keys on `machineId` so two unread foreign machines get separate holds
+   * rather than inheriting each other's expiry.
    */
   const laneCatalogUnresolved = Boolean(
     enabled
     && machineId !== boundMachineId
+    && machineIsKnown
     && !executionLaneCatalogLoaded
     && unionWillReadMachine
     && !laneReadFailed,
@@ -446,9 +450,9 @@ export function useDraftMachineRouting({
     // `laneCatalogLoading` already implies a foreign machine. Depend on the
     // boolean rather than on `machineOptions`, which is a fresh array on every
     // connection snapshot and would re-fire this expensive status-depth read.
-    if (!laneCatalogLoading || !machineIsKnown) return;
+    if (!laneCatalogLoading) return;
     requestCrossMachineLanesForMachine(machineId);
-  }, [laneCatalogLoading, machineIsKnown, machineId]);
+  }, [laneCatalogLoading, machineId]);
 
   /**
    * Re-resolve the selected lane against the machine that will run the launch.

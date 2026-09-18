@@ -616,6 +616,24 @@ describe("useDraftMachineRouting", () => {
     }
   });
 
+  it("does not hold for a machine the picker does not offer", async () => {
+    installRemoteBoundAde();
+    const { result } = renderRemoteBoundRouting({
+      crossMachineLanesByMachineId: {},
+      laneId: "studio-primary",
+    });
+
+    await waitFor(() => expect(result.current.machineOptions).toHaveLength(2));
+    // A machine absent from `machineOptions` cannot be refreshed — the request
+    // effect would decline it — so starting a hold for it would expire against
+    // a read that never happens and leave the composer permanently silent.
+    act(() => {
+      result.current.handleMachineChange("ghost-machine");
+    });
+    expect(result.current.selectedMachineId).not.toBe("ghost-machine");
+    expect(result.current.laneCatalogLoading).toBe(false);
+  });
+
   it("gives each foreign machine its own loading hold", async () => {
     installTwoForeignAde();
     const { result } = renderRemoteBoundRouting({
