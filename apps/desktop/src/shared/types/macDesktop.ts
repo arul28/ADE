@@ -45,6 +45,13 @@ export const MAC_DESKTOP_USER_HAS_CONTROL_CODE = "MAC_DESKTOP_USER_HAS_CONTROL" 
 export const MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE = "MAC_DESKTOP_LEASE_HELD_BY_OTHER" as const;
 export const MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE = "MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT" as const;
 export const MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE = "MAC_DESKTOP_RECORDING_NOT_RUNNING" as const;
+/**
+ * The sync live view's client mistakes, refused by the fan-out before a reader
+ * is opened. Both travel as `error.code` on the command result, so a client can
+ * tell a bad subscription id from a busy host.
+ */
+export const MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG_CODE = "MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG" as const;
+export const MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT_CODE = "MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT" as const;
 
 export type MacDesktopErrorCode =
   | typeof MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE
@@ -59,7 +66,9 @@ export type MacDesktopErrorCode =
   | typeof MAC_DESKTOP_USER_HAS_CONTROL_CODE
   | typeof MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE
   | typeof MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE
-  | typeof MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE;
+  | typeof MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE
+  | typeof MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG_CODE
+  | typeof MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT_CODE;
 
 /** The one sentence every non-macOS rejection carries. */
 export const MAC_DESKTOP_MACOS_ONLY_MESSAGE =
@@ -590,11 +599,21 @@ export type MacDesktopRecordingStatus = {
   laneId: string;
   running: boolean;
   startedAt: string | null;
-  /** Host-absolute path, present once the recording stops. */
+  /**
+   * Host-absolute path. Present once the recording stops — and, when a stop
+   * fails, the path the helper was told to write, so a partial recording is
+   * named rather than invisible.
+   */
   filePath: string | null;
   durationMs: number | null;
   /** Set when `record start` was given one; it opts the file into proof. */
   caption: string | null;
+  /**
+   * Why the last stop failed, when it did. `running` goes false either way, so
+   * `status` and a second `stop` agree instead of disagreeing about whether a
+   * recording is live.
+   */
+  lastError?: string | null;
 };
 
 export type MacDesktopRecordStartArgs = {

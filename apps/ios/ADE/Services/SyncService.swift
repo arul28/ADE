@@ -3867,6 +3867,40 @@ func syncPreferredRecoveryActionName(
   return nil
 }
 
+/// Orders the detached decodes of pushed Mac Desktop stream records.
+///
+/// The socket receive loop awaits each record in order, but every decode is a
+/// detached suspension point: a keyframe's hundreds of kilobytes can finish
+/// after the P-frames that followed it if two loops ever share a socket or a
+/// caller decodes concurrently. Each submission waits for the one before it on
+/// the same subscription, so delivery order matches arrival order per lane.
+@MainActor
+final class MacDesktopStreamDecodeQueue {
+  private var tails: [String: Task<MacDesktopStreamRecord?, Never>] = [:]
+
+  /// Runs `decode` after every earlier decode for `subscriptionId`.
+  func decode(
+    subscriptionId: String,
+    _ work: @escaping @Sendable () async -> MacDesktopStreamRecord?
+  ) -> Task<MacDesktopStreamRecord?, Never> {
+    let previous = tails[subscriptionId]
+    let task = Task.detached(priority: .userInitiated) { () -> MacDesktopStreamRecord? in
+      await previous?.value
+      return await work()
+    }
+    tails[subscriptionId] = task
+    return task
+  }
+
+  func forget(subscriptionId: String) {
+    tails.removeValue(forKey: subscriptionId)
+  }
+
+  func removeAll() {
+    tails.removeAll()
+  }
+}
+
 @MainActor
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
@@ -4011,6 +4045,9 @@ final class SyncService: ObservableObject {
   /// record's bytes off the main actor before landing here.
   private var macDesktopStreamRecordHandlers: [String: (MacDesktopStreamRecord) -> Void] = [:]
   private var macDesktopStreamEndedHandlers: [String: (MacDesktopStreamEnded) -> Void] = [:]
+  /// Serializes each subscription's record decodes so delivery stays in the
+  /// order the socket received them.
+  private let macDesktopStreamDecodeQueue = MacDesktopStreamDecodeQueue()
   @Published private(set) var pendingOperationCount = 0
   /// Offline new-chat creations awaiting sync. The Work list renders one
   /// "Pending sync" row per entry.
@@ -15015,11 +15052,13 @@ final class SyncService: ObservableObject {
   func unregisterMacDesktopStream(subscriptionId: String) {
     macDesktopStreamRecordHandlers.removeValue(forKey: subscriptionId)
     macDesktopStreamEndedHandlers.removeValue(forKey: subscriptionId)
+    macDesktopStreamDecodeQueue.forget(subscriptionId: subscriptionId)
   }
 
   private func resetMacDesktopStreamHandlers() {
     macDesktopStreamRecordHandlers.removeAll()
     macDesktopStreamEndedHandlers.removeAll()
+    macDesktopStreamDecodeQueue.removeAll()
   }
 
   /// Refuses a live-stream call the connected host never advertised, rather
@@ -19511,15 +19550,18 @@ final class SyncService: ObservableObject {
       // The pushed records are the whole live picture, so this case is the
       // only data path: no polling, no request of the phone's own. The base64
       // access unit decodes off the main actor — a keyframe is hundreds of
-      // kilobytes — and the generation guard then drops a record that belongs
-      // to a socket which has already been replaced.
+      // kilobytes — through a per-subscription serial chain, so records are
+      // delivered in arrival order even if a decode outlives the next record's
+      // arrival. The generation guard then drops a record that belongs to a
+      // socket which has already been replaced.
       guard let dict = payload as? [String: Any],
             let envelope = MacDesktopStreamRecordEnvelope(dict) else { break }
-      let record = await Task.detached(priority: .userInitiated) {
+      let decodeTask = macDesktopStreamDecodeQueue.decode(subscriptionId: envelope.subscriptionId) {
         Data(base64Encoded: envelope.base64Data).map {
           MacDesktopStreamRecord(envelope: envelope, data: $0)
         }
-      }.value
+      }
+      let record = await decodeTask.value
       guard isCurrentConnectionGeneration(generation), let record else { break }
       macDesktopStreamRecordHandlers[record.subscriptionId]?(record)
     case "macDesktop.streamEnded":

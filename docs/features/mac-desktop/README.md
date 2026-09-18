@@ -100,6 +100,8 @@ required.
 | `apps/ade-cli/src/cli.ts` | The `ade mac-desktop` command family. |
 | `apps/desktop/src/renderer/components/chat/ChatMacDesktopPanel.tsx` | The Work tools pane tool. |
 | `apps/desktop/src/renderer/components/chat/useMacDesktopLiveView.ts` | The live view, its low-power idle rate, and its reconnect budget. |
+| `apps/desktop/src/renderer/components/chat/macDesktopLiveViewLease.ts` | The renderer-side ref-counted lease: one stream per lane, one decoder, pane outranking the corner card. |
+| `apps/desktop/src/renderer/components/chat/h264FrameGate.ts` | The pure sequence-gap/keyframe gate both pushed-source decoders hold P-frames with after a skipped record or a decoder error. |
 | `apps/desktop/resources/agent-skills/ade-desktop/SKILL.md` | The bundled agent skill. |
 
 ## Where this runs
@@ -119,11 +121,15 @@ client.
 - **Phone and hosted web client.** Both read the `macDesktop` slice of
   `WorkToolsLaneState` (`apps/desktop/src/shared/types/workTools.ts`): the
   display, its parked windows, the lease line, the stream state, and the last
-  frame fetched through `workTools.readObservationPreview`. Neither surface can
-  take over — takeover needs the lease heartbeat and an input channel, and
-  neither exists off the desktop today — so `WORK_TOOLS_CONTROL_HINT` still
-  says control stays on the desktop. A missing `macDesktop` key, or
-  `supported: false`, hides the tool rather than drawing an empty pane.
+  frame fetched through `workTools.readObservationPreview`. The phone cannot
+  take over — view-only by product decision. The hosted web client can, when
+  the host advertises `hello.features.macDesktopControl`: the pane then carries
+  a Take control affordance, forwards pointer and keyboard through the same
+  real-input hook the desktop panel uses, and heartbeats the lease over the
+  sync socket. Without that bit (an older host, a chat-only runtime)
+  `WORK_TOOLS_CONTROL_HINT` still says control stays on the desktop. A missing
+  `macDesktop` key, or `supported: false`, hides the tool rather than drawing
+  an empty pane.
 
   Both gain a live picture when the host advertises
   `hello.features.macDesktopStream` and the `macDesktop.streamSubscribe`
@@ -149,6 +155,18 @@ client.
   unsubscribes on disappear, background, sheet close, or socket teardown. The
   hosted web client does the same with WebCodecs, unsubscribing on unmount, tab
   hidden, or socket close and re-subscribing after a reconnect.
+
+  Web takeover is the desktop interaction over that same socket:
+  `macDesktop.takeControl` / `returnControl` / `renewLease` / `input`, all
+  controller-only (never `viewerAllowed`) and advertised with
+  `hello.features.macDesktopControl`. The browser pane draws the same strip
+  state ("You have control · Return to agent"), forwards pointer and keyboard
+  through `useMacDesktopRealInput` with a sync sender, draws the same local
+  cursor glyph, and renews the lease every TTL/3. It gives control back when
+  the user hands it back, the tab hides, the page unloads, the socket closes,
+  or the stream ends; and if the polled lease changes holder, it says "Control
+  ended" rather than showing a stuck error. The controller id is never taken
+  from the wire: see "The input lease" below.
 
 ## Ownership
 
@@ -217,8 +235,16 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
 - Only one controller holds the lease at a time.
 - While the user holds control (takeover), agent input is refused with
   `MAC_DESKTOP_USER_HAS_CONTROL` and the agent waits.
+- A web takeover holds the lease under an id the brain derives, never one the
+  wire supplies: `web:<connectionId>:<clientToken>`, where the connection id is
+  the host's per-socket identity and the token is the tab's own. A second
+  socket can therefore never return or renew the first's lease, and a token
+  lifted from one tab is inert on another.
 - A remote viewer that disconnects during a takeover loses the lease on the
-  socket close. The lease has a heartbeat deadline, so it can never stick.
+  socket close. The sync host returns it immediately through the same
+  `returnControl` path a client uses (the command service records which derived
+  ids a connection took), rather than waiting for the TTL. The lease has a
+  heartbeat deadline, so it can never stick either way.
 - Machine sleep drops the lease for the same reason. `powerMonitor` is
   Electron-only and this service also runs in the runtime daemon, so sleep is
   detected as a coarse wall-clock jump on the idle sweep (a tick that arrives
@@ -270,6 +296,19 @@ lease holder) to decide whether the chat you are reading is actually watching
 the lane's desktop; a chat that is neither a viewer nor the lease holder does
 not get the lane's screen as a corner card.
 
+The corner card is itself a viewer, not a picture someone else happens to
+leave on screen. The pane, full screen and the card share one decoder per lane
+through a renderer-side ref-counted lease (`macDesktopLiveViewLease.ts`): the
+first holder starts the stream, the last release stops it, and the decoder
+belongs to the highest-priority holder — the pane (and with it full screen)
+outranks the card. While the pane is open the card is a passive holder that
+keeps the stream up without reading it; the moment the pane switches tools the
+card is promoted and decodes into an off-screen canvas, so frames keep
+reaching `macDesktopFrameStore` and the chat stays in `viewerChatSessionIds`.
+Hiding the pane is not an unsubscribe, and a pane→card hand-off never reaches
+zero holders, so the encoder is not stopped and restarted under the card.
+Unmounting the last holder is what stops the lane's stream.
+
 An explicit `stopStream` is not a per-watcher unsubscribe: it is CTO/human-only
 and it stops the encoder for every watcher of that lane at once, because the
 owner set goes with it. A chat ENDING is the gentle path — `stopOwnedBy` drops
@@ -298,7 +337,30 @@ uses the same keyframe-on-attach path every other reader gets, so a viewer
 opening the card never waits on a still desktop. The phone is view-only; the
 web client can also `macDesktop.start`/`stop`. Pushes are best-effort: past
 2 MiB queued they skip to the next keyframe instead of growing the socket
-buffer without bound.
+buffer without bound, and a record the sync host's own 4 MiB gate refuses is
+treated as a broken reference chain — the next record sent is a keyframe.
+
+A subscription is also activity. Subscribing notes activity on the stream
+server immediately and every delivered record notes it again, throttled to once
+a second, so a passive phone or browser keeps the lane at full rate instead of
+letting it fall to the idle rate five quiet seconds after the last input. The
+fan-out refuses a `subscriptionId` longer than 128 characters and a third live
+subscription on one connection for one lane, with
+`MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG` and
+`MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT` on the command result.
+
+Both clients gate their decoders on the host's sequence numbers: a `seq` gap,
+a decoder error, or a config rebuild holds P-frames until the next keyframe, and
+"playing" means the first frame actually drawn rather than the first chunk
+submitted. While the picture is playing the web pane skips the still-frame fetch
+and lengthens its state poll to 15 s, because the pushes carry the picture. The
+phone decodes pushed records through a serial queue per subscription so a large
+keyframe cannot be overtaken by the P-frames behind it, writes
+`DisplayImmediately` and `NotSync` into each sample's per-sample attachment
+dictionary — the display layer reads the sample dictionary, not a buffer-level
+attachment — labels itself `iPhone`/`iPad` rather than the device name, and
+resubscribes by itself when a lane's display reports running again after a
+`stopped` stream.
 
 ## Proof
 
@@ -334,6 +396,22 @@ hosted web client. Recordings and turn clips go to the computer-use artifact
 store under `.ade/artifacts`, because the thread plays them through
 `ade-artifact://` and main serves that scheme only from inside that root. A bare
 screenshot with no `--out` stays in the computer-use scratch root.
+
+A caller-supplied `--out` may land inside the lane worktree or the OS temp
+directory (`$TMPDIR`), both of which are agent-owned scratch space; the proof
+skill documents `$TMPDIR` paths, and the earlier worktree-only rule refused the
+documented command. Everything else is still refused by code, with symlink
+checks on both the directories on the way and the leaf itself.
+
+**Recording state is one truth.** `record stop` waits at most
+`CaptureEngine.recordingFinalizeBudget` (2 s) for `AVAssetWriter.finishWriting`.
+If the writer does not settle, the driver answers with a coded failure naming
+the partial path and keeps the writer alive until its completion fires, rather
+than parking its single main thread for fifteen seconds. The service mirrors
+that: a failed stop flips `running` to `false`, records `lastError`, keeps the
+intended `filePath`, and emits `recording-changed`, so `status` and a second
+`stop` agree. A recording that captured no frames is refused and its empty file
+removed — it never reaches the proof drawer.
 
 ## Gotchas and fragile areas
 
@@ -372,11 +450,47 @@ screenshot with no `--out` stays in the computer-use scratch root.
 - **A stream outlives all but its last asker.** Two chats watching one lane are
   both recorded as owners; the first to end drops out of the set and only an
   empty set stops the encoder.
+- **The pane and the corner card share one decoder per lane.** The renderer's
+  ref-counted live-view lease elects the pane (highest priority) and promotes
+  the card when the pane unmounts; a surface in the tree for another reason
+  still holds the count, so a pane that switches tools is not an unsubscribe.
+  Two decoders for one lane is a defect, not a fallback.
+- **The corner card's session is the display, not the lane.** The × marker is
+  keyed `display:<displayId>:<createdAt>` (creation time carries the
+  off-screen-region fallback), so a destroyed-and-recreated display may show
+  the card again while the same display stays closed.
+- **A recording failure is not a display failure.** The pane's display-state
+  slot titles the empty state; a refused `stopRecording` (a stale "running"
+  flag after the display died) goes on the strip's own error line, and
+  `display-destroyed` clears the recording with the display. Error text never
+  carries a raw lane id: `macDesktopErrorText` replaces it with the lane's name
+  when known and drops it otherwise.
+- **The strip leads with the display's own name.** `ADE · <lane>` (from
+  `display.name`) is the first segment, truncated with a tooltip; the status
+  word never truncates and the separator travels with the detail it
+  introduces, so takeover controls cannot collapse "Live · Idle" to a sliver.
 - **`getStreamStatus` must stay redacted.** It is on the action allowlist, so an
   unredacted token would be printed into a durable agent transcript.
 - **The agent-facing prompt cost is one line.** The system prompt gains a single
   line, and only when the lane has a display. A lane with the tool off pays
   nothing.
+- **A chat-bound `--lane` is refused, not swapped.** The daemon pins every
+  `mac_desktop` action to the calling chat's lane. A bound caller that names a
+  different lane gets `This chat is bound to lane <a>; --lane <b> was ignored.`
+  rather than silently targeting lane `<a>` and failing with a message about it.
+  User clients (desktop, web, phone) keep the lane their UI is showing.
+- **Full-auto answers `external_directory` asks for the project's own `.ade`.**
+  The mac-desktop artifacts and observations live under `<project>/.ade`, which
+  is outside the lane worktree, so OpenCode's default ask fired and full-auto
+  never answered — the test drive blocked for eleven minutes on its own
+  workspace. Full-auto now replies `always` before any card exists when every
+  pattern is a literal path inside `<project>/.ade` (a mid-path glob keeps the
+  card). No card means the card and `chat status` cannot disagree about it.
+- **Recording stop cannot wedge the driver.** `markAsFinished` raises an ObjC
+  exception on a writer that never started, which is exactly the state a still
+  display leaves; the finalize only touches a `.writing` writer. The wait is
+  bounded at 2 s, and a late writer is retained until its completion runs so a
+  slow mux still lands in the reported file.
 
 ## The native helper, as built
 
@@ -419,8 +533,10 @@ moves. It returns `null` off macOS rather than throwing, because `getStatus`
 answers on every platform.
 
 `swift test --package-path apps/desktop/native/ADEDesktopDriver`
-(`npm run test:desktop-driver`) runs the unit suite. The one test that creates a
-real virtual display is skipped unless `ADE_DESKTOP_DRIVER_LIVE_TESTS=1`.
+(`npm run test:desktop-driver`) runs the unit suite. The tests that create a
+real virtual display and record it are skipped unless
+`ADE_DESKTOP_DRIVER_LIVE_TESTS=1`; `RecordingFinalizeTests` covers the finalize
+path against real `AVAssetWriter`s without a window server.
 
 ### What the private API actually does, measured on macOS 27
 

@@ -211,14 +211,22 @@ Browser `window.ade` adapter:
   handshake. `supportsLiveStream()` requires both the
   `hello.features.macDesktopStream` bit and the advertised subscribe command,
   because either half missing would mount a view whose first RPC the host
-  rejects. Takeover and real input are deliberately absent:
-  `WORK_TOOLS_CONTROL_HINT` still says control stays on the desktop. The
-  `macDesktop` Work tool renders live in `WorkToolReadOnlyView` by feeding
-  `H264VideoCanvas` a pushed-record source (the same decoder the Electron
-  panel drives from a loopback URL), keeps the display's aspect ratio with
-  `object-fit: contain`, shows the last still frame until the first keyframe
-  arrives, and falls back to that still with a one-line notice on a browser
-  without WebCodecs.
+  rejects. The same shape governs takeover: `supportsMacDesktopControl()`
+  requires `hello.features.macDesktopControl` **and** the advertised
+  `macDesktop.takeControl`, and only then do `takeControl`/`returnControl`/
+  `renewLease`/`input` exist on this namespace. The web call sends a per-tab
+  token, never a lease identity — the host derives `web:<connectionId>:<token>`
+  — and a host without the bit keeps the watch-only pane and its
+  `WORK_TOOLS_CONTROL_HINT` line. The `macDesktop` Work tool renders live in
+  `WorkToolReadOnlyView` by feeding `H264VideoCanvas` a pushed-record source
+  (the same decoder the Electron panel drives from a loopback URL), keeps the
+  display's aspect ratio with `object-fit: contain`, shows the last still frame
+  until the first keyframe arrives, and falls back to that still with a
+  one-line notice on a browser without WebCodecs. When control is advertised
+  the pane adds the Take control affordance, forwards pointer/keyboard through
+  the shared `useMacDesktopRealInput` with a sync sender, draws the same
+  takeover cursor over the letterboxed picture with the shared geometry, and
+  heartbeats the lease until it hands control back.
 - `apps/desktop/src/renderer/webclient/adapter/account.ts` - maps the browser
   OAuth session and account directory onto the reused `window.ade.account`
   contract for status, sign-in/out, machine listing, and machine removal.

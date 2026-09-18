@@ -1,25 +1,33 @@
 /**
  * The Mac Desktop namespace for the hosted web client.
  *
- * The desktop's own namespace is a superset: it carries takeover, real input,
- * recording and window claiming, all of which need a local pointer and a local
- * renderer. This one is deliberately the read-only/live-view cut — a browser
- * tab can start and stop the lane's display and watch its stream, and nothing
- * here can move a pointer. Takeover stays a desktop-only move, which is what
- * `WORK_TOOLS_CONTROL_HINT` tells the viewer.
+ * The desktop's own namespace is a superset: it carries recording and window
+ * claiming, which need a local renderer. This one is the live-view cut plus
+ * takeover: a browser tab can start and stop the lane's display, watch its
+ * stream, and — when the host advertises `hello.features.macDesktopControl` —
+ * take the input lease and drive the pointer through `macDesktop.input`.
  *
- * `supportsLiveStream` and the push listeners are web-only members: the phone
- * has its own Swift client, and the Electron preload gets an IPC event fan-out.
+ * The takeover methods carry a per-tab `controllerId`, which is a TOKEN, not a
+ * lease identity: the host derives the real holder id as
+ * `web:<socket connection id>:<token>`, so a token lifted from one tab is
+ * inert on another socket and a client can only renew or return its own lease.
+ *
+ * `supportsLiveStream`, `supportsMacDesktopControl` and the push listeners are
+ * web-only members: the phone has its own Swift client, and the Electron
+ * preload gets an IPC event fan-out.
  */
 
 import type {
   MacDesktopGetStatusArgs,
+  MacDesktopInputResult,
+  MacDesktopLeaseState,
   MacDesktopStartArgs,
   MacDesktopStatus,
   MacDesktopStopArgs,
   MacDesktopStopResult,
 } from "../../../shared/types/macDesktop";
 import type {
+  SyncMacDesktopInputCall,
   SyncMacDesktopStreamEndedPayload,
   SyncMacDesktopStreamRecordPayload,
   SyncMacDesktopStreamSubscribeResult,
@@ -30,6 +38,13 @@ export type MacDesktopStreamSubscribeArgs = {
   laneId: string;
   subscriptionId: string;
   viewerLabel?: string | null;
+};
+
+export type MacDesktopWebControlArgs = {
+  laneId: string;
+  /** The caller's per-tab token. See the file header. */
+  controllerId: string;
+  controllerLabel?: string | null;
 };
 
 export type MacDesktopWebApi = {
@@ -51,6 +66,20 @@ export type MacDesktopWebApi = {
    * when the socket closes and re-subscribe after the reconnect handshake.
    */
   onConnectionChange: (listener: (connected: boolean) => void) => () => void;
+  /**
+   * Whether takeover is available here: the `macDesktopControl` feature bit
+   * and the `macDesktop.takeControl` command, both halves again.
+   */
+  supportsMacDesktopControl: () => boolean;
+  takeControl: (args: MacDesktopWebControlArgs) => Promise<MacDesktopLeaseState | null>;
+  returnControl: (args: Omit<MacDesktopWebControlArgs, "controllerLabel">) => Promise<MacDesktopLeaseState | null>;
+  /** Heartbeat. A renewal that answers null means the lease is gone. */
+  renewLease: (args: Omit<MacDesktopWebControlArgs, "controllerLabel">) => Promise<MacDesktopLeaseState | null>;
+  /**
+   * One forwarded real-input call. The host forces `silent`, strips every
+   * caller-asserted identity and re-fills the derived controller id.
+   */
+  input: (args: { laneId: string; call: SyncMacDesktopInputCall }) => Promise<MacDesktopInputResult | null>;
 };
 
 export function createMacDesktopNamespace(infra: AdapterInfra): MacDesktopWebApi {
@@ -102,5 +131,37 @@ export function createMacDesktopNamespace(infra: AdapterInfra): MacDesktopWebApi
     onConnectionChange: (listener) => client.subscribe((status) => {
       listener(status.state === "connected" && status.readiness === "ready");
     }),
+    supportsMacDesktopControl: () => client.supportsMacDesktopControl(),
+    // Every control call is a mutation: `idempotent: false` makes an
+    // unsupported host reject rather than resolving the null fallback, so a
+    // pane cannot report a takeover that never happened.
+    takeControl: (args) =>
+      commands.call(
+        "macDesktop.takeControl",
+        {
+          laneId: args.laneId,
+          controllerId: args.controllerId,
+          ...(args.controllerLabel ? { controllerLabel: args.controllerLabel } : {}),
+        },
+        { fallback: null as MacDesktopLeaseState | null, idempotent: false },
+      ),
+    returnControl: (args) =>
+      commands.call(
+        "macDesktop.returnControl",
+        { laneId: args.laneId, controllerId: args.controllerId },
+        { fallback: null as MacDesktopLeaseState | null, idempotent: false },
+      ),
+    renewLease: (args) =>
+      commands.call(
+        "macDesktop.renewLease",
+        { laneId: args.laneId, controllerId: args.controllerId },
+        { fallback: null as MacDesktopLeaseState | null, idempotent: false },
+      ),
+    input: (args) =>
+      commands.call(
+        "macDesktop.input",
+        { laneId: args.laneId, call: args.call },
+        { fallback: null as MacDesktopInputResult | null, idempotent: false },
+      ),
   };
 }

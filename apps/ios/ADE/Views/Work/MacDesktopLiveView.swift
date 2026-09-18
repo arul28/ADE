@@ -108,6 +108,41 @@ enum MacDesktopAnnexB {
   }
 }
 
+/// The per-sample attachment dictionary the display layer actually reads.
+///
+/// `AVSampleBufferDisplayLayer` consults the sample-attachments array, not the
+/// buffer-level attachments `CMSetAttachment` writes. Two keys matter here:
+/// `DisplayImmediately` makes a sample present without a control timebase —
+/// this stream has none, so without it the layer holds every frame forever
+/// while `hasFrame` still flips and the placeholder disappears over black —
+/// and `NotSync` marks a P-frame as a delta frame, so the layer does not treat
+/// a mid-GOP picture as a sync sample. Keyframes need no `NotSync` entry: an
+/// absent key means sync.
+enum MacDesktopSampleAttachments {
+  static func apply(to sampleBuffer: CMSampleBuffer, keyframe: Bool) {
+    guard
+      let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
+      CFArrayGetCount(attachments) > 0
+    else { return }
+    let dictionary = unsafeBitCast(
+      CFArrayGetValueAtIndex(attachments, 0),
+      to: CFMutableDictionary.self
+    )
+    CFDictionarySetValue(
+      dictionary,
+      Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+      Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+    )
+    if !keyframe {
+      CFDictionarySetValue(
+        dictionary,
+        Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque(),
+        Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+      )
+    }
+  }
+}
+
 /// Decides which pushed frames may reach the decoder.
 ///
 /// The host may skip frames under backpressure and the contract says it always
@@ -164,6 +199,13 @@ final class MacDesktopLiveSession: ObservableObject {
   /// second subscription onto the host for the same lane.
   let subscriptionId: String
   let viewerLabel: String?
+
+  /// The label the host records for this viewer. Deliberately generic: the
+  /// device's own name ("Arul's iPhone") is user-identifying, and the host
+  /// only uses this to say who is watching.
+  static func defaultViewerLabel() -> String {
+    UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+  }
 
   @Published private(set) var phase: Phase = .idle
   @Published private(set) var hasFrame = false
@@ -408,14 +450,9 @@ final class MacDesktopLiveSession: ObservableObject {
       sampleBufferOut: &sampleBuffer
     )
     guard sampleStatus == noErr, let sampleBuffer else { return false }
-    if keyframe {
-      CMSetAttachment(
-        sampleBuffer,
-        key: kCMSampleAttachmentKey_NotSync,
-        value: kCFBooleanFalse,
-        attachmentMode: kCMAttachmentMode_ShouldPropagate
-      )
-    }
+    // Per-sample attachments, not `CMSetAttachment`: the layer reads the
+    // sample dictionary, so a buffer-level write is invisible to it.
+    MacDesktopSampleAttachments.apply(to: sampleBuffer, keyframe: keyframe)
     layer.enqueue(sampleBuffer)
     return true
   }

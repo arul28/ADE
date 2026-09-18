@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MAC_DESKTOP_STREAM_PATH } from "../../../shared/types/macDesktop";
 import {
@@ -241,6 +241,34 @@ describe("macDesktopStreamServer", () => {
     expect(rates).toContain(30);
     expect(server.metrics("lane-1")?.idle).toBe(false);
   }, 10_000);
+
+  it("never goes idle while a viewer keeps noting activity", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const rates: number[] = [];
+    const server = createMacDesktopStreamServer({
+      logger,
+      setRate: ({ fps }) => {
+        rates.push(fps);
+      },
+    });
+    cleanups.push(() => server.dispose());
+    vi.useFakeTimers();
+    try {
+      await server.start({ laneId: "lane-1", sourcePort: upstream.port, fps: 30, idleFps: 3 });
+      // The sync fan-out notes activity once a second while records flow, so
+      // the five-second idle timer is always re-armed before it can fire.
+      for (let second = 0; second < 8; second += 1) {
+        vi.advanceTimersByTime(1_000);
+        server.noteActivity("lane-1");
+      }
+      expect(rates).not.toContain(3);
+      expect(server.metrics("lane-1")?.idle).toBe(false);
+      expect(server.metrics("lane-1")?.fps).toBe(30);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("stops reporting a lane once it is stopped", async () => {
     const upstream = await startUpstream(Buffer.from([1]));

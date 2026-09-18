@@ -1,3 +1,4 @@
+import CoreMedia
 import XCTest
 @testable import ADE
 
@@ -291,6 +292,77 @@ final class MacDesktopStreamContractTests: XCTestCase {
     }
   }
 
+  // MARK: - Sample attachments
+
+  func testSampleAttachmentsPresentImmediatelyAndMarkDeltaFramesNotSync() throws {
+    // A keyframe needs DisplayImmediately — this stream has no control
+    // timebase, so without it the layer holds every frame forever — and no
+    // NotSync, because an absent key means sync.
+    let keyframeBuffer = try makeSyntheticSample()
+    MacDesktopSampleAttachments.apply(to: keyframeBuffer, keyframe: true)
+    let keyframeAttachments = try XCTUnwrap(attachmentDictionary(of: keyframeBuffer))
+    XCTAssertTrue(attachmentFlag(keyframeAttachments, kCMSampleAttachmentKey_DisplayImmediately as CFString))
+    XCTAssertFalse(attachmentFlag(keyframeAttachments, kCMSampleAttachmentKey_NotSync as CFString))
+
+    // A P-frame is a delta frame: the layer must not treat it as a sync sample.
+    let deltaBuffer = try makeSyntheticSample()
+    MacDesktopSampleAttachments.apply(to: deltaBuffer, keyframe: false)
+    let deltaAttachments = try XCTUnwrap(attachmentDictionary(of: deltaBuffer))
+    XCTAssertTrue(attachmentFlag(deltaAttachments, kCMSampleAttachmentKey_DisplayImmediately as CFString))
+    XCTAssertTrue(attachmentFlag(deltaAttachments, kCMSampleAttachmentKey_NotSync as CFString))
+  }
+
+  // MARK: - Serial decode
+
+  @MainActor
+  func testDecodeQueueKeepsOneSubscriptionInArrivalOrderWithoutBlockingOthers() async throws {
+    let queue = MacDesktopStreamDecodeQueue()
+    let probe = DecodeOrderProbe()
+    let release = DispatchSemaphore(value: 0)
+    let firstStarted = expectation(description: "first decode started")
+
+    let first = queue.decode(subscriptionId: "sub-1") {
+      await probe.append(0)
+      firstStarted.fulfill()
+      release.wait()
+      return nil
+    }
+    await fulfillment(of: [firstStarted], timeout: 5)
+
+    // The second record for the same subscription must wait; a record for
+    // another subscription must not.
+    let second = queue.decode(subscriptionId: "sub-1") {
+      await probe.append(1)
+      return nil
+    }
+    let other = queue.decode(subscriptionId: "sub-2") {
+      await probe.append(2)
+      return nil
+    }
+    await other.value
+    for _ in 0..<20 {
+      await Task.yield()
+    }
+    let blocked = await probe.values()
+    XCTAssertEqual(blocked, [0, 2])
+
+    release.signal()
+    await first.value
+    await second.value
+    let delivered = await probe.values()
+    XCTAssertEqual(delivered, [0, 2, 1])
+  }
+
+  // MARK: - Viewer label
+
+  @MainActor
+  func testViewerLabelIsGenericRatherThanTheDeviceName() {
+    let label = MacDesktopLiveSession.defaultViewerLabel()
+    XCTAssertTrue(["iPhone", "iPad"].contains(label))
+    // The device's own name is user-identifying; only the form factor travels.
+    XCTAssertNotEqual(label, UIDevice.current.name)
+  }
+
   // MARK: - Helpers
 
   private static func descriptor(_ action: String) -> [String: Any] {
@@ -325,5 +397,95 @@ final class MacDesktopStreamContractTests: XCTestCase {
       try? FileManager.default.removeItem(at: baseURL)
     }
     try await body(service)
+  }
+
+  /// One synthetic H.264 sample, built the way `MacDesktopLiveSession.enqueue`
+  /// builds one, so the attachment assertions exercise the real object.
+  private func makeSyntheticSample() throws -> CMSampleBuffer {
+    let sps: [UInt8] = [0x67, 0x42, 0x00, 0x0A, 0xF8, 0x41, 0xA2]
+    let pps: [UInt8] = [0x68, 0xCE, 0x38, 0x80]
+    let format = try XCTUnwrap(MacDesktopAnnexB.formatDescription(sps: sps, pps: pps))
+    let accessUnit = Data([0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84])
+
+    var blockBuffer: CMBlockBuffer?
+    XCTAssertEqual(
+      CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault,
+        memoryBlock: nil,
+        blockLength: accessUnit.count,
+        blockAllocator: kCFAllocatorDefault,
+        customBlockSource: nil,
+        offsetToData: 0,
+        dataLength: accessUnit.count,
+        flags: 0,
+        blockBufferOut: &blockBuffer
+      ),
+      kCMBlockBufferNoErr
+    )
+    let block = try XCTUnwrap(blockBuffer)
+    let copyStatus = accessUnit.withUnsafeBytes { raw -> OSStatus in
+      guard let base = raw.baseAddress else { return -1 }
+      return CMBlockBufferReplaceDataBytes(
+        with: base,
+        blockBuffer: block,
+        offsetIntoDestination: 0,
+        dataLength: accessUnit.count
+      )
+    }
+    XCTAssertEqual(copyStatus, kCMBlockBufferNoErr)
+
+    var sampleBuffer: CMSampleBuffer?
+    var timing = CMSampleTimingInfo(
+      duration: .invalid,
+      presentationTimeStamp: CMTime(value: 0, timescale: 1_000_000),
+      decodeTimeStamp: .invalid
+    )
+    var sampleSize = accessUnit.count
+    XCTAssertEqual(
+      CMSampleBufferCreateReady(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: block,
+        formatDescription: format,
+        sampleCount: 1,
+        sampleTimingEntryCount: 1,
+        sampleTimingArray: &timing,
+        sampleSizeEntryCount: 1,
+        sampleSizeArray: &sampleSize,
+        sampleBufferOut: &sampleBuffer
+      ),
+      noErr
+    )
+    return try XCTUnwrap(sampleBuffer)
+  }
+
+  /// The per-sample dictionary the display layer reads, not the buffer-level
+  /// attachment dictionary `CMSetAttachment` writes.
+  private func attachmentDictionary(of sampleBuffer: CMSampleBuffer) -> CFDictionary? {
+    guard
+      let array = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false),
+      CFArrayGetCount(array) > 0
+    else { return nil }
+    return unsafeBitCast(CFArrayGetValueAtIndex(array, 0), to: CFDictionary.self)
+  }
+
+  private func attachmentFlag(_ dictionary: CFDictionary, _ key: CFString) -> Bool {
+    guard let raw = CFDictionaryGetValue(dictionary, Unmanaged.passUnretained(key).toOpaque()) else {
+      return false
+    }
+    let value = Unmanaged<CFBoolean>.fromOpaque(raw).takeUnretainedValue()
+    return CFBooleanGetValue(value)
+  }
+}
+
+/// Records the order detached decodes actually completed in.
+private actor DecodeOrderProbe {
+  private var entries: [Int] = []
+
+  func append(_ value: Int) {
+    entries.append(value)
+  }
+
+  func values() -> [Int] {
+    entries
   }
 }

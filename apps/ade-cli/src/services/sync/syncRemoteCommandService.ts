@@ -193,6 +193,12 @@ import type {
   SyncWebPairingInfo,
   SyncRunQuickCommandArgs,
   SyncMacDesktopStatus,
+  MacDesktopClickArgs,
+  MacDesktopDragArgs,
+  MacDesktopMoveArgs,
+  MacDesktopPressArgs,
+  MacDesktopScrollArgs,
+  MacDesktopTypeArgs,
   LaneBranchDriftResolution,
   SessionSettleOverride,
   SessionWakeReason,
@@ -472,6 +478,13 @@ export type SyncRemoteCommandExecutionContext = {
    * the stream over the command reply.
    */
   macDesktopStream?: MacDesktopSyncStreamSink;
+  /**
+   * The invoking socket's stable id. Every `macDesktop.*` command receives it
+   * (the host sets it for that action prefix alone), because the takeover
+   * commands derive the lease's controller id from the connection plus the
+   * caller's per-tab token and never from the wire.
+   */
+  connectionId?: string;
 };
 
 type RegisteredRemoteCommand = {
@@ -5245,19 +5258,152 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
 }
 
 /**
+ * Every Mac Desktop lease a sync connection took, keyed by lane.
+ *
+ * The holder id itself is derived from the connection, so a closed socket's
+ * lease could be found by prefix — but only if the service exposed its lease
+ * registry, which it deliberately does not. Recording the exact derived ids
+ * here lets the host return a closed connection's lease by the same
+ * `returnControl` path a client uses, immediately rather than at the TTL.
+ */
+type MacDesktopConnectionLeases = Map<string, Map<string, string>>;
+
+/** Text forwarded by one `macDesktop.input` call is capped at this. */
+const MAC_DESKTOP_SYNC_TEXT_MAX_BYTES = 4 * 1024;
+
+/** A per-tab token longer than this is not one ADE minted. */
+const MAC_DESKTOP_SYNC_TOKEN_MAX_LENGTH = 128;
+
+const MAC_DESKTOP_SYNC_INPUT_KINDS = ["click", "move", "scroll", "type", "press", "drag"] as const;
+
+type MacDesktopSyncInput = {
+  kind: (typeof MAC_DESKTOP_SYNC_INPUT_KINDS)[number];
+  args: Record<string, unknown>;
+};
+
+function requireMacDesktopConnectionId(
+  context: SyncRemoteCommandExecutionContext,
+  action: string,
+): string {
+  const connectionId = context.connectionId?.trim();
+  if (!connectionId) throw new Error(`${action} requires a live sync connection.`);
+  return connectionId;
+}
+
+/**
+ * The lease's holder id, from the socket and the caller's token — never the
+ * wire's own `controllerId`.
+ *
+ * `web:` names the family so a later surface (the TUI, say) can mint its own
+ * prefix and no two families can collide. The token is the client's per-tab
+ * value; the connection id is the host's, so a token stolen from one tab is
+ * inert on another socket.
+ */
+function deriveMacDesktopHolderId(
+  controllerToken: unknown,
+  context: SyncRemoteCommandExecutionContext,
+  action: string,
+): string {
+  const connectionId = requireMacDesktopConnectionId(context, action);
+  const token = requireString(controllerToken, `${action} requires controllerId.`);
+  if (token.length > MAC_DESKTOP_SYNC_TOKEN_MAX_LENGTH) {
+    throw new Error(`${action} controllerId is not a token this host accepts.`);
+  }
+  return `web:${connectionId}:${token}`;
+}
+
+function rememberMacDesktopConnectionLease(
+  leases: MacDesktopConnectionLeases,
+  connectionId: string,
+  laneId: string,
+  holderId: string,
+): void {
+  const held = leases.get(connectionId);
+  if (held) held.set(laneId, holderId);
+  else leases.set(connectionId, new Map([[laneId, holderId]]));
+}
+
+function forgetMacDesktopConnectionLease(
+  leases: MacDesktopConnectionLeases,
+  connectionId: string,
+  laneId: string,
+): void {
+  const held = leases.get(connectionId);
+  if (!held) return;
+  held.delete(laneId);
+  if (held.size === 0) leases.delete(connectionId);
+}
+
+function parseMacDesktopSyncInputCall(value: unknown): MacDesktopSyncInput {
+  if (!isRecord(value)) throw new Error("macDesktop.input requires a call object.");
+  const kind = requireString(value.kind, "macDesktop.input requires call.kind.");
+  if (!(MAC_DESKTOP_SYNC_INPUT_KINDS as readonly string[]).includes(kind)) {
+    throw new Error(`macDesktop.input does not support '${kind}'.`);
+  }
+  return {
+    kind: kind as MacDesktopSyncInput["kind"],
+    args: isRecord(value.args) ? value.args : {},
+  };
+}
+
+/**
+ * Every point a call names must be on the lane's display.
+ *
+ * Real input is posted on the global plane, and the display has an origin:
+ * a point off it would post a `CGEvent` at the user's own screen. Points are
+ * only checked when present — a click resolved by handle or text names none —
+ * and the display's edges are inclusive.
+ */
+function assertMacDesktopSyncPointsInDisplay(
+  args: Record<string, unknown>,
+  display: { origin: { x: number; y: number }; width: number; height: number },
+): void {
+  const check = (candidate: unknown): void => {
+    if (!isRecord(candidate)) return;
+    const x = asOptionalNumber(candidate.x);
+    const y = asOptionalNumber(candidate.y);
+    if (x === undefined || y === undefined) return;
+    if (
+      x < display.origin.x
+      || y < display.origin.y
+      || x > display.origin.x + display.width
+      || y > display.origin.y + display.height
+    ) {
+      throw new Error("macDesktop.input point is outside the lane's display.");
+    }
+  };
+  check(args);
+  check(args.target);
+  check(args.from);
+  check(args.to);
+}
+
+/**
  * The lane's private macOS screen, over the sync socket.
  *
  * `getStatus` / `streamSubscribe` / `streamUnsubscribe` are how the phone and
- * the hosted web client watch a lane's display live. `start` and `stop` exist
- * for the web client — the phone is view-only by product decision and never
- * calls them — so the split is by client behavior, not by policy: all five are
+ * the hosted web client watch a lane's display live, and all three are
  * viewer-allowed, exactly like the rest of the read-only Work-tools mirror.
+ *
+ * `start` / `stop` create and destroy a display on the host, and
+ * `takeControl` / `returnControl` / `renewLease` / `input` post real
+ * `CGEvent`s there, so those six are controller-only (`viewerAllowed: false`,
+ * `controllerAllowed: true`): a read-only viewer device watches, a
+ * paired/account browser controller drives. The phone is view-only by product
+ * decision and never calls any of them. The controller identity never comes
+ * off the wire: the brain derives it as `web:<connectionId>:<clientToken>`
+ * from the socket it arrived on plus the caller's per-tab token, so a tab can
+ * only return or renew the lease that socket took.
  *
  * The stream half is registered only when the host built both the Mac Desktop
  * service and its subscription fan-out, so `hello.features.commandRouting` is
  * the honest capability answer.
  */
-function registerMacDesktopRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+function registerMacDesktopRemoteCommands({
+  args,
+  register,
+  connectionLeases,
+}: RemoteCommandRegistrationDeps & { connectionLeases: MacDesktopConnectionLeases }): void {
   const macDesktopService = args.macDesktopService;
   const macDesktopSyncStream = args.macDesktopSyncStream;
   if (macDesktopService) {
@@ -5271,17 +5417,122 @@ function registerMacDesktopRemoteCommands({ args, register }: RemoteCommandRegis
       redact(await macDesktopService.getStatus({
         laneId: requireString(payload.laneId, "macDesktop.getStatus requires laneId."),
       })));
-    register("macDesktop.start", { viewerAllowed: true }, async (payload) => {
+
+    register("macDesktop.start", {
+      viewerAllowed: false,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload) => {
       const laneName = asTrimmedString(payload.laneName);
       return redact(await macDesktopService.start({
         laneId: requireString(payload.laneId, "macDesktop.start requires laneId."),
         ...(laneName ? { laneName } : {}),
       }));
     });
-    register("macDesktop.stop", { viewerAllowed: true }, async (payload) =>
+
+    register("macDesktop.stop", {
+      viewerAllowed: false,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload) =>
       await macDesktopService.stop({
         laneId: requireString(payload.laneId, "macDesktop.stop requires laneId."),
       }));
+
+    register("macDesktop.takeControl", {
+      viewerAllowed: false,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload, context) => {
+      const laneId = requireString(payload.laneId, "macDesktop.takeControl requires laneId.");
+      const holderId = deriveMacDesktopHolderId(payload.controllerId, context, "macDesktop.takeControl");
+      const controllerLabel = asTrimmedString(payload.controllerLabel) ?? "Web viewer";
+      const lease = await macDesktopService.takeControl({ laneId, controllerId: holderId, controllerLabel });
+      rememberMacDesktopConnectionLease(connectionLeases, context.connectionId!, laneId, holderId);
+      return lease;
+    });
+
+    register("macDesktop.returnControl", {
+      viewerAllowed: false,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload, context) => {
+      const laneId = requireString(payload.laneId, "macDesktop.returnControl requires laneId.");
+      const holderId = deriveMacDesktopHolderId(payload.controllerId, context, "macDesktop.returnControl");
+      const lease = await macDesktopService.returnControl({ laneId, controllerId: holderId });
+      // The service answers null only when the lease was actually released;
+      // a refusal comes back as the holder's lease.
+      if (!lease) forgetMacDesktopConnectionLease(connectionLeases, context.connectionId!, laneId);
+      return lease;
+    });
+
+    register("macDesktop.renewLease", {
+      viewerAllowed: false,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload, context) => {
+      const laneId = requireString(payload.laneId, "macDesktop.renewLease requires laneId.");
+      const holderId = deriveMacDesktopHolderId(payload.controllerId, context, "macDesktop.renewLease");
+      const lease = await macDesktopService.renewLease({ laneId, holderId });
+      if (lease) rememberMacDesktopConnectionLease(connectionLeases, context.connectionId!, laneId, holderId);
+      else forgetMacDesktopConnectionLease(connectionLeases, context.connectionId!, laneId);
+      return lease;
+    });
+
+    register("macDesktop.input", {
+      viewerAllowed: false,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload, context) => {
+      const laneId = requireString(payload.laneId, "macDesktop.input requires laneId.");
+      const call = parseMacDesktopSyncInputCall(payload.call);
+      // The client's own token is read BEFORE the strip: it is what the
+      // derived holder id is built from. Everything an agent could forge —
+      // the service controller id, a holder id, a chat session — is dropped,
+      // the same way the action bus scopes agent-shaped mac_desktop calls.
+      const holderId = deriveMacDesktopHolderId(call.args.controllerId, context, "macDesktop.input");
+      const {
+        controllerId: _forgedController,
+        holderId: _forgedHolder,
+        chatSessionId: _forgedChat,
+        laneId: _callerLane,
+        ...rest
+      } = call.args;
+      // `laneId` is pinned to the payload's validated value, the same way the
+      // action bus pins an agent's lane: the display a call names is the one
+      // the caller asked for, and the coordinate check below ran against it.
+      const inputArgs: Record<string, unknown> = {
+        ...rest,
+        laneId,
+        silent: true,
+        controllerId: holderId,
+      };
+      if (call.kind === "type") {
+        const text = inputArgs.text;
+        if (typeof text !== "string" || !text.length) {
+          throw new Error("macDesktop.input type requires text.");
+        }
+        if (Buffer.byteLength(text, "utf8") > MAC_DESKTOP_SYNC_TEXT_MAX_BYTES) {
+          throw new Error("macDesktop.input text is limited to 4 KiB per call.");
+        }
+      }
+      const display = await macDesktopService.getDisplay({ laneId });
+      if (display) assertMacDesktopSyncPointsInDisplay(inputArgs, display);
+      switch (call.kind) {
+        case "click":
+          return await macDesktopService.click(inputArgs as unknown as MacDesktopClickArgs);
+        case "move":
+          return await macDesktopService.move(inputArgs as unknown as MacDesktopMoveArgs);
+        case "scroll":
+          return await macDesktopService.scroll(inputArgs as unknown as MacDesktopScrollArgs);
+        case "type":
+          return await macDesktopService.type(inputArgs as unknown as MacDesktopTypeArgs);
+        case "press":
+          return await macDesktopService.press(inputArgs as unknown as MacDesktopPressArgs);
+        case "drag":
+          return await macDesktopService.drag(inputArgs as unknown as MacDesktopDragArgs);
+      }
+    });
   }
   if (macDesktopService && macDesktopSyncStream) {
     register("macDesktop.streamSubscribe", { viewerAllowed: true }, async (payload, context) => {
@@ -6196,6 +6447,10 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
 
 export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {
   const registry = new Map<SyncRemoteCommandAction, RegisteredRemoteCommand>();
+  // Mac Desktop leases per sync connection. See `MacDesktopConnectionLeases`:
+  // a socket close must return control immediately, and this is the only place
+  // that knows which derived holder ids a given socket took.
+  const macDesktopConnectionLeases: MacDesktopConnectionLeases = new Map();
 
   const register = (
     action: SyncRemoteCommandAction,
@@ -6317,7 +6572,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerPersonalChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
-  registerMacDesktopRemoteCommands({ args, register });
+  registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });
@@ -6347,6 +6602,30 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
     getDescriptor(action: string): SyncRemoteCommandDescriptor | null {
       return registry.get(action as SyncRemoteCommandAction)?.descriptor ?? null;
+    },
+
+    /**
+     * Returns every Mac Desktop lease this sync connection took.
+     *
+     * The sync host calls this from its socket-close handler, so a closed tab
+     * gives control back on the disconnect rather than a TTL later. Fire and
+     * forget: the lease's deadline is still the guarantee, and a `returnControl`
+     * that loses a race with a new controller simply does not match.
+     */
+    releaseMacDesktopConnection(connectionId: string): void {
+      const held = macDesktopConnectionLeases.get(connectionId);
+      if (!held) return;
+      macDesktopConnectionLeases.delete(connectionId);
+      const service = args.macDesktopService;
+      if (!service) return;
+      for (const [laneId, holderId] of held) {
+        void service.returnControl({ laneId, controllerId: holderId }).catch((error: unknown) => {
+          args.logger.warn("sync.mac_desktop_connection_release_failed", {
+            laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
     },
 
     async execute(

@@ -194,11 +194,15 @@ const LOCAL_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["ios", "app-control"]);
  *
  * Mac Desktop IS here, and for the browser's reason rather than the
  * simulator's: the lane's screen leaves a describable trail — a display, a
- * window list, a lease holder, and now a live stream the web client plays over
+ * window list, a lease holder, and a live stream the web client plays over
  * the sync socket — so a web client shows that instead of a dead card. It may
- * start and stop the lane's display, which is why the pane no longer reads as
- * "a still"; what it may NOT do is take over: the lease, the pointer and the
- * keyboard stay on the Mac. The control hint says exactly that.
+ * start and stop the lane's display, and when the host advertises
+ * `hello_ok.features.macDesktopControl` it may also take the input lease and
+ * drive the pointer from the browser. The membership here is therefore about
+ * the WATCHING fallback, not about a permanent no-control rule: a host without
+ * the control commands (or a browser that fails the capability check) still
+ * renders this read-only pane, and `WORK_TOOLS_CONTROL_HINT` says control
+ * stays on the desktop exactly then.
  */
 const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control", "mac-desktop"]);
 

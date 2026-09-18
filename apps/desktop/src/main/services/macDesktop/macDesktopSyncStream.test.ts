@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
@@ -11,8 +12,10 @@ import type {
 } from "../../../shared/types/sync";
 import { encodeVideoRecord } from "../media/videoRecords";
 import {
+  MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTION_ID_LENGTH,
   MAC_DESKTOP_SYNC_STREAM_PENDING_LIMIT_BYTES,
   createMacDesktopSyncStream,
+  openLoopbackReader,
   type MacDesktopSyncStreamReader,
 } from "./macDesktopSyncStream";
 
@@ -70,16 +73,23 @@ function createSink(connectionId = "conn-1") {
   const records: SyncMacDesktopStreamRecordPayload[] = [];
   const ended: SyncMacDesktopStreamEndedPayload[] = [];
   let pending = 0;
+  let accepts = true;
   return {
     records,
     ended,
     setPendingBytes: (value: number) => {
       pending = value;
     },
+    setAccepts: (value: boolean) => {
+      accepts = value;
+    },
     sink: {
       connectionId,
       sendRecord: (record: SyncMacDesktopStreamRecordPayload) => {
+        // Mirrors the sync host: a refused record never reaches the socket.
+        if (!accepts) return false;
         records.push(record);
+        return true;
       },
       sendEnded: (event: SyncMacDesktopStreamEndedPayload) => {
         ended.push(event);
@@ -91,6 +101,8 @@ function createSink(connectionId = "conn-1") {
 
 function createHarness(options: {
   reader?: ReturnType<typeof createFakeReader>;
+  now?: () => number;
+  noteActivity?: (laneId: string) => void;
   startStream?: (args: { laneId: string; ownerId: string }) => Promise<{
     url: string;
     width: number | null;
@@ -112,6 +124,7 @@ function createHarness(options: {
     logger,
     startStream,
     releaseOwner,
+    ...(options.noteActivity ? { noteActivity: options.noteActivity } : {}),
     subscribeEvents: (listener) => {
       eventListeners.push(listener);
       return () => {
@@ -119,10 +132,10 @@ function createHarness(options: {
         if (index >= 0) eventListeners.splice(index, 1);
       };
     },
-    now: () => {
+    now: options.now ?? (() => {
       clock += 1_000;
       return clock;
-    },
+    }),
     openReader: () => reader.reader,
   });
   return {
@@ -333,5 +346,204 @@ describe("macDesktopSyncStream", () => {
       connectionId: "conn-1",
       sink: sink.sink,
     })).rejects.toThrow(/disposed/);
+  });
+
+  it("skips to the next keyframe when the transport refuses a record", async () => {
+    const harness = createHarness();
+    const sink = createSink();
+    await harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "sub-1",
+      connectionId: "conn-1",
+      sink: sink.sink,
+    });
+
+    harness.reader.push(configRecord());
+    sink.setAccepts(false);
+    harness.reader.push(frameRecord(Buffer.from([1]), false));
+    expect(sink.records).toHaveLength(1);
+
+    // The flag is latched: even after the transport accepts again, the P-frame
+    // whose reference was lost is dropped.
+    sink.setAccepts(true);
+    harness.reader.push(frameRecord(Buffer.from([2]), false));
+    expect(sink.records).toHaveLength(1);
+
+    harness.reader.push(frameRecord(Buffer.from([3]), true));
+    expect(sink.records).toHaveLength(2);
+    expect(sink.records[1]!.keyframe).toBe(true);
+    // The refused record spent a seq, so the delivered keyframe still carries
+    // the gap the client's own gate holds P-frames across.
+    expect(sink.records[1]!.seq).toBeGreaterThan(1);
+    expect(harness.stream.droppedFrameCount("sub-1")).toBe(2);
+  });
+
+  it("counts a live subscriber as stream activity, throttled to once per second", async () => {
+    let clock = 1_000;
+    const noteActivity = vi.fn();
+    const harness = createHarness({ noteActivity, now: () => clock });
+    const sink = createSink();
+    await harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "sub-1",
+      connectionId: "conn-1",
+      sink: sink.sink,
+    });
+    // Subscribing is activity by itself: the forced keyframe may take a moment.
+    expect(noteActivity).toHaveBeenCalledTimes(1);
+    expect(noteActivity).toHaveBeenCalledWith("lane-1");
+
+    harness.reader.push(configRecord());
+    harness.reader.push(frameRecord(Buffer.from([1]), true));
+    // Two delivered records inside the same second are one note.
+    expect(noteActivity).toHaveBeenCalledTimes(1);
+
+    clock += 500;
+    harness.reader.push(frameRecord(Buffer.from([2]), false));
+    expect(noteActivity).toHaveBeenCalledTimes(1);
+
+    clock += 600;
+    harness.reader.push(frameRecord(Buffer.from([3]), false));
+    expect(noteActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a subscription id longer than the cap, before opening a reader", async () => {
+    const harness = createHarness();
+    const sink = createSink();
+
+    await expect(harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "s".repeat(MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTION_ID_LENGTH + 1),
+      connectionId: "conn-1",
+      sink: sink.sink,
+    })).rejects.toMatchObject({ code: "MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG" });
+    expect(harness.startStream).not.toHaveBeenCalled();
+    expect(harness.stream.subscriptionCount()).toBe(0);
+  });
+
+  it("refuses a third live subscription on one connection for one lane", async () => {
+    const harness = createHarness();
+    const first = createSink("conn-1");
+    const second = createSink("conn-1");
+    const third = createSink("conn-1");
+    await harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "sub-1",
+      connectionId: "conn-1",
+      sink: first.sink,
+    });
+    await harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "sub-2",
+      connectionId: "conn-1",
+      sink: second.sink,
+    });
+
+    await expect(harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "sub-3",
+      connectionId: "conn-1",
+      sink: third.sink,
+    })).rejects.toMatchObject({ code: "MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT" });
+    expect(harness.stream.subscriptionCount()).toBe(2);
+
+    // The cap is per connection and per lane: another lane and another
+    // connection each get their own two.
+    await harness.stream.subscribe({
+      laneId: "lane-2",
+      subscriptionId: "sub-4",
+      connectionId: "conn-1",
+      sink: third.sink,
+    });
+    await harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "sub-5",
+      connectionId: "conn-2",
+      sink: third.sink,
+    });
+    expect(harness.stream.subscriptionCount()).toBe(4);
+  });
+
+  it("retries an existing subscription id instead of counting it against the cap", async () => {
+    const harness = createHarness();
+    const sink = createSink();
+    const first = await harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "sub-1",
+      connectionId: "conn-1",
+      sink: sink.sink,
+    });
+    await harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "sub-2",
+      connectionId: "conn-1",
+      sink: sink.sink,
+    });
+
+    // A lost reply makes the client ask again with the id it already used.
+    await expect(harness.stream.subscribe({
+      laneId: "lane-1",
+      subscriptionId: "sub-1",
+      connectionId: "conn-1",
+      sink: sink.sink,
+    })).resolves.toEqual(first);
+    expect(harness.startStream).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("openLoopbackReader", () => {
+  const servers: Array<ReturnType<typeof createServer>> = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    })));
+  });
+
+  it("dispatches the request and surfaces the framed bytes the server sends", async () => {
+    const body = Buffer.concat([
+      configRecord(),
+      frameRecord(Buffer.from([0x00, 0x00, 0x00, 0x01, 0x65, 0x88]), true),
+    ]);
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/octet-stream" });
+      response.write(body);
+      response.end();
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+
+    const reader = openLoopbackReader(`http://127.0.0.1:${address.port}/mac-desktop-video?lane=lane-1&token=t`);
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      reader.onChunk((chunk) => chunks.push(chunk));
+      reader.onEnd(() => resolve());
+      reader.onError((message) => reject(new Error(message)));
+    });
+
+    // Without `request.end()` the server is never asked anything and this
+    // never settles — the assertion is the test timing out.
+    expect(Buffer.concat(chunks)).toEqual(body);
+  });
+
+  it("reports a non-200 answer as an error rather than an empty stream", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(403);
+      response.end();
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+
+    const reader = openLoopbackReader(`http://127.0.0.1:${address.port}/mac-desktop-video?lane=lane-1&token=t`);
+    const message = await new Promise<string>((resolve) => {
+      reader.onChunk(() => {});
+      reader.onEnd(() => resolve("ended"));
+      reader.onError((error) => resolve(error));
+    });
+    expect(message).toContain("403");
   });
 });

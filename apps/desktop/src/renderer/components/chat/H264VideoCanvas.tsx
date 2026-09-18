@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "../ui/cn";
+import { createH264FrameGate } from "./h264FrameGate";
 import {
   IosSimVideoProtocolError,
   createIosSimVideoRecordParser,
@@ -150,6 +151,10 @@ export function H264VideoCanvas({
     report("connecting", null);
 
     const drawFrame = (frame: { displayWidth: number; displayHeight: number; close: () => void }) => {
+      if (cancelled) {
+        frame.close();
+        return;
+      }
       const canvas = canvasRef.current;
       const context = contextRef.current;
       if (!canvas || !context) {
@@ -167,6 +172,10 @@ export function H264VideoCanvas({
       }
       try {
         context.drawImage(frame as unknown as CanvasImageSource, 0, 0);
+        // Playing is a drawn frame, not an accepted chunk: an encoded chunk
+        // says the decoder took the bytes, and a decoder that then errors out
+        // would still have claimed the picture was up.
+        report("playing", null);
       } finally {
         // A VideoFrame holds a GPU buffer. Not closing it stalls the decoder
         // within a few frames.
@@ -175,7 +184,10 @@ export function H264VideoCanvas({
     };
 
     // One record pipeline for both sources: the URL reader feeds it parsed
-    // records, a push subscription hands it the same shapes directly.
+    // records, a push subscription hands it the same shapes directly. The URL
+    // path carries no sequence numbers, so the gate only applies to pushes;
+    // a decoder error or a rebuild resets it for both.
+    const gate = createH264FrameGate();
     let configured = false;
     const consume = (record: IosSimVideoRecord): void => {
       if (record.kind === "config") {
@@ -184,6 +196,9 @@ export function H264VideoCanvas({
           output: drawFrame,
           error: (decodeError) => {
             if (cancelled) return;
+            // The decoder's references are gone; hold P-frames until the host
+            // repeats the parameter sets in front of the next keyframe.
+            gate.requireKeyframe();
             report("error", decodeError.message);
           },
         });
@@ -191,19 +206,20 @@ export function H264VideoCanvas({
         // without one expects exactly that.
         decoder.configure({ codec: record.codec, optimizeForLatency: true });
         configured = true;
+        gate.reset();
         if (record.width && record.height) {
           dimensionsRef.current?.({ width: record.width, height: record.height });
         }
         return;
       }
       if (!configured || !decoder || decoder.state === "closed") return;
+      if (record.seq !== undefined && !gate.shouldDeliver(record.keyframe, record.seq)) return;
       timestampUs += 33_333;
       decoder.decode(new EncodedVideoChunkCtor({
         type: record.keyframe ? "key" : "delta",
         timestamp: timestampUs,
         data: record.bytes,
       }));
-      report("playing", null);
     };
 
     let unsubscribe: (() => void) | null = null;

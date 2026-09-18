@@ -209,6 +209,12 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
    * must not await a service call to decide to do nothing.
    */
   hasDisplaySync(laneId: string | null | undefined): boolean;
+  /**
+   * The sync live view's activity hook. A viewer that keeps receiving records
+   * is watching, so the encoder must not treat the lane as idle between input
+   * events; the fan-out calls this on subscribe and while frames flow.
+   */
+  noteStreamActivity(laneId: string): void;
   readonly resolutionSettingKey: string;
   setResolution(preset: MacDesktopResolutionPreset): void;
   getResolution(): MacDesktopResolutionPreset;
@@ -366,9 +372,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       requireDisplay(laneId);
     },
     assertPermission,
-    recordingNotRunning: (laneId) => new MacDesktopError(
+    recordingNotRunning: (laneId, partialFilePath) => new MacDesktopError(
       "MAC_DESKTOP_RECORDING_NOT_RUNNING",
-      `Lane ${laneId} is not recording its desktop.`,
+      partialFilePath
+        ? `Lane ${laneId} is not recording its desktop. The last recording failed to finalise; its file is at ${partialFilePath}.`
+        : `Lane ${laneId} is not recording its desktop.`,
     ),
   });
   const recordings = recording.recordings;
@@ -1050,6 +1058,12 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       const trimmed = laneId?.trim();
       if (!trimmed || !isDarwin) return false;
       return ownership.hasDisplay(trimmed);
+    },
+    /** A delivered sync record keeps the lane's encoder at full rate. */
+    noteStreamActivity(laneId: string): void {
+      const trimmed = laneId?.trim();
+      if (!trimmed || !isDarwin) return;
+      streamServer.noteActivity(trimmed);
     },
     /** Opens the turn clip. Called by the chat runtime on the turn's first act. */
     beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void> {

@@ -24,7 +24,15 @@ import type {
 } from "./externalSessions";
 import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
-import type { MacDesktopStatus } from "./macDesktop";
+import type {
+  MacDesktopClickArgs,
+  MacDesktopDragArgs,
+  MacDesktopMoveArgs,
+  MacDesktopPressArgs,
+  MacDesktopScrollArgs,
+  MacDesktopStatus,
+  MacDesktopTypeArgs,
+} from "./macDesktop";
 import type { LinearConnectionStatus } from "./linearSync";
 import type { SyncHostConflictPublic, SyncHostReadinessSnapshot } from "./syncHostRecovery";
 
@@ -663,6 +671,14 @@ export type SyncFeatureFlags = {
    * client without a decoder keeps the still-image fallback.
    */
   macDesktopStream?: true;
+  /**
+   * The host serves `macDesktop.takeControl` and its siblings, so the hosted
+   * web client may take the lane's input lease over the sync socket. Advertised
+   * only when the control commands are registered, exactly like
+   * {@link macDesktopStream}; the phone ignores it (view-only by product
+   * decision), and an older host omits it and keeps the watch-only wording.
+   */
+  macDesktopControl?: true;
   chatStreaming: {
     enabled: true;
   };
@@ -1738,6 +1754,24 @@ export type SyncMacDesktopStreamSubscribeResult = {
 };
 
 /**
+ * One forwarded real-input call from a web controller.
+ *
+ * The same six calls the desktop's `useMacDesktopRealInput` builds, so the
+ * translation from a browser event is one shared function rather than a second
+ * implementation per surface. The args are the service's own shapes; the host
+ * strips every caller-asserted identity from them (`controllerId`, `holderId`,
+ * `chatSessionId`), forces `silent`, and re-fills the controller id it derives
+ * from the socket, so nothing here can name a lease it does not hold.
+ */
+export type SyncMacDesktopInputCall =
+  | { kind: "click"; args: MacDesktopClickArgs }
+  | { kind: "move"; args: MacDesktopMoveArgs }
+  | { kind: "scroll"; args: MacDesktopScrollArgs }
+  | { kind: "type"; args: MacDesktopTypeArgs }
+  | { kind: "press"; args: MacDesktopPressArgs }
+  | { kind: "drag"; args: MacDesktopDragArgs };
+
+/**
  * The lane's macOS screen as a sync client may read it. `MacDesktopStatus` is
  * already token-free (the stream is a summary); this only pins the recording
  * to null, because its `filePath` is host state no read-only client can use.
@@ -2203,6 +2237,14 @@ export type SyncRemoteCommandAction =
   | "macDesktop.stop"
   | "macDesktop.streamSubscribe"
   | "macDesktop.streamUnsubscribe"
+  // Takeover from the hosted web client. Deliberately NOT viewer-allowed: a
+  // read-only viewer watches, a paired/account controller drives. The brain
+  // derives the lease's controller id from the socket's connection id plus the
+  // caller's per-tab token, so a client can only return or renew its own lease.
+  | "macDesktop.takeControl"
+  | "macDesktop.returnControl"
+  | "macDesktop.renewLease"
+  | "macDesktop.input"
   | "deeplinks.open";
 
 export type SyncRemoteCommandPolicy = {

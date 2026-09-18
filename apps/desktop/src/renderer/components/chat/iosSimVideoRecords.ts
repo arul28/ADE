@@ -27,6 +27,12 @@ export type IosSimVideoAccessUnitRecord = {
   kind: "access-unit";
   keyframe: boolean;
   bytes: Uint8Array;
+  /**
+   * Host sequence number when the transport carries one (the sync-socket Mac
+   * Desktop pushes do; a loopback byte stream does not). It is what lets the
+   * decoder hold P-frames after the host skipped records.
+   */
+  seq?: number;
 };
 
 export type IosSimVideoRecord = IosSimVideoConfigRecord | IosSimVideoAccessUnitRecord;

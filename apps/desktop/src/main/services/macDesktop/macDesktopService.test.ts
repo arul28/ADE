@@ -639,6 +639,57 @@ describe("macDesktopService recordings", () => {
     expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toBe(true);
     service.dispose();
   });
+
+  it("a stop that fails marks the recording failed instead of leaving it running", async () => {
+    // The driver removed its recorder before it finalised, so a stop that
+    // timed out left the local status on `running: true` with no file while
+    // the next stop answered "not running" — two states, one recording.
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => {
+        throw new Error("internal_error: record.stop did not complete within 16s.");
+      },
+    });
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    const started = await service.startRecording({ laneId: "lane-1", caption: "the bug" });
+    expect(started.running).toBe(true);
+
+    await expect(service.stopRecording({ laneId: "lane-1" }))
+      .rejects.toThrow(/did not complete/);
+
+    const status = await service.getStatus({ laneId: "lane-1" });
+    expect(status.recording).toMatchObject({
+      running: false,
+      lastError: expect.stringContaining("did not complete"),
+    });
+    // The path the helper was handed is what a partial recording lives at;
+    // naming it is what keeps the failure actionable.
+    expect(status.recording?.filePath).toMatch(/mac-desktop-recording-lane-1.*\.mp4$/);
+    // The stop button's surface hears about the transition, not just the throw.
+    expect(events.filter((event) =>
+      event.type === "recording-changed" && event.status.running === false)).toHaveLength(1);
+
+    // A second stop reports a clean failure and names the partial file.
+    await expect(service.stopRecording({ laneId: "lane-1" }))
+      .rejects.toThrow(/is not recording its desktop.*mac-desktop-recording-lane-1/);
+    service.dispose();
+  });
+
+  it("a clean stop clears the failure state", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 1_200 }),
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.startRecording({ laneId: "lane-1", caption: "the fix" });
+    const stopped = await service.stopRecording({ laneId: "lane-1", chatSessionId: "chat-1" });
+    expect(stopped).toMatchObject({ running: false, filePath: "/tmp/clip.mp4", durationMs: 1_200, lastError: null });
+
+    // A second stop is a clean "not running" with no path to report.
+    await expect(service.stopRecording({ laneId: "lane-1" }))
+      .rejects.toThrow(/MAC_DESKTOP_RECORDING_NOT_RUNNING: Lane lane-1 is not recording its desktop\.$/);
+    service.dispose();
+  });
 });
 
 describe("macDesktopService streaming", () => {

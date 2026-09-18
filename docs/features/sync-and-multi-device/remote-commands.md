@@ -652,16 +652,20 @@ The lane's private macOS screen, watched live from the hosted web client and
 the phone. Registered only when the runtime built both the Mac Desktop service
 and its subscription fan-out, and advertised to clients with
 `hello_ok.features.macDesktopStream: true`; either half missing keeps the
-existing still-image fallback.
+existing still-image fallback. Web takeover is advertised separately with
+`hello_ok.features.macDesktopControl: true`, which is set exactly when the
+`takeControl` command is registered.
 
 - `getStatus` `{ laneId }` — viewer-allowed read of the same `MacDesktopStatus`
   the desktop gets, with the recording pinned to `null` so its host file path
   never crosses the socket. The stream's token and URL are already absent from a
   status read.
-- `start` `{ laneId, laneName? }` / `stop` `{ laneId }` — viewer-allowed for
-  the hosted web client. `start` is idempotent and platform-gated: a non-Mac
-  runtime answers `MAC_DESKTOP_UNSUPPORTED_PLATFORM`. The phone never calls
-  either (view-only by product decision).
+- `start` `{ laneId, laneName? }` / `stop` `{ laneId }` — controller-only
+  (`viewerAllowed: false`, `controllerAllowed: true`): creating or destroying a
+  display is a host mutation, so a read-only viewer device never gets it; the
+  hosted web client (a paired browser controller) does, and the phone does not.
+  `start` is idempotent and platform-gated: a non-Mac runtime answers
+  `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 - `streamSubscribe` `{ laneId, subscriptionId, viewerLabel? }` → `{ ok, width,
   height, codec }`. It calls the same service path as the desktop's
   `startStream`, so idle-rate and owner bookkeeping apply, but the asker is
@@ -670,6 +674,28 @@ existing still-image fallback.
   always a `config`, then a keyframe.
 - `streamUnsubscribe` `{ subscriptionId }`. A socket close releases every
   subscription that connection owned, with no notice (the socket is gone).
+- `takeControl` `{ laneId, controllerId, controllerLabel? }` →
+  `MacDesktopLeaseState`. Controller-only (`viewerAllowed: false`,
+  `controllerAllowed: true`): a read-only viewer watches, a paired/account
+  browser controller drives. The payload's `controllerId` is a per-tab TOKEN,
+  not a lease identity — the brain derives the holder id as
+  `web:<socket connection id>:<token>`, so a client can only return or renew
+  the lease its own socket took. The phone never calls it (view-only).
+- `returnControl` `{ laneId, controllerId }` and `renewLease` `{ laneId,
+  controllerId }` → `MacDesktopLeaseState | null`, with the same derivation.
+  A second connection's derivation cannot match the first's holder id, so
+  returning or renewing someone else's lease is a no-op. `renewLease` is the
+  heartbeat: null means the lease lapsed or another controller holds it.
+- `input` `{ laneId, call: { kind: "click" | "move" | "scroll" | "type" |
+  "press" | "drag", args } }` → `MacDesktopInputResult` for one forwarded
+  pointer or keyboard event. The host strips `controllerId`, `holderId` and
+  `chatSessionId` from `args`, forces `silent: true`, and re-fills the derived
+  controller id; `type` text is capped at 4 KiB per call and any named point
+  outside the lane's display is refused.
+- A socket that took a lease returns it on `ws close`, immediately through
+  `returnControl` rather than at the TTL. The command service records which
+  derived holder ids each connection took, because that bookkeeping never
+  leaves the brain.
 - Server→client pushes on the same envelope channel the brain uses for chat
   events: `macDesktop.streamRecord` `{ subscriptionId, seq, kind: "config" |
   "frame", keyframe, timestampUs, data }` where `data` is base64 (Annex-B

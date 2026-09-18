@@ -25,7 +25,11 @@ import {
   IOS_VIDEO_RECORD_FLAG_KEYFRAME,
   IOS_VIDEO_RECORD_TYPE_CONFIG,
 } from "../../../shared/types/iosSimulator";
-import type { MacDesktopEventPayload } from "../../../shared/types/macDesktop";
+import {
+  MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG_CODE,
+  MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT_CODE,
+  type MacDesktopEventPayload,
+} from "../../../shared/types/macDesktop";
 import type {
   SyncMacDesktopStreamEndedPayload,
   SyncMacDesktopStreamRecordPayload,
@@ -36,6 +40,33 @@ import { createVideoRecordSplitter, VideoRecordFramingError } from "../media/vid
 
 /** Queued bytes past which a subscription skips frames until the next keyframe. */
 export const MAC_DESKTOP_SYNC_STREAM_PENDING_LIMIT_BYTES = 2 * 1024 * 1024;
+
+/** The longest `subscriptionId` the fan-out accepts from a sync client. */
+export const MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTION_ID_LENGTH = 128;
+
+/**
+ * Live subscriptions one connection may hold on one lane. A viewer needs one;
+ * the second is a reconnect that has not released the first yet. More than two
+ * is a client bug, and each one costs its own upstream connection.
+ */
+export const MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE = 2;
+
+/** How often a delivered record is allowed to count as stream activity. */
+export const MAC_DESKTOP_SYNC_STREAM_ACTIVITY_THROTTLE_MS = 1_000;
+
+/**
+ * A refusal the sync client can branch on: the host sends `error.code` with
+ * the command result, and both limits are client mistakes rather than failures.
+ */
+export class MacDesktopSyncStreamError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "MacDesktopSyncStreamError";
+    this.code = code;
+  }
+}
 
 /**
  * The reader half of a subscription: raw framed bytes from the lane's loopback
@@ -57,7 +88,13 @@ export type MacDesktopSyncStreamReader = {
 export type MacDesktopSyncStreamSink = {
   /** Identifies this subscriber's sync connection, for close-time cleanup. */
   connectionId: string;
-  sendRecord(record: SyncMacDesktopStreamRecordPayload): void;
+  /**
+   * False when the transport refused the record rather than queued it (the
+   * sync host's `send` returns false at its 4 MiB backpressure gate). The
+   * fan-out then treats the picture as broken and skips to the next keyframe,
+   * the same as if `pendingBytes` had crossed the limit.
+   */
+  sendRecord(record: SyncMacDesktopStreamRecordPayload): boolean;
   sendEnded(ended: SyncMacDesktopStreamEndedPayload): void;
   pendingBytes(): number;
 };
@@ -84,6 +121,12 @@ export type MacDesktopSyncStreamDeps = {
   /** Drops one owner; stops the encoder when it was the lane's last. */
   releaseOwner: (ownerId: string) => Promise<void> | void;
   subscribeEvents?: (listener: (event: MacDesktopEventPayload) => void) => () => void;
+  /**
+   * Counts a live subscription as stream activity, so a passive viewer does
+   * not fall to the idle rate after five quiet seconds. Wired to the stream
+   * server's own `noteActivity`.
+   */
+  noteActivity?: (laneId: string) => void;
   now?: () => number;
   /** Test seam. Defaults to a loopback HTTP reader. */
   openReader?: (url: string) => MacDesktopSyncStreamReader;
@@ -109,10 +152,44 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
   const now = deps.now ?? (() => Date.now());
   const openReader = deps.openReader ?? openLoopbackReader;
   const subscriptions = new Map<string, Subscription>();
-  /** Subscribe calls still inside `startStream`, keyed id → connection. */
-  const pending = new Map<string, string>();
+  /** Subscribe calls still inside `startStream`, keyed id → its connection. */
+  const pending = new Map<string, { connectionId: string; laneId: string }>();
   const cancelled = new Set<string>();
+  /** laneId → `now()` of the last activity note, for the 1s throttle. */
+  const lastActivityNotedAtMs = new Map<string, number>();
   let disposed = false;
+
+  /**
+   * A live viewer is doing something: it is watching. Without this the stream
+   * server's idle timer only hears about input paths, so a phone or browser
+   * watching a lane the agent is not touching drops to the idle rate after
+   * five seconds. Delivered records call it throttled to once per second;
+   * subscribing calls it immediately because the forced keyframe that answers
+   * a subscribe may not arrive for a moment.
+   */
+  function noteActivity(laneId: string, force = false): void {
+    const note = deps.noteActivity;
+    if (!note) return;
+    const nowMs = now();
+    if (!force) {
+      const last = lastActivityNotedAtMs.get(laneId);
+      if (last !== undefined && nowMs - last < MAC_DESKTOP_SYNC_STREAM_ACTIVITY_THROTTLE_MS) return;
+    }
+    lastActivityNotedAtMs.set(laneId, nowMs);
+    note(laneId);
+  }
+
+  /** Live and in-flight subscriptions this connection holds on this lane. */
+  function connectionLaneSubscriptionCount(connectionId: string, laneId: string): number {
+    let count = 0;
+    for (const subscription of subscriptions.values()) {
+      if (subscription.connectionId === connectionId && subscription.laneId === laneId) count += 1;
+    }
+    for (const entry of pending.values()) {
+      if (entry.connectionId === connectionId && entry.laneId === laneId) count += 1;
+    }
+    return count;
+  }
 
   const eventUnsubscribe = deps.subscribeEvents?.((event) => {
     if (event.type === "display-destroyed") {
@@ -248,12 +325,24 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
       data: payload.toString("base64"),
     };
     subscription.seq += 1;
+    let delivered = true;
     try {
-      subscription.sink.sendRecord(record);
+      // The sync host's `send` returns false at its 4 MiB backpressure gate
+      // instead of throwing. A refused record is lost but its `seq` is spent,
+      // so the next delivered record carries the gap; the flag makes sure the
+      // first one after that is a keyframe.
+      delivered = subscription.sink.sendRecord(record) !== false;
     } catch (error) {
       // A throwing sink is a dead transport. End without notifying it.
       endSubscription(subscription, "error", error instanceof Error ? error.message : String(error), { notify: false });
+      return;
     }
+    if (!delivered) {
+      subscription.droppingFrames = true;
+      subscription.droppedFrames += 1;
+      return;
+    }
+    noteActivity(subscription.laneId);
   }
 
   return {
@@ -268,14 +357,32 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
       const subscriptionId = args.subscriptionId?.trim();
       if (!laneId) throw new Error("macDesktop.streamSubscribe requires laneId.");
       if (!subscriptionId) throw new Error("macDesktop.streamSubscribe requires subscriptionId.");
+      if (subscriptionId.length > MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTION_ID_LENGTH) {
+        throw new MacDesktopSyncStreamError(
+          MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG_CODE,
+          `macDesktop.streamSubscribe subscriptionId is limited to `
+            + `${MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTION_ID_LENGTH} characters.`,
+        );
+      }
       const existing = subscriptions.get(subscriptionId);
       if (existing) {
         if (existing.connectionId === args.connectionId) return existing.result;
         endSubscription(existing, "connection_closed", undefined, { notify: false });
       }
+      if (
+        connectionLaneSubscriptionCount(args.connectionId, laneId)
+        >= MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE
+      ) {
+        throw new MacDesktopSyncStreamError(
+          MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT_CODE,
+          `macDesktop.streamSubscribe allows `
+            + `${MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE} live subscriptions `
+            + "per connection per lane.",
+        );
+      }
       const sink = args.sink;
       if (!sink) throw new Error("macDesktop.streamSubscribe requires a live sync connection.");
-      pending.set(subscriptionId, args.connectionId);
+      pending.set(subscriptionId, { connectionId: args.connectionId, laneId });
       let started: MacDesktopSyncStreamStarted;
       try {
         started = await deps.startStream({ laneId, ownerId: subscriptionId });
@@ -299,6 +406,7 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
         releaseOwner(subscriptionId);
         return result;
       }
+      noteActivity(laneId, true);
       const subscription: Subscription = {
         subscriptionId,
         laneId,
@@ -360,8 +468,8 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
 
     /** Every subscription this sync connection owns is gone. */
     releaseConnection(connectionId: string): void {
-      for (const [id, ownerConnectionId] of [...pending]) {
-        if (ownerConnectionId !== connectionId) continue;
+      for (const [id, owner] of [...pending]) {
+        if (owner.connectionId !== connectionId) continue;
         cancelled.add(id);
       }
       for (const subscription of [...subscriptions.values()]) {
@@ -388,6 +496,7 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
       }
       pending.clear();
       cancelled.clear();
+      lastActivityNotedAtMs.clear();
       eventUnsubscribe?.();
     },
   };
@@ -400,6 +509,11 @@ export type MacDesktopSyncStream = ReturnType<typeof createMacDesktopSyncStream>
  * stream server treats it exactly like a desktop reader — its own upstream TCP
  * connection, its own config record, and a forced keyframe — so the brain does
  * not need a second framing path.
+ *
+ * The request is dispatched here, after every handler is wired: `http.request`
+ * only builds the request object. Without `end()` nothing is written to the
+ * socket, the server never answers, and the reader sits silent forever — which
+ * is exactly how the brain's first live view behaved.
  */
 export function openLoopbackReader(url: string): MacDesktopSyncStreamReader {
   let chunkHandler: ((chunk: Buffer) => void) | null = null;
@@ -433,6 +547,11 @@ export function openLoopbackReader(url: string): MacDesktopSyncStreamReader {
   });
   request.on("error", (error: Error) => settleError(error.message));
   request.on("close", settleEnd);
+  // Dispatch now that the response path is wired. Nothing can be delivered
+  // before the caller registers its handlers: both the response callback and
+  // every socket event are asynchronous, so the same-turn registration in
+  // `subscribe` always wins the race.
+  request.end();
 
   return {
     onChunk(callback) {
@@ -446,8 +565,10 @@ export function openLoopbackReader(url: string): MacDesktopSyncStreamReader {
     },
     close() {
       if (settled) return;
-      settled = true;
       request.destroy();
+      // The request's own close event is asynchronous, so this guard still
+      // lands first: an explicit close never doubles as an end notification.
+      settled = true;
     },
   };
 }

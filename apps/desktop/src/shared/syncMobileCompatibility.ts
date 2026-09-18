@@ -92,16 +92,26 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // aggregator at all.
   "workTools.getLaneState",
   "workTools.readObservationPreview",
-  // Live Mac Desktop view over the sync socket. `getStatus` and the two
-  // stream-subscription calls are read-only; `start`/`stop` are the hosted web
-  // client's controls (the phone is view-only). Optional because a host with
-  // no Mac Desktop service — or a chat-only runtime — registers none of them,
-  // and clients then keep the still-image fallback.
+  // Mac Desktop over the sync socket. `getStatus` and the two
+  // stream-subscription calls are read-only and viewer-allowed; `start`/`stop`
+  // create and destroy a host display, so they are controller-only like the
+  // takeover calls below (the phone is view-only and calls none of them).
+  // Optional because a host with no Mac Desktop service — or a chat-only
+  // runtime — registers none of them, and clients then keep the still-image
+  // fallback.
   "macDesktop.getStatus",
   "macDesktop.start",
   "macDesktop.stop",
   "macDesktop.streamSubscribe",
   "macDesktop.streamUnsubscribe",
+  // Web takeover. Controller-only (never viewer-allowed), and advertised as
+  // optional so a phone on an older build — or the phone at all, which is
+  // view-only by product decision — simply never calls them. A host with no
+  // Mac Desktop service registers none of them.
+  "macDesktop.takeControl",
+  "macDesktop.returnControl",
+  "macDesktop.renewLease",
+  "macDesktop.input",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

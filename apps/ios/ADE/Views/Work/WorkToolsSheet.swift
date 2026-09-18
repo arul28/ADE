@@ -504,6 +504,9 @@ struct WorkToolsSheet: View {
     guard !Task.isCancelled else { return }
     state = next
     loaded = true
+    // `stopped` ends the subscription but leaves the session mounted; the
+    // next poll is where "the display is running again" is noticed.
+    retryStoppedLiveSessionIfNeeded()
     await loadFrameIfNeeded()
     // While a live session is mounted the card's still is not polled: the
     // picture arrives on the socket and the one-shot placeholder loaded at
@@ -656,7 +659,7 @@ struct WorkToolsSheet: View {
     let session = MacDesktopLiveSession(
       laneId: laneId,
       subscriptionId: "ios-\(syncService.deviceId)-mac-desktop-\(laneId)",
-      viewerLabel: UIDevice.current.name
+      viewerLabel: MacDesktopLiveSession.defaultViewerLabel()
     )
     syncService.registerMacDesktopStream(
       subscriptionId: session.subscriptionId,
@@ -673,6 +676,21 @@ struct WorkToolsSheet: View {
     guard let session = liveSession else { return }
     session.stop(using: syncService)
     liveSession = nil
+  }
+
+  /// A `stopped` stream is the encoder pausing — no viewers left, or an
+  /// explicit stop — not the subscription dying. The session stays mounted on
+  /// "The stream stopped."; when the lane's display later reports running
+  /// again (the desktop restarted the encoder), re-attach instead of waiting
+  /// for the sheet to be reopened.
+  private func retryStoppedLiveSessionIfNeeded() {
+    guard let session = liveSession else { return }
+    guard case .ended(let reason, _) = session.phase, reason == "stopped" else { return }
+    guard isLiveCapable,
+          scenePhase == .active,
+          syncService.connectionState == .connected
+    else { return }
+    Task { await session.start(using: syncService) }
   }
 
   /// Ceiling on a decoded observation frame. These are desktop-resolution PNG

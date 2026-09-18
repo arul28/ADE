@@ -988,6 +988,17 @@ export class AdeSyncClient {
       .some((descriptor) => descriptor.action === "macDesktop.streamSubscribe");
   }
 
+  /**
+   * Both halves of web takeover: the hello feature bit and the takeControl
+   * command the pane is about to invoke. Either one missing keeps the
+   * watch-only pane and its "control from the desktop" line.
+   */
+  supportsMacDesktopControl(): boolean {
+    if (this.latestHello?.features.macDesktopControl !== true) return false;
+    return (this.latestHello.features.commandRouting?.actions ?? [])
+      .some((descriptor) => descriptor.action === "macDesktop.takeControl");
+  }
+
   onProjectCatalog(listener: (payload: SyncProjectCatalogPayload) => void): () => void {
     return this.on("projectCatalog", listener);
   }

@@ -4535,4 +4535,52 @@ describe("browser sync connection and client", () => {
     expect(client.supportsMacDesktopStream()).toBe(false);
     client.dispose();
   });
+
+  it("gates web takeover on both hello halves", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const macHello = helloOk();
+    macHello.features = {
+      ...macHello.features,
+      macDesktopControl: true,
+      commandRouting: {
+        mode: "allowlisted",
+        supportedActions: ["macDesktop.takeControl"],
+        actions: [
+          {
+            action: "macDesktop.takeControl",
+            scope: "project",
+            policy: { viewerAllowed: false, controllerAllowed: true },
+          },
+        ],
+      },
+    };
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: macHello });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    await client.connect(environment.envId, signedInRelayAccess);
+
+    expect(client.supportsMacDesktopControl()).toBe(true);
+    client.dispose();
+  });
+
+  it("keeps the watch-only path for a host that predates the control bit", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    await client.connect(environment.envId, signedInRelayAccess);
+
+    // `helloOk()` advertises neither the bit nor the command, and either half
+    // missing must leave the read-only wording and no control affordance.
+    expect(client.supportsMacDesktopControl()).toBe(false);
+    client.dispose();
+  });
 });

@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
+import { WORK_TOOL_READ_ONLY_POLL_MS, WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 import type { WorkToolsLaneState, WorkToolsMacDesktopState } from "../../../shared/types/workTools";
 
 const DATA_URL = "data:image/png;base64,AAAA";
@@ -129,6 +129,7 @@ describe("WorkToolReadOnlyView", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     delete (globalThis as unknown as { VideoDecoder?: unknown }).VideoDecoder;
     delete (globalThis as unknown as { EncodedVideoChunk?: unknown }).EncodedVideoChunk;
@@ -345,5 +346,217 @@ describe("WorkToolReadOnlyView", () => {
     expect(screen.queryByRole("button", { name: "Start desktop" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(stop).toHaveBeenCalledWith({ laneId: "lane-1" }));
+  });
+
+  /* ── Web takeover ─────────────────────────────────────────────────────── */
+
+  const USER_LEASE = {
+    laneId: "lane-1",
+    holder: "user" as const,
+    holderId: "web:conn-1:tab-token-1",
+    holderLabel: "ADE Web",
+    grantedAt: "2026-09-18T10:00:00.000Z",
+    expiresAt: "2026-09-18T10:01:00.000Z",
+  };
+
+  function controlApi(overrides: Record<string, unknown> = {}) {
+    return {
+      ...liveApi({ supportsLiveStream: () => false }),
+      supportsMacDesktopControl: () => true,
+      takeControl: vi.fn(async (_args: { laneId: string; controllerId: string; controllerLabel?: string }) => USER_LEASE),
+      returnControl: vi.fn(async (_args: { laneId: string; controllerId: string }) => null),
+      renewLease: vi.fn(async (_args: { laneId: string; controllerId: string }) => USER_LEASE),
+      input: vi.fn(async (_args: { laneId: string; call: unknown }) => ({
+        ok: true,
+        action: "click",
+        mode: "real",
+        silent: true,
+        resolved: null,
+        observation: null,
+        trace: null,
+      })),
+      ...overrides,
+    };
+  }
+
+  // jsdom has no PointerEvent, so testing-library would fall back to a plain
+  // Event and drop clientX/clientY. A MouseEvent subclass restores them.
+  beforeEach(() => {
+    (window as unknown as { PointerEvent?: unknown }).PointerEvent = class PointerEvent extends MouseEvent {};
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { PointerEvent?: unknown }).PointerEvent;
+  });
+
+  it("keeps the watch-only wording and no control when the host has not advertised takeover", async () => {
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => null),
+      },
+      {
+        ...liveApi({ supportsLiveStream: () => false }),
+        supportsMacDesktopControl: () => false,
+        takeControl: vi.fn(async () => USER_LEASE),
+      },
+    );
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+
+    expect(await screen.findByText("Control from the desktop")).toBeTruthy();
+    expect(screen.queryByTestId("mac-desktop-web-takeover")).toBeNull();
+  });
+
+  it("takes control, shows the strip state, and heartbeats the lease", async () => {
+    const api = controlApi();
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => null),
+      },
+      api,
+    );
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+
+    // The affordance and the hint change together: the host advertised both
+    // halves, so the pane must not still claim control is elsewhere.
+    const takeButton = await screen.findByTestId("mac-desktop-web-takeover");
+    expect(screen.getByText("Take control here, or watch from the desktop")).toBeTruthy();
+
+    // Fake timers only after the initial load: `findBy` drives its own clock.
+    vi.useFakeTimers();
+    fireEvent.click(takeButton);
+    await act(async () => {});
+
+    expect(api.takeControl).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      controllerId: expect.any(String),
+      controllerLabel: "ADE Web",
+    });
+    expect(screen.getByTestId("mac-desktop-web-takeover-banner")).toBeTruthy();
+    expect(screen.getByText("You have control")).toBeTruthy();
+    expect(screen.getByText("Return to agent")).toBeTruthy();
+    expect(screen.getByText("You have control.")).toBeTruthy();
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(api.renewLease).toHaveBeenCalledTimes(1);
+    expect(api.renewLease).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      controllerId: api.takeControl.mock.calls[0]?.[0]?.controllerId,
+    });
+  });
+
+  it("returns control when the tab goes hidden", async () => {
+    const api = controlApi();
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => null),
+      },
+      api,
+    );
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    fireEvent.click(await screen.findByTestId("mac-desktop-web-takeover"));
+    await act(async () => {});
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    try {
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await waitFor(() => expect(api.returnControl).toHaveBeenCalledTimes(1));
+      expect(api.returnControl).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        controllerId: api.takeControl.mock.calls[0]?.[0]?.controllerId,
+      });
+      expect(screen.queryByTestId("mac-desktop-web-takeover-banner")).toBeNull();
+    } finally {
+      delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    }
+  });
+
+  it("shows a Control ended line when the polled lease changes holder", async () => {
+    // Fake timers from the start, so the pane's poll interval is a fake one
+    // this test can advance instead of waiting four real seconds.
+    vi.useFakeTimers();
+    const api = controlApi();
+    const getLaneState = vi.fn(async () => laneState({
+      capturedAt: new Date().toISOString(),
+      macDesktop: macDesktopState({
+        lease: { ...USER_LEASE, holderId: "web:conn-2:someone-else" },
+      }),
+    }));
+    installAde({ getLaneState, readObservationPreview: vi.fn(async () => null) }, api);
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    await act(async () => {});
+    const takeButton = screen.getByTestId("mac-desktop-web-takeover");
+    fireEvent.click(takeButton);
+    await act(async () => {});
+    // The state on the screen was read before this tab took control, so it is
+    // not evidence that control ended. The next poll is.
+    expect(screen.queryByTestId("mac-desktop-web-control-notice")).toBeNull();
+
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_TOOL_READ_ONLY_POLL_MS);
+    });
+    expect(screen.getByTestId("mac-desktop-web-control-notice").textContent).toContain("Control ended");
+    expect(screen.queryByTestId("mac-desktop-web-takeover-banner")).toBeNull();
+  });
+
+  it("maps pointer coordinates through the picture's letterbox", async () => {
+    const api = controlApi();
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => null),
+      },
+      api,
+    );
+    // jsdom has no layout: give the pane a 1000x1000 box and let the shared
+    // geometry place the 2560x1440 picture inside it (562.5px tall, centered).
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 1000,
+      height: 1000,
+      right: 1000,
+      bottom: 1000,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    (Element.prototype as unknown as { setPointerCapture: () => void }).setPointerCapture = vi.fn();
+    (Element.prototype as unknown as { releasePointerCapture: () => void }).releasePointerCapture = vi.fn();
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    fireEvent.click(await screen.findByTestId("mac-desktop-web-takeover"));
+    await act(async () => {});
+
+    const surface = screen.getByTestId("mac-desktop-web-surface");
+    fireEvent.pointerDown(surface, { clientX: 500, clientY: 500, pointerId: 7, button: 0 });
+    fireEvent.pointerUp(surface, { clientX: 500, clientY: 500, pointerId: 7, button: 0, detail: 1 });
+
+    await waitFor(() => expect(api.input).toHaveBeenCalledTimes(1));
+    expect(api.input).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      call: {
+        kind: "click",
+        args: expect.objectContaining({
+          laneId: "lane-1",
+          x: 1280,
+          y: 720,
+          silent: true,
+        }),
+      },
+    });
   });
 });

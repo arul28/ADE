@@ -9,7 +9,11 @@
  * private macOS display, and the last frame any of them captured.
  *
  * So iOS and the hosted web client render this shape and nothing else. There is
- * no control surface here on purpose; see `WORK_TOOLS_CONTROL_HINT`.
+ * no control surface here on purpose; see `WORK_TOOLS_CONTROL_HINT`. The one
+ * exception is web Mac Desktop takeover, which is negotiated separately over
+ * the sync socket (`macDesktop.takeControl` and friends) and is announced by
+ * `hello_ok.features.macDesktopControl`; this state shape still carries only
+ * the description either way.
  */
 
 import type {
@@ -45,6 +49,17 @@ export function isWorkToolId(value: unknown): value is WorkToolId {
 
 /** Shown wherever a read-only client renders a tool it cannot drive. */
 export const WORK_TOOLS_CONTROL_HINT = "Control from the desktop";
+
+/**
+ * The Mac Desktop pane's variant when the host advertises web takeover.
+ *
+ * The pane carries a real Take control affordance in that case, so the
+ * watch-only sentence would be a lie about the button right above it. Kept as a
+ * second constant rather than a parameter on the first so the three surfaces
+ * that render the read-only hint keep one string, and only the Mac Desktop pane
+ * — the one with a capability check to read — picks between them.
+ */
+export const WORK_TOOLS_MAC_DESKTOP_CONTROL_HINT = "Take control here, or watch from the desktop";
 
 /** Empty state when this machine has no desktop attached at all. */
 export const WORK_TOOLS_NO_DESKTOP_MESSAGE =

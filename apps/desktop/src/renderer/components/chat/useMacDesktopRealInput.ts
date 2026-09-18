@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -9,13 +9,14 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type {
   MacDesktopClickArgs,
   MacDesktopDragArgs,
+  MacDesktopInputResult,
   MacDesktopMoveArgs,
   MacDesktopPressArgs,
   MacDesktopScrollArgs,
   MacDesktopTypeArgs,
 } from "../../../shared/types/macDesktop";
 import { macDesktopApi } from "./macDesktopApi";
-import { macDesktopErrorText } from "./macDesktopErrorText";
+import { macDesktopErrorText, type MacDesktopErrorTextOptions } from "./macDesktopErrorText";
 import {
   createMacDesktopTakeoverCursorFeed,
   type MacDesktopTakeoverCursorFeed,
@@ -291,9 +292,12 @@ export function createMacDesktopMovePump(options: {
 }
 
 /** The one line the strip shows when the host refuses a forwarded event. */
-export function macDesktopInputRefusal(error: unknown): string {
+export function macDesktopInputRefusal(
+  error: unknown,
+  options?: MacDesktopErrorTextOptions,
+): string {
   const message = error instanceof Error ? error.message : String(error);
-  const peeled = macDesktopErrorText(message);
+  const peeled = macDesktopErrorText(message, options);
   return `Input refused: ${peeled || "unknown error"}`;
 }
 
@@ -312,6 +316,33 @@ export type UseMacDesktopRealInput = {
   clearInputError: () => void;
 };
 
+/**
+ * Where a forwarded call goes.
+ *
+ * The desktop panel leaves this unset and the hook dispatches through
+ * `macDesktopApi()` exactly as it always has. The hosted web client injects
+ * the sync action instead, which is what makes this hook usable off Electron:
+ * everything above the call — the gesture translation, the coalescing, the
+ * keyboard rules, the cursor feed — is the same code on both surfaces.
+ */
+export type MacDesktopInputSender = (
+  call: MacDesktopInputCall,
+) => Promise<MacDesktopInputResult | null>;
+
+/** The desktop's dispatch, unchanged, as the hook's default sender. */
+function sendMacDesktopInputCall(
+  call: MacDesktopInputCall,
+  runtimePin: OpenProjectBinding | null,
+): Promise<MacDesktopInputResult> {
+  const api = macDesktopApi();
+  return call.kind === "move" ? api.move(call.args, runtimePin)
+    : call.kind === "click" ? api.click(call.args, runtimePin)
+    : call.kind === "drag" ? api.drag(call.args, runtimePin)
+    : call.kind === "scroll" ? api.scroll(call.args, runtimePin)
+    : call.kind === "type" ? api.type(call.args, runtimePin)
+    : api.press(call.args, runtimePin);
+}
+
 export function useMacDesktopRealInput(args: {
   laneId: string;
   sessionId: string | null;
@@ -320,8 +351,30 @@ export function useMacDesktopRealInput(args: {
   enabled: boolean;
   toDisplayPoint: (clientX: number, clientY: number) => MacDesktopPoint | null;
   runtimePin: OpenProjectBinding | null;
+  /** Injected transport. See {@link MacDesktopInputSender}. */
+  sender?: MacDesktopInputSender | null;
+  /**
+   * Forward throttled pointer moves.
+   *
+   * Off for the desktop, deliberately: a hover `CGEvent` teleports the one
+   * system cursor onto the virtual display, and a 60 Hz warp+post flood stalls
+   * ScreenCaptureKit — the desktop draws a local glyph instead. A remote
+   * controller is a different trade: the pointer in the picture has to track
+   * something, so the web opts in and the pump below (one call per frame,
+   * latest position only) is what keeps it from becoming a flood.
+   */
+  forwardPointerMoves?: boolean;
 }): UseMacDesktopRealInput {
-  const { controllerId, enabled, laneId, runtimePin, sessionId, toDisplayPoint } = args;
+  const {
+    controllerId,
+    enabled,
+    forwardPointerMoves = false,
+    laneId,
+    runtimePin,
+    sender,
+    sessionId,
+    toDisplayPoint,
+  } = args;
   const dragStartRef = useRef<MacDesktopPoint | null>(null);
   const loggedRef = useRef<string | null>(null);
   const [inputError, setInputError] = useState<string | null>(null);
@@ -333,17 +386,11 @@ export function useMacDesktopRealInput(args: {
   const cursorFeed = cursorFeedRef.current;
 
   const send = useCallback((call: MacDesktopInputCall) => {
-    const api = macDesktopApi();
-    const pending = call.kind === "move" ? api.move(call.args, runtimePin)
-      : call.kind === "click" ? api.click(call.args, runtimePin)
-      : call.kind === "drag" ? api.drag(call.args, runtimePin)
-      : call.kind === "scroll" ? api.scroll(call.args, runtimePin)
-      : call.kind === "type" ? api.type(call.args, runtimePin)
-      : api.press(call.args, runtimePin);
+    const pending = sender ? sender(call) : sendMacDesktopInputCall(call, runtimePin);
     void pending.then(
       () => setInputError(null),
       (caught: unknown) => {
-        const line = macDesktopInputRefusal(caught);
+        const line = macDesktopInputRefusal(caught, { laneId });
         setInputError(line);
         // Once per distinct refusal: a held key against a lost lease would
         // otherwise write a log line per repeat.
@@ -353,18 +400,46 @@ export function useMacDesktopRealInput(args: {
         }
       },
     );
-  }, [laneId, runtimePin]);
+  }, [laneId, runtimePin, sender]);
+
+  // The pump is built once and lives for the hook's life, while `send` is
+  // rebuilt whenever the transport changes. Read through refs so the pump never
+  // holds a sender bound to a connection that has since moved.
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const contextRef = useRef({ laneId, sessionId, controllerId });
+  contextRef.current = { laneId, sessionId, controllerId };
+  const movePumpRef = useRef<MacDesktopMovePump | null>(null);
+  if (!movePumpRef.current) {
+    movePumpRef.current = createMacDesktopMovePump({
+      send: (point) => {
+        const context = contextRef.current;
+        sendRef.current(macDesktopMoveCall(
+          { laneId: context.laneId, chatSessionId: context.sessionId, controllerId: context.controllerId },
+          point,
+        ));
+      },
+    });
+  }
+  useEffect(() => {
+    // A pending move posted after the gesture (or the takeover) ended would
+    // move the lane's pointer from a view nobody is driving.
+    if (!enabled || !forwardPointerMoves) movePumpRef.current?.stop();
+  }, [enabled, forwardPointerMoves]);
+  useEffect(() => () => movePumpRef.current?.stop(), []);
 
   const onPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!enabled) return;
     const point = toDisplayPoint(event.clientX, event.clientY);
     // The local glyph is the pointer the person sees. Hover `CGEvent`s are
-    // not sent: each one teleports the one system cursor onto the virtual
-    // display (and a 60Hz flood of warp+post stalls the capture). Clicks,
-    // drags, scrolls and keys still go through. A letterbox hit does not
-    // hide the glyph — that is what made the yellow arrow vanish.
+    // not sent by the desktop: each one teleports the one system cursor onto
+    // the virtual display (and a 60Hz flood of warp+post stalls the capture).
+    // Clicks, drags, scrolls and keys still go through. A letterbox hit does
+    // not hide the glyph — that is what made the yellow arrow vanish.
     if (point) cursorFeed.publish(point);
-  }, [cursorFeed, enabled, toDisplayPoint]);
+    if (!point || !forwardPointerMoves) return;
+    movePumpRef.current?.push(point);
+  }, [cursorFeed, enabled, forwardPointerMoves, toDisplayPoint]);
 
   const onPointerLeave = useCallback(() => {
     // The system cursor may leave this element for the length of a posted
@@ -376,8 +451,15 @@ export function useMacDesktopRealInput(args: {
     event.currentTarget.focus({ preventScroll: true });
     // Restore-after-post warps the system cursor off this element for a beat
     // and would otherwise cancel the gesture before `pointerup`. Capture keeps
-    // the click/drag on this target through that warp.
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // the click/drag on this target through that warp. A host where capture is
+    // unavailable (or refuses the pointer id) must not drop the gesture: the
+    // click is still sent from `pointerup`, with no press point to compare
+    // against so it reads as a click rather than a drag.
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Capture failed; continue with the gesture.
+    }
     dragStartRef.current = toDisplayPoint(event.clientX, event.clientY);
   }, [enabled, toDisplayPoint]);
 

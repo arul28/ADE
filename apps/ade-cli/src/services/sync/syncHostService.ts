@@ -1637,6 +1637,13 @@ export function buildSyncHostHelloOkPayload(args: {
    */
   macDesktopStreamEnabled?: boolean;
   /**
+   * Advertise the web takeover contract. Set only when the command registry
+   * serves `macDesktop.takeControl`, same rule as `macDesktopStreamEnabled`: a
+   * client that reads the bit and mounts the control affordance must be able
+   * to invoke the command. The phone ignores it.
+   */
+  macDesktopControlEnabled?: boolean;
+  /**
    * Whether this peer is authorized to use the paired runtime RPC channel and
    * loopback port-forwarding (paired AND a desktop runtime-host). Defaults to
    * false so non-desktop paired devices (phones/browsers) never see the
@@ -1704,6 +1711,11 @@ export function buildSyncHostHelloOkPayload(args: {
       ...(args.macDesktopStreamEnabled
         ? {
             macDesktopStream: true as const,
+          }
+        : {}),
+      ...(args.macDesktopControlEnabled
+        ? {
+            macDesktopControl: true as const,
           }
         : {}),
       ...(isInvalidationOnlyBrowserPeer(args.peer)
@@ -2270,6 +2282,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           },
           releaseOwner: (ownerId) => macDesktopService.releaseStreamSubscription(ownerId),
           subscribeEvents: (listener) => macDesktopService.subscribe(listener),
+          noteActivity: (laneId) => macDesktopService.noteStreamActivity(laneId),
         })
       : null);
   const remoteCommandService = args.remoteCommandService ?? createSyncRemoteCommandService({
@@ -2349,6 +2362,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const macDesktopStreamEnabled = remoteCommandService
     .getSupportedActions()
     .includes("macDesktop.streamSubscribe");
+  // The control contract is advertised on its own command, not on the stream's:
+  // a host serves control whenever it serves the takeover commands, whether or
+  // not it also built the stream fan-out.
+  const macDesktopControlEnabled = remoteCommandService
+    .getSupportedActions()
+    .includes("macDesktop.takeControl");
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));
   const backpressureTimeoutMs = Math.max(heartbeatIntervalMs * 3, 10_000);
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
@@ -3677,6 +3696,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Every Mac Desktop viewer this socket owned is gone. The release stops
       // the encoder when the set empties, same as a closing chat.
       macDesktopSyncStream?.releaseConnection(peer.macDesktopConnectionId);
+      // A socket that was driving a lane's display gives the input lease back
+      // now rather than at the TTL. Fire and forget: the lease's own deadline
+      // is still the guarantee, and a return that loses a race with a new
+      // controller simply does not match. The command service holds this
+      // bookkeeping because the derived holder id never leaves the brain.
+      // Optional call because an embedding may inject a service built before
+      // this method existed; the TTL still covers that host.
+      remoteCommandService.releaseMacDesktopConnection?.(peer.macDesktopConnectionId);
       if (peer.rosterSubscribed && rosterSubscriberPeers().length === 0) {
         stopRosterSafetyPoll();
         clearRosterFlushTimers();
@@ -6646,14 +6673,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const stopTrackingCommand = trackBrainLoopWatchdogCommand(payload.action);
       // Only the Mac Desktop stream methods read the sink, and a subscription
       // outlives the command that created it, so the sink closes over the peer
-      // rather than the command's own reply path.
+      // rather than the command's own reply path. Every `macDesktop.*` command
+      // also gets the connection id, which the takeover handlers derive the
+      // lease's controller id from — the stream fan-out is not a requirement
+      // for control, so the id is passed independently of the sink.
+      const macDesktopConnectionId =
+        peer.authenticated && payload.action.startsWith("macDesktop.")
+          ? peer.macDesktopConnectionId
+          : undefined;
       const macDesktopStreamSink: MacDesktopSyncStreamSink | undefined =
-        macDesktopSyncStream && peer.authenticated && payload.action.startsWith("macDesktop.")
+        macDesktopSyncStream && macDesktopConnectionId
           ? {
-              connectionId: peer.macDesktopConnectionId,
-              sendRecord: (record) => {
-                send(peer, "macDesktop.streamRecord", record);
-              },
+              connectionId: macDesktopConnectionId,
+              // Hand the transport's own answer back: `send` refuses once the
+              // socket is over its 4 MiB gate, and the fan-out must then skip
+              // the picture to the next keyframe instead of pretending the
+              // record went out.
+              sendRecord: (record) => send(peer, "macDesktop.streamRecord", record),
               sendEnded: (ended) => {
                 send(peer, "macDesktop.streamEnded", ended);
               },
@@ -6666,6 +6702,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           ? { accepted: false, reason: "disabled" }
           : await executor.execute(routedPayload, {
               signal,
+              ...(macDesktopConnectionId ? { connectionId: macDesktopConnectionId } : {}),
               ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
             });
       } finally {
@@ -7907,6 +7944,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         terminalInputAckEnabled: true,
         attachmentUploadEnabled,
         macDesktopStreamEnabled,
+        macDesktopControlEnabled,
         // Runtime RPC channel + port-forward are desktop-runtime-host only,
         // even after successful pairing (phones/browsers stay on the mobile
         // command allowlist).

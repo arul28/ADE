@@ -747,6 +747,10 @@ export function createSyncService(args: SyncServiceArgs) {
         },
         releaseOwner: (ownerId) => macDesktopService.releaseStreamSubscription(ownerId),
         subscribeEvents: (listener) => macDesktopService.subscribe(listener),
+        // A browser or phone that keeps receiving records is watching: count
+        // it as activity so the lane does not fall to the idle rate under a
+        // passive viewer.
+        noteActivity: (laneId) => macDesktopService.noteStreamActivity(laneId),
       })
     : null;
 

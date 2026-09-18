@@ -1,14 +1,26 @@
-import { describe, expect, it } from "vitest";
+/* @vitest-environment jsdom */
 
+import { act, cleanup, renderHook } from "@testing-library/react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { MacDesktopInputResult } from "../../../shared/types/macDesktop";
 import {
   MAC_DESKTOP_DRAG_SLOP_PX,
+  MAC_DESKTOP_MOVE_INTERVAL_MS,
   createMacDesktopMovePump,
   macDesktopInputRefusal,
   macDesktopKeyCall,
   macDesktopMoveCall,
   macDesktopPointerUpCall,
   macDesktopWheelCall,
+  useMacDesktopRealInput,
+  type MacDesktopInputCall,
   type MacDesktopInputContext,
+  type MacDesktopInputSender,
 } from "./useMacDesktopRealInput";
 
 const context: MacDesktopInputContext = {
@@ -169,6 +181,14 @@ describe("macDesktopInputRefusal", () => {
       new Error("Error invoking remote method 'ade.localRuntime.callAction': Error: invalid_argument: \"control\" is not a key this driver knows."),
     )).toBe("Input refused: \"control\" is not a key this driver knows.");
   });
+
+  it("takes the lane id out of a refusal when the caller names the lane", () => {
+    const laneId = "ab829725-4f40-4c1f-8582-091b500dd26a";
+    expect(macDesktopInputRefusal(
+      new Error(`MAC_DESKTOP_USER_HAS_CONTROL: Lane ${laneId} is controlled by someone else.`),
+      { laneId, laneName: "docs-fix" },
+    )).toBe("Input refused: Lane docs-fix is controlled by someone else.");
+  });
 });
 
 describe("macDesktopMoveCall", () => {
@@ -286,5 +306,190 @@ describe("createMacDesktopMovePump", () => {
     pump.stop();
     advance(1_000);
     expect(sent).toEqual([{ x: 1, y: 1 }]);
+  });
+});
+
+/* ── The injected sender: the same hook off Electron ─────────────────────── */
+
+const SILENT_RESULT: MacDesktopInputResult = {
+  ok: true,
+  action: "click",
+  mode: "real",
+  silent: true,
+  resolved: null,
+  observation: null,
+  trace: null,
+};
+
+function pointerEvent(
+  clientX: number,
+  clientY: number,
+  overrides: Record<string, unknown> = {},
+): ReactPointerEvent<HTMLDivElement> {
+  return {
+    clientX,
+    clientY,
+    button: 0,
+    detail: 1,
+    pointerId: 7,
+    currentTarget: { focus: vi.fn(), setPointerCapture: vi.fn() },
+    ...overrides,
+  } as unknown as ReactPointerEvent<HTMLDivElement>;
+}
+
+function keyEvent(
+  key: string,
+  overrides: Record<string, unknown> = {},
+): ReactKeyboardEvent<HTMLDivElement> {
+  return {
+    key,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    ctrlKey: false,
+    preventDefault: vi.fn(),
+    ...overrides,
+  } as unknown as ReactKeyboardEvent<HTMLDivElement>;
+}
+
+function renderInput(
+  sender: MacDesktopInputSender,
+  overrides: Partial<Parameters<typeof useMacDesktopRealInput>[0]> = {},
+) {
+  return renderHook(() => useMacDesktopRealInput({
+    laneId: "lane-1",
+    sessionId: null,
+    controllerId: "tab-token-1",
+    enabled: true,
+    toDisplayPoint: (x, y) => ({ x, y }),
+    runtimePin: null,
+    sender,
+    forwardPointerMoves: true,
+    ...overrides,
+  }));
+}
+
+describe("useMacDesktopRealInput with an injected sender", () => {
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("forwards a click through the sender with the controller token", async () => {
+    const sender = vi.fn(async (_call: MacDesktopInputCall) => SILENT_RESULT);
+    const { result } = renderInput(sender);
+
+    await act(async () => {
+      result.current.onPointerDown(pointerEvent(10, 11));
+      result.current.onPointerUp(pointerEvent(10, 11));
+    });
+
+    expect(sender).toHaveBeenCalledTimes(1);
+    expect(sender.mock.calls[0]![0]).toMatchObject({
+      kind: "click",
+      args: {
+        laneId: "lane-1",
+        x: 10,
+        y: 11,
+        mode: "real",
+        silent: true,
+        controllerId: "tab-token-1",
+      },
+    });
+  });
+
+  it("never sends a modifier-only key, the same rule as the desktop", () => {
+    const sender = vi.fn(async (_call: MacDesktopInputCall) => SILENT_RESULT);
+    const { result } = renderInput(sender);
+
+    act(() => {
+      result.current.onKeyDown(keyEvent("Shift", { shiftKey: true }));
+      result.current.onKeyDown(keyEvent("Meta", { metaKey: true }));
+    });
+
+    expect(sender).not.toHaveBeenCalled();
+  });
+
+  it("coalesces a burst of moves to one per frame, latest position only", async () => {
+    vi.useFakeTimers();
+    const sender = vi.fn(async (_call: MacDesktopInputCall) => SILENT_RESULT);
+    const { result } = renderInput(sender);
+
+    act(() => {
+      result.current.onPointerMove(pointerEvent(1, 1));
+    });
+    // The first move of a gesture goes immediately: that is the latency that
+    // shows at the start of a drag.
+    expect(sender).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      result.current.onPointerMove(pointerEvent(2, 2));
+      result.current.onPointerMove(pointerEvent(3, 3));
+    });
+    expect(sender).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(MAC_DESKTOP_MOVE_INTERVAL_MS + 1);
+    });
+    expect(sender).toHaveBeenCalledTimes(2);
+    expect(sender.mock.calls[1]![0]).toMatchObject({
+      kind: "move",
+      args: { laneId: "lane-1", x: 3, y: 3, silent: true, controllerId: "tab-token-1" },
+    });
+  });
+
+  it("does not forward moves when the caller has not opted in", () => {
+    const sender = vi.fn(async (_call: MacDesktopInputCall) => SILENT_RESULT);
+    const { result } = renderInput(sender, { forwardPointerMoves: false });
+
+    act(() => {
+      result.current.onPointerMove(pointerEvent(4, 4));
+    });
+
+    expect(sender).not.toHaveBeenCalled();
+    // The local glyph still follows the pointer; only the forwarded call is
+    // withheld, which is the desktop's behavior.
+    expect(result.current.cursorFeed.current).toEqual({ x: 4, y: 4 });
+  });
+
+  it("continues the gesture when the element refuses pointer capture", async () => {
+    // A CDP-synthesized click surfaced this: `setPointerCapture` threw on the
+    // synthetic pointer id, the press point was never recorded, and the whole
+    // gesture was dropped before `pointerup`. The click must still go through.
+    const sender = vi.fn(async (_call: MacDesktopInputCall) => SILENT_RESULT);
+    const { result } = renderInput(sender);
+    const capture = vi.fn(() => {
+      throw new Error("InvalidPointerId");
+    });
+
+    await act(async () => {
+      result.current.onPointerDown(pointerEvent(10, 11, {
+        currentTarget: { focus: vi.fn(), setPointerCapture: capture },
+      }));
+      result.current.onPointerUp(pointerEvent(12, 13));
+    });
+
+    expect(capture).toHaveBeenCalledWith(7);
+    expect(sender).toHaveBeenCalledTimes(1);
+    expect(sender.mock.calls[0]![0]).toMatchObject({
+      kind: "click",
+      args: { laneId: "lane-1", x: 12, y: 13, controllerId: "tab-token-1" },
+    });
+  });
+
+  it("surfaces a refusal on the strip error line, and clears it", async () => {
+    const sender = vi.fn(async (_call: MacDesktopInputCall) => {
+      throw new Error("MAC_DESKTOP_USER_HAS_CONTROL");
+    });
+    const { result } = renderInput(sender);
+
+    await act(async () => {
+      result.current.onPointerUp(pointerEvent(1, 2));
+    });
+    expect(result.current.inputError).toBe("Input refused: MAC_DESKTOP_USER_HAS_CONTROL");
+
+    act(() => { result.current.clearInputError(); });
+    expect(result.current.inputError).toBeNull();
   });
 });
