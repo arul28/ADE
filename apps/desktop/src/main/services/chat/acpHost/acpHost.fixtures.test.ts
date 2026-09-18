@@ -2,7 +2,9 @@
  * Dialect claims vs captured initialize responses from real binaries.
  *
  * These fixtures were recorded on 2026-08-31 against Copilot CLI 1.0.82
- * (ACP agent 1.0.4), Grok 1.0.13, Qwen Code 0.22.3, and Kimi Code 0.39.1.
+ * (ACP agent 1.0.4), Grok 1.0.13, Qwen Code 0.22.3, and the Kimi Code 0.39.1
+ * compatibility baseline. Kimi Code 2.0.0's current ACP reference is covered
+ * by the dialect contract assertions below.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -140,7 +142,7 @@ describe("captured initialize fixtures", () => {
     expect(qwenDialect.authProbe.methodId).toBe("openai");
   });
 
-  it("kimi 0.39.1 advertises close, login terminal-auth, and no usage", () => {
+  it("kimi 0.39.1 baseline advertises close, login terminal-auth, and no usage", () => {
     const init = loadFixture<AcpInitializeResponse>("kimi.initialize.json");
     expect(init.protocolVersion).toBe(1);
     expect(init.agentInfo?.version).toBe("0.39.1");
@@ -165,5 +167,7 @@ describe("captured initialize fixtures", () => {
     expect(kimiDialect.usageSource).toBe("none");
     expect(kimiDialect.authProbe.methodId).toBe("login");
     expect(kimiDialect.imagePrompts.declared).toBe(true);
+    expect(kimiDialect.sessionConfig.declared).toBe(true);
+    expect([...kimiDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
   });
 });

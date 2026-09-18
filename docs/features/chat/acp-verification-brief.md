@@ -69,8 +69,11 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   `~/.claude/settings.json` `defaultMode` leaks into Grok; confirm ADE defeats
   it. This is the single most important Grok check.
 - Grok: cancel must be a notification, not a request.
-- Kimi 0.39.1: `session/close` is advertised and implemented. Usage on the wire
-  is still unverified. Interactive TUI still has no argv prompt.
+- Kimi compatibility baseline 0.39.1: `session/close` is advertised and
+  implemented. Kimi Code 2.0.0's ACP reference also documents
+  `session/set_config_option` for mode/model/thinking, now enabled by ADE.
+  Usage on the wire is still unverified. Interactive TUI still has no argv
+  prompt.
 - Qwen 0.22.3: `--session-id` vs `--resume`/`--continue` and `--yolo` vs
   `--approval-mode` are parse errors. `session/close` is **not** implemented.
 - Copilot: `config.json` is JSONC; live 1.0.82 persists `trustedFolders`

@@ -54654,8 +54654,8 @@ describe("acp chat runtime", () => {
   });
 
   it("emits no usage for Kimi and says why once", async () => {
-    // Kimi 0.31.x reports nothing on the wire. Fabricating a zero would be a
-    // lie; saying nothing at all reads as a broken meter. So it says so.
+    // Kimi's ACP integration still has no verified usage payload. Fabricating
+    // a zero would be a lie; saying nothing at all reads as a broken meter.
     const harness = await openAcpHarness({
       provider: "kimi",
       model: "kimi-code/k3",

@@ -26791,8 +26791,9 @@ export function createAgentChatService(args: {
     mode: AgentChatAcpPermissionMode,
   ): boolean => {
     if (mode !== "yolo") return false;
-    // Qwen takes the whole posture through `session/set_config_option`, so the
-    // agent stops asking and there is nothing for ADE to auto-answer.
+    // Qwen and Kimi take the whole posture through
+    // `session/set_config_option`, so the agent stops asking and there is
+    // nothing for ADE to auto-answer.
     return !dialect.sessionConfig.declared;
   };
 
