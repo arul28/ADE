@@ -16048,6 +16048,8 @@ describe("createAgentChatService", () => {
       let warmupComplete = false;
       let turnDone: (() => void) | null = null;
       const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      let releaseTerminalNotification: (() => void) | null = null;
+      const terminalNotificationGate = new Promise<void>((resolve) => { releaseTerminalNotification = resolve; });
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const stream = vi.fn(() => (async function* () {
@@ -16100,6 +16102,7 @@ describe("createAgentChatService", () => {
           task_id: "wf-1",
           patch: { status: "completed" },
         };
+        await terminalNotificationGate;
         // Workflow ends while scan:db is still running.
         yield {
           type: "system",
@@ -16126,6 +16129,14 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
       const sendPromise = service.sendMessage({ sessionId: session.id, text: "Run the workflow." });
 
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result"
+          && (e.event as any).taskId === "wf-1::a1"
+          && (e.event as any).status === "stopped",
+      );
+      releaseTerminalNotification!();
       await waitForEvent(
         events,
         (e): e is AgentChatEventEnvelope =>
@@ -18759,6 +18770,72 @@ describe("createAgentChatService", () => {
         && (e.event as any).status === "stopped");
       expect(events.some((e) =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "task-B")).toBe(false);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("stops synthetic workflow agents when their parent task is stopped", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-stop-workflow", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "workflow-stop",
+          task_type: "local_workflow",
+          workflow_name: "stop-review",
+          description: "Run stop review",
+        };
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "workflow-stop",
+          task_type: "local_workflow",
+          workflow_name: "stop-review",
+          description: "Run stop review",
+          workflow_progress: [
+            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "stop:review" },
+          ],
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-stop-workflow", setPermissionMode, stopTask,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "start a workflow" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started" && (e.event as any).taskId === "workflow-stop::a0");
+
+      await expect(service.stopTask({ sessionId: session.id, taskId: "workflow-stop" }))
+        .resolves.toMatchObject({ stopped: true, taskId: "workflow-stop" });
+      expect(stopTask).toHaveBeenCalledWith("workflow-stop");
+      expect(events).toContainEqual(expect.objectContaining({
+        event: expect.objectContaining({
+          type: "subagent_result",
+          taskId: "workflow-stop::a0",
+          status: "stopped",
+          workflowName: "stop-review",
+        }),
+      }));
 
       hangResolve!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -25885,6 +25962,10 @@ describe("createAgentChatService", () => {
       let finishBackground!: () => void;
       const startBackgroundPromise = new Promise<void>((resolve) => { startBackground = resolve; });
       const finishBackgroundPromise = new Promise<void>((resolve) => { finishBackground = resolve; });
+      let releaseIdleWorkflowNotification!: () => void;
+      const idleWorkflowNotificationGate = new Promise<void>((resolve) => {
+        releaseIdleWorkflowNotification = resolve;
+      });
 
       const stream = vi.fn(() => (async function* () {
         streamCall += 1;
@@ -25986,6 +26067,7 @@ describe("createAgentChatService", () => {
           task_id: "idle-workflow-1",
           patch: { status: "completed" },
         };
+        await idleWorkflowNotificationGate;
         yield {
           type: "system",
           subtype: "task_notification",
@@ -26100,6 +26182,14 @@ describe("createAgentChatService", () => {
           && (event.event as any).taskId === "idle-workflow-1::a0",
       );
       expect((idleWorkflowAgentResult.event as any).status).toBe("stopped");
+      releaseIdleWorkflowNotification();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "subagent_result"
+          && (event.event as any).taskId === "idle-workflow-1",
+      );
       const idleWorkflowParentResult = events.find(
         (event) => event.sessionId === session.id
           && event.event.type === "subagent_result"

@@ -52,6 +52,11 @@ function readFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function readNonNegativeSafeInteger(value: unknown): number | undefined {
+  const number = readFiniteNumber(value);
+  return number !== undefined && Number.isSafeInteger(number) && number >= 0 ? number : undefined;
+}
+
 type RawAgentEntry = {
   index: number;
   state: string;
@@ -75,7 +80,7 @@ type RawAgentEntry = {
 };
 
 function normalizeAgentEntry(entry: Record<string, unknown>): RawAgentEntry | undefined {
-  const index = readFiniteNumber(entry.index);
+  const index = readNonNegativeSafeInteger(entry.index);
   const state = readString(entry.state);
   if (index === undefined || state === undefined) return undefined;
   const terminal = state === "done" || state === "error";
@@ -146,7 +151,7 @@ export function parseClaudeWorkflowProgress(
         break;
       }
       case "workflow_phase": {
-        const index = readFiniteNumber(entry.index);
+        const index = readNonNegativeSafeInteger(entry.index);
         const title = readClippedString(entry.title, MAX_PREVIEW_CHARS);
         if (index !== undefined && title !== undefined
           && (phasesByIndex.has(index) || phasesByIndex.size < MAX_PHASE_ENTRIES)) {

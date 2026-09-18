@@ -40,6 +40,22 @@ describe("parseClaudeWorkflowProgress", () => {
     expect(snapshot!.phases).toEqual([{ index: 0, title: "Scan" }]);
   });
 
+  it("drops fractional and unsafe indexes so synthetic lineage stays addressable", () => {
+    const snapshot = parseClaudeWorkflowProgress([
+      agentEntry({ index: 0.5 }),
+      agentEntry({ index: Number.MAX_SAFE_INTEGER + 1 }),
+      agentEntry({ index: 1, state: "done" }),
+      { type: "workflow_phase", index: 1.5, title: "Fractional" },
+      { type: "workflow_phase", index: Number.MAX_SAFE_INTEGER + 1, title: "Unsafe" },
+      { type: "workflow_phase", index: 0, title: "Valid" },
+    ], TASK_ID);
+
+    expect(snapshot).toMatchObject({
+      phases: [{ index: 0, title: "Valid" }],
+      agents: [expect.objectContaining({ index: 1, status: "completed" })],
+    });
+  });
+
   it("derives status and excludes queued agents while counting them", () => {
     const snapshot = parseClaudeWorkflowProgress([
       agentEntry({ index: 0, state: "start" , startedAt: undefined }), // queued

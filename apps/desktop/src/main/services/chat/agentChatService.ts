@@ -22868,6 +22868,11 @@ export function createAgentChatService(args: {
         ...(workflowProgress ? { workflowProgress } : {}),
         ...(model ? { model } : {}),
       });
+      closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+        workflowName,
+        turnId,
+        summary,
+      });
       return true;
     }
     if (status === "completed" || status === "failed" || status === "killed") {
@@ -22906,6 +22911,11 @@ export function createAgentChatService(args: {
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
         turnId,
+      });
+      closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+        workflowName,
+        turnId,
+        summary,
       });
       return true;
     }
@@ -24895,6 +24905,11 @@ export function createAgentChatService(args: {
               ...(workflowProgress ? { workflowProgress } : {}),
               ...(model ? { model } : {}),
             });
+            closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+              workflowName,
+              turnId,
+              summary,
+            });
             continue;
           }
           if (status === "completed" || status === "failed" || status === "killed") {
@@ -24933,6 +24948,11 @@ export function createAgentChatService(args: {
               ...(workflowName ? { workflowName } : {}),
               ...(workflowProgress ? { workflowProgress } : {}),
               turnId,
+            });
+            closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+              workflowName,
+              turnId,
+              summary,
             });
           } else {
             runtime.activeSubagents.set(taskId, {
@@ -29825,6 +29845,9 @@ export function createAgentChatService(args: {
     const tracked = runtime.workflowAgentsByTask.get(workflowTaskId);
     if (!tracked) return;
     runtime.workflowAgentsByTask.delete(workflowTaskId);
+    const terminalSummary = context.summary && !/^Status: (completed|failed|killed)$/.test(context.summary)
+      ? context.summary
+      : "Workflow ended before this agent finished.";
     for (const { agent, agentId } of drainRunningClaudeWorkflowAgents(tracked)) {
       emitClaudeSubagentResult(managed, runtime, {
         type: "subagent_result",
@@ -29833,8 +29856,8 @@ export function createAgentChatService(args: {
         ...(agent.agentType ? { agentType: agent.agentType } : {}),
         parentToolUseId: null,
         status: "stopped",
-        summary: context.summary ?? "Workflow ended before this agent finished.",
-        finalSummary: context.summary ?? "Workflow ended before this agent finished.",
+        summary: terminalSummary,
+        finalSummary: terminalSummary,
         taskType: "subagent",
         ...(context.workflowName ? { workflowName: context.workflowName } : {}),
         turnId: context.turnId,
@@ -29951,7 +29974,8 @@ export function createAgentChatService(args: {
     }
     const runtime = managed.runtime;
     const existing = runtime.activeSubagents.get(id);
-    if (!existing && !runtime.liveBackgroundTaskIds.has(id)) {
+    const ownsWorkflowTracker = runtime.workflowAgentsByTask.has(id);
+    if (!existing && !runtime.liveBackgroundTaskIds.has(id) && !ownsWorkflowTracker) {
       return { sessionId, taskId: id, stopped: false, reason: "That task is not running." };
     }
     const turnId = runtime.activeTurnId ?? undefined;
@@ -29984,6 +30008,11 @@ export function createAgentChatService(args: {
       };
     }
     const tracked = runtime.activeSubagents.get(id) ?? existing;
+    closeClaudeWorkflowAgentTracker(managed, runtime, id, {
+      workflowName: tracked?.workflowName,
+      turnId,
+      summary: "Stopped by user",
+    });
     if (tracked && isBackgroundShellCommand({
       taskType: tracked.taskType,
       agentType: tracked.agentType,

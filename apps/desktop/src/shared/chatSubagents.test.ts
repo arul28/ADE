@@ -78,6 +78,33 @@ describe("chat pane scalability helpers", () => {
     })).toBe(false);
   });
 
+  it("rejects fractional workflow indexes at the client boundary", () => {
+    const progress = {
+      phases: [{ index: 0, title: "Scan" }],
+      agents: [{
+        key: "agent-1",
+        index: 0,
+        name: "agent",
+        status: "running" as const,
+        summary: "Working",
+      }],
+      queuedCount: 0,
+      runningCount: 1,
+      doneCount: 0,
+      failedCount: 0,
+    };
+
+    expect(isAgentChatWorkflowProgress(progress)).toBe(true);
+    expect(isAgentChatWorkflowProgress({
+      ...progress,
+      phases: [{ index: 0.5, title: "Scan" }],
+    })).toBe(false);
+    expect(isAgentChatWorkflowProgress({
+      ...progress,
+      agents: [{ ...progress.agents[0], index: 0.5 }],
+    })).toBe(false);
+  });
+
   it("keeps a child active after its parent turn ends until the child emits a result", () => {
     const parentDoneEvents: AgentChatEventEnvelope[] = [
       {

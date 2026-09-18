@@ -83,6 +83,10 @@ function isFiniteNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 function isBoundedString(value: unknown): value is string {
   return typeof value === "string" && value.length <= AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS;
 }
@@ -91,7 +95,7 @@ function isWorkflowAgent(value: unknown): value is AgentChatWorkflowProgress["ag
   if (!isRecord(value)) return false;
   if (
     !isBoundedString(value.key)
-    || !isFiniteNonNegativeNumber(value.index)
+    || !isNonNegativeSafeInteger(value.index)
     || !isBoundedString(value.name)
     || (value.status !== "running" && value.status !== "completed" && value.status !== "failed" && value.status !== "stopped")
     || !isBoundedString(value.summary)
@@ -118,7 +122,7 @@ export function isAgentChatWorkflowProgress(value: unknown): value is AgentChatW
   if (!Array.isArray(value.agents) || value.agents.length > MAX_WORKFLOW_AGENT_ENTRIES) return false;
   if (!value.phases.every((phase) => (
     isRecord(phase)
-    && isFiniteNonNegativeNumber(phase.index)
+    && isNonNegativeSafeInteger(phase.index)
     && isBoundedString(phase.title)
   ))) return false;
   if (!value.agents.every(isWorkflowAgent)) return false;
