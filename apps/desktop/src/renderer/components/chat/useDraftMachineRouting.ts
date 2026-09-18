@@ -404,7 +404,13 @@ export function useDraftMachineRouting({
     if (!laneCatalogUnresolved) return;
     const timer = setTimeout(() => setLaneCatalogHoldExpired(true), LANE_CATALOG_HOLD_MS);
     return () => clearTimeout(timer);
-  }, [laneCatalogUnresolved]);
+    // `machineId` is a dependency even though it is already folded into
+    // `laneCatalogUnresolved`: switching straight from one UNREAD foreign
+    // machine to another leaves that boolean true, so without it the effect
+    // would not re-run and the first machine's expired hold would carry over —
+    // the second machine would read as unavailable immediately and never get
+    // its pull-forward read.
+  }, [laneCatalogUnresolved, machineId]);
   /**
    * True while a machine OTHER than the tab's own has been picked and we have
    * never read its lanes. The selection is held UNRESOLVED for that window

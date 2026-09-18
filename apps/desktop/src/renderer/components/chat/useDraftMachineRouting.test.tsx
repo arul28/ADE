@@ -213,6 +213,41 @@ describe("useDraftMachineRouting", () => {
     } as any;
   }
 
+  /**
+   * Same as `installRemoteBoundAde`, plus a second connected remote. Only the
+   * per-machine hold test needs two FOREIGN machines; the shared fixture stays
+   * at one so the other cases keep asserting their exact machine lists.
+   */
+  function installTwoForeignAde() {
+    installRemoteBoundAde();
+    (window.ade as any).remoteRuntime.getConnectionSnapshot = vi.fn().mockResolvedValue({
+      connectedCount: 2,
+      updatedAt: 1,
+      connections: [
+        {
+          state: "connected",
+          target: { id: "studio", name: "Arul's Mac Studio", hostname: "studio.local" },
+          projects: [{
+            projectId: "project-1",
+            rootPath: "/Volumes/work/project-under-test",
+            displayName: "project-under-test",
+            gitOriginUrl: REMOTE_ORIGIN,
+          }],
+        },
+        {
+          state: "connected",
+          target: { id: "mini", name: "Mac mini", hostname: "mini.local" },
+          projects: [{
+            projectId: "project-2",
+            rootPath: "/Volumes/work/project-under-test",
+            displayName: "project-under-test",
+            gitOriginUrl: REMOTE_ORIGIN,
+          }],
+        },
+      ],
+    });
+  }
+
   type RoutingProps = {
     crossMachineLanesByMachineId: Record<string, CrossMachineMachineLanes>;
     crossMachineLaneIntendedMachineIds?: readonly string[] | null;
@@ -574,6 +609,39 @@ describe("useDraftMachineRouting", () => {
           laneId: "studio-primary",
           crossMachineLaneIntendedMachineIds: ["target-studio", "this-mac"],
         });
+      });
+      expect(result.current.laneCatalogLoading).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives each foreign machine its own loading hold", async () => {
+    installTwoForeignAde();
+    const { result } = renderRemoteBoundRouting({
+      crossMachineLanesByMachineId: {},
+      laneId: "studio-primary",
+    });
+
+    await waitFor(() => expect(result.current.machineOptions).toHaveLength(3));
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        result.current.handleMachineChange("this-mac");
+      });
+      expect(result.current.laneCatalogLoading).toBe(true);
+
+      // Let the FIRST machine's hold lapse.
+      act(() => {
+        vi.advanceTimersByTime(13_000);
+      });
+      expect(result.current.laneCatalogLoading).toBe(false);
+
+      // Switching straight to another unread foreign machine must start a fresh
+      // hold. Both machines are unresolved, so the hold cannot key on that
+      // alone — the expiry belonged to the machine we just left.
+      act(() => {
+        result.current.handleMachineChange("mini");
       });
       expect(result.current.laneCatalogLoading).toBe(true);
     } finally {
