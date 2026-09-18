@@ -35,6 +35,7 @@ import type {
   ProjectConfigFile,
 } from "../../../shared/types";
 import { orchestrationLeadOpenCodeToolSelection } from "../../../shared/orchestrationRuntimePolicy";
+import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { stableStringify } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import type { PermissionMode } from "../ai/tools/universalTools";
@@ -199,11 +200,19 @@ function buildPermissionConfig(
       // means no prompts.
       read: "allow",
       task: "allow",
-      // external_directory is deliberately NOT stated here, and "ask" is what
-      // omitting it means. That boundary is ADE's lane worktree, not a
-      // permission tier the user picked — the same reason the system prompt
-      // confines edits to the lane. See the note on the edit ruleset below for
-      // why the key must be absent rather than spelled out.
+      // Full access means no prompts AT ALL — including for a path outside the
+      // lane worktree. Never stating this key (the rule for every other ADE
+      // ruleset, see the canonical note below) leaves OpenCode's own default in
+      // force, which is "ask", so an agent reading a screenshot outside the
+      // worktree raised an approval card the user had to click through on a
+      // mode that exists precisely to not do that. A bare "allow" expands to a
+      // single `{pattern:"*"}` rule, appended after OpenCode's built-ins and
+      // winning the `findLast` for every path — so it grants unrestricted
+      // external read/write, including paths OpenCode would otherwise ask about
+      // or deny. That is exactly what full auto promises. "ask"/"deny" are the
+      // values that cannot be stated here: they would revoke OpenCode's access
+      // to its own temp/skill/reference directories.
+      external_directory: "allow",
       question: "allow",
     };
   }
@@ -237,16 +246,17 @@ function buildPermissionConfig(
     bash: "ask",
     webfetch: "allow",
     doom_loop: "ask",
-    // Never state `external_directory` in ANY ADE ruleset — this note is the
-    // canonical one and the other three point at it.
+    // Never state `external_directory` in an ASKING/DENYING ADE ruleset — this
+    // note is the canonical one and the other non-full-auto rulesets point at
+    // it. (Full auto states "allow"; its ruleset comment owns that exception.)
     //
     // OpenCode's own default is `{"*": "ask", <tmp>: "allow", <skill dirs>:
     // "allow", <reference dirs>: "allow"}`. A bare string expands to a single
     // `{pattern: "*"}` rule that an agent block appends AFTER those defaults,
-    // and rule lookup is a `findLast` over the merged list — so the bare rule
+    // and rule lookup is a `findLast` over the merged list — so a bare rule
     // wins for every path and silently revokes OpenCode's access to its own
-    // temp, skill, and reference directories. That is equally true of "deny"
-    // and "ask", which is why all four rulesets omit the key.
+    // temp, skill, and reference directories. That is true of "deny" and
+    // "ask", which is why all the non-full-auto rulesets omit the key.
     //
     // The trade, stated honestly: plan and helper used to hard-DENY every path
     // outside the worktree, and now they ASK for one. That is a real loosening,
@@ -517,8 +527,9 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
     bash: "deny",
     webfetch: "deny",
     doom_loop: "deny",
-    // No `external_directory`, matching every other ADE ruleset — see the
-    // canonical note in `buildPermissionConfig`. The helper has no UI to show an
+    // No `external_directory` on this restrictive ruleset — see the
+    // canonical note in `buildPermissionConfig`; only `ade-full-auto` states it
+    // (as "allow"). The helper has no UI to show an
     // approval card, so `runOpenCodeTextPrompt` answers any ask by rejecting it
     // at once, which is what the old bare "deny" achieved.
     question: "deny",
@@ -625,6 +636,21 @@ export function buildOpenCodePromptParts(args: {
     });
   }
   return parts;
+}
+
+/**
+ * The v2 session prompt's file-attachment shape (`{uri, name}`), which is a
+ * different wire type from the v1 `FilePartInput` above. Lives here beside its
+ * sibling so the runtime module stays the one place that knows how an OpenCode
+ * prompt file is expressed on either API.
+ */
+export function buildOpenCodeV2PromptAttachments(
+  files: readonly OpenCodePromptFile[],
+): Array<{ uri: string; name: string }> {
+  return files.map((file) => ({
+    uri: pathToFileURL(file.path).toString(),
+    name: file.filename ?? basenameCrossPlatform(file.path),
+  }));
 }
 
 /**
@@ -955,8 +981,9 @@ export async function runOpenCodeTextPrompt(
       }
 
       // A one-shot prompt has no UI and nobody to ask, so an approval request
-      // must fail fast rather than hang. ADE states no `external_directory`
-      // rule any more, which means OpenCode's default ASKS for a path outside
+      // must fail fast rather than hang. This helper runs under a restrictive
+      // ruleset that states no `external_directory` rule, which means
+      // OpenCode's default ASKS for a path outside
       // the worktree instead of denying it outright — without this responder
       // that ask would sit unanswered until the caller's abort fires, minutes
       // later. Rejecting immediately reproduces the old hard deny: the tool

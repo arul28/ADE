@@ -8,6 +8,7 @@ import {
   isHostSleepNoticeEvent,
 } from "../../../desktop/src/shared/hostSleepNotice";
 import { readChatErrorPresentation } from "../../../desktop/src/shared/chatErrorPresentation";
+import { isDataUri } from "../../../desktop/src/shared/chatImageUrls";
 import { approvalRequestKind, isQuestionKind } from "../../../desktop/src/shared/pendingInputAnswers";
 import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
 import { isLegacyProviderRetryNotice } from "../../../desktop/src/shared/providerRetryPresentation";
@@ -1070,9 +1071,12 @@ export function renderChatLines(args: {
     }
     if (event.type === "codex_image_generation" || event.type === "codex_image_view") {
       const isGeneration = event.type === "codex_image_generation";
-      const title = isGeneration
-        ? event.revisedPrompt ?? event.prompt ?? "image"
-        : event.title ?? event.url ?? event.path ?? "image";
+      // A data URI is not a name — a tool-returned image can arrive nameless,
+      // and printing its base64 into a truncating line is worse than "image".
+      const rawTitle = isGeneration
+        ? event.revisedPrompt ?? event.prompt
+        : event.title ?? event.url ?? event.path;
+      const title = rawTitle && !isDataUri(rawTitle) ? rawTitle : "image";
       lines.push({
         id,
         tone: event.status === "failed" ? "error" : "tool",

@@ -58,6 +58,7 @@ import {
   type TerminalSessionDetail,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
+import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
 import {
   isUnsupportedAgentChatRecoveryActionError,
   providerForkReplaysTranscript,
@@ -712,7 +713,7 @@ function mergeAdjacentSubagentEvents(left: AgentChatEvent, right: AgentChatEvent
     return { ...right, text: `${left.text}${right.text}`, messageId: left.messageId ?? right.messageId };
   }
   if (left.type === "reasoning" && right.type === "reasoning") {
-    return { ...right, text: `${left.text}${right.text}` };
+    return { ...right, text: mergeReasoningFragment(left.text, right.text) };
   }
   if (left.type === "command" && right.type === "command") {
     if (right.status !== "running") return right;
@@ -5827,6 +5828,17 @@ export function AgentChatPane({
       || sessions.find((s) => s.sessionId === id)?.title?.trim()
       || null,
     [sessionTitleById, sessions],
+  );
+
+  // A spawned child chat can run on a different provider than its parent. Its
+  // inline subagent card wears the child's own mark when the session list knows
+  // it; an unresolved child falls back to this chat's provider in the card.
+  // Read the latest list through the ref so this callback keeps a stable
+  // identity: it is a dependency of the transcript row memo, and `sessions` is
+  // replaced on every refresh, which would otherwise invalidate the whole memo.
+  const resolveSpawnedChatProvider = useCallback(
+    (id: string): string | null => sessionsRef.current.find((s) => s.sessionId === id)?.provider ?? null,
+    [],
   );
 
   // Keep configured models selectable unless a caller explicitly constrains
@@ -14727,6 +14739,7 @@ export function AgentChatPane({
                         textPacingEnabled={!subagentView}
                         sessionEnded={selectedSession?.status === "ended"}
                         sessionProvider={selectedSession?.provider ?? sessionProvider}
+                        resolveSpawnedChatProvider={resolveSpawnedChatProvider}
                         runtimePin={chatRuntimePin}
                         className="min-h-0 border-0"
                         surfaceMode={surfaceMode}

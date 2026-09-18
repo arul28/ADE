@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { ArrowDown, CaretDown, CaretRight, Check, Gear, Square, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
+import { chatToolTypeForProvider } from "../../lib/sessions";
+import { ToolLogo } from "../terminals/ToolLogos";
+import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import type { AgentChatSpawnKind } from "../../../shared/types";
@@ -93,6 +96,30 @@ function glyphStatusFor(status: SubagentSpawnAnchorRenderEvent["status"]): ChatS
 }
 
 /**
+ * Who is running this subagent, drawn as the same provider mark the Work
+ * session rows use (bottom-right of the card, same 20px, same muted tone).
+ *
+ * A runtime-native subagent runs on the chat's own provider, so the mark is the
+ * chat's. A spawned ADE chat can use a different provider; the caller resolves
+ * that child's provider when it knows it and this only falls back for an
+ * unknown/unresolved session. Renders nothing for a blank provider so a card
+ * never grows an empty mark.
+ */
+function SubagentProviderMark({ provider }: { provider?: string | null }) {
+  const normalized = provider?.trim();
+  if (!normalized) return null;
+  return (
+    <span
+      className="inline-flex shrink-0 items-center"
+      data-subagent-provider={normalized}
+      title={providerDisplayLabel(normalized, normalized)}
+    >
+      <ToolLogo toolType={chatToolTypeForProvider(normalized)} size={20} className="block shrink-0 opacity-75" />
+    </span>
+  );
+}
+
+/**
  * Spawn card — one row anchored where the agent started. Shows identicon/color,
  * task description title, agent-type + background chips, and ONE single-line
  * live status line (`running · <activity> · <N> tools · <elapsed>`). The elapsed
@@ -104,12 +131,15 @@ export function SubagentSpawnCard({
   onJumpToResult,
   onStop,
   laneId,
+  provider,
 }: {
   event: SubagentSpawnAnchorRenderEvent;
   onJumpToResult?: () => void;
   onStop?: (taskId: string) => void;
   /** Lane of the spawner, forwarded to the navigation event when known. */
   laneId?: string | null;
+  /** Runtime that owns this agent; drives the bottom-right provider mark. */
+  provider?: string | null;
 }) {
   const isRunning = event.status === "running";
   const liveMs = useLiveDurationMs(event.startedAt, isRunning);
@@ -205,9 +235,14 @@ export function SubagentSpawnCard({
             </span>
           ) : null}
         </div>
-        {liveParts.length ? (
+        {liveParts.length || provider ? (
           <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
             <span className="min-w-0 truncate">{liveParts.join(" · ")}</span>
+            {/* Same seat the Work session rows give their provider mark: last
+                thing on the card's bottom line, after the status text. */}
+            <span className="ml-auto flex shrink-0 items-center pl-2">
+              <SubagentProviderMark provider={provider} />
+            </span>
           </div>
         ) : null}
         {resultSummary ? (
@@ -289,10 +324,13 @@ export function SubagentResultCard({
   event,
   laneId,
   onViewTranscript,
+  provider,
 }: {
   event: SubagentResultCardRenderEvent;
   laneId?: string | null;
   onViewTranscript?: () => void;
+  /** Runtime that owns this agent; drives the bottom-right provider mark. */
+  provider?: string | null;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const isSuccess = event.status === "completed";
@@ -379,9 +417,12 @@ export function SubagentResultCard({
             {summary}
           </div>
         ) : null}
-        {counters.length ? (
-          <div className="mt-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/32">
-            {counters.join(" · ")}
+        {counters.length || provider ? (
+          <div className="mt-1.5 flex min-w-0 items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/32">
+            {counters.length ? <span className="min-w-0 truncate">{counters.join(" · ")}</span> : <span className="min-w-0 flex-1" />}
+            <span className="ml-auto flex shrink-0 items-center pl-2">
+              <SubagentProviderMark provider={provider} />
+            </span>
           </div>
         ) : null}
       </ChatCardRow>

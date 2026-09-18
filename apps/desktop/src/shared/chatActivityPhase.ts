@@ -70,9 +70,64 @@ export function collapseActivityPhaseRows<T>(
   return result;
 }
 
+/**
+ * Join two reasoning fragments without repeating text the provider re-sent.
+ *
+ * Providers stream a thought as deltas and then re-emit the completed block
+ * (Claude sends the SDK snapshot after the deltas, Cursor re-sends a run's
+ * text), so a blind concatenation doubles the paragraph. Cumulative re-emits
+ * (`incoming` extends `existing`) replace, duplicate/suffix re-emits are
+ * dropped, and a shared boundary is spliced once instead of twice.
+ */
+export function mergeReasoningFragment(existing: string, incoming: string): string {
+  if (!existing.length) return incoming;
+  if (!incoming.length) return existing;
+  if (existing === incoming) return existing;
+  if (incoming.startsWith(existing)) return incoming;
+  if (existing.startsWith(incoming)) return existing;
+  if (incoming.trim().length > 0 && existing.trimEnd().endsWith(incoming.trim())) return existing;
+  const max = Math.min(existing.length, incoming.length, 64);
+  for (let length = max; length > 0; length -= 1) {
+    if (existing.endsWith(incoming.slice(0, length))) {
+      return `${existing}${incoming.slice(length)}`;
+    }
+  }
+  return `${existing}${incoming}`;
+}
+
+/**
+ * Collapse a list of reasoning blocks into the blocks that actually differ.
+ *
+ * Used when a whole list is folded at once (activity-phase merge, the TUI's
+ * aggregate) rather than appended pairwise like {@link mergeReasoningFragment}.
+ * Identical blocks drop, a cumulative re-emit replaces the block it extends, and
+ * blocks already contained in another drop — including every earlier block a
+ * cumulative re-emit swallowed, not just the first one found. Genuinely
+ * distinct blocks are joined by `---`, which is presentation the pairwise
+ * stream accumulator deliberately does not apply.
+ */
 export function mergeReasoningTextFragments(texts: readonly string[]): string {
-  return texts
-    .map((text) => text.trim())
-    .filter((text) => text.length > 0)
-    .join("\n\n---\n\n");
+  const fragments: string[] = [];
+  for (const raw of texts) {
+    const text = raw.trim();
+    if (!text.length) continue;
+    if (fragments.includes(text)) continue;
+    const contained = fragments
+      .map((fragment, index) => (text.includes(fragment) ? index : -1))
+      .filter((index) => index >= 0);
+    if (contained.length) {
+      // Replace the earliest contained block with the cumulative text and drop
+      // the others it also contains, so a re-emit covering two earlier blocks
+      // leaves neither behind.
+      const firstIndex = contained[0]!;
+      fragments[firstIndex] = text;
+      for (const index of contained.slice(1).sort((left, right) => right - left)) {
+        fragments.splice(index, 1);
+      }
+      continue;
+    }
+    if (fragments.some((fragment) => fragment.includes(text))) continue;
+    fragments.push(text);
+  }
+  return fragments.join("\n\n---\n\n");
 }

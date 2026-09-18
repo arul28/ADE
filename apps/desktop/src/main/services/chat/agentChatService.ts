@@ -61,7 +61,11 @@ import {
   mapClaudeStructuredActivityBlock,
   type ClaudeStructuredActivityState,
 } from "./claudeStructuredActivity";
-import { mapOpenCodeImagePart } from "./openCodeStructuredActivity";
+import {
+  isOpenCodeImageGenerationToolName,
+  mapOpenCodeImageAttachment,
+  mapOpenCodeImagePart,
+} from "./openCodeStructuredActivity";
 import {
   isCorruptThinkingTranscriptError,
   repairClaudeResumeTranscript,
@@ -764,6 +768,7 @@ import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import {
   buildOpenCodePromptParts,
+  buildOpenCodeV2PromptAttachments,
   mapPermissionModeToOpenCodeAgent,
   openCodeEventStream,
   openCodePartUpdatedDelta,
@@ -772,6 +777,7 @@ import {
   resolveOpenCodeModelSelection,
   startOpenCodeSession,
   type DiscoveredLocalModelEntry,
+  type OpenCodePromptFile,
   type OpenCodeQuestionInfo,
   type OpenCodeSessionHandle,
 } from "../opencode/openCodeRuntime";
@@ -1922,6 +1928,26 @@ type QueuedSteer = {
   interactionMode?: AgentChatInteractionMode | null;
 };
 
+/**
+ * The fields one inline OpenCode steer needs. `uuid` doubles as the v2 prompt's
+ * admission id (prefixed `msg_` — the server validates that brand and rejects
+ * anything else with a 400), so retrying the same admission re-admits the same
+ * identity instead of duplicating the message. It does not cover the queue
+ * fallback: a refused steer is re-sent as a fresh turn through the v1 path and
+ * gets a new identity there.
+ */
+type OpenCodeInlineSteer = Pick<
+  QueuedSteer,
+  | "steerId"
+  | "uuid"
+  | "text"
+  | "displayText"
+  | "attachments"
+  | "contextAttachments"
+  | "resolvedAttachments"
+  | "metadata"
+>;
+
 type AcceptedCodexSteer = {
   steerId: string;
   text: string;
@@ -2455,6 +2481,8 @@ type OpenCodeRuntime = {
   permissionMode: AgentChatOpenCodePermissionMode;
   pendingApprovals: Map<string, PendingOpenCodeApproval>;
   pendingSteers: QueuedSteer[];
+  /** Staged rows currently being folded into the live turn (see `dispatchSteer`). */
+  dispatchingSteerIds: Set<string>;
   interrupted: boolean;
   modelDescriptor: ModelDescriptor;
   textByPartId: Map<string, string>;
@@ -3986,6 +4014,46 @@ type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _resolvedPath: string;
   _rootPath: string;
 };
+
+/**
+ * Resolve chat attachments into OpenCode prompt files. A file that does not
+ * exist on disk cannot be sent as a file part on either API, so it comes back
+ * in `unsent` for the caller to name in the prompt text instead of dropping it
+ * silently. Shared by the running-turn send (v1 parts) and the inline steer
+ * (v2 `{uri}` input) so the two cannot disagree about what "attached" means.
+ */
+function toOpenCodePromptFiles(
+  resolvedAttachments: readonly ResolvedAgentChatFileRef[],
+): { files: OpenCodePromptFile[]; unsent: ResolvedAgentChatFileRef[] } {
+  const files: OpenCodePromptFile[] = [];
+  const unsent: ResolvedAgentChatFileRef[] = [];
+  for (const attachment of resolvedAttachments) {
+    const filePath = attachment._resolvedPath;
+    if (filePath && fs.existsSync(filePath)) {
+      files.push({
+        path: filePath,
+        mime: inferAttachmentMediaType(attachment),
+        filename: path.basename(filePath),
+      });
+    } else {
+      unsent.push(attachment);
+    }
+  }
+  return { files, unsent };
+}
+
+/**
+ * Name attachments the prompt cannot carry as file parts. One formatter for the
+ * running-turn v1 send and the v2 inline steer so the two never diverge on how a
+ * dropped attachment is described.
+ */
+function formatAttachedContextHint(
+  items: ReadonlyArray<{ type: string; path: string }>,
+): string {
+  return items.length
+    ? `\n\nAttached context:\n${items.map((item) => `- ${item.type}: ${item.path}`).join("\n")}`
+    : "";
+}
 
 type ResolvedChatConfig = {
   codexApprovalPolicy: AgentChatCodexApprovalPolicy;
@@ -5955,12 +6023,26 @@ const settledSteerIds = new WeakMap<ManagedChatSession, Set<string>>();
 /**
  * True while an explicit dispatch owns this staged row.
  *
- * Only Claude and Cursor track in-flight dispatches, and only Cursor holds the
- * row in `pendingSteers` across a network await — which is the window where an
- * edit or a cancel would contradict what the agent already received.
+ * Claude, Cursor, and OpenCode track in-flight dispatches, and Cursor and
+ * OpenCode hold the row out of `pendingSteers` across a network await — which is
+ * the window where an edit or a cancel would contradict what the agent already
+ * received.
  */
 function isSteerDispatchInFlight(runtime: ChatRuntime, steerId: string): boolean {
   return "dispatchingSteerIds" in runtime && runtime.dispatchingSteerIds.has(steerId);
+}
+
+/**
+ * True when a staged row carries a per-message override — reasoning effort or
+ * an execution/interaction mode. A text-only inline steer channel cannot carry
+ * one, so every provider with an inline path declines the row and leaves it
+ * staged for the turn boundary, which applies the directives. One predicate so
+ * the Claude/Cursor/OpenCode guards cannot drift apart.
+ */
+function rowHasPerMessageOverrides(
+  row: Pick<QueuedSteer, "reasoningEffort" | "executionMode" | "interactionMode">,
+): boolean {
+  return row.reasoningEffort != null || Boolean(row.executionMode) || Boolean(row.interactionMode);
 }
 
 /**
@@ -6702,6 +6784,44 @@ function claudeEmittedTextRecord(runtime: ClaudeRuntime, messageId: string): Map
     }
   }
   return record;
+}
+
+/**
+ * True when a thinking snapshot's text was already streamed for this message.
+ * The stream can label a block with an index the SDK snapshot does not (a
+ * redacted/empty thinking block is stripped from the snapshot but still
+ * counted by the stream), so the index-keyed dedupe misses and the thought is
+ * persisted twice. Match on the accumulated text instead.
+ */
+function isClaudeThinkingTextAlreadyStreamed(
+  streamedByContentIndex: ReadonlyMap<number, string>,
+  snapshotText: string,
+): boolean {
+  const trimmedSnapshot = snapshotText.trim();
+  if (!trimmedSnapshot.length) return false;
+  for (const streamed of streamedByContentIndex.values()) {
+    if (streamed.trim() === trimmedSnapshot) return true;
+  }
+  return false;
+}
+
+/**
+ * Append one streamed thinking delta to the per-content-index accumulator.
+ * Three producers (the foreground stream's deltas, a block-start snapshot, and
+ * the idle reader) feed the same map shape; one append is what lets
+ * `isClaudeThinkingTextAlreadyStreamed` compare a snapshot against the exact
+ * accumulated text.
+ */
+function appendStreamedThinkingText(
+  streamedByContentIndex: Map<number, string>,
+  contentIndex: number | null | undefined,
+  text: string,
+): void {
+  if (contentIndex == null) return;
+  streamedByContentIndex.set(
+    contentIndex,
+    `${streamedByContentIndex.get(contentIndex) ?? ""}${text}`,
+  );
 }
 
 const CLAUDE_ORDINAL_TASK_ID = /^\d{1,6}$/;
@@ -14227,6 +14347,13 @@ export function createAgentChatService(args: {
       permissionMode: permMode,
       pendingApprovals: new Map(),
       pendingSteers: [],
+      /**
+       * Staged rows currently being folded into the live turn by
+       * `dispatchSteer`/`promoteStagedSteer`. The row leaves `pendingSteers`
+       * before the v2 await, so without this a cancel or edit during the round
+       * trip would contradict a delivery that already happened.
+       */
+      dispatchingSteerIds: new Set(),
       interrupted: false,
       modelDescriptor: descriptor,
       textByPartId: new Map(),
@@ -22302,6 +22429,7 @@ export function createAgentChatService(args: {
     toolUseMetaByContentIndex: Map<number, { toolName: string; itemId: string; toolUseId?: string; argsWereEmpty?: boolean }>;
     currentStreamMessageId: string | null;
     streamedTextByContentIndex: Map<number, string>;
+    streamedThinkingByContentIndex: Map<number, string>;
     recentTextDeltaBuffer: string;
     scheduledWakeAttached: boolean;
     /** Dedupe for todo/task tracker application per tool_use (ADE-130): a
@@ -22484,6 +22612,7 @@ export function createAgentChatService(args: {
     state.turnId = null;
     state.currentStreamMessageId = null;
     state.streamedTextByContentIndex.clear();
+    state.streamedThinkingByContentIndex.clear();
     state.recentTextDeltaBuffer = "";
     if (!compactionIssued && runtime.pendingSteers.length && managed.runtime === runtime) {
       runtime.idleReaderPromise = null;
@@ -23282,7 +23411,7 @@ export function createAgentChatService(args: {
             : "";
         } else if (block.type === "thinking") {
           const text = typeof block.thinking === "string" ? block.thinking : typeof block.text === "string" ? block.text : "";
-          if (text.trim().length) {
+          if (text.trim().length && !isClaudeThinkingTextAlreadyStreamed(state.streamedThinkingByContentIndex, text)) {
             emitChatEvent(managed, {
               type: "reasoning",
               text,
@@ -23342,6 +23471,7 @@ export function createAgentChatService(args: {
       if (event.type === "message_start") {
         const message = asRecord(event.message);
         state.streamedTextByContentIndex.clear();
+        state.streamedThinkingByContentIndex.clear();
         state.recentTextDeltaBuffer = "";
         state.currentStreamMessageId = compactString(message?.id) ?? compactString(streamMsg.uuid) ?? null;
         updateClaudeLiveContextUsage(
@@ -23391,6 +23521,7 @@ export function createAgentChatService(args: {
         } else if (delta?.type === "thinking_delta") {
           const text = typeof delta.thinking === "string" ? delta.thinking : typeof delta.text === "string" ? delta.text : "";
           if (text.length) {
+            appendStreamedThinkingText(state.streamedThinkingByContentIndex, contentIndex, text);
             emitChatEvent(managed, {
               type: "reasoning",
               text,
@@ -23603,6 +23734,7 @@ export function createAgentChatService(args: {
       toolUseMetaByContentIndex: new Map(),
       currentStreamMessageId: null,
       streamedTextByContentIndex: new Map(),
+      streamedThinkingByContentIndex: new Map(),
       recentTextDeltaBuffer: "",
       scheduledWakeAttached: false,
       emittedTodoToolIds: new Set(),
@@ -23891,6 +24023,12 @@ export function createAgentChatService(args: {
     const claudeStructuredActivity = createClaudeStructuredActivityState();
     const streamedClaudeTextContentKeys = new Set<string>();
     const streamedClaudeThinkingContentKeys = new Set<string>();
+    // Snapshot-vs-delta thinking dedupe cannot rely on the content index alone:
+    // the SDK strips a redacted/empty thinking block from the assistant snapshot
+    // while the raw stream still counts it, so the same thought arrives as
+    // `claude-thinking:<turn>:1` (deltas) and `...:0` (snapshot). Key the
+    // accumulated stream text by index and match the snapshot by TEXT.
+    const streamedClaudeThinkingTextByContentIndex = new Map<number, string>();
     let currentClaudeStreamMessageId: string | null = null;
     let pendingWorkerShutdownReason: string | null = null;
     let recentClaudeTextDeltaBuffer = "";
@@ -25407,7 +25545,8 @@ export function createAgentChatService(args: {
                 const fallbackThinkingKey = assistantMessageId ? claudeDedupeKey(null, blockIndex) : null;
                 const alreadyStreamedThinking =
                   (thinkingKey ? streamedClaudeThinkingContentKeys.has(thinkingKey) : false)
-                  || (fallbackThinkingKey ? streamedClaudeThinkingContentKeys.has(fallbackThinkingKey) : false);
+                  || (fallbackThinkingKey ? streamedClaudeThinkingContentKeys.has(fallbackThinkingKey) : false)
+                  || isClaudeThinkingTextAlreadyStreamed(streamedClaudeThinkingTextByContentIndex, thinkingText);
                 if (thinkingText.trim().length > 0 && (!thinkingKey || !alreadyStreamedThinking)) {
                   emitChatEvent(managed, {
                     type: "activity",
@@ -25510,6 +25649,7 @@ export function createAgentChatService(args: {
               if (text.length) {
                 const thinkingKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
                 if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
+                appendStreamedThinkingText(streamedClaudeThinkingTextByContentIndex, contentIndex, text);
                 const reasoningItemId = buildClaudeContentItemId("thinking", contentIndex);
                 emitChatEvent(managed, {
                   type: "activity",
@@ -25568,6 +25708,7 @@ export function createAgentChatService(args: {
               if (startText.length) {
                 const thinkingKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
                 if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
+                appendStreamedThinkingText(streamedClaudeThinkingTextByContentIndex, contentIndex, startText);
                 emitChatEvent(managed, {
                   type: "reasoning",
                   text: startText,
@@ -25671,6 +25812,7 @@ export function createAgentChatService(args: {
           } else if (event.type === "message_start") {
             currentClaudeStreamMessageId = typeof event.message?.id === "string" ? event.message.id : null;
             recentClaudeTextDeltaBuffer = "";
+            streamedClaudeThinkingTextByContentIndex.clear();
             const msgUsage = event.message?.usage;
             updateClaudeLiveContextUsage(
               managed,
@@ -27598,9 +27740,7 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const attachmentHint = attachments.length
-        ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
-        : "";
+      const attachmentHint = formatAttachedContextHint(attachments);
       const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
       const userContent = providerSlashCommand
         ? args.promptText
@@ -27619,13 +27759,7 @@ export function createAgentChatService(args: {
       runtime.toolStateByPartId.clear();
       runtime.compactionStartedPartIds.clear();
 
-      const toPromptFiles = resolvedAttachments
-        .map((attachment) => ({
-          path: attachment._resolvedPath,
-          mime: inferAttachmentMediaType(attachment),
-          filename: path.basename(attachment._resolvedPath),
-        }))
-        .filter((entry) => fs.existsSync(entry.path));
+      const toPromptFiles = toOpenCodePromptFiles(resolvedAttachments).files;
       const toolSelection = await refreshOpenCodeSessionToolSelection(runtime.handle, {
         orchestrationLead: isOrchestrationLeadSession(managed.session),
       });
@@ -27738,6 +27872,20 @@ export function createAgentChatService(args: {
           emittedPartIds: emittedOpenCodeImagePartIds,
         });
         if (imageEvent) emitChatEvent(managed, imageEvent);
+      };
+      /**
+       * Tool-returned images are views, not generations: the same `file` shape
+       * backs both, and labeling a `read` of a screenshot "Image generated"
+       * invented model output that never happened. Shared dedupe set with the
+       * generated-image path so one wire part can never render twice.
+       */
+      const emitOpenCodeImageAttachment = (part: unknown): void => {
+        const viewEvent = mapOpenCodeImageAttachment({
+          part,
+          turnId,
+          emittedPartIds: emittedOpenCodeImagePartIds,
+        });
+        if (viewEvent) emitChatEvent(managed, viewEvent);
       };
       let parentSessionIdle = false;
       for await (const event of eventStream) {
@@ -28232,8 +28380,12 @@ export function createAgentChatService(args: {
             }
 
             if (nextStatus === "completed" && previousStatus !== "completed") {
+              // A media-producing tool's attachment is its output, so it keeps
+              // the generation card; every other tool's images are views.
+              const attachmentIsGenerated = isOpenCodeImageGenerationToolName(part.tool);
               for (const attachment of part.state.attachments ?? []) {
-                emitOpenCodeImagePart(attachment);
+                if (attachmentIsGenerated) emitOpenCodeImagePart(attachment);
+                else emitOpenCodeImageAttachment(attachment);
               }
               emitChatEvent(managed, {
                 type: "tool_result",
@@ -35128,10 +35280,7 @@ export function createAgentChatService(args: {
     // message is being built. Do not auto-deliver another row at the parent
     // turn boundary; the idle reader will consume the explicit dispatch, then
     // remaining staged rows can proceed in order.
-    if (
-      (runtime.kind === "claude" || runtime.kind === "cursor")
-      && runtime.dispatchingSteerIds.size > 0
-    ) return false;
+    if ("dispatchingSteerIds" in runtime && runtime.dispatchingSteerIds.size > 0) return false;
 
     const nextSteer = runtime.pendingSteers.shift();
     if (!nextSteer) return false;
@@ -41990,14 +42139,12 @@ export function createAgentChatService(args: {
    *
    * The wording names no culprit on purpose. Most refusals are ADE's own —
    * attachments, per-message overrides, a cloud run, no live turn — and the
-   * steer channel is never even consulted for them. Saying "Cursor didn't take
-   * it" would be false on the most common path of all: attaching a file during a
-   * live turn. The consequence is identical either way, so the line states only
-   * that.
+   * steer channel is never even consulted for them. The consequence is
+   * identical either way, so the line states only that.
    */
-  const emitCursorInlineSteerFallbackNotice = (
+  const emitInlineSteerFallbackNotice = (
     managed: ManagedChatSession,
-    runtime: CursorRuntime,
+    runtime: { activeTurnId: string | null },
   ): void => {
     emitChatEvent(managed, {
       type: "system_notice",
@@ -42008,27 +42155,54 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * The user row a steer emits when it lands (`inline`) or is put back on the
+   * queue (`queued`). Every provider's delivery path and every restore path
+   * emits this one shape, so a failed promotion can never render a different
+   * bubble than the delivery it is undoing.
+   */
+  const emitSteerUserRow = (
+    managed: ManagedChatSession,
+    steer: Pick<
+      QueuedSteer,
+      "steerId" | "text" | "displayText" | "attachments" | "contextAttachments" | "metadata"
+    >,
+    deliveryState: "inline" | "queued",
+    turnId: string | undefined,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: steer.text,
+      ...(steer.displayText && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
+      ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
+      ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
+      ...(steer.metadata ? { metadata: steer.metadata } : {}),
+      steerId: steer.steerId,
+      deliveryState,
+      turnId,
+    });
+  };
+
+  /**
    * Show one staged Cursor row in the transcript as queued.
    *
    * Used by the staging path and by the drain's restore-on-throw, so the two
    * cannot describe the same row differently — they already had, with `text`
-   * holding submitted text in one and visible text in the other.
+   * holding submitted text in one and visible text in the other. Cursor's
+   * convention is the visible text IN `text` (no separate `displayText`); one
+   * emitter still owns the event shape, so this only maps the row to it.
    */
   const emitQueuedCursorSteerRow = (
     managed: ManagedChatSession,
     runtime: CursorRuntime,
     row: QueuedSteer,
   ): void => {
-    emitChatEvent(managed, {
-      type: "user_message",
-      text: row.displayText ?? row.text,
-      ...(row.attachments.length ? { attachments: row.attachments } : {}),
-      ...(row.contextAttachments.length ? { contextAttachments: row.contextAttachments } : {}),
-      ...(row.metadata ? { metadata: row.metadata } : {}),
-      steerId: row.steerId,
-      turnId: runtime.activeTurnId ?? undefined,
-      deliveryState: "queued",
-    });
+    const { displayText, ...rest } = row;
+    emitSteerUserRow(
+      managed,
+      { ...rest, text: displayText ?? row.text },
+      "queued",
+      runtime.activeTurnId ?? undefined,
+    );
   };
 
   /**
@@ -42060,7 +42234,7 @@ export function createAgentChatService(args: {
     // Per-message overrides cannot ride a text-only channel either. No caller
     // pairs them with an inline dispatch today; this keeps the next one from
     // losing them silently.
-    if (row.reasoningEffort != null || row.executionMode || row.interactionMode) {
+    if (rowHasPerMessageOverrides(row)) {
       return false;
     }
     // Gated here, not only in the renderer: a cloud run refuses every steer, and
@@ -42089,15 +42263,7 @@ export function createAgentChatService(args: {
     // message would be sent again on reopen.
     onDelivered?.();
     if (managed.closed) return true;
-    emitChatEvent(managed, {
-      type: "user_message",
-      text: row.text,
-      ...(row.displayText && row.displayText !== row.text ? { displayText: row.displayText } : {}),
-      ...(row.metadata ? { metadata: row.metadata } : {}),
-      steerId: row.steerId,
-      turnId: runtime.activeTurnId ?? undefined,
-      deliveryState: "inline",
-    });
+    emitSteerUserRow(managed, row, "inline", runtime.activeTurnId ?? undefined);
     persistChatState(managed);
     return true;
   };
@@ -42108,11 +42274,11 @@ export function createAgentChatService(args: {
    * Returns the steerId it drained, or null when it declined — wrong runtime,
    * a live turn, a dispatch already in flight, an empty queue, or a throw.
    *
-   * Cursor drains `pendingSteers` at exactly one place: the end of a live turn
-   * (`shouldDeliverQueuedSteer`). There is no idle reader. So a row that lands
-   * on the queue AFTER that boundary has already passed — which is the common
-   * shape of `revert_to_followup`, since the turn refusing the message is often
-   * the turn ending — would wait for the user to send something else.
+   * Cursor and OpenCode drain `pendingSteers` only inside a live turn's tail.
+   * So a row that lands on the queue AFTER that boundary has already passed —
+   * which is the common shape of a refused inline steer, since the turn
+   * refusing the message is often the turn ending — would wait for the user to
+   * send something else.
    *
    * Runs only when this runtime is still the session's and is genuinely idle.
    *
@@ -42122,10 +42288,15 @@ export function createAgentChatService(args: {
    * synchronous, so two drains always take two DIFFERENT rows. The worst case is
    * two queued messages going out closer together than usual, never the same
    * message twice and never a message lost.
+   *
+   * `restoreRow` re-emits the provider's queued bubble if the delivery throws,
+   * and `logKey` names the provider in the failure log.
    */
-  const drainCursorQueueHeadIfIdle = async (
+  const drainQueueHeadIfIdle = async (
     managed: ManagedChatSession,
-    runtime: CursorRuntime,
+    runtime: CursorRuntime | OpenCodeRuntime,
+    restoreRow: (row: QueuedSteer) => void,
+    logKey: string,
   ): Promise<string | null> => {
     if (managed.closed || managed.runtime !== runtime) return null;
     if (runtime.busy || runtime.activeTurnId || runtime.dispatchingSteerIds.size) return null;
@@ -42158,10 +42329,10 @@ export function createAgentChatService(args: {
       ) {
         runtime.pendingSteers.unshift(head);
         reopenSteerSettlement(managed, head.steerId);
-        emitQueuedCursorSteerRow(managed, runtime, head);
+        restoreRow(head);
         persistChatState(managed);
       }
-      logger.warn("agent_chat.cursor_sdk_idle_queue_drain_failed", {
+      logger.warn(logKey, {
         sessionId: managed.session.id,
         steerId: head.steerId,
         error: error instanceof Error ? error.message : String(error),
@@ -42169,6 +42340,26 @@ export function createAgentChatService(args: {
       return null;
     }
   };
+
+  const drainCursorQueueHeadIfIdle = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+  ): Promise<string | null> => drainQueueHeadIfIdle(
+    managed,
+    runtime,
+    (row) => emitQueuedCursorSteerRow(managed, runtime, row),
+    "agent_chat.cursor_sdk_idle_queue_drain_failed",
+  );
+
+  const drainOpenCodeQueueHeadIfIdle = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+  ): Promise<string | null> => drainQueueHeadIfIdle(
+    managed,
+    runtime,
+    (row) => emitSteerUserRow(managed, row, "queued", runtime.activeTurnId ?? undefined),
+    "agent_chat.opencode_idle_queue_drain_failed",
+  );
 
   /**
    * Last resort for steers lifted off a recycled runtime that will never be
@@ -45461,21 +45652,59 @@ export function createAgentChatService(args: {
     runtime.inputPump.push(sdkMsg);
     onAccepted?.();
 
-    emitChatEvent(managed, {
-      type: "user_message",
-      text: steer.text,
-      ...(steer.displayText && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
-      ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
-      ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
-      ...(steer.metadata ? { metadata: steer.metadata } : {}),
-      steerId: steer.steerId,
-      deliveryState: "inline",
-      turnId: runtime.activeTurnId ?? undefined,
-    });
+    emitSteerUserRow(managed, steer, "inline", runtime.activeTurnId ?? undefined);
     persistChatState(managed);
     if (!runtime.busy && !runtime.activeTurnId && !runtime.idleReaderPromise) {
       startClaudeIdleReader(managed, runtime, "query_ready");
     }
+    return Date.now();
+  };
+
+  /**
+   * Fold a steer into OpenCode's live agent loop.
+   *
+   * The v2 session prompt admits one input with `delivery: "steer"`; the
+   * server injects it at the next model step (OpenCode's own follow-up
+   * steering). ADE used to only ever stage on the turn boundary here, so a
+   * message typed mid-turn waited for the whole turn even though the transport
+   * supported folding it in. Throws when the server refuses — callers fall back
+   * to the queue so nothing is lost.
+   */
+  const dispatchOpenCodeSteerMessage = async (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    steer: OpenCodeInlineSteer,
+    onAccepted?: () => void,
+  ): Promise<number> => {
+    const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
+    // The v1 prompt path attaches real files by URL; the v2 input takes the
+    // same files as `{uri}` through the runtime module's builder. A file that is
+    // not on disk (an http(s) image-url attachment) cannot be sent as a part,
+    // so it is named in the prompt text exactly as a normal OpenCode send names
+    // it, instead of being silently dropped.
+    const { files, unsent } = toOpenCodePromptFiles(steer.resolvedAttachments);
+    const attachmentHint = formatAttachedContextHint(unsent);
+    const text = contextPrompt
+      ? `${contextPrompt}\n\n${steer.text}${attachmentHint}`
+      : `${steer.text}${attachmentHint}`;
+    const promptFiles = buildOpenCodeV2PromptAttachments(files);
+    await runtime.handle.client.v2.session.prompt({
+      sessionID: runtime.handle.sessionId,
+      // The admission id is the row's own uuid under the server's `msg_` brand:
+      // if a transport failure hides whether the server committed, retrying the
+      // same admission reuses the identity instead of duplicating the message.
+      // A bare uuid fails the server's ID schema (HTTP 400), which would make
+      // every inline steer silently degrade to the queue.
+      id: `msg_${steer.uuid}`,
+      prompt: {
+        text,
+        ...(promptFiles.length ? { files: promptFiles } : {}),
+      },
+      delivery: "steer",
+    }, { throwOnError: true });
+    onAccepted?.();
+    emitSteerUserRow(managed, steer, "inline", runtime.activeTurnId ?? undefined);
+    persistChatState(managed);
     return Date.now();
   };
 
@@ -45562,9 +45791,69 @@ export function createAgentChatService(args: {
         if (!preparedSteer) {
           return { steerId, queued: false };
         }
+        // Inline: fold into the live turn. Only a delivered outcome returns
+        // here; a refusal falls through to staging, so the message is queued
+        // exactly as it would have been without an inline attempt and nothing
+        // is sent twice. The row is built here because only the inline channel
+        // consumes it — the queue fallback builds its own through
+        // `enqueueSteerOrDrop`.
+        let inlineRefused = false;
+        // The v2 steer prompt carries text and file parts only, so a per-message
+        // reasoning/execution/interaction override cannot ride it. Cursor refuses
+        // the same shape for the same reason: fall through to staging, which
+        // applies the directives at the turn boundary, rather than silently
+        // pinning the session's current defaults.
+        const hasPerMessageOverrides = rowHasPerMessageOverrides({
+          reasoningEffort,
+          executionMode,
+          interactionMode,
+        });
+        if (dispatchMode === "inline" && !hasPerMessageOverrides) {
+          const immediateSteer: OpenCodeInlineSteer = {
+            steerId,
+            uuid: randomUUID(),
+            text: preparedSteer.submittedText,
+            ...(preparedSteer.visibleText !== preparedSteer.submittedText
+              ? { displayText: preparedSteer.visibleText }
+              : {}),
+            attachments: preparedSteer.attachments,
+            contextAttachments: preparedSteer.contextAttachments,
+            resolvedAttachments: preparedSteer.resolvedAttachments,
+            ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          };
+          try {
+            await dispatchOpenCodeSteerMessage(managed, runtime, immediateSteer, options?.onAcceptedDispatch);
+            return { steerId, queued: false };
+          } catch (error) {
+            inlineRefused = true;
+            logger.warn("agent_chat.opencode_inline_steer_refused", {
+              sessionId,
+              turnId: runtime.activeTurnId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        // A close or runtime swap during the v2 await tears the queue down with
+        // the runtime. Re-route onto whatever owns the session now, exactly as
+        // Cursor's post-await guard does: stage on a live replacement, or send
+        // it as its own turn when there is none. Non-Claude queues are not
+        // persisted, so staging onto the captured runtime would show a queued
+        // chip for a message nothing owns.
+        let stageRuntime = runtime;
+        if (managed.closed) return { steerId, queued: false };
+        if (managed.runtime !== runtime) {
+          const current = managed.runtime;
+          if (current?.kind === "opencode" && (current.busy || managed.session.status === "active")) {
+            stageRuntime = current;
+          } else {
+            preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
+            await executePreparedSendMessage(preparedSteer);
+            return { steerId, queued: false };
+          }
+        }
         const queued = enqueueSteerOrDrop(
           managed,
-          runtime,
+          stageRuntime,
           sessionId,
           steerId,
           preparedSteer.submittedText,
@@ -45574,9 +45863,20 @@ export function createAgentChatService(args: {
           preparedSteer.metadata,
           { displayText: preparedSteer.visibleText, reasoningEffort, executionMode, interactionMode },
         );
-        return queued
-          ? { steerId, queued: true }
-          : { steerId, queued: false, reason: "queue_full" };
+        if (!queued) {
+          return { steerId, queued: false, reason: "queue_full" };
+        }
+        // Emitted only once the message is genuinely queued — above the
+        // queue-full guard it would promise a delivery that never happens.
+        if (inlineRefused) {
+          emitInlineSteerFallbackNotice(managed, stageRuntime);
+          // A refusal is often the turn ending in the same instant; if that tail
+          // already drained, send this as its own turn rather than leaving it
+          // parked for a turn that will never come.
+          const flushed = await drainOpenCodeQueueHeadIfIdle(managed, stageRuntime);
+          if (flushed === steerId) return { steerId, queued: false };
+        }
+        return { steerId, queued: true };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -45758,7 +46058,7 @@ export function createAgentChatService(args: {
         }
         // Emitted only once the message is genuinely going to be queued. Above
         // the queue-full guard it would promise a delivery that never happens.
-        if (inlineRefused) emitCursorInlineSteerFallbackNotice(managed, rt);
+        if (inlineRefused) emitInlineSteerFallbackNotice(managed, rt);
         rt.pendingSteers.push(queuedRow);
         emitQueuedCursorSteerRow(managed, rt, queuedRow);
         emitChatEvent(managed, {
@@ -46606,7 +46906,7 @@ export function createAgentChatService(args: {
       // from persisted state before a future runtime can hydrate it.
     } else {
       const queue = runtime.pendingSteers;
-      // Both runtimes that track in-flight dispatches splice the row out of the
+      // The runtimes that track in-flight dispatches splice the row out of the
       // queue before the dispatch completes, so without this the user would be
       // told the message is "no longer queued" while it is in fact being sent.
       // Not gated on `requireQueued`: the desktop Remove action omits it, and a
@@ -46666,14 +46966,16 @@ export function createAgentChatService(args: {
     }
     if (!runtime) throw new Error("This message is no longer queued.");
 
-    const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
-    if (idx === -1) throw new Error("This message is no longer queued.");
-    // An inline dispatch holds the row in `pendingSteers` across the SDK await
-    // and sends the text it read at call time. Editing it mid-flight would make
-    // the transcript show text the agent never received.
+    // An inline dispatch owns the row across the network await and sends the
+    // text it read at call time. Editing it mid-flight would make the
+    // transcript show text the agent never received. Checked BEFORE the queue
+    // lookup: Cursor and OpenCode splice the row out before that await, so an
+    // in-flight id is absent from the queue by design.
     if (isSteerDispatchInFlight(runtime, steerId)) {
       throw new Error("This message is already being dispatched.");
     }
+    const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
+    if (idx === -1) throw new Error("This message is no longer queued.");
 
     if (!trimmed.length) {
       const [removed] = runtime.pendingSteers.splice(idx, 1);
@@ -46701,6 +47003,86 @@ export function createAgentChatService(args: {
       deliveryState: "queued",
     });
     persistChatState(managed);
+  };
+
+  /**
+   * Promote one staged steer with the lifecycle every inline-capable provider
+   * shares: take the row off the queue, retire its chip with the
+   * "Delivering…" notice, hand it to the provider's `deliver`, and on a throw
+   * put the row back (re-emitting the queued bubble and re-opening its
+   * settlement) so the message is never silently lost.
+   *
+   * `canDeliver` lets a provider decline before the row leaves the queue — a
+   * Codex thread with no live turn has nothing to fold into.
+   */
+  const promoteStagedSteer = async (args: {
+    managed: ManagedChatSession;
+    steerId: string;
+    provider: AgentChatProvider;
+    queue: QueuedSteer[];
+    activeTurnId: string | null;
+    canDeliver?: (row: QueuedSteer) => boolean;
+    deliver: (row: QueuedSteer) => Promise<void>;
+    /**
+     * Last resort after a throw put the row back: deliver the queue head when
+     * the runtime is already idle (the refusing turn is often the turn that
+     * just ended). Returning the promoted `steerId` reports the row as
+     * delivered instead of throwing at a caller whose message actually went.
+     */
+    afterRestore?: () => Promise<string | null>;
+  }): Promise<{ dispatchedAt: number | null }> => {
+    const { managed, steerId, provider, queue, activeTurnId } = args;
+    const index = queue.findIndex((entry) => entry.steerId === steerId);
+    if (index === -1) return { dispatchedAt: null };
+    if (args.canDeliver && !args.canDeliver(queue[index])) return { dispatchedAt: null };
+    const [promoted] = queue.splice(index, 1);
+    claimSteerSettlement(managed, steerId);
+    // Resolves the staged chip in the composer; without it the row stays
+    // parked there after the steer has already landed.
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      steerId,
+      message: "Delivering your queued message...",
+      turnId: activeTurnId ?? undefined,
+    });
+    persistChatState(managed);
+    try {
+      await args.deliver(promoted);
+    } catch (error) {
+      // Put the row back so the user's message is never silently lost.
+      let restored = false;
+      if (!queue.some((entry) => entry.steerId === steerId)) {
+        queue.splice(Math.min(index, queue.length), 0, promoted);
+        reopenSteerSettlement(managed, steerId);
+        emitSteerUserRow(managed, promoted, "queued", activeTurnId ?? undefined);
+        persistChatState(managed);
+        restored = true;
+      }
+      logger.warn("agent_chat.dispatch_steer_failed", {
+        sessionId: managed.session.id,
+        steerId,
+        mode: "inline",
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (restored && args.afterRestore) {
+        let drained: string | null = null;
+        try {
+          drained = await args.afterRestore();
+        } catch (drainError) {
+          logger.warn("agent_chat.dispatch_steer_idle_drain_failed", {
+            sessionId: managed.session.id,
+            steerId,
+            provider,
+            error: drainError instanceof Error ? drainError.message : String(drainError),
+          });
+        }
+        if (drained === steerId) return { dispatchedAt: Date.now() };
+      }
+      throw error;
+    }
+    return { dispatchedAt: Date.now() };
   };
 
   const dispatchSteer = async ({
@@ -46763,7 +47145,7 @@ export function createAgentChatService(args: {
           runtime.dispatchingSteerIds.delete(steerId);
         }
         if (delivered) return { dispatchedAt: Date.now() };
-        emitCursorInlineSteerFallbackNotice(managed, runtime);
+        emitInlineSteerFallbackNotice(managed, runtime);
         persistChatState(managed);
         // The row is still staged and Cursor only drains at a turn boundary. If
         // that boundary already passed while the steer was in flight, nothing
@@ -46819,18 +47201,7 @@ export function createAgentChatService(args: {
         if (!cursorQueue.some((entry) => entry.steerId === steerId)) {
           cursorQueue.splice(Math.min(cursorIdx, cursorQueue.length), 0, promoted);
           reopenSteerSettlement(managed, steerId);
-          emitChatEvent(managed, {
-            type: "user_message",
-            text: promoted.text,
-            ...(promoted.displayText && promoted.displayText !== promoted.text
-              ? { displayText: promoted.displayText }
-              : {}),
-            ...(promoted.attachments.length ? { attachments: promoted.attachments } : {}),
-            ...(promoted.contextAttachments.length ? { contextAttachments: promoted.contextAttachments } : {}),
-            ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
-            steerId,
-            deliveryState: "queued",
-          });
+          emitSteerUserRow(managed, promoted, "queued", runtime.activeTurnId ?? undefined);
           persistChatState(managed);
         }
         logger.warn("agent_chat.dispatch_steer_failed", {
@@ -46850,71 +47221,63 @@ export function createAgentChatService(args: {
     // already running, so a staged row can be promoted into it. There is no
     // interrupt-and-resend; the table guard above already rejected that mode.
     if (runtime.kind === "codex") {
-      const codexQueue = runtime.pendingSteers;
-      const codexIdx = codexQueue.findIndex((s) => s.steerId === steerId);
-      if (codexIdx === -1) return { dispatchedAt: null };
-      // No live turn to fold into. Leave the row staged for the turn boundary
-      // rather than firing it at a thread that is not running.
-      if (!managed.session.threadId || !runtime.activeTurnId) return { dispatchedAt: null };
-      const [promoted] = codexQueue.splice(codexIdx, 1);
-      claimSteerSettlement(managed, steerId);
-      // Resolves the staged chip in the composer; without it the row stays
-      // parked there after the steer has already landed.
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
+      return promoteStagedSteer({
+        managed,
         steerId,
-        message: "Delivering your queued message...",
-        turnId: runtime.activeTurnId ?? undefined,
-      });
-      persistChatState(managed);
-      try {
-        // Back through the one codex steer path rather than a second copy of
-        // the `turn/steer` request, so the expected-turn mismatch retry and the
-        // accepted-steer bookkeeping stay in a single place.
-        await steerWithOptions(markChatMentionsExpanded({
-          sessionId,
-          text: promoted.text,
-          ...(promoted.displayText != null && promoted.displayText !== promoted.text
-            ? { displayText: promoted.displayText }
-            : {}),
-          attachments: promoted.attachments,
-          contextAttachments: promoted.contextAttachments,
-          ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
-          reasoningEffort: promoted.reasoningEffort,
-          executionMode: promoted.executionMode,
-          interactionMode: promoted.interactionMode,
-          dispatchMode: "inline",
-        }));
-      } catch (error) {
-        // Put the row back so the user's message is never silently lost.
-        if (!codexQueue.some((entry) => entry.steerId === steerId)) {
-          codexQueue.splice(Math.min(codexIdx, codexQueue.length), 0, promoted);
-          reopenSteerSettlement(managed, steerId);
-          emitChatEvent(managed, {
-            type: "user_message",
+        provider: "codex",
+        queue: runtime.pendingSteers,
+        activeTurnId: runtime.activeTurnId,
+        // No live turn to fold into. Leave the row staged for the turn boundary
+        // rather than firing it at a thread that is not running.
+        canDeliver: () => Boolean(managed.session.threadId && runtime.activeTurnId),
+        deliver: async (promoted) => {
+          // Back through the one codex steer path rather than a second copy of
+          // the `turn/steer` request, so the expected-turn mismatch retry and the
+          // accepted-steer bookkeeping stay in a single place.
+          await steerWithOptions(markChatMentionsExpanded({
+            sessionId,
             text: promoted.text,
-            ...(promoted.displayText && promoted.displayText !== promoted.text
+            ...(promoted.displayText != null && promoted.displayText !== promoted.text
               ? { displayText: promoted.displayText }
               : {}),
-            ...(promoted.attachments.length ? { attachments: promoted.attachments } : {}),
-            ...(promoted.contextAttachments.length ? { contextAttachments: promoted.contextAttachments } : {}),
+            attachments: promoted.attachments,
+            contextAttachments: promoted.contextAttachments,
             ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
-            steerId,
-            deliveryState: "queued",
-          });
-          persistChatState(managed);
-        }
-        logger.warn("agent_chat.dispatch_steer_failed", {
-          sessionId,
-          steerId,
-          mode,
-          provider: "codex",
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
-      return { dispatchedAt: Date.now() };
+            reasoningEffort: promoted.reasoningEffort,
+            executionMode: promoted.executionMode,
+            interactionMode: promoted.interactionMode,
+            dispatchMode: "inline",
+          }));
+        },
+      });
+    }
+    // OpenCode: a staged row can be folded into the live run through the
+    // server's native steer delivery. The table guard above already rejected
+    // "interrupt" for OpenCode (it has no interrupt-and-resend), so only
+    // "inline" reaches here.
+    if (runtime.kind === "opencode") {
+      return promoteStagedSteer({
+        managed,
+        steerId,
+        provider: "opencode",
+        queue: runtime.pendingSteers,
+        activeTurnId: runtime.activeTurnId,
+        // The v2 steer prompt cannot carry per-message overrides. Keep a row
+        // that has them staged so the turn boundary applies the directives,
+        // mirroring Cursor's refusal rather than dropping them.
+        canDeliver: (row) => !rowHasPerMessageOverrides(row),
+        deliver: async (promoted) => {
+          // Held across the v2 await so a cancel or edit during the round trip
+          // is refused rather than contradicting a delivery in flight.
+          runtime.dispatchingSteerIds.add(steerId);
+          try {
+            await dispatchOpenCodeSteerMessage(managed, runtime, promoted);
+          } finally {
+            runtime.dispatchingSteerIds.delete(steerId);
+          }
+        },
+        afterRestore: () => drainOpenCodeQueueHeadIfIdle(managed, runtime),
+      });
     }
     if (runtime.kind !== "claude") {
       throw new Error(`dispatchSteer is not supported on ${runtime.kind} sessions.`);

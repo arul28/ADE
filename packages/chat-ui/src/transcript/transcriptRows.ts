@@ -12,7 +12,8 @@
  *  - `buildRenderKey` / `buildTextRenderKey` / `buildCollapseKey`
  *  - tool call → tool result upgrade-in-place keyed on `logicalItemId ?? itemId`
  *    (the same template drives approval request → decision)
- *  - consecutive-reasoning merge and consecutive-status dedupe from
+ *  - consecutive-reasoning merge (same turn, deduped through
+ *    `mergeReasoningTextFragments`) and consecutive-status dedupe from
  *    `groupConsecutiveWorkLogRows`
  *  - `formatStructuredValue`, `eventHasPayload`, `readRecord`
  *
@@ -607,14 +608,6 @@ export function collapseTranscriptEvents(
 /* Group                                                                       */
 /* -------------------------------------------------------------------------- */
 
-function sameReasoningBlock(a: ChatEventReasoning, b: ChatEventReasoning): boolean {
-  return (
-    (a.turnId ?? null) === (b.turnId ?? null)
-    && (a.itemId ?? null) === (b.itemId ?? null)
-    && (a.summaryIndex ?? null) === (b.summaryIndex ?? null)
-  );
-}
-
 function sameStatusRow(a: ChatEventStatus, b: ChatEventStatus): boolean {
   return (
     a.turnStatus === b.turnStatus
@@ -624,7 +617,39 @@ function sameStatusRow(a: ChatEventStatus, b: ChatEventStatus): boolean {
 }
 
 /**
- * Second pass: merge consecutive reasoning from the same block into one
+ * Collapse a list of reasoning blocks into the blocks that actually differ.
+ *
+ * Ported from `apps/desktop/src/shared/chatActivityPhase.ts`: providers stream a
+ * thought as deltas and then re-emit the completed block (Claude can persist one
+ * thought twice, under the stream index and the snapshot index), so identical
+ * and contained blocks drop instead of repeating. Genuinely distinct blocks are
+ * joined by `---`.
+ */
+function mergeReasoningTextFragments(texts: readonly string[]): string {
+  const fragments: string[] = [];
+  for (const raw of texts) {
+    const text = raw.trim();
+    if (!text.length) continue;
+    if (fragments.includes(text)) continue;
+    const contained = fragments
+      .map((fragment, index) => (text.includes(fragment) ? index : -1))
+      .filter((index) => index >= 0);
+    if (contained.length) {
+      const firstIndex = contained[0]!;
+      fragments[firstIndex] = text;
+      for (const index of contained.slice(1).sort((left, right) => right - left)) {
+        fragments.splice(index, 1);
+      }
+      continue;
+    }
+    if (fragments.some((fragment) => fragment.includes(text))) continue;
+    fragments.push(text);
+  }
+  return fragments.join("\n\n---\n\n");
+}
+
+/**
+ * Second pass: merge consecutive reasoning from the same turn into one
  * collapsible row and drop repeated identical status rows.
  */
 export function groupTranscriptRows(rows: readonly TranscriptRow[]): TranscriptRow[] {
@@ -636,20 +661,20 @@ export function groupTranscriptRows(rows: readonly TranscriptRow[]): TranscriptR
 
     if (row.event.type === "reasoning") {
       const head = row.event;
-      let mergedText = head.text ?? "";
+      const fragments = [head.text ?? ""];
       let cursor = index + 1;
       while (cursor < rows.length) {
         const candidate = rows[cursor]!;
         if (candidate.event.type !== "reasoning") break;
-        if (!sameReasoningBlock(head, candidate.event)) break;
-        mergedText += `\n\n---\n\n${candidate.event.text ?? ""}`;
+        if ((candidate.event.turnId ?? null) !== (head.turnId ?? null)) break;
+        fragments.push(candidate.event.text ?? "");
         cursor += 1;
       }
       if (cursor > index + 1) {
         grouped.push({
           key: `reasoning-group:${row.key}`,
           timestamp: rows[cursor - 1]!.timestamp,
-          event: { ...head, text: mergedText },
+          event: { ...head, text: mergeReasoningTextFragments(fragments) },
         });
         index = cursor;
         continue;

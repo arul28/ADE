@@ -821,14 +821,18 @@ window) — the same replay staged when a wedged thread is recycled.
 actually happens, and so cross-machine fork excludes it (there is no provider
 artifact to transport).
 
-Cursor and Codex are the two non-Claude providers that can take a message
-*during* a live turn, and they take it differently from each other. Codex's
+Cursor, Codex, and OpenCode are the non-Claude providers that can take a
+message *during* a live turn, each by a different channel. Codex's
 app-server folds a `turn/steer` request into the running turn, so
 `ACTIVE_TURN_DISPATCH_MODES` gives it `inline` and `queue` but no `interrupt` —
 there is no cancel-and-resend. `@cursor/sdk` 1.0.31 added `Run.steer(text)`,
 which folds a message into the live local run, so the same table gives Cursor
 all three modes Claude has — read the table for the list rather than restating
-it here. What Cursor does *not* share is the meaning of its interrupt: it stops
+it here. OpenCode's v2 session prompt admits an input with
+`delivery: "steer"` (`v2.session.prompt`, the same route the server's own
+follow-up steering uses), which the live agent loop picks up at the next model
+step; like Codex it gets `inline` and `queue` and no `interrupt`. What Cursor
+does *not* share is the meaning of its interrupt: it stops
 the run, waits for the turn to settle, and sends the message as the next turn on
 the same agent, which keeps the thread because the SDK's local agent store holds
 it. That is what `activeTurnInterruptContinues` records, and why every surface

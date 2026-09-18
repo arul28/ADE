@@ -1,5 +1,6 @@
 import {
   collapseActivityPhaseRows,
+  mergeReasoningFragment,
   mergeReasoningTextFragments,
   type ActivityPhaseMergeMeta,
 } from "../../../shared/chatActivityPhase";
@@ -2210,7 +2211,7 @@ export function appendCollapsedChatTranscriptEvent(
           timestamp: envelope.timestamp,
           event: {
             ...existing.event,
-            text: `${existing.event.text}${event.text}`,
+            text: mergeReasoningFragment(existing.event.text, event.text),
             startTimestamp: existing.event.startTimestamp ?? existing.timestamp,
           },
         };
@@ -2812,19 +2813,23 @@ export function groupConsecutiveWorkLogRows(
       continue;
     }
 
-    // Group consecutive reasoning events into a single merged reasoning event
+    // Group consecutive reasoning events into a single merged reasoning event.
+    // Same-turn blocks merge even when the provider gave them different item
+    // ids (Claude persists one thought twice, under the stream index and the
+    // snapshot index); identical text collapses instead of repeating. The
+    // fragments are collected and merged in ONE call so a cumulative re-emit
+    // covering two earlier blocks drops both, which a pairwise fold cannot see.
     if (row.event.type === "reasoning") {
-      let mergedText = (row.event as any).text ?? "";
-      let mergedStartTimestamp = (row.event as any).startTimestamp ?? row.timestamp;
+      const firstReasoning = row.event;
+      const mergedStartTimestamp = firstReasoning.startTimestamp ?? row.timestamp;
+      const fragments = [firstReasoning.text ?? ""];
+      const firstTurnId = firstReasoning.turnId ?? null;
       let cursor = index + 1;
-      while (cursor < rows.length && rows[cursor]!.event.type === "reasoning") {
-        const nextReasoning = rows[cursor]!.event as any;
-        const sameBlock =
-          (nextReasoning.turnId ?? null) === ((row.event as any).turnId ?? null)
-          && (nextReasoning.itemId ?? null) === ((row.event as any).itemId ?? null)
-          && (nextReasoning.summaryIndex ?? null) === ((row.event as any).summaryIndex ?? null);
-        if (!sameBlock) break;
-        mergedText += "\n\n---\n\n" + (nextReasoning.text ?? "");
+      while (cursor < rows.length) {
+        const nextRow = rows[cursor]!;
+        if (nextRow.event.type !== "reasoning") break;
+        if ((nextRow.event.turnId ?? null) !== firstTurnId) break;
+        fragments.push(nextRow.event.text ?? "");
         cursor += 1;
       }
       if (cursor > index + 1) {
@@ -2834,10 +2839,10 @@ export function groupConsecutiveWorkLogRows(
           key: `reasoning-group:${row.key}`,
           timestamp: lastRow.timestamp,
           event: {
-            ...row.event,
-            text: mergedText,
+            ...firstReasoning,
+            text: mergeReasoningTextFragments(fragments),
             startTimestamp: mergedStartTimestamp,
-          } as any,
+          },
         });
         index = cursor;
         continue;

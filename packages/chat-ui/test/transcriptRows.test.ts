@@ -174,10 +174,19 @@ describe("groupTranscriptRows", () => {
     expect(rows[0]!.event).toMatchObject({ type: "reasoning", text: "first\n\n---\n\nsecond" });
   });
 
-  it("keeps reasoning from different blocks separate", () => {
+  it("merges same-turn reasoning blocks even when the provider used different block ids", () => {
     const rows = buildTranscriptRows([
       envelope({ type: "reasoning", text: "a", turnId: "t1", itemId: "i1", summaryIndex: 0 }),
       envelope({ type: "reasoning", text: "b", turnId: "t1", itemId: "i1", summaryIndex: 1 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event).toMatchObject({ type: "reasoning", text: "a\n\n---\n\nb" });
+  });
+
+  it("keeps reasoning from different turns separate", () => {
+    const rows = buildTranscriptRows([
+      envelope({ type: "reasoning", text: "a", turnId: "t1", itemId: "i1" }),
+      envelope({ type: "reasoning", text: "b", turnId: "t2", itemId: "i2" }),
     ]);
     expect(rows).toHaveLength(2);
   });

@@ -162,7 +162,7 @@ Two helpers summarise a parsed stream:
 | `context_usage` | Provider-neutral context occupancy. Automatic Claude samples use `origin: "live" \| "snapshot" \| "compact"` and are filtered out of the transcript; `live` is the responsive stream estimate, while `snapshot`/`compact` come from the SDK control channel after initialization, settled turns, and compact completion. `state` is `measured`, `compacting`, `recalculating`, or `unknown`; non-measured states deliberately hide the old percentage. Monotonic `sampleId` plus `capturedAt` support stale-response rejection and diagnostics. The user-invoked `/context` command carries `origin: "command"` (historical undefined-origin snapshots are treated the same) and still renders its inline breakdown card, classified by each category's `kind` (`used` / `free` / `buffer` / `deferred`) — never by the display name `"free"`. Optional typed fields (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`) carry the breakdown the meter's hover shows without reparsing the display `categories`. |
 | `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary and `state: "completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, and per-session count. `trigger: "ade_fallback"` identifies ADE's guarded fallback. A completed boundary invalidates older context-meter usage on desktop, ADE Code, and iOS; exact post-compaction snapshots may refill the meter immediately, while stale same-turn aggregate counters are ignored. |
 | `web_search` | Provider-neutral web-search/fetch lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. Actions can carry `query`, `queries`, `title`, `url`, and `snippet`; desktop and iOS render URL actions as in-app-browser result chips, while the TUI keeps a concise one-line action summary. Codex 0.145 additionally emits structured `results` (an array of `{ url, title, snippet }` capped at 8 by the adapter) plus `resultsTotal` (the pre-cap hit count). Renderers thread these onto the same grouped row — desktop/iOS surface them as `Sources` chips (deduped against the action URLs) and the Sources tab, and the TUI shows up to three `title — domain` preview lines with a `+N more` tail. Codex emits native web-search items; `claudeStructuredActivity.ts` maps Claude server-tool blocks into the same event. |
-| `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. Large stored data URIs are removed with original/omitted byte metadata. |
+| `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. OpenCode's two origins are split by where the `file` part lives: an assistant-owned part is model output (`codex_image_generation`), while a tool attachment is what the tool returned (`codex_image_view`) — except attachments from a recognized image-generation tool, which keep the generation card. The view line renders an inline preview for data URIs only (the renderer CSP pins `img-src` to an allowlist plus data:/blob:, so a remote preview would paint an empty box) and never prints a data URI as its name; remote and local sources keep the `open` affordance. Large stored data URIs are removed with original/omitted byte metadata. |
 | `codex_safety_buffering` / `codex_moderation_metadata` / `codex_sleep` / `codex_thread_deleted` / `codex_turn_stalled` | Codex app-server runtime state. Safety buffering, moderation metadata, and sleep are compact status rows; `codex_thread_deleted` clears the stored upstream thread; `codex_turn_stalled` is the structured recovery event shown when a turn produced no useful output after app-server reconciliation. Its actions are `wait`, `steer`, `interrupt_retry_same_thread`, and `restart_resume_thread`. |
 | `auto_approval_review` | When auto-approval policy kicks in, this event carries the review text. |
 | `prompt_suggestion` | Suggested follow-up prompts for the user. |
@@ -181,6 +181,16 @@ provider message shape with the child thread id, parent thread id, and the
 first model found across the historical/current SDK message shapes. The
 renderer treats a reported model as authoritative and shows the parent model
 as **inherited** only when no child model was reported.
+
+Every inline `SubagentSpawnCard` / `SubagentResultCard` also wears the owning
+runtime's provider mark at the bottom-right of the card (the same 20px mark the
+Work session rows use, from the same `chatToolTypeForProvider` mapping), so a
+thread makes clear which provider the main chat is calling. A runtime-native
+subagent inherits the chat's provider — that is the runtime that ran it. A
+spawned ADE child chat can run on a different provider, so `AgentChatPane`
+resolves the child's own provider from the session list and the card wears
+that; an unresolved child falls back to the parent runtime's mark rather than
+rendering nothing or a guess.
 
 ## Claude context guardrails
 
@@ -378,7 +388,10 @@ implements a two-layer transform:
    turns stay as two grouped envelopes. Shared logic lives in
    `apps/desktop/src/shared/chatActivityPhase.ts`; desktop wires it through
    `groupChatTranscriptRows()`, the TUI through `aggregateChatBlocks()`,
-   and iOS through `collapseActivityPhaseTimelineEntries()`.
+   and iOS through `collapseActivityPhaseTimelineEntries()`. Rows that the
+   client never draws (automatic `context_usage` snapshots, same-provider
+   handoffs) are removed before grouping on desktop, so a hidden row cannot
+   split one thinking run into two `Thought` rows.
 
 4. **Client presentation.** Grouping remains lossless, but normalized tool,
    command, hook, and web-search groups no longer occupy permanent transcript
@@ -455,6 +468,25 @@ model refusal fallback or `supersedes` message invalidated.
 heuristic. When a final `plan` event arrives for a turn, any preceding
 `plan_text` rows for that turn are discarded and replaced with the
 single `plan` row.
+
+## Reasoning merging
+
+Adjacent `reasoning` events in the same turn merge into one `Thought` row
+even when the provider gave them different `itemId`s, and the merged text
+never repeats a fragment the provider re-sent. Providers persist one thought
+more than once — Claude emits the streamed block under the stream content
+index and the SDK snapshot under the block index (the two differ when a
+redacted/empty thinking block was stripped from the snapshot), and Cursor
+re-sends a run's text — so without duplicate-aware merging a turn renders as
+two `Thought` rows or as one row with the paragraph doubled.
+
+The merge helpers live in `apps/desktop/src/shared/chatActivityPhase.ts`:
+`mergeReasoningFragment()` folds streaming fragments (exact/suffix re-emits and
+cumulative snapshots collapse to the text once) and
+`mergeReasoningTextFragments()` deduplicates fragment lists while keeping the
+`---` separator between genuinely distinct blocks. The Claude producer also
+skips a snapshot whose full text was already streamed, matched by text rather
+than by content index.
 
 ## Turn diff summaries
 

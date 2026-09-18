@@ -469,7 +469,9 @@ enum WorkActiveSendMode: String, Equatable {
 /// during turn" — but no cancel-and-resend, so it stops there. Cursor has all
 /// three too since `@cursor/sdk` 1.0.31 added `Run.steer()`, but its interrupt
 /// keeps its own meaning — it cancels the run and resends on the same agent
-/// thread — so its button still says "continue". Everything else is queue-only,
+/// thread — so its button still says "continue". OpenCode's v2 session prompt
+/// admits `delivery: "steer"` into the live agent loop, so it also has "send
+/// during turn" and no interrupt. Everything else is queue-only,
 /// which leaves nothing to pick between, so the picker stays hidden.
 struct WorkActiveSendCapability: Equatable {
   let modes: [WorkActiveSendMode]
@@ -517,6 +519,10 @@ struct WorkActiveSendCapability: Equatable {
       // `withholdingInlineIfNeeded` and is applied by the caller that knows the
       // session.
       return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Cursor", interruptContinues: true)
+    case "opencode":
+      // OpenCode's v2 session prompt admits `delivery: "steer"` into the live
+      // agent loop. No interrupt: like Codex there is no cancel-and-resend.
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "OpenCode", interruptContinues: false)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and
