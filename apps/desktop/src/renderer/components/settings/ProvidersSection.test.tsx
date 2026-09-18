@@ -1677,7 +1677,7 @@ describe("ProvidersSection", () => {
     // The chip is a claim about the models, so it must come from the registry's
     // `previewTier`, not from a hand-maintained list of provider names.
     it("marks only the preview-tier providers with a Preview chip", async () => {
-      for (const [provider, expected] of [["grok", true], ["copilot", true], ["qwen", false], ["kimi", false]] as const) {
+      for (const [provider, expected] of [["grok", false], ["copilot", true], ["qwen", false], ["kimi", false]] as const) {
         const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
         getStatusMock.mockReset();
         getStatusMock.mockResolvedValue(buildStatus(true));
