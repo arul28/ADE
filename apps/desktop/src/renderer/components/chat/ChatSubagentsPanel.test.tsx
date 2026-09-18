@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
@@ -161,6 +161,38 @@ describe("ChatSubagentsPanel (pane variant)", () => {
 
     fireEvent.keyDown(screen.getByTestId("chat-workflow-details-dialog"), { key: "Escape" });
     expect(screen.queryByTestId("chat-workflow-details-dialog")).toBeNull();
+  });
+
+  it("keeps a running workflow duration ticking past a stale provider sample", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-12T00:00:10.000Z"));
+    const workflow: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-duration",
+      description: "Track workflow duration",
+      taskType: "local_workflow",
+      workflowName: "Duration check",
+      workflowProgress: {
+        phases: [],
+        agents: [],
+        queuedCount: 0,
+        runningCount: 0,
+        doneCount: 0,
+        failedCount: 0,
+      },
+      // This is an interim provider sample, not the live elapsed duration.
+      usage: { durationMs: 1_000, toolUses: 1, totalTokens: 10 },
+    };
+
+    render(<ChatSubagentsPanel snapshots={[workflow]} events={[]} variant="pane" />);
+    fireEvent.click(screen.getByTestId("chat-workflow-active-card"));
+    const dialog = within(screen.getByTestId("chat-workflow-details-dialog"));
+
+    expect(dialog.getByText("10s")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(dialog.getByText("11s")).toBeTruthy();
   });
 
   it("reveals older workflow runs through the Show all control", () => {

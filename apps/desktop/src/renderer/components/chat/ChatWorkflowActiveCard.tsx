@@ -180,10 +180,14 @@ function phaseState(
 
 function workflowDuration(run: ChatWorkflowRun, nowMs: number): number | null {
   const reported = run.parent.usage?.durationMs;
-  if (typeof reported === "number" && reported > 0) return reported;
   const started = Date.parse(run.parent.startedAt);
+  if (run.parent.status === "running") {
+    if (Number.isFinite(started)) return Math.max(0, nowMs - started);
+    return typeof reported === "number" && reported > 0 ? reported : null;
+  }
+  if (typeof reported === "number" && reported > 0) return reported;
   if (!Number.isFinite(started)) return null;
-  const end = run.parent.status === "running" ? nowMs : Date.parse(run.parent.updatedAt);
+  const end = Date.parse(run.parent.updatedAt);
   if (!Number.isFinite(end)) return null;
   return Math.max(0, end - started);
 }

@@ -7,6 +7,7 @@ import {
   summarizeClaudeWorkflowRun,
   type ClaudeWorkflowAgentEmitState,
 } from "./claudeWorkflowProgress";
+import { isAgentChatWorkflowProgress } from "../../../shared/chatSubagents";
 
 const TASK_ID = "wf-task-1";
 
@@ -90,6 +91,32 @@ describe("parseClaudeWorkflowProgress", () => {
     expect(agent.name.length).toBeLessThanOrEqual(241);
     expect(agent.summary).toContain("blocked by safety filter");
     expect(agent.lastToolName?.length).toBeLessThanOrEqual(241);
+  });
+
+  it("round-trips clipped provider text through the shared workflow boundary", () => {
+    const long = "x".repeat(1_000);
+    const snapshot = parseClaudeWorkflowProgress([
+      { type: "workflow_phase", index: 0, title: long },
+      agentEntry({
+        label: long,
+        agentId: long,
+        agentType: long,
+        model: long,
+        phaseTitle: long,
+        blocked: true,
+        error: long,
+        resultPreview: long,
+        lastToolSummary: long,
+        lastToolName: long,
+        promptPreview: long,
+      }),
+    ], TASK_ID)!;
+
+    expect(isAgentChatWorkflowProgress(snapshot)).toBe(true);
+    expect(snapshot.agents[0]!.key.length).toBeLessThanOrEqual(241);
+    expect(snapshot.agents[0]!.summary.length).toBeLessThanOrEqual(241);
+    expect(snapshot.agents[0]!.agentId?.length).toBeLessThanOrEqual(241);
+    expect(snapshot.agents[0]!.agentType?.length).toBeLessThanOrEqual(241);
   });
 
   it("marks provider-running agents stopped when a terminal workflow snapshot is finalized", () => {

@@ -1,7 +1,8 @@
-import type {
-  AgentChatWorkflowAgent,
-  AgentChatWorkflowPhase,
-  AgentChatWorkflowProgress,
+import {
+  AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS,
+  type AgentChatWorkflowAgent,
+  type AgentChatWorkflowPhase,
+  type AgentChatWorkflowProgress,
 } from "../../../shared/types/chat";
 
 /**
@@ -33,7 +34,9 @@ export type ClaudeWorkflowProgressSnapshot = AgentChatWorkflowProgress;
 
 const MAX_AGENT_ENTRIES = 300;
 const MAX_PHASE_ENTRIES = 50;
-const MAX_PREVIEW_CHARS = 240;
+// The clipper reserves one character for its ellipsis so every final string
+// stays within the shared boundary accepted by isAgentChatWorkflowProgress.
+const MAX_PREVIEW_CHARS = AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS - 1;
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
@@ -86,8 +89,8 @@ function normalizeAgentEntry(entry: Record<string, unknown>): RawAgentEntry | un
     terminal,
     failed: state === "error",
     label: readClippedString(entry.label, MAX_PREVIEW_CHARS),
-    agentId: readString(entry.agentId),
-    agentType: readString(entry.agentType),
+    agentId: readClippedString(entry.agentId, MAX_PREVIEW_CHARS),
+    agentType: readClippedString(entry.agentType, MAX_PREVIEW_CHARS),
     model: readClippedString(entry.model, MAX_PREVIEW_CHARS),
     phaseTitle: readClippedString(entry.phaseTitle, MAX_PREVIEW_CHARS),
     blocked: entry.blocked === true,
@@ -115,7 +118,7 @@ function agentSummary(entry: RawAgentEntry): string {
   if (entry.phaseTitle) parts.push(entry.phaseTitle);
   if (entry.blocked) parts.push("blocked by safety filter");
   parts.push(detail);
-  return parts.join(" · ");
+  return readClippedString(parts.join(" · "), MAX_PREVIEW_CHARS) ?? "running";
 }
 
 /**
@@ -178,7 +181,9 @@ export function parseClaudeWorkflowProgress(
     else if (status === "failed") failedCount += 1;
     else doneCount += 1;
     agents.push({
-      key: entry.agentId ?? `${taskId}::a${entry.index}`,
+      key: entry.agentId
+        ?? readClippedString(`${taskId}::a${entry.index}`, MAX_PREVIEW_CHARS)
+        ?? `agent-${entry.index}`,
       index: entry.index,
       name: entry.label ?? entry.agentType ?? `Agent #${entry.index + 1}`,
       status,
@@ -220,7 +225,7 @@ export function summarizeClaudeWorkflowRun(snapshot: ClaudeWorkflowProgressSnaps
   const parts: string[] = [];
   if (currentPhase !== undefined) parts.push(currentPhase);
   if (counts.length > 0) parts.push(counts.join(" · "));
-  return parts.join(" — ");
+  return readClippedString(parts.join(" — "), MAX_PREVIEW_CHARS) ?? "";
 }
 
 /**

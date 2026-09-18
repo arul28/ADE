@@ -16092,6 +16092,14 @@ describe("createAgentChatService", () => {
             { type: "workflow_agent", index: 1, state: "start", startedAt: 5, label: "scan:db" },
           ],
         };
+        // Some SDK versions publish a completed patch before the richer
+        // notification. The active entry must retain the latest snapshot.
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          task_id: "wf-1",
+          patch: { status: "completed" },
+        };
         // Workflow ends while scan:db is still running.
         yield {
           type: "system",
@@ -25948,6 +25956,45 @@ describe("createAgentChatService", () => {
           parent_agent_id: "agent-parent-1",
         };
 
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-idle-wakeup",
+          task_id: "idle-workflow-1",
+          task_type: "local_workflow",
+          workflow_name: "idle-review",
+          description: "Review idle changes",
+        };
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          session_id: "sdk-idle-wakeup",
+          task_id: "idle-workflow-1",
+          task_type: "local_workflow",
+          workflow_name: "idle-review",
+          description: "Review idle changes",
+          workflow_progress: [
+            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "idle:review" },
+          ],
+        };
+        // Exercise the idle reader's completed-update preservation before its
+        // terminal notification drains the synthetic workflow agent.
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-idle-wakeup",
+          task_id: "idle-workflow-1",
+          patch: { status: "completed" },
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          session_id: "sdk-idle-wakeup",
+          task_id: "idle-workflow-1",
+          status: "completed",
+          summary: "Idle review complete",
+        };
+
         await finishBackgroundPromise;
         yield {
           type: "system",
@@ -26043,6 +26090,25 @@ describe("createAgentChatService", () => {
         title: "Check CI again",
         sourceToolUseId: "tool-wakeup-1",
         sourceTaskId: "cron-task-1",
+      });
+
+      const idleWorkflowAgentResult = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "subagent_result"
+          && (event.event as any).taskId === "idle-workflow-1::a0",
+      );
+      expect((idleWorkflowAgentResult.event as any).status).toBe("stopped");
+      const idleWorkflowParentResult = events.find(
+        (event) => event.sessionId === session.id
+          && event.event.type === "subagent_result"
+          && (event.event as any).taskId === "idle-workflow-1",
+      );
+      expect((idleWorkflowParentResult?.event as any)?.workflowProgress).toMatchObject({
+        queuedCount: 0,
+        runningCount: 0,
+        agents: [expect.objectContaining({ status: "stopped" })],
       });
 
       finishBackground();

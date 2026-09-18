@@ -866,6 +866,9 @@ export type AgentChatWorkflowPhase = {
   title: string;
 };
 
+/** Inclusive bound for provider-derived workflow text crossing client boundaries. */
+export const AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS = 241;
+
 export type AgentChatWorkflowAgent = {
   key: string;
   index: number;

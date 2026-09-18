@@ -1,9 +1,10 @@
-import type {
-  AgentChatEvent,
-  AgentChatEventEnvelope,
-  AgentChatSessionSummary,
-  AgentChatSubagentTranscriptMessage,
-  AgentChatWorkflowProgress,
+import {
+  AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS,
+  type AgentChatEvent,
+  type AgentChatEventEnvelope,
+  type AgentChatSessionSummary,
+  type AgentChatSubagentTranscriptMessage,
+  type AgentChatWorkflowProgress,
 } from "./types/chat";
 import { resolveModelDescriptor } from "./modelRegistry";
 
@@ -74,8 +75,6 @@ const MAX_WORKFLOW_AGENT_ENTRIES = 300;
 const MAX_WORKFLOW_PHASE_ENTRIES = 50;
 // The main-process preview clip keeps 240 source characters and appends one
 // ellipsis character, so the stored boundary is one character wider.
-const MAX_WORKFLOW_TEXT_CHARS = 241;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -85,7 +84,7 @@ function isFiniteNonNegativeNumber(value: unknown): value is number {
 }
 
 function isBoundedString(value: unknown): value is string {
-  return typeof value === "string" && value.length <= MAX_WORKFLOW_TEXT_CHARS;
+  return typeof value === "string" && value.length <= AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS;
 }
 
 function isWorkflowAgent(value: unknown): value is AgentChatWorkflowProgress["agents"][number] {
