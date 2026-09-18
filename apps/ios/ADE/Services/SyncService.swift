@@ -4005,6 +4005,12 @@ final class SyncService: ObservableObject {
   @Published private(set) var chatEventNotificationRevision = 0
   @Published private(set) var subscribedTerminalSessionIds: Set<String> = []
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
+  /// Live-view consumers for pushed `macDesktop.streamRecord` /
+  /// `macDesktop.streamEnded`, keyed by the subscription id the phone minted.
+  /// Main-actor because every consumer is a view; the receive path decodes the
+  /// record's bytes off the main actor before landing here.
+  private var macDesktopStreamRecordHandlers: [String: (MacDesktopStreamRecord) -> Void] = [:]
+  private var macDesktopStreamEndedHandlers: [String: (MacDesktopStreamEnded) -> Void] = [:]
   @Published private(set) var pendingOperationCount = 0
   /// Offline new-chat creations awaiting sync. The Work list renders one
   /// "Pending sync" row per entry.
@@ -4432,6 +4438,9 @@ final class SyncService: ObservableObject {
   private var supportsProjectActions = false
   private var supportsChatStreaming = false
   private var supportsChatHistoryPaging = false
+  /// `hello.features.macDesktopStream`: the host can push the lane's Mac
+  /// Desktop video over this socket. Absent or false keeps the still image.
+  private var advertisesMacDesktopStream = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
   private let chatEventUnsubscribeRetentionLimit = 4
   private var recentFullChatSnapshotRequestBySession: [
@@ -14910,6 +14919,125 @@ final class SyncService: ObservableObject {
     return try? decode(result, as: WorkToolsObservationPreview.self)
   }
 
+  // MARK: - Mac Desktop live stream (view-only)
+
+  /// Whether this host can stream a lane's Mac Desktop to the phone.
+  ///
+  /// Two halves must both be present. `hello.features.macDesktopStream` is the
+  /// wire contract's support signal, and `macDesktop.streamSubscribe` is the
+  /// command the phone is about to invoke — a feature bit without the
+  /// advertisement would mount a live view whose first RPC the host answers
+  /// with an error. Either half missing falls back to today's still image,
+  /// which is the safe direction.
+  var supportsMacDesktopStream: Bool {
+    advertisesMacDesktopStream && supportsRemoteAction("macDesktop.streamSubscribe")
+  }
+
+  /// The lane's redacted Mac Desktop status, over the same view-only read the
+  /// desktop calls. Never carries the stream token: only `startStream` does,
+  /// and the phone does not call it.
+  func macDesktopGetStatus(laneId: String) async throws -> MacDesktopStatus {
+    try requireMacDesktopStreamAction("macDesktop.getStatus")
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    return try decode(
+      try await sendCommand(
+        action: "macDesktop.getStatus",
+        args: ["laneId": trimmed],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
+      ),
+      as: MacDesktopStatus.self
+    )
+  }
+
+  /// Asks the host to attach this viewer to the lane's stream.
+  ///
+  /// The host starts the encoder if it is not already running and pushes a
+  /// `config` record followed by a keyframe. This is the view-only path: the
+  /// phone never calls `macDesktop.start`/`stop`, so no display is created or
+  /// torn down by watching one.
+  func macDesktopStreamSubscribe(
+    laneId: String,
+    subscriptionId: String,
+    viewerLabel: String? = nil
+  ) async throws -> MacDesktopStreamSubscribeResult {
+    try requireMacDesktopStreamAction("macDesktop.streamSubscribe")
+    let trimmedLane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedSubscription = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedLane.isEmpty, !trimmedSubscription.isEmpty else {
+      throw NSError(
+        domain: "ADE",
+        code: 6,
+        userInfo: [NSLocalizedDescriptionKey: "The live view had no lane to watch."]
+      )
+    }
+    var args: [String: Any] = ["laneId": trimmedLane, "subscriptionId": trimmedSubscription]
+    if let viewerLabel, !viewerLabel.isEmpty {
+      args["viewerLabel"] = viewerLabel
+    }
+    return try decode(
+      try await sendCommand(
+        action: "macDesktop.streamSubscribe",
+        args: args,
+        disconnectOnTimeout: false,
+        attemptedLiveFailurePolicy: .preserveForManualRetry
+      ),
+      as: MacDesktopStreamSubscribeResult.self
+    )
+  }
+
+  /// Drops this viewer's subscription. Best-effort: a dead socket has already
+  /// released it on the host, so a failure needs no retry.
+  func macDesktopStreamUnsubscribe(subscriptionId: String) async throws {
+    try requireMacDesktopStreamAction("macDesktop.streamUnsubscribe")
+    let trimmed = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    _ = try await sendCommand(
+      action: "macDesktop.streamUnsubscribe",
+      args: ["subscriptionId": trimmed],
+      disconnectOnTimeout: false,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// Registers the one live-view consumer for a subscription id. A second
+  /// registration for the same id replaces the first, so a rebuilt view cannot
+  /// leave a stale closure receiving frames for a subscription it abandoned.
+  func registerMacDesktopStream(
+    subscriptionId: String,
+    onRecord: @escaping (MacDesktopStreamRecord) -> Void,
+    onEnded: @escaping (MacDesktopStreamEnded) -> Void
+  ) {
+    macDesktopStreamRecordHandlers[subscriptionId] = onRecord
+    macDesktopStreamEndedHandlers[subscriptionId] = onEnded
+  }
+
+  func unregisterMacDesktopStream(subscriptionId: String) {
+    macDesktopStreamRecordHandlers.removeValue(forKey: subscriptionId)
+    macDesktopStreamEndedHandlers.removeValue(forKey: subscriptionId)
+  }
+
+  private func resetMacDesktopStreamHandlers() {
+    macDesktopStreamRecordHandlers.removeAll()
+    macDesktopStreamEndedHandlers.removeAll()
+  }
+
+  /// Refuses a live-stream call the connected host never advertised, rather
+  /// than putting an unknown action on the wire. Older brains and chat-only
+  /// runtimes simply omit these commands.
+  private func requireMacDesktopStreamAction(_ action: String) throws {
+    guard supportsMacDesktopStream, supportsViewerRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Live Mac Desktop video is not available on this machine version.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+  }
+
   func createPullRequest(
     laneId: String,
     title: String,
@@ -18827,6 +18955,7 @@ final class SyncService: ObservableObject {
     supportsPersonalChats = false
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
+    advertisesMacDesktopStream = featureEnabled("macDesktopStream", "mac_desktop_stream")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
     supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
     if let chunking = features?["chunkedEnvelopes"] as? [String: Any],
@@ -19378,6 +19507,25 @@ final class SyncService: ObservableObject {
       // snapshot read, never a GitHub poll per event.
       prsRemoteRevision += 1
       resolve(requestId: requestId, result: .success(payload))
+    case "macDesktop.streamRecord":
+      // The pushed records are the whole live picture, so this case is the
+      // only data path: no polling, no request of the phone's own. The base64
+      // access unit decodes off the main actor — a keyframe is hundreds of
+      // kilobytes — and the generation guard then drops a record that belongs
+      // to a socket which has already been replaced.
+      guard let dict = payload as? [String: Any],
+            let envelope = MacDesktopStreamRecordEnvelope(dict) else { break }
+      let record = await Task.detached(priority: .userInitiated) {
+        Data(base64Encoded: envelope.base64Data).map {
+          MacDesktopStreamRecord(envelope: envelope, data: $0)
+        }
+      }.value
+      guard isCurrentConnectionGeneration(generation), let record else { break }
+      macDesktopStreamRecordHandlers[record.subscriptionId]?(record)
+    case "macDesktop.streamEnded":
+      guard let dict = payload as? [String: Any],
+            let ended = MacDesktopStreamEnded(dict) else { break }
+      macDesktopStreamEndedHandlers[ended.subscriptionId]?(ended)
     case "heartbeat":
       if let dict = payload as? [String: Any], (dict["kind"] as? String) == "ping" {
         sendEnvelope(type: "heartbeat", requestId: requestId, payload: [
@@ -20068,6 +20216,11 @@ final class SyncService: ObservableObject {
     reconnectStabilityTask?.cancel()
     reconnectStabilityTask = nil
     resetTerminalTransportStateForReconnect()
+    // A stream subscription is owned by the socket that minted it; the host
+    // drops it on close. Clearing the consumers here means a reconnecting live
+    // view re-registers against the new connection instead of receiving
+    // nothing.
+    resetMacDesktopStreamHandlers()
     if let socket {
       resolveRelayTransportReady(
         taskIdentifier: socket.taskIdentifier,

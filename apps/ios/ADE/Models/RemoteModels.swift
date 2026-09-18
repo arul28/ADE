@@ -6465,3 +6465,109 @@ struct WorkToolsObservationPreview: Codable, Equatable {
   var dataUrl: String
   var mimeType: String
 }
+
+// MARK: - Mac Desktop live stream (view-only)
+
+/// A redacted `macDesktop.getStatus` reply.
+///
+/// Only the fields the phone renders are modelled, exactly like
+/// `WorkToolsMacDesktopState`: a newer host sends the desktop's full status
+/// (driver health, permissions, lanes, recording) and `Codable` ignores what
+/// this type does not name. The stream token is deliberately absent — the host
+/// redacts it on this method and only `startStream` ever carries it.
+struct MacDesktopStatus: Codable, Equatable {
+  var supported: Bool
+  var display: WorkToolsMacDesktopDisplay?
+  var windows: [WorkToolsMacDesktopWindow]?
+  var lease: WorkToolsMacDesktopLease?
+  var stream: WorkToolsMacDesktopStream?
+}
+
+/// `macDesktop.streamSubscribe` reply: the picture's shape, then records flow.
+struct MacDesktopStreamSubscribeResult: Codable, Equatable {
+  var ok: Bool
+  var width: Int?
+  var height: Int?
+  var codec: String?
+}
+
+/// The `config` record's payload — JSON inside the record's `data` bytes.
+struct MacDesktopStreamConfig: Codable, Equatable {
+  var codec: String
+  var width: Int
+  var height: Int
+  var annexB: Bool
+}
+
+/// A pushed `macDesktop.streamRecord` before its base64 `data` is decoded.
+///
+/// Split from `MacDesktopStreamRecord` so the whole access unit's base64 can be
+/// decoded off the main actor: a keyframe on a 2560-wide display is hundreds of
+/// kilobytes of base64, and this lands on the socket's receive path.
+struct MacDesktopStreamRecordEnvelope: Equatable {
+  enum Kind: String {
+    case config
+    case frame
+  }
+
+  var subscriptionId: String
+  var seq: Int
+  var kind: Kind
+  var keyframe: Bool
+  var timestampUs: Int
+  var base64Data: String
+
+  init?(_ payload: [String: Any]) {
+    guard
+      let subscriptionId = payload["subscriptionId"] as? String,
+      let kind = (payload["kind"] as? String).flatMap(Kind.init(rawValue:)),
+      let encoded = payload["data"] as? String
+    else { return nil }
+    self.subscriptionId = subscriptionId
+    self.seq = (payload["seq"] as? NSNumber)?.intValue ?? 0
+    self.kind = kind
+    self.keyframe = (payload["keyframe"] as? Bool) ?? false
+    self.timestampUs = (payload["timestampUs"] as? NSNumber)?.intValue ?? 0
+    self.base64Data = encoded
+  }
+}
+
+/// One pushed stream record, its access unit decoded.
+struct MacDesktopStreamRecord: Equatable {
+  var subscriptionId: String
+  var seq: Int
+  var kind: MacDesktopStreamRecordEnvelope.Kind
+  var keyframe: Bool
+  var timestampUs: Int
+  /// `frame`: one Annex-B access unit. `config`: the `MacDesktopStreamConfig`
+  /// JSON object's bytes.
+  var data: Data
+
+  init(envelope: MacDesktopStreamRecordEnvelope, data: Data) {
+    self.subscriptionId = envelope.subscriptionId
+    self.seq = envelope.seq
+    self.kind = envelope.kind
+    self.keyframe = envelope.keyframe
+    self.timestampUs = envelope.timestampUs
+    self.data = data
+  }
+}
+
+/// A pushed `macDesktop.streamEnded`. `reason` stays a raw string so a reason a
+/// newer host invents degrades to the generic stopped sentence instead of
+/// failing to decode.
+struct MacDesktopStreamEnded: Equatable {
+  var subscriptionId: String
+  var reason: String
+  var message: String?
+
+  init?(_ payload: [String: Any]) {
+    guard
+      let subscriptionId = payload["subscriptionId"] as? String,
+      let reason = payload["reason"] as? String
+    else { return nil }
+    self.subscriptionId = subscriptionId
+    self.reason = reason
+    self.message = payload["message"] as? String
+  }
+}

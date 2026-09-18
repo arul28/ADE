@@ -2800,6 +2800,27 @@ into `limited` mode. Browser login handoff is surfaced read-only through
 `WorkToolsBrowserTab.handoffReason`. See
 [Chat › the Work tools pane on iOS and the hosted web client](../chat/README.md#the-work-tools-pane-on-ios-and-the-hosted-web-client).
 
+The **Mac Desktop card** gains a live picture when the host advertises
+`hello.features.macDesktopStream` and the `macDesktop.streamSubscribe`
+command. `MacDesktopLiveView.swift` wraps an `AVSampleBufferDisplayLayer` in a
+`UIViewRepresentable`; the card subscribes while the sheet is visible,
+foregrounded, and connected, and drops the subscription on disappear,
+background, sheet close, or socket teardown, resubscribing on reconnect —
+one stable subscription id per lane per app instance. Records arrive as
+`macDesktop.streamRecord` pushes (a `config` first, then Annex-B frames with
+SPS/PPS ahead of every keyframe), are base64-decoded off the main actor,
+rewritten to AVCC, and decoded through a `CMVideoFormatDescription` built from
+the in-band parameter sets; `MacDesktopStreamFrameGate` holds P-frames until
+the keyframe that follows any sequence gap, which is what the host's
+backpressure contract promises. `macDesktop.streamEnded` ends the session
+(stopped/display destroyed) or waits for the reconnect
+(`connection_closed`). The still image is fetched once as the placeholder
+behind the first keyframe and stays when the host reports `stream.idle` — the
+phone never polls a still while a session is mounted. The phone never calls
+`macDesktop.start`/`stop` and sends no input; the lease line and the sheet's
+"Control from the desktop" line still apply.
+
+
 ### The Proof sheet and viewer
 
 `WorkProofSheet.swift` is the phone's proof drawer, presented from the chat

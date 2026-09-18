@@ -24,6 +24,7 @@ struct WorkToolsSheet: View {
 
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.scenePhase) private var scenePhase
 
   @State private var state: WorkToolsLaneState?
   @State private var loaded = false
@@ -33,6 +34,16 @@ struct WorkToolsSheet: View {
   /// `loadFrameIfNeeded`: only a definitive answer lands here, never a
   /// transport failure.
   @State private var unreadableFramePath: String?
+  /// The Mac Desktop card's own still image, separate from the active-tool
+  /// frame above. While a live session is up it is the placeholder behind the
+  /// stream and is fetched exactly once; it is only polled on hosts without
+  /// the stream feature.
+  @State private var macDesktopFrame: UIImage?
+  @State private var loadedMacDesktopFramePath: String?
+  /// The one live subscription for this lane. Non-nil only while the sheet is
+  /// on screen, active, connected, and the host can stream the lane's display.
+  @State private var liveSession: MacDesktopLiveSession?
+  @State private var isFetchingMacDesktopFrame = false
 
   #if DEBUG
   /// Fixture seam for previews and simulator screenshots. When set, `refresh`
@@ -73,6 +84,11 @@ struct WorkToolsSheet: View {
         await refresh()
       }
     }
+    .onAppear { updateLiveLifecycle() }
+    .onDisappear { stopLiveSession() }
+    .onChange(of: scenePhase) { _, _ in updateLiveLifecycle() }
+    .onChange(of: syncService.connectionState) { _, _ in updateLiveLifecycle() }
+    .onChange(of: isLiveCapable) { _, _ in updateLiveLifecycle() }
   }
 
   private var content: some View {
@@ -258,6 +274,7 @@ struct WorkToolsSheet: View {
       ADEGlassSection(title: "Mac Desktop", subtitle: macDesktop.display?.name) {
         if let display = macDesktop.display {
           VStack(alignment: .leading, spacing: 6) {
+            macDesktopPicture
             HStack(spacing: 6) {
               Text("\(display.width) × \(display.height)")
                 .font(.caption)
@@ -317,6 +334,38 @@ struct WorkToolsSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
+    }
+  }
+
+  /// The card's picture slot.
+  ///
+  /// With the stream feature the live layer owns the picture and the latest
+  /// still sits behind it until the first keyframe decodes. Without it the
+  /// still is the picture, exactly as the rest of the read-only sheet works.
+  @ViewBuilder
+  private var macDesktopPicture: some View {
+    let isLive = syncService.supportsMacDesktopStream && liveSession != nil
+    if isLive, let session = liveSession {
+      MacDesktopLivePicture(session: session, placeholder: macDesktopFrame)
+    } else if let macDesktopFrame {
+      Image(uiImage: macDesktopFrame)
+        .resizable()
+        .scaledToFit()
+        .frame(maxWidth: .infinity)
+        .background(
+          Color.black.opacity(0.12),
+          in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityLabel("The last captured frame of this lane's Mac Desktop")
+    } else if isFetchingMacDesktopFrame {
+      HStack(spacing: 10) {
+        ProgressView()
+        Text("Loading the last frame…")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
@@ -456,6 +505,10 @@ struct WorkToolsSheet: View {
     state = next
     loaded = true
     await loadFrameIfNeeded()
+    // While a live session is mounted the card's still is not polled: the
+    // picture arrives on the socket and the one-shot placeholder loaded at
+    // session start is all the fallback that is ever needed.
+    await loadMacDesktopFrameIfNeeded(allowFetch: !isLiveMacDesktopMounted)
   }
 
   private func loadFrameIfNeeded() async {
@@ -466,6 +519,17 @@ struct WorkToolsSheet: View {
       return
     }
     guard loadedFramePath != path else { return }
+    // The live view owns the mac-desktop observation while it is mounted. If
+    // the top card is showing that tool, reuse the placeholder already loaded
+    // for the card instead of starting the 3s still poll the stream replaced.
+    if isLiveMacDesktopMounted, path == macDesktopObservationPath {
+      if loadedMacDesktopFramePath == path, let macDesktopFrame {
+        frame = macDesktopFrame
+        loadedFramePath = path
+        unreadableFramePath = nil
+      }
+      return
+    }
     // A host that advertises the state read but not the preview read cannot
     // send bytes at all. Nothing is put on the wire, and `frameState` says so
     // instead of spinning under a frame that is never coming.
@@ -503,6 +567,112 @@ struct WorkToolsSheet: View {
     frame = image
     loadedFramePath = path
     unreadableFramePath = nil
+  }
+
+  /// One still for the Mac Desktop card and the live view's placeholder.
+  ///
+  /// `allowFetch` is false while a live session owns the picture, which is how
+  /// the card avoids becoming a 3s still-image poll under the stream. The
+  /// loaded-path guard and the image cache mean even allowed calls fetch at
+  /// most once per observation.
+  private func loadMacDesktopFrameIfNeeded(allowFetch: Bool) async {
+    guard let path = macDesktopObservationPath else {
+      macDesktopFrame = nil
+      loadedMacDesktopFramePath = nil
+      return
+    }
+    guard loadedMacDesktopFramePath != path else { return }
+    let cacheKey = "work-tools-mac-desktop-observation::\(path)"
+    if let cached = ADEImageCache.shared.cachedImage(for: cacheKey) {
+      macDesktopFrame = cached
+      loadedMacDesktopFramePath = path
+      return
+    }
+    guard allowFetch, syncService.supportsWorkToolsObservationPreview else { return }
+    guard !isFetchingMacDesktopFrame else { return }
+    isFetchingMacDesktopFrame = true
+    defer { isFetchingMacDesktopFrame = false }
+    let preview: WorkToolsObservationPreview?
+    do {
+      preview = try await syncService.readWorkToolsObservationPreview(path: path)
+    } catch {
+      // Transient; the next allowed call retries. Never recorded as a verdict.
+      return
+    }
+    guard !Task.isCancelled else { return }
+    guard
+      let preview,
+      let data = Self.decodeDataUrl(preview.dataUrl),
+      let image = UIImage(data: data)
+    else {
+      // The host answered and had nothing to give. A retry cannot change that.
+      loadedMacDesktopFramePath = path
+      macDesktopFrame = nil
+      return
+    }
+    ADEImageCache.shared.store(data, for: cacheKey)
+    macDesktopFrame = image
+    loadedMacDesktopFramePath = path
+  }
+
+  // MARK: - Live stream lifecycle
+
+  /// True when the host can stream and this lane has a display to stream. The
+  /// feature-absent host and the lane with no desktop both keep the still.
+  private var isLiveCapable: Bool {
+    syncService.supportsMacDesktopStream
+      && state?.macDesktop?.supported == true
+      && state?.macDesktop?.display != nil
+  }
+
+  /// Whether a live session object is mounted right now. Its lifetime is the
+  /// subscription's.
+  private var isLiveMacDesktopMounted: Bool {
+    liveSession != nil
+  }
+
+  private var macDesktopObservationPath: String? {
+    state?.macDesktop?.lastObservation?.screenshotPath
+  }
+
+  /// The one decision point for the subscription: the card is on screen, the
+  /// app is in the foreground, the socket is up, and the lane has a display.
+  private func updateLiveLifecycle() {
+    let shouldRun = isLiveCapable
+      && scenePhase == .active
+      && syncService.connectionState == .connected
+    if shouldRun {
+      startLiveSessionIfNeeded()
+    } else {
+      stopLiveSession()
+    }
+  }
+
+  private func startLiveSessionIfNeeded() {
+    guard liveSession == nil else { return }
+    // Stable per lane, per app instance, and per device: rebuilding the view
+    // cannot stack a second subscription onto the host for the same display,
+    // and two phones watching one lane cannot steal each other's subscription.
+    let session = MacDesktopLiveSession(
+      laneId: laneId,
+      subscriptionId: "ios-\(syncService.deviceId)-mac-desktop-\(laneId)",
+      viewerLabel: UIDevice.current.name
+    )
+    syncService.registerMacDesktopStream(
+      subscriptionId: session.subscriptionId,
+      onRecord: { [weak session] record in session?.consume(record) },
+      onEnded: { [weak session] ended in session?.noteEnded(ended) }
+    )
+    liveSession = session
+    // One still for the wait, never a poll.
+    Task { await loadMacDesktopFrameIfNeeded(allowFetch: true) }
+    Task { await session.start(using: syncService) }
+  }
+
+  private func stopLiveSession() {
+    guard let session = liveSession else { return }
+    session.stop(using: syncService)
+    liveSession = nil
   }
 
   /// Ceiling on a decoded observation frame. These are desktop-resolution PNG
