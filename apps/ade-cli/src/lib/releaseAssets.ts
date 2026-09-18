@@ -84,13 +84,23 @@ export class ReleaseAssetDownloadError extends Error {
   }
 }
 
+/**
+ * ADE release tags are `v<semver>`. Clients often carry the bare app version
+ * (`1.2.74` from the desktop's package version or the update feed), so a bare
+ * semver is mapped onto its tag here rather than producing a 404 download URL.
+ */
+export function releaseTagForVersion(version: string): string {
+  const trimmed = version.trim();
+  return /^\d+\.\d+\.\d+/.test(trimmed) ? `v${trimmed}` : trimmed;
+}
+
 export function releaseAssetUrl(repo: string, version: string, assetName: string): string {
   const trimmedRepo = repo.trim();
   const trimmedVersion = version.trim();
   if (!trimmedVersion || trimmedVersion === "latest") {
     return `https://github.com/${trimmedRepo}/releases/latest/download/${assetName}`;
   }
-  return `https://github.com/${trimmedRepo}/releases/download/${trimmedVersion}/${assetName}`;
+  return `https://github.com/${trimmedRepo}/releases/download/${releaseTagForVersion(trimmedVersion)}/${assetName}`;
 }
 
 /** Canonical published asset name for a runtime binary, e.g. `ade-linux-arm64`. */

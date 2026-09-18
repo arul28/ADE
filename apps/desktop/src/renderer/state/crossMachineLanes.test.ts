@@ -28,6 +28,7 @@ import {
   useForeignSessionLaneId,
   useLanesForPin,
   useMachineEntryForBinding,
+  requestCrossMachineLanesForMachine,
   startCrossMachineLaneSync,
   useCrossMachineLaneUnion,
 } from "./crossMachineLanes";
@@ -1221,6 +1222,57 @@ describe("cross-machine refresh scheduling", () => {
       });
 
     stop();
+  });
+
+  it("re-reads one machine's lanes on request instead of waiting for the slow cadence", async () => {
+    vi.useFakeTimers();
+    const localBinding = {
+      kind: "local" as const,
+      key: "local:/repo-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    };
+    const listLanes = vi.fn(async () => [
+      makeLane({ id: "lane-this-mac", branchRef: "feature/local" }),
+    ]);
+    const listSessions = vi.fn(async () => []);
+    window.ade = {
+      lanes: { list: listLanes },
+      sessions: { list: listSessions },
+      remoteRuntime: {
+        callAction: vi.fn(),
+        getConnectionSnapshot: vi.fn(async () => ({ connections: [], connectedCount: 0 })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "remote:target-studio:project-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: "target-studio",
+      boundProjectId: "project-a",
+      thisMachineBinding: localBinding,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(listLanes).toHaveBeenCalledTimes(1);
+
+    // A normal poll tick is inside the slow lane cadence, so it buys nothing.
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(listLanes).toHaveBeenCalledTimes(1);
+
+    // The composer picking this machine is a direct request for its catalog.
+    requestCrossMachineLanesForMachine(THIS_MACHINE_ID);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(listLanes).toHaveBeenCalledTimes(2);
+
+    stop();
+    // Nothing subscribed: a request must not start a read against a dead scope.
+    listLanes.mockClear();
+    requestCrossMachineLanesForMachine(THIS_MACHINE_ID);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(listLanes).not.toHaveBeenCalled();
   });
 
   it("waits for a slow refresh to settle before scheduling the next poll", async () => {

@@ -1739,7 +1739,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
   });
 
-  it("setDraftLaneId remembers the new-session lane per project and selects it globally", () => {
+  it("setDraftLaneId remembers the new-session lane per project without touching the global selection", () => {
     const { result } = renderHook(() => useWorkSessions());
 
     act(() => {
@@ -1747,7 +1747,11 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(setWorkViewStateSpy).toHaveBeenCalledWith("/fake/project", { draftLaneId: "lane-2" });
-    expect(selectLaneSpy).toHaveBeenCalledWith("lane-2");
+    // Lane ids are per-machine. The draft can target a machine the project tab
+    // is not bound to, so the global selection is synced by `WorkStartSurface`
+    // only when the draft machine IS the bound one — writing a foreign lane id
+    // here pointed Lanes/PRs/Files at a lane the bound project never had.
+    expect(selectLaneSpy).not.toHaveBeenCalled();
   });
 
   it("setDraftMachineId remembers the draft owner independently from its lane id", () => {

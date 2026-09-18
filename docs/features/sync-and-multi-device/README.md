@@ -1390,6 +1390,15 @@ Cross-machine Work union:
   `isThisMachine` decides whether the amber elsewhere glyph appears. Thus a
   remote-bound tab still labels every remotely owned lane, including those in
   its primary list rather than the foreign union.
+  `requestCrossMachineLanesForMachine(machineId)` is the module's one
+  on-demand escape from the slow foreign lane cadence, for a surface that is
+  about to route work at a machine and needs its lane catalog now. It forgets
+  that machine's lane-read and lane-status-read timestamps together — they are
+  one fact and are never forgotten separately — and schedules a status-depth
+  refresh on the shared coalesced tick, so calling it from a render effect
+  cannot fan out reads. It is a no-op when no consumer is subscribed, because a
+  refresh outside a live scope would read against an empty scope and publish
+  rows nobody asked for.
 - `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx`,
   `SessionListPane.tsx`, and
   `apps/desktop/src/renderer/lib/terminalAttention.ts` — route chat-created
