@@ -379,16 +379,32 @@ export function useDraftMachineRouting({
    * true and actionable.
    */
   const laneReadFailed = unionSlice != null && unionSlice.error != null && unionSlice.lanes.length === 0;
+  /**
+   * Whether holding the selection is warranted RIGHT NOW: a foreign machine is
+   * picked, its lanes have not been read, the union still intends to read them,
+   * and no read has failed.
+   *
+   * The timer below and the flag below it both key on this single condition so
+   * they can never disagree. Keying the timer on a weaker condition let an
+   * expiry be recorded during a window when the hold was not warranted at all
+   * (the machine was briefly outside the intended read set); because the effect
+   * then had no reason to re-run, that stale expiry latched and permanently
+   * suppressed the pull-forward read once the machine became eligible again.
+   */
+  const laneCatalogUnresolved = Boolean(
+    enabled
+    && machineId !== boundMachineId
+    && !executionLaneCatalogLoaded
+    && unionWillReadMachine
+    && !laneReadFailed,
+  );
   const [laneCatalogHoldExpired, setLaneCatalogHoldExpired] = useState(false);
   useEffect(() => {
-    if (!enabled || machineId === boundMachineId || executionLaneCatalogLoaded) {
-      setLaneCatalogHoldExpired(false);
-      return;
-    }
     setLaneCatalogHoldExpired(false);
+    if (!laneCatalogUnresolved) return;
     const timer = setTimeout(() => setLaneCatalogHoldExpired(true), LANE_CATALOG_HOLD_MS);
     return () => clearTimeout(timer);
-  }, [boundMachineId, enabled, executionLaneCatalogLoaded, machineId]);
+  }, [laneCatalogUnresolved]);
   /**
    * True while a machine OTHER than the tab's own has been picked and we have
    * never read its lanes. The selection is held UNRESOLVED for that window
@@ -405,14 +421,7 @@ export function useDraftMachineRouting({
    * for X…" into a permanent state that refuses every launch on that machine,
    * which is strictly worse than the unavailable message it was replacing.
    */
-  const laneCatalogLoading = Boolean(
-    enabled
-    && machineId !== boundMachineId
-    && !executionLaneCatalogLoaded
-    && unionWillReadMachine
-    && !laneReadFailed
-    && !laneCatalogHoldExpired,
-  );
+  const laneCatalogLoading = laneCatalogUnresolved && !laneCatalogHoldExpired;
   const selectorLanes = useMemo<RoutedDraftLane[]>(() => {
     if (!enabled) return (availableLanes ?? lanes) as RoutedDraftLane[];
     // Strictly the picked machine's lanes. A lane id from another machine is

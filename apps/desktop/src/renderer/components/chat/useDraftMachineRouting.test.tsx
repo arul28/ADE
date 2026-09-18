@@ -542,6 +542,45 @@ describe("useDraftMachineRouting", () => {
     expect(result.current.laneCatalogLoading).toBe(true);
   });
 
+  it("does not latch a hold expiry recorded while the machine was ineligible", async () => {
+    installRemoteBoundAde();
+    // The union has resolved a read set that EXCLUDES this-mac, so the hold is
+    // not warranted and must not be armed.
+    const { result, rerender } = renderRemoteBoundRouting({
+      crossMachineLanesByMachineId: {},
+      laneId: "studio-primary",
+      crossMachineLaneIntendedMachineIds: ["target-studio"],
+    });
+
+    await waitFor(() => expect(result.current.machineOptions).toHaveLength(2));
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        result.current.handleMachineChange("this-mac");
+      });
+      expect(result.current.laneCatalogLoading).toBe(false);
+
+      // Long enough that a timer armed here would have fired.
+      act(() => {
+        vi.advanceTimersByTime(13_000);
+      });
+
+      // The union now intends to read this-mac after all. A stale expiry from
+      // the window above would leave the composer permanently not-loading, so
+      // the pull-forward read would never be requested.
+      act(() => {
+        rerender({
+          crossMachineLanesByMachineId: {},
+          laneId: "studio-primary",
+          crossMachineLaneIntendedMachineIds: ["target-studio", "this-mac"],
+        });
+      });
+      expect(result.current.laneCatalogLoading).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounds the loading hold for a machine that is never read and never errors", async () => {
     installRemoteBoundAde();
     const { result } = renderRemoteBoundRouting({

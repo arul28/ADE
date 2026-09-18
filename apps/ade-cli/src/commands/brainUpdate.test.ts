@@ -702,6 +702,10 @@ describe("releaseTagForVersion", () => {
     ["build metadata carries through", "1.2.74+build.5", "v1.2.74+build.5"],
     ["trailing junk is not a semver", "1.2.74foo", "1.2.74foo"],
     ["a non-semver ref is untouched", "whisper-models-v1", "whisper-models-v1"],
+    // Near-misses that a looser character class waved through. These are legal
+    // custom tag names, so rewriting them would request a tag nobody published.
+    ["a leading zero is not a semver", "01.2.3", "01.2.3"],
+    ["an empty prerelease identifier is not a semver", "1.2.3-.", "1.2.3-."],
   ])("%s", (_label, input, expected) => {
     expect(releaseTagForVersion(input)).toBe(expected);
   });
