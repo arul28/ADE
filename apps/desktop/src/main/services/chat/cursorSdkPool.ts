@@ -526,6 +526,13 @@ export async function acquireCursorSdkConnection(args: {
   sessionId: string;
   policy: CursorSdkPermissionPolicy;
   mcpServers?: Record<string, unknown>;
+  /**
+   * Extra Cursor workspace roots carrying ADE's bundled agent skills. The
+   * caller materializes them (see `prepareCursorAgentSkillShim`); the pool only
+   * forwards them, and `ADE_AGENT_SKILLS_DIRS` stays on the worker env as the
+   * fallback for a session that gets none.
+   */
+  agentSkillDirs?: string[];
   cleanupStateRoot?: boolean;
   logger?: Logger;
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
@@ -923,6 +930,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     agentName: args.agentName ?? null,
     policy: args.policy,
     ...(args.mcpServers ? { mcpServers: args.mcpServers } : {}),
+    ...(args.agentSkillDirs?.length ? { agentSkillDirs: [...args.agentSkillDirs] } : {}),
   };
   let result: { agentId: string };
   try {

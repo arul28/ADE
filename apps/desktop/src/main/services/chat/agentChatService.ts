@@ -764,6 +764,10 @@ import {
   existingAgentSkillRoots,
   type CodexSkillsListResponse,
 } from "../skills/agentSkillRuntimeService";
+import {
+  cursorAgentSkillShimRoot,
+  resolveCursorAgentSkillDirs,
+} from "../skills/cursorAgentSkillShim";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   SESSION_STALE_AFTER_MS,
@@ -840,6 +844,7 @@ import {
   acpInvocationKey,
   buildAcpPromptBlocks,
   createAcpRuntime,
+  ensureQwenAdeSkillDefaultsFile,
   openAcpSession,
   pendingPermissionToInputRequest,
   setAcpReasoningEffort,
@@ -962,6 +967,7 @@ import {
 import {
   allowCursorHook,
   approvalPolicyLabel,
+  cursorSdkSettingSources,
   denyCursorHook,
   evaluateCursorSdkHook,
   resolveCursorSdkPolicy,
@@ -26705,7 +26711,9 @@ export function createAgentChatService(args: {
         | "claude-listing"
         | "codex-extra-roots"
         | "pi-additional-paths"
-        | "opencode-skill-paths";
+        | "opencode-skill-paths"
+        | "qwen-skill-directories"
+        | "cursor-workspace-dirs";
       rootCount?: number;
       delivered: boolean;
       skillCount?: number;
@@ -27459,6 +27467,28 @@ export function createAgentChatService(args: {
     }
 
     const configHome = acpConfigHomeFor(provider, runtimeEnv);
+    // Qwen's own `skills.directories` key, so its agents get ADE's bundled
+    // skills through native discovery instead of having to read a path out of
+    // prose. It travels in an ADE-OWNED system-defaults file named by
+    // `QWEN_CODE_SYSTEM_DEFAULTS_PATH`; nothing is written into `~/.qwen`.
+    // A personal chat deliberately gets none — ADE capabilities are not part
+    // of that surface. No other ACP agent has an equivalent hook yet.
+    const qwenSkillDefaults = provider === "qwen"
+      ? ensureQwenAdeSkillDefaultsFile({
+        projectRoot,
+        laneWorktreePath: managed.laneWorktreePath,
+        env: agentSkillRootEnv(),
+        personalSession: isPersonalSession(managed.session),
+      })
+      : null;
+    if (qwenSkillDefaults) {
+      logSkillDelivery(managed, {
+        mechanism: "qwen-skill-directories",
+        rootCount: qwenSkillDefaults.roots.length,
+        delivered: qwenSkillDefaults.path !== null,
+        ...(qwenSkillDefaults.reason ? { reason: qwenSkillDefaults.reason } : {}),
+      });
+    }
     const permissionMode = resolveAcpPermissionMode(managed.session);
     const modelToken = acpModelTokenFor(managed.session);
     const spawnPlan = dialect.buildSpawnPlan({
@@ -27469,6 +27499,7 @@ export function createAgentChatService(args: {
       reasoningEffort: managed.session.reasoningEffort ?? null,
       permissionMode,
       configHome,
+      adeSkillDefaultsPath: qwenSkillDefaults?.path ?? null,
     });
     const invocationKey = acpInvocationKey(spawnPlan);
 
@@ -42517,12 +42548,33 @@ export function createAgentChatService(args: {
     // Electron main this is a no-op and the launch stays synchronous.
     const browserCapabilityReady = prepareBrowserActorCapability(managed);
     if (browserCapabilityReady) await browserCapabilityReady;
+    const cursorRuntimeEnv = buildAgentRuntimeEnv(managed);
+    // Cursor's own skill discovery. ADE copies the bundled catalog into a
+    // private shim laid out the way Cursor scans (`.agents/skills/<name>/
+    // SKILL.md`) and passes that root as an extra workspace dir, instead of
+    // relying on `ADE_AGENT_SKILLS_DIRS` — which Cursor never reads — plus a
+    // prompt pointer. The env var stays on the worker env as the fallback for
+    // every session this declines (personal chats, orchestration leads, and any
+    // launch where the shim could not be written).
+    const cursorAgentSkills = resolveCursorAgentSkillDirs({
+      personalSession: isPersonalSession(managed.session),
+      settingSources: cursorSdkSettingSources(policy),
+      skillRoots: existingAgentSkillRoots(cursorRuntimeEnv),
+      shimRoot: cursorAgentSkillShimRoot(),
+    });
+    logSkillDelivery(managed, {
+      mechanism: "cursor-workspace-dirs",
+      rootCount: cursorAgentSkills.rootCount,
+      delivered: cursorAgentSkills.delivered,
+      skillCount: cursorAgentSkills.skillCount,
+      ...(cursorAgentSkills.reason ? { reason: cursorAgentSkills.reason } : {}),
+    });
     const acquireArgs = {
       poolKey,
       stateKey: cursorSdkStateKeyFor(managed),
       projectRoot,
       workspacePath: managed.laneWorktreePath,
-      baseEnv: buildAgentRuntimeEnv(managed),
+      baseEnv: cursorRuntimeEnv,
       modelSdkId: launchModelSdkId,
       ...(launchModelParams?.length ? { modelParams: launchModelParams } : {}),
       apiKey,
@@ -42531,6 +42583,7 @@ export function createAgentChatService(args: {
       sessionId: managed.session.id,
       policy,
       ...(cursorMcpServerConfig ? { mcpServers: cursorMcpServerConfig } : {}),
+      ...(cursorAgentSkills.dirs.length ? { agentSkillDirs: cursorAgentSkills.dirs } : {}),
       logger,
     };
     try {
