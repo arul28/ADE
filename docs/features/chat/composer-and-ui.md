@@ -1576,7 +1576,7 @@ wall of identical rows. The card carries the cause: `interrupt` heads
 — and a run splits wherever the cause changes.
 
 Claude Workflow runs (the SDK's multi-agent orchestration tool) render in
-the same panel with zero new chrome: `claudeWorkflowProgress.ts` normalizes
+the same Agents panel: `claudeWorkflowProgress.ts` normalizes
 the undocumented `workflow_progress` snapshot and fans each workflow agent
 out as its own subagent row (phase in the summary line, tokens/duration
 from the snapshot, `workflowName` chip), while the parent workflow task row
@@ -1591,6 +1591,18 @@ the live child-session title when available, and shows the runtime as the small
 kind chip. The parent transcript additionally shows a quiet "Subagent spawned"
 chip (a `status:"subagent_spawned"` system notice) that deep-links to the child
 chat.
+
+When a workflow snapshot is available, the Agents pane also puts a compact
+**Workflow activity** card above the ordinary roster. The card is a deliberate
+entry point rather than a second live dashboard: clicking it opens a modal over
+the chat with the provider-reported phase rail, running/completed/failed/queued
+counts, per-agent summaries, model, token, tool, duration, and last-tool
+details. Agent rows with a pullable transcript route through the same existing
+subagent selection behavior; synthetic workflow-agent rows are drill-down
+details and the parent workflow owns the stop action. The modal can stop the parent workflow while
+it is active. The modal traps focus, closes on Escape or backdrop click, locks
+background scrolling, and keeps the raw workflow prompt out of the UI; parser
+caps and clipped previews remain the boundary for provider-supplied text.
 
 Codex parallel-agent lifecycle comes from both legacy `collabAgentToolCall`
 items and newer app-server `subAgentActivity` items. The service registers

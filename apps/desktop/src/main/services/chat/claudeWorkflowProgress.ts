@@ -1,3 +1,10 @@
+import {
+  AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS,
+  type AgentChatWorkflowAgent,
+  type AgentChatWorkflowPhase,
+  type AgentChatWorkflowProgress,
+} from "../../../shared/types/chat";
+
 /**
  * Defensive normalization for the Claude Agent SDK's `workflow_progress`
  * payload on `system:task_progress` messages.
@@ -19,46 +26,17 @@
  * identity so stream reconnects upsert one row instead of duplicating.
  */
 
-export type ClaudeWorkflowPhase = {
-  index: number;
-  title: string;
-};
+export type ClaudeWorkflowPhase = AgentChatWorkflowPhase;
 
-export type ClaudeWorkflowAgent = {
-  /**
-   * Stable fold identity: the SDK agentId when present, else a synthetic
-   * `<taskId>::a<index>`. Never the workflow's own taskId — that would
-   * collide with (and re-key away) the parent workflow row in the snapshot
-   * folds.
-   */
-  key: string;
-  index: number;
-  name: string;
-  status: "running" | "completed" | "failed";
-  summary: string;
-  /** Real SDK agent id (enables per-agent transcript drill-down). */
-  agentId?: string;
-  agentType?: string;
-  phaseTitle?: string;
-  tokens?: number;
-  toolCalls?: number;
-  durationMs?: number;
-  lastToolName?: string;
-};
+export type ClaudeWorkflowAgent = AgentChatWorkflowAgent;
 
-export type ClaudeWorkflowProgressSnapshot = {
-  phases: ClaudeWorkflowPhase[];
-  /** Agents that have started or finished. Queued agents are only counted. */
-  agents: ClaudeWorkflowAgent[];
-  queuedCount: number;
-  runningCount: number;
-  doneCount: number;
-  failedCount: number;
-};
+export type ClaudeWorkflowProgressSnapshot = AgentChatWorkflowProgress;
 
 const MAX_AGENT_ENTRIES = 300;
 const MAX_PHASE_ENTRIES = 50;
-const MAX_PREVIEW_CHARS = 240;
+// The clipper reserves one character for its ellipsis so every final string
+// stays within the shared boundary accepted by isAgentChatWorkflowProgress.
+const MAX_PREVIEW_CHARS = AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS - 1;
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
@@ -74,6 +52,11 @@ function readFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function readNonNegativeSafeInteger(value: unknown): number | undefined {
+  const number = readFiniteNumber(value);
+  return number !== undefined && Number.isSafeInteger(number) && number >= 0 ? number : undefined;
+}
+
 type RawAgentEntry = {
   index: number;
   state: string;
@@ -83,6 +66,7 @@ type RawAgentEntry = {
   label?: string;
   agentId?: string;
   agentType?: string;
+  model?: string;
   phaseTitle?: string;
   blocked: boolean;
   error?: string;
@@ -96,7 +80,7 @@ type RawAgentEntry = {
 };
 
 function normalizeAgentEntry(entry: Record<string, unknown>): RawAgentEntry | undefined {
-  const index = readFiniteNumber(entry.index);
+  const index = readNonNegativeSafeInteger(entry.index);
   const state = readString(entry.state);
   if (index === undefined || state === undefined) return undefined;
   const terminal = state === "done" || state === "error";
@@ -110,14 +94,15 @@ function normalizeAgentEntry(entry: Record<string, unknown>): RawAgentEntry | un
     terminal,
     failed: state === "error",
     label: readClippedString(entry.label, MAX_PREVIEW_CHARS),
-    agentId: readString(entry.agentId),
-    agentType: readString(entry.agentType),
+    agentId: readClippedString(entry.agentId, MAX_PREVIEW_CHARS),
+    agentType: readClippedString(entry.agentType, MAX_PREVIEW_CHARS),
+    model: readClippedString(entry.model, MAX_PREVIEW_CHARS),
     phaseTitle: readClippedString(entry.phaseTitle, MAX_PREVIEW_CHARS),
     blocked: entry.blocked === true,
     error: readClippedString(entry.error, MAX_PREVIEW_CHARS),
     resultPreview: readClippedString(entry.resultPreview, MAX_PREVIEW_CHARS),
     lastToolSummary: readClippedString(entry.lastToolSummary, MAX_PREVIEW_CHARS),
-    lastToolName: readString(entry.lastToolName),
+    lastToolName: readClippedString(entry.lastToolName, MAX_PREVIEW_CHARS),
     promptPreview: readClippedString(entry.promptPreview, MAX_PREVIEW_CHARS),
     tokens: readFiniteNumber(entry.tokens),
     toolCalls: readFiniteNumber(entry.toolCalls),
@@ -138,7 +123,7 @@ function agentSummary(entry: RawAgentEntry): string {
   if (entry.phaseTitle) parts.push(entry.phaseTitle);
   if (entry.blocked) parts.push("blocked by safety filter");
   parts.push(detail);
-  return parts.join(" · ");
+  return readClippedString(parts.join(" · "), MAX_PREVIEW_CHARS) ?? "running";
 }
 
 /**
@@ -166,7 +151,7 @@ export function parseClaudeWorkflowProgress(
         break;
       }
       case "workflow_phase": {
-        const index = readFiniteNumber(entry.index);
+        const index = readNonNegativeSafeInteger(entry.index);
         const title = readClippedString(entry.title, MAX_PREVIEW_CHARS);
         if (index !== undefined && title !== undefined
           && (phasesByIndex.has(index) || phasesByIndex.size < MAX_PHASE_ENTRIES)) {
@@ -201,13 +186,16 @@ export function parseClaudeWorkflowProgress(
     else if (status === "failed") failedCount += 1;
     else doneCount += 1;
     agents.push({
-      key: entry.agentId ?? `${taskId}::a${entry.index}`,
+      key: entry.agentId
+        ?? readClippedString(`${taskId}::a${entry.index}`, MAX_PREVIEW_CHARS)
+        ?? `agent-${entry.index}`,
       index: entry.index,
       name: entry.label ?? entry.agentType ?? `Agent #${entry.index + 1}`,
       status,
       summary: agentSummary(entry),
       ...(entry.agentId !== undefined ? { agentId: entry.agentId } : {}),
       ...(entry.agentType !== undefined ? { agentType: entry.agentType } : {}),
+      ...(entry.model !== undefined ? { model: entry.model } : {}),
       ...(entry.phaseTitle !== undefined ? { phaseTitle: entry.phaseTitle } : {}),
       ...(entry.tokens !== undefined ? { tokens: entry.tokens } : {}),
       ...(entry.toolCalls !== undefined ? { toolCalls: entry.toolCalls } : {}),
@@ -242,7 +230,37 @@ export function summarizeClaudeWorkflowRun(snapshot: ClaudeWorkflowProgressSnaps
   const parts: string[] = [];
   if (currentPhase !== undefined) parts.push(currentPhase);
   if (counts.length > 0) parts.push(counts.join(" · "));
-  return parts.join(" — ");
+  return readClippedString(parts.join(" — "), MAX_PREVIEW_CHARS) ?? "";
+}
+
+/**
+ * Close provider-reported agents when the parent workflow has reached a
+ * terminal task notification. The SDK can deliver the final task row before
+ * its cumulative snapshot catches up, so leaving those agents as `running`
+ * would make every downstream surface show a live spinner after the workflow
+ * has already ended.
+ */
+export function finalizeClaudeWorkflowProgress(
+  snapshot: ClaudeWorkflowProgressSnapshot,
+): ClaudeWorkflowProgressSnapshot {
+  if (!snapshot.agents.some((agent) => agent.status === "running") && snapshot.queuedCount === 0) {
+    return snapshot;
+  }
+  const agents = snapshot.agents.map((agent) => agent.status === "running"
+    ? {
+        ...agent,
+        status: "stopped" as const,
+        summary: "Workflow ended before this agent finished.",
+      }
+    : agent);
+  return {
+    ...snapshot,
+    agents,
+    queuedCount: 0,
+    runningCount: 0,
+    doneCount: agents.filter((agent) => agent.status === "completed").length,
+    failedCount: agents.filter((agent) => agent.status === "failed").length,
+  };
 }
 
 export type ClaudeWorkflowAgentEmitState = {
@@ -271,6 +289,7 @@ function agentSignature(agent: ClaudeWorkflowAgent): string {
     agent.tokens ?? "",
     agent.toolCalls ?? "",
     agent.durationMs ?? "",
+    agent.model ?? "",
     agent.lastToolName ?? "",
   ].join("|");
 }

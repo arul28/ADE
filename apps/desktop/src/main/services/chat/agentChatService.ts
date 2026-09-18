@@ -87,11 +87,13 @@ import {
 } from "./chatScheduledWorkScheduler";
 import {
   drainRunningClaudeWorkflowAgents,
+  finalizeClaudeWorkflowProgress,
   parseClaudeWorkflowProgress,
   planClaudeWorkflowAgentTransitions,
   summarizeClaudeWorkflowRun,
   type ClaudeWorkflowAgentEmitState,
   type ClaudeWorkflowAgentTransition,
+  type ClaudeWorkflowProgressSnapshot,
 } from "./claudeWorkflowProgress";
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
@@ -489,6 +491,7 @@ import {
   type AgentChatAcpConfigSnapshot,
   type AgentChatAcpPermissionMode,
   type AgentChatResourceLink,
+  type AgentChatWorkflowProgress,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
@@ -1943,6 +1946,7 @@ type ClaudeActiveSubagent = {
    */
   taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
   workflowName?: string;
+  workflowProgress?: AgentChatWorkflowProgress;
   /**
    * SDK marks ambient/housekeeping tasks (e.g. session-title generation) with
    * skip_transcript=true. Stashed here so completion events can be suppressed
@@ -10382,6 +10386,9 @@ export function createAgentChatService(args: {
         background: event.background ?? false,
         spawnDepth: event.spawnDepth ?? previous?.spawnDepth,
         resourceLinks: event.resourceLinks?.length ? event.resourceLinks : previous?.resourceLinks,
+        ...(event.workflowProgress ?? previous?.workflowProgress
+          ? { workflowProgress: event.workflowProgress ?? previous?.workflowProgress }
+          : {}),
       });
       return;
     }
@@ -10409,6 +10416,9 @@ export function createAgentChatService(args: {
         usage: event.usage ?? previous?.usage,
         spawnDepth: event.spawnDepth ?? previous?.spawnDepth,
         resourceLinks: event.resourceLinks?.length ? event.resourceLinks : previous?.resourceLinks,
+        ...(event.workflowProgress ?? previous?.workflowProgress
+          ? { workflowProgress: event.workflowProgress ?? previous?.workflowProgress }
+          : {}),
       });
       return;
     }
@@ -10442,6 +10452,9 @@ export function createAgentChatService(args: {
       usage: event.usage ?? previous?.usage,
       spawnDepth: event.spawnDepth ?? previous?.spawnDepth,
       resourceLinks: event.resourceLinks?.length ? event.resourceLinks : previous?.resourceLinks,
+      ...(event.workflowProgress ?? previous?.workflowProgress
+        ? { workflowProgress: event.workflowProgress ?? previous?.workflowProgress }
+        : {}),
     });
   };
 
@@ -22594,6 +22607,7 @@ export function createAgentChatService(args: {
     const classification = classifyClaudeTaskMessage(runtime, msg, existing);
     const taskType = classification.taskType;
     const workflowName = normalizeClaudeWorkflowName(msg.workflow_name) ?? existing?.workflowName;
+    const workflowProgress = parseClaudeWorkflowProgress(msg.workflow_progress, taskId) ?? existing?.workflowProgress;
     const parentToolUseId = taskParentToolUseId(msg) ?? existing?.parentToolUseId ?? null;
     const agentId = notificationAgentId ?? existing?.agentId;
     const parentAgentId = compactString(msg.parent_agent_id) ?? existing?.parentAgentId ?? null;
@@ -22735,6 +22749,7 @@ export function createAgentChatService(args: {
         ...(parentAgentId ? { parentAgentId } : {}),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...(workflowProgress ? { workflowProgress } : {}),
         ...(model ? { model } : {}),
         ...claudeTaskTreeFields(msg, existing),
       });
@@ -22816,7 +22831,12 @@ export function createAgentChatService(args: {
         ...optionalSubagentModelFields(existing?.model ?? model),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...(workflowProgress ? { workflowProgress } : {}),
         ...claudeTaskTreeFields(msg, existing),
+        turnId,
+      });
+      closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+        workflowName,
         turnId,
       });
       return true;
@@ -22845,7 +22865,13 @@ export function createAgentChatService(args: {
         ...(parentAgentId ? { parentAgentId } : {}),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...(workflowProgress ? { workflowProgress } : {}),
         ...(model ? { model } : {}),
+      });
+      closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+        workflowName,
+        turnId,
+        summary,
       });
       return true;
     }
@@ -22886,6 +22912,11 @@ export function createAgentChatService(args: {
         ...(workflowName ? { workflowName } : {}),
         turnId,
       });
+      closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+        workflowName,
+        turnId,
+        summary,
+      });
       return true;
     }
     runtime.activeSubagents.set(taskId, {
@@ -22899,6 +22930,7 @@ export function createAgentChatService(args: {
       ...(parentAgentId ? { parentAgentId } : {}),
       ...(taskType ? { taskType } : {}),
       ...(workflowName ? { workflowName } : {}),
+      ...(workflowProgress ? { workflowProgress } : {}),
       ...(model ? { model } : {}),
     });
     emitChatEvent(managed, {
@@ -22914,8 +22946,16 @@ export function createAgentChatService(args: {
       ...optionalSubagentModelFields(model),
       ...(taskType ? { taskType } : {}),
       ...(workflowName ? { workflowName } : {}),
+      ...(workflowProgress ? { workflowProgress } : {}),
       turnId,
     });
+    if (workflowProgress) {
+      emitClaudeWorkflowProgressAgents(managed, runtime, taskId, workflowProgress, {
+        background: existing?.background === true,
+        workflowName,
+        turnId,
+      });
+    }
     return true;
   };
 
@@ -24739,6 +24779,9 @@ export function createAgentChatService(args: {
             ...(parentAgentId ? { parentAgentId } : {}),
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...(workflowProgress ?? existing?.workflowProgress
+              ? { workflowProgress: workflowProgress ?? existing?.workflowProgress }
+              : {}),
             ...(model ? { model } : {}),
             ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
           });
@@ -24763,24 +24806,17 @@ export function createAgentChatService(args: {
             lastToolName: typeof taskMsg.last_tool_name === "string" ? taskMsg.last_tool_name : undefined,
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...(workflowProgress ? { workflowProgress } : {}),
             ...optionalSubagentModelFields(model),
             ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             turnId,
           });
-          if (workflowProgress && workflowProgress.agents.length > 0) {
-            let tracked = runtime.workflowAgentsByTask.get(taskId);
-            if (!tracked) {
-              tracked = new Map();
-              runtime.workflowAgentsByTask.set(taskId, tracked);
-            }
-            for (const transition of planClaudeWorkflowAgentTransitions(tracked, workflowProgress.agents)) {
-              emitClaudeWorkflowAgentEvent(managed, runtime, transition, {
-                workflowTaskId: taskId,
-                background: existing?.background === true,
-                workflowName,
-                turnId,
-              });
-            }
+          if (workflowProgress) {
+            emitClaudeWorkflowProgressAgents(managed, runtime, taskId, workflowProgress, {
+              background: existing?.background === true,
+              workflowName,
+              turnId,
+            });
           }
           continue;
         }
@@ -24802,6 +24838,7 @@ export function createAgentChatService(args: {
           const model = existing?.model;
           const taskType = existing?.taskType;
           const workflowName = existing?.workflowName;
+          const workflowProgress = parseClaudeWorkflowProgress(taskMsg.workflow_progress, taskId) ?? existing?.workflowProgress;
           const background = patch.is_backgrounded === true || existing?.background === true;
           if (status === "completed" || status === "failed" || status === "killed") {
             if (consumeClaudeStoppingBackgroundTask(managed, runtime, {
@@ -24865,7 +24902,13 @@ export function createAgentChatService(args: {
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
+              ...(workflowProgress ? { workflowProgress } : {}),
               ...(model ? { model } : {}),
+            });
+            closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+              workflowName,
+              turnId,
+              summary,
             });
             continue;
           }
@@ -24903,7 +24946,13 @@ export function createAgentChatService(args: {
               ...optionalSubagentModelFields(model),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
+              ...(workflowProgress ? { workflowProgress } : {}),
               turnId,
+            });
+            closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+              workflowName,
+              turnId,
+              summary,
             });
           } else {
             runtime.activeSubagents.set(taskId, {
@@ -24917,6 +24966,7 @@ export function createAgentChatService(args: {
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
+              ...(workflowProgress ? { workflowProgress } : {}),
               ...(model ? { model } : {}),
               ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             });
@@ -24934,6 +24984,7 @@ export function createAgentChatService(args: {
               ...(taskType ? { taskType } : {}),
               ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
               ...(workflowName ? { workflowName } : {}),
+              ...(workflowProgress ? { workflowProgress } : {}),
               turnId,
             });
           }
@@ -25154,6 +25205,7 @@ export function createAgentChatService(args: {
           const parentAgentId = compactString(taskMsg.parent_agent_id) ?? existing?.parentAgentId ?? null;
           const taskType = existing?.taskType ?? normalizeClaudeTaskType(taskMsg.task_type);
           const workflowName = existing?.workflowName ?? normalizeClaudeWorkflowName(taskMsg.workflow_name);
+          const workflowProgress = parseClaudeWorkflowProgress(taskMsg.workflow_progress, taskId) ?? existing?.workflowProgress;
           // Background shell commands settle as a terminal background_task row
           // (with duration), never a subagent_result.
           if (classifyClaudeTaskMessage(runtime, taskMsg as Record<string, unknown>, existing).backgroundShell) {
@@ -25209,30 +25261,14 @@ export function createAgentChatService(args: {
             } : undefined,
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...(workflowProgress ? { workflowProgress } : {}),
             ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             turnId,
           });
-          // A workflow task that ends with agents still mid-flight (stop,
-          // interrupt, script error) leaves those rows running — close them.
-          const workflowTracker = runtime.workflowAgentsByTask.get(taskId);
-          if (workflowTracker) {
-            runtime.workflowAgentsByTask.delete(taskId);
-            for (const { agent, agentId: workflowAgentId } of drainRunningClaudeWorkflowAgents(workflowTracker)) {
-              emitClaudeSubagentResult(managed, runtime, {
-                type: "subagent_result",
-                taskId: `${taskId}::a${agent.index}`,
-                agentId: workflowAgentId,
-                ...(agent.agentType ? { agentType: agent.agentType } : {}),
-                parentToolUseId: null,
-                status: "stopped",
-                summary: "Workflow ended before this agent finished.",
-                finalSummary: "Workflow ended before this agent finished.",
-                taskType: "subagent",
-                ...(workflowName ? { workflowName } : {}),
-                turnId,
-              });
-            }
-          }
+          closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
+            workflowName,
+            turnId,
+          });
           continue;
         }
 
@@ -29667,9 +29703,13 @@ export function createAgentChatService(args: {
     ) {
       return;
     }
+    const workflowProgress = event.workflowProgress
+      ? finalizeClaudeWorkflowProgress(event.workflowProgress)
+      : undefined;
     emitChatEvent(managed, {
       ...claudeSubagentLabelFields(runtime, [event.taskId, event.agentId]),
       ...event,
+      ...(workflowProgress ? { workflowProgress } : {}),
     });
     runtime.emittedSubagentStartIds.delete(event.taskId);
     if (event.agentId) runtime.emittedSubagentStartIds.delete(event.agentId);
@@ -29726,6 +29766,7 @@ export function createAgentChatService(args: {
         taskId,
         agentId,
         ...(agent.agentType ? { agentType: agent.agentType } : {}),
+        ...optionalSubagentModelFields(agent.model),
         parentToolUseId: null,
         description: agent.name,
         background: context.background,
@@ -29741,6 +29782,7 @@ export function createAgentChatService(args: {
         taskId,
         agentId,
         ...(agent.agentType ? { agentType: agent.agentType } : {}),
+        ...optionalSubagentModelFields(agent.model),
         parentToolUseId: null,
         description: agent.name,
         summary: agent.summary,
@@ -29757,8 +29799,13 @@ export function createAgentChatService(args: {
       taskId,
       agentId,
       ...(agent.agentType ? { agentType: agent.agentType } : {}),
+      ...optionalSubagentModelFields(agent.model),
       parentToolUseId: null,
-      status: agent.status === "failed" ? "failed" : "completed",
+      status: agent.status === "failed"
+        ? "failed"
+        : agent.status === "stopped"
+          ? "stopped"
+          : "completed",
       summary: agent.summary,
       finalSummary: agent.summary,
       ...(usage ? { usage } : {}),
@@ -29767,6 +29814,56 @@ export function createAgentChatService(args: {
       turnId: context.turnId,
     });
   };
+
+  function emitClaudeWorkflowProgressAgents(
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    workflowTaskId: string,
+    workflowProgress: ClaudeWorkflowProgressSnapshot,
+    context: { background: boolean; workflowName?: string; turnId?: string },
+  ): void {
+    if (workflowProgress.agents.length === 0) return;
+    let tracked = runtime.workflowAgentsByTask.get(workflowTaskId);
+    if (!tracked) {
+      tracked = new Map();
+      runtime.workflowAgentsByTask.set(workflowTaskId, tracked);
+    }
+    for (const transition of planClaudeWorkflowAgentTransitions(tracked, workflowProgress.agents)) {
+      emitClaudeWorkflowAgentEvent(managed, runtime, transition, {
+        workflowTaskId,
+        ...context,
+      });
+    }
+  }
+
+  function closeClaudeWorkflowAgentTracker(
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    workflowTaskId: string,
+    context: { workflowName?: string; turnId?: string; summary?: string },
+  ): void {
+    const tracked = runtime.workflowAgentsByTask.get(workflowTaskId);
+    if (!tracked) return;
+    runtime.workflowAgentsByTask.delete(workflowTaskId);
+    const terminalSummary = context.summary && !/^Status: (completed|failed|killed)$/.test(context.summary)
+      ? context.summary
+      : "Workflow ended before this agent finished.";
+    for (const { agent, agentId } of drainRunningClaudeWorkflowAgents(tracked)) {
+      emitClaudeSubagentResult(managed, runtime, {
+        type: "subagent_result",
+        taskId: `${workflowTaskId}::a${agent.index}`,
+        agentId,
+        ...(agent.agentType ? { agentType: agent.agentType } : {}),
+        parentToolUseId: null,
+        status: "stopped",
+        summary: terminalSummary,
+        finalSummary: terminalSummary,
+        taskType: "subagent",
+        ...(context.workflowName ? { workflowName: context.workflowName } : {}),
+        turnId: context.turnId,
+      });
+    }
+  }
 
   const stopActiveClaudeSubagents = async (
     managed: ManagedChatSession,
@@ -29777,24 +29874,13 @@ export function createAgentChatService(args: {
     // Close any still-running Workflow agent rows first — they are tracked
     // separately from activeSubagents (they are snapshot-derived, not SDK
     // tasks, so there is nothing to stopTask for them).
-    for (const [workflowTaskId, tracked] of [...runtime.workflowAgentsByTask]) {
-      runtime.workflowAgentsByTask.delete(workflowTaskId);
+    for (const [workflowTaskId] of [...runtime.workflowAgentsByTask]) {
       const workflowName = runtime.activeSubagents.get(workflowTaskId)?.workflowName;
-      for (const { agent, agentId } of drainRunningClaudeWorkflowAgents(tracked)) {
-        emitClaudeSubagentResult(managed, runtime, {
-          type: "subagent_result",
-          taskId: `${workflowTaskId}::a${agent.index}`,
-          agentId,
-          ...(agent.agentType ? { agentType: agent.agentType } : {}),
-          parentToolUseId: null,
-          status: "stopped",
-          summary,
-          finalSummary: summary,
-          taskType: "subagent",
-          ...(workflowName ? { workflowName } : {}),
-          turnId,
-        });
-      }
+      closeClaudeWorkflowAgentTracker(managed, runtime, workflowTaskId, {
+        workflowName,
+        turnId,
+        summary,
+      });
     }
     // Close still-open background shell commands as stopped (terminal
     // background_task rows) — they live in activeSubagents too but must never
@@ -29888,7 +29974,8 @@ export function createAgentChatService(args: {
     }
     const runtime = managed.runtime;
     const existing = runtime.activeSubagents.get(id);
-    if (!existing && !runtime.liveBackgroundTaskIds.has(id)) {
+    const ownsWorkflowTracker = runtime.workflowAgentsByTask.has(id);
+    if (!existing && !runtime.liveBackgroundTaskIds.has(id) && !ownsWorkflowTracker) {
       return { sessionId, taskId: id, stopped: false, reason: "That task is not running." };
     }
     const turnId = runtime.activeTurnId ?? undefined;
@@ -29921,6 +30008,11 @@ export function createAgentChatService(args: {
       };
     }
     const tracked = runtime.activeSubagents.get(id) ?? existing;
+    closeClaudeWorkflowAgentTracker(managed, runtime, id, {
+      workflowName: tracked?.workflowName,
+      turnId,
+      summary: "Stopped by user",
+    });
     if (tracked && isBackgroundShellCommand({
       taskType: tracked.taskType,
       agentType: tracked.agentType,

@@ -1,12 +1,13 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { SUBAGENT_CAPABILITIES } from "../../../shared/subagentCapabilities";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatSubagentsPanel, type SubagentSelection } from "./ChatSubagentsPanel";
+import { deriveChatWorkflowRuns } from "./ChatWorkflowActiveCard";
 import { ChatTaskList } from "./ChatTasksPanel";
 
 function scheduledSnapshot(overrides: Partial<ChatScheduledWorkSnapshot>): ChatScheduledWorkSnapshot {
@@ -87,6 +88,266 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByText("Map theme plumbing")).toBeTruthy();
     expect(screen.getByText("Implement appearance mode")).toBeTruthy();
     expect(screen.getByText("Run focused checks")).toBeTruthy();
+  });
+
+  it("opens workflow details from the active card with phases and agent telemetry", () => {
+    const workflow: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-1",
+      description: "Run the review workflow",
+      status: "running",
+      taskType: "local_workflow",
+      workflowName: "CodeReview",
+      workflowProgress: {
+        phases: [
+          { index: 0, title: "Foundation" },
+          { index: 1, title: "CodeReview" },
+        ],
+        agents: [
+          {
+            key: "agent-1",
+            index: 0,
+            name: "cloud:security",
+            status: "running",
+            summary: "CodeReview · running rg",
+            agentId: "agent-1",
+            agentType: "security",
+            phaseTitle: "CodeReview",
+            tokens: 4_200,
+            toolCalls: 12,
+            lastToolName: "rg",
+          },
+        ],
+        queuedCount: 2,
+        runningCount: 1,
+        doneCount: 3,
+        failedCount: 0,
+      },
+    };
+    const workflowAgent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-1::a0",
+      agentId: "agent-1",
+      description: "cloud:security",
+      agentType: "security",
+      workflowName: "CodeReview",
+      taskType: "subagent",
+      parentToolUseId: null,
+      status: "running",
+      model: "claude-opus-5",
+    };
+    const stopWorkflow = vi.fn();
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[workflow, workflowAgent]}
+        events={[]}
+        variant="pane"
+        onStopSubagent={stopWorkflow}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("chat-workflow-active-card"));
+
+    expect(screen.getByTestId("chat-workflow-details-dialog")).toBeTruthy();
+    expect(screen.getByText("Foundation")).toBeTruthy();
+    expect(screen.getAllByText("CodeReview").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("cloud:security").length).toBeGreaterThan(0);
+    expect(screen.getByText("2 agents queued behind the current phase")).toBeTruthy();
+    expect(screen.getByText("1,234 total tokens reported by the workflow")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Stop cloud:security" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
+    expect(stopWorkflow).toHaveBeenCalledWith(workflow);
+
+    fireEvent.keyDown(screen.getByTestId("chat-workflow-details-dialog"), { key: "Escape" });
+    expect(screen.queryByTestId("chat-workflow-details-dialog")).toBeNull();
+  });
+
+  it("keeps a running workflow duration ticking past a stale provider sample", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-12T00:00:10.000Z"));
+    const workflow: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-duration",
+      description: "Track workflow duration",
+      taskType: "local_workflow",
+      workflowName: "Duration check",
+      workflowProgress: {
+        phases: [],
+        agents: [],
+        queuedCount: 0,
+        runningCount: 0,
+        doneCount: 0,
+        failedCount: 0,
+      },
+      // This is an interim provider sample, not the live elapsed duration.
+      usage: { durationMs: 1_000, toolUses: 1, totalTokens: 10 },
+    };
+
+    render(<ChatSubagentsPanel snapshots={[workflow]} events={[]} variant="pane" />);
+    fireEvent.click(screen.getByTestId("chat-workflow-active-card"));
+    const dialog = within(screen.getByTestId("chat-workflow-details-dialog"));
+
+    expect(dialog.getByText("10s")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(dialog.getByText("11s")).toBeTruthy();
+  });
+
+  it("reveals older workflow runs through the Show all control", () => {
+    const workflows = Array.from({ length: 4 }, (_, index): ChatSubagentSnapshot => ({
+      ...baseSnapshot,
+      taskId: "workflow-" + index,
+      description: "Workflow " + index,
+      updatedAt: "2026-05-12T00:00:" + String(index).padStart(2, "0") + ".000Z",
+      taskType: "local_workflow",
+      workflowName: "Workflow " + index,
+      workflowProgress: {
+        phases: [],
+        agents: [{
+          key: "workflow-" + index + "::a0",
+          index: 0,
+          name: "agent-" + index,
+          status: "completed",
+          summary: "Finished",
+        }],
+        queuedCount: 0,
+        runningCount: 0,
+        doneCount: 1,
+        failedCount: 0,
+      },
+    }));
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={workflows}
+        events={[]}
+        variant="pane"
+      />,
+    );
+
+    expect(screen.getAllByTestId("chat-workflow-active-card")).toHaveLength(3);
+    fireEvent.click(screen.getByTestId("chat-workflow-show-all"));
+    expect(screen.getAllByTestId("chat-workflow-active-card")).toHaveLength(4);
+    fireEvent.click(screen.getAllByTestId("chat-workflow-active-card")[0]!);
+    expect(screen.getByTestId("chat-workflow-details-dialog")).toBeTruthy();
+  });
+
+  it("keeps same-named legacy workflow lineage separate from a rich workflow", () => {
+    const richParent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "rich-workflow",
+      description: "Rich workflow",
+      status: "completed",
+      taskType: "local_workflow",
+      workflowName: "CodeReview",
+      workflowProgress: {
+        phases: [],
+        agents: [],
+        queuedCount: 0,
+        runningCount: 0,
+        doneCount: 0,
+        failedCount: 0,
+      },
+    };
+    const legacyParent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "legacy-workflow",
+      description: "Legacy workflow",
+      taskType: "local_workflow",
+      workflowName: "CodeReview",
+    };
+    const legacyAgent = (taskId: string, status: ChatSubagentSnapshot["status"]): ChatSubagentSnapshot => ({
+      ...baseSnapshot,
+      taskId,
+      description: taskId,
+      taskType: "subagent",
+      workflowName: "CodeReview",
+      status,
+    });
+
+    const runs = deriveChatWorkflowRuns([
+      richParent,
+      legacyParent,
+      legacyAgent("legacy-workflow::a0", "running"),
+      legacyAgent("legacy-workflow::a1", "completed"),
+    ]);
+    const legacyRun = runs.find((run) => run.id === "workflow:legacy-workflow");
+
+    expect(runs).toHaveLength(2);
+    expect(legacyRun).toEqual(expect.objectContaining({
+      name: "CodeReview",
+      parent: legacyParent,
+    }));
+    expect(legacyRun?.members.map((member) => member.taskId)).toEqual([
+      "legacy-workflow::a0",
+      "legacy-workflow::a1",
+    ]);
+  });
+
+  it("does not promote an orphaned synthetic workflow agent to a stoppable parent", () => {
+    const orphanedAgent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "review-42::a0",
+      description: "cloud:security",
+      taskType: "subagent",
+      workflowName: "CodeReview",
+      status: "running",
+    };
+
+    expect(deriveChatWorkflowRuns([orphanedAgent])).toEqual([]);
+  });
+
+  it("settles a provider-running workflow row when the parent has ended", () => {
+    const workflow: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-ended",
+      description: "Run the review workflow",
+      status: "completed",
+      taskType: "local_workflow",
+      workflowName: "CodeReview",
+      workflowProgress: {
+        phases: [{ index: 0, title: "CodeReview" }],
+        agents: [{
+          key: "workflow-ended::a0",
+          index: 0,
+          name: "cloud:security",
+          status: "running",
+          summary: "CodeReview · running rg",
+        }],
+        queuedCount: 0,
+        runningCount: 1,
+        doneCount: 0,
+        failedCount: 0,
+      },
+    };
+    const workflowAgent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "workflow-ended::a0",
+      agentId: "workflow-agent-0",
+      description: "cloud:security",
+      taskType: "subagent",
+      parentToolUseId: null,
+      workflowName: "CodeReview",
+      status: "stopped",
+      finalSummary: "Workflow ended before this agent finished.",
+    };
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[workflow, workflowAgent]}
+        events={[]}
+        variant="pane"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("chat-workflow-active-card"));
+
+    expect(screen.getByText("0/1 agents complete · 1 stopped")).toBeTruthy();
+    expect(screen.getByText("1 stopped when the workflow ended")).toBeTruthy();
+    expect(screen.getByText("Workflow ended before this agent finished.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Stop workflow" })).toBeNull();
   });
 
   it("merges foreground and background-run agents into one Subagents list with a background chip", () => {

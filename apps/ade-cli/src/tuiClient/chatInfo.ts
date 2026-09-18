@@ -78,6 +78,7 @@ export function snapshotFromRuntimeSubagent(row: AgentChatSubagentSnapshot): Sub
     costUsd: row.usage?.costUsd,
     durationMs: row.usage?.durationMs,
     lastToolName: row.lastToolName,
+    workflowProgress: row.workflowProgress,
   };
 }
 

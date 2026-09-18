@@ -2,9 +2,11 @@ import type {
   AgentChatEventEnvelope,
   AgentChatResourceLink,
   AgentChatSpawnKind,
+  AgentChatWorkflowProgress,
   TurnDiffSummary,
 } from "../../../shared/types";
 import {
+  isAgentChatWorkflowProgress,
   latestPlan,
   normalizeSubagentLifecycleEvent,
   type ChatInfoPlan,
@@ -58,6 +60,7 @@ export type ChatSubagentSnapshot = {
    */
   spawnKind?: AgentChatSpawnKind;
   workflowName?: string;
+  workflowProgress?: AgentChatWorkflowProgress;
   spawnDepth?: number;
   resourceLinks?: AgentChatResourceLink[];
   usage?: {
@@ -212,6 +215,18 @@ function mergeSubagentChildSessionId(args: {
   return args.taskId.startsWith("chat:") ? args.taskId.slice("chat:".length) : args.taskId;
 }
 
+function workflowProgressForSnapshot(
+  event: ChatSubagentEvent,
+  existing: ChatSubagentSnapshot | undefined,
+): AgentChatWorkflowProgress | undefined {
+  if ("workflowProgress" in event && isAgentChatWorkflowProgress(event.workflowProgress)) {
+    return event.workflowProgress;
+  }
+  return isAgentChatWorkflowProgress(existing?.workflowProgress)
+    ? existing.workflowProgress
+    : undefined;
+}
+
 export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): ChatSubagentSnapshot[] {
   const snapshots = new Map<string, ChatSubagentSnapshot>();
   const resolvedKeysByParent = buildResolvedSubagentKeysByParent(events);
@@ -224,6 +239,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
       const taskId = mergeSubagentTaskId(existing?.taskId, event.taskId, true);
       const agentId = event.agentId ?? existing?.agentId;
       const spawnKind = event.spawnKind ?? existing?.spawnKind;
+      const workflowProgress = workflowProgressForSnapshot(event, existing);
       snapshots.set(key, {
         taskId,
         childSessionId: mergeSubagentChildSessionId({ existing, taskId, agentId, spawnKind }),
@@ -248,6 +264,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         // fall back to the existing snapshot to survive the twin's overwrite.
         spawnKind,
         workflowName: event.workflowName ?? existing?.workflowName,
+        ...(workflowProgress ? { workflowProgress } : {}),
         spawnDepth: event.spawnDepth ?? existing?.spawnDepth,
         resourceLinks: event.resourceLinks?.length ? event.resourceLinks : existing?.resourceLinks,
         usage: existing?.usage,
@@ -260,6 +277,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
       const taskId = mergeSubagentTaskId(existing?.taskId, event.taskId, adoptedPlaceholder);
       const agentId = event.agentId ?? existing?.agentId;
       const spawnKind = existing?.spawnKind;
+      const workflowProgress = workflowProgressForSnapshot(event, existing);
       snapshots.set(key, {
         taskId,
         childSessionId: mergeSubagentChildSessionId({ existing, taskId, agentId, spawnKind }),
@@ -282,6 +300,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskType: event.taskType ?? existing?.taskType,
         spawnKind,
         workflowName: event.workflowName ?? existing?.workflowName,
+        ...(workflowProgress ? { workflowProgress } : {}),
         spawnDepth: event.spawnDepth ?? existing?.spawnDepth,
         resourceLinks: event.resourceLinks?.length ? event.resourceLinks : existing?.resourceLinks,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
@@ -294,6 +313,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
       const taskId = mergeSubagentTaskId(existing?.taskId, event.taskId, adoptedPlaceholder);
       const agentId = event.agentId ?? existing?.agentId;
       const spawnKind = existing?.spawnKind;
+      const workflowProgress = workflowProgressForSnapshot(event, existing);
       snapshots.set(key, {
         taskId,
         childSessionId: mergeSubagentChildSessionId({ existing, taskId, agentId, spawnKind }),
@@ -316,6 +336,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskType: event.taskType ?? existing?.taskType,
         spawnKind,
         workflowName: event.workflowName ?? existing?.workflowName,
+        ...(workflowProgress ? { workflowProgress } : {}),
         spawnDepth: event.spawnDepth ?? existing?.spawnDepth,
         resourceLinks: event.resourceLinks?.length ? event.resourceLinks : existing?.resourceLinks,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,

@@ -48,6 +48,7 @@ import { BottomDrawerSection } from "./BottomDrawerSection";
 import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { ChatWorkflowActiveCard } from "./ChatWorkflowActiveCard";
 
 const GLYPH_SIZE = 16;
 const PANE_UI_STORAGE_PREFIX = "ade.chat.paneUi.v1";
@@ -70,6 +71,12 @@ const PANE_EARLIER_SECTION_KEYS = ["subagents", "background", "schedule"] as con
 
 function subagentIdentity(snapshot: ChatSubagentSnapshot): string {
   return snapshot.agentId?.trim() || snapshot.taskId;
+}
+
+function isSyntheticWorkflowAgent(snapshot: ChatSubagentSnapshot): boolean {
+  return snapshot.taskType === "subagent"
+    && snapshot.parentToolUseId == null
+    && /::a\d+$/.test(snapshot.taskId);
 }
 
 export function chatPaneUiStorageKey(sessionId: string): string {
@@ -1003,7 +1010,7 @@ function SubagentRow({
           {time ? <span className="text-fg/35 group-hover:text-fg/50">{time}</span> : null}
         </span>
       </button>
-      {isRunning && onStop && !isSpawnedChat ? (
+      {isRunning && onStop && !isSpawnedChat && !isSyntheticWorkflowAgent(snapshot) ? (
         <button
           type="button"
           aria-label={`Stop ${name}`}
@@ -1571,6 +1578,12 @@ export function ChatSubagentsPanel({
 
   const body = (
     <div className="flex min-h-full flex-col font-sans">
+      <ChatWorkflowActiveCard
+        snapshots={snapshots}
+        onSelectSubagent={handleRowClick}
+        onStopWorkflow={onStopSubagent}
+      />
+
       {/* ── Goal (Codex editable, or Claude read-only /goal loop) ─── */}
       {hasGoal && goal ? (
         <GoalCard

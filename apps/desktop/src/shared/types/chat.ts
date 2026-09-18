@@ -855,6 +855,47 @@ export type AgentChatResourceLink = {
   path?: string;
 };
 
+/**
+ * Cumulative progress published by Claude's dynamic Workflow tool. The host
+ * keeps this deliberately provider-shaped: the renderer can show the phases
+ * and agent roster when Claude supplies it, while other providers continue to
+ * use the ordinary subagent lifecycle fields.
+ */
+export type AgentChatWorkflowPhase = {
+  index: number;
+  title: string;
+};
+
+/** Inclusive bound for provider-derived workflow text crossing client boundaries. */
+export const AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS = 241;
+
+export type AgentChatWorkflowAgent = {
+  key: string;
+  index: number;
+  name: string;
+  status: "running" | "completed" | "failed" | "stopped";
+  summary: string;
+  /** Real SDK agent id when the provider supplies one. */
+  agentId?: string;
+  agentType?: string;
+  model?: string;
+  phaseTitle?: string;
+  tokens?: number;
+  toolCalls?: number;
+  durationMs?: number;
+  lastToolName?: string;
+};
+
+export type AgentChatWorkflowProgress = {
+  phases: AgentChatWorkflowPhase[];
+  /** Started or finished agents; queued agents are represented by queuedCount. */
+  agents: AgentChatWorkflowAgent[];
+  queuedCount: number;
+  runningCount: number;
+  doneCount: number;
+  failedCount: number;
+};
+
 export type AgentChatEvent =
   | {
       type: "user_message";
@@ -1191,6 +1232,7 @@ export type AgentChatEvent =
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       spawnKind?: AgentChatSpawnKind;
       workflowName?: string;
+      workflowProgress?: AgentChatWorkflowProgress;
       /** SDK spawn_depth when the host publishes it; 0 is the top-level agent. */
       spawnDepth?: number;
       resourceLinks?: AgentChatResourceLink[];
@@ -1218,6 +1260,7 @@ export type AgentChatEvent =
       lastToolName?: string;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       workflowName?: string;
+      workflowProgress?: AgentChatWorkflowProgress;
       spawnDepth?: number;
       resourceLinks?: AgentChatResourceLink[];
       turnId?: string;
@@ -1250,6 +1293,7 @@ export type AgentChatEvent =
       toolUseCount?: number;
       spawnDepth?: number;
       resourceLinks?: AgentChatResourceLink[];
+      workflowProgress?: AgentChatWorkflowProgress;
       turnId?: string;
     }
   | {
@@ -2460,6 +2504,7 @@ export type AgentChatSubagentSnapshot = {
     /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
     costUsd?: number;
   };
+  workflowProgress?: AgentChatWorkflowProgress;
   spawnDepth?: number;
   resourceLinks?: AgentChatResourceLink[];
 };
