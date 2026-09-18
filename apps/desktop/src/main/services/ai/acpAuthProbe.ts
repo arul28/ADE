@@ -33,6 +33,7 @@ import { ACP_METHOD } from "../chat/acpHost/acpProtocolTypes";
 import type { Logger } from "../logging/logger";
 import {
   copilotConfigHome,
+  grokConfigHome,
   kimiCodeConfigHome,
   qwenConfigHome,
 } from "../shared/providerConfigHomes";
@@ -63,8 +64,8 @@ function cacheKey(provider: AcpChatProvider, cwd: string): CacheKey {
 /**
  * Config home to export for the probe.
  *
- * Grok is absent on purpose: it reads `~/.grok` and honors no override, so ADE
- * must not invent one. See `providerConfigHomes.grokConfigHome`.
+ * Grok uses the vendor-supported `GROK_HOME` override, just like the other
+ * ACP config-home variables. The dialect exports this same path on spawn.
  */
 export function acpProbeConfigHome(
   provider: AcpChatProvider,
@@ -78,7 +79,7 @@ export function acpProbeConfigHome(
     case "copilot":
       return copilotConfigHome({ env });
     case "grok":
-      return null;
+      return grokConfigHome({ env });
   }
 }
 

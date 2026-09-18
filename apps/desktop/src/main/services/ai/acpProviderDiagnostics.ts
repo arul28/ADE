@@ -39,7 +39,7 @@ export function acpProviderSupportsDoctor(provider: AcpChatProvider): boolean {
   return DOCTOR_COMMANDS[provider] != null;
 }
 
-/** Config directory each CLI reads. Grok's is fixed at `~/.grok`. */
+/** Config directory each CLI reads, including Grok's `GROK_HOME` override. */
 function configHomeFor(provider: AcpChatProvider, env: NodeJS.ProcessEnv): string {
   return provider === "grok" ? grokConfigHome({ env }) : acpProbeConfigHome(provider, env) ?? "";
 }

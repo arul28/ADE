@@ -1116,7 +1116,7 @@ export type AcpProviderDiagnostics = {
   /** Null when nothing was found — the bare command name is a guess, not a path. */
   binaryPath: string | null;
   binarySource: "env" | "auth" | "path" | "common-dir" | "fallback-command";
-  /** Directory the CLI reads its config from. Grok's is fixed at `~/.grok`. */
+  /** Directory the CLI reads its config from, including Grok's `GROK_HOME`. */
   configHome: string | null;
   version: string | null;
   /** Why no version, when there is none. */

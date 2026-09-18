@@ -37,7 +37,7 @@ slash-command allowlist.
 |---|---|---|
 | qwen | first-class | cleanest surface |
 | kimi | first-class | two holes, absorbed (below) |
-| grok | preview (Settings-only label) | **blocker CLEARED 2026-08-31, tier decision pending.** A real `session/request_permission` was observed in a host-driven ACP session on 1.0.13 once both halves of §3's neutralization were applied. Graduating to first-class is a product call, not a technical one; the remaining caveat is that the kill switch is an undocumented vendor hatch (§3 rule 3) |
+| grok | first-class | **Graduated 2026-09-18.** A real `session/request_permission` was observed in a host-driven ACP session on 1.0.13 once both halves of §3's neutralization were applied. The undocumented vendor hatch remains a compatibility risk, so the preflight and runtime supervision invariant stay load-bearing. |
 | copilot | preview (Settings-only label) | graduates when GitHub fixes cancel + drops preview |
 
 Preview labels appear ONLY in Settings (tile + detail page). Pickers render all
@@ -255,16 +255,21 @@ Rust, Apache-2.0)
   text fs and corrupts assets). `terminal` capability optional.
 - Slash: `available_commands_update`, re-emitted repeatedly → dedupe.
 - Config home: `GROK_HOME` IS a valid env override (`xai-dirs` reads it;
-  earlier "no override" text was wrong). ADE still sets nothing and reuses the
-  user's `~/.grok`, because a private home would hide their `grok login`
-  credential and rules. That is a choice, not a limitation.
+  earlier "no override" text was wrong). ADE passes the resolved value to the
+  ACP child and auth probe, defaulting to the user's `~/.grok`; it never writes
+  the directory. This keeps custom credential homes first-class without
+  changing the default login path.
 - Tracked CLI: positional prompt `grok "<p>"`, `-s <uuid>` assign, `-r <id>` /
   `-c` resume, `--permission-mode {default,acceptEdits,auto,dontAsk,
   bypassPermissions,plan}`, `--reasoning-effort`, `--rules` (append guidance),
   `--no-alt-screen`. NEVER pass `-w/--worktree` (collides with lanes).
 - Auth: reuse `grok login` (`~/.grok/auth.json`) or `XAI_API_KEY`; stored
   session token outranks env key. No free tier.
-- Version churn ~daily; record binary version in diagnostics; floor ≥1.0.13.
+- Version churn ~daily; record the binary version in diagnostics; compatibility
+  baseline remains ≥1.0.13. The npm `latest` release is 1.0.34, published
+  2026-09-16 04:15:07 UTC; its release notes add generally available Memory and
+  Markdown heading theme colors without changing the ACP launch contract. ADE's
+  setup/error copy recommends `@xai-official/grok@1.0.34` for this baseline.
 
 ### Copilot (`copilot --acp`, npm `@github/copilot`, PREVIEW)
 - Caps on 1.0.82 (ACP agent 1.0.4): `loadSession`, image prompts, session
@@ -346,8 +351,9 @@ From the internal audit (all file:line refs verified 2026-08-30):
   auth probe; Jean pattern: spawn, `initialize`+`authenticate`, map JSON-RPC
   error to "Run `<cli> login` first").
 - `main/services/shared/providerConfigHomes.ts`: `qwenConfigHome` (QWEN_HOME),
-  `copilotConfigHome` (COPILOT_HOME), `kimiCodeConfigHome` (KIMI_CODE_HOME) —
-  CODEX_HOME shape. Grok: none (use `~/.grok`).
+  `copilotConfigHome` (COPILOT_HOME), `kimiCodeConfigHome` (KIMI_CODE_HOME),
+  and `grokConfigHome` (GROK_HOME) — config-directory env overrides. Grok
+  defaults to `~/.grok`.
 - `shared/cliLaunch.ts`: `CliProvider` + four; launch/resume builders. Template:
   claude branch for qwen/grok/copilot, cursor branch (initialInput) for kimi.
 - `renderer/lib/sessions.ts`: `KnownChatProvider` + four; both maps + tool types.

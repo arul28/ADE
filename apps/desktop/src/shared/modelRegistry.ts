@@ -772,7 +772,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     isCliWrapped: true,
   },
 
-  // ---- Grok (CLI-wrapped via `grok`, ACP, preview) ----
+  // ---- Grok (CLI-wrapped via `grok`, ACP, first-class) ----
   // Verified against the CLI's own live model cache: two visible models, both
   // 500K context, and `xhigh` effort only on 4.6.
   {
@@ -792,7 +792,6 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "grok-4.6",
     cliCommand: "grok",
     isCliWrapped: true,
-    previewTier: true,
   },
   {
     id: "xai/grok-4-5",
@@ -811,7 +810,6 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "grok-4.5",
     cliCommand: "grok",
     isCliWrapped: true,
-    previewTier: true,
   },
 
   // ---- GitHub Copilot (CLI-wrapped via `copilot`, ACP, preview) ----
@@ -1507,7 +1505,7 @@ const ACP_GROUP_METADATA: Record<
 > = {
   qwen: { family: "qwen", providerRoute: "qwen-acp", cliCommand: "qwen", color: "#6D4AFF", previewTier: false },
   kimi: { family: "moonshot", providerRoute: "kimi-acp", cliCommand: "kimi", color: "#1F1F1F", previewTier: false },
-  grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: "#DC2626", previewTier: true },
+  grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: "#DC2626", previewTier: false },
   copilot: {
     family: "github-copilot",
     providerRoute: "copilot-acp",

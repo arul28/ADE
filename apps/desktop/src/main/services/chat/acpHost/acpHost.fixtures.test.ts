@@ -34,7 +34,7 @@ describe("captured initialize fixtures", () => {
     expect(copilotDialect.imagePrompts.declared).toBe(true);
   });
 
-  it("grok 1.0.13 advertises load/resume/close, no images, and MCP http/sse", () => {
+  it("grok remains first-class while preserving its honest capability gates", () => {
     const init = loadFixture<AcpInitializeResponse>("grok.initialize.json");
     expect(init.protocolVersion).toBe(1);
     expect(init.agentCapabilities?.loadSession).toBe(true);
@@ -46,6 +46,7 @@ describe("captured initialize fixtures", () => {
       close: {},
     });
     expect(grokDialect.loadPolicy).toBe("resume_preferred");
+    expect(grokDialect.tier).toBe("first_class");
     expect(grokDialect.closeStyle).toBe("close_request");
     expect(grokDialect.imagePrompts.declared).toBe(false);
     expect(grokDialect.mcpInjection.declared).toBe(true);

@@ -798,6 +798,7 @@ import {
 } from "./acpHost";
 import {
   copilotConfigHome,
+  grokConfigHome,
   kimiCodeConfigHome,
   qwenConfigHome,
 } from "../shared/providerConfigHomes";
@@ -16338,7 +16339,7 @@ export function createAgentChatService(args: {
   const ACP_INSTALL_COMMANDS: Record<AcpChatProvider, string> = {
     qwen: "npm install -g @qwen-code/qwen-code",
     kimi: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
-    grok: "npm install -g @xai-official/grok",
+    grok: "npm install -g @xai-official/grok@1.0.34",
     copilot: "npm install -g @github/copilot",
   };
 
@@ -26737,7 +26738,7 @@ export function createAgentChatService(args: {
   // the places where ADE itself must: the config home each CLI honors, Kimi's
   // Windows prerequisite check, and Grok's supervision preflight.
 
-  /** Config home to hand a dialect's spawn plan. Grok honors no override. */
+  /** Config home to hand a dialect's spawn plan. */
   const acpConfigHomeFor = (
     provider: AcpChatProvider,
     env: NodeJS.ProcessEnv,
@@ -26746,8 +26747,7 @@ export function createAgentChatService(args: {
       case "qwen": return qwenConfigHome({ env });
       case "kimi": return kimiCodeConfigHome({ env });
       case "copilot": return copilotConfigHome({ env });
-      // Grok reads `~/.grok` and nothing else, so ADE sets nothing.
-      case "grok": return null;
+      case "grok": return grokConfigHome({ env });
     }
   };
 
