@@ -74,11 +74,9 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "grok",
     tagline: "Uses your grok login, or XAI_API_KEY.",
     logoFamily: "xai",
-    installCommand: "npm install -g @xai-official/grok",
-    // Grok honours no config-home override: it reads ~/.grok and nothing else,
-    // so ADE reuses whatever is already there and sets nothing.
-    credentialSource: "Signed in through `grok login` (~/.grok/auth.json), or XAI_API_KEY. ADE does not relocate ~/.grok.",
-    setup: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE reuses ~/.grok and does not write Grok's config. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
+    installCommand: "npm install -g @xai-official/grok@1.0.34",
+    credentialSource: "Signed in through `grok login` (GROK_HOME/auth.json, default ~/.grok/auth.json), or XAI_API_KEY. ADE does not write Grok's config.",
+    setup: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
   },
   {
     ...ACP_PROVIDER_METADATA.copilot,

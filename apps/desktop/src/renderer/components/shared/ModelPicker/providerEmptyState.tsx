@@ -105,7 +105,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   xai: {
     title: "Set up Grok",
-    body: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE reuses ~/.grok and does not relocate it.",
+    body: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE uses GROK_HOME when set and defaults to ~/.grok.",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Grok CLI docs",

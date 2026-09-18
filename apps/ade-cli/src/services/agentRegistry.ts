@@ -214,7 +214,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "grok",
     displayName: "Grok CLI",
     binaryNames: ["grok"],
-    installCommand: npmGlobalInstallCommand("@xai-official/grok"),
+    installCommand: npmGlobalInstallCommand("@xai-official/grok@1.0.34"),
     authCommand: "grok login",
     missingErrorPatterns: [
       /\bgrok\b.*\b(command not found|not recognized|not found|enoent)\b/i,

@@ -35,7 +35,7 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     statusLabel: "Grok",
     loginCommand: "grok login",
     loginHint: "grok login or set XAI_API_KEY",
-    configHomeEnv: null,
+    configHomeEnv: "GROK_HOME",
   },
   copilot: {
     label: "GitHub Copilot",

@@ -266,15 +266,24 @@ describe("spawn plans", () => {
     ).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits"]));
   });
 
-  it("grok sets no config home, even though GROK_HOME is a real override", () => {
-    // `xai-dirs` honors GROK_HOME. ADE declines it on purpose: a private home
-    // would hide the user's own `grok login` credential and rules.
-    const plan = grokDialect.buildSpawnPlan({ binaryPath: "/bin/grok", cwd: "/lane", baseEnv: { PATH: "/bin" } });
+  it("grok passes its vendor-supported config home through the child environment", () => {
+    const plan = grokDialect.buildSpawnPlan({
+      binaryPath: "/bin/grok",
+      cwd: "/lane",
+      baseEnv: { PATH: "/bin" },
+      configHome: "/tmp/ade-grok-home",
+    });
     expect(plan.env.PATH).toBe("/bin");
-    expect(plan.env.GROK_HOME).toBeUndefined();
+    expect(plan.env.GROK_HOME).toBe("/tmp/ade-grok-home");
     expect(plan.env.QWEN_HOME).toBeUndefined();
     expect(plan.env.KIMI_CODE_HOME).toBeUndefined();
     expect(plan.env.COPILOT_HOME).toBeUndefined();
+  });
+
+  it("keeps Grok pools separate when their config homes differ", () => {
+    const first = hashPoolEnv({ GROK_HOME: "/tmp/grok-one", XAI_API_KEY: "key" }, grokDialect.poolEnvKeys);
+    const second = hashPoolEnv({ GROK_HOME: "/tmp/grok-two", XAI_API_KEY: "key" }, grokDialect.poolEnvKeys);
+    expect(first).not.toBe(second);
   });
 
   it("qwen exports QWEN_HOME only when a config home exists", () => {

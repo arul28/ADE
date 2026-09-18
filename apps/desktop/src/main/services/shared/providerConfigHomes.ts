@@ -89,11 +89,8 @@ export function kimiCodeConfigHome(args: HomeArg = {}): string {
   return configured ? path.resolve(configured) : path.join(baseHome(args), ".kimi-code");
 }
 
-/**
- * Grok has NO config-home override: it reads `~/.grok` and nothing else. ADE
- * therefore sets nothing and reuses whatever the user already has. Stated here
- * so the absence reads as a decision rather than an omission.
- */
+/** `GROK_HOME` names the config directory itself; it defaults to `~/.grok`. */
 export function grokConfigHome(args: HomeArg = {}): string {
-  return path.join(baseHome(args), ".grok");
+  const configured = trimmed((args.env ?? process.env).GROK_HOME);
+  return configured ? path.resolve(configured) : path.join(baseHome(args), ".grok");
 }
