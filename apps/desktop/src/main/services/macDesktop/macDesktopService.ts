@@ -188,6 +188,19 @@ function asNullableDisplayId(raw: unknown): number | null {
 export type MacDesktopRuntimeService = MacDesktopServiceApi & {
   beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void>;
   /**
+   * The sync live view's stream owner. Kept off `startStream` so a subscription
+   * id never lands in `viewerChatSessionIds`, which clients read as chats.
+   */
+  startStreamForSubscription(args: {
+    laneId: string;
+    subscriptionId: string;
+  }): Promise<MacDesktopStreamStatus>;
+  /**
+   * Drops one sync-socket subscription and stops the encoder when it was the
+   * lane's last asker.
+   */
+  releaseStreamSubscription(subscriptionId: string): Promise<void>;
+  /**
    * Whether the lane has a display right now, answered from memory.
    *
    * `getDisplay` is async because it is part of the cross-process contract;
@@ -1042,6 +1055,19 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void> {
       if (!isDarwin) return Promise.resolve();
       return recording.startTurnClip(args.laneId.trim(), args.chatSessionId.trim(), args.turnId);
+    },
+    async startStreamForSubscription(args: {
+      laneId: string;
+      subscriptionId: string;
+    }): Promise<MacDesktopStreamStatus> {
+      assertSupported();
+      return await streaming.startStreamForSubscription({
+        laneId: args.laneId.trim(),
+        subscriptionId: args.subscriptionId.trim(),
+      });
+    },
+    async releaseStreamSubscription(subscriptionId: string): Promise<void> {
+      await streaming.releaseStreamSubscription(subscriptionId.trim());
     },
     /** The KV key the resolution preset is stored under. */
     resolutionSettingKey: MAC_DESKTOP_RESOLUTION_SETTING_KEY,

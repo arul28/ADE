@@ -374,11 +374,13 @@ function WorkAppControlTool({
 /**
  * The lane's private macOS screen.
  *
- * Read-only on the hosted web client, which has no way to hold an input lease
- * and no decoder for the host's stream. Everywhere else — including a Windows
- * or Linux desktop watching a Mac-hosted lane — this is the live panel: the
- * display lives on the runtime host, so the viewer's own platform never enters
- * into it.
+ * Read-only on the hosted web client in the one sense that matters: no
+ * takeover and no real input, because there is no way to hold the input lease
+ * over a sync socket. It still plays the live picture when the host advertises
+ * `macDesktopStream`, and it can start or stop the lane's display. Everywhere
+ * else — including a Windows or Linux desktop watching a Mac-hosted lane —
+ * this is the full panel: the display lives on the runtime host, so the
+ * viewer's own platform never enters into it.
  */
 function WorkMacDesktopTool({
   laneId,

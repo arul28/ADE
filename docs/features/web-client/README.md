@@ -200,6 +200,25 @@ Browser `window.ade` adapter:
   returns an empty list because dev-server discovery reads this machine's PTY
   output and a web tab has none. Everything else in the namespace is
   deliberately absent so a caller feature-detects instead of getting a fake.
+- `apps/desktop/src/renderer/webclient/adapter/macDesktop.ts` - the lane's
+  macOS screen as this surface can use it. `getStatus`/`start`/`stop` are the
+  same `macDesktop.*` commands the desktop panel calls, and
+  `streamSubscribe`/`streamUnsubscribe` own at most one live subscription per
+  view, keyed by a per-mount `subscriptionId`. The pushed
+  `macDesktop.streamRecord`/`macDesktop.streamEnded` envelopes are surfaced
+  through `onStreamRecord`/`onStreamEnded`; `onConnectionChange` lets the view
+  drop its subscription on a socket close and re-subscribe after the reconnect
+  handshake. `supportsLiveStream()` requires both the
+  `hello.features.macDesktopStream` bit and the advertised subscribe command,
+  because either half missing would mount a view whose first RPC the host
+  rejects. Takeover and real input are deliberately absent:
+  `WORK_TOOLS_CONTROL_HINT` still says control stays on the desktop. The
+  `macDesktop` Work tool renders live in `WorkToolReadOnlyView` by feeding
+  `H264VideoCanvas` a pushed-record source (the same decoder the Electron
+  panel drives from a loopback URL), keeps the display's aspect ratio with
+  `object-fit: contain`, shows the last still frame until the first keyframe
+  arrives, and falls back to that still with a one-line notice on a browser
+  without WebCodecs.
 - `apps/desktop/src/renderer/webclient/adapter/account.ts` - maps the browser
   OAuth session and account directory onto the reused `window.ade.account`
   contract for status, sign-in/out, machine listing, and machine removal.

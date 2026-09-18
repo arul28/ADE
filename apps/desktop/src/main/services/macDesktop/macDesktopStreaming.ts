@@ -54,6 +54,15 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
    * any other so `stopOwnedBy` can never empty a set it is in.
    */
   const streamOwners = new Map<string, Set<string | null>>();
+  /**
+   * laneId → sync-socket subscription ids watching the lane live.
+   *
+   * Deliberately not in `streamOwners`: that set feeds `viewerChatSessionIds`,
+   * which callers read as "chats watching this lane". A subscription id is not
+   * a chat, and a viewer that is only watching from a browser must not make
+   * the lane look like a chat's turn is active.
+   */
+  const streamSubscriptions = new Map<string, Set<string>>();
 
   const addStreamOwner = (laneId: string, chatSessionId: string | null | undefined): void => {
     const owner = chatSessionId?.trim() || null;
@@ -61,6 +70,16 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     if (owners) owners.add(owner);
     else streamOwners.set(laneId, new Set([owner]));
   };
+
+  const addSubscriptionOwner = (laneId: string, subscriptionId: string): void => {
+    const existing = streamSubscriptions.get(laneId);
+    if (existing) existing.add(subscriptionId);
+    else streamSubscriptions.set(laneId, new Set([subscriptionId]));
+  };
+
+  /** True while any asker — chat or sync subscription — keeps the stream up. */
+  const hasStreamOwners = (laneId: string): boolean =>
+    (streamOwners.get(laneId)?.size ?? 0) > 0 || (streamSubscriptions.get(laneId)?.size ?? 0) > 0;
   const streamServer = createMacDesktopStreamServer({
     logger: deps.logger,
     now: deps.now,
@@ -83,6 +102,14 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
   });
 
   /**
+   * The chat ids recorded as viewers of a lane's stream, anonymous askers
+   * dropped. Ids only — see `MacDesktopStreamStatus.viewerChatSessionIds`.
+   */
+  const viewerChatSessionIds = (laneId: string): string[] => (
+    [...(streamOwners.get(laneId) ?? [])].filter((owner): owner is string => typeof owner === "string")
+  );
+
+  /**
    * The stream's shape for a reader.
    *
    * Always answers: a lane with no stream is a stopped stream, not an absent
@@ -103,6 +130,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
         transport: null,
         lastError: null,
         clients: 0,
+        viewerChatSessionIds: viewerChatSessionIds(laneId),
       };
     }
     const transport = options.transport ?? null;
@@ -125,10 +153,23 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       },
       lastError: metrics.lastError,
       clients: metrics.clients,
+      viewerChatSessionIds: viewerChatSessionIds(laneId),
     };
   }
 
-  async function startStream(args: MacDesktopStartStreamArgs): Promise<MacDesktopStreamStatus> {
+  type StreamOwner =
+    | { kind: "chat"; chatSessionId: string | null | undefined }
+    | { kind: "subscription"; subscriptionId: string };
+
+  const addOwner = (laneId: string, owner: StreamOwner): void => {
+    if (owner.kind === "chat") addStreamOwner(laneId, owner.chatSessionId);
+    else addSubscriptionOwner(laneId, owner.subscriptionId);
+  };
+
+  async function startStreamFor(
+    args: Pick<MacDesktopStartStreamArgs, "laneId" | "fps" | "idleFps">,
+    owner: StreamOwner,
+  ): Promise<MacDesktopStreamStatus> {
     const laneId = args.laneId.trim();
     deps.requireDisplay(laneId);
     const running = streamServer.getTransport(laneId);
@@ -136,7 +177,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       // A reconnecting viewer asks again. Restarting would mint a second token
       // and cut off every client holding the first one, so the live stream and
       // its token are handed back unchanged; only a stopped stream mints one.
-      addStreamOwner(laneId, args.chatSessionId);
+      addOwner(laneId, owner);
       deps.touchDisplay(laneId);
       return buildStreamStatus(laneId, { redacted: false, transport: running });
     }
@@ -160,7 +201,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       fps,
       idleFps,
     });
-    addStreamOwner(laneId, args.chatSessionId);
+    addOwner(laneId, owner);
     deps.touchDisplay(laneId);
     // The only call that hands out the token.
     const status = buildStreamStatus(laneId, { redacted: false, transport });
@@ -168,10 +209,29 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     return status;
   }
 
+  async function startStream(args: MacDesktopStartStreamArgs): Promise<MacDesktopStreamStatus> {
+    return await startStreamFor(args, { kind: "chat", chatSessionId: args.chatSessionId });
+  }
+
+  /**
+   * The sync live view's start: same stream, same rate bookkeeping, but the
+   * asker is a subscription id rather than a chat. It stays out of
+   * `viewerChatSessionIds` for that reason.
+   */
+  async function startStreamForSubscription(args: {
+    laneId: string;
+    subscriptionId: string;
+    fps?: number | null;
+    idleFps?: number | null;
+  }): Promise<MacDesktopStreamStatus> {
+    return await startStreamFor(args, { kind: "subscription", subscriptionId: args.subscriptionId });
+  }
+
   async function stopStream(laneId: string, reason: string): Promise<MacDesktopStreamStatus> {
     const wasStreaming = streamServer.isStreaming(laneId);
     streamServer.stop(laneId);
     streamOwners.delete(laneId);
+    streamSubscriptions.delete(laneId);
     const provider = deps.isDarwin ? deps.activeProvider() : null;
     if (provider) {
       await provider.stopStream({ laneId }).catch((error: unknown) => {
@@ -191,6 +251,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     streamServer,
     buildStreamStatus,
     startStream,
+    startStreamForSubscription,
     stopStream,
 
     /** Records an encoder failure the backend reported, and republishes. */
@@ -203,6 +264,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     forgetLane(laneId: string): void {
       streamServer.stop(laneId);
       streamOwners.delete(laneId);
+      streamSubscriptions.delete(laneId);
     },
 
     /**
@@ -215,8 +277,23 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     async stopOwnedBy(chatSessionId: string): Promise<void> {
       for (const [laneId, owners] of [...streamOwners]) {
         if (!owners.delete(chatSessionId)) continue;
-        if (owners.size) continue;
+        if (hasStreamOwners(laneId)) continue;
         await stopStream(laneId, "owner-chat-ended").catch(() => {
+          // A stream we cannot stop is one the server's own teardown will.
+        });
+      }
+    },
+
+    /**
+     * Drops one sync-socket viewer. Same rule as `stopOwnedBy`: only an empty
+     * owner set stops the encoder, so a browser closing its tab never takes
+     * the picture away from a chat that is still watching.
+     */
+    async releaseStreamSubscription(subscriptionId: string): Promise<void> {
+      for (const [laneId, subscriptions] of [...streamSubscriptions]) {
+        if (!subscriptions.delete(subscriptionId)) continue;
+        if (hasStreamOwners(laneId)) continue;
+        await stopStream(laneId, "subscription-ended").catch(() => {
           // A stream we cannot stop is one the server's own teardown will.
         });
       }
@@ -224,11 +301,13 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
 
     clear(): void {
       streamOwners.clear();
+      streamSubscriptions.clear();
     },
 
     dispose(): void {
       streamServer.dispose();
       streamOwners.clear();
+      streamSubscriptions.clear();
     },
   };
 }

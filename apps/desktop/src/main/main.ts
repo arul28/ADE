@@ -4691,6 +4691,7 @@ app.whenReady().then(async () => {
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
       getExternalSessionsService: () => externalSessionsService,
+      macDesktopService,
       usageTrackingService,
       hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: machineAdeLayout.secretsDir,

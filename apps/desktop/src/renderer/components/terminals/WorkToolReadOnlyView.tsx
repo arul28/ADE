@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   WORK_TOOLS_CONTROL_HINT,
   WORK_TOOLS_NO_DESKTOP_MESSAGE,
   workToolsUnavailableMessage,
   type WorkToolsLaneState,
+  type WorkToolsMacDesktopState,
   type WorkToolsObservation,
 } from "../../../shared/types/workTools";
+import { H264VideoCanvas, isWebCodecsAvailable, type H264VideoRecordSource, type H264VideoStatus } from "../chat/H264VideoCanvas";
+import type { MacDesktopWebApi } from "../../webclient/adapter/macDesktop";
 
 /**
  * The browser and App Control panes, as seen from a surface that cannot run
@@ -17,6 +20,11 @@ import {
  * answer was "Desktop app only", which is true and useless: the thing the user
  * wanted to know is what their desktop is *doing*. This shows exactly that and
  * offers no controls, so nothing here can lie about being interactive.
+ *
+ * Mac Desktop is the one read-only tool with a live picture: when the host
+ * advertises `macDesktopStream` the pane subscribes over the sync socket and
+ * decodes the same H.264 the desktop panel plays. Takeover and real input stay
+ * desktop-only, so the control hint still says so.
  */
 
 /**
@@ -119,11 +127,20 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-auto px-3 py-3">
       {tool === "browser" ? <BrowserSummary state={state} /> : null}
       {tool === "app-control" ? <AppControlSummary state={state} /> : null}
-      {tool === "mac-desktop" ? <MacDesktopSummary state={state} /> : null}
-      <ObservationFrame
-        observation={observation}
-        dataUrl={preview?.path === observationPath ? preview?.dataUrl ?? null : null}
-      />
+      {tool === "mac-desktop" ? (
+        <MacDesktopPanel
+          laneId={laneId}
+          macDesktop={state.macDesktop}
+          observation={observation}
+          dataUrl={preview?.path === observationPath ? preview?.dataUrl ?? null : null}
+          onRefresh={() => void refresh()}
+        />
+      ) : (
+        <ObservationFrame
+          observation={observation}
+          dataUrl={preview?.path === observationPath ? preview?.dataUrl ?? null : null}
+        />
+      )}
       <p className="text-[11px] text-muted-fg">{WORK_TOOLS_CONTROL_HINT}</p>
     </div>
   );
@@ -209,20 +226,176 @@ function AppControlSummary({ state }: { state: WorkToolsLaneState }): JSX.Elemen
   );
 }
 
+/** The web namespace is optional on every surface; read it defensively. */
+function macDesktopWebApi(): Partial<MacDesktopWebApi> | null {
+  const api = window.ade?.macDesktop as Partial<MacDesktopWebApi> | undefined;
+  return api ?? null;
+}
+
+function randomSubscriptionId(laneId: string): string {
+  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `macdesk-${laneId}-${suffix}`;
+}
+
+function decodeBase64Bytes(data: string): Uint8Array {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
 /**
- * The lane's private macOS screen, described. No control: the lease is taken on
- * the Mac, and a web client that offered a "take over" button would be offering
- * to move a pointer it has no way to move. Web takeover is a follow-up lane.
+ * A push-fed record source over the web `macDesktop` namespace. One
+ * subscription per source instance; abandoning the source unsubscribes.
  */
-function MacDesktopSummary({ state }: { state: WorkToolsLaneState }): JSX.Element {
-  const macDesktop = state.macDesktop;
+function createMacDesktopStreamSource(args: {
+  api: Partial<MacDesktopWebApi>;
+  laneId: string;
+  subscriptionId: string;
+  viewerLabel: string;
+}): H264VideoRecordSource {
+  const { api, laneId, subscriptionId, viewerLabel } = args;
+  return {
+    subscribe(handlers) {
+      let closed = false;
+      const offRecord = api.onStreamRecord?.((record) => {
+        if (closed || record.subscriptionId !== subscriptionId) return;
+        if (record.kind === "config") {
+          try {
+            const config = JSON.parse(new TextDecoder().decode(decodeBase64Bytes(record.data))) as {
+              codec?: unknown;
+              width?: unknown;
+              height?: unknown;
+              annexB?: unknown;
+            };
+            if (typeof config.codec !== "string" || !config.codec) {
+              handlers.onError("The video stream sent no codec.");
+              return;
+            }
+            handlers.onRecord({
+              kind: "config",
+              codec: config.codec,
+              width: typeof config.width === "number" ? config.width : null,
+              height: typeof config.height === "number" ? config.height : null,
+              annexB: config.annexB !== false,
+            });
+          } catch {
+            handlers.onError("The video stream sent an unreadable configuration.");
+          }
+          return;
+        }
+        handlers.onRecord({
+          kind: "access-unit",
+          keyframe: record.keyframe,
+          bytes: decodeBase64Bytes(record.data),
+        });
+      }) ?? (() => {});
+      const offEnded = api.onStreamEnded?.((ended) => {
+        if (closed || ended.subscriptionId !== subscriptionId) return;
+        if (ended.reason === "error") {
+          handlers.onError(ended.message ?? "The desktop stream failed.");
+        } else {
+          handlers.onEnd();
+        }
+      }) ?? (() => {});
+      void Promise.resolve(api.streamSubscribe?.({ laneId, subscriptionId, viewerLabel }))
+        .then((result) => {
+          if (closed || !api.streamSubscribe) return;
+          if (!result) handlers.onError("The live desktop view is not available on this host.");
+        })
+        .catch((error: unknown) => {
+          if (closed) return;
+          handlers.onError(error instanceof Error ? error.message : String(error));
+        });
+      return () => {
+        closed = true;
+        offRecord();
+        offEnded();
+        void Promise.resolve(api.streamUnsubscribe?.({ subscriptionId })).catch(() => {
+          // A dead socket already released the subscription host-side.
+        });
+      };
+    },
+  };
+}
+
+/**
+ * The lane's private macOS screen in the hosted web client: the live picture
+ * when the host and this browser can play it, and the last still frame
+ * otherwise. No takeover — the lease is taken on the Mac, and a web client
+ * that offered one would be offering to move a pointer it has no way to move.
+ */
+function MacDesktopPanel({
+  laneId,
+  macDesktop,
+  observation,
+  dataUrl,
+  onRefresh,
+}: {
+  laneId: string;
+  macDesktop: WorkToolsMacDesktopState | null;
+  observation: WorkToolsObservation | null;
+  dataUrl: string | null;
+  onRefresh: () => void;
+}): JSX.Element {
+  const api = macDesktopWebApi();
+  // The host half and the browser half are separate answers: a host that
+  // advertises the contract but a browser without WebCodecs gets the still
+  // frame plus one honest line, not a dead pane.
+  const hostSupportsLive = Boolean(
+    api?.streamSubscribe
+    && api.onStreamRecord
+    && api.supportsLiveStream?.() === true,
+  );
+  const browserSupportsLive = isWebCodecsAvailable();
+  const liveSupported = hostSupportsLive && browserSupportsLive;
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
+  const [connected, setConnected] = useState(true);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const [streamStatus, setStreamStatus] = useState<H264VideoStatus>("connecting");
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onVisibilityChange = () => setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    if (!liveSupported || !api?.onConnectionChange) return undefined;
+    return api.onConnectionChange((next) => setConnected(next));
+  }, [liveSupported, api]);
+
+  const streamKey = `${pageVisible ? "shown" : "hidden"}:${connected ? "on" : "off"}:${retryNonce}`;
+  const subscriptionId = useMemo(
+    () => randomSubscriptionId(laneId),
+    // A reconnect or a manual retry is a new subscription; the old one was
+    // released by the server with the socket or by our own unsubscribe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [laneId, streamKey],
+  );
+  const source = useMemo(() => {
+    if (!liveSupported || !api || !pageVisible || !connected) return null;
+    return createMacDesktopStreamSource({
+      api,
+      laneId,
+      subscriptionId,
+      viewerLabel: "ADE Web",
+    });
+  }, [liveSupported, api, laneId, subscriptionId, pageVisible, connected]);
+
   if (!macDesktop || !macDesktop.supported) {
     return <ReadOnlyMessage message="This machine can't host a lane desktop." />;
   }
   const display = macDesktop.display;
-  if (!display) {
-    return <p className="text-[12px] text-muted-fg">This lane has no desktop running.</p>;
-  }
   const lease = macDesktop.lease;
   // "Agent driving" vs "You have control" is the same sentence the desktop's
   // strip shows, so the two surfaces cannot describe one lease two ways.
@@ -231,19 +404,115 @@ function MacDesktopSummary({ state }: { state: WorkToolsLaneState }): JSX.Elemen
       ? `You have control${lease.holderLabel ? ` · ${lease.holderLabel}` : ""}`
       : `Agent driving${lease.holderLabel ? ` · ${lease.holderLabel}` : ""}`)
     : "Nobody has taken control.";
+
+  const runAction = async (action: "start" | "stop") => {
+    if (!api) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      if (action === "start") await api.start?.({ laneId });
+      else await api.stop?.({ laneId });
+      onRefresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!display) {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-[12px] text-muted-fg">This lane has no desktop running.</p>
+        {api?.start ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void runAction("start")}
+            className="self-start rounded-md border border-border/60 px-2.5 py-1.5 text-[12px] hover:bg-muted/40 disabled:opacity-50"
+          >
+            {busy ? "Starting…" : "Start desktop"}
+          </button>
+        ) : null}
+        {actionError ? <p className="text-[11px] text-red-400">{actionError}</p> : null}
+      </div>
+    );
+  }
+
   const stream = macDesktop.stream;
+  const pictureVisible = source && pageVisible && connected;
+  const stillFallbackReason = !liveSupported && hostSupportsLive
+    ? "This browser can't play the live view, so this is the latest frame."
+    : null;
+
   return (
     <div className="flex flex-col gap-2">
       <div className="rounded-md border border-border/60 px-2.5 py-2 text-[12px]">
         <div className="flex items-center gap-1.5">
           <span className="truncate font-medium">{display.name}</span>
           {stream?.running ? <Badge label={stream.idle ? "Idle" : "Live"} /> : null}
+          {streamError && pictureVisible && streamStatus === "error"
+            ? <Badge label="No signal" />
+            : null}
         </div>
         <div className="text-[11px] text-muted-fg">
           {display.width} × {display.height} · {display.mode}
         </div>
         <div className="text-[11px] text-muted-fg">{leaseLine}</div>
+        <div className="mt-1.5 flex items-center gap-2">
+          {stream?.running ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void runAction("stop")}
+              className="rounded-md border border-border/60 px-2 py-1 text-[11px] hover:bg-muted/40 disabled:opacity-50"
+            >
+              {busy ? "Stopping…" : "Stop"}
+            </button>
+          ) : null}
+          {pictureVisible && streamStatus !== "playing" ? (
+            <button
+              type="button"
+              onClick={() => setRetryNonce((value) => value + 1)}
+              className="rounded-md border border-border/60 px-2 py-1 text-[11px] hover:bg-muted/40"
+            >
+              {streamStatus === "error" ? "Retry live view" : "Reconnect live view"}
+            </button>
+          ) : null}
+        </div>
+        {actionError ? <p className="mt-1 text-[11px] text-red-400">{actionError}</p> : null}
       </div>
+
+      {/* The display's own aspect ratio, contained — never cropped. */}
+      <div
+        className="relative w-full overflow-hidden rounded-md border border-border/60 bg-muted/20"
+        style={{ aspectRatio: `${display.width} / ${display.height}` }}
+      >
+        {pictureVisible ? (
+          <H264VideoCanvas
+            source={source}
+            className="absolute inset-0 h-full w-full"
+            onStatus={(status, error) => {
+              setStreamStatus(status);
+              setStreamError(error);
+            }}
+          />
+        ) : null}
+        {!pictureVisible || streamStatus !== "playing" ? (
+          dataUrl ? (
+            <img
+              src={dataUrl}
+              alt={observation?.caption ?? "Latest captured frame"}
+              className="absolute inset-0 h-full w-full object-contain"
+            />
+          ) : pictureVisible ? (
+            <div className="absolute inset-0 flex items-center justify-center text-[11px] text-muted-fg">
+              Waiting for the first frame…
+            </div>
+          ) : null
+        ) : null}
+      </div>
+      {stillFallbackReason ? <p className="text-[11px] text-muted-fg">{stillFallbackReason}</p> : null}
       <p className="text-[11px] text-muted-fg">
         {macDesktop.windows.length === 0
           ? "No windows are parked on this desktop."

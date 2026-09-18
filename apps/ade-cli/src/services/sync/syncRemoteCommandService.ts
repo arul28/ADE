@@ -192,6 +192,7 @@ import type {
   SyncStartCliSessionResult,
   SyncWebPairingInfo,
   SyncRunQuickCommandArgs,
+  SyncMacDesktopStatus,
   LaneBranchDriftResolution,
   SessionSettleOverride,
   SessionWakeReason,
@@ -247,6 +248,8 @@ import {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
+import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
+import type { MacDesktopSyncStream, MacDesktopSyncStreamSink } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
@@ -390,6 +393,18 @@ type SyncRemoteCommandServiceArgs = {
    */
   workToolsStateService?: WorkToolsStateService | null;
   /**
+   * The runtime's Mac Desktop service. Present on a host that can hold a
+   * display (and answers `supported: false` off macOS, which is how a Windows
+   * or Linux runtime hides the tool). Absent on a chat-only runtime, in which
+   * case `macDesktop.*` is simply not registered.
+   */
+  macDesktopService?: ReturnType<typeof createMacDesktopService> | null;
+  /**
+   * Subscription fan-out for the live view. Hosts that never built one — or
+   * that built no Mac Desktop service — register no stream methods.
+   */
+  macDesktopSyncStream?: MacDesktopSyncStream | null;
+  /**
    * Deterministic stamp of the sync host's in-memory lane presence
    * (`devicesOpen`). The host decorates lane list/detail payloads with
    * presence AFTER this service builds them, so the conditional-response
@@ -450,6 +465,13 @@ type SyncRemoteCommandServiceArgs = {
 
 export type SyncRemoteCommandExecutionContext = {
   signal?: AbortSignal;
+  /**
+   * The invoking peer's transport. Only the `macDesktop.stream*` methods read
+   * it: a subscription outlives the command that created it, so the handler
+   * registers the peer's sink with the stream fan-out rather than returning
+   * the stream over the command reply.
+   */
+  macDesktopStream?: MacDesktopSyncStreamSink;
 };
 
 type RegisteredRemoteCommand = {
@@ -5222,6 +5244,67 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
     }));
 }
 
+/**
+ * The lane's private macOS screen, over the sync socket.
+ *
+ * `getStatus` / `streamSubscribe` / `streamUnsubscribe` are how the phone and
+ * the hosted web client watch a lane's display live. `start` and `stop` exist
+ * for the web client — the phone is view-only by product decision and never
+ * calls them — so the split is by client behavior, not by policy: all five are
+ * viewer-allowed, exactly like the rest of the read-only Work-tools mirror.
+ *
+ * The stream half is registered only when the host built both the Mac Desktop
+ * service and its subscription fan-out, so `hello.features.commandRouting` is
+ * the honest capability answer.
+ */
+function registerMacDesktopRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const macDesktopService = args.macDesktopService;
+  const macDesktopSyncStream = args.macDesktopSyncStream;
+  if (macDesktopService) {
+    // `MacDesktopStatus` is already token-free; only the recording's host file
+    // path is outside what a read-only client may carry.
+    const redact = (status: Awaited<ReturnType<typeof macDesktopService.getStatus>>): SyncMacDesktopStatus => ({
+      ...status,
+      recording: null,
+    });
+    register("macDesktop.getStatus", { viewerAllowed: true }, async (payload) =>
+      redact(await macDesktopService.getStatus({
+        laneId: requireString(payload.laneId, "macDesktop.getStatus requires laneId."),
+      })));
+    register("macDesktop.start", { viewerAllowed: true }, async (payload) => {
+      const laneName = asTrimmedString(payload.laneName);
+      return redact(await macDesktopService.start({
+        laneId: requireString(payload.laneId, "macDesktop.start requires laneId."),
+        ...(laneName ? { laneName } : {}),
+      }));
+    });
+    register("macDesktop.stop", { viewerAllowed: true }, async (payload) =>
+      await macDesktopService.stop({
+        laneId: requireString(payload.laneId, "macDesktop.stop requires laneId."),
+      }));
+  }
+  if (macDesktopService && macDesktopSyncStream) {
+    register("macDesktop.streamSubscribe", { viewerAllowed: true }, async (payload, context) => {
+      const sink = context.macDesktopStream;
+      if (!sink) {
+        throw new Error("macDesktop.streamSubscribe requires a live sync connection.");
+      }
+      const viewerLabel = asTrimmedString(payload.viewerLabel);
+      return await macDesktopSyncStream.subscribe({
+        laneId: requireString(payload.laneId, "macDesktop.streamSubscribe requires laneId."),
+        subscriptionId: requireString(payload.subscriptionId, "macDesktop.streamSubscribe requires subscriptionId."),
+        connectionId: sink.connectionId,
+        ...(viewerLabel ? { viewerLabel } : {}),
+        sink,
+      });
+    });
+    register("macDesktop.streamUnsubscribe", { viewerAllowed: true }, async (payload) =>
+      macDesktopSyncStream.unsubscribe(
+        requireString(payload.subscriptionId, "macDesktop.streamUnsubscribe requires subscriptionId."),
+      ));
+  }
+}
+
 function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   // Cross-surface ModelPicker favorites + recents — see modelPickerStore.ts.
   // Mirrors the direct JSON-RPC `modelPicker.*` methods on adeRpcServer so iOS
@@ -6234,6 +6317,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerPersonalChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
+  registerMacDesktopRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });

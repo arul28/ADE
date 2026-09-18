@@ -85,7 +85,8 @@ required.
 | `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the one `DesktopSeatProvider` implementation. One method per driver op; the only file that knows the op names. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopInput.ts` | The observation and input half: the one capture path, target→driver payload, who a call claims to be for the lease check, and the eight acting commands built on it. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopWindows.ts` | The window and app lifecycle: launching an app onto a lane's display, parking and unparking a window, presenting the set elsewhere, and the one window read every `windows-changed` event is built from. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream — chats and sync subscriptions tracked separately. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopSyncStream.ts` | The fan-out that turns a lane's loopback stream into `macDesktop.streamRecord` / `macDesktop.streamEnded` sync pushes, with per-subscription keyframe-gated backpressure. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The two writers of a movie file — the per-turn time-lapse and the captioned recording — serialized against the helper's one recorder per lane. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | The pending-input card that asks for real input, and the lease push that makes the helper's own refusal correct. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopActionDomain.ts` | The `mac_desktop` action domain: its argument readers and its platform gate. `adeActions/registry.ts` keeps one wiring line. |
@@ -116,14 +117,38 @@ client.
   method rejects with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`. The renderer hides the
   tab.
 - **Phone and hosted web client.** Both read the `macDesktop` slice of
-  `WorkToolsLaneState` (`apps/desktop/src/shared/types/workTools.ts`) and render
-  it read-only: the display, its parked windows, the lease line, the stream
-  state, and the last frame fetched through `workTools.readObservationPreview`.
-  There is no control surface — `WORK_TOOLS_CONTROL_HINT` says so. **Taking
-  control from the hosted web client is a follow-up lane**: takeover needs the
-  lease heartbeat and an input channel, and neither exists off the desktop
-  today. A missing `macDesktop` key, or `supported: false`, hides the tool
-  rather than drawing an empty pane.
+  `WorkToolsLaneState` (`apps/desktop/src/shared/types/workTools.ts`): the
+  display, its parked windows, the lease line, the stream state, and the last
+  frame fetched through `workTools.readObservationPreview`. Neither surface can
+  take over — takeover needs the lease heartbeat and an input channel, and
+  neither exists off the desktop today — so `WORK_TOOLS_CONTROL_HINT` still
+  says control stays on the desktop. A missing `macDesktop` key, or
+  `supported: false`, hides the tool rather than drawing an empty pane.
+
+  Both gain a live picture when the host advertises
+  `hello.features.macDesktopStream` and the `macDesktop.streamSubscribe`
+  command. The runtime opens a reader on the lane's loopback stream in-process
+  and re-publishes its framed records as `macDesktop.streamRecord` push
+  notifications on the sync socket, ending a subscription with
+  `macDesktop.streamEnded`; the loopback URL and its token never cross that
+  boundary. Each subscription joins the stream's owner set keyed by its
+  `subscriptionId`, so one browser tab closing never stops the encoder under a
+  chat that is still watching, and an explicit unsubscribe or a closed socket
+  releases it like a closing chat would. Once the peer's queued bytes pass
+  2 MiB the push drops frames until the next keyframe, so no client ever gets
+  a P-frame whose reference was skipped.
+
+  On the web client the live pane can also `macDesktop.start`/`stop` the lane's
+  display; the phone is view-only by product decision and never calls either.
+  Both keep the still image until the first keyframe and when the feature (or a
+  WebCodecs decoder) is absent.
+
+  The phone subscribes while the sheet is visible and foregrounded, decodes the
+  pushed `macDesktop.streamRecord` Annex-B H.264 frames with VideoToolbox,
+  keeps the still image as the placeholder until the first keyframe, and
+  unsubscribes on disappear, background, sheet close, or socket teardown. The
+  hosted web client does the same with WebCodecs, unsubscribing on unmount, tab
+  hidden, or socket close and re-subscribing after a reconnect.
 
 ## Ownership
 
@@ -238,7 +263,12 @@ keyframe can still configure its decoder.
 
 The token is minted per `startStream` and returned only by `startStream`.
 `getStreamStatus` reports the transport shape with `url` and `token` null,
-because that read sits on the agent action allowlist.
+because that read sits on the agent action allowlist. It also reports
+`viewerChatSessionIds` — the chats recorded as viewers of the current stream,
+as ids and nothing else. The Work tab's floating preview reads that (plus the
+lease holder) to decide whether the chat you are reading is actually watching
+the lane's desktop; a chat that is neither a viewer nor the lease holder does
+not get the lane's screen as a corner card.
 
 An explicit `stopStream` is not a per-watcher unsubscribe: it is CTO/human-only
 and it stops the encoder for every watcher of that lane at once, because the
@@ -255,6 +285,20 @@ The stream runs at a low frame rate while nothing happens — no agent action, n
 takeover — and at full rate on activity. The last decoded frame is kept, which
 is what the Lanes tab hover peek and the thread mini view render. Neither adds a
 poller.
+
+The phone and the hosted web client watch the same encoder through the sync
+socket when `hello.features.macDesktopStream` is advertised.
+`macDesktop.streamSubscribe` opens a loopback reader in the runtime
+(`macDesktopSyncStream.ts`) and records the viewer as a **subscription** owner
+keyed by its `subscriptionId`, kept out of `viewerChatSessionIds` because a
+subscription is not a chat. The `config` and `frame` records arrive as
+`macDesktop.streamRecord` pushes with the frames already keyframed-first, and
+`macDesktop.streamUnsubscribe` — or the socket closing — removes the owner. It
+uses the same keyframe-on-attach path every other reader gets, so a viewer
+opening the card never waits on a still desktop. The phone is view-only; the
+web client can also `macDesktop.start`/`stop`. Pushes are best-effort: past
+2 MiB queued they skip to the next keyframe instead of growing the socket
+buffer without bound.
 
 ## Proof
 

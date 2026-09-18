@@ -6309,6 +6309,20 @@ describe("CTO-gated Linear sync commands", () => {
         readObservationPreview: vi.fn(async () => ({ ok: true })),
         setActiveTool: vi.fn(() => ({ ok: true })),
       },
+      // Same rule for `macDesktop.*`: a Mac runtime builds the service and its
+      // stream fan-out (`bootstrap.ts` / `main.ts`), so the fixture carries
+      // both. The handlers are never reached with valid args here; the loop
+      // only checks that each optional action clears the authorization gate.
+      macDesktopService: {
+        getStatus: vi.fn(async () => ({ supported: false })),
+        start: vi.fn(async () => ({ supported: true })),
+        stop: vi.fn(async () => ({ stopped: false, releasedWindows: 0 })),
+        startStreamForSubscription: vi.fn(async () => {
+          throw new Error("no display in this fixture");
+        }),
+        releaseStreamSubscription: vi.fn(async () => {}),
+        subscribe: vi.fn(() => () => {}),
+      },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
@@ -6373,6 +6387,11 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.deletePromptStash",
         "workTools.getLaneState",
         "workTools.readObservationPreview",
+        "macDesktop.getStatus",
+        "macDesktop.start",
+        "macDesktop.stop",
+        "macDesktop.streamSubscribe",
+        "macDesktop.streamUnsubscribe",
       ]);
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
         expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),

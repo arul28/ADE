@@ -552,6 +552,16 @@ export type MacDesktopStreamStatus = {
   lastError: string | null;
   /** Readers attached right now. Zero stops the encoder after a grace period. */
   clients: number;
+  /**
+   * The chats currently recorded as viewers of this stream, as ids and nothing
+   * else.
+   *
+   * Redaction-safe on purpose: no token and no URL, because this rides on
+   * `getStreamStatus`, which is on the agent action allowlist. The floating
+   * preview reads it to decide whether the chat you are looking at is actually
+   * watching (or holding the lease of) the lane's desktop.
+   */
+  viewerChatSessionIds: string[];
 };
 
 /** The redacted half of `getStatus`. Never carries the token. */

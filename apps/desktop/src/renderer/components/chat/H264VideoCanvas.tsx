@@ -3,6 +3,7 @@ import { cn } from "../ui/cn";
 import {
   IosSimVideoProtocolError,
   createIosSimVideoRecordParser,
+  type IosSimVideoRecord,
 } from "./iosSimVideoRecords";
 
 /**
@@ -52,9 +53,27 @@ export function isWebCodecsAvailable(): boolean {
   return typeof scope.VideoDecoder === "function" && typeof scope.EncodedVideoChunk === "function";
 }
 
+/**
+ * A second record source: pushed records instead of a fetchable URL.
+ *
+ * The hosted web client cannot reach the lane's loopback URL, so its Mac
+ * Desktop stream arrives as sync-socket notifications. The decoder does not
+ * care where a record came from, so it consumes both through the same
+ * `IosSimVideoRecord` shape.
+ */
+export type H264VideoRecordSource = {
+  subscribe(handlers: {
+    onRecord: (record: IosSimVideoRecord) => void;
+    onError: (message: string) => void;
+    onEnd: () => void;
+  }): () => void;
+};
+
 export type H264VideoCanvasProps = {
   /** The URL `startStream` handed back, already localised for this machine. */
-  url: string;
+  url?: string | null;
+  /** Pushed records instead of a URL. Takes precedence when both are present. */
+  source?: H264VideoRecordSource | null;
   className?: string;
   /** Bumping this reconnects. Use it after a port forward is rebuilt. */
   reconnectNonce?: number;
@@ -64,7 +83,8 @@ export type H264VideoCanvasProps = {
 };
 
 export function H264VideoCanvas({
-  url,
+  url = null,
+  source = null,
   className,
   reconnectNonce = 0,
   onStatus,
@@ -106,7 +126,7 @@ export function H264VideoCanvas({
   }, [onCanvas]);
 
   useEffect(() => {
-    if (!url) {
+    if (!url && !source) {
       report("stopped", null);
       return;
     }
@@ -154,70 +174,93 @@ export function H264VideoCanvas({
       }
     };
 
-    const run = async () => {
-      try {
-        const response = await fetch(url, { signal: abort.signal, cache: "no-store" });
-        if (!response.ok) {
-          throw new Error(response.status === 403
-            ? "The video stream refused this token."
-            : `The video stream answered ${response.status}.`);
+    // One record pipeline for both sources: the URL reader feeds it parsed
+    // records, a push subscription hands it the same shapes directly.
+    let configured = false;
+    const consume = (record: IosSimVideoRecord): void => {
+      if (record.kind === "config") {
+        decoder?.close();
+        decoder = new VideoDecoderCtor({
+          output: drawFrame,
+          error: (decodeError) => {
+            if (cancelled) return;
+            report("error", decodeError.message);
+          },
+        });
+        // No `description`: the stream is Annex-B, and a decoder configured
+        // without one expects exactly that.
+        decoder.configure({ codec: record.codec, optimizeForLatency: true });
+        configured = true;
+        if (record.width && record.height) {
+          dimensionsRef.current?.({ width: record.width, height: record.height });
         }
-        const body = response.body;
-        if (!body) throw new Error("The video stream sent no body.");
-        const reader = body.getReader();
-        const parser = createIosSimVideoRecordParser();
-        let configured = false;
-
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done || cancelled) break;
-          if (!value) continue;
-          for (const record of parser.push(value)) {
-            if (record.kind === "config") {
-              decoder?.close();
-              decoder = new VideoDecoderCtor({
-                output: drawFrame,
-                error: (decodeError) => {
-                  if (cancelled) return;
-                  report("error", decodeError.message);
-                },
-              });
-              // No `description`: the stream is Annex-B, and a decoder
-              // configured without one expects exactly that.
-              decoder.configure({ codec: record.codec, optimizeForLatency: true });
-              configured = true;
-              if (record.width && record.height) {
-                dimensionsRef.current?.({ width: record.width, height: record.height });
-              }
-              continue;
-            }
-            if (!configured || !decoder || decoder.state === "closed") continue;
-            timestampUs += 33_333;
-            decoder.decode(new EncodedVideoChunkCtor({
-              type: record.keyframe ? "key" : "delta",
-              timestamp: timestampUs,
-              data: record.bytes,
-            }));
-            report("playing", null);
-          }
-        }
-        if (!cancelled) report("stopped", null);
-      } catch (caught) {
-        if (cancelled || abort.signal.aborted) return;
-        const message = caught instanceof IosSimVideoProtocolError
-          ? caught.message
-          : caught instanceof Error
-            ? caught.message
-            : String(caught);
-        report("error", message);
+        return;
       }
+      if (!configured || !decoder || decoder.state === "closed") return;
+      timestampUs += 33_333;
+      decoder.decode(new EncodedVideoChunkCtor({
+        type: record.keyframe ? "key" : "delta",
+        timestamp: timestampUs,
+        data: record.bytes,
+      }));
+      report("playing", null);
     };
 
-    void run();
+    let unsubscribe: (() => void) | null = null;
+    if (source) {
+      unsubscribe = source.subscribe({
+        onRecord: (record) => {
+          if (!cancelled) consume(record);
+        },
+        onError: (message) => {
+          if (!cancelled) report("error", message);
+        },
+        onEnd: () => {
+          if (!cancelled) report("stopped", null);
+        },
+      });
+    } else if (url) {
+      const run = async () => {
+        try {
+          const response = await fetch(url, { signal: abort.signal, cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(response.status === 403
+              ? "The video stream refused this token."
+              : `The video stream answered ${response.status}.`);
+          }
+          const body = response.body;
+          if (!body) throw new Error("The video stream sent no body.");
+          const reader = body.getReader();
+          const parser = createIosSimVideoRecordParser();
+
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done || cancelled) break;
+            if (!value) continue;
+            for (const record of parser.push(value)) {
+              if (cancelled) break;
+              consume(record);
+            }
+          }
+          if (!cancelled) report("stopped", null);
+        } catch (caught) {
+          if (cancelled || abort.signal.aborted) return;
+          const message = caught instanceof IosSimVideoProtocolError
+            ? caught.message
+            : caught instanceof Error
+              ? caught.message
+              : String(caught);
+          report("error", message);
+        }
+      };
+
+      void run();
+    }
 
     return () => {
       cancelled = true;
       abort.abort();
+      unsubscribe?.();
       try {
         if (decoder && decoder.state !== "closed") decoder.close();
       } catch {
@@ -225,7 +268,7 @@ export function H264VideoCanvas({
       }
       decoder = null;
     };
-  }, [url, reconnectNonce, report]);
+  }, [url, source, reconnectNonce, report]);
 
   return (
     <canvas

@@ -696,12 +696,44 @@ describe("macDesktopService streaming", () => {
     await service.start({ laneId: "lane-1" });
     await service.startStream({ laneId: "lane-1", chatSessionId: "chat-a" });
     await service.startStream({ laneId: "lane-1", chatSessionId: "chat-b" });
+    // The redacted viewer list names both askers as ids, so the floating
+    // preview can tell which chat may show the lane's screen.
+    expect((await service.getStreamStatus({ laneId: "lane-1" })).viewerChatSessionIds.sort())
+      .toEqual(["chat-a", "chat-b"]);
 
     await service.releaseIfOwnedBy("chat-a");
-    expect((await service.getStreamStatus({ laneId: "lane-1" })).running).toBe(true);
+    const shared = await service.getStreamStatus({ laneId: "lane-1" });
+    expect(shared.running).toBe(true);
+    expect(shared.viewerChatSessionIds).toEqual(["chat-b"]);
 
     // The last asker leaving is what stops it.
     await service.releaseIfOwnedBy("chat-b");
+    const stopped = await service.getStreamStatus({ laneId: "lane-1" });
+    expect(stopped.running).toBe(false);
+    expect(stopped.viewerChatSessionIds).toEqual([]);
+    service.dispose();
+  });
+
+  it("shares the stream with a sync subscription without calling it a chat", async () => {
+    // The web/phone live view asks through the same start path but is a
+    // subscription, not a chat: it must keep the encoder up for a chat that is
+    // watching while staying out of `viewerChatSessionIds`, which the floating
+    // preview reads as "the chat you are looking at is watching this lane".
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.startStream]: () => ({ port: 65_000, codec: "avc1.640032", width: 2560, height: 1440 }),
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.startStream({ laneId: "lane-1", chatSessionId: "chat-a" });
+
+    const started = await service.startStreamForSubscription({ laneId: "lane-1", subscriptionId: "sub-1" });
+    expect(started.running).toBe(true);
+    expect((await service.getStreamStatus({ laneId: "lane-1" })).viewerChatSessionIds).toEqual(["chat-a"]);
+
+    // Either kind of last owner leaving is what stops it.
+    await service.releaseIfOwnedBy("chat-a");
+    expect((await service.getStreamStatus({ laneId: "lane-1" })).running).toBe(true);
+    await service.releaseStreamSubscription("sub-1");
     expect((await service.getStreamStatus({ laneId: "lane-1" })).running).toBe(false);
     service.dispose();
   });

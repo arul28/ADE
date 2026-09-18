@@ -2316,6 +2316,7 @@ export async function createAdeRuntime(args: {
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
+        macDesktopService,
         sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,
         hostStartupEnabled: syncRuntimeOptions.hostStartupEnabled ?? true,
         hostDiscoveryEnabled: syncRuntimeOptions.hostDiscoveryEnabled ?? true,

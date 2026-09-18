@@ -194,13 +194,15 @@ const LOCAL_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["ios", "app-control"]);
  *
  * Mac Desktop IS here, and for the browser's reason rather than the
  * simulator's: the lane's screen leaves a describable trail — a display, a
- * window list, a lease holder, a last frame — so a web client shows that
- * instead of a dead card. Taking control from the web is a later lane; this
- * surface offers no control at all.
+ * window list, a lease holder, and now a live stream the web client plays over
+ * the sync socket — so a web client shows that instead of a dead card. It may
+ * start and stop the lane's display, which is why the pane no longer reads as
+ * "a still"; what it may NOT do is take over: the lease, the pointer and the
+ * keyboard stay on the Mac. The control hint says exactly that.
  */
 const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control", "mac-desktop"]);
 
-/** True when this surface may only observe the tool, never operate it. */
+/** True when this surface may only watch the tool's live view, never drive it. */
 export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext): boolean {
   return context.isWebClient && WEB_READ_ONLY_TOOL_IDS.has(id);
 }

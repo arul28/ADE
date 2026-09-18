@@ -646,6 +646,43 @@ a boolean.
   UI on the advertised action set. See
   [Linear integration](../linear-integration/README.md#connecting-and-managing-from-mobile).
 
+**Mac Desktop** (`macDesktop.*`)
+
+The lane's private macOS screen, watched live from the hosted web client and
+the phone. Registered only when the runtime built both the Mac Desktop service
+and its subscription fan-out, and advertised to clients with
+`hello_ok.features.macDesktopStream: true`; either half missing keeps the
+existing still-image fallback.
+
+- `getStatus` `{ laneId }` — viewer-allowed read of the same `MacDesktopStatus`
+  the desktop gets, with the recording pinned to `null` so its host file path
+  never crosses the socket. The stream's token and URL are already absent from a
+  status read.
+- `start` `{ laneId, laneName? }` / `stop` `{ laneId }` — viewer-allowed for
+  the hosted web client. `start` is idempotent and platform-gated: a non-Mac
+  runtime answers `MAC_DESKTOP_UNSUPPORTED_PLATFORM`. The phone never calls
+  either (view-only by product decision).
+- `streamSubscribe` `{ laneId, subscriptionId, viewerLabel? }` → `{ ok, width,
+  height, codec }`. It calls the same service path as the desktop's
+  `startStream`, so idle-rate and owner bookkeeping apply, but the asker is
+  recorded as a **subscription** owner keyed by `subscriptionId` — not a chat —
+  so it never appears in `viewerChatSessionIds`. The first pushed record is
+  always a `config`, then a keyframe.
+- `streamUnsubscribe` `{ subscriptionId }`. A socket close releases every
+  subscription that connection owned, with no notice (the socket is gone).
+- Server→client pushes on the same envelope channel the brain uses for chat
+  events: `macDesktop.streamRecord` `{ subscriptionId, seq, kind: "config" |
+  "frame", keyframe, timestampUs, data }` where `data` is base64 (Annex-B
+  access units for frames, the JSON config object for configs), and
+  `macDesktop.streamEnded` `{ subscriptionId, reason, message? }` with
+  `reason` one of `unsubscribed`, `stopped`, `display_destroyed`,
+  `connection_closed`, `error`.
+- Backpressure is per subscription: once the peer's queued bytes exceed 2 MiB,
+  `frame` records are dropped until the next keyframe, so a decoder never
+  receives a P-frame whose reference was skipped. `seq` counts source records,
+  sent or not, so a gap in `seq` tells the client frames were dropped and it
+  can hold P-frames until the keyframe that follows.
+
 The canonical list is typed as `SyncRemoteCommandAction` in
 `apps/desktop/src/shared/types/sync.ts`.
 

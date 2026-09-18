@@ -24,6 +24,7 @@ import type {
 } from "./externalSessions";
 import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
+import type { MacDesktopStatus } from "./macDesktop";
 import type { LinearConnectionStatus } from "./linearSync";
 import type { SyncHostConflictPublic, SyncHostReadinessSnapshot } from "./syncHostRecovery";
 
@@ -656,6 +657,12 @@ export type SyncStatusEventPayload = {
 export type SyncFeatureFlags = {
   fileAccess: true;
   terminalStreaming: true;
+  /**
+   * The host can re-publish a lane's Mac Desktop H.264 stream as
+   * `macDesktop.streamRecord` push notifications. Older hosts omit it, and a
+   * client without a decoder keeps the still-image fallback.
+   */
+  macDesktopStream?: true;
   chatStreaming: {
     enabled: true;
   };
@@ -1688,6 +1695,55 @@ export type SyncBrainStatusPayload = {
   cloudRelayWssUrl?: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// Mac Desktop live stream over the sync socket
+//
+// The desktop reads its lane's stream from a token-guarded loopback URL. A
+// paired phone or hosted web client cannot reach that URL, so the brain
+// subscribes to the same loopback stream in-process and re-publishes each
+// framed record as a push notification on the sync socket. The URL and token
+// never cross this boundary; a subscription is keyed by `subscriptionId`.
+// ---------------------------------------------------------------------------
+
+/**
+ * One pushed record. `data` is base64: Annex-B access-unit bytes for a
+ * `frame`, and the JSON `{codec,width,height,annexB}` config object for a
+ * `config`. The first record after subscribe is always a config, then a
+ * keyframe. Under backpressure the host may skip frames, and a resumed stream
+ * always begins again at a keyframe.
+ */
+export type SyncMacDesktopStreamRecordPayload = {
+  subscriptionId: string;
+  /** Host-assigned, per-subscription, monotonically increasing. */
+  seq: number;
+  kind: "config" | "frame";
+  keyframe: boolean;
+  /** Microseconds since the subscription attached; monotonic per subscription. */
+  timestampUs: number;
+  data: string;
+};
+
+export type SyncMacDesktopStreamEndedPayload = {
+  subscriptionId: string;
+  reason: "unsubscribed" | "stopped" | "display_destroyed" | "connection_closed" | "error";
+  message?: string;
+};
+
+/** The `macDesktop.streamSubscribe` reply. */
+export type SyncMacDesktopStreamSubscribeResult = {
+  ok: true;
+  width: number | null;
+  height: number | null;
+  codec: string | null;
+};
+
+/**
+ * The lane's macOS screen as a sync client may read it. `MacDesktopStatus` is
+ * already token-free (the stream is a summary); this only pins the recording
+ * to null, because its `filePath` is host state no read-only client can use.
+ */
+export type SyncMacDesktopStatus = Omit<MacDesktopStatus, "recording"> & { recording: null };
+
 export type SyncRunQuickCommandArgs = {
   laneId: string;
   title: string;
@@ -2137,6 +2193,16 @@ export type SyncRemoteCommandAction =
   // panes, they never drive them.
   | "workTools.getLaneState"
   | "workTools.readObservationPreview"
+  // The lane's private macOS screen. `getStatus` / `streamSubscribe` /
+  // `streamUnsubscribe` are read-only; `start` / `stop` exist for the hosted
+  // web client (the phone is view-only and never calls them). Records and the
+  // end notice are pushed back on dedicated `macDesktop.streamRecord` /
+  // `macDesktop.streamEnded` envelopes.
+  | "macDesktop.getStatus"
+  | "macDesktop.start"
+  | "macDesktop.stop"
+  | "macDesktop.streamSubscribe"
+  | "macDesktop.streamUnsubscribe"
   | "deeplinks.open";
 
 export type SyncRemoteCommandPolicy = {
@@ -2264,6 +2330,19 @@ export type SyncTerminalHistoryEnvelope = SyncEnvelopeWithPayload<"terminal_hist
 export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload | SyncChatSubscribeSnapshotPayload>;
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
+/**
+ * Host→client push for a Mac Desktop stream subscription. The type names match
+ * the sync command namespace on purpose: a client dispatches these by the same
+ * action vocabulary it called `macDesktop.streamSubscribe` with.
+ */
+export type SyncMacDesktopStreamRecordEnvelope = SyncEnvelopeWithPayload<
+  "macDesktop.streamRecord",
+  SyncMacDesktopStreamRecordPayload
+>;
+export type SyncMacDesktopStreamEndedEnvelope = SyncEnvelopeWithPayload<
+  "macDesktop.streamEnded",
+  SyncMacDesktopStreamEndedPayload
+>;
 export type SyncChatHistoryEnvelope = SyncEnvelopeWithPayload<
   "chat_history",
   SyncChatHistoryRequestPayload | SyncChatHistoryResponsePayload
@@ -2341,6 +2420,8 @@ export type SyncEnvelope =
   | SyncChatSubscribeEnvelope
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope
+  | SyncMacDesktopStreamRecordEnvelope
+  | SyncMacDesktopStreamEndedEnvelope
   | SyncChatHistoryEnvelope
   | SyncBrainStatusEnvelope
   | SyncPrsUpdatedEnvelope

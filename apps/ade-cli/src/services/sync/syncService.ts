@@ -76,6 +76,8 @@ import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT, buildSyncHostPortCandidates } from "./syncProtocol";
 import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
+import type { MacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
+import { createMacDesktopSyncStream } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
 import {
   buildAddressCandidates,
   buildPairingConnectInfo,
@@ -163,6 +165,12 @@ type SyncServiceArgs = {
    * served to iOS and the hosted web client through `workTools.*`.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /**
+   * The runtime's Mac Desktop service, when this runtime can hold a display.
+   * Serves `macDesktop.*` to paired viewers and supplies the loopback transport
+   * the live-view fan-out reads.
+   */
+  macDesktopService?: MacDesktopService | null;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
    * When provided, the embedded sync host attaches to it instead of binding
@@ -715,6 +723,33 @@ export function createSyncService(args: SyncServiceArgs) {
     });
   };
 
+  // One fan-out for the whole host: the `macDesktop.*` command handlers push
+  // through it, and the host releases a subscription when its socket closes.
+  const macDesktopService = args.macDesktopService ?? null;
+  const macDesktopSyncStream = macDesktopService
+    ? createMacDesktopSyncStream({
+        logger: args.logger,
+        startStream: async ({ laneId, ownerId }) => {
+          const status = await macDesktopService.startStreamForSubscription({
+            laneId,
+            subscriptionId: ownerId,
+          });
+          const transport = status.transport;
+          if (!transport?.url) {
+            throw new Error("The Mac Desktop stream did not hand back a loopback URL.");
+          }
+          return {
+            url: transport.url,
+            width: transport.width,
+            height: transport.height,
+            codec: transport.codec,
+          };
+        },
+        releaseOwner: (ownerId) => macDesktopService.releaseStreamSubscription(ownerId),
+        subscribeEvents: (listener) => macDesktopService.subscribe(listener),
+      })
+    : null;
+
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
     usageTrackingService: args.usageTrackingService,
@@ -745,6 +780,8 @@ export function createSyncService(args: SyncServiceArgs) {
     getLinearIssueTracker: args.getLinearIssueTracker,
     getExternalSessionsService: args.getExternalSessionsService,
     workToolsStateService: args.workToolsStateService,
+    macDesktopService,
+    macDesktopSyncStream,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
@@ -892,6 +929,8 @@ export function createSyncService(args: SyncServiceArgs) {
       // without `workTools.*`, which is a mobile capability disappearing with no
       // error anywhere.
       workToolsStateService: args.workToolsStateService,
+      macDesktopService,
+      macDesktopSyncStream,
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,
@@ -1810,6 +1849,8 @@ export function createSyncService(args: SyncServiceArgs) {
       clearInterval(localLanePresenceHeartbeatTimer);
       stopCanonicalPortMigrateTimer();
       await stopHostIfRunning();
+      // After the host stops, so no pushed record can outlive its socket.
+      macDesktopSyncStream?.dispose();
       await syncPeerService.dispose();
     },
   };

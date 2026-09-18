@@ -4,10 +4,12 @@ import {
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
-  type SyncBrainStatusPayload,
+  type   SyncBrainStatusPayload,
   type SyncEnvelope,
   type SyncFeatureFlags,
   type SyncHelloOkPayload,
+  type SyncMacDesktopStreamEndedPayload,
+  type SyncMacDesktopStreamRecordPayload,
   type SyncPairingQrPayload,
   type SyncPeerMetadata,
 } from "../../../../shared/types/sync";
@@ -4453,6 +4455,84 @@ describe("browser sync connection and client", () => {
       data: "older",
       atStart: true,
     });
+    client.dispose();
+  });
+
+  it("delivers Mac Desktop stream pushes and gates the live view on both hello halves", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const macHello = helloOk();
+    macHello.features = {
+      ...macHello.features,
+      macDesktopStream: true,
+      commandRouting: {
+        mode: "allowlisted",
+        supportedActions: ["macDesktop.streamSubscribe"],
+        actions: [
+          { action: "macDesktop.streamSubscribe", scope: "project", policy: { viewerAllowed: true } },
+        ],
+      },
+    };
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: macHello });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const records: SyncMacDesktopStreamRecordPayload[] = [];
+    const ended: SyncMacDesktopStreamEndedPayload[] = [];
+    client.onMacDesktopStreamRecord((payload) => records.push(payload));
+    client.onMacDesktopStreamEnded((payload) => ended.push(payload));
+    await client.connect(environment.envId, signedInRelayAccess);
+
+    expect(client.supportsMacDesktopStream()).toBe(true);
+    // The multi-candidate dial leaves earlier sockets closed; the live one is
+    // the last opened.
+    const socket = script.sockets[script.sockets.length - 1]!;
+    socket.serverSend({
+      type: "macDesktop.streamRecord",
+      payload: {
+        subscriptionId: "sub-1",
+        seq: 0,
+        kind: "config",
+        keyframe: false,
+        timestampUs: 0,
+        data: "eyJjb2RlYyI6ImF2YzEuNjQwMDMyIn0=",
+      },
+    } as never);
+    await flush();
+    socket.serverSend({
+      type: "macDesktop.streamEnded",
+      payload: { subscriptionId: "sub-1", reason: "stopped" },
+    } as never);
+    await flush();
+
+    expect(records).toEqual([{
+      subscriptionId: "sub-1",
+      seq: 0,
+      kind: "config",
+      keyframe: false,
+      timestampUs: 0,
+      data: "eyJjb2RlYyI6ImF2YzEuNjQwMDMyIn0=",
+    }]);
+    expect(ended).toEqual([{ subscriptionId: "sub-1", reason: "stopped" }]);
+    client.dispose();
+  });
+
+  it("keeps the still-image path for a host that predates the Mac Desktop stream bit", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    await client.connect(environment.envId, signedInRelayAccess);
+
+    // `helloOk()` advertises neither `macDesktopStream` nor the subscribe
+    // command; either half missing must leave the still image in place.
+    expect(client.supportsMacDesktopStream()).toBe(false);
     client.dispose();
   });
 });

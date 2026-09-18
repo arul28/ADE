@@ -1,11 +1,77 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
-import type { WorkToolsLaneState } from "../../../shared/types/workTools";
+import type { WorkToolsLaneState, WorkToolsMacDesktopState } from "../../../shared/types/workTools";
 
 const DATA_URL = "data:image/png;base64,AAAA";
+
+function macDesktopState(overrides: Partial<WorkToolsMacDesktopState> = {}): WorkToolsMacDesktopState {
+  return {
+    supported: true,
+    display: {
+      laneId: "lane-1",
+      displayId: 7,
+      name: "ADE · lane-1",
+      mode: "virtual",
+      width: 2560,
+      height: 1440,
+      scale: 2,
+      origin: { x: 0, y: 0 },
+      createdAt: "2026-09-18T10:00:00.000Z",
+      windowCount: 0,
+      lastActivityAt: "2026-09-18T10:00:30.000Z",
+    },
+    windows: [],
+    lease: null,
+    stream: { running: true, idle: false, fps: 30, bitrateKbps: 900, lastError: null },
+    permissions: { screenRecording: "granted", accessibility: "granted" },
+    lastObservation: {
+      id: "obs-1",
+      capturedAt: "2026-09-18T10:00:20.000Z",
+      caption: "Sign in",
+      screenshotPath: "/tmp/obs/obs-1.png",
+    },
+    hostIsLocal: false,
+    ...overrides,
+  };
+}
+
+/** The web `macDesktop` namespace subset the live view reads. */
+function liveApi(overrides: Record<string, unknown> = {}) {
+  return {
+    supportsLiveStream: () => true,
+    streamSubscribe: vi.fn(async (args: { laneId: string; subscriptionId: string }) => {
+      void args;
+      return { ok: true, width: 2560, height: 1440, codec: "avc1.640032" };
+    }),
+    streamUnsubscribe: vi.fn(async (args: { subscriptionId: string }) => {
+      void args;
+      return { ok: true };
+    }),
+    onStreamRecord: () => () => {},
+    onStreamEnded: () => () => {},
+    onConnectionChange: () => () => {},
+    ...overrides,
+  };
+}
+
+function installFakeWebCodecs(): void {
+  class FakeVideoDecoder {
+    state = "configured";
+    configure = vi.fn();
+    decode = vi.fn();
+    close = vi.fn(() => {
+      this.state = "closed";
+    });
+  }
+  class FakeEncodedVideoChunk {
+    constructor(readonly init: unknown) {}
+  }
+  (globalThis as unknown as { VideoDecoder?: unknown }).VideoDecoder = FakeVideoDecoder;
+  (globalThis as unknown as { EncodedVideoChunk?: unknown }).EncodedVideoChunk = FakeEncodedVideoChunk;
+}
 
 function laneState(overrides: Partial<WorkToolsLaneState> = {}): WorkToolsLaneState {
   return {
@@ -46,8 +112,14 @@ function laneState(overrides: Partial<WorkToolsLaneState> = {}): WorkToolsLaneSt
   };
 }
 
-function installAde(workTools: Partial<Window["ade"]["workTools"]>): void {
-  (window as unknown as { ade: unknown }).ade = { workTools };
+function installAde(
+  workTools: Partial<Window["ade"]["workTools"]>,
+  macDesktop?: Record<string, unknown>,
+): void {
+  (window as unknown as { ade: unknown }).ade = {
+    workTools,
+    ...(macDesktop ? { macDesktop } : {}),
+  };
 }
 
 describe("WorkToolReadOnlyView", () => {
@@ -58,6 +130,8 @@ describe("WorkToolReadOnlyView", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    delete (globalThis as unknown as { VideoDecoder?: unknown }).VideoDecoder;
+    delete (globalThis as unknown as { EncodedVideoChunk?: unknown }).EncodedVideoChunk;
   });
 
   it("shows the lane's tabs and the latest frame, and never offers a control", async () => {
@@ -167,5 +241,109 @@ describe("WorkToolReadOnlyView", () => {
 
     expect(await screen.findByText("Select a lane to see what its tools are doing.")).toBeTruthy();
     expect(getLaneState).not.toHaveBeenCalled();
+  });
+
+  it("subscribes to the lane's stream when the host advertises the live view", async () => {
+    installFakeWebCodecs();
+    const api = liveApi();
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => null),
+      },
+      api,
+    );
+
+    const { unmount } = render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+
+    expect(await screen.findByTestId("ios-h264-canvas")).toBeTruthy();
+    await waitFor(() => expect(api.streamSubscribe).toHaveBeenCalledTimes(1));
+    expect(api.streamSubscribe.mock.calls[0]?.[0]).toMatchObject({ laneId: "lane-1" });
+    // The lease line is the desktop strip's sentence, not a second phrasing.
+    expect(screen.getByText("Nobody has taken control.")).toBeTruthy();
+
+    unmount();
+    await waitFor(() => expect(api.streamUnsubscribe).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps the still frame and says so when the browser has no WebCodecs", async () => {
+    // No fake VideoDecoder: this is the Safari-without-WebCodecs path. The
+    // host still advertises the contract, so the pane owes one line of why.
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => ({
+          dataUrl: DATA_URL,
+          mimeType: "image/png",
+          byteLength: 4,
+        })),
+      },
+      { ...liveApi() },
+    );
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+
+    expect(await screen.findByRole("img")).toHaveProperty("src", DATA_URL);
+    expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
+    expect(screen.getByText("This browser can't play the live view, so this is the latest frame.")).toBeTruthy();
+  });
+
+  it("keeps the still frame without a notice when the host cannot stream at all", async () => {
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => ({
+          dataUrl: DATA_URL,
+          mimeType: "image/png",
+          byteLength: 4,
+        })),
+      },
+      { supportsLiveStream: () => false },
+    );
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+
+    expect(await screen.findByRole("img")).toHaveProperty("src", DATA_URL);
+    expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
+    expect(screen.queryByText(/can't play the live view/)).toBeNull();
+  });
+
+  it("offers Start desktop only when the lane has no display, and Stop only while running", async () => {
+    const start = vi.fn(async () => null);
+    const stop = vi.fn(async () => null);
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({
+          macDesktop: macDesktopState({ display: null, stream: null }),
+        })),
+        readObservationPreview: vi.fn(async () => null),
+      },
+      { ...liveApi({ start, stop }) },
+    );
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+
+    const startButton = await screen.findByRole("button", { name: "Start desktop" });
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    fireEvent.click(startButton);
+    await waitFor(() => expect(start).toHaveBeenCalledWith({ laneId: "lane-1" }));
+  });
+
+  it("does not offer Start once the display exists, and Stop carries the lane", async () => {
+    const stop = vi.fn(async () => null);
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => null),
+      },
+      { ...liveApi({ stop }) },
+    );
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start desktop" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith({ laneId: "lane-1" }));
   });
 });

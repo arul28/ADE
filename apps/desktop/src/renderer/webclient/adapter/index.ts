@@ -18,6 +18,7 @@ import { createProjectState } from "./infra/projectState";
 import { withFallbackProxy } from "./infra/proxy";
 import { TerminalRegistry } from "./infra/registries";
 import { createLanesNamespace } from "./lanes";
+import { createMacDesktopNamespace } from "./macDesktop";
 import { createMiscNamespaces } from "./misc";
 import { createProjectNamespace } from "./project";
 import { createPrsNamespace } from "./prs";
@@ -141,6 +142,9 @@ export function createAdeWebAdapter(
     computerUse: misc.computerUse,
     iosSimulator: misc.iosSimulator,
     appControl: misc.appControl,
+    // Live, read-only Mac Desktop view. The Electron namespace carries the
+    // desktop-only members; this surface implements the live-view cut.
+    macDesktop: createMacDesktopNamespace(infra),
     builtInBrowser: misc.builtInBrowser,
     usage: misc.usage,
     review: misc.review,
