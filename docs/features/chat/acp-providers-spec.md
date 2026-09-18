@@ -279,24 +279,36 @@ Rust, Apache-2.0)
   Markdown heading theme colors without changing the ACP launch contract. ADE's
   setup/error copy recommends `@xai-official/grok@1.0.34` for this baseline.
 
-### Copilot (`copilot --acp`, npm `@github/copilot`, PREVIEW)
-- Caps on 1.0.82 (ACP agent 1.0.4): `loadSession`, image prompts, session
-  list. `session/resume` and `session/close` are **not** advertised and
-  answer -32601. Slash as ordinary prompts + `available_commands_update`;
-  TUI-only commands (`/diff`, `/resume`, `/login`, `/undo`…) must be filtered
-  from the picker or they hit the model.
-- KNOWN BUG: `session/cancel` as a REQUEST answers -32601. Send it as a
-  notification. Live 1.0.82 cancel mid-count returned `stopReason:"end_turn"`
-  with partial text `"1\n2\n3\n4\n5"` (github/copilot-cli #4561) → client-side
-  cancel accounting is mandatory. ADE still attempts `session/close` and
-  degrades, keeping the process for pooling. Real `session/prompt` turns work
-  (`"ping"`, usage on the prompt result + `usage_update`). ACP model selection
-  is not a `session/new` config option: ADE uses Copilot's native
-  `session/set_model` request when the installed CLI supports it. Older ACP
-  builds accepted that request without changing inference and stayed on Auto,
-  so the runtime must tolerate a provider-side fallback. Config options use
-  `currentValue` and nested `value`, which ADE canonicalizes onto `value` /
-  `options[].id`.
+### Copilot (`copilot --acp`, npm `@github/copilot@1.0.86`, PREVIEW)
+- The 1.0.86 compatibility baseline (ACP agent 1.0.86, captured
+  2026-09-18) advertises `loadSession`, image prompts, HTTP/SSE MCP, and
+  session list/close. It does not advertise `session/resume`. ADE checks the
+  handshake before sending lifecycle methods, and older 1.0.x binaries that
+  omit close release a shared lease without killing other chats.
+- ACP mode controls are live: `agent`, `plan`, and `autopilot`, plus the
+  `allow_all` option. ADE maps its abstract permission ladder to those native
+  mode ids and normalizes Copilot's `currentValue` / nested `value` shape.
+  Copilot has no intermediate auto-edit mode, so ADE deliberately maps
+  `auto-edit` and `auto` down to approval-gated Agent mode and tells the user
+  about that downgrade.
+- Slash commands arrive as ordinary prompts plus `available_commands_update`;
+  TUI-only commands (`/diff`, `/resume`, `/login`, `/undo`…) are filtered from
+  the picker or they hit the model.
+- KNOWN BUG: `session/cancel` as a REQUEST answers -32601 on the observed
+  compatibility path. Send it as a notification. Historical live 1.0.82
+  cancellation returned `stopReason:"end_turn"` with partial text
+  `"1\n2\n3\n4\n5"` (github/copilot-cli #4561), so client-side cancel accounting
+  remains mandatory until GitHub documents a fix.
+- `--model` and `--effort` are process-global ACP launch flags. ADE passes the
+  selected model and effort at launch and folds both into the pool identity;
+  `session/new` cannot override them. Usage arrives on the prompt result and
+  `usage_update`.
+- ACP model selection is not a `session/new` config option: ADE passes the
+  selected model at launch and uses Copilot's native `session/set_model` when
+  that method is advertised. Older ACP builds accepted that request without
+  changing inference and stayed on Auto, so the runtime tolerates a
+  provider-side fallback. Config options use `currentValue` and nested
+  `value`, which ADE canonicalizes onto `value` / `options[].id`.
 - Server-start flags (`--effort`, `--available-tools`, `--excluded-tools`) are
   process-global; `session/new` cannot override.
 - **Trust pre-seed: REMOVED. ADE does not write Copilot's config.** There was

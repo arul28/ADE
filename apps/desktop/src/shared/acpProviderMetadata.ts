@@ -7,6 +7,15 @@
 export const ACP_PROVIDER_IDS = ["qwen", "kimi", "grok", "copilot"] as const;
 export type AcpProviderId = (typeof ACP_PROVIDER_IDS)[number];
 
+/**
+ * Copilot ACP compatibility baseline validated against the live CLI.
+ *
+ * ACP is still a public preview in Copilot CLI, so this is a tested baseline
+ * rather than a promise that every future vendor release is wire-compatible.
+ */
+export const COPILOT_ACP_COMPATIBILITY_BASELINE = "1.0.86" as const;
+export const COPILOT_NPM_PACKAGE_SPEC = `@github/copilot@${COPILOT_ACP_COMPATIBILITY_BASELINE}` as const;
+
 export type AcpProviderMetadata = {
   readonly label: string;
   readonly statusLabel: string;

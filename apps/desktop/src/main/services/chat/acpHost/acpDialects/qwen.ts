@@ -7,9 +7,10 @@
  *
  * It does **not** advertise `session/close`, and a dummy `session/close` is
  * -32601. Ending a chat therefore ends the process (one process per session),
- * the same posture Kimi 0.31.x used. Copilot 1.0.82 has the same missing-close
- * wire and keeps `close_request` + pool by product call; Qwen follows the
- * handshake so leaked agent sessions cannot pile up in a pooled process.
+ * the same posture Kimi 0.31.x used. Older Copilot 1.0.x builds may have the
+ * same missing-close wire, but the host gates that call from the handshake.
+ * Qwen follows the handshake so leaked agent sessions cannot pile up in a
+ * pooled process.
  *
  * `QWEN_HOME` names the config directory, in the same shape as `CODEX_HOME`.
  *

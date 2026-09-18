@@ -76,10 +76,12 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   prompt.
 - Qwen 0.22.3: `--session-id` vs `--resume`/`--continue` and `--yolo` vs
   `--approval-mode` are parse errors. `session/close` is **not** implemented.
-- Copilot: `config.json` is JSONC; live 1.0.82 persists `trustedFolders`
-  (camelCase — not the `trusted_folders` older notes claimed). ADE writes
-  neither: the trust pre-seed is removed and nothing on the Copilot path may
-  write `$COPILOT_HOME` again.
+- Copilot 1.0.86 ACP: `loadSession`, image prompts, HTTP/SSE MCP, and
+  `session/close` are advertised; `session/resume` is absent. `config.json` is
+  JSONC; older live 1.0.82 persisted `trustedFolders` (camelCase — not the
+  `trusted_folders` older notes claimed). ADE writes neither: the trust
+  pre-seed is removed and nothing on the Copilot path may write `$COPILOT_HOME`
+  again. ACP mode options include agent, plan, and autopilot.
   Headless ACP `session/new` did not deadlock without a seed or `--add-dir`.
   Cwd writes emit 0 `session/request_permission` with `allow_all` off.
 

@@ -209,7 +209,7 @@ export type AcpSessionConfigOption = {
 };
 
 /**
- * Copilot 1.0.82 (and possibly other agents) send `currentValue` instead of
+ * Copilot ACP (and possibly other agents) sends `currentValue` instead of
  * `value`, and nested choices as `{ value, name }` instead of `{ id, name }`.
  * Canonicalize onto ADE's `value` / `options[].id` shape so a live snapshot
  * does not land as "no current mode".
@@ -569,6 +569,20 @@ export type AcpAgentCapabilities = {
   sessionCapabilities?: AcpSessionCapabilities;
   _meta?: AcpMeta;
 };
+
+/** ACP session capabilities are presence-based: `{}` advertises a method. */
+export function hasAcpSessionCapability(
+  agentCapabilities: AcpAgentCapabilities | null | undefined,
+  capability: keyof AcpSessionCapabilities,
+): boolean {
+  const sessionCapabilities = agentCapabilities?.sessionCapabilities;
+  return sessionCapabilities != null
+    && Object.prototype.hasOwnProperty.call(sessionCapabilities, capability);
+}
+
+export function hasAcpLoadSessionCapability(agentCapabilities: AcpAgentCapabilities | null | undefined): boolean {
+  return agentCapabilities?.loadSession === true;
+}
 
 export type AcpAuthMethod = {
   id: string;
