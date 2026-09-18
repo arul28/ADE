@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { DotsThree, Plus, SquaresFour, X } from "@phosphor-icons/react";
+import { DotsThree, PictureInPicture, Plus, SquaresFour, X } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { motion, useReducedMotion } from "motion/react";
 import type { WorkSidebarTab } from "../../state/appStore";
@@ -196,6 +196,9 @@ export function WorkToolHeader({
   onPick,
   onCloseTool,
   onClose,
+  floatTool,
+  floating,
+  onFloat,
 }: {
   /** The tab on screen, or null while the picker page is showing. */
   activeTool: WorkSidebarTab | null;
@@ -214,6 +217,14 @@ export function WorkToolHeader({
   onPick: (tool: WorkSidebarTab) => void;
   onCloseTool: (tool: WorkSidebarTab) => void;
   onClose: () => void;
+  /**
+   * The active screen tool, when it can be floated into the corner card. Null
+   * for non-screen tools (Git, Files, Terminal) and for the picker.
+   */
+  floatTool?: WorkSidebarTab | null;
+  /** True when the user has already floated this tool back on for the chat. */
+  floating?: boolean;
+  onFloat?: () => void;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const { ref, width } = useMeasuredWidth();
@@ -395,6 +406,32 @@ export function WorkToolHeader({
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
+      ) : null}
+
+      {/*
+        Float: show the corner card for the tool you are already looking at.
+        The card normally never duplicates the active pane, so this is the one
+        explicit way to ask for it; pressing it clears that tool's closed marker
+        for the chat. It stays lit while floated and × takes it back down.
+      */}
+      {activeTool !== null && floatTool ? (
+        <PaneTooltip label="Show floating preview" side="bottom">
+          <button
+            type="button"
+            onClick={onFloat}
+            aria-label="Show floating preview"
+            aria-pressed={floating === true}
+            className={cn(
+              CONTROL_CLASS,
+              "w-6 px-0",
+              floating && "bg-white/[0.09] text-fg",
+            )}
+            data-variant="ghost"
+            data-state={floating ? "open" : undefined}
+          >
+            <PictureInPicture size={15} weight={floating ? "fill" : "regular"} />
+          </button>
+        </PaneTooltip>
       ) : null}
 
       {/* Nothing to add while the picker is already up — that button IS the

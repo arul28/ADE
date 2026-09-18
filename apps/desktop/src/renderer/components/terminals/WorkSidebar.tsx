@@ -18,6 +18,8 @@ import type {
   TerminalToolType,
 } from "../../../shared/types";
 import { useAppStore, type WorkDraftKind, type WorkSidebarTab } from "../../state/appStore";
+import { isWorkLiveScreenTool } from "../../state/workLiveCardState";
+import { floatWorkLiveCardForChat, useChatCompanionUiState } from "../chat/chatCompanionUiState";
 import {
   formatAppControlContextForPrompt,
   formatBuiltInBrowserContextForPrompt,
@@ -342,6 +344,21 @@ export function WorkSidebar({
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
+
+  /**
+   * The active screen tool, when it can be floated into the corner card.
+   *
+   * The card normally hides the tool already filling the pane; Float is the
+   * explicit opt-in that suspends that rule for one tool until it is closed.
+   * It writes to the chat's companion state, the same namespace the card reads.
+   */
+  const floatableTool = effectiveTool && isWorkLiveScreenTool(effectiveTool) ? effectiveTool : null;
+  const companionUi = useChatCompanionUiState(panelSessionId);
+  const floating = floatableTool ? companionUi.workLiveCardFloating.includes(floatableTool) : false;
+  const floatActivePreview = useCallback(() => {
+    if (!floatableTool || !panelSessionId) return;
+    floatWorkLiveCardForChat(panelSessionId, floatableTool);
+  }, [floatableTool, panelSessionId]);
 
   const dispatchTargetRef = useRef({ contextTarget, contextDisabledReason });
   dispatchTargetRef.current = { contextTarget, contextDisabledReason };
@@ -776,6 +793,9 @@ export function WorkSidebar({
         onPick={selectTool}
         onCloseTool={closeTool}
         onClose={closePane}
+        floatTool={panelSessionId ? floatableTool : null}
+        floating={floating}
+        onFloat={floatActivePreview}
       />
       {/* A true crossfade, so the two surfaces overlap rather than the pane
           blanking between them: both children are absolutely positioned and

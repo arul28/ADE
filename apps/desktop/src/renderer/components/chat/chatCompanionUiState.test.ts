@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   chatCompanionUiStorageKey,
+  closeWorkLiveCardForChat,
+  floatWorkLiveCardForChat,
+  isWorkLiveCardClosedForChat,
   patchChatCompanionUiState,
   pruneChatCompanionUiState,
   readChatCompanionUiState,
@@ -228,5 +231,60 @@ describe("pruneChatCompanionUiState", () => {
     expect(restored.chatActionsOpen).toBe(true);
     expect(restored.chatActionsTab).toBe("proof");
     expect(restored.prPaneOpen).toBe(false);
+  });
+});
+
+describe("workLiveCard closed and floating flags", () => {
+  it("round-trips a closed marker through storage, per chat", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    closeWorkLiveCardForChat("chat-2", "browser", "tab-9");
+    resetChatCompanionUiStateCacheForTests();
+
+    expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool).toEqual({ browser: "tab-1" });
+    expect(readChatCompanionUiState("chat-2").workLiveCardClosedByTool).toEqual({ browser: "tab-9" });
+    // The marker is per tool, and does not silence a different one.
+    expect(isWorkLiveCardClosedForChat("chat-1", "browser", "tab-1")).toBe(true);
+    expect(isWorkLiveCardClosedForChat("chat-1", "browser", "tab-2")).toBe(false);
+    expect(isWorkLiveCardClosedForChat("chat-1", "ios", "sim-1")).toBe(false);
+  });
+
+  it("drops unknown tool ids and empty keys on read", () => {
+    window.localStorage.setItem(
+      chatCompanionUiStorageKey("chat-1"),
+      JSON.stringify({ workLiveCardClosedByTool: { browser: "tab-1", git: "nope", ios: "" } }),
+    );
+    resetChatCompanionUiStateCacheForTests();
+    expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool).toEqual({ browser: "tab-1" });
+  });
+
+  it("float clears the closed marker and opts the tool in", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    expect(isWorkLiveCardClosedForChat("chat-1", "browser", "tab-1")).toBe(true);
+
+    const next = floatWorkLiveCardForChat("chat-1", "browser");
+    expect(next?.workLiveCardClosedByTool.browser).toBeUndefined();
+    expect(next?.workLiveCardFloating).toEqual(["browser"]);
+    // Idempotent: floating twice does not duplicate.
+    expect(floatWorkLiveCardForChat("chat-1", "browser")?.workLiveCardFloating).toEqual(["browser"]);
+    // …and floating a different tool leaves the first alone.
+    expect(floatWorkLiveCardForChat("chat-1", "ios")?.workLiveCardFloating).toEqual(["browser", "ios"]);
+  });
+
+  it("closing a tool removes it from the floated list", () => {
+    floatWorkLiveCardForChat("chat-1", "browser");
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    const state = readChatCompanionUiState("chat-1");
+    expect(state.workLiveCardFloating).toEqual([]);
+    expect(state.workLiveCardClosedByTool.browser).toBe("tab-1");
+  });
+
+  it("keeps the closed flags out of the pane drawer fields", () => {
+    // The two concerns share one record; writing one must not clobber the other.
+    patchChatCompanionUiState("chat-1", { terminalDrawerOpen: true });
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    resetChatCompanionUiStateCacheForTests();
+    const state = readChatCompanionUiState("chat-1");
+    expect(state.terminalDrawerOpen).toBe(true);
+    expect(state.workLiveCardClosedByTool.browser).toBe("tab-1");
   });
 });

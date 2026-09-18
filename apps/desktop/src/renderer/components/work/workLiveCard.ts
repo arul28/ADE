@@ -1,10 +1,16 @@
 import type { WorkSidebarTab } from "../../state/appStore";
 import {
   WORK_LIVE_SCREEN_TOOLS,
+  isWorkLiveCardClosed,
   isWorkLiveScreenTool,
-  normalizeWorkLiveCardDismissals,
+  normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardPosition,
-  type WorkLiveCardDismissals,
+  normalizeWorkLiveCardWidth,
+  WORK_LIVE_CARD_DEFAULT_WIDTH,
+  WORK_LIVE_CARD_MAX_WIDTH,
+  WORK_LIVE_CARD_MIN_WIDTH,
+  type WorkLiveCardClosedByTool,
+  type WorkLiveCardFloatingTools,
   type WorkLiveCardPosition,
   type WorkLiveScreenTool,
 } from "../../state/workLiveCardState";
@@ -12,10 +18,11 @@ import {
 /**
  * The floating corner card's decisions, as pure functions.
  *
- * Two questions live here — "which tool should the card show?" and "which
- * remembered frame is the pointer over?" — because both are the kind of thing
- * that is obvious until it isn't (a dismissed card that never comes back, a
- * scrubber that shows frame 10 of 3), and neither needs a DOM to answer.
+ * Three questions live here — "which tool should the card show?", "how big is
+ * the box?", and "which remembered frame is the pointer over?" — because all
+ * three are the kind of thing that is obvious until it isn't (a dismissed card
+ * that never comes back, a scrubber that shows frame 10 of 3, a picture scaled
+ * into a fixed box and cropped), and none needs a DOM to answer.
  */
 
 /**
@@ -28,10 +35,20 @@ import {
 export {
   WORK_LIVE_SCREEN_TOOLS,
   isWorkLiveScreenTool,
-  normalizeWorkLiveCardDismissals,
+  isWorkLiveCardClosed,
+  normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardPosition,
+  normalizeWorkLiveCardWidth,
+  WORK_LIVE_CARD_DEFAULT_WIDTH,
+  WORK_LIVE_CARD_MAX_WIDTH,
+  WORK_LIVE_CARD_MIN_WIDTH,
 };
-export type { WorkLiveCardDismissals, WorkLiveCardPosition, WorkLiveScreenTool };
+export type {
+  WorkLiveCardClosedByTool,
+  WorkLiveCardFloatingTools,
+  WorkLiveCardPosition,
+  WorkLiveScreenTool,
+};
 
 /**
  * Compile-time proof that every previewable tool id is a real sidebar tab id.
@@ -49,46 +66,85 @@ export type WorkLiveActivity = {
   available: boolean;
   /** Something of this tool's is running right now. */
   live: boolean;
+  /**
+   * The chat that owns this session, or null when it is unowned (a manually
+   * started browser tab, a display owned by the lane).
+   *
+   * The card follows the conversation you are reading: a session started by
+   * another chat must not float over this one. Only the owner's chat sees it.
+   */
+  ownerChatSessionId: string | null;
+  /**
+   * Identity of the CURRENT session, used for the "×" rule: a closed card stays
+   * closed while this key is unchanged, and a new key may show again.
+   */
+  sessionKey: string | null;
+  /**
+   * Whether a session with no owner is still shown to every chat.
+   *
+   * True for the three per-chat tools — an unowned tab belongs to nobody, so it
+   * leaks nothing by showing everywhere. False for mac-desktop, which is a lane
+   * resource gated on being a viewer or lease holder.
+   */
+  showWhenUnowned: boolean;
 };
 
-/* ── Dismissal ────────────────────────────────────────────────────────────── */
+/* ── Selection ────────────────────────────────────────────────────────────── */
 
-export function commitWorkLiveCardDismissal(
-  dismissals: WorkLiveCardDismissals | null | undefined,
-  tool: WorkLiveScreenTool,
-  activityStamp: number,
-): WorkLiveCardDismissals {
-  const previous = dismissals?.[tool] ?? 0;
-  return { ...(dismissals ?? {}), [tool]: Math.max(previous, activityStamp) };
+/**
+ * Does this activity belong to the chat on screen?
+ *
+ * Owned sessions only show in their own chat. Unowned sessions show in every
+ * chat unless the tool explicitly opts out (`showWhenUnowned: false`), which is
+ * how mac-desktop hides itself from a chat that is not watching the lane.
+ */
+export function workLiveActivityBelongsToChat(
+  activity: Pick<WorkLiveActivity, "ownerChatSessionId" | "showWhenUnowned">,
+  activeChatSessionId: string | null,
+): boolean {
+  if (activity.ownerChatSessionId != null) {
+    return activeChatSessionId != null && activity.ownerChatSessionId === activeChatSessionId;
+  }
+  return activity.showWhenUnowned;
 }
 
 /**
  * Which tool the card shows, or null for "show nothing".
  *
  * The card exists to keep the screen you are NOT looking at in view, so the
- * active tool is always excluded — otherwise you would get a postage-stamp copy
- * of the pane next to the pane. Ties go to the most recent activity, which is
- * what "the thing that just happened" means to the person watching.
+ * active tool is normally excluded — otherwise you would get a postage-stamp
+ * copy of the pane next to the pane. Ties go to the most recent activity, which
+ * is what "the thing that just happened" means to the person watching.
  *
- * `dismissals` implements the "×" affordance: a dismissed tool stays hidden
- * until it does something strictly newer than the stamp it was dismissed at, so
- * closing it silences the current burst of activity rather than the feature —
- * and never silences a different tool.
+ * A tool the user explicitly FLOATED (`floatingTools`) suspends that exclusion
+ * for itself until it is closed again: the Float button is the one way to ask
+ * for the preview of the pane you are already on.
+ *
+ * `closed` implements the "×" affordance by session key, not by activity stamp:
+ * frames, status refreshes and remounts can never reopen a card, only a new
+ * session key can.
  */
 export function selectWorkLiveCardTool(args: {
   activeTool: WorkSidebarTab | null;
+  /** The chat on screen, or null when none is selected. */
+  activeChatSessionId: string | null;
   activities: readonly WorkLiveActivity[];
-  /** Per-tool dismissal stamps for the current lane, or null. */
-  dismissals: WorkLiveCardDismissals | null;
+  /** Tools explicitly floated on for this chat. */
+  floatingTools?: readonly WorkLiveScreenTool[] | null;
+  /** Per-tool closed markers for this chat, keyed by tool id. */
+  closed?: WorkLiveCardClosedByTool | null;
 }): WorkLiveScreenTool | null {
-  const { activeTool, activities, dismissals } = args;
+  const { activeTool, activeChatSessionId, activities, floatingTools, closed } = args;
   let best: WorkLiveActivity | null = null;
   for (const activity of activities) {
     if (!activity.available || !activity.live) continue;
-    if (activity.tool === activeTool) continue;
-    if (activity.lastActivityAt <= 0) continue;
-    const dismissedAt = dismissals?.[activity.tool];
-    if (dismissedAt != null && activity.lastActivityAt <= dismissedAt) continue;
+    if (!workLiveActivityBelongsToChat(activity, activeChatSessionId)) continue;
+    const floated = Boolean(floatingTools?.includes(activity.tool));
+    if (!floated) {
+      if (activity.tool === activeTool) continue;
+      if (activity.lastActivityAt <= 0) continue;
+      if (isWorkLiveCardClosed(closed, activity.tool, activity.sessionKey)) continue;
+    }
     if (!best || activity.lastActivityAt > best.lastActivityAt) best = activity;
   }
   return best?.tool ?? null;
@@ -101,11 +157,11 @@ export function selectWorkLiveCardTool(args: {
  * one shape.
  *
  * The component used to answer these five questions with five consecutive
- * `if (tool === "browser") … if (tool === "app-control") … if (tool === "ios")`
- * ladders over the same three states, each with its own field-picking rule —
- * so a fourth previewable tool meant finding seven edit sites in one file.
- * One adapter per tool, in a map beside {@link WORK_LIVE_SCREEN_TOOLS}, keeps
- * the answers together and makes them testable without mounting the card.
+ * `if (tool === "browser") … if (tool === "app-control") …` ladders over the
+ * same three states, each with its own field-picking rule — so a fourth
+ * previewable tool meant finding seven edit sites in one file. One adapter per
+ * tool, in a map beside {@link WORK_LIVE_SCREEN_TOOLS}, keeps the answers
+ * together and makes them testable without mounting the card.
  */
 export type WorkLiveSource = {
   /** Something of this tool's is running right now. */
@@ -118,6 +174,8 @@ export type WorkLiveSource = {
   handoff: WorkLiveHandoff;
   /** Truthy while the tool is recording; only the browser can be. */
   recording: unknown;
+  /** The current session identity, for the "×" rule. */
+  sessionKey: string | null;
 };
 
 export type WorkLiveHandoff = { label: string; detail: string | null } | null;
@@ -144,6 +202,7 @@ export function detectWorkLiveHandoff(value: unknown): WorkLiveHandoff {
 export type WorkLiveSourceState = {
   /** The browser's active tab, or null. */
   browserTab: {
+    id?: string | null;
     ownerChatSessionId?: string | null;
     title?: string | null;
     url?: string | null;
@@ -151,12 +210,14 @@ export type WorkLiveSourceState = {
     handoff?: unknown;
   } | null;
   appControlSession: {
+    id?: string | null;
     chatSessionId?: string | null;
     label?: string | null;
     status?: string | null;
     handoff?: unknown;
   } | null;
   iosSession: {
+    id?: string | null;
     chatSessionId?: string | null;
     appName?: string | null;
     deviceName?: string | null;
@@ -172,6 +233,7 @@ export type WorkLiveSourceState = {
    * recently and not by whether an object exists.
    */
   macDesktopFrame: {
+    laneId?: string | null;
     at?: number | null;
     caption?: string | null;
   } | null;
@@ -212,6 +274,7 @@ export const WORK_LIVE_SOURCES: Record<
     caption: browserTab?.title ?? workLiveHostLabel(browserTab?.url) ?? null,
     handoff: detectWorkLiveHandoff(browserTab),
     recording: browserTab?.recording ?? null,
+    sessionKey: browserTab?.id ?? null,
   }),
   "app-control": ({ appControlSession }) => ({
     // `stopped` and `exited` are terminal; `failed` is not — the session is
@@ -223,6 +286,7 @@ export const WORK_LIVE_SOURCES: Record<
     caption: appControlSession?.label ?? null,
     handoff: detectWorkLiveHandoff(appControlSession),
     recording: null,
+    sessionKey: appControlSession?.id ?? null,
   }),
   "mac-desktop": ({ macDesktopFrame }) => ({
     live: Boolean(macDesktopFrame),
@@ -232,6 +296,10 @@ export const WORK_LIVE_SOURCES: Record<
     caption: macDesktopFrame?.caption ?? null,
     handoff: null,
     recording: null,
+    // A display is per lane and long-lived, so the lane id IS the session
+    // identity for the "×" rule: closing the preview hides it until the display
+    // is replaced (or the user floats it back).
+    sessionKey: macDesktopFrame?.laneId ?? null,
   }),
   ios: ({ iosSession }) => ({
     live: Boolean(iosSession),
@@ -239,6 +307,7 @@ export const WORK_LIVE_SOURCES: Record<
     caption: iosSession?.appName ?? iosSession?.deviceName ?? null,
     handoff: detectWorkLiveHandoff(iosSession),
     recording: null,
+    sessionKey: iosSession?.id ?? null,
   }),
 };
 
@@ -439,44 +508,135 @@ export function formatWorkLiveAge(elapsedMs: number): string {
 /* ── Placement ────────────────────────────────────────────────────────────── */
 
 /**
- * The card's two fixed shapes, with a 12px gap to every edge of the column.
+ * The card's width is the user's, and its height follows the picture.
  *
- * Browser and App Control use a small 16:10 landscape rectangle. The simulator
- * is the one portrait exception, because its source is a phone-sized stream.
+ * A fixed per-tool box is exactly what cropped tall captures: a browser tab
+ * captured from a tall panel rect was scaled to a 288px-wide box and cut to its
+ * top band, so a person saw a zoomed-in fragment instead of a screen. The box
+ * now derives its height from the source's own aspect ratio, capped so a
+ * portrait phone or a full-height window does not become a full-column card.
  */
-/** The fixed browser/App Control width; the preview stream is sized against it. */
-export const WORK_LIVE_CARD_WIDTH = 288;
-/** The fixed browser/App Control height (16:10). */
-export const WORK_LIVE_CARD_HEIGHT = 180;
 export const WORK_LIVE_CARD_INSET = 12;
 /** Below either of these the card would cover the thing it sits next to. */
 export const WORK_LIVE_CARD_MIN_HOST_WIDTH = 380;
 export const WORK_LIVE_CARD_MIN_HOST_HEIGHT = 260;
 
+/**
+ * The tallest the card may grow before its width is shrunk to keep the aspect.
+ *
+ * ~340px is comfortably under half a typical chat column at 1x, and the cap is
+ * additionally bounded by the column's own height minus the composer reserve in
+ * {@link workLiveCardSize}, so a short window clamps it further.
+ */
+export const WORK_LIVE_CARD_MAX_HEIGHT = 340;
+
+/** The card never takes more than half the chat column's width. */
+export const WORK_LIVE_CARD_MAX_HOST_WIDTH_RATIO = 0.5;
+
+/** The aspect used before a source picture has reported its own. */
+export const WORK_LIVE_CARD_DEFAULT_ASPECT = 16 / 10;
+export const WORK_LIVE_CARD_IOS_ASPECT = 3 / 4;
+
 export type WorkLiveCardSize = { width: number; height: number };
 
-/** 288×180. */
-export const WORK_LIVE_CARD_LANDSCAPE_SIZE: WorkLiveCardSize = {
-  width: WORK_LIVE_CARD_WIDTH,
-  height: WORK_LIVE_CARD_HEIGHT,
+/** The aspect ratio (width / height) of each tool before its source reports one. */
+export const WORK_LIVE_TOOL_ASPECT: Record<WorkLiveScreenTool, number> = {
+  browser: WORK_LIVE_CARD_DEFAULT_ASPECT,
+  "app-control": WORK_LIVE_CARD_DEFAULT_ASPECT,
+  "mac-desktop": WORK_LIVE_CARD_DEFAULT_ASPECT,
+  ios: WORK_LIVE_CARD_IOS_ASPECT,
 };
-/** 240×320. */
-export const WORK_LIVE_CARD_PORTRAIT_SIZE: WorkLiveCardSize = { width: 240, height: 320 };
 
-/** The box this tool's card occupies. Only the simulator is portrait. */
-export function workLiveCardSize(tool: WorkLiveScreenTool | null): WorkLiveCardSize {
-  return tool === "ios" ? WORK_LIVE_CARD_PORTRAIT_SIZE : WORK_LIVE_CARD_LANDSCAPE_SIZE;
+/**
+ * The aspect to build the box from: the source's natural ratio when it is real
+ * and positive, else the tool's default. A zero/NaN/negative ratio happens
+ * while a frame is still decoding and must never divide the width by zero.
+ */
+export function workLiveCardAspect(
+  tool: WorkLiveScreenTool | null,
+  sourceAspect?: number | null,
+): number {
+  if (typeof sourceAspect === "number" && Number.isFinite(sourceAspect) && sourceAspect > 0) {
+    return sourceAspect;
+  }
+  return tool ? WORK_LIVE_TOOL_ASPECT[tool] : WORK_LIVE_CARD_DEFAULT_ASPECT;
 }
 
 /**
- * The frame treatment inside each fixed card.
+ * The width range available in a column of this width.
  *
- * Browser and App Control always cover the rectangle and stay anchored at the
- * top, so a portrait page shows its header instead of shrinking into bars. The
- * simulator remains contained inside its fixed portrait card.
+ * The user's chosen width is clamped into it, so a card dragged wide in a big
+ * column cannot cover half the conversation when the column narrows.
  */
-export function workLiveCardObjectFit(tool: WorkLiveScreenTool | null): "contain" | "cover" {
-  return tool === "ios" ? "contain" : "cover";
+export function workLiveCardWidthBounds(hostWidth: number): { min: number; max: number } {
+  const byRatio = hostWidth > 0 ? hostWidth * WORK_LIVE_CARD_MAX_HOST_WIDTH_RATIO : WORK_LIVE_CARD_MAX_WIDTH;
+  const max = Math.max(
+    WORK_LIVE_CARD_MIN_WIDTH,
+    Math.min(WORK_LIVE_CARD_MAX_WIDTH, Math.round(byRatio)),
+  );
+  return { min: WORK_LIVE_CARD_MIN_WIDTH, max };
+}
+
+/**
+ * The box this card occupies, from the chosen width and the picture's aspect.
+ *
+ * Width-first: height = width / aspect. If that height exceeds the cap (or the
+ * column's available height), the width is shrunk to keep the aspect exact
+ * rather than letting the height run away.
+ */
+export function workLiveCardSize(args: {
+  tool: WorkLiveScreenTool | null;
+  /** The user's chosen width; defaults inside the bounds. */
+  width?: number;
+  /** Natural width / height of the source picture, when known. */
+  aspect?: number | null;
+  host?: { width: number; height: number };
+  /** Space to leave at the bottom, e.g. the composer's height. */
+  bottomReserve?: number;
+}): WorkLiveCardSize {
+  const aspect = workLiveCardAspect(args.tool, args.aspect);
+  const host = args.host ?? { width: 0, height: 0 };
+  const reserve = Math.max(0, args.bottomReserve ?? 0);
+  const bounds = workLiveCardWidthBounds(host.width);
+  const requested = typeof args.width === "number" && Number.isFinite(args.width)
+    ? args.width
+    : WORK_LIVE_CARD_DEFAULT_WIDTH;
+  let width = Math.max(bounds.min, Math.min(bounds.max, Math.round(requested)));
+  let height = width / aspect;
+
+  const availableHeight = host.height > 0
+    ? host.height - reserve - WORK_LIVE_CARD_INSET * 2
+    : Number.POSITIVE_INFINITY;
+  const maxHeight = Math.max(
+    WORK_LIVE_CARD_MIN_WIDTH * WORK_LIVE_CARD_IOS_ASPECT,
+    Math.min(WORK_LIVE_CARD_MAX_HEIGHT, availableHeight),
+  );
+  if (height > maxHeight) {
+    height = maxHeight;
+    width = height * aspect;
+  }
+  // The user's floor is a hard one: for a source taller than
+  // `minWidth / maxHeight` (~0.59) the two constraints cannot both hold, and a
+  // 200px card that is taller than the soft cap is better than a 136px card
+  // nobody can see. The exact aspect is kept either way.
+  if (width < bounds.min) {
+    width = bounds.min;
+    height = width / aspect;
+  }
+  return { width: Math.round(width), height: Math.round(height) };
+}
+
+/**
+ * Every tool contains its picture; nothing is cropped.
+ *
+ * Kept as a named function (rather than inlined) so the one treatment is stated
+ * once and cannot drift back into a per-tool `cover`.
+ */
+export const WORK_LIVE_CARD_OBJECT_FIT = "contain" as const;
+
+export function workLiveCardObjectFit(_tool: WorkLiveScreenTool | null): "contain" {
+  void _tool;
+  return WORK_LIVE_CARD_OBJECT_FIT;
 }
 
 /**
@@ -484,11 +644,15 @@ export function workLiveCardObjectFit(tool: WorkLiveScreenTool | null): "contain
  * pixels, so a Retina card is not fed a 260px image and upscaled into mush —
  * and a 5K panel is not fed a 1280px one for a thumbnail.
  */
-export function workLivePreviewMaxWidth(devicePixelRatio: number | undefined): number {
+export function workLivePreviewMaxWidth(
+  devicePixelRatio: number | undefined,
+  width: number = WORK_LIVE_CARD_DEFAULT_WIDTH,
+): number {
   const ratio = Number.isFinite(devicePixelRatio) && (devicePixelRatio ?? 0) > 0
     ? (devicePixelRatio as number)
     : 1;
-  return Math.max(WORK_LIVE_CARD_WIDTH, Math.min(960, Math.round(WORK_LIVE_CARD_WIDTH * ratio)));
+  const base = Math.max(WORK_LIVE_CARD_MIN_WIDTH, Math.round(width));
+  return Math.max(base, Math.min(960, Math.round(base * ratio)));
 }
 
 /**
@@ -502,8 +666,8 @@ export function workLivePreviewMaxWidth(devicePixelRatio: number | undefined): n
 export function workLiveCardFits(
   host: { width: number; height: number },
   bottomReserve = 0,
-  /** The box actually being placed; defaults to the landscape card. */
-  card: WorkLiveCardSize = WORK_LIVE_CARD_LANDSCAPE_SIZE,
+  /** The box actually being placed; defaults to the default card. */
+  card: WorkLiveCardSize = { width: WORK_LIVE_CARD_DEFAULT_WIDTH, height: WORK_LIVE_CARD_DEFAULT_WIDTH / WORK_LIVE_CARD_DEFAULT_ASPECT },
 ): boolean {
   const minWidth = Math.max(WORK_LIVE_CARD_MIN_HOST_WIDTH, card.width + WORK_LIVE_CARD_INSET * 2);
   const minHeight = Math.max(WORK_LIVE_CARD_MIN_HOST_HEIGHT, card.height + WORK_LIVE_CARD_INSET * 2);
@@ -521,12 +685,12 @@ export function workLiveCardFits(
 export function workLiveCardTravel(args: {
   host: { width: number; height: number };
   cardHeight: number;
-  /** Defaults to the widest card, so a caller that omits it under-reaches. */
+  /** Defaults to the default card width, so a caller that omits it under-reaches. */
   cardWidth?: number;
   bottomReserve?: number;
 }): { minLeft: number; maxLeft: number; minTop: number; maxTop: number } {
   const bottomReserve = Math.max(0, args.bottomReserve ?? 0);
-  const cardWidth = args.cardWidth ?? WORK_LIVE_CARD_WIDTH;
+  const cardWidth = args.cardWidth ?? WORK_LIVE_CARD_DEFAULT_WIDTH;
   const minLeft = WORK_LIVE_CARD_INSET;
   const minTop = WORK_LIVE_CARD_INSET;
   return {
@@ -627,7 +791,7 @@ export function workLiveCardRect(args: {
   }
   return clampWorkLiveCardRect({
     ...args,
-    left: position.xPct * (host.width - (args.cardWidth ?? WORK_LIVE_CARD_WIDTH)),
+    left: position.xPct * (host.width - (args.cardWidth ?? WORK_LIVE_CARD_DEFAULT_WIDTH)),
     top: position.yPct * (host.height - cardHeight),
   });
 }
@@ -662,7 +826,7 @@ export function workLiveCardPositionFromRect(args: {
   cardHeight: number;
   cardWidth?: number;
 }): WorkLiveCardPosition {
-  const spanX = Math.max(1, args.host.width - (args.cardWidth ?? WORK_LIVE_CARD_WIDTH));
+  const spanX = Math.max(1, args.host.width - (args.cardWidth ?? WORK_LIVE_CARD_DEFAULT_WIDTH));
   const spanY = Math.max(1, args.host.height - args.cardHeight);
   return {
     xPct: Math.max(0, Math.min(1, args.left / spanX)),

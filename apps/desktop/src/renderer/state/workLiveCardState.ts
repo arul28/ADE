@@ -1,12 +1,12 @@
 /**
  * The persisted shape of the Work tab's floating live-preview card.
  *
- * Deliberately a `state/` module with no imports: both the store (which
- * normalizes this on load and on every write) and the card's own pure logic in
- * `components/work/workLiveCard.ts` need these two normalizers, and the store
- * must not depend on a component module. Keeping one copy here is what stops
- * the two from drifting — they already had, on which tool ids count as
- * previewable.
+ * Deliberately a `state/` module with no imports beyond the card's pure logic:
+ * both the store (which normalizes the position and width on load and on every
+ * write) and the card's own pure logic in `components/work/workLiveCard.ts` need
+ * these normalizers, and the store must not depend on a component module.
+ * Keeping one copy here is what stops the two from drifting — they already had,
+ * on which tool ids count as previewable.
  */
 
 /** The tools that have something to *look at*. Git and Files do not. */
@@ -36,17 +36,7 @@ export function isWorkLiveScreenTool(tool: string | null | undefined): tool is W
  */
 export type WorkLiveCardPosition = { xPct: number; yPct: number };
 
-/**
- * The activity stamp each tool's card was dismissed at, keyed by tool id.
- *
- * Per TOOL rather than one flag because "I don't need to watch the browser
- * right now" says nothing about the simulator that boots ten seconds later.
- * The value is the activity clock the card was showing when you closed it, so
- * the rule "come back on NEW activity" is a plain `>` and cannot be defeated by
- * the bookkeeping event that closing the card itself provokes.
- */
-export type WorkLiveCardDismissals = Record<string, number>;
-
+/** Reads a stored fractional position, clamping it into 0..1 and rejecting junk. */
 export function normalizeWorkLiveCardPosition(value: unknown): WorkLiveCardPosition | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<WorkLiveCardPosition>;
@@ -59,14 +49,79 @@ export function normalizeWorkLiveCardPosition(value: unknown): WorkLiveCardPosit
   };
 }
 
-/** Drops unknown tool ids and non-positive stamps, so a hand-edited blob cannot hide the card forever. */
-export function normalizeWorkLiveCardDismissals(value: unknown): WorkLiveCardDismissals | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const next: WorkLiveCardDismissals = {};
-  for (const [key, stamp] of Object.entries(value as Record<string, unknown>)) {
+/**
+ * The width the user chose for the card, in CSS pixels.
+ *
+ * Only the width is chosen: the height follows the source picture's aspect
+ * ratio (see `workLiveCardSize`), because a fixed box is what cropped tall
+ * captures in the first place. `null` means "never resized" and falls back to
+ * the default.
+ */
+export const WORK_LIVE_CARD_DEFAULT_WIDTH = 288;
+export const WORK_LIVE_CARD_MIN_WIDTH = 200;
+/** A card wider than this stops being a corner preview and becomes a pane. */
+export const WORK_LIVE_CARD_MAX_WIDTH = 560;
+
+export function normalizeWorkLiveCardWidth(value: unknown): number | null {
+  // `null` / `undefined` / `""` must stay "never resized" — `Number(null)` is 0,
+  // which would otherwise clamp to the minimum width and shrink every card.
+  if (value == null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(WORK_LIVE_CARD_MIN_WIDTH, Math.min(WORK_LIVE_CARD_MAX_WIDTH, Math.round(n)));
+}
+
+/**
+ * Per-tool "closed" markers for one chat.
+ *
+ * Valued with the SESSION KEY the tool was showing when the user pressed ×
+ * (browser active tab id, App Control session id, simulator session id, the
+ * lane's display id for mac-desktop). A tool stays closed for that chat while
+ * its key is unchanged; a NEW session key may show the card again. This is per
+ * CHAT rather than per lane: the card belongs to the conversation you are
+ * reading, not the checkout.
+ */
+export type WorkLiveCardClosedByTool = Partial<Record<WorkLiveScreenTool, string>>;
+
+/** Tools the user explicitly floated back on for one chat. */
+export type WorkLiveCardFloatingTools = WorkLiveScreenTool[];
+
+/**
+ * Reads a stored closed map. Unknown tool ids and empty keys are dropped so a
+ * hand-edited blob cannot hide a card forever with a value nothing can match.
+ */
+export function normalizeWorkLiveCardClosedByTool(value: unknown): WorkLiveCardClosedByTool {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const next: WorkLiveCardClosedByTool = {};
+  for (const [key, sessionKey] of Object.entries(value as Record<string, unknown>)) {
     if (!isWorkLiveScreenTool(key)) continue;
-    if (typeof stamp !== "number" || !Number.isFinite(stamp) || stamp <= 0) continue;
-    next[key] = stamp;
+    if (typeof sessionKey !== "string" || !sessionKey.trim()) continue;
+    next[key] = sessionKey.trim();
   }
-  return Object.keys(next).length > 0 ? next : null;
+  return next;
+}
+
+/** Reads a stored floating list, keeping only screen tools and dropping dupes. */
+export function normalizeWorkLiveCardFloatingTools(value: unknown): WorkLiveCardFloatingTools {
+  if (!Array.isArray(value)) return [];
+  const next: WorkLiveCardFloatingTools = [];
+  for (const entry of value) {
+    if (!isWorkLiveScreenTool(entry) || next.includes(entry)) continue;
+    next.push(entry);
+  }
+  return next;
+}
+
+/** True when `tool` is closed for this chat at the given session key. */
+export function isWorkLiveCardClosed(
+  closed: WorkLiveCardClosedByTool | null | undefined,
+  tool: WorkLiveScreenTool,
+  sessionKey: string | null,
+): boolean {
+  const stored = closed?.[tool];
+  if (stored == null) return false;
+  // A key we cannot compute cannot distinguish a new session from the old one,
+  // so an unknown key stays closed rather than flashing the card back.
+  if (sessionKey == null) return true;
+  return stored === sessionKey;
 }

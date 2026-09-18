@@ -1,22 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
+  WORK_LIVE_CARD_DEFAULT_WIDTH,
   WORK_LIVE_CARD_INSET,
-  WORK_LIVE_CARD_LANDSCAPE_SIZE,
-  WORK_LIVE_CARD_HEIGHT,
-  WORK_LIVE_CARD_PORTRAIT_SIZE,
-  WORK_LIVE_CARD_WIDTH,
+  WORK_LIVE_CARD_MAX_HEIGHT,
+  WORK_LIVE_CARD_MIN_WIDTH,
   WORK_LIVE_SCRUB_BUFFER_SIZE,
+  WORK_LIVE_CARD_OBJECT_FIT,
+  workLiveCardAspect,
   workLiveCardObjectFit,
   workLiveCardSize,
+  workLiveCardWidthBounds,
   commitWorkLiveScrubFrame,
   formatWorkLiveActionCaption,
   workLiveActionVerb,
   formatWorkLiveAge,
   isWorkLiveScreenTool,
-  clampWorkLiveCardRect,
-  commitWorkLiveCardDismissal,
-  normalizeWorkLiveCardDismissals,
+  isWorkLiveCardClosed,
+  normalizeWorkLiveCardClosedByTool,
+  normalizeWorkLiveCardWidth,
   normalizeWorkLiveCardPosition,
+  clampWorkLiveCardRect,
   selectWorkLiveCardTool,
   updateWorkLiveScrubCaption,
   workLiveScrubFrameKey,
@@ -27,6 +30,7 @@ import {
   workLiveCardRect,
   workLiveCardTravel,
   workLiveBottomReserve,
+  workLiveActivityBelongsToChat,
   workLiveHostLabel,
   workLivePreviewMaxWidth,
   workLiveScrubIndex,
@@ -34,137 +38,206 @@ import {
   type WorkLiveScrubFrame,
 } from "./workLiveCard";
 
-const CARD_HEIGHT = 207;
+const CARD_HEIGHT = 180;
+const CARD_WIDTH = WORK_LIVE_CARD_DEFAULT_WIDTH;
 
 function activity(overrides: Partial<WorkLiveActivity> & Pick<WorkLiveActivity, "tool">): WorkLiveActivity {
   return {
     lastActivityAt: 1_000,
     available: true,
     live: true,
+    ownerChatSessionId: null,
+    sessionKey: `${overrides.tool}-1`,
+    showWhenUnowned: true,
     ...overrides,
   };
 }
 
+/** The selector as the card calls it, with the chat on screen filled in. */
+function select(args: {
+  activeTool?: Parameters<typeof selectWorkLiveCardTool>[0]["activeTool"];
+  activeChatSessionId?: string | null;
+  activities: readonly WorkLiveActivity[];
+  floatingTools?: Parameters<typeof selectWorkLiveCardTool>[0]["floatingTools"];
+  closed?: Parameters<typeof selectWorkLiveCardTool>[0]["closed"];
+}) {
+  return selectWorkLiveCardTool({
+    activeTool: null,
+    activeChatSessionId: "chat-1",
+    ...args,
+  });
+}
+
 describe("selectWorkLiveCardTool", () => {
   it("shows the most recently active screen tool", () => {
-    const tool = selectWorkLiveCardTool({
+    const tool = select({
       activeTool: "git",
       activities: [
         activity({ tool: "browser", lastActivityAt: 500 }),
         activity({ tool: "app-control", lastActivityAt: 900 }),
         activity({ tool: "ios", lastActivityAt: 700 }),
       ],
-      dismissals: null,
     });
     expect(tool).toBe("app-control");
   });
 
   it("never shows the tool already filling the pane", () => {
-    const tool = selectWorkLiveCardTool({
+    const tool = select({
       activeTool: "app-control",
       activities: [
         activity({ tool: "browser", lastActivityAt: 500 }),
         activity({ tool: "app-control", lastActivityAt: 900 }),
       ],
-      dismissals: null,
     });
     expect(tool).toBe("browser");
   });
 
   it("shows nothing when the only active tool is the one on screen", () => {
-    expect(selectWorkLiveCardTool({
+    expect(select({
       activeTool: "browser",
       activities: [activity({ tool: "browser", lastActivityAt: 900 })],
-      dismissals: null,
     })).toBeNull();
   });
 
   it("skips tools that are unavailable here or not running", () => {
-    expect(selectWorkLiveCardTool({
+    expect(select({
       activeTool: null,
       activities: [
         activity({ tool: "ios", lastActivityAt: 900, available: false }),
         activity({ tool: "app-control", lastActivityAt: 800, live: false }),
         activity({ tool: "browser", lastActivityAt: 100 }),
       ],
-      dismissals: null,
     })).toBe("browser");
   });
 
   it("ignores tools that have never done anything", () => {
-    expect(selectWorkLiveCardTool({
+    expect(select({
       activeTool: null,
       activities: [activity({ tool: "browser", lastActivityAt: 0 })],
-      dismissals: null,
+    })).toBeNull();
+  });
+});
+
+describe("chat scoping", () => {
+  it("shows an owned session only in its own chat", () => {
+    const browser = activity({ tool: "browser", ownerChatSessionId: "chat-1" });
+    expect(workLiveActivityBelongsToChat(browser, "chat-1")).toBe(true);
+    expect(workLiveActivityBelongsToChat(browser, "chat-2")).toBe(false);
+    // No chat selected means no owned session belongs here.
+    expect(workLiveActivityBelongsToChat(browser, null)).toBe(false);
+  });
+
+  it("shows an unowned session in every chat", () => {
+    const browser = activity({ tool: "browser", ownerChatSessionId: null, showWhenUnowned: true });
+    expect(workLiveActivityBelongsToChat(browser, "chat-1")).toBe(true);
+    expect(workLiveActivityBelongsToChat(browser, null)).toBe(true);
+  });
+
+  it("hides a lane-scoped session (mac-desktop) from a chat that does not own it", () => {
+    const desktop = activity({
+      tool: "mac-desktop",
+      ownerChatSessionId: null,
+      showWhenUnowned: false,
+    });
+    expect(workLiveActivityBelongsToChat(desktop, "chat-1")).toBe(false);
+
+    const authorized = activity({
+      tool: "mac-desktop",
+      ownerChatSessionId: "chat-1",
+      showWhenUnowned: false,
+    });
+    expect(workLiveActivityBelongsToChat(authorized, "chat-1")).toBe(true);
+    expect(workLiveActivityBelongsToChat(authorized, "chat-2")).toBe(false);
+  });
+
+  it("never lets a session started by chat A float over chat B", () => {
+    expect(select({
+      activeChatSessionId: "chat-b",
+      activities: [activity({ tool: "browser", ownerChatSessionId: "chat-a", lastActivityAt: 900 })],
     })).toBeNull();
   });
 
-  it("stays hidden after a dismissal until something newer happens", () => {
-    const activities = [activity({ tool: "browser", lastActivityAt: 1_000 })];
-    expect(selectWorkLiveCardTool({
-      activeTool: null,
-      activities,
-      dismissals: { browser: 1_000 },
-    })).toBeNull();
-    expect(selectWorkLiveCardTool({
-      activeTool: null,
-      activities,
-      dismissals: { browser: 1_500 },
-    })).toBeNull();
-    expect(selectWorkLiveCardTool({
-      activeTool: null,
-      activities: [activity({ tool: "browser", lastActivityAt: 2_000 })],
-      dismissals: { browser: 1_500 },
-    })).toBe("browser");
-  });
-
-  it("silences only the tool the dismissal was aimed at", () => {
-    expect(selectWorkLiveCardTool({
-      activeTool: null,
+  it("picks the newest session owned by the chat on screen", () => {
+    expect(select({
+      activeChatSessionId: "chat-b",
       activities: [
-        activity({ tool: "browser", lastActivityAt: 1_800 }),
-        activity({ tool: "ios", lastActivityAt: 900 }),
+        activity({ tool: "browser", ownerChatSessionId: "chat-a", lastActivityAt: 5_000 }),
+        activity({ tool: "ios", ownerChatSessionId: "chat-b", lastActivityAt: 900 }),
       ],
-      dismissals: { browser: 2_000 },
     })).toBe("ios");
   });
 });
 
-describe("dismissals", () => {
-  it("records the stamp a tool was dismissed at, leaving the others alone", () => {
-    const first = commitWorkLiveCardDismissal(null, "browser", 1_000);
-    expect(first).toEqual({ browser: 1_000 });
-    const second = commitWorkLiveCardDismissal(first, "ios", 2_000);
-    expect(second).toEqual({ browser: 1_000, ios: 2_000 });
-    expect(first).toEqual({ browser: 1_000 });
+describe("closed-key semantics", () => {
+  it("stays closed for the same session key", () => {
+    const browser = activity({ tool: "browser", sessionKey: "tab-1", lastActivityAt: 5_000 });
+    expect(select({ activities: [browser], closed: { browser: "tab-1" } })).toBeNull();
+    // A frame or status refresh only moves the clock; the key is unchanged.
+    expect(select({
+      activities: [{ ...browser, lastActivityAt: 9_000 }],
+      closed: { browser: "tab-1" },
+    })).toBeNull();
   });
 
-  it("never moves a stamp backwards", () => {
-    const dismissals = commitWorkLiveCardDismissal({ browser: 5_000 }, "browser", 1_000);
-    expect(dismissals.browser).toBe(5_000);
+  it("shows again for a new session key", () => {
+    expect(select({
+      activities: [activity({ tool: "browser", sessionKey: "tab-2", lastActivityAt: 9_000 })],
+      closed: { browser: "tab-1" },
+    })).toBe("browser");
   });
 
-  it("drops keys that are not screen tools and stamps that are not stamps", () => {
-    expect(normalizeWorkLiveCardDismissals({
-      browser: 1_000,
-      git: 2_000,
-      ios: "soon",
-      "app-control": -4,
-    })).toEqual({ browser: 1_000 });
-    expect(normalizeWorkLiveCardDismissals({ git: 1 })).toBeNull();
-    expect(normalizeWorkLiveCardDismissals(null)).toBeNull();
-    expect(normalizeWorkLiveCardDismissals([1, 2])).toBeNull();
-    expect(normalizeWorkLiveCardDismissals("nope")).toBeNull();
+  it("silences only the tool the close was aimed at", () => {
+    expect(select({
+      activities: [
+        activity({ tool: "browser", sessionKey: "tab-1", lastActivityAt: 1_800 }),
+        activity({ tool: "ios", sessionKey: "sim-1", lastActivityAt: 900 }),
+      ],
+      closed: { browser: "tab-1" },
+    })).toBe("ios");
   });
 
-  it("round-trips through the normalizer so a persisted dismissal still hides", () => {
-    const persisted = JSON.parse(JSON.stringify(
-      commitWorkLiveCardDismissal(null, "browser", 4_000),
-    )) as unknown;
-    expect(selectWorkLiveCardTool({
-      activeTool: null,
-      activities: [activity({ tool: "browser", lastActivityAt: 3_900 })],
-      dismissals: normalizeWorkLiveCardDismissals(persisted),
+  it("stays closed for a session whose key cannot be computed", () => {
+    const browser = activity({ tool: "browser", sessionKey: null, lastActivityAt: 5_000 });
+    expect(select({ activities: [browser], closed: { browser: "tab-1" } })).toBeNull();
+  });
+
+  it("reads a closed map defensively", () => {
+    expect(normalizeWorkLiveCardClosedByTool({
+      browser: "tab-1",
+      git: "nope",
+      ios: "",
+      "app-control": 4,
+    })).toEqual({ browser: "tab-1" });
+    expect(normalizeWorkLiveCardClosedByTool(null)).toEqual({});
+    expect(normalizeWorkLiveCardClosedByTool([1, 2])).toEqual({});
+    expect(isWorkLiveCardClosed({ browser: "tab-1" }, "browser", "tab-1")).toBe(true);
+    expect(isWorkLiveCardClosed({ browser: "tab-1" }, "browser", "tab-2")).toBe(false);
+  });
+});
+
+describe("floating override", () => {
+  it("shows a floated tool even while it fills the pane", () => {
+    const browser = activity({ tool: "browser", lastActivityAt: 0, sessionKey: "tab-1" });
+    expect(select({ activeTool: "browser", activities: [browser] })).toBeNull();
+    expect(select({ activeTool: "browser", activities: [browser], floatingTools: ["browser"] }))
+      .toBe("browser");
+  });
+
+  it("overrides a closed marker on the same session", () => {
+    const browser = activity({ tool: "browser", sessionKey: "tab-1" });
+    expect(select({ activities: [browser], closed: { browser: "tab-1" } })).toBeNull();
+    expect(select({
+      activities: [browser],
+      closed: { browser: "tab-1" },
+      floatingTools: ["browser"],
+    })).toBe("browser");
+  });
+
+  it("still requires the floated tool to be live and available", () => {
+    expect(select({
+      activeTool: "browser",
+      activities: [activity({ tool: "browser", live: false })],
+      floatingTools: ["browser"],
     })).toBeNull();
   });
 });
@@ -174,6 +247,7 @@ describe("isWorkLiveScreenTool", () => {
     expect(isWorkLiveScreenTool("browser")).toBe(true);
     expect(isWorkLiveScreenTool("ios")).toBe(true);
     expect(isWorkLiveScreenTool("app-control")).toBe(true);
+    expect(isWorkLiveScreenTool("mac-desktop")).toBe(true);
     expect(isWorkLiveScreenTool("git")).toBe(false);
     expect(isWorkLiveScreenTool("files")).toBe(false);
     expect(isWorkLiveScreenTool(null)).toBe(false);
@@ -247,12 +321,10 @@ describe("captions", () => {
   });
 
   it("says what an action did rather than naming the method that did it", () => {
-    // The footer of a live preview read "stopFindInPage · 1s".
     expect(workLiveActionVerb("stopFindInPage")).toBe("Closed find");
     expect(workLiveActionVerb("navigate")).toBe("Opened");
     expect(workLiveActionVerb("fill")).toBe("Typed");
     expect(workLiveActionVerb("handoff-end")).toBe("Handed back");
-    // Anything the table has not met yet still reads as words.
     expect(workLiveActionVerb("someNewAction")).toBe("Some new action");
     expect(workLiveActionVerb("  ")).toBe("Action");
   });
@@ -287,7 +359,7 @@ describe("placement", () => {
       cardHeight: CARD_HEIGHT,
       bottomReserve: 120,
     });
-    expect(rect.left).toBe(900 - WORK_LIVE_CARD_WIDTH - WORK_LIVE_CARD_INSET);
+    expect(rect.left).toBe(900 - CARD_WIDTH - WORK_LIVE_CARD_INSET);
     expect(rect.top).toBe(600 - CARD_HEIGHT - WORK_LIVE_CARD_INSET - 120);
   });
 
@@ -306,7 +378,7 @@ describe("placement", () => {
       cardHeight: CARD_HEIGHT,
       bottomReserve: 0,
     });
-    expect(rect.left).toBeLessThanOrEqual(420 - WORK_LIVE_CARD_WIDTH - WORK_LIVE_CARD_INSET);
+    expect(rect.left).toBeLessThanOrEqual(420 - CARD_WIDTH - WORK_LIVE_CARD_INSET);
     expect(rect.top).toBeLessThanOrEqual(320 - CARD_HEIGHT - WORK_LIVE_CARD_INSET);
     expect(rect.left).toBeGreaterThanOrEqual(0);
     expect(rect.top).toBeGreaterThanOrEqual(0);
@@ -319,6 +391,13 @@ describe("placement", () => {
     expect(normalizeWorkLiveCardPosition(null)).toBeNull();
     expect(normalizeWorkLiveCardPosition("nope")).toBeNull();
   });
+
+  it("normalizes a persisted width into the allowed range", () => {
+    expect(normalizeWorkLiveCardWidth(360)).toBe(360);
+    expect(normalizeWorkLiveCardWidth(10)).toBe(WORK_LIVE_CARD_MIN_WIDTH);
+    expect(normalizeWorkLiveCardWidth(10_000)).toBe(560);
+    expect(normalizeWorkLiveCardWidth("nope")).toBeNull();
+  });
 });
 
 describe("drag bounds", () => {
@@ -328,13 +407,11 @@ describe("drag bounds", () => {
     const travel = workLiveCardTravel({ host, cardHeight: CARD_HEIGHT, bottomReserve: 120 });
     expect(travel.minLeft).toBe(WORK_LIVE_CARD_INSET);
     expect(travel.minTop).toBe(WORK_LIVE_CARD_INSET);
-    expect(travel.maxLeft).toBe(900 - WORK_LIVE_CARD_WIDTH - WORK_LIVE_CARD_INSET);
+    expect(travel.maxLeft).toBe(900 - CARD_WIDTH - WORK_LIVE_CARD_INSET);
     expect(travel.maxTop).toBe(600 - CARD_HEIGHT - WORK_LIVE_CARD_INSET - 120);
   });
 
   it("clamps a drag that ran off the left of the column", () => {
-    // The reported bug: dragging left parked the card under the column's
-    // `overflow-hidden`, which ate the title and half the caption.
     const clamped = clampWorkLiveCardRect({ host, left: -180, top: 40, cardHeight: CARD_HEIGHT });
     expect(clamped.left).toBe(WORK_LIVE_CARD_INSET);
     expect(clamped.top).toBe(40);
@@ -348,7 +425,7 @@ describe("drag bounds", () => {
       cardHeight: CARD_HEIGHT,
       bottomReserve: 120,
     });
-    expect(clamped.left).toBe(900 - WORK_LIVE_CARD_WIDTH - WORK_LIVE_CARD_INSET);
+    expect(clamped.left).toBe(900 - CARD_WIDTH - WORK_LIVE_CARD_INSET);
     expect(clamped.top).toBe(600 - CARD_HEIGHT - WORK_LIVE_CARD_INSET - 120);
   });
 
@@ -360,8 +437,6 @@ describe("drag bounds", () => {
       cardHeight: CARD_HEIGHT,
       bottomReserve: 120,
     });
-    // Parked in the bottom-right corner: no room right or down, the rest of the
-    // column to the left and up.
     expect(constraints.right).toBe(0);
     expect(constraints.bottom).toBe(0);
     expect(origin.left + constraints.left).toBe(WORK_LIVE_CARD_INSET);
@@ -405,20 +480,22 @@ describe("updateWorkLiveScrubCaption", () => {
 
 describe("workLivePreviewMaxWidth", () => {
   it("asks for the card's width in device pixels", () => {
-    expect(workLivePreviewMaxWidth(2)).toBe(WORK_LIVE_CARD_WIDTH * 2);
+    expect(workLivePreviewMaxWidth(2, 300)).toBe(600);
   });
 
   it("stays inside sane bounds for junk and extreme ratios", () => {
-    expect(workLivePreviewMaxWidth(1)).toBe(WORK_LIVE_CARD_WIDTH);
-    expect(workLivePreviewMaxWidth(undefined)).toBe(WORK_LIVE_CARD_WIDTH);
-    expect(workLivePreviewMaxWidth(0)).toBe(WORK_LIVE_CARD_WIDTH);
-    expect(workLivePreviewMaxWidth(Number.NaN)).toBe(WORK_LIVE_CARD_WIDTH);
-    expect(workLivePreviewMaxWidth(12)).toBe(960);
+    expect(workLivePreviewMaxWidth(1)).toBe(WORK_LIVE_CARD_DEFAULT_WIDTH);
+    expect(workLivePreviewMaxWidth(undefined)).toBe(WORK_LIVE_CARD_DEFAULT_WIDTH);
+    expect(workLivePreviewMaxWidth(0)).toBe(WORK_LIVE_CARD_DEFAULT_WIDTH);
+    expect(workLivePreviewMaxWidth(Number.NaN)).toBe(WORK_LIVE_CARD_DEFAULT_WIDTH);
+    expect(workLivePreviewMaxWidth(12, 300)).toBe(960);
   });
 });
 
 describe("workLiveCardFits", () => {
   const wide = { width: 400, height: 400 };
+  const landscape = { width: WORK_LIVE_CARD_DEFAULT_WIDTH, height: 180 };
+  const portrait = { width: 255, height: 340 };
 
   it("refuses a host too small for the card at all", () => {
     expect(workLiveCardFits({ width: 300, height: 400 })).toBe(false);
@@ -427,48 +504,83 @@ describe("workLiveCardFits", () => {
   });
 
   it("counts the composer's height, which the card sits above", () => {
-    // 300px of column with a 150px composer leaves 150px for a 320px card:
-    // `fits` used to say yes, `workLiveCardTravel`'s `Math.max` then gave up
-    // and parked the card on top of the composer it was measured to avoid.
     expect(workLiveCardFits({ width: 400, height: 300 }, 150)).toBe(false);
     expect(workLiveCardFits({ width: 400, height: 520 }, 150)).toBe(true);
-    // A negative reserve is not a bonus.
     expect(workLiveCardFits({ width: 400, height: 344 }, -100)).toBe(true);
   });
 
   it("measures the box actually being placed, not the tallest one", () => {
-    // A 288×180 browser card fits a column that a 240×320 simulator card does
-    // not. Asking with the envelope rather than the card is how a browser
-    // preview used to vanish from a perfectly adequate column.
     const shortColumn = { width: 400, height: 280 };
-    expect(workLiveCardFits(shortColumn, 0, WORK_LIVE_CARD_LANDSCAPE_SIZE)).toBe(true);
-    expect(workLiveCardFits(shortColumn, 0, WORK_LIVE_CARD_PORTRAIT_SIZE)).toBe(false);
-    // The default is the landscape card — the shape four of the five tools
-    // take — not an envelope no real card ever uses.
+    expect(workLiveCardFits(shortColumn, 0, landscape)).toBe(true);
+    expect(workLiveCardFits(shortColumn, 0, portrait)).toBe(false);
     expect(workLiveCardFits(shortColumn))
-      .toBe(workLiveCardFits(shortColumn, 0, WORK_LIVE_CARD_LANDSCAPE_SIZE));
+      .toBe(workLiveCardFits(shortColumn, 0, landscape));
   });
 });
 
 describe("workLiveCardSize", () => {
-  it("uses a small fixed landscape card for browser and App Control", () => {
-    expect(workLiveCardSize("browser")).toEqual({ width: 288, height: 180 });
-    expect(workLiveCardSize("app-control")).toEqual({ width: 288, height: 180 });
-    // Only the simulator is a phone.
-    expect(workLiveCardSize("ios")).toEqual({ width: 240, height: 320 });
-    expect(workLiveCardSize(null)).toEqual(WORK_LIVE_CARD_LANDSCAPE_SIZE);
+  it("uses the chosen width and the landscape default aspect before a frame", () => {
+    expect(workLiveCardSize({ tool: "browser" })).toEqual({ width: 288, height: 180 });
+    expect(workLiveCardSize({ tool: "app-control" })).toEqual({ width: 288, height: 180 });
+    // 3:4 portrait: 288 -> 384, capped at the max height and shrunk to keep it.
+    expect(workLiveCardSize({ tool: "ios" })).toEqual({
+      width: Math.round(WORK_LIVE_CARD_MAX_HEIGHT * 0.75),
+      height: WORK_LIVE_CARD_MAX_HEIGHT,
+    });
+    expect(workLiveCardSize({ tool: null })).toEqual({ width: 288, height: 180 });
   });
 
-  it("keeps the fixed landscape dimensions and portrait simulator dimensions", () => {
-    expect(WORK_LIVE_CARD_LANDSCAPE_SIZE).toEqual({
-      width: WORK_LIVE_CARD_WIDTH,
-      height: WORK_LIVE_CARD_HEIGHT,
-    });
-    expect(WORK_LIVE_CARD_PORTRAIT_SIZE).toEqual({ width: 240, height: 320 });
-    // Both shapes still clear the host minimums the placement math enforces.
-    for (const size of [WORK_LIVE_CARD_LANDSCAPE_SIZE, WORK_LIVE_CARD_PORTRAIT_SIZE]) {
-      expect(workLiveCardFits({ width: 1_200, height: 900 }, 0, size)).toBe(true);
+  it("derives the box from the source picture's own aspect ratio", () => {
+    // A 390x844 phone capture: no crop, the card is tall and narrow. The
+    // minimum width wins over the soft height cap, so it is 200px wide.
+    const portrait = workLiveCardSize({ tool: "browser", aspect: 390 / 844, width: 250 });
+    expect(portrait.width).toBe(WORK_LIVE_CARD_MIN_WIDTH);
+    expect(portrait.width / portrait.height).toBeCloseTo(390 / 844, 2);
+
+    // A wide window: the height follows, well under the cap.
+    const wide = workLiveCardSize({ tool: "mac-desktop", aspect: 3440 / 1440, width: 288 });
+    expect(wide).toEqual({ width: 288, height: Math.round(288 / (3440 / 1440)) });
+  });
+
+  it("caps the height and shrinks the width to keep the aspect", () => {
+    const size = workLiveCardSize({ tool: "browser", aspect: 0.7, width: 500 });
+    expect(size.height).toBe(WORK_LIVE_CARD_MAX_HEIGHT);
+    expect(size.width).toBe(Math.round(WORK_LIVE_CARD_MAX_HEIGHT * 0.7));
+    expect(size.width / size.height).toBeCloseTo(0.7, 1);
+  });
+
+  it("never exceeds half the column's width", () => {
+    const size = workLiveCardSize({ tool: "browser", width: 540, host: { width: 600, height: 800 } });
+    expect(size.width).toBeLessThanOrEqual(300);
+  });
+
+  it("ignores a junk aspect and falls back to the tool default", () => {
+    expect(workLiveCardSize({ tool: "browser", aspect: 0 })).toEqual({ width: 288, height: 180 });
+    expect(workLiveCardSize({ tool: "browser", aspect: Number.NaN })).toEqual({ width: 288, height: 180 });
+    expect(workLiveCardSize({ tool: "browser", aspect: -3 })).toEqual({ width: 288, height: 180 });
+  });
+
+  it("bounds the width range by the column", () => {
+    expect(workLiveCardWidthBounds(0)).toEqual({ min: WORK_LIVE_CARD_MIN_WIDTH, max: 560 });
+    expect(workLiveCardWidthBounds(600)).toEqual({ min: WORK_LIVE_CARD_MIN_WIDTH, max: 300 });
+    expect(workLiveCardWidthBounds(2_000)).toEqual({ min: WORK_LIVE_CARD_MIN_WIDTH, max: 560 });
+  });
+});
+
+describe("workLiveCardAspect / objectFit", () => {
+  it("prefers the source aspect and falls back per tool", () => {
+    expect(workLiveCardAspect("browser", 2)).toBe(2);
+    expect(workLiveCardAspect("browser")).toBeCloseTo(1.6, 5);
+    expect(workLiveCardAspect("ios")).toBeCloseTo(0.75, 5);
+    expect(workLiveCardAspect(null)).toBeCloseTo(1.6, 5);
+  });
+
+  it("contains every tool's picture — nothing is cropped", () => {
+    for (const tool of ["browser", "app-control", "ios", "mac-desktop"] as const) {
+      expect(workLiveCardObjectFit(tool)).toBe("contain");
     }
+    expect(WORK_LIVE_CARD_OBJECT_FIT).toBe("contain");
+    expect(workLiveCardObjectFit(null)).toBe("contain");
   });
 });
 
@@ -479,7 +591,6 @@ describe("workLiveScrubFrameKey", () => {
       { id: "t2", dataUrl: null, caption: "type", at: 2 },
     ];
     const held = workLiveScrubFrameKey(buffer[1]!);
-    // A new action shifts the buffer left; the held frame is now at index 0.
     const shifted = buffer.slice(1);
     expect(shifted.findIndex((frame) => workLiveScrubFrameKey(frame) === held)).toBe(0);
   });
@@ -493,13 +604,10 @@ describe("workLiveHostLabel", () => {
   it("reduces a URL to the host a person recognises", () => {
     expect(workLiveHostLabel("https://example.com/a/b?c=1#d")).toBe("example.com");
     expect(workLiveHostLabel("http://localhost:5173/work")).toBe("localhost:5173");
-    // `www.` is noise on a 288px pill.
     expect(workLiveHostLabel("https://www.example.com/")).toBe("example.com");
   });
 
   it("hands back anything it cannot parse rather than losing the only label", () => {
-    // Parses, but has no host — the scheme-only forms come back whole rather
-    // than as the empty string the `.host` read would have given.
     expect(workLiveHostLabel("about:blank")).toBe("about:blank");
     expect(workLiveHostLabel("localhost:5173")).toBe("localhost:5173");
     expect(workLiveHostLabel("not a url")).toBe("not a url");
@@ -520,8 +628,6 @@ describe("workLiveBottomReserve", () => {
   });
 
   it("covers everything below a card floating above the composer, in one number", () => {
-    // The anchored card is what the reserve is measured to; the composer under
-    // it is included by construction rather than added to it.
     expect(workLiveBottomReserve({
       host,
       obstructions: [
@@ -535,11 +641,8 @@ describe("workLiveBottomReserve", () => {
     expect(workLiveBottomReserve({
       host,
       obstructions: [
-        // A hidden empty-state composer belonging to another chat pane.
         { top: 0, bottom: 0, height: 0 },
-        // Chrome at the top of the column.
         { top: 0, bottom: 40, height: 40 },
-        // Below the host entirely.
         { top: 640, bottom: 700, height: 60 },
       ],
     })).toBe(0);
@@ -567,6 +670,7 @@ describe("workLiveSource", () => {
     const browser = workLiveSource("browser", {
       ...empty,
       browserTab: {
+        id: "tab-1",
         ownerChatSessionId: "chat-1",
         title: "Sign in",
         url: "https://example.test/login",
@@ -580,6 +684,7 @@ describe("workLiveSource", () => {
       caption: "Sign in",
       handoff: { label: "Needs you", detail: "Sign in to continue" },
       recording: { startedAt: "now" },
+      sessionKey: "tab-1",
     });
   });
 
@@ -587,6 +692,14 @@ describe("workLiveSource", () => {
     expect(workLiveSource("app-control", { ...empty, appControlSession: { status: "stopped" } }).live).toBe(false);
     expect(workLiveSource("app-control", { ...empty, appControlSession: { status: "exited" } }).live).toBe(false);
     expect(workLiveSource("app-control", { ...empty, appControlSession: { status: "failed" } }).live).toBe(true);
+  });
+
+  it("identifies each tool's session key", () => {
+    expect(workLiveSource("app-control", { ...empty, appControlSession: { id: "s1", status: "connected" } }).sessionKey)
+      .toBe("s1");
+    expect(workLiveSource("ios", { ...empty, iosSession: { id: "i1", appName: "ADE" } }).sessionKey).toBe("i1");
+    expect(workLiveSource("mac-desktop", { ...empty, macDesktopFrame: { laneId: "lane-1" } }).sessionKey)
+      .toBe("lane-1");
   });
 
   it("only the browser can be recording", () => {
@@ -606,18 +719,8 @@ describe("workLiveSource", () => {
         caption: null,
         handoff: null,
         recording: null,
+        sessionKey: null,
       });
     }
-  });
-});
-
-describe("workLiveCardObjectFit", () => {
-  it("covers browser and App Control frames from the top", () => {
-    expect(workLiveCardObjectFit("browser")).toBe("cover");
-    expect(workLiveCardObjectFit("app-control")).toBe("cover");
-  });
-
-  it("keeps the simulator contained in its portrait card", () => {
-    expect(workLiveCardObjectFit("ios")).toBe("contain");
   });
 });

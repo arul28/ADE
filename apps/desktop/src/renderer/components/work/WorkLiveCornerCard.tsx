@@ -13,19 +13,29 @@ import type {
   BuiltInBrowserEventPayload,
   BuiltInBrowserStatus,
   IosSimulatorEventPayload,
+  MacDesktopEventPayload,
   OpenProjectBinding,
 } from "../../../shared/types";
 import {
   selectActiveProjectStateKey,
-  selectLaneWorkViewState,
   selectWorkViewState,
   useAppStore,
   type WorkSidebarTab,
 } from "../../state/appStore";
+import {
+  WORK_LIVE_CARD_DEFAULT_WIDTH,
+  normalizeWorkLiveCardWidth,
+  type WorkLiveCardClosedByTool,
+  type WorkLiveScreenTool,
+} from "../../state/workLiveCardState";
 import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
 import { cn } from "../ui/cn";
 import { workToolDefinition } from "../terminals/workTools";
 import { useMacDesktopFrame } from "../chat/macDesktopFrameStore";
+import {
+  closeWorkLiveCardForChat,
+  useChatCompanionUiState,
+} from "../chat/chatCompanionUiState";
 import type { NativeToolFeedScope } from "../terminals/useNativeToolSessions";
 import {
   useNativeToolFeedHandlers,
@@ -37,29 +47,26 @@ import {
 } from "./iosSimulatorPreviewStream";
 import {
   clampWorkLiveCardRect,
-  commitWorkLiveCardDismissal,
   commitWorkLiveScrubFrame,
   formatWorkLiveActionCaption,
   formatWorkLiveAge,
-  normalizeWorkLiveCardDismissals,
-  normalizeWorkLiveCardPosition,
   selectWorkLiveCardTool,
   updateWorkLiveScrubCaption,
   workLiveBottomReserve,
   workLiveCardDragConstraints,
   workLiveCardFits,
+  workLiveCardObjectFit,
   workLiveCardPositionFromRect,
   workLiveCardRect,
-  workLiveCardObjectFit,
   workLiveCardSize,
   workLivePreviewMaxWidth,
+  workLiveCardWidthBounds,
   WORK_LIVE_CARD_AVOID_SELECTOR,
   workLiveScrubFrameKey,
   workLiveScrubIndex,
   workLiveSource,
   type WorkLiveActivity,
   type WorkLiveCardPosition,
-  type WorkLiveScreenTool,
   type WorkLiveScrubFrame,
 } from "./workLiveCard";
 
@@ -68,10 +75,14 @@ import {
  *
  * The Work tab has exactly one pane for a screen tool, so the moment an agent
  * starts driving a browser while you read its diff, the thing you most want to
- * see is the thing you just navigated away from. This is that: a 288px live
- * thumbnail of the most recently active screen tool that is NOT the one on
- * screen, parked in the corner of the chat column, one click away from taking
- * the pane back.
+ * see is the thing you just navigated away from. This is that: a live thumbnail
+ * of the most recently active screen tool that is NOT the one on screen, parked
+ * in the corner of the chat column, one click away from taking the pane back.
+ *
+ * It follows the conversation you are reading: a session owned by another chat
+ * is not shown here (`selectWorkLiveCardTool`). Its box follows the picture's
+ * own aspect ratio, so nothing is cropped, and its "×" is keyed by session, so
+ * frames and remounts can never bring a closed card back.
  *
  * Three things keep it from being a battery tax. It subscribes to feeds that
  * already exist (App Control's screencast, the browser's new refcounted preview
@@ -107,8 +118,7 @@ const BLANK_FRAME = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAAL
  *
  * Status events are bookkeeping as much as activity — closing the card stops
  * its preview stream, which itself emits one. Diffing the parts a human would
- * call activity is what makes the × stick: the dismissal is no longer undone
- * by the event the dismissal caused.
+ * call activity is what keeps the most-recent-tool clock honest.
  */
 function browserActivitySignature(status: BuiltInBrowserStatus | null): string {
   if (!status || !Array.isArray(status.tabs)) return "";
@@ -125,10 +135,85 @@ function browserActivitySignature(status: BuiltInBrowserStatus | null): string {
   ].join("|");
 }
 
+/**
+ * Whether the chat on screen is currently watching the lane's desktop, or
+ * holding its input lease.
+ *
+ * The display belongs to the lane, not to one chat, so the card asks the
+ * stream status who its viewers are (ids only) and the lease who holds it.
+ * Both reads are tolerant of a surface without the namespace.
+ */
+function useMacDesktopChatScope(args: {
+  enabled: boolean;
+  laneId: string | null;
+  chatSessionId: string | null;
+  runtimePin: OpenProjectBinding | null;
+}): { viewerChatSessionIds: string[]; leaseHolderId: string | null } {
+  const { enabled, laneId, chatSessionId, runtimePin } = args;
+  const [viewerChatSessionIds, setViewerChatSessionIds] = useState<string[]>([]);
+  const [leaseHolderId, setLeaseHolderId] = useState<string | null>(null);
+  // Read through a ref so a caller passing a fresh pin object each render cannot
+  // re-issue the stream read; only the pin's key is a dependency.
+  const pinRef = useRef(runtimePin);
+  pinRef.current = runtimePin;
+  const pinKey = runtimePin?.key ?? null;
+
+  useEffect(() => {
+    if (!enabled || !laneId) {
+      setViewerChatSessionIds([]);
+      setLeaseHolderId(null);
+      return undefined;
+    }
+    const api = window.ade?.macDesktop;
+    if (!api || !chatSessionId) {
+      // Without a chat there is nothing to authorize; skip the reads entirely.
+      setViewerChatSessionIds([]);
+      setLeaseHolderId(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void api.getStreamStatus?.({ laneId }, pinRef.current)
+      .then((status) => {
+        if (!cancelled) setViewerChatSessionIds(status?.viewerChatSessionIds ?? []);
+      })
+      .catch(() => {});
+    // The lease is seeded once as well as tracked by event: a chat that already
+    // holds it when this card mounts gets no `lease-changed` to learn from.
+    void api.getStatus?.({ laneId, chatSessionId }, pinRef.current)
+      .then((status) => {
+        if (!cancelled) setLeaseHolderId(status?.lease?.holderId ?? null);
+      })
+      .catch(() => {});
+    const unsubscribe = api.onEvent?.((event: MacDesktopEventPayload) => {
+      if (
+        event.type === "stream-started"
+        || event.type === "stream-status"
+        || event.type === "stream-stopped"
+        || event.type === "stream-error"
+      ) {
+        if (event.status.laneId === laneId) {
+          setViewerChatSessionIds(event.status.viewerChatSessionIds ?? []);
+        }
+        return;
+      }
+      if (event.type === "lease-changed" && event.laneId === laneId) {
+        setLeaseHolderId(event.lease?.holderId ?? null);
+      }
+    }, pinRef.current);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [chatSessionId, enabled, laneId, pinKey]);
+
+  return { viewerChatSessionIds, leaseHolderId };
+}
+
 export function WorkLiveCornerCard({
   active,
   laneId,
   activeTool,
+  chatSessionId,
   runtimePin,
   onPick,
 }: {
@@ -137,13 +222,14 @@ export function WorkLiveCornerCard({
   laneId: string | null;
   /** The tool currently filling the tools pane, or null when it is closed/on the picker. */
   activeTool: WorkSidebarTab | null;
+  /** The chat on screen. The card only shows sessions owned by this chat. */
+  chatSessionId: string | null;
   runtimePin: OpenProjectBinding | null;
   onPick: (tool: WorkSidebarTab) => void;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const setWorkViewState = useAppStore((state) => state.setWorkViewState);
-  const setLaneWorkViewState = useAppStore((state) => state.setLaneWorkViewState);
   // Through the store's own selectors rather than a hand-built `"<p>::<lane>"`
   // key: the key shape and the normalizers are the store's business, and
   // spelling them here is how the two copies drifted in the first place.
@@ -153,13 +239,12 @@ export function WorkLiveCornerCard({
       return (state: Parameters<typeof select>[0]) => select(state).workLiveCardPosition ?? null;
     }, [projectStateKey]),
   );
-  // Dismissals are LANE-scoped: silencing the browser preview while you read
-  // one lane's diff must not silence it in the lane you switch to next.
-  const storedDismissals = useAppStore(
+  // Width is a layout preference, so it is project-scoped beside the position.
+  const storedWidth = useAppStore(
     useMemo(() => {
-      const select = selectLaneWorkViewState(projectStateKey, laneId);
-      return (state: Parameters<typeof select>[0]) => select(state).workLiveCardDismissed ?? null;
-    }, [laneId, projectStateKey]),
+      const select = selectWorkViewState(projectStateKey);
+      return (state: Parameters<typeof select>[0]) => select(state).workLiveCardWidth ?? null;
+    }, [projectStateKey]),
   );
 
   const runtimePinRef = useRef(runtimePin);
@@ -175,7 +260,17 @@ export function WorkLiveCornerCard({
   });
   /** Only used when there is no project to persist into (a projectless Work surface). */
   const [localPosition, setLocalPosition] = useState<WorkLiveCardPosition | null>(null);
-  const [localDismissals, setLocalDismissals] = useState<Record<string, number> | null>(null);
+  const [localWidth, setLocalWidth] = useState<number | null>(null);
+  /**
+   * Closed/floated state for a surface with no chat. A chat-backed card reads
+   * the per-chat source of truth in `chatCompanionUiState` instead.
+   */
+  const [localClosed, setLocalClosed] = useState<WorkLiveCardClosedByTool>({});
+  const [localFloating, setLocalFloating] = useState<WorkLiveScreenTool[]>([]);
+  /** The picture's own width / height, which the box is built from. */
+  const [sourceAspect, setSourceAspect] = useState<number | null>(null);
+  /** Live width while a resize gesture is in flight; null otherwise. */
+  const [resizeWidth, setResizeWidth] = useState<number | null>(null);
   // Held by trace ID, not by index: a new action shifts the whole buffer left,
   // and an index would then caption a different action than the picture the
   // pointer is still parked on.
@@ -185,6 +280,14 @@ export function WorkLiveCornerCard({
   const [bottomReserve, setBottomReserve] = useState(0);
   const [scrubBuffer, setScrubBuffer] = useState<readonly WorkLiveScrubFrame[]>([]);
   const [nowTick, setNowTick] = useState(() => Date.now());
+
+  const companionUi = useChatCompanionUiState(chatSessionId);
+  const closed: WorkLiveCardClosedByTool = chatSessionId
+    ? companionUi.workLiveCardClosedByTool
+    : localClosed;
+  const floating: readonly WorkLiveScreenTool[] = chatSessionId
+    ? companionUi.workLiveCardFloating
+    : localFloating;
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -221,11 +324,6 @@ export function WorkLiveCornerCard({
   /** A drag ends with a click event; that click must not also open the tool. */
   const suppressClickRef = useRef(false);
   const browserSignatureRef = useRef("");
-  /**
-   * The current dismissals, read from inside feed callbacks that outlive the
-   * render which subscribed them.
-   */
-  const dismissalsRef = useRef<Record<string, number> | null>(null);
   const appControlTraceIdRef = useRef<string | null>(null);
   /**
    * Which tool the card is painting. Both the browser and App Control feeds are
@@ -241,6 +339,8 @@ export function WorkLiveCornerCard({
     "mac-desktop": 0,
   });
   const activityCommitRef = useRef<number | null>(null);
+  /** Resize gesture state: where the pointer started and how wide the card was. */
+  const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
 
   /**
    * Records that a tool did something.
@@ -282,15 +382,6 @@ export function WorkLiveCornerCard({
   }, []);
 
   /* ── Feeds ─────────────────────────────────────────────────────────────── */
-
-  const onBrowserStatusSettled = useCallback((status: BuiltInBrowserStatus | null) => {
-    // For a DISMISSED browser, the state it was already in when this card
-    // mounted is not activity: seeding the signature is what stops a dismissal
-    // from lasting only until the next remount. When it is not dismissed the
-    // seed is skipped, so the first status still brings the card up for a
-    // browser that was already running.
-    if (dismissalsRef.current?.browser) browserSignatureRef.current = browserActivitySignature(status);
-  }, []);
 
   const onBrowserEvent = useCallback((event: BuiltInBrowserEventPayload) => {
     if (event.type === "status" || event.type === "open-request") {
@@ -353,9 +444,12 @@ export function WorkLiveCornerCard({
     if (event.type === "frame") {
       // Painted, but deliberately NOT counted as activity. The panel's
       // screencast runs at 30fps for the life of the session, independent of
-      // this card: bumping on it made the × unusable (the next frame undid the
-      // dismissal 33ms later) and let App Control win the most-recent-activity
-      // tie-break forever. Real activity is a session event or a new trace id.
+      // this card: bumping on it made the × unusable and let App Control win
+      // the most-recent-activity tie-break forever. Real activity is a session
+      // event or a new trace id.
+      if (event.frame.width > 0 && event.frame.height > 0) {
+        setSourceAspect(event.frame.width / event.frame.height);
+      }
       paintFrame("app-control", `data:${event.frame.mimeType};base64,${event.frame.data}`);
     }
   }, [bump, paintFrame]);
@@ -367,8 +461,7 @@ export function WorkLiveCornerCard({
   // The page's one subscription set, shared with the Work tools pane: the
   // capability gate, the web-client boundary check, the offline guard and the
   // teardown all live in `NativeToolFeedsProvider`. The card contributes
-  // handlers to its fan-out and opens nothing of its own — which is also how it
-  // inherited the offline guard it used to be missing.
+  // handlers to its fan-out and opens nothing of its own.
   const {
     browserStatus,
     iosSession,
@@ -387,22 +480,34 @@ export function WorkLiveCornerCard({
    * view free — no second stream client, no second encoder on the Mac.
    */
   const macDesktopFrame = useMacDesktopFrame(laneId);
+  /**
+   * Who is watching the lane's desktop. Gated on the host's capability, so a
+   * non-Mac runtime never gets a rejected `getStreamStatus`.
+   */
+  const macScope = useMacDesktopChatScope({
+    enabled: toolContext.supportsMacDesktop !== false,
+    laneId,
+    chatSessionId,
+    runtimePin,
+  });
   useNativeToolFeedHandlers(useMemo(() => ({
-    onBrowserStatusSettled,
     onBrowserEvent,
     onAppControlEvent,
     onIosEvent,
-  }), [onAppControlEvent, onBrowserEvent, onBrowserStatusSettled, onIosEvent]));
+  }), [onAppControlEvent, onBrowserEvent, onIosEvent]));
 
   /**
    * A new desktop frame is both the activity signal and the picture.
    *
    * Keyed on the frame's timestamp so a re-render with the same frame neither
-   * moves the activity clock nor repaints, which is what keeps the "×" usable:
-   * a dismissal survives until the desktop does something genuinely new.
+   * moves the activity clock nor repaints. It can no longer reopen a closed
+   * card: the close is keyed by the lane's display, not by an activity stamp.
    */
   useEffect(() => {
     if (!macDesktopFrame) return;
+    if (macDesktopFrame.width > 0 && macDesktopFrame.height > 0) {
+      setSourceAspect(macDesktopFrame.width / macDesktopFrame.height);
+    }
     bump("mac-desktop");
     paintFrame("mac-desktop", macDesktopFrame.dataUrl);
   }, [bump, macDesktopFrame, paintFrame]);
@@ -415,7 +520,8 @@ export function WorkLiveCornerCard({
   }, [browserStatus]);
 
   // Every per-tool question the card asks — live, owner, caption, handoff,
-  // recording — answered once, by the adapter map beside the tool list.
+  // recording, session key — answered once, by the adapter map beside the tool
+  // list.
   const sourceState = useMemo(() => ({
     browserTab: activeBrowserTab,
     appControlSession,
@@ -430,15 +536,40 @@ export function WorkLiveCornerCard({
     "mac-desktop": workLiveSource("mac-desktop", sourceState),
   }), [sourceState]);
 
+  /** Is the chat on screen watching this lane's desktop, or holding its lease? */
+  const macDesktopAuthorized = Boolean(
+    chatSessionId
+    && (macScope.viewerChatSessionIds.includes(chatSessionId) || macScope.leaseHolderId === chatSessionId),
+  );
+
   const activities = useMemo<WorkLiveActivity[]>(() => [
-    { tool: "browser", lastActivityAt: activityAt.browser, available: canBrowser, live: sources.browser.live },
+    {
+      tool: "browser",
+      lastActivityAt: activityAt.browser,
+      available: canBrowser,
+      live: sources.browser.live,
+      ownerChatSessionId: activeBrowserTab?.ownerChatSessionId ?? null,
+      sessionKey: sources.browser.sessionKey,
+      showWhenUnowned: true,
+    },
     {
       tool: "app-control",
       lastActivityAt: activityAt["app-control"],
       available: canAppControl,
       live: sources["app-control"].live,
+      ownerChatSessionId: appControlSession?.chatSessionId ?? null,
+      sessionKey: sources["app-control"].sessionKey,
+      showWhenUnowned: true,
     },
-    { tool: "ios", lastActivityAt: activityAt.ios, available: canIos, live: sources.ios.live },
+    {
+      tool: "ios",
+      lastActivityAt: activityAt.ios,
+      available: canIos,
+      live: sources.ios.live,
+      ownerChatSessionId: iosSession?.chatSessionId ?? null,
+      sessionKey: sources.ios.sessionKey,
+      showWhenUnowned: true,
+    },
     {
       tool: "mac-desktop",
       lastActivityAt: activityAt["mac-desktop"],
@@ -446,23 +577,54 @@ export function WorkLiveCornerCard({
       // show a frame that exists, so an unknown capability cannot invent one.
       available: toolContext.supportsMacDesktop !== false,
       live: sources["mac-desktop"].live,
+      // Per lane, not per chat: the id is only set when this chat is a viewer
+      // or the lease holder, and an unauthorized chat sees nothing.
+      ownerChatSessionId: macDesktopAuthorized ? chatSessionId : null,
+      sessionKey: macDesktopFrame?.laneId ?? laneId,
+      showWhenUnowned: false,
     },
-  ], [activityAt, canAppControl, canBrowser, canIos, sources, toolContext.supportsMacDesktop]);
+  ], [
+    activeBrowserTab?.ownerChatSessionId,
+    activityAt,
+    appControlSession?.chatSessionId,
+    canAppControl,
+    canBrowser,
+    canIos,
+    chatSessionId,
+    iosSession?.chatSessionId,
+    laneId,
+    macDesktopAuthorized,
+    macDesktopFrame?.laneId,
+    sources,
+    toolContext.supportsMacDesktop,
+  ]);
 
-  const dismissals = useMemo(
-    () => normalizeWorkLiveCardDismissals(projectStateKey && laneId ? storedDismissals : localDismissals),
-    [laneId, localDismissals, projectStateKey, storedDismissals],
-  );
   const tool = useMemo(
-    () => selectWorkLiveCardTool({ activeTool, activities, dismissals }),
-    [activeTool, activities, dismissals],
+    () => selectWorkLiveCardTool({
+      activeTool,
+      activeChatSessionId: chatSessionId,
+      activities,
+      floatingTools: floating,
+      closed,
+    }),
+    [activeTool, activities, chatSessionId, closed, floating],
   );
-  dismissalsRef.current = dismissals;
 
-  const cardSize = workLiveCardSize(tool);
+  const storedCardWidth = normalizeWorkLiveCardWidth(storedWidth);
+  const chosenWidth = projectStateKey
+    ? storedCardWidth ?? WORK_LIVE_CARD_DEFAULT_WIDTH
+    : localWidth ?? WORK_LIVE_CARD_DEFAULT_WIDTH;
+
+  const baseCardSize = workLiveCardSize({
+    tool,
+    width: resizeWidth ?? chosenWidth,
+    aspect: sourceAspect,
+    host: hostSize,
+    bottomReserve,
+  });
   const objectFit = workLiveCardObjectFit(tool);
 
-  const fits = workLiveCardFits(hostSize, bottomReserve, cardSize);
+  const fits = workLiveCardFits(hostSize, bottomReserve, baseCardSize);
   const visible = active && tool != null && fits;
 
   /* ── Host geometry ─────────────────────────────────────────────────────── */
@@ -493,9 +655,7 @@ export function WorkLiveCornerCard({
     Measured as viewport RECTS against the host's own rect, not as
     `offsetHeight` of the first selector match: several chat panes stay mounted
     at once, and the previous version happily reserved space for a hidden
-    empty-state composer belonging to a different session (or, when the live
-    composer rendered as a shell footer without the attribute, reserved nothing
-    at all and parked the card on top of it).
+    empty-state composer belonging to a different session.
   */
   useEffect(() => {
     const host = hostRef.current;
@@ -519,9 +679,7 @@ export function WorkLiveCornerCard({
         observed.add(element);
       }
       // ...and unobserved as soon as it leaves. A `ResizeObserver` holds a
-      // strong reference to everything it watches, so a composer wrapper from a
-      // session the user switched away from could not be collected until
-      // `visible` next flipped — a slow leak across a long session.
+      // strong reference to everything it watches.
       for (const element of observed) {
         if (present.has(element)) continue;
         observer.unobserve(element);
@@ -546,25 +704,25 @@ export function WorkLiveCornerCard({
   }, [visible]);
 
   const position = useMemo(
-    () => (projectStateKey ? normalizeWorkLiveCardPosition(storedPosition) : localPosition),
+    () => (projectStateKey ? storedPosition : localPosition),
     [localPosition, projectStateKey, storedPosition],
   );
 
   const rect = useMemo(() => workLiveCardRect({
     host: hostSize,
     position,
-    cardHeight: cardSize.height,
-    cardWidth: cardSize.width,
+    cardHeight: baseCardSize.height,
+    cardWidth: baseCardSize.width,
     bottomReserve,
-  }), [bottomReserve, cardSize, hostSize, position]);
+  }), [baseCardSize, bottomReserve, hostSize, position]);
 
   const dragConstraints = useMemo(() => workLiveCardDragConstraints({
     host: hostSize,
     origin: rect,
-    cardHeight: cardSize.height,
-    cardWidth: cardSize.width,
+    cardHeight: baseCardSize.height,
+    cardWidth: baseCardSize.width,
     bottomReserve,
-  }), [bottomReserve, cardSize, hostSize, rect]);
+  }), [baseCardSize, bottomReserve, hostSize, rect]);
 
   const dragX = useMotionValue(0);
   const dragY = useMotionValue(0);
@@ -584,22 +742,22 @@ export function WorkLiveCornerCard({
       host: hostSize,
       left: rect.left + offsetX,
       top: rect.top + offsetY,
-      cardHeight: cardSize.height,
-      cardWidth: cardSize.width,
+      cardHeight: baseCardSize.height,
+      cardWidth: baseCardSize.width,
       bottomReserve,
     });
     const next = workLiveCardPositionFromRect({
       host: hostSize,
       left: clamped.left,
       top: clamped.top,
-      cardHeight: cardSize.height,
-      cardWidth: cardSize.width,
+      cardHeight: baseCardSize.height,
+      cardWidth: baseCardSize.width,
     });
     if (projectStateKey) setWorkViewState(projectStateKey, { workLiveCardPosition: next });
     else setLocalPosition(next);
   }, [
+    baseCardSize,
     bottomReserve,
-    cardSize,
     dragX,
     dragY,
     hostSize,
@@ -608,6 +766,45 @@ export function WorkLiveCornerCard({
     rect.top,
     setWorkViewState,
   ]);
+
+  /* ── Resize (width only; the aspect stays locked) ───────────────────────── */
+
+  const commitResize = useCallback((width: number) => {
+    const bounds = workLiveCardWidthBounds(hostSize.width);
+    const next = Math.max(bounds.min, Math.min(bounds.max, Math.round(width)));
+    if (projectStateKey) setWorkViewState(projectStateKey, { workLiveCardWidth: next });
+    else setLocalWidth(next);
+  }, [hostSize.width, projectStateKey, setWorkViewState]);
+
+  const handleResizePointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    resizeStartRef.current = { x: event.clientX, width: baseCardSize.width };
+    setResizeWidth(baseCardSize.width);
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+  }, [baseCardSize.width]);
+
+  const handleResizePointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const start = resizeStartRef.current;
+    if (!start) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = workLiveCardWidthBounds(hostSize.width);
+    const next = Math.max(bounds.min, Math.min(bounds.max, Math.round(start.width + (event.clientX - start.x))));
+    setResizeWidth(next);
+  }, [hostSize.width]);
+
+  const handleResizePointerUp = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (!resizeStartRef.current) return;
+    resizeStartRef.current = null;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = workLiveCardWidthBounds(hostSize.width);
+    const next = Math.max(bounds.min, Math.min(bounds.max, Math.round(resizeWidth ?? baseCardSize.width)));
+    setResizeWidth(null);
+    commitResize(next);
+  }, [baseCardSize.width, commitResize, hostSize.width, resizeWidth]);
 
   /* ── Feed start/stop for the SELECTED tool ─────────────────────────────── */
 
@@ -625,7 +822,7 @@ export function WorkLiveCornerCard({
       ...scope,
       tabId: previewTabId,
       fps: PREVIEW_FPS,
-      maxWidth: workLivePreviewMaxWidth(window.devicePixelRatio),
+      maxWidth: workLivePreviewMaxWidth(window.devicePixelRatio, baseCardSize.width),
     }).catch(() => {
       started = false;
     });
@@ -633,7 +830,7 @@ export function WorkLiveCornerCard({
       if (!started) return;
       void stopPreviewStream({ ...scope, tabId: previewTabId }).catch(() => {});
     };
-  }, [browserViewRoot, previewTabId, visible]);
+  }, [baseCardSize.width, browserViewRoot, previewTabId, visible]);
 
   const iosDeviceUdid = tool === "ios" ? iosSession?.deviceUdid ?? null : null;
   const iosDeviceName = iosSession?.deviceName ?? null;
@@ -666,13 +863,14 @@ export function WorkLiveCornerCard({
     };
   }, [iosDeviceName, iosDeviceUdid, visible]);
 
-  // Switching source tools must not leave the previous tool's last frame on
-  // screen under the new tool's name.
+  // Switching source tools must not leave the previous tool's last frame or
+  // aspect on screen under the new tool's name.
   useEffect(() => {
     paintToolRef.current = visible ? tool : null;
     liveFrameRef.current = null;
     pendingFrameRef.current = null;
     appControlTraceIdRef.current = null;
+    setSourceAspect(null);
     setScrubBuffer([]);
     setScrubFrameId(null);
     if (imageRef.current) imageRef.current.src = BLANK_FRAME;
@@ -692,7 +890,7 @@ export function WorkLiveCornerCard({
   const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     // Scrubbing and dragging are the same gesture until you commit to one; a
     // drag must not also rewind the thumbnail under the cursor.
-    if (draggingRef.current) return;
+    if (draggingRef.current || resizeStartRef.current) return;
     setHovering(true);
     const bounds = event.currentTarget.getBoundingClientRect();
     const index = workLiveScrubIndex({
@@ -719,8 +917,7 @@ export function WorkLiveCornerCard({
   const source = tool ? sources[tool] : null;
   // Resolved by ID on every render: the ring buffer shifts left when a new
   // action lands, so the frame the pointer is parked on must be re-found rather
-  // than re-indexed — otherwise the caption starts describing a different
-  // action than the picture still on screen.
+  // than re-indexed.
   const scrubbedFrame = useMemo(() => (
     scrubFrameId == null
       ? null
@@ -731,12 +928,6 @@ export function WorkLiveCornerCard({
   /**
    * What the card is a picture OF — `example.com`, the app under App Control,
    * the simulator's app. It leads the pill.
-   *
-   * The pill used to lead with the tool's own name and then print the action
-   * alone: "Browser · Closed find · 3m". Which browser, of the two tabs and
-   * three windows an agent may have opened, was the one thing it did not say —
-   * and the tool's name is already spelled by the icon beside it, in the tool's
-   * own hue. Page first, then what just happened to it.
    */
   const identity = source?.caption ?? definition?.label ?? null;
 
@@ -755,36 +946,31 @@ export function WorkLiveCornerCard({
     if (tool === "app-control" && appControlAction) {
       return `${appControlAction.caption} · ${formatWorkLiveAge(nowTick - appControlAction.at)}`;
     }
-    // Nothing has happened yet, and the page is already named to the left of
-    // this slot — repeating it here was the old fallback and said nothing twice.
     return null;
   }, [appControlAction, lastTrace, nowTick, scrubbedFrame, tool]);
 
   const handoff = source?.handoff ?? null;
   const recording = source?.recording ?? null;
 
+  /**
+   * ×, keyed by the session the card is showing.
+   *
+   * A new session (new key) may show again; frames, status refreshes and
+   * remounts never can, because they do not change the key.
+   */
   const handleDismiss = useCallback(() => {
     if (!tool) return;
-    // Stamped with `now`, not with the activity clock the card was showing:
-    // the clock is committed on a 500ms coalesce, so a bump already in flight
-    // would otherwise re-open the card the instant it closed.
-    const stamp = Math.max(Date.now(), activityRef.current[tool] ?? 0);
-    if (projectStateKey && laneId) {
-      setLaneWorkViewState(projectStateKey, laneId, (prev) => ({
-        ...prev,
-        workLiveCardDismissed: commitWorkLiveCardDismissal(
-          normalizeWorkLiveCardDismissals(prev.workLiveCardDismissed),
-          tool,
-          stamp,
-        ),
-      }));
+    const sessionKey = sources[tool]?.sessionKey ?? "";
+    if (chatSessionId) {
+      closeWorkLiveCardForChat(chatSessionId, tool, sessionKey);
       return;
     }
-    setLocalDismissals((current) => commitWorkLiveCardDismissal(current, tool, stamp));
-  }, [laneId, projectStateKey, setLaneWorkViewState, tool]);
+    setLocalClosed((current) => ({ ...current, [tool]: sessionKey }));
+    setLocalFloating((current) => current.filter((entry) => entry !== tool));
+  }, [chatSessionId, sources, tool]);
 
   const activate = useCallback(() => {
-    if (suppressClickRef.current || draggingRef.current || !tool) return;
+    if (suppressClickRef.current || draggingRef.current || resizeStartRef.current || !tool) return;
     onPick(tool);
   }, [onPick, tool]);
 
@@ -802,14 +988,6 @@ export function WorkLiveCornerCard({
    *
    * An 8px dot cannot spell "recording" or "waiting for you", so it does the
    * only thing that size affords: red beats amber beats rest, worst news first.
-   * The words for it arrive with the pill.
-   *
-   * Null is rest, and rest is NOT the tool's hue. The hue is a wayfinding accent
-   * for a 14px glyph in a list of six tools; blown up to a saturated cyan dot
-   * floating over the conversation it read as a status light that meant
-   * something, and it is the one state that means nothing. Rest falls through to
-   * `bg-fg/25` — the same idle grey the rest of the chat uses — which leaves red
-   * and amber the only colours on the card that carry news.
    */
   const statusColor = recording
     ? "var(--color-error)"
@@ -847,8 +1025,8 @@ export function WorkLiveCornerCard({
               y: dragY,
               left: rect.left,
               top: rect.top,
-              width: cardSize.width,
-              height: cardSize.height,
+              width: baseCardSize.width,
+              height: baseCardSize.height,
             }}
             animate={reduceMotion
               ? { opacity: 1 }
@@ -878,9 +1056,6 @@ export function WorkLiveCornerCard({
             data-work-live-card={tool}
             className={cn(
               "group pointer-events-auto absolute cursor-pointer overflow-hidden",
-              // The pill is a drag handle sitting on its own text, so a drag
-              // that starts on the label used to select the label — the caret
-              // and the blue highlight following the card across the column.
               "select-none",
               "rounded-[var(--radius-lg)] bg-[var(--color-surface)] shadow-[var(--shadow-float)]",
               "transition-shadow duration-[120ms] ease-out motion-reduce:transition-none",
@@ -891,7 +1066,7 @@ export function WorkLiveCornerCard({
             onPointerLeave={handlePointerLeave}
             onClick={handleCardClick}
           >
-            {/* The picture is the card. Everything else floats over it. */}
+            {/* The picture is the card, contained so nothing is cropped. */}
             <button
               type="button"
               data-live-card-inert=""
@@ -902,13 +1077,17 @@ export function WorkLiveCornerCard({
                 "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--color-accent)]",
               )}
             >
-              {/* Browser and App Control use the full fixed card and crop every
-                  frame from the top, keeping a portrait page's header visible. */}
               {tool === "ios" ? (
                 <video
                   ref={setVideoRef}
                   muted
                   playsInline
+                  onLoadedMetadata={(event) => {
+                    const video = event.currentTarget;
+                    if (video.videoWidth > 0 && video.videoHeight > 0) {
+                      setSourceAspect(video.videoWidth / video.videoHeight);
+                    }
+                  }}
                   className="h-full w-full object-contain"
                 />
               ) : (
@@ -916,8 +1095,14 @@ export function WorkLiveCornerCard({
                   ref={setImageRef}
                   alt=""
                   src={BLANK_FRAME}
+                  onLoad={(event) => {
+                    const image = event.currentTarget;
+                    if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+                      setSourceAspect(image.naturalWidth / image.naturalHeight);
+                    }
+                  }}
                   className="h-full w-full"
-                  style={{ objectFit, objectPosition: "top" }}
+                  style={{ objectFit }}
                 />
               )}
               <img
@@ -932,7 +1117,6 @@ export function WorkLiveCornerCard({
                 style={{
                   opacity: scrubbedFrame?.dataUrl ? 1 : 0,
                   objectFit,
-                  objectPosition: "top",
                 }}
               />
             </button>
@@ -974,8 +1158,7 @@ export function WorkLiveCornerCard({
             {/*
               At rest: one 8px dot. It is the whole chrome, and it is enough —
               the card's job is to show you the screen, and a title bar over a
-              288px picture spends a tenth of it saying what the picture
-              already says.
+              picture spends a tenth of it saying what the picture already says.
             */}
             <span
               aria-hidden="true"
@@ -1019,8 +1202,8 @@ export function WorkLiveCornerCard({
               ) : null}
               {/*
                 `min-w-0` + a shrink budget rather than `shrink-0`: a page title
-                can be sixty characters, and pinning it at full width pushed the
-                action, the ✕ and everything else out of a 288px pill.
+                can be sixty characters, and pinning it at full width pushes the
+                action, the ✕ and everything else out of the pill.
               */}
               <span
                 className="min-w-0 shrink truncate text-[11px] font-medium text-fg"
@@ -1070,7 +1253,7 @@ export function WorkLiveCornerCard({
                   event.stopPropagation();
                   handleDismiss();
                 }}
-                title="Hide until the next activity"
+                title="Close until a new session"
                 aria-label={`Hide the ${definition.label} preview`}
                 className={cn(
                   "-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px]",
@@ -1082,6 +1265,35 @@ export function WorkLiveCornerCard({
                 <X size={11} weight="bold" />
               </button>
             </div>
+
+            {/*
+              The resize handle: bottom-right, width only. The aspect stays
+              locked, so dragging it changes the box's width and lets the height
+              follow the picture rather than distorting it.
+            */}
+            <span
+              data-live-card-inert=""
+              data-live-card-resize=""
+              onPointerDown={handleResizePointerDown}
+              onPointerMove={handleResizePointerMove}
+              onPointerUp={handleResizePointerUp}
+              onPointerCancel={handleResizePointerUp}
+              onClick={(event) => event.stopPropagation()}
+              title="Resize preview"
+              className={cn(
+                "absolute bottom-0 right-0 z-10 h-4 w-4 cursor-nwse-resize touch-none",
+                "opacity-0 transition-opacity duration-[120ms] motion-reduce:transition-none",
+                "group-hover:opacity-100 group-focus-within:opacity-100",
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "pointer-events-none absolute bottom-[3px] right-[3px] h-2 w-2 rounded-[2px]",
+                  "border-b border-r border-white/70 drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]",
+                )}
+              />
+            </span>
           </motion.section>
         ) : null}
       </AnimatePresence>

@@ -1,4 +1,13 @@
+import { useCallback, useSyncExternalStore } from "react";
 import type { ChatActionsTab } from "./ChatActionsDrawerPanel";
+import {
+  isWorkLiveCardClosed,
+  normalizeWorkLiveCardClosedByTool,
+  normalizeWorkLiveCardFloatingTools,
+  type WorkLiveCardClosedByTool,
+  type WorkLiveCardFloatingTools,
+  type WorkLiveScreenTool,
+} from "../../state/workLiveCardState";
 
 /**
  * Per-chat companion UI state — which side panes/drawers a given chat had open.
@@ -22,6 +31,19 @@ export type ChatCompanionUiState = {
   terminalDrawerOpen: boolean;
   /** Floating PR pane (left side). Persisted per chat; explicit open/close only. */
   prPaneOpen: boolean;
+  /**
+   * The Work corner card's "×" markers for this chat, keyed by tool id and
+   * valued with the session key that was closed. Per chat because the card
+   * belongs to the conversation you are reading; a session started by another
+   * chat must not reappear here.
+   */
+  workLiveCardClosedByTool: WorkLiveCardClosedByTool;
+  /**
+   * Screen tools the user explicitly floated back on for this chat. The Float
+   * button in the pane header suspends the card's "never show the active tool"
+   * rule until the tool is closed again.
+   */
+  workLiveCardFloating: WorkLiveCardFloatingTools;
 };
 
 export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
@@ -31,6 +53,8 @@ export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
   appControlOpen: false,
   terminalDrawerOpen: false,
   prPaneOpen: false,
+  workLiveCardClosedByTool: {},
+  workLiveCardFloating: [],
 };
 
 const CHAT_COMPANION_UI_STORAGE_PREFIX = "ade.chat.companionUiState.";
@@ -67,6 +91,99 @@ function parseChatActionsTab(value: unknown): ChatActionsTab {
 
 const chatCompanionUiStateByKey = new Map<string, ChatCompanionUiState>();
 
+/**
+ * Per-key change listeners.
+ *
+ * The corner card (which reads a chat's closed/floated flags) and the Float
+ * button in the pane header (which writes them) live in different subtrees, so
+ * a plain module read would go stale without a write. `useSyncExternalStore`
+ * over this map is the smallest thing that keeps them in step; every write
+ * replaces the cached object, so the snapshot identity changes exactly when the
+ * state does.
+ */
+const chatCompanionUiSubscribers = new Map<string, Set<() => void>>();
+
+function notifyChatCompanionUiState(key: string): void {
+  const listeners = chatCompanionUiSubscribers.get(key);
+  if (!listeners) return;
+  for (const listener of [...listeners]) listener();
+}
+
+export function subscribeChatCompanionUiState(key: string, listener: () => void): () => void {
+  let listeners = chatCompanionUiSubscribers.get(key);
+  if (!listeners) {
+    listeners = new Set();
+    chatCompanionUiSubscribers.set(key, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) chatCompanionUiSubscribers.delete(key);
+  };
+}
+
+/**
+ * The companion UI state for a chat, reactively.
+ *
+ * A null key is the projectless/draft surface: it answers the defaults and
+ * subscribes to nothing, so a caller can always call this hook.
+ */
+export function useChatCompanionUiState(key: string | null): ChatCompanionUiState {
+  const subscribe = useCallback(
+    (listener: () => void) => (key ? subscribeChatCompanionUiState(key, listener) : () => undefined),
+    [key],
+  );
+  const snapshot = useCallback(
+    () => (key ? readChatCompanionUiState(key) : DEFAULT_CHAT_COMPANION_UI_STATE),
+    [key],
+  );
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
+}
+
+/** Has this tool's card been closed for this chat at the given session key? */
+export function isWorkLiveCardClosedForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+  sessionKey: string | null,
+): boolean {
+  return isWorkLiveCardClosed(readChatCompanionUiState(key).workLiveCardClosedByTool, tool, sessionKey);
+}
+
+/**
+ * × for one chat's card: remember the session key it was closed at, and drop
+ * any explicit float so the two never disagree.
+ */
+export function closeWorkLiveCardForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+  sessionKey: string,
+): ChatCompanionUiState {
+  const current = readChatCompanionUiState(key);
+  return patchChatCompanionUiState(key, {
+    workLiveCardClosedByTool: { ...current.workLiveCardClosedByTool, [tool]: sessionKey },
+    workLiveCardFloating: current.workLiveCardFloating.filter((entry) => entry !== tool),
+  });
+}
+
+/**
+ * The Float button: clear the closed marker and opt the tool in even while it
+ * fills the pane. A no-op when the chat key is missing (projectless surface).
+ */
+export function floatWorkLiveCardForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+): ChatCompanionUiState | null {
+  const current = readChatCompanionUiState(key);
+  const closed = { ...current.workLiveCardClosedByTool };
+  delete closed[tool];
+  return patchChatCompanionUiState(key, {
+    workLiveCardClosedByTool: closed,
+    workLiveCardFloating: current.workLiveCardFloating.includes(tool)
+      ? current.workLiveCardFloating
+      : [...current.workLiveCardFloating, tool],
+  });
+}
+
 export function chatCompanionUiStorageKey(key: string): string {
   return `${CHAT_COMPANION_UI_STORAGE_PREFIX}${key}`;
 }
@@ -93,6 +210,8 @@ export function readChatCompanionUiState(key: string): ChatCompanionUiState {
         appControlOpen: parsed.appControlOpen === true,
         terminalDrawerOpen: parsed.terminalDrawerOpen === true,
         prPaneOpen: parsed.prPaneOpen === true,
+        workLiveCardClosedByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardClosedByTool),
+        workLiveCardFloating: normalizeWorkLiveCardFloatingTools(parsed.workLiveCardFloating),
       };
       chatCompanionUiStateByKey.set(key, state);
       return state;
@@ -105,6 +224,7 @@ export function readChatCompanionUiState(key: string): ChatCompanionUiState {
 
 export function writeChatCompanionUiState(key: string, state: ChatCompanionUiState): void {
   chatCompanionUiStateByKey.set(key, state);
+  notifyChatCompanionUiState(key);
   try {
     const record: StoredChatCompanionUiState = { ...state, savedAtMs: Date.now() };
     window.localStorage.setItem(chatCompanionUiStorageKey(key), JSON.stringify(record));

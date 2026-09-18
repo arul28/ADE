@@ -10,6 +10,11 @@ import {
   makeBuiltInBrowserStatus,
   makeBuiltInBrowserTab,
 } from "../chat/__fixtures__/builtInBrowserStatus";
+import {
+  floatWorkLiveCardForChat,
+  readChatCompanionUiState,
+  resetChatCompanionUiStateCacheForTests,
+} from "../chat/chatCompanionUiState";
 
 type BrowserEventListener = (event: unknown) => void;
 
@@ -43,11 +48,18 @@ function emitAppControlEvent(event: unknown): void {
   });
 }
 
-const APP_CONTROL_SESSION = { status: "connected", label: "Playground", chatSessionId: null };
+const APP_CONTROL_SESSION = { id: "app-1", status: "connected", label: "Playground", chatSessionId: null };
 
 /** One screencast frame, the 30fps feed that used to count as "activity". */
 function appControlFrame() {
-  return { type: "frame", frame: { mimeType: "image/jpeg", data: "AAAA" } };
+  return { type: "frame", frame: { mimeType: "image/jpeg", data: "AAAA", width: 288, height: 180 } };
+}
+
+/** jsdom does not decode images; report a natural size and fire `load`. */
+function loadImage(image: HTMLImageElement, width: number, height: number): void {
+  Object.defineProperty(image, "naturalWidth", { configurable: true, value: width });
+  Object.defineProperty(image, "naturalHeight", { configurable: true, value: height });
+  fireEvent.load(image);
 }
 
 beforeEach(() => {
@@ -55,6 +67,8 @@ beforeEach(() => {
   appControlListeners.clear();
   startPreviewStream.mockClear();
   stopPreviewStream.mockClear();
+  window.localStorage.clear();
+  resetChatCompanionUiStateCacheForTests();
   // jsdom has no ResizeObserver; the card sizes itself from one.
   (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
     constructor(private readonly callback: (entries: unknown[], observer: unknown) => void) {}
@@ -94,6 +108,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
+  resetChatCompanionUiStateCacheForTests();
   vi.restoreAllMocks();
 });
 
@@ -103,6 +119,7 @@ function renderCard(overrides: Partial<Parameters<typeof WorkLiveCornerCard>[0]>
     active: true,
     laneId: "lane-1" as string | null,
     activeTool: "git" as Parameters<typeof WorkLiveCornerCard>[0]["activeTool"],
+    chatSessionId: "chat-1" as string | null,
     runtimePin: null,
     onPick,
     ...overrides,
@@ -139,13 +156,16 @@ describe("WorkLiveCornerCard", () => {
     ));
   });
 
+  it("does not show a tab owned by a different chat", async () => {
+    renderCard({ chatSessionId: "chat-2" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(screen.queryByLabelText("Browser live preview")).toBeNull();
+    expect(startPreviewStream).not.toHaveBeenCalled();
+  });
+
   it("paints a preview frame that arrives through the provider's fan-out", async () => {
-    // The regression this covers: the card opens no subscriptions of its own,
-    // so a `preview-frame` reaches its `<img>` only if the provider fans the
-    // event out to the handler set the card registered. When that fan-out was
-    // broken the card still said "Live" and still called `startPreviewStream`
-    // — it just never repainted, which is invisible to every other assertion
-    // here.
     renderCard();
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
     emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
@@ -162,7 +182,6 @@ describe("WorkLiveCornerCard", () => {
       capturedAt: new Date().toISOString(),
     });
 
-    // Painted through one rAF, so the assertion has to wait for it.
     await waitFor(() => {
       const live = card.querySelector("img");
       expect(live?.getAttribute("src")).toBe(frame);
@@ -170,10 +189,6 @@ describe("WorkLiveCornerCard", () => {
   });
 
   it("never starts a browser feed for a pane with no tab", async () => {
-    // A browser whose last tab just closed still reports status, and the card
-    // still comes up for it. Asking that pane for frames is asking it to
-    // capture nothing, which is where the screenshot path used to throw on
-    // every tick.
     renderCard();
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
     emitBrowserEvent({
@@ -181,7 +196,6 @@ describe("WorkLiveCornerCard", () => {
       status: { ...BROWSER_STATUS, activeTabId: null, tabs: [] },
     });
 
-    // Give the feed effect every chance to fire before asserting it did not.
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
     expect(startPreviewStream).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("Browser live preview")).toBeNull();
@@ -284,13 +298,6 @@ async function showCard(overrides: Partial<Parameters<typeof WorkLiveCornerCard>
 
 describe("WorkLiveCornerCard obstructions", () => {
   it("stops watching an obstruction once it leaves the DOM", async () => {
-    /*
-      A14: obstructions were added to the `ResizeObserver` lazily and never
-      removed. A `ResizeObserver` holds a strong reference to everything it
-      watches, so composer wrappers from sessions the user switched away from
-      accumulated for as long as the card stayed visible — the effect only
-      re-ran on `visible`.
-    */
     const observed: Element[] = [];
     const unobserved: Element[] = [];
     const notifiers: (() => void)[] = [];
@@ -315,6 +322,7 @@ describe("WorkLiveCornerCard obstructions", () => {
           active
           laneId="lane-1"
           activeTool="git"
+          chatSessionId="chat-1"
           runtimePin={null}
           onPick={vi.fn()}
         />
@@ -326,12 +334,9 @@ describe("WorkLiveCornerCard obstructions", () => {
     await waitFor(() => expect(observed).toContain(composer));
     expect(unobserved).not.toContain(composer);
 
-    // The session switches away and its composer is torn down.
     act(() => { composer?.remove(); });
     act(() => { for (const notify of notifiers) notify(); });
     await waitFor(() => expect(unobserved).toContain(composer));
-    // Only the detached child was released — the card's own host stays watched,
-    // because a card that stopped measuring itself would stop laying out.
     expect(unobserved).toEqual([composer]);
   });
 });
@@ -345,36 +350,28 @@ describe("WorkLiveCornerCard placement", () => {
       },
     });
     const { card } = await showCard();
-    // 900-wide host, 288-wide card: half of the 612px of travel. The browser's
-    // card is 288×180, so the vertical span is 600 - 180.
     expect(card.style.left).toBe("306px");
     expect(card.style.top).toBe(`${0.25 * (600 - 180)}px`);
     expect(card.style.width).toBe("288px");
     expect(card.style.height).toBe("180px");
   });
 
-  it("keeps a fixed landscape card and covers a portrait frame from the top", async () => {
+  it("contains a portrait frame rather than cropping it, and follows its aspect", async () => {
     seedProject();
     const { card } = await showCard();
-    expect(card.style.width).toBe("288px");
+    // Before any frame, the tool's default landscape aspect.
     expect(card.style.height).toBe("180px");
 
-    const image = card.querySelector("img") as HTMLImageElement;
-    // A portrait page is cropped inside the fixed card, rather than changing
-    // the card's height after the image decodes.
-    expect(image.style.objectFit).toBe("cover");
-    expect(image.style.objectPosition).toBe("top");
+    const live = card.querySelector("img") as HTMLImageElement;
+    expect(live.style.objectFit).toBe("contain");
+    expect(live.style.objectPosition).toBe("");
 
-    emitBrowserEvent({
-      type: "preview-frame",
-      tabId: "tab-1",
-      dataUrl: "data:image/jpeg;base64,cG9ydHJhaXQ=",
-      width: 390,
-      height: 844,
-      capturedAt: new Date().toISOString(),
-    });
-    await waitFor(() => expect(image.getAttribute("src")).toContain("cG9ydHJhaXQ"));
-    expect(card.style.height).toBe("180px");
+    // A portrait page decodes: the card grows to the picture, uncropped.
+    loadImage(live, 390, 844);
+    await waitFor(() => expect(card.style.height).not.toBe("180px"));
+    expect(Number.parseInt(card.style.height, 10)).toBeGreaterThan(180);
+    expect(live.style.objectFit).toBe("contain");
+    expect(live.style.objectPosition).toBe("");
   });
 
   it("clamps a stored position that would hang outside the column", async () => {
@@ -388,22 +385,36 @@ describe("WorkLiveCornerCard placement", () => {
     expect(card.style.left).toBe("12px");
     expect(card.style.top).toBe("12px");
   });
+
+  it("resizes by width, persists it, and keeps the aspect", async () => {
+    seedProject();
+    const { card } = await showCard();
+    const handle = card.querySelector("[data-live-card-resize]") as HTMLElement;
+    expect(handle).toBeTruthy();
+
+    fireEvent(handle, new MouseEvent("pointerdown", { bubbles: true, clientX: 100, button: 0 }));
+    fireEvent(handle, new MouseEvent("pointermove", { bubbles: true, clientX: 180, button: 0 }));
+    fireEvent(handle, new MouseEvent("pointerup", { bubbles: true, clientX: 180, button: 0 }));
+
+    await waitFor(() => expect(card.style.width).toBe("368px"));
+    // Landscape aspect is locked: 288x180 -> 368x230.
+    expect(card.style.height).toBe("230px");
+    expect(useAppStore.getState().workViewByProject[PROJECT_ROOT]?.workLiveCardWidth).toBe(368);
+  });
 });
 
 describe("WorkLiveCornerCard dismissal", () => {
-  it("persists the dismissal for the lane and survives a remount", async () => {
+  it("remembers the close per chat and survives a remount", async () => {
     seedProject();
     const { unmount } = await showCard();
 
     fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
     await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
 
-    const stamp = useAppStore.getState()
-      .laneWorkViewByScope[`${PROJECT_ROOT}::lane-1`]?.workLiveCardDismissed?.browser;
-    expect(typeof stamp).toBe("number");
+    // Stored against the chat, keyed by the session that was showing.
+    expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool.browser).toBe("tab-1");
 
-    // Re-reading the same status after a remount is not "new activity", so the
-    // card must stay closed rather than popping back the moment you navigate.
+    // Re-reading the same status after a remount is not a new session.
     unmount();
     renderCard();
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
@@ -412,16 +423,79 @@ describe("WorkLiveCornerCard dismissal", () => {
     expect(screen.queryByLabelText("Browser live preview")).toBeNull();
   });
 
-  it("keeps a dismissal scoped to its own lane", async () => {
+  it("keeps a dismissal scoped to its own chat", async () => {
     seedProject();
-    const { unmount } = await showCard();
+    // An unowned tab belongs to every chat, so the only thing being tested is
+    // that the close is remembered per chat.
+    const unowned = makeBuiltInBrowserStatus({
+      visible: false,
+      activeTabId: "tab-1",
+      tabs: [
+        makeBuiltInBrowserTab({
+          id: "tab-1",
+          url: "https://example.test/login",
+          title: "Sign in",
+          ownerChatSessionId: null,
+        }),
+      ],
+    });
+    const view = renderCard();
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status: unowned });
+    await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
     fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
     await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
-    unmount();
+    view.unmount();
 
-    renderCard({ laneId: "lane-2" });
+    renderCard({ chatSessionId: "chat-2" });
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
-    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    emitBrowserEvent({ type: "status", status: unowned });
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it("stays closed through new frames, then reopens for a new session key", async () => {
+    seedProject();
+    const { card } = await showCard();
+    fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
+    await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+    expect(card).toBeTruthy();
+
+    // A frame is not a new session.
+    emitBrowserEvent({
+      type: "preview-frame",
+      tabId: "tab-1",
+      dataUrl: "data:image/jpeg;base64,bmV3",
+      width: 480,
+      height: 300,
+      capturedAt: new Date().toISOString(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(screen.queryByLabelText("Browser live preview")).toBeNull();
+
+    // A NEW tab id is a new session, and may show again.
+    const nextStatus = makeBuiltInBrowserStatus({
+      visible: false,
+      activeTabId: "tab-2",
+      tabs: [
+        makeBuiltInBrowserTab({
+          id: "tab-2",
+          url: "https://example.test/next",
+          title: "Next",
+          ownerChatSessionId: "chat-1",
+        }),
+      ],
+    });
+    emitBrowserEvent({ type: "status", status: nextStatus });
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it("reopens a closed card when the chat floats the tool", async () => {
+    seedProject();
+    await showCard();
+    fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
+    await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+
+    act(() => { floatWorkLiveCardForChat("chat-1", "browser"); });
     expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
   });
 });
@@ -441,22 +515,33 @@ describe("WorkLiveCornerCard App Control dismissal", () => {
     fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
     await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
 
-    // The panel's screencast runs for the life of the session, independent of
-    // this card. Counting its frames as activity made the × unusable: the next
-    // frame arrived ~33ms later and the card came back 500ms after that.
     for (let i = 0; i < 20; i += 1) emitAppControlEvent(appControlFrame());
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(screen.queryByLabelText("App Control live preview")).toBeNull();
   });
 
-  it("comes back when the session actually does something", async () => {
+  it("stays dismissed when the same session reports activity", async () => {
+    await showAppControlCard();
+    fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
+    await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
+
+    // A status refresh — even with a new trace id — is not a new session.
+    emitAppControlEvent({
+      type: "session-updated",
+      session: { ...APP_CONTROL_SESSION, lastTraceEntryId: "trace-9" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
+  });
+
+  it("shows again for a new App Control session id", async () => {
     await showAppControlCard();
     fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
     await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
 
     emitAppControlEvent({
-      type: "session-updated",
-      session: { ...APP_CONTROL_SESSION, lastTraceEntryId: "trace-9" },
+      type: "session-started",
+      session: { ...APP_CONTROL_SESSION, id: "app-2", label: "Playground 2" },
     });
     expect(await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 })).toBeTruthy();
   });
@@ -475,11 +560,9 @@ describe("WorkLiveCornerCard scrubbing", () => {
       toJSON: () => ({}),
     });
 
-    // Left edge is the oldest of the two remembered actions.
     scrubTo(card, 0);
     expect(await screen.findByTitle(/Clicked 'Sign in'/)).toBeTruthy();
 
-    // Right edge is the newest.
     scrubTo(card, 288);
     expect(await screen.findByTitle(/Typed 'Email'/)).toBeTruthy();
 
@@ -512,8 +595,6 @@ describe("WorkLiveCornerCard scrubbing", () => {
   });
 
   it("keeps the scrub strip out of the layout until the pointer is on the card", async () => {
-    // The strip overlays the media's bottom 2px. Reserving a row for it would
-    // shrink the picture by 1% for a control that is invisible 99% of the time.
     seedProject();
     const { card } = await showCard();
     emitBrowserEvent(traceEvent("trace-1", "click", "Sign in"));
@@ -537,7 +618,6 @@ describe("WorkLiveCornerCard scrubbing", () => {
 });
 
 describe("WorkLiveCornerCard chrome", () => {
-  /** The 8px resting dot: the only chrome the card shows until you hover it. */
   function restDot(card: HTMLElement): HTMLElement | null {
     return card.querySelector<HTMLElement>("[data-live-card-status]");
   }
@@ -569,32 +649,22 @@ describe("WorkLiveCornerCard chrome", () => {
 
     const dot = restDot(card);
     expect(dot?.dataset.liveCardStatus).toBe("idle");
-    // Hidden by hover rather than by a render, so a 12fps feed costs nothing.
     expect(dot?.className).toContain("group-hover:opacity-0");
     expect(dot?.className).toContain("h-2");
 
-    // The × lives in the pill and nowhere else.
     const pill = card.querySelector("[data-live-card-pill]");
     expect(pill?.contains(screen.getByLabelText("Hide the Browser preview"))).toBe(true);
     expect(pill?.className).toContain("h-8");
     expect(pill?.className).toContain("group-hover:opacity-100");
-    // The pill is the drag handle; the picture underneath is not.
     expect(pill?.className).toContain("cursor-grab");
-    // …and it leads with the PAGE. The tool's own name is already spelled by
-    // the icon beside it, in the tool's hue; which of an agent's several tabs
-    // this is a picture of was the fact the pill did not carry.
     expect(pill?.textContent).toContain("Sign in");
     expect(pill?.textContent).not.toContain("Browser");
-    // A drag that starts on the pill must not select the pill's own label.
     expect(card.className).toContain("select-none");
   });
 
   it("leads the pill with the page and follows it with the last action", async () => {
-    // The review's example, exactly: `example.test · Closed find · 3m`.
     const card = await showTab({ title: null });
     const pill = card.querySelector("[data-live-card-pill]");
-    // No title yet, so the HOST — never the raw URL, which does not fit and
-    // reads as a log line rather than as an identity.
     expect(pill?.textContent).toContain("example.test");
     expect(pill?.textContent).not.toContain("https://");
 
@@ -605,10 +675,6 @@ describe("WorkLiveCornerCard chrome", () => {
   });
 
   it("rests on a neutral dot rather than on the tool's own hue", async () => {
-    // Cyan at 8px, floating over the conversation, read as a status light that
-    // meant something. Rest is the one state that means nothing, so it gets the
-    // same idle grey the rest of the chat uses — leaving red (recording) and
-    // amber (needs you) as the only colours on the card that carry news.
     const card = await showTab({});
     const dot = restDot(card);
     expect(dot?.dataset.liveCardStatus).toBe("idle");
@@ -620,7 +686,6 @@ describe("WorkLiveCornerCard chrome", () => {
     const card = await showTab({ recording: { startedAt: new Date().toISOString(), fps: 30 } });
     const dot = restDot(card);
     expect(dot?.dataset.liveCardStatus).toBe("recording");
-    // Red is the one state the dot must survive a reduced-motion setting for.
     expect(dot?.className).toContain("ade-status-pulse");
     expect(dot?.className).toContain("motion-reduce:animate-none");
   });
@@ -638,7 +703,6 @@ describe("WorkLiveCornerCard chrome", () => {
       },
     });
     expect(restDot(card)?.dataset.liveCardStatus).toBe("handoff");
-    // The dot can only say "amber"; the reason itself waits in the pill.
     expect(restDot(card)?.title).toBe("Sign in to staging");
     const chip = card.querySelector("[data-live-card-pill] [title='Sign in to staging']");
     expect(chip?.textContent).toBe("Needs you");
@@ -647,12 +711,6 @@ describe("WorkLiveCornerCard chrome", () => {
 
 describe("WorkLiveCornerCard tool switching", () => {
   it("keeps painting frames after the card has swapped source tools once", async () => {
-    // `AnimatePresence` defaults to `mode="sync"`, so the OUTGOING card's ref
-    // callback fires with `null` AFTER the incoming card has already claimed
-    // the ref. A naive `ref={(node) => { imageRef.current = node; }}` therefore
-    // ends every tool switch with a null image ref, and the live thumbnail
-    // never painted again for the life of the pane — while "Live", the feed
-    // subscription and every other assertion in this file stayed green.
     seedProject();
     renderCard({ activeTool: "git" });
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
@@ -671,18 +729,14 @@ describe("WorkLiveCornerCard tool switching", () => {
     });
     await waitFor(() => expect(first.querySelector("img")?.getAttribute("src")).toBe(firstFrame));
 
-    // App Control becomes the newest active tool: the browser card exits and
-    // the App Control card enters, both mounted at once for the crossfade.
     emitAppControlEvent({ type: "session-started", session: APP_CONTROL_SESSION });
     await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 });
 
-    // …and the browser becomes newest again.
     emitBrowserEvent({
       type: "status",
       status: { ...BROWSER_STATUS, tabs: [{ ...BROWSER_STATUS.tabs[0]!, title: "Signed in" }] },
     });
     await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
-    // Let the crossfade finish so only the incoming card is left holding the ref.
     await waitFor(
       () => expect(screen.queryByLabelText("App Control live preview")).toBeNull(),
       { timeout: 3_000 },

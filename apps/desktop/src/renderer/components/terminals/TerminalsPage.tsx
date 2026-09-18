@@ -1544,6 +1544,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               active={active}
               laneId={activeLaneId}
               activeTool={workSidebarVisible ? workSidebarTool : null}
+              // The chat you are reading. The card only shows sessions owned by
+              // it; a CLI session is not a chat, so its tools are held back too.
+              chatSessionId={activeWorkSession && isChatToolType(activeWorkSession.toolType)
+                ? activeWorkSession.id
+                : null}
               runtimePin={activeWorkSessionRuntimePin}
               onPick={setWorkSidebarTool}
             />

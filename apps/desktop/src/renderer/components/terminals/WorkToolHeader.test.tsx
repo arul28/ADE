@@ -306,3 +306,29 @@ describe("workToolTabLayout", () => {
     expect(layout.overflow).toHaveLength(strip.length - 1);
   });
 });
+
+describe("WorkToolHeader float button", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("offers Float for a screen tool and calls back", () => {
+    const onFloat = vi.fn();
+    renderHeader({ activeTool: "browser", floatTool: "browser", floating: false, onFloat });
+    const button = screen.getByLabelText("Show floating preview");
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(button);
+    expect(onFloat).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the button pressed while the tool is floated", () => {
+    renderHeader({ activeTool: "ios", floatTool: "ios", floating: true, onFloat: vi.fn() });
+    expect(screen.getByLabelText("Show floating preview").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("offers no Float for a tool with nothing to preview", () => {
+    renderHeader({ activeTool: "git", floatTool: null, onFloat: vi.fn() });
+    expect(screen.queryByLabelText("Show floating preview")).toBeNull();
+  });
+});

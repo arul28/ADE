@@ -1111,12 +1111,20 @@ agent starts driving the browser while you read a diff, the thing you
 most want to see is the thing you just navigated away from. The corner
 card is a live thumbnail of the most recently active screen tool that is
 **not** the one on screen, parked in a corner of the chat column and one
-click away from taking the pane back. Browser and App Control use a fixed
-288×180 landscape rectangle (16:10), smaller than the main pane; every frame
-uses `object-fit: cover` with `object-position: top`, so a portrait page shows
-its top. The simulator keeps a fixed 240×320 portrait card. It asks its source for frames at the card's width in
-*device* pixels, so a Retina card is not fed a thumbnail-sized image and
-upscaled into mush, nor a 5K panel a full-width one.
+click away from taking the pane back.
+
+The box follows the picture, not a fixed per-tool rectangle. The width is
+the user's (default 288 px, 200–560, never more than half the column); the
+height is `width / aspect`, capped at ~340 px, and the width is shrunk to keep
+the aspect when the cap hits. The aspect comes from the source's own natural
+size — the browser `<img>`'s `naturalWidth/Height`, the App Control frame, the
+simulator `<video>`'s `videoWidth/Height`, the `macDesktopFrame` — and falls
+back to the tool's default (16:10, or 3:4 for the simulator) until the first
+frame arrives. Every tool draws with `object-fit: contain`; nothing is cropped.
+A bottom-right handle resizes the width (the aspect stays locked) and the width
+is persisted project-scoped beside the position. It asks its source for frames
+at the card's width in *device* pixels, so a Retina card is not fed a
+thumbnail-sized image and upscaled into mush, nor a 5K panel a full-width one.
 
 Its chrome follows a mini-player: **nothing but an 8 px status dot at
 rest**, and a 32 px blurred pill — icon, name, last action, ✕ — that takes
@@ -1131,18 +1139,27 @@ the card stops its preview stream, which itself emits one, and a
 dismissal undone by the event it caused would never stick.
 
 - **Which tool.** `selectWorkLiveCardTool` in `workLiveCard.ts` picks the
-  available, live, non-active tool with the newest activity. Only
-  `browser`, `app-control`, and `ios` are previewable
+  available, live, non-active tool with the newest activity. `browser`,
+  `app-control`, `ios`, and `mac-desktop` are previewable
   (`WORK_LIVE_SCREEN_TOOLS` in `state/workLiveCardState.ts`, which the
   store also imports so the list cannot fork); Git and Files have nothing
   to look at.
-- **Dismissal is per tool and per lane.** The ✕ records the activity
-  stamp the card was showing, so the tool comes back only on strictly
-  newer activity — closing it silences the current burst, not the
-  feature, and never another tool. Stamps live in the lane's work-view
-  state; the card's position is project-scoped and stored as fractions of
-  the chat column (`workLiveCardPosition`) so resizing the column keeps it
-  in place instead of stranding it off an edge.
+- **It belongs to the chat you are reading.** The card is passed the selected
+  chat session id and shows only sessions that chat owns: a browser tab's
+  `ownerChatSessionId`, an App Control or simulator session's `chatSessionId`.
+  An unowned session (a manual tab, a lane's display) is shared; mac-desktop is
+  the exception — it is per lane, so it shows only to a chat that is a current
+  viewer of the lane's stream or holds its input lease (the stream status
+  carries the redacted-safe `viewerChatSessionIds`).
+- **The ✕ means closed until the session changes.** It records the session key
+  it was closed at — browser active tab id, App Control session id, simulator
+  session id, the lane's display id for mac-desktop — per chat, in
+  `chatCompanionUiState.ts`. Frames, status refreshes, open-requests, and
+  remounts never reopen it; only a new session key does. The Float button in the
+  pane header (`WorkToolHeader`) clears the marker and suspends the
+  active-tool exclusion for that tool until the next ×. Position and width stay
+  project-scoped (`workLiveCardPosition`, `workLiveCardWidth`) so resizing the
+  column keeps the card in place instead of stranding it off an edge.
 - **It costs nothing when nobody watches.** It subscribes to feeds that
   already exist — App Control's screencast, the browser's refcounted
   preview stream, the simulator's shared window capture via
