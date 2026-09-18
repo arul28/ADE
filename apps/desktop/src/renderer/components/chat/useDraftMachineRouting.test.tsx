@@ -153,6 +153,10 @@ describe("useDraftMachineRouting", () => {
     lanes: readonly LaneSummary[],
     lastSyncedAtMs: number | null = 1,
     error: string | null = null,
+    // Defaults to the general clock so existing rows keep meaning "the lane
+    // list was read". Pass `null` explicitly for a slice written by a
+    // sessions-only or PR-only merge, where no lane read has happened.
+    lanesSyncedAtMs: number | null = lastSyncedAtMs,
   ): Record<string, CrossMachineMachineLanes> {
     return {
       "this-mac": {
@@ -172,6 +176,7 @@ describe("useDraftMachineRouting", () => {
         sessions: [],
         prs: [],
         lastSyncedAtMs,
+        lanesSyncedAtMs,
         error,
       },
     };
@@ -441,6 +446,27 @@ describe("useDraftMachineRouting", () => {
     });
 
     await waitFor(() => expect(onLaneChange).toHaveBeenCalledWith("mac-primary"));
+  });
+
+  it("does not treat a sessions-only slice as a read lane catalog", async () => {
+    installRemoteBoundAde();
+    const { result } = renderRemoteBoundRouting({
+      // What an optimistic foreign launch writes: sessions merged, lanes never
+      // read. `lastSyncedAtMs` advances on ANY merge, so only the lane-specific
+      // clock can tell this apart from a catalog that decoded to zero lanes.
+      crossMachineLanesByMachineId: thisMacSlice([], Date.now(), null, null),
+      laneId: "studio-primary",
+    });
+
+    await waitFor(() => expect(result.current.machineOptions).toHaveLength(2));
+
+    act(() => {
+      result.current.handleMachineChange("this-mac");
+    });
+
+    // Still reading: mistaking this for a loaded catalog suppresses the
+    // pull-forward lane read and remaps the selection against nothing.
+    expect(result.current.laneCatalogLoading).toBe(true);
   });
 
   it("stops claiming to load lanes for a machine the union will never read", async () => {

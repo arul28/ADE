@@ -164,6 +164,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
         "target-laptop": {
@@ -176,6 +177,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -212,6 +214,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
           ],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -239,6 +242,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
         "target-laptop": {
@@ -251,6 +255,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -322,6 +327,22 @@ describe("offline machines stay in the sidebar, dimmed", () => {
     const refreshedEntry = useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
     expect(refreshedEntry.lanes).toBe(beforeEntry.lanes);
     expect(refreshedEntry.lastSyncedAtMs).toBeGreaterThan(beforeEntry.lastSyncedAtMs ?? 0);
+    expect(refreshedEntry.lanesSyncedAtMs).toBeGreaterThan(beforeEntry.lanesSyncedAtMs ?? 0);
+
+    // A sessions-only merge (what an optimistic foreign launch writes) advances
+    // the general clock but must NOT claim the lane list was read — consumers
+    // use `lanesSyncedAtMs` to tell "no lanes" from "not read yet".
+    vi.setSystemTime(new Date("2026-07-27T10:00:10Z"));
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      online: true,
+      sessions: [makeSession()],
+    });
+    const sessionsOnlyEntry = useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
+    expect(sessionsOnlyEntry.lastSyncedAtMs).toBeGreaterThan(refreshedEntry.lastSyncedAtMs ?? 0);
+    expect(sessionsOnlyEntry.lanesSyncedAtMs).toBe(refreshedEntry.lanesSyncedAtMs);
+
     const before = useAppStore.getState().crossMachineLanesByMachineId;
     useAppStore.getState().setCrossMachineMachinesOnline(["target-studio"]);
     expect(useAppStore.getState().crossMachineLanesByMachineId).toBe(before);
@@ -407,6 +428,7 @@ describe("local session dedupe", () => {
       sessions,
       prs: [],
       lastSyncedAtMs: Date.now(),
+      lanesSyncedAtMs: Date.now(),
       error: null,
     },
   });
@@ -472,6 +494,7 @@ describe("local session dedupe", () => {
           sessions: [shared],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
         ...foreignMachine([shared]),
@@ -501,6 +524,7 @@ describe("local session dedupe", () => {
           sessions: [shared],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -531,6 +555,7 @@ describe("union memo stability", () => {
           sessions: [makeSession({ id: "session-foreign", laneId: "lane-foreign" })],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -592,6 +617,7 @@ describe("machine marker", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -639,6 +665,7 @@ describe("machine marker", () => {
           sessions: [makeSession({ id: "session-duplicate", laneId: activeLane.id })],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
         [THIS_MACHINE_ID]: {
@@ -657,6 +684,7 @@ describe("machine marker", () => {
           sessions: [makeSession({ id: "session-local", laneId: thisMacLane.id })],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -695,6 +723,7 @@ describe("machine marker", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
         "target-laptop": {
@@ -707,6 +736,7 @@ describe("machine marker", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -743,6 +773,7 @@ describe("machine marker", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: 1,
+          lanesSyncedAtMs: 1,
           error: null,
         },
         b: {
@@ -755,6 +786,7 @@ describe("machine marker", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: 1,
+          lanesSyncedAtMs: 1,
           error: null,
         },
       },
@@ -781,6 +813,7 @@ describe("machine marker", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: 1,
+          lanesSyncedAtMs: 1,
           error: null,
         },
       },
@@ -890,6 +923,7 @@ describe("selectOtherMachineBranchStates", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: 1,
+          lanesSyncedAtMs: 1,
           error: null,
         },
       },
@@ -939,6 +973,7 @@ describe("selectOtherMachineBranchStates", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: 1,
+          lanesSyncedAtMs: 1,
           error: null,
         },
       },
@@ -968,6 +1003,7 @@ describe("selectOtherMachineBranchStates", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -989,6 +1025,7 @@ describe("selectOtherMachineBranchStates", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: null,
+          lanesSyncedAtMs: null,
           error: "not yet reachable",
         },
       },
@@ -1023,6 +1060,7 @@ describe("selectOtherMachineBranchStates", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
         [THIS_MACHINE_ID]: {
@@ -1041,6 +1079,7 @@ describe("selectOtherMachineBranchStates", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -1073,6 +1112,7 @@ describe("selectOtherMachineBranchStates", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: syncedAtMs,
+          lanesSyncedAtMs: syncedAtMs,
           error: "offline",
         },
       },

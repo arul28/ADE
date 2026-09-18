@@ -690,13 +690,17 @@ describe("brain update command", () => {
 });
 
 describe("releaseTagForVersion", () => {
-  // ADE release tags are `v<semver>`; these four inputs are exactly what the
-  // regex discriminates. The prerelease row is load-bearing: the tail is
-  // deliberately unanchored so a suffix rides along with the `v` prefix.
+  // ADE release tags are `v<semver>`; these inputs are exactly what the regex
+  // discriminates. The prerelease row is load-bearing — a real semver tail must
+  // ride along with the `v` prefix — but the shape is anchored, so trailing
+  // junk is NOT a semver and must pass through untouched rather than becoming a
+  // tag nobody published.
   it.each([
     ["a bare semver is prefixed", "1.2.74", "v1.2.74"],
     ["an already-tagged version is left alone", "v1.2.13", "v1.2.13"],
     ["a prerelease suffix carries through", "1.2.74-beta.1", "v1.2.74-beta.1"],
+    ["build metadata carries through", "1.2.74+build.5", "v1.2.74+build.5"],
+    ["trailing junk is not a semver", "1.2.74foo", "1.2.74foo"],
     ["a non-semver ref is untouched", "whisper-models-v1", "whisper-models-v1"],
   ])("%s", (_label, input, expected) => {
     expect(releaseTagForVersion(input)).toBe(expected);

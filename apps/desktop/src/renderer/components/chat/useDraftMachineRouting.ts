@@ -347,11 +347,18 @@ export function useDraftMachineRouting({
    * whose catalog has landed: routing a selection against an empty, unread
    * catalog is what made "This computer" look like it had no Primary while the
    * tab was bound remotely.
+   *
+   * The clock has to be the LANE-specific one. `lastSyncedAtMs` advances on any
+   * merge — including the sessions-only slice an optimistic foreign launch
+   * writes — so reading it here declared an empty, never-read lane list "loaded":
+   * that suppressed the pull-forward read below and remapped the selection
+   * against nothing, surfacing "Selected lane is not available on the selected
+   * machine" until the slow foreign cadence eventually landed.
    */
   const unionSlice = crossMachineLanesByMachineId[machineId];
   const executionLaneCatalogLoaded = machineId === boundMachineId
     ? boundLaneCatalogLoaded
-    : unionSlice != null && (unionSlice.lastSyncedAtMs != null || unionSlice.lanes.length > 0);
+    : unionSlice != null && (unionSlice.lanesSyncedAtMs != null || unionSlice.lanes.length > 0);
   /**
    * `null` means the union has not resolved its read set yet, so a catalog may
    * still be coming. Once it HAS resolved and this machine is not in it, no read

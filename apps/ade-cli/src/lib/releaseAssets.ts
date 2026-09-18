@@ -88,10 +88,19 @@ export class ReleaseAssetDownloadError extends Error {
  * ADE release tags are `v<semver>`. Clients often carry the bare app version
  * (`1.2.74` from the desktop's package version or the update feed), so a bare
  * semver is mapped onto its tag here rather than producing a 404 download URL.
+ *
+ * The shape is ANCHORED at both ends: anything that is not a whole semver
+ * (`1.2.74foo`) is passed through untouched, because prefixing it would request
+ * a tag nobody published while the caller's own string may well exist. The
+ * optional prerelease and build segments are deliberate — `1.2.74-beta.1` must
+ * still map to `v1.2.74-beta.1`, and ADE does not publish `+build` tags but
+ * accepting the segment beats silently rewriting such input.
  */
+const BARE_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
 export function releaseTagForVersion(version: string): string {
   const trimmed = version.trim();
-  return /^\d+\.\d+\.\d+/.test(trimmed) ? `v${trimmed}` : trimmed;
+  return BARE_SEMVER.test(trimmed) ? `v${trimmed}` : trimmed;
 }
 
 export function releaseAssetUrl(repo: string, version: string, assetName: string): string {
