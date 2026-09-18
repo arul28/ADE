@@ -108,4 +108,64 @@ final class VirtualDisplayLiveTests: XCTestCase {
             )
         )
     }
+
+    /// The test-drive regression, against a real display.
+    ///
+    /// `record stop` must finalise quickly even when the display never changes:
+    /// the old path waited fifteen seconds on a still display and was answered
+    /// by the watchdog. Needs Screen Recording permission, so it is opt-in with
+    /// the rest of the live tests.
+    func testRecordingStopFinalizesWithinBudgetOnARealDisplay() throws {
+        try XCTSkipUnless(isEnabled, "Set ADE_DESKTOP_DRIVER_LIVE_TESTS=1 to record a real virtual display.")
+
+        let host = VirtualDisplayHost(log: { _ in })
+        try XCTSkipUnless(
+            host.isVirtualDisplayAvailable,
+            "The private virtual-display classes are unavailable: \(host.unavailableReason ?? "no reason")"
+        )
+
+        let laneId = "live-record-\(UUID().uuidString.prefix(8))"
+        let handle = host.create(
+            laneId: laneId,
+            name: "\(VirtualDisplayIdentity.namePrefix)live record",
+            width: 640,
+            height: 480,
+            scale: 1
+        )
+        defer { host.destroy(laneId: laneId) }
+
+        let engine = CaptureEngine(log: { _ in }, emit: { _ in })
+        let path = NSTemporaryDirectory() + "ade-recording-live-\(laneId).mp4"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        _ = try engine.startRecording(
+            laneId: laneId,
+            displayId: handle.displayId,
+            fps: 15,
+            filePath: path
+        )
+
+        // Wait for a picture rather than a wall-clock sleep: a virtual display
+        // that has produced nothing is exactly the case stop refuses now.
+        let deadline = Date().addingTimeInterval(10)
+        while engine.recordedFrameCount(laneId: laneId) == 0, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertGreaterThan(
+            engine.recordedFrameCount(laneId: laneId),
+            0,
+            "the virtual display produced no frame for the recording"
+        )
+
+        let start = Date()
+        let stopped = try engine.stopRecording(laneId: laneId)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThanOrEqual(
+            elapsed,
+            CaptureEngine.recordingFinalizeBudget,
+            "record.stop took \(elapsed)s"
+        )
+        XCTAssertEqual(stopped.filePath, path)
+        let size = (try FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.intValue ?? 0
+        XCTAssertGreaterThan(size, 0)
+    }
 }

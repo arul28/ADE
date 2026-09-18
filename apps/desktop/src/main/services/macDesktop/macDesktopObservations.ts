@@ -13,6 +13,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import {
@@ -268,10 +269,13 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
      * Resolves a caller-supplied `out`.
      *
      * A relative path resolves against the lane's worktree, because that is
-     * where the agent is working. Anything that escapes it — `../`, a symlink
-     * out, an absolute path somewhere else — is refused by code, not by
-     * convention: an agent that can write one file anywhere on the Mac can
-     * write `~/.zshrc`.
+     * where the agent is working. Two roots may be written to: the lane
+     * worktree and the OS temp directory. Both are agent-owned scratch space —
+     * the proof skill writes `--out "$TMPDIR/…"` — and the earlier rule that
+     * only the worktree counted made a documented command impossible.
+     * Everything else — `../`, a symlink out, an absolute path somewhere else
+     * — is refused by code, not by convention: an agent that can write one file
+     * anywhere on the Mac can write `~/.zshrc`.
      */
     async resolveOutPath(args: { laneId: string; out: string }): Promise<string> {
       const raw = args.out.trim();
@@ -282,17 +286,33 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
         );
       }
       const worktree = (await deps.resolveLaneWorktreePath?.(args.laneId)) ?? deps.projectRoot;
-      const root = path.resolve(worktree);
-      const absolute = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(root, raw);
+      const realpathOrSelf = (candidate: string): string => {
+        try {
+          return fs.realpathSync(candidate);
+        } catch {
+          return path.resolve(candidate);
+        }
+      };
+      // `$TMPDIR` on macOS is itself a symlink target (`/var` →
+      // `/private/var`), so a caller can hand back either spelling of the same
+      // directory; matching against both is what keeps one of them from being
+      // refused as "outside".
+      const roots = [path.resolve(worktree), path.resolve(os.tmpdir())].map((root) => ({
+        path: root,
+        real: realpathOrSelf(root),
+      }));
+      const absolute = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(roots[0]!.path, raw);
       const refuse = (): never => {
         throw new MacDesktopObservationError(
           MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
-          `Screenshots must be written inside the lane worktree (${root}). ${raw} is outside it.`,
+          `Screenshots must be written inside the lane worktree (${roots[0]!.path}) `
+            + `or the system temp directory (${roots[1]!.path}). ${raw} is outside both.`,
         );
       };
-      if (!isPathInside(root, absolute)) refuse();
+      const matched = roots.find((root) =>
+        isPathInside(root.path, absolute) || isPathInside(root.real, absolute)) ?? refuse();
       // Resolve symlinks on the deepest directory that already exists: a link
-      // inside the worktree pointing out of it passes the string check above.
+      // inside an allowed root pointing out of it passes the string check above.
       let probe = path.dirname(absolute);
       for (let depth = 0; depth < 64; depth += 1) {
         let real: string | null = null;
@@ -304,14 +324,7 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
           probe = parent;
           continue;
         }
-        let realRoot = root;
-        try {
-          realRoot = fs.realpathSync(root);
-        } catch {
-          // A worktree that is not on disk cannot contain anything; the string
-          // check above is then the whole answer.
-        }
-        if (real !== realRoot && !isPathInside(realRoot, real)) refuse();
+        if (real !== matched.real && !isPathInside(matched.real, real)) refuse();
         break;
       }
       // The loop above only ever inspected directories. A leaf that is itself a

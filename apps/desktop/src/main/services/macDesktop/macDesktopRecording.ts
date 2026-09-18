@@ -15,6 +15,7 @@
 
 import {
   type DesktopSeatProvider,
+  type DesktopSeatReply,
   type MacDesktopEventPayload,
   type MacDesktopRecordStartArgs,
   type MacDesktopRecordingStatus,
@@ -38,12 +39,25 @@ export type MacDesktopRecordingDeps = {
   activeProvider: () => DesktopSeatProvider | null;
   requireDisplay: (laneId: string) => void;
   assertPermission: (which: "screenRecording" | "accessibility") => void;
-  recordingNotRunning: (laneId: string) => Error;
+  /**
+   * The `stop` refusal. The file path is the recording that failed to
+   * finalise, when there is one: a second stop after a timeout must name the
+   * partial file rather than pretending nothing was ever written.
+   */
+  recordingNotRunning: (laneId: string, partialFilePath?: string | null) => Error;
 };
 
 export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
   /** laneId → the user-facing recording, running or just finished. */
   const recordings = new Map<string, MacDesktopRecordingStatus>();
+  /**
+   * laneId → the path `record.start` handed the helper.
+   *
+   * The status only carries a path once a stop returns one, but a stop that
+   * fails still leaves a file at this path — and that is the path the caller
+   * is told about so a partial recording is not invisible.
+   */
+  const recordingPaths = new Map<string, string>();
 
   const isUserRecording = (laneId: string): boolean =>
     recordings.get(laneId)?.running === true;
@@ -185,6 +199,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       const filePath = deps.observations.artifactPath(`mac-desktop-recording-${laneId}`, "mp4");
       const fps = clampFps(args.fps, 15);
       await provider.startRecording({ laneId, fps, filePath });
+      recordingPaths.set(laneId, filePath);
       const status: MacDesktopRecordingStatus = {
         laneId,
         running: true,
@@ -192,6 +207,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         filePath: null,
         durationMs: null,
         caption: args.caption?.trim() || null,
+        lastError: null,
       };
       recordings.set(laneId, status);
       deps.emit({ type: "recording-changed", status });
@@ -201,9 +217,34 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
     async stopRecording(args: { laneId: string; chatSessionId?: string | null }): Promise<MacDesktopRecordingStatus> {
       const laneId = args.laneId.trim();
       const existing = recordings.get(laneId);
-      if (!existing?.running) throw deps.recordingNotRunning(laneId);
-      const provider = await deps.ensureProvider();
-      const reply = await provider.stopRecording({ laneId });
+      if (!existing?.running) {
+        // Only a failed recording has a partial file worth naming; a clean
+        // stop's path is a finished movie and needs no warning attached.
+        throw deps.recordingNotRunning(laneId, existing?.lastError ? existing.filePath : null);
+      }
+      let reply: DesktopSeatReply;
+      try {
+        const provider = await deps.ensureProvider();
+        reply = await provider.stopRecording({ laneId });
+      } catch (error) {
+        // One truth for recording state. The helper removes its recorder
+        // before it finalises, so a stop that fails still means no recording is
+        // running — leaving the local status on `running: true` made `status`
+        // and the next `stop` disagree, and the pane kept showing a stop
+        // button that could only fail. The intended path is kept because a
+        // partial file is still inspectable.
+        const partialFilePath = recordingPaths.get(laneId) ?? existing.filePath;
+        const failed: MacDesktopRecordingStatus = {
+          ...existing,
+          running: false,
+          filePath: partialFilePath,
+          lastError: error instanceof Error ? error.message : String(error),
+        };
+        recordings.set(laneId, failed);
+        deps.emit({ type: "recording-changed", status: failed });
+        throw error;
+      }
+      recordingPaths.delete(laneId);
       const status: MacDesktopRecordingStatus = {
         ...existing,
         running: false,
@@ -213,6 +254,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         durationMs: typeof reply.durationMs === "number" && Number.isFinite(reply.durationMs)
           ? reply.durationMs
           : 0,
+        lastError: null,
       };
       recordings.set(laneId, status);
       deps.emit({ type: "recording-changed", status });
@@ -240,10 +282,12 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
 
     forgetLane(laneId: string): void {
       recordings.delete(laneId);
+      recordingPaths.delete(laneId);
     },
 
     clear(): void {
       recordings.clear();
+      recordingPaths.clear();
     },
   };
 }

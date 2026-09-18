@@ -3028,8 +3028,18 @@ export const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>(
  * User clients keep what they sent: the desktop renderer, the web client and a
  * paired phone each drive whichever lane's display their UI is showing, and the
  * human's takeover holds the lease under a `controllerId`, not a chat id.
+ *
+ * A bound caller that names a *different* lane is refused out loud. The pin is
+ * deliberate — an agent may only drive its own lane's display — but silently
+ * swapping the target meant `--lane <other>` produced an error that named the
+ * socket's lane, which reads as a bug in the wrong place. Refusing names both
+ * lanes and the reason. Nothing changes for a caller that names its own lane,
+ * which is what an agent that passes `--lane` at all normally does.
+ *
+ * Exported for the scope tests: the refusal is a contract, not an implementation
+ * detail, and the full RPC dispatch is the wrong size for proving one sentence.
  */
-function scopeMacDesktopAdeActionArgs(
+export function scopeMacDesktopAdeActionArgs(
   runtime: AdeRuntime,
   session: SessionState,
   isUserClient: boolean,
@@ -3049,6 +3059,21 @@ function scopeMacDesktopAdeActionArgs(
     scopeAccessDenied(
       "mac_desktop actions need a resolvable lane for this caller",
       `run_ade_action:mac_desktop.${action}`,
+    );
+  }
+  // Only `laneId` counts here: `parentLaneId` is a lane-domain argument, and
+  // this domain would drop it anyway.
+  const requestedLaneId = asOptionalTrimmedString(rest.laneId);
+  if (sessionLaneId && requestedLaneId && requestedLaneId !== sessionLaneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      `This chat is bound to lane ${sessionLaneId}; --lane ${requestedLaneId} was ignored.`,
+      {
+        kind: "lane_bound",
+        method: `run_ade_action:mac_desktop.${action}`,
+        callerLaneId: sessionLaneId,
+        requestedLaneId,
+      },
     );
   }
   return {

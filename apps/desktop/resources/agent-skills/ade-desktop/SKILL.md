@@ -12,7 +12,8 @@ clicking — with one exception, the input lease below.
 
 macOS runtime hosts only. `ade mac-desktop status --text` answers everywhere;
 every other command refuses off macOS with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
-`--lane` defaults to `ADE_LANE_ID`.
+`--lane` defaults to `ADE_LANE_ID`. In a chat, the command is pinned to that
+chat's lane: `--lane` naming a different lane is refused, not silently swapped.
 
 ## Operating loop
 
@@ -96,9 +97,14 @@ ade mac-desktop record stop --text
 ade mac-desktop proof --caption "Preferences now saves the API key" --text
 ```
 
-`screenshot` writes a file and files nothing. `proof` is the intentional one
-and **refuses without `--caption`** — a record nobody can judge is not proof.
-It captures, then re-observes, and prints the state it filed.
+`screenshot` writes a file and files nothing. `--out` must land inside the lane
+worktree or the OS temp directory (`$TMPDIR`); anywhere else is refused. `proof`
+is the intentional one and **refuses without `--caption`** — a record nobody can
+judge is not proof. It captures, then re-observes, and prints the state it filed.
+
+`record stop` finalizes within about two seconds. If it fails, the status it
+prints carries an `error` line and the partial file's path — report that instead
+of assuming the clip exists.
 
 **Read that state before you rely on the record.** If the observation it
 returns does not show what your caption claims, the proof is wrong: fix the

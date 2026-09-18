@@ -5171,14 +5171,30 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
 
-    // A foreign chat session id is replaced with the caller's own, and the lane
-    // is pinned the same way `work_tools.getLaneState` pins it.
+    // A foreign lane is refused outright rather than silently swapped for the
+    // caller's own: the old behavior made `--lane lane-b` fail with a message
+    // naming lane-a, which reads as a bug in the wrong place. Both lanes are
+    // named in the refusal.
     const foreign = await callTool(handler, "run_ade_action", {
       domain: "mac_desktop",
       action: "observe",
       args: { laneId: "lane-b", chatSessionId: "chat-b" },
     });
-    expect(foreign?.isError).toBeUndefined();
+    expect(foreign?.isError).toBe(true);
+    const foreignText = JSON.stringify(foreign);
+    expect(foreignText).toContain("bound to lane lane-a");
+    expect(foreignText).toContain("--lane lane-b was ignored");
+    expect(observe).not.toHaveBeenCalled();
+
+    // Naming the caller's own lane is a no-op, and the chat attribution is
+    // filled in rather than trusted: an agent's call belongs to the chat that
+    // made it.
+    const own = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-a", chatSessionId: "chat-b" },
+    });
+    expect(own?.isError).toBeUndefined();
     expect(observe).toHaveBeenCalledWith(expect.objectContaining({
       laneId: "lane-a",
       chatSessionId: "chat-a",

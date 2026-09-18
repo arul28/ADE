@@ -107,6 +107,53 @@ describe("macDesktopObservations out paths", () => {
     expect(fs.existsSync(path.dirname(resolved))).toBe(true);
   });
 
+  it("resolves an absolute path under the OS temp directory", async () => {
+    // The proof skill tells agents to write `$TMPDIR/…`; both the lane worktree
+    // and the temp dir are agent-owned scratch space. Refusing one of the two
+    // made a documented command impossible.
+    const projectRoot = makeRoot();
+    const worktree = path.join(projectRoot, "worktrees", "lane-1");
+    fs.mkdirSync(worktree, { recursive: true });
+    const store = createMacDesktopObservations({
+      projectRoot,
+      resolveLaneWorktreePath: () => worktree,
+    });
+    const out = path.join(os.tmpdir(), `ade-out-${Date.now()}`, "proof.png");
+    const resolved = await store.resolveOutPath({ laneId: "lane-1", out });
+    expect(resolved).toBe(path.resolve(out));
+    expect(fs.existsSync(path.dirname(resolved))).toBe(true);
+    try { fs.rmSync(path.dirname(resolved), { recursive: true, force: true }); } catch { /* best effort */ }
+
+    // The same directory by its resolved spelling (`/var` → `/private/var` on
+    // macOS) is the same root, not somewhere outside it.
+    const realTemp = fs.realpathSync(os.tmpdir());
+    const realOut = path.join(realTemp, `ade-out-real-${Date.now()}`, "proof.png");
+    const realResolved = await store.resolveOutPath({ laneId: "lane-1", out: realOut });
+    expect(realResolved).toBe(path.resolve(realOut));
+    try { fs.rmSync(path.dirname(realResolved), { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+
+  it("still refuses a symlink out of the temp directory", async () => {
+    const projectRoot = makeRoot();
+    const worktree = path.join(projectRoot, "worktrees", "lane-1");
+    fs.mkdirSync(worktree, { recursive: true });
+    // The target has to be outside BOTH allowed roots. A fresh directory under
+    // the home dir is outside the temp dir; one under the project root is not,
+    // because the test's project root itself lives in the temp dir.
+    const outside = fs.mkdtempSync(path.join(os.homedir(), "ade-outside-"));
+    const link = path.join(os.tmpdir(), `ade-out-link-${Date.now()}`);
+    fs.symlinkSync(outside, link, "dir");
+    const store = createMacDesktopObservations({
+      projectRoot,
+      resolveLaneWorktreePath: () => worktree,
+    });
+    // The string is inside the temp root; the real directory is not.
+    await expect(store.resolveOutPath({ laneId: "lane-1", out: path.join(link, "escape.png") }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT" });
+    try { fs.unlinkSync(link); } catch { /* best effort */ }
+    try { fs.rmSync(outside, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+
   it("refuses a path that escapes the worktree", async () => {
     const projectRoot = makeRoot();
     const worktree = path.join(projectRoot, "worktrees", "lane-1");
@@ -115,7 +162,14 @@ describe("macDesktopObservations out paths", () => {
       projectRoot,
       resolveLaneWorktreePath: () => worktree,
     });
-    for (const out of ["../escape.png", "../../escape.png", path.join(os.homedir(), ".zshrc")]) {
+    // `../escape.png` lands in the temp dir (the test's project root lives
+    // there), which is now an allowed root on purpose — see the two-root rule.
+    // What must still be refused is anything outside both roots.
+    for (const out of [
+      path.join(os.homedir(), ".zshrc"),
+      path.join(path.sep, "etc", "passwd"),
+      path.join(worktree, "..", "..", "..", "..", "..", "..", "..", "..", "etc", "passwd"),
+    ]) {
       let code: string | null = null;
       try {
         await store.resolveOutPath({ laneId: "lane-1", out });
@@ -124,14 +178,19 @@ describe("macDesktopObservations out paths", () => {
       }
       expect(code).toBe("MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT");
     }
+    // Escaping the worktree but staying in the OS temp dir is the documented
+    // exception, not a hole: both are agent-owned scratch space.
+    await expect(store.resolveOutPath({ laneId: "lane-1", out: path.join("..", "escape.png") }))
+      .resolves.toBe(path.join(projectRoot, "worktrees", "escape.png"));
   });
 
   it("refuses a symlink that points out of the worktree", async () => {
     const projectRoot = makeRoot();
     const worktree = path.join(projectRoot, "worktrees", "lane-1");
-    const outside = path.join(projectRoot, "outside");
+    // Outside BOTH allowed roots: a target under the project root is inside the
+    // test's temp dir, which is now allowed on purpose.
+    const outside = fs.mkdtempSync(path.join(os.homedir(), "ade-outside-"));
     fs.mkdirSync(worktree, { recursive: true });
-    fs.mkdirSync(outside, { recursive: true });
     fs.symlinkSync(outside, path.join(worktree, "link"), "dir");
     const store = createMacDesktopObservations({
       projectRoot,
@@ -144,6 +203,7 @@ describe("macDesktopObservations out paths", () => {
       code = (error as { code?: string }).code ?? null;
     }
     expect(code).toBe("MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT");
+    try { fs.rmSync(outside, { recursive: true, force: true }); } catch { /* best effort */ }
   });
 
   it("refuses a leaf that is itself a symlink", async () => {

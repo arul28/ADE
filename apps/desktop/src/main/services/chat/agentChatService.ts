@@ -2414,6 +2414,42 @@ async function rejectOpenCodePendingApproval(
   await replyToOpenCodePendingApproval(handle, pending, "reject");
 }
 
+/**
+ * Whether every external-directory pattern names somewhere inside the
+ * project's own `.ade` state.
+ *
+ * The blocked ask in the test drive was `external_directory:
+ * /Users/<user>/Projects/ADE/.ade/*` — the observations, artifacts and cache
+ * the mac-desktop commands read and write. Those paths are outside the lane
+ * worktree (the lane lives under `<project>/.ade/worktrees/<lane>`), so
+ * OpenCode's default asks, and full-auto never answered: the chat sat blocked
+ * on a prompt for its own workspace.
+ *
+ * Only literal paths with an optional trailing glob are accepted. A pattern
+ * with wildcards in the middle cannot be proven inside the root without a glob
+ * engine, and guessing it allowed is how a rule meant for `.ade/cache` ends up
+ * covering `~/.ssh`. Anything unproven keeps the approval card.
+ */
+export function isOpenCodeExternalDirectoryInsideAdeRoot(
+  projectRoot: string,
+  patterns: readonly string[],
+): boolean {
+  const adeRoot = path.resolve(projectRoot, ".ade");
+  const normalizedPatterns = patterns
+    .map((pattern) => pattern.trim())
+    .filter((pattern) => pattern.length > 0);
+  if (!normalizedPatterns.length) return false;
+  return normalizedPatterns.every((pattern) => {
+    const literal = pattern.replace(/\/\*\*$|\/\*$|\*$/, "");
+    if (/[*?[\]{}]/.test(literal)) return false;
+    const absolute = path.isAbsolute(literal)
+      ? path.resolve(literal)
+      : path.resolve(projectRoot, literal);
+    const relative = path.relative(adeRoot, absolute);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  });
+}
+
 type OpenCodeRuntime = {
   kind: "opencode";
   handle: OpenCodeSessionHandle;
@@ -27639,6 +27675,33 @@ export function createAgentChatService(args: {
           const description = permission.patterns?.length
             ? `${normalizedType}: ${permission.patterns.join(", ")}`
             : normalizedType || "Approval required";
+          // Full access means no prompts, including for the project's own
+          // `.ade` state (`isOpenCodeExternalDirectoryInsideAdeRoot`). The
+          // reply goes out before any card exists, so there is no card for a
+          // later sweep to close while `chat status` still calls it blocked.
+          if (
+            runtime.permissionMode === "full-auto"
+            && normalizedType === "external_directory"
+            && isOpenCodeExternalDirectoryInsideAdeRoot(projectRoot, permission.patterns ?? [])
+          ) {
+            try {
+              await replyToOpenCodePendingApproval(
+                runtime.handle,
+                { category: "write", permissionId: permission.id, protocol: "v2" },
+                "always",
+              );
+              continue;
+            } catch (error) {
+              // Answering failed. Falling through re-raises the card rather
+              // than dropping an ask, which is the better of the two failures.
+              logger.warn("agent_chat.opencode_external_directory_auto_approve_failed", {
+                sessionId: managed.session.id,
+                turnId,
+                requestId: permission.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
           const category: PendingOpenCodeApproval["category"] = normalizedType.includes("bash")
             || normalizedType.includes("command")
             || description.toLowerCase().includes("command")

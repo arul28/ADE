@@ -3,6 +3,7 @@ import {
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_HANDLE_EXPIRED_CODE,
   MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+  MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
   MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
   MAC_DESKTOP_USER_HAS_CONTROL_CODE,
@@ -237,6 +238,10 @@ describe("macDesktopErrorHint", () => {
       .toContain("ade mac-desktop observe");
     expect(macDesktopErrorHint(`${MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE}: not a Mac`))
       .toContain("macOS runtime host");
+    // Both allowed roots are named: the worktree and the OS temp dir, which the
+    // proof skill tells agents to write under.
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE}: /etc/x.png is outside both`))
+      .toMatch(/lane worktree.*\$TMPDIR/);
     expect(macDesktopErrorHint("something else entirely")).toBeNull();
   });
 

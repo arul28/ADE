@@ -3096,7 +3096,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   separate ADE desktop-app launcher, not this. macOS runtime hosts only;
   everywhere else "status" answers supported=false and the rest refuse.
 
-  Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID.
+  Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID. A chat-bound
+  caller is pinned to its chat's lane: --lane naming a different lane is refused.
 
   Display:
     $ ade mac-desktop status --text                    Host support, display, windows, lease
@@ -3139,7 +3140,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   "mac-desktop proof" refuses without --caption: a proof record nobody can judge is
   not proof. It re-observes AFTER the capture, so check the state it returns
-  matches your claim before you rely on the record.
+  matches your claim before you rely on the record. "screenshot --out" and
+  "proof --out" write inside the lane worktree or the OS temp dir ($TMPDIR);
+  anywhere else is refused.
 `,
   "app-control": `${ADE_BANNER}
   App Control
@@ -11889,7 +11892,7 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
   ],
   [
     MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
-    "--out must land inside the lane worktree named above — drop --out to use the default scratch path.",
+    "--out must land inside the lane worktree named above or the OS temp directory ($TMPDIR) — drop --out to use the default scratch path.",
   ],
 ];
 
@@ -25426,10 +25429,10 @@ function formatMacDesktopAction(value: unknown): string {
  * How long the clip actually is.
  *
  * The container is the authority: the driver's own stop-time delta includes
- * everything between `record start` and the moment `finishWriting` returned —
- * stream warm-up before the first frame and up to fifteen seconds of muxing
- * after the last one — so it reports a clip longer than the file plays. When
- * the service hands back a container-measured duration, that wins.
+ * everything between `record start` and the moment `finishWriting` settled —
+ * stream warm-up before the first frame and the mux after the last one — so it
+ * reports a clip longer than the file plays. When the service hands back a
+ * container-measured duration, that wins.
  */
 function macDesktopRecordingDurationMs(record: JsonObject): number | null {
   for (const key of ["containerDurationMs", "clipDurationMs", "durationMs"]) {
@@ -25449,11 +25452,14 @@ function formatMacDesktopRecording(value: unknown): string {
     ["running", status.running],
     ["started", status.startedAt],
     ["file", status.filePath],
+    // A stop that failed still flips `running` to false; without this line the
+    // failure was invisible and the file looked like a finished recording.
+    ["error", status.lastError],
     ["duration", durationMs == null ? null : `${(durationMs / 1000).toFixed(1)}s`],
     ["caption", status.caption],
     [
       "filed",
-      status.running === true
+      status.running === true || status.lastError
         ? null
         : status.caption
           ? "yes — a captioned recording goes to the proof drawer"

@@ -120,9 +120,38 @@ final class CaptureEngine {
     /// happens to be running at that instant.
     private var cursorVisibleByLane: [String: Bool] = [:]
     private var recordings: [String: RecordingState] = [:]
+    /// Appended frames per recording lane, so "captured nothing" is a fact this
+    /// process can state before `record.stop` decides what to do with a file.
+    private var recordedFrameCounts: [String: Int] = [:]
     private let lock = NSRecursiveLock()
+    /// Serialises recording appends against the stop path.
+    ///
+    /// AVFoundation is explicit that `finishWriting` must not run concurrently
+    /// with `appendPixelBuffer`, and that every append must have returned before
+    /// it is invoked; the sample handler queue and the main thread are exactly
+    /// the two threads that made that a race. A recording stop takes this lock
+    /// first, so by the time it marks the input finished and asks the writer to
+    /// close, no append can be in flight — and a frame that arrives afterwards
+    /// waits for the stop and then finds its state gone.
+    private let appendLock = NSLock()
+    /// Writers whose finalize outlived the stop budget.
+    ///
+    /// A writer that is still finishing must not be released: AVFoundation
+    /// finalises the moov asynchronously, and dropping the last reference
+    /// mid-write is how a slow mux turns into a corrupt file. Kept only until
+    /// their completion fires, which the completion itself reports.
+    private var abandonedWriters: [AVAssetWriter] = []
     private let log: (String) -> Void
     private let emit: (DriverEvent) -> Void
+
+    /// How long `record.stop` waits for `finishWriting` before answering.
+    ///
+    /// The operation the test drive wedged on waited fifteen seconds and still
+    /// had not seen the completion. A correct close of a handful of frames is
+    /// milliseconds (measured: ~20ms), so two seconds is a generous budget that
+    /// still fails fast; a writer that needs longer is registered as abandoned
+    /// rather than blocking the driver's single main thread.
+    static let recordingFinalizeBudget: TimeInterval = 2.0
 
     init(log: @escaping (String) -> Void, emit: @escaping (DriverEvent) -> Void) {
         self.log = log
@@ -868,6 +897,11 @@ final class CaptureEngine {
         let sink = CaptureFrameSink(
             onFrame: { [weak self] sampleBuffer in
                 guard let self, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+                // Held across the state check and the append so a stop that
+                // removed the recording can never overlap an append the sample
+                // handler was already committed to.
+                self.appendLock.lock()
+                defer { self.appendLock.unlock() }
                 let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 self.lock.lock()
                 guard var state = self.recordings[laneId] else {
@@ -894,6 +928,7 @@ final class CaptureEngine {
                 if willAppend {
                     state.lastPresentationTime = time
                     self.recordings[laneId] = state
+                    self.recordedFrameCounts[laneId] = (self.recordedFrameCounts[laneId] ?? 0) + 1
                 }
                 self.lock.unlock()
                 guard willAppend else { return }
@@ -939,6 +974,11 @@ final class CaptureEngine {
     }
 
     func stopRecording(laneId: String) throws -> (filePath: String, durationMs: Int) {
+        // Taken before the state is removed and held through the finalize:
+        // every append either finished before this line or will find its
+        // recording gone and return without touching the adaptor.
+        appendLock.lock()
+        defer { appendLock.unlock() }
         lock.lock()
         guard let state = recordings.removeValue(forKey: laneId) else {
             lock.unlock()
@@ -949,23 +989,48 @@ final class CaptureEngine {
         }
         lock.unlock()
         state.stream.stopCapture { _ in }
-        state.input.markAsFinished()
-        let finished = SettledFlag()
+        lock.lock()
+        recordedFrameCounts.removeValue(forKey: laneId)
+        lock.unlock()
+
+        // A recording that never received a frame has no moov and no pictures:
+        // it is not a short video, and answering `ok` with its path filed a
+        // zero-byte file as proof. Refused with a reason the caller can act on.
+        guard state.firstPresentationTime != nil else {
+            state.writer.cancelWriting()
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: state.filePath))
+            throw DriverError(
+                code: DriverErrorCode.internalError,
+                message: "The recording for lane \(laneId) captured no frames; "
+                    + "the display produced no picture while it was running."
+            )
+        }
+
         if state.writer.status == .writing {
             // Close the session at the last frame we appended. AVFoundation
             // otherwise leaves the session open to the writer's own idea of
             // "now", and the mp4 container ends up seconds longer than the
             // pictures in it.
-            if let last = state.lastPresentationTime {
-                state.writer.endSession(atSourceTime: last)
-            }
-            state.writer.finishWriting { finished.set() }
-            RunLoopPump.wait(until: { finished.isSet }, timeout: 15)
-            if !finished.isSet {
+            let writer = state.writer
+            let settled = Self.finalizeRecordingWriter(
+                writer: writer,
+                input: state.input,
+                lastPresentationTime: state.lastPresentationTime,
+                onCompletion: { [weak self] in self?.releaseAbandonedWriter(writer) }
+            )
+            if !settled {
+                // The mux is still running — usually a long recording, or a
+                // writer that hit an AVFoundation stall. Answering `ok` here
+                // would hand the caller a file whose moov may not exist yet,
+                // and waiting is what wedged the driver's single main thread
+                // for the test drive. Keep the writer alive so the completion
+                // can still finish the file, and report the partial path.
+                abandonWriter(writer)
                 throw DriverError(
                     code: DriverErrorCode.internalError,
-                    message: "The recording for lane \(laneId) did not finalise within 15s; "
-                        + "\(state.filePath) may be unplayable."
+                    message: "The recording for lane \(laneId) did not finalise within "
+                        + "\(Int(Self.recordingFinalizeBudget))s; \(state.filePath) may be unplayable, "
+                        + "and its finalisation is still running."
                 )
             }
         }
@@ -993,10 +1058,74 @@ final class CaptureEngine {
         return (state.filePath, durationMs)
     }
 
+    /// The one finalize sequence `stopRecording` runs.
+    ///
+    /// Extracted so a test can hold a real `AVAssetWriter` to the same budget
+    /// without a window server: the bug this replaces was a stop that waited
+    /// fifteen seconds on a writer that had nothing left to say, and the
+    /// completion never arrived in that window. `onCompletion` fires on the
+    /// writer's own queue exactly once, late or on time.
+    @discardableResult
+    static func finalizeRecordingWriter(
+        writer: AVAssetWriter,
+        input: AVAssetWriterInput,
+        lastPresentationTime: CMTime?,
+        timeout: TimeInterval = CaptureEngine.recordingFinalizeBudget,
+        onCompletion: (() -> Void)? = nil
+    ) -> Bool {
+        // Status first: `markAsFinished` raises an ObjC exception on a writer
+        // that never started (`status == .unknown`), which is a legal state —
+        // it is what a display that produced no frame leaves behind — and an
+        // exception here is a crash, not a refusal. `finishWriting` marks every
+        // unfinished input finished itself, so there is nothing to do for a
+        // writer that never began.
+        guard writer.status == .writing else { return writer.status == .completed }
+        input.markAsFinished()
+        if let last = lastPresentationTime {
+            writer.endSession(atSourceTime: last)
+        }
+        let finished = SettledFlag()
+        writer.finishWriting {
+            onCompletion?()
+            finished.set()
+        }
+        RunLoopPump.wait(until: { finished.isSet }, timeout: timeout)
+        return finished.isSet
+    }
+
+    /// Keeps a late-finalising writer alive until its own completion runs.
+    private func abandonWriter(_ writer: AVAssetWriter) {
+        guard writer.status == .writing else { return }
+        lock.lock()
+        if !abandonedWriters.contains(where: { $0 === writer }) {
+            abandonedWriters.append(writer)
+        }
+        lock.unlock()
+    }
+
+    private func releaseAbandonedWriter(_ writer: AVAssetWriter) {
+        lock.lock()
+        abandonedWriters.removeAll { $0 === writer }
+        let remaining = abandonedWriters.count
+        lock.unlock()
+        log("recording writer finished late (status \(writer.status.rawValue)); \(remaining) still pending")
+    }
+
     func isRecording(laneId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         return recordings[laneId] != nil
+    }
+
+    /// How many frames the lane's recording has appended so far.
+    ///
+    /// Read by the live test to wait for a picture before stopping, and by
+    /// nobody else: the stop path decides "captured nothing" from the state it
+    /// removed, not from this counter.
+    func recordedFrameCount(laneId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedFrameCounts[laneId] ?? 0
     }
 
     func dispose() {
