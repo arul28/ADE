@@ -6,10 +6,15 @@ import { WorkLiveCornerCard } from "./WorkLiveCornerCard";
 import { NativeToolFeedsProvider } from "../terminals/NativeToolFeedsContext";
 import { useAppStore } from "../../state/appStore";
 import type { BuiltInBrowserStatus, BuiltInBrowserTab } from "../../../shared/types";
+import type { MacDesktopDisplay, MacDesktopEventPayload, MacDesktopStatus, MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
 import {
   makeBuiltInBrowserStatus,
   makeBuiltInBrowserTab,
 } from "../chat/__fixtures__/builtInBrowserStatus";
+import { resetMacDesktopFrames, setMacDesktopFrame } from "../chat/macDesktopFrameStore";
+import { resetMacDesktopLiveViewLeasesForTests } from "../chat/macDesktopLiveViewLease";
+import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
+import { resetMacDesktopSupportCache } from "../terminals/useMacDesktopSupport";
 import {
   floatWorkLiveCardForChat,
   readChatCompanionUiState,
@@ -20,8 +25,51 @@ type BrowserEventListener = (event: unknown) => void;
 
 const browserListeners = new Set<BrowserEventListener>();
 const appControlListeners = new Set<BrowserEventListener>();
+const macDesktopListeners = new Set<(event: MacDesktopEventPayload) => void>();
 const startPreviewStream = vi.fn(async () => ({ tabId: "tab-1", fps: 12, maxWidth: 480, subscribers: 1 }));
 const stopPreviewStream = vi.fn(async () => ({ tabId: "tab-1", fps: 12, maxWidth: 480, subscribers: 0 }));
+
+function makeStreamStatus(overrides: Partial<MacDesktopStreamStatus> = {}): MacDesktopStreamStatus {
+  return {
+    laneId: "lane-1",
+    running: false,
+    fps: 0,
+    idle: false,
+    bitrateKbps: null,
+    transport: null,
+    lastError: null,
+    clients: 0,
+    viewerChatSessionIds: [],
+    ...overrides,
+  };
+}
+
+const macDesktopStartStream = vi.fn(async () => makeStreamStatus({
+  running: true,
+  transport: {
+    url: "http://127.0.0.1:9/mac-desktop-video?lane=lane-1&token=t",
+    port: 9,
+    token: "t",
+    codec: "avc1.640032",
+    width: 1920,
+    height: 1080,
+  },
+}));
+const macDesktopStopStream = vi.fn(async () => makeStreamStatus());
+const macDesktopGetStreamStatus = vi.fn(async () => makeStreamStatus());
+const macDesktopGetStatus = vi.fn(async (): Promise<Partial<MacDesktopStatus>> => ({
+  supported: true,
+  display: null,
+  lease: null,
+  windows: [],
+  recording: null,
+}));
+
+function emitMacDesktopEvent(event: MacDesktopEventPayload): void {
+  act(() => {
+    for (const listener of macDesktopListeners) listener(event);
+  });
+}
 
 const BROWSER_STATUS: BuiltInBrowserStatus = makeBuiltInBrowserStatus({
   visible: false,
@@ -65,8 +113,17 @@ function loadImage(image: HTMLImageElement, width: number, height: number): void
 beforeEach(() => {
   browserListeners.clear();
   appControlListeners.clear();
+  macDesktopListeners.clear();
   startPreviewStream.mockClear();
   stopPreviewStream.mockClear();
+  macDesktopStartStream.mockClear();
+  macDesktopStopStream.mockClear();
+  macDesktopGetStreamStatus.mockReset();
+  macDesktopGetStreamStatus.mockResolvedValue(makeStreamStatus());
+  macDesktopGetStatus.mockClear();
+  resetMacDesktopSupportCache();
+  resetMacDesktopLiveViewLeasesForTests();
+  resetMacDesktopFrames();
   window.localStorage.clear();
   resetChatCompanionUiStateCacheForTests();
   // jsdom has no ResizeObserver; the card sizes itself from one.
@@ -102,6 +159,17 @@ beforeEach(() => {
       getTrace: vi.fn(async () => ({ entries: [] })),
     },
     iosSimulator: { getStatus: vi.fn(async () => ({ activeSession: null })), onEvent: () => () => {} },
+    macDesktop: {
+      getStatus: macDesktopGetStatus,
+      getStreamStatus: macDesktopGetStreamStatus,
+      startStream: macDesktopStartStream,
+      stopStream: macDesktopStopStream,
+      resolveStreamUrl: vi.fn(async (url: string) => ({ url, forwarded: false, error: null })),
+      onEvent: (cb: (event: MacDesktopEventPayload) => void) => {
+        macDesktopListeners.add(cb);
+        return () => macDesktopListeners.delete(cb);
+      },
+    },
   };
   useAppStore.setState({ projectBinding: null });
 });
@@ -110,6 +178,9 @@ afterEach(() => {
   cleanup();
   window.localStorage.clear();
   resetChatCompanionUiStateCacheForTests();
+  resetMacDesktopLiveViewLeasesForTests();
+  resetMacDesktopFrames();
+  resetMacDesktopSupportCache();
   vi.restoreAllMocks();
 });
 
@@ -136,6 +207,9 @@ function renderCard(overrides: Partial<Parameters<typeof WorkLiveCornerCard>[0]>
 
 describe("WorkLiveCornerCard", () => {
   it("shows nothing until a screen tool has actually done something", async () => {
+    (window.ade.builtInBrowser.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeBuiltInBrowserStatus({ visible: false, activeTabId: null, tabs: [] }),
+    );
     renderCard();
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
     expect(screen.queryByLabelText("Browser live preview")).toBeNull();
@@ -400,6 +474,39 @@ describe("WorkLiveCornerCard placement", () => {
     // Landscape aspect is locked: 288x180 -> 368x230.
     expect(card.style.height).toBe("230px");
     expect(useAppStore.getState().workViewByProject[PROJECT_ROOT]?.workLiveCardWidth).toBe(368);
+  });
+
+  it("draws a shrunk card in a column narrower than the full-size floor (M6)", async () => {
+    seedProject();
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, value: 360 });
+    const { card } = await showCard();
+    // The card clamps itself to the 200px minimum instead of disappearing.
+    expect(card.style.width).toBe("200px");
+  });
+
+  it("pulls a right-edge card back inside when a resize widens it (M7)", async () => {
+    seedProject();
+    useAppStore.setState({
+      workViewByProject: {
+        [PROJECT_ROOT]: { workLiveCardPosition: { xPct: 1, yPct: 0.25 } } as never,
+      },
+    });
+    const { card } = await showCard();
+    expect(card.style.left).toBe(`${900 - 288 - 12}px`);
+
+    const handle = card.querySelector("[data-live-card-resize]") as HTMLElement;
+    fireEvent(handle, new MouseEvent("pointerdown", { bubbles: true, clientX: 100, button: 0 }));
+    fireEvent(handle, new MouseEvent("pointermove", { bubbles: true, clientX: 300, button: 0 }));
+    fireEvent(handle, new MouseEvent("pointerup", { bubbles: true, clientX: 300, button: 0 }));
+
+    await waitFor(() => expect(card.style.width).toBe("450px"));
+    const left = Number.parseInt(card.style.left, 10);
+    const width = Number.parseInt(card.style.width, 10);
+    expect(left + width).toBeLessThanOrEqual(900 - 12);
+    // The clamp is persisted, not just drawn: xPct 1 would reopen off-column.
+    const stored = useAppStore.getState().workViewByProject[PROJECT_ROOT]?.workLiveCardPosition;
+    expect(stored?.xPct).toBeLessThan(1);
+    expect(card.style.left).toBe(`${900 - 450 - 12}px`);
   });
 });
 
@@ -755,5 +862,157 @@ describe("WorkLiveCornerCard tool switching", () => {
       const live = screen.getByLabelText("Browser live preview").querySelector("img");
       expect(live?.getAttribute("src")).toBe(secondFrame);
     });
+  });
+});
+
+/* ── D1/D2: activity seeding and the shared live-view lease ─────────────── */
+
+/** Stands in for `ChatMacDesktopPanel`'s decoder while a test drives the pane. */
+function MacDesktopPaneProbe() {
+  const live = useMacDesktopLiveView({
+    laneId: "lane-1",
+    runtimePin: null,
+    enabled: true,
+    chatSessionId: "chat-1",
+  });
+  return <span data-testid="pane-probe" data-url={live.url ?? ""} />;
+}
+
+function macDesktopFrame() {
+  return {
+    laneId: "lane-1",
+    dataUrl: "data:image/jpeg;base64,ZnJhbWU=",
+    width: 1920,
+    height: 1080,
+    at: Date.now(),
+    caption: null,
+  };
+}
+
+function macDesktopDisplay(overrides: Partial<MacDesktopDisplay> = {}): MacDesktopDisplay {
+  return {
+    laneId: "lane-1",
+    displayId: 31,
+    name: "ADE · mac-desktop",
+    mode: "virtual",
+    width: 2560,
+    height: 1440,
+    scale: 1,
+    origin: { x: 0, y: 0 },
+    createdAt: "2026-09-18T19:00:00.000Z",
+    windowCount: 1,
+    lastActivityAt: "2026-09-18T19:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("WorkLiveCornerCard live tools that predate the card", () => {
+  it("shows a browser that was already open when the card mounted (D1)", async () => {
+    // No `status` event ever arrives after mount; only the provider's settled
+    // `getStatus` answer. Before the fix this tool had `lastActivityAt: 0` and
+    // was skipped forever — the card could never show it again until a reload.
+    renderCard({ activeTool: "mac-desktop" });
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    await waitFor(() => expect(startPreviewStream).toHaveBeenCalled());
+  });
+
+  it("shows a floated tool even when it has never painted (D1)", async () => {
+    (window.ade.builtInBrowser.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeBuiltInBrowserStatus({ visible: false, activeTabId: null, tabs: [] }),
+    );
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    expect(screen.queryByLabelText("Browser live preview")).toBeNull();
+
+    act(() => { floatWorkLiveCardForChat("chat-1", "browser"); });
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it("shows the mac-desktop card for a chat that watches the lane (D1)", async () => {
+    macDesktopGetStreamStatus.mockResolvedValue(
+      makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }),
+    );
+    setMacDesktopFrame(macDesktopFrame());
+    renderCard({ activeTool: "browser" });
+    expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it("reopens a closed mac-desktop card for a recreated display (M2)", async () => {
+    macDesktopGetStatus.mockResolvedValue({
+      supported: true,
+      display: macDesktopDisplay(),
+      lease: null,
+      windows: [],
+      recording: null,
+    });
+    macDesktopGetStreamStatus.mockResolvedValue(
+      makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }),
+    );
+    setMacDesktopFrame(macDesktopFrame());
+    renderCard({ activeTool: "browser" });
+    await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
+
+    fireEvent.click(screen.getByLabelText("Hide the Mac Desktop preview"));
+    await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
+    // The close is stored against the display, not the lane.
+    expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool["mac-desktop"])
+      .toBe("display:31:2026-09-18T19:00:00.000Z");
+
+    // The display dies...
+    emitMacDesktopEvent({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" });
+    await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
+    // ...and a new one is a new session, so the closed card may show again.
+    emitMacDesktopEvent({
+      type: "display-created",
+      display: macDesktopDisplay({ displayId: 57, createdAt: "2026-09-18T19:10:00.000Z" }),
+    });
+    act(() => { setMacDesktopFrame({ ...macDesktopFrame(), at: Date.now() + 1 }); });
+    expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it("keeps the stream alive, and decodes it, when the pane goes away (D2)", async () => {
+    macDesktopGetStreamStatus.mockResolvedValue(
+      makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }),
+    );
+    setMacDesktopFrame(macDesktopFrame());
+    const onPick = vi.fn();
+    /**
+     * The card and the pane, with the pane mount toggleable without disturbing
+     * the card's position in the tree — the same shape as the tools pane going
+     * away inside a live Work page.
+     */
+    function Harness({ showPane }: { showPane: boolean }) {
+      return (
+        <NativeToolFeedsProvider active runtimePin={null}>
+          {showPane ? <MacDesktopPaneProbe /> : null}
+          <WorkLiveCornerCard
+            active
+            laneId="lane-1"
+            activeTool="browser"
+            chatSessionId="chat-1"
+            runtimePin={null}
+            onPick={onPick}
+          />
+        </NativeToolFeedsProvider>
+      );
+    }
+    const view = render(<Harness showPane />);
+    // The pane is the decoder owner: it starts the stream once.
+    await waitFor(() => expect(macDesktopStartStream).toHaveBeenCalledTimes(1));
+    await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
+
+    // Hiding the pane is an unmount: before the lease this stopped the encoder
+    // (and with it the chat's viewer entry) under the card still showing it.
+    view.rerender(<Harness showPane={false} />);
+    await waitFor(() => expect(macDesktopStartStream).toHaveBeenCalledTimes(2));
+    expect(macDesktopStopStream).not.toHaveBeenCalled();
+    // ...and the card owns a decoder now, so frames keep reaching the store.
+    const cardNode = screen.getByLabelText("Mac Desktop live preview");
+    await waitFor(() => expect(cardNode.parentElement?.querySelector("[data-live-card-decoder]")).toBeTruthy());
+
+    // Dismissing the card is the last release: the stream stops.
+    fireEvent.click(screen.getByLabelText("Hide the Mac Desktop preview"));
+    await waitFor(() => expect(macDesktopStopStream).toHaveBeenCalledTimes(1));
+    expect(macDesktopStopStream).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
   });
 });

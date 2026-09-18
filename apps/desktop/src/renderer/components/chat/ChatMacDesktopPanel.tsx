@@ -68,7 +68,9 @@ import {
   macDesktopPresentAction,
   macDesktopRelativeTime,
   macDesktopStatusPill,
+  macDesktopStatusSegments,
   macDesktopStripControls,
+  macDesktopStripName,
   macDesktopWindowRowText,
   macDesktopWindowTitle,
 } from "./macDesktopStrip";
@@ -232,6 +234,8 @@ export function ChatMacDesktopPanel({
     error: statusError,
     setError: setStatusError,
     refresh: refreshStatus,
+    start,
+    starting,
     cursor,
     notParked,
     dismissNotParked,
@@ -250,6 +254,20 @@ export function ChatMacDesktopPanel({
   const [claimError, setClaimError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
+  /**
+   * A recording toggle that failed, kept OUT of `statusError`.
+   *
+   * `statusError` is the display-state slot: it titles the empty state when
+   * the display is gone. A failed `stopRecording` on a lane whose recorder the
+   * helper already closed used to be written there and then surfaced as
+   * "Lane <uuid> is not recording." over an empty pane — an error about the
+   * wrong thing, in the wrong place, with an id in it.
+   */
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  // The line belongs to one lane's recorder; a lane change starts a new one.
+  useEffect(() => {
+    setRecordingError(null);
+  }, [laneId]);
   const [viewRect, setViewRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
   /** The pane's own box, which decides stacked vs side by side. */
   const [bodySize, setBodySize] = useState({ width: 0, height: 0 });
@@ -311,6 +329,18 @@ export function ChatMacDesktopPanel({
   }, [canvasSlot, videoHost]);
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
+
+  /**
+   * One place every user-facing failure is routed through, so a lane id never
+   * reaches a panel: the lane's name replaces it when the caller has one.
+   */
+  const errorText = useCallback(
+    (error: unknown): string | null => macDesktopErrorText(
+      error instanceof Error ? error.message : String(error),
+      { laneId, laneName },
+    ),
+    [laneId, laneName],
+  );
 
   const display: MacDesktopDisplay | null = status?.display ?? null;
   const lease: MacDesktopLeaseState | null = status?.lease ?? null;
@@ -501,11 +531,11 @@ export function ChatMacDesktopPanel({
       );
       setStatus((current) => (current ? { ...current, lease: next } : current));
     } catch (error) {
-      setStatusError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
+      setStatusError(errorText(error));
     } finally {
       setBusy(false);
     }
-  }, [laneId, setStatus, setStatusError]);
+  }, [errorText, laneId, setStatus, setStatusError]);
 
   /* ── Real input, only while the user holds the lease ──────────────────── */
 
@@ -526,18 +556,26 @@ export function ChatMacDesktopPanel({
 
   const recording = status?.recording ?? null;
   const toggleRecording = useCallback(async () => {
+    // No display means no recorder: the helper closed it with the display, and
+    // a stale `running: true` would otherwise send a stop for a recording that
+    // no longer exists.
+    if (!display) return;
     setBusy(true);
     try {
       const next = recording?.running
         ? await macDesktopApi().stopRecording({ laneId, chatSessionId: sessionId }, pinRef.current)
         : await macDesktopApi().startRecording({ laneId, chatSessionId: sessionId }, pinRef.current);
       setStatus((current) => (current ? { ...current, recording: next } : current));
+      setRecordingError(null);
     } catch (error) {
-      setStatusError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
+      setRecordingError(macDesktopErrorText(
+        error instanceof Error ? error.message : String(error),
+        { laneId, laneName },
+      ));
     } finally {
       setBusy(false);
     }
-  }, [laneId, recording?.running, sessionId, setStatus, setStatusError]);
+  }, [display, laneId, laneName, recording?.running, sessionId, setStatus]);
 
   const present = useCallback(async (destination: "main" | "display") => {
     setBusy(true);
@@ -545,11 +583,11 @@ export function ChatMacDesktopPanel({
       await macDesktopApi().present({ laneId, destination }, pinRef.current);
       await refreshStatus();
     } catch (error) {
-      setStatusError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
+      setStatusError(errorText(error));
     } finally {
       setBusy(false);
     }
-  }, [laneId, refreshStatus, setStatusError]);
+  }, [errorText, laneId, refreshStatus, setStatusError]);
 
   /**
    * What is open on the user's own screen that this lane could adopt.
@@ -567,11 +605,11 @@ export function ChatMacDesktopPanel({
       const all = await macDesktopApi().listWindows({ laneId: null }, pinRef.current);
       setClaimable(all);
     } catch (error) {
-      setClaimError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
+      setClaimError(errorText(error));
     } finally {
       setClaimableLoading(false);
     }
-  }, []);
+  }, [errorText]);
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -592,20 +630,20 @@ export function ChatMacDesktopPanel({
       await macDesktopApi().claimWindow({ laneId, windowId, chatSessionId: sessionId }, pinRef.current);
       await refreshStatus();
     } catch (error) {
-      setClaimError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
+      setClaimError(errorText(error));
       throw error;
     } finally {
       setBusy(false);
     }
-  }, [laneId, refreshStatus, sessionId]);
+  }, [errorText, laneId, refreshStatus, sessionId]);
 
   const releaseWindow = useCallback(async (windowId: number) => {
     try {
       await macDesktopApi().releaseWindow({ laneId, windowId }, pinRef.current);
     } catch (error) {
-      setStatusError(macDesktopErrorText(error instanceof Error ? error.message : String(error)));
+      setStatusError(errorText(error));
     }
-  }, [laneId, setStatusError]);
+  }, [errorText, laneId, setStatusError]);
 
   /**
    * Point the rail at one window, or stop pointing.
@@ -696,14 +734,25 @@ export function ChatMacDesktopPanel({
   }
 
   if (!display) {
+    /*
+      An absent display with a settled status is a start, not a spinner.
+  
+      The auto-start only runs on mount, so after `mac-desktop stop` the pane
+      used to sit on "Starting…" forever, and a stale action error used to take
+      its place. `statusError` is the display's own failure (a denied
+      permission, a refused create), and the manual start is idempotent, so
+      both the retry and the stopped case get the same button.
+    */
+    const settled = status != null && !starting;
     return (
       <WorkToolEmptyLine
         testId="mac-desktop-starting"
-        title={statusError ?? "Starting this lane's screen…"}
-        action={statusError ? (
-          <button type="button" className={WORK_TOOL_PRIMARY_BUTTON} onClick={() => void refreshStatus()}>
+        title={statusError
+          ?? (settled ? "Start Mac Desktop for this lane" : "Starting this lane's screen…")}
+        action={statusError || settled ? (
+          <button type="button" className={WORK_TOOL_PRIMARY_BUTTON} onClick={() => void start()}>
             <Monitor size={14} />
-            Try again
+            {statusError ? "Try again" : "Start Mac Desktop"}
           </button>
         ) : undefined}
       />
@@ -725,6 +774,9 @@ export function ChatMacDesktopPanel({
         ? { message: "Accessibility is off for ADE on the lane's Mac.", pane: "macos-accessibility" }
         : null;
   const pill = macDesktopStatusPill({ live: live.status, lease, iHaveControl });
+  const statusSegments = macDesktopStatusSegments(pill);
+  // "ADE · <lane>", the display's own name, leading the strip's status chip.
+  const stripName = macDesktopStripName({ displayName: display.name, laneName });
   const selectedWindow = parkedWindows.find((entry) => entry.id === selectedWindowId) ?? null;
   /* Where the selected window sits on the picture. A positioned div over the
      canvas, never a second canvas: it moves when the pane resizes and when the
@@ -777,11 +829,24 @@ export function ChatMacDesktopPanel({
           pill.tone === "live" ? "bg-emerald-400" : pill.tone === "error" ? "bg-rose-400/85" : "bg-amber-400",
         )}
       />
-      <span className="truncate">
-        {pill.label}
-        <span className="px-1 opacity-60">·</span>
-        {pill.detail}
-      </span>
+      {/*
+        The name truncates first, the detail second, and the status word never:
+        the takeover controls are wide, and "Live · Idle" collapsing into a
+        sliver that read as a bare separator is what this split prevents.
+      */}
+      {stripName ? (
+        <>
+          <span className="min-w-0 truncate" title={stripName}>{stripName}</span>
+          <span aria-hidden="true" className="shrink-0 text-muted-fg/50">·</span>
+        </>
+      ) : null}
+      <span className="shrink-0">{statusSegments.status}</span>
+      {statusSegments.detail ? (
+        <>
+          <span aria-hidden="true" className="shrink-0 opacity-60">{statusSegments.separator}</span>
+          <span className="min-w-0 truncate">{statusSegments.detail}</span>
+        </>
+      ) : null}
     </span>
   );
 
@@ -1106,27 +1171,53 @@ export function ChatMacDesktopPanel({
     );
   };
 
-  const renderInputErrorLine = (suffix: string) => (
-    realInput.inputError ? (
+  /**
+   * One amber line for a refusal that belongs to an action, not the display.
+   *
+   * Real input and a recording toggle both fail while the picture is fine, so
+   * neither may write `statusError` — that slot titles the EMPTY state, and the
+   * recording refusal used to end up there with the lane's raw uuid in it.
+   */
+  const renderStripErrorLine = (
+    suffix: string,
+    testId: string,
+    message: string | null,
+    onDismiss: () => void,
+  ) => (
+    message ? (
       <div
         className="flex w-full items-start gap-2 px-1 text-left text-[12px] text-amber-300"
-        data-testid={`mac-desktop-input-error${suffix}`}
+        data-testid={`${testId}${suffix}`}
       >
         <WarningCircle size={12} className="mt-0.5 shrink-0" />
         <span className="min-w-0 flex-1 whitespace-normal break-words">
-          {macDesktopErrorText(realInput.inputError)}
+          {message}
         </span>
         <button
           type="button"
           className="mt-0.5 shrink-0 rounded-[4px] p-0.5 text-amber-200/80 hover:bg-white/[0.06] hover:text-amber-100"
           title="Dismiss"
           aria-label="Dismiss"
-          onClick={realInput.clearInputError}
+          onClick={onDismiss}
         >
           <X size={12} />
         </button>
       </div>
     ) : null
+  );
+
+  const renderInputErrorLine = (suffix: string) => renderStripErrorLine(
+    suffix,
+    "mac-desktop-input-error",
+    realInput.inputError ? macDesktopErrorText(realInput.inputError, { laneId, laneName }) : null,
+    realInput.clearInputError,
+  );
+
+  const renderRecordingErrorLine = (suffix: string) => renderStripErrorLine(
+    suffix,
+    "mac-desktop-recording-error",
+    recordingError,
+    () => setRecordingError(null),
   );
 
   return (
@@ -1195,6 +1286,7 @@ export function ChatMacDesktopPanel({
       >
         <div className={cn("flex min-w-0 shrink-0 flex-col items-stretch", wide ? "h-full flex-1" : "w-full")}>
           {renderInputErrorLine("")}
+          {renderRecordingErrorLine("")}
           {renderPicture("pane")}
         </div>
 
@@ -1322,6 +1414,7 @@ export function ChatMacDesktopPanel({
                 {renderChromeRow("fullscreen")}
               </div>
               {renderInputErrorLine("-fs")}
+              {renderRecordingErrorLine("-fs")}
               <div
                 className="flex min-h-0 flex-1 items-stretch justify-stretch"
                 style={{ padding: MAC_DESKTOP_FULLSCREEN_MARGIN }}

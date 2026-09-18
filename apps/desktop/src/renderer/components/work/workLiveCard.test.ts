@@ -32,6 +32,7 @@ import {
   workLiveBottomReserve,
   workLiveActivityBelongsToChat,
   workLiveHostLabel,
+  workLiveMacDesktopSessionKey,
   workLivePreviewMaxWidth,
   workLiveScrubIndex,
   type WorkLiveActivity,
@@ -233,12 +234,30 @@ describe("floating override", () => {
     })).toBe("browser");
   });
 
-  it("still requires the floated tool to be live and available", () => {
+  it("still requires the floated tool to be available, but not to be live", () => {
+    // A floated tool with nothing painted yet is a blank frame with its name
+    // on it — the lit Float button has to produce something.
     expect(select({
       activeTool: "browser",
-      activities: [activity({ tool: "browser", live: false })],
+      activities: [activity({ tool: "browser", live: false, lastActivityAt: 0 })],
+      floatingTools: ["browser"],
+    })).toBe("browser");
+    expect(select({
+      activeTool: "browser",
+      activities: [activity({ tool: "browser", live: false, available: false })],
       floatingTools: ["browser"],
     })).toBeNull();
+  });
+
+  it("lets a floated tool outrank another tool's newer activity", () => {
+    expect(select({
+      activeTool: "browser",
+      activities: [
+        activity({ tool: "browser", live: false, lastActivityAt: 0 }),
+        activity({ tool: "app-control", lastActivityAt: 9_000 }),
+      ],
+      floatingTools: ["browser"],
+    })).toBe("browser");
   });
 });
 
@@ -516,6 +535,20 @@ describe("workLiveCardFits", () => {
     expect(workLiveCardFits(shortColumn))
       .toBe(workLiveCardFits(shortColumn, 0, landscape));
   });
+
+  it("shrinks into a column narrower than the full-size floor (M6)", () => {
+    // 360px is under the 380px full-size floor, but the card's own bounds
+    // already clamp it to the 200px minimum: hide it and the column has no
+    // preview at all, show it and the picture survives at its floor.
+    const host = { width: 360, height: 600 };
+    const size = workLiveCardSize({ tool: "browser", width: WORK_LIVE_CARD_DEFAULT_WIDTH, host });
+    expect(size.width).toBe(WORK_LIVE_CARD_MIN_WIDTH);
+    expect(workLiveCardFits(host, 0, size)).toBe(true);
+
+    // ...but a host that cannot hold the minimum card still has no room.
+    const tooNarrow = { width: WORK_LIVE_CARD_MIN_WIDTH + WORK_LIVE_CARD_INSET * 2 - 1, height: 600 };
+    expect(workLiveCardFits(tooNarrow, 0, workLiveCardSize({ tool: "browser", host: tooNarrow }))).toBe(false);
+  });
 });
 
 describe("workLiveCardSize", () => {
@@ -581,6 +614,26 @@ describe("workLiveCardAspect / objectFit", () => {
     }
     expect(WORK_LIVE_CARD_OBJECT_FIT).toBe("contain");
     expect(workLiveCardObjectFit(null)).toBe("contain");
+  });
+});
+
+describe("workLiveMacDesktopSessionKey", () => {
+  it("is stable for one display and changes when it is recreated (M2)", () => {
+    const display = { displayId: 31, createdAt: "2026-09-18T19:00:00.000Z" };
+    const key = workLiveMacDesktopSessionKey(display);
+    expect(key).toBe("display:31:2026-09-18T19:00:00.000Z");
+    // A status refresh hands back an equal display: the key must not move.
+    expect(workLiveMacDesktopSessionKey({ ...display })).toBe(key);
+    // A new display has a new id and a new creation time.
+    expect(workLiveMacDesktopSessionKey({ displayId: 57, createdAt: "2026-09-18T19:10:00.000Z" }))
+      .not.toBe(key);
+  });
+
+  it("falls back to the creation time for an off-screen-region display", () => {
+    expect(workLiveMacDesktopSessionKey({ displayId: null, createdAt: "2026-09-18T19:00:00.000Z" }))
+      .toBe("display:offscreen:2026-09-18T19:00:00.000Z");
+    expect(workLiveMacDesktopSessionKey(null)).toBeNull();
+    expect(workLiveMacDesktopSessionKey({ displayId: null, createdAt: "  " })).toBeNull();
   });
 });
 
@@ -700,6 +753,13 @@ describe("workLiveSource", () => {
     expect(workLiveSource("ios", { ...empty, iosSession: { id: "i1", appName: "ADE" } }).sessionKey).toBe("i1");
     expect(workLiveSource("mac-desktop", { ...empty, macDesktopFrame: { laneId: "lane-1" } }).sessionKey)
       .toBe("lane-1");
+  });
+
+  it("prefers the display identity over the lane id for mac-desktop (M2)", () => {
+    expect(workLiveSource("mac-desktop", {
+      ...empty,
+      macDesktopFrame: { laneId: "lane-1", displayKey: "display:31:2026-09-18T19:00:00.000Z" },
+    }).sessionKey).toBe("display:31:2026-09-18T19:00:00.000Z");
   });
 
   it("only the browser can be recording", () => {

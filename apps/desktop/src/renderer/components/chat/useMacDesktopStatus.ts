@@ -51,7 +51,12 @@ export function reduceMacDesktopStatus(
     case "display-created":
       return event.display.laneId === laneId ? { ...status, display: event.display } : status;
     case "display-destroyed":
-      return event.laneId === laneId ? { ...status, display: null, windows: [] } : status;
+      return event.laneId === laneId
+        // The recording went with the display: the helper closes its recorder
+        // when the display dies, and a stale `running: true` made the strip
+        // still offer "Stop recording" for a recorder that no longer exists.
+        ? { ...status, display: null, windows: [], recording: null }
+        : status;
     case "windows-changed":
       return event.laneId === laneId ? { ...status, windows: event.windows } : status;
     case "lease-changed":
@@ -126,6 +131,10 @@ export type UseMacDesktopStatus = {
   error: string | null;
   setError: (message: string | null) => void;
   refresh: () => Promise<MacDesktopStatus>;
+  /** Creates the lane's display. Idempotent on the host, so a retry is safe. */
+  start: () => Promise<MacDesktopStatus | null>;
+  /** A create is in flight — the empty state says so instead of offering one. */
+  starting: boolean;
   cursor: MacDesktopAgentCursor | null;
 };
 
@@ -158,13 +167,38 @@ export function useMacDesktopStatus(args: {
   }, [laneId, runtimePin, sessionId]);
 
   /**
-   * Auto-start.
+   * Auto-start, and the manual retry the empty state offers.
    *
    * The spec's "there is no intermediate card" is load bearing: a tab that
    * opens onto a button saying "Start display" is a step nobody can decline
    * meaningfully. `start` is idempotent and serialized per lane on the host, so
-   * two chats in the lane opening the tab at once both get the first display.
+   * two chats in the lane opening the tab at once both get the first display,
+   * and a user pressing the button after a `mac-desktop stop` gets the display
+   * back instead of a button that only re-reads.
    */
+  const [starting, setStarting] = useState(false);
+
+  const start = useCallback(async (): Promise<MacDesktopStatus | null> => {
+    setStarting(true);
+    setError(null);
+    try {
+      const started = await macDesktopApi().start(
+        { laneId, laneName, chatSessionId: sessionId },
+        runtimePin,
+      );
+      setStatus(started);
+      return started;
+    } catch (caught) {
+      setError(macDesktopErrorText(
+        caught instanceof Error ? caught.message : String(caught),
+        { laneId, laneName },
+      ));
+      return null;
+    } finally {
+      setStarting(false);
+    }
+  }, [laneId, laneName, runtimePin, sessionId]);
+
   useEffect(() => {
     let cancelled = false;
     setError(null);
@@ -172,19 +206,20 @@ export function useMacDesktopStatus(args: {
       try {
         const current = await refresh();
         if (cancelled || !current.supported || current.display) return;
-        const started = await macDesktopApi().start(
-          { laneId, laneName, chatSessionId: sessionId },
-          runtimePin,
-        );
-        if (!cancelled) setStatus(started);
+        await start();
       } catch (caught) {
-        if (!cancelled) setError(macDesktopErrorText(caught instanceof Error ? caught.message : String(caught)));
+        if (!cancelled) {
+          setError(macDesktopErrorText(
+            caught instanceof Error ? caught.message : String(caught),
+            { laneId, laneName },
+          ));
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [laneId, laneName, refresh, runtimePin, sessionId]);
+  }, [laneId, laneName, refresh, start]);
 
   useEffect(() => {
     const api = window.ade.macDesktop;
@@ -238,5 +273,5 @@ export function useMacDesktopStatus(args: {
     });
   }, []);
 
-  return { status, setStatus, error, setError, refresh, cursor, notParked, dismissNotParked };
+  return { status, setStatus, error, setError, refresh, start, starting, cursor, notParked, dismissNotParked };
 }

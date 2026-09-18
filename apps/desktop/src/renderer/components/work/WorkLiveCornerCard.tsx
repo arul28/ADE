@@ -24,6 +24,7 @@ import {
 } from "../../state/appStore";
 import {
   WORK_LIVE_CARD_DEFAULT_WIDTH,
+  isWorkLiveCardClosed,
   normalizeWorkLiveCardWidth,
   type WorkLiveCardClosedByTool,
   type WorkLiveScreenTool,
@@ -31,7 +32,10 @@ import {
 import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
 import { cn } from "../ui/cn";
 import { workToolDefinition } from "../terminals/workTools";
-import { useMacDesktopFrame } from "../chat/macDesktopFrameStore";
+import { clearMacDesktopFrame, useMacDesktopFrame } from "../chat/macDesktopFrameStore";
+import { H264VideoCanvas } from "../chat/H264VideoCanvas";
+import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
+import { MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY } from "../chat/macDesktopLiveViewLease";
 import {
   closeWorkLiveCardForChat,
   useChatCompanionUiState,
@@ -61,6 +65,7 @@ import {
   workLiveCardSize,
   workLivePreviewMaxWidth,
   workLiveCardWidthBounds,
+  workLiveMacDesktopSessionKey,
   WORK_LIVE_CARD_AVOID_SELECTOR,
   workLiveScrubFrameKey,
   workLiveScrubIndex,
@@ -137,21 +142,24 @@ function browserActivitySignature(status: BuiltInBrowserStatus | null): string {
 
 /**
  * Whether the chat on screen is currently watching the lane's desktop, or
- * holding its input lease.
+ * holding its input lease — plus the identity of the display itself.
  *
  * The display belongs to the lane, not to one chat, so the card asks the
  * stream status who its viewers are (ids only) and the lease who holds it.
- * Both reads are tolerant of a surface without the namespace.
+ * Both reads are tolerant of a surface without the namespace. The display key
+ * is what the "×" marker is stored under: a stop-and-recreate is a new
+ * session, and a lane id could never tell the two apart.
  */
 function useMacDesktopChatScope(args: {
   enabled: boolean;
   laneId: string | null;
   chatSessionId: string | null;
   runtimePin: OpenProjectBinding | null;
-}): { viewerChatSessionIds: string[]; leaseHolderId: string | null } {
+}): { viewerChatSessionIds: string[]; leaseHolderId: string | null; displayKey: string | null } {
   const { enabled, laneId, chatSessionId, runtimePin } = args;
   const [viewerChatSessionIds, setViewerChatSessionIds] = useState<string[]>([]);
   const [leaseHolderId, setLeaseHolderId] = useState<string | null>(null);
+  const [displayKey, setDisplayKey] = useState<string | null>(null);
   // Read through a ref so a caller passing a fresh pin object each render cannot
   // re-issue the stream read; only the pin's key is a dependency.
   const pinRef = useRef(runtimePin);
@@ -162,6 +170,7 @@ function useMacDesktopChatScope(args: {
     if (!enabled || !laneId) {
       setViewerChatSessionIds([]);
       setLeaseHolderId(null);
+      setDisplayKey(null);
       return undefined;
     }
     const api = window.ade?.macDesktop;
@@ -169,6 +178,7 @@ function useMacDesktopChatScope(args: {
       // Without a chat there is nothing to authorize; skip the reads entirely.
       setViewerChatSessionIds([]);
       setLeaseHolderId(null);
+      setDisplayKey(null);
       return undefined;
     }
     let cancelled = false;
@@ -177,11 +187,14 @@ function useMacDesktopChatScope(args: {
         if (!cancelled) setViewerChatSessionIds(status?.viewerChatSessionIds ?? []);
       })
       .catch(() => {});
-    // The lease is seeded once as well as tracked by event: a chat that already
-    // holds it when this card mounts gets no `lease-changed` to learn from.
+    // The lease and the display are seeded once as well as tracked by event: a
+    // chat that already holds the lease, or a display that already exists when
+    // this card mounts, gets no event to learn from.
     void api.getStatus?.({ laneId, chatSessionId }, pinRef.current)
       .then((status) => {
-        if (!cancelled) setLeaseHolderId(status?.lease?.holderId ?? null);
+        if (cancelled) return;
+        setLeaseHolderId(status?.lease?.holderId ?? null);
+        setDisplayKey(workLiveMacDesktopSessionKey(status?.display));
       })
       .catch(() => {});
     const unsubscribe = api.onEvent?.((event: MacDesktopEventPayload) => {
@@ -198,6 +211,20 @@ function useMacDesktopChatScope(args: {
       }
       if (event.type === "lease-changed" && event.laneId === laneId) {
         setLeaseHolderId(event.lease?.holderId ?? null);
+        return;
+      }
+      if (event.type === "display-created") {
+        if (event.display.laneId === laneId) {
+          setDisplayKey(workLiveMacDesktopSessionKey(event.display));
+        }
+        return;
+      }
+      if (event.type === "display-destroyed" && event.laneId === laneId) {
+        setDisplayKey(null);
+        // The picture is of a display that no longer exists; the pane clears
+        // the shared frame too, but the card must not depend on the pane being
+        // open to stop showing a dead screen.
+        clearMacDesktopFrame(laneId);
       }
     }, pinRef.current);
     return () => {
@@ -206,7 +233,7 @@ function useMacDesktopChatScope(args: {
     };
   }, [chatSessionId, enabled, laneId, pinKey]);
 
-  return { viewerChatSessionIds, leaseHolderId };
+  return { viewerChatSessionIds, leaseHolderId, displayKey };
 }
 
 export function WorkLiveCornerCard({
@@ -412,6 +439,23 @@ export function WorkLiveCornerCard({
     }
   }, [bump, paintFrame]);
 
+  /**
+   * A browser that was already open when this card mounted still counts.
+   *
+   * Activity used to advance on events only, so a tab opened before the Work
+   * page (or before a remount of it) had `lastActivityAt: 0` and
+   * `selectWorkLiveCardTool` skipped it forever — a live tool the card could
+   * never show. The settled `getStatus` answer is the session, not a refresh:
+   * an unchanged signature is ignored.
+   */
+  const onBrowserStatusSettled = useCallback((status: BuiltInBrowserStatus | null) => {
+    if (!status || !Array.isArray(status.tabs) || status.tabs.length === 0) return;
+    const signature = browserActivitySignature(status);
+    if (signature === browserSignatureRef.current) return;
+    browserSignatureRef.current = signature;
+    bump("browser");
+  }, [bump]);
+
   const onAppControlEvent = useCallback((event: AppControlEventPayload, scope: NativeToolFeedScope) => {
     if (event.type === "session-started" || event.type === "session-updated") {
       const session = event.session ?? null;
@@ -491,10 +535,35 @@ export function WorkLiveCornerCard({
     runtimePin,
   });
   useNativeToolFeedHandlers(useMemo(() => ({
+    onBrowserStatusSettled,
     onBrowserEvent,
     onAppControlEvent,
     onIosEvent,
-  }), [onAppControlEvent, onBrowserEvent, onIosEvent]));
+  }), [onAppControlEvent, onBrowserEvent, onBrowserStatusSettled, onIosEvent]));
+
+  /**
+   * A session that was already running when this card mounted counts too.
+   *
+   * The same gap the settled browser answer closes: App Control and the
+   * simulator only bump on events, so a card that mounted after the session
+   * started — a Work remount, a chat switch — saw a live session with no
+   * activity and could never picture it.
+   */
+  const seenAppControlSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = appControlSession?.id ?? null;
+    if (!key || key === seenAppControlSessionRef.current) return;
+    seenAppControlSessionRef.current = key;
+    bump("app-control");
+  }, [appControlSession?.id, bump]);
+
+  const seenIosSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = iosSession?.id ?? null;
+    if (!key || key === seenIosSessionRef.current) return;
+    seenIosSessionRef.current = key;
+    bump("ios");
+  }, [bump, iosSession?.id]);
 
   /**
    * A new desktop frame is both the activity signal and the picture.
@@ -526,8 +595,10 @@ export function WorkLiveCornerCard({
     browserTab: activeBrowserTab,
     appControlSession,
     iosSession,
-    macDesktopFrame,
-  }), [activeBrowserTab, appControlSession, iosSession, macDesktopFrame]);
+    macDesktopFrame: macDesktopFrame
+      ? { ...macDesktopFrame, displayKey: macScope.displayKey }
+      : null,
+  }), [activeBrowserTab, appControlSession, iosSession, macDesktopFrame, macScope.displayKey]);
 
   const sources = useMemo(() => ({
     browser: workLiveSource("browser", sourceState),
@@ -541,6 +612,43 @@ export function WorkLiveCornerCard({
     chatSessionId
     && (macScope.viewerChatSessionIds.includes(chatSessionId) || macScope.leaseHolderId === chatSessionId),
   );
+
+  /**
+   * The display's identity, which is this card's session for the "×" rule.
+   *
+   * A lane's display is destroyed and recreated (a stop, an idle release), and
+   * the close marker must follow the display rather than the lane: keyed on
+   * the lane id, a closed card could never reopen for the next display.
+   */
+  const macDesktopSessionKey = sources["mac-desktop"].sessionKey ?? laneId;
+  const macDesktopCardDismissed = isWorkLiveCardClosed(closed, "mac-desktop", macDesktopSessionKey)
+    && !floating.includes("mac-desktop");
+
+  /**
+   * The lane's one decoder, held by the card while nobody shows the pane.
+   *
+   * The pane and the card share one decoder per lane through
+   * `macDesktopLiveViewLease`: while the pane is open it outranks the card and
+   * this hook is passive; the moment the pane goes away the card is promoted
+   * and decodes into an off-screen canvas, so frames keep reaching
+   * `macDesktopFrameStore` and the chat stays a stream viewer. Without this the
+   * pane's unmount stopped the encoder and the card lost the very viewer entry
+   * that authorized it.
+   */
+  const macDesktopLive = useMacDesktopLiveView({
+    laneId,
+    runtimePin,
+    enabled: Boolean(
+      active
+      && laneId
+      && chatSessionId
+      && macDesktopAuthorized
+      && !macDesktopCardDismissed
+      && toolContext.supportsMacDesktop !== false,
+    ),
+    chatSessionId,
+    priority: MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
+  });
 
   const activities = useMemo<WorkLiveActivity[]>(() => [
     {
@@ -580,7 +688,7 @@ export function WorkLiveCornerCard({
       // Per lane, not per chat: the id is only set when this chat is a viewer
       // or the lease holder, and an unauthorized chat sees nothing.
       ownerChatSessionId: macDesktopAuthorized ? chatSessionId : null,
-      sessionKey: macDesktopFrame?.laneId ?? laneId,
+      sessionKey: macDesktopSessionKey,
       showWhenUnowned: false,
     },
   ], [
@@ -594,7 +702,7 @@ export function WorkLiveCornerCard({
     iosSession?.chatSessionId,
     laneId,
     macDesktopAuthorized,
-    macDesktopFrame?.laneId,
+    macDesktopSessionKey,
     sources,
     toolContext.supportsMacDesktop,
   ]);
@@ -772,9 +880,50 @@ export function WorkLiveCornerCard({
   const commitResize = useCallback((width: number) => {
     const bounds = workLiveCardWidthBounds(hostSize.width);
     const next = Math.max(bounds.min, Math.min(bounds.max, Math.round(width)));
-    if (projectStateKey) setWorkViewState(projectStateKey, { workLiveCardWidth: next });
-    else setLocalWidth(next);
-  }, [hostSize.width, projectStateKey, setWorkViewState]);
+    const nextSize = workLiveCardSize({
+      tool,
+      width: next,
+      aspect: sourceAspect,
+      host: hostSize,
+      bottomReserve,
+    });
+    // Widening moves the right edge (and a taller aspect the bottom edge), so a
+    // card parked against one has to be pulled back inside before the new
+    // width is persisted — otherwise the stored position reopens off-column.
+    const clamped = clampWorkLiveCardRect({
+      host: hostSize,
+      left: rect.left,
+      top: rect.top,
+      cardHeight: nextSize.height,
+      cardWidth: nextSize.width,
+      bottomReserve,
+    });
+    const nextPosition = workLiveCardPositionFromRect({
+      host: hostSize,
+      left: clamped.left,
+      top: clamped.top,
+      cardHeight: nextSize.height,
+      cardWidth: nextSize.width,
+    });
+    if (projectStateKey) {
+      setWorkViewState(projectStateKey, {
+        workLiveCardWidth: next,
+        workLiveCardPosition: nextPosition,
+      });
+    } else {
+      setLocalWidth(next);
+      setLocalPosition(nextPosition);
+    }
+  }, [
+    bottomReserve,
+    hostSize,
+    projectStateKey,
+    rect.left,
+    rect.top,
+    setWorkViewState,
+    sourceAspect,
+    tool,
+  ]);
 
   const handleResizePointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
@@ -1006,6 +1155,27 @@ export function WorkLiveCornerCard({
       aria-hidden={visible ? undefined : true}
       className="pointer-events-none absolute inset-0 z-20 overflow-hidden"
     >
+      {/*
+        The card's own decoder, visible only to the stream: when the pane is
+        gone this is what keeps frames arriving, and a 1px transparent canvas
+        is enough — the picture shown is the frame store's data URL, and the
+        canvas is only ever read for its pixels.
+      */}
+      {macDesktopLive.url ? (
+        <div
+          aria-hidden="true"
+          data-live-card-decoder=""
+          className="pointer-events-none absolute left-0 top-0 h-px w-px overflow-hidden opacity-0"
+        >
+          <H264VideoCanvas
+            url={macDesktopLive.url}
+            reconnectNonce={macDesktopLive.reconnectNonce}
+            onStatus={macDesktopLive.onStatus}
+            onDimensions={macDesktopLive.onDimensions}
+            onCanvas={macDesktopLive.onCanvas}
+          />
+        </div>
+      ) : null}
       <AnimatePresence initial={false}>
         {visible && tool && definition ? (
           <motion.section

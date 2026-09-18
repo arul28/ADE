@@ -1139,7 +1139,14 @@ the card stops its preview stream, which itself emits one, and a
 dismissal undone by the event it caused would never stick.
 
 - **Which tool.** `selectWorkLiveCardTool` in `workLiveCard.ts` picks the
-  available, live, non-active tool with the newest activity. `browser`,
+  available, live, non-active tool with the newest activity. Activity is
+  seeded from the settled `getStatus`/session answers as well as from events,
+  so a tool that was already live when the card mounted — a tab opened before
+  the Work page, a display the pane already streamed — still counts instead of
+  being skipped for `lastActivityAt: 0` forever. A floated tool is shown even
+  before it has painted and outranks every non-floated activity, because the
+  Float button is an explicit ask and a blank card with the tool's name is
+  better feedback than a lit button that does nothing. `browser`,
   `app-control`, `ios`, and `mac-desktop` are previewable
   (`WORK_LIVE_SCREEN_TOOLS` in `state/workLiveCardState.ts`, which the
   store also imports so the list cannot fork); Git and Files have nothing
@@ -1151,15 +1158,29 @@ dismissal undone by the event it caused would never stick.
   the exception — it is per lane, so it shows only to a chat that is a current
   viewer of the lane's stream or holds its input lease (the stream status
   carries the redacted-safe `viewerChatSessionIds`).
+- **It is a viewer, not a copy.** The pane and the card share one decoder per
+  lane through `macDesktopLiveViewLease.ts`, a renderer-side refcount that
+  starts the stream with the first holder and stops it with the last. The pane
+  (and full screen) outranks the card, so while the pane is open the card keeps
+  the stream alive without decoding; when the pane switches tools the card is
+  promoted and decodes into an off-screen canvas, so frames keep landing in
+  `macDesktopFrameStore` and the chat stays a viewer. Hiding the pane is
+  therefore not an unsubscribe, and one lane never has two decoders.
 - **The ✕ means closed until the session changes.** It records the session key
   it was closed at — browser active tab id, App Control session id, simulator
-  session id, the lane's display id for mac-desktop — per chat, in
-  `chatCompanionUiState.ts`. Frames, status refreshes, open-requests, and
-  remounts never reopen it; only a new session key does. The Float button in the
-  pane header (`WorkToolHeader`) clears the marker and suspends the
-  active-tool exclusion for that tool until the next ×. Position and width stay
-  project-scoped (`workLiveCardPosition`, `workLiveCardWidth`) so resizing the
-  column keeps the card in place instead of stranding it off an edge.
+  session id, and for mac-desktop the display's own identity
+  (`display:<displayId>:<createdAt>`), so a destroyed-and-recreated display may
+  show again while the same display stays closed — per chat, in
+  `chatCompanionUiState.ts`; the record is dropped when the chat is deleted.
+  Frames, status refreshes, open-requests, and remounts never reopen it; only a
+  new session key does. The Float button in the pane header (`WorkToolHeader`)
+  clears the marker and suspends the active-tool exclusion for that tool until
+  the next ×. Position and width stay project-scoped (`workLiveCardPosition`,
+  `workLiveCardWidth`) so resizing the column keeps the card in place instead
+  of stranding it off an edge, and a width resize re-clamps and re-persists the
+  position so a right-edge card cannot reopen off-column. In a column narrower
+  than the full-size floor the card shrinks to its minimum width instead of
+  being hidden.
 - **It costs nothing when nobody watches.** It subscribes to feeds that
   already exist — App Control's screencast, the browser's refcounted
   preview stream, the simulator's shared window capture via

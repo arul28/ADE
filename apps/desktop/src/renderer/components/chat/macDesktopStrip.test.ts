@@ -9,7 +9,9 @@ import {
   macDesktopPresentAction,
   macDesktopRelativeTime,
   macDesktopStatusPill,
+  macDesktopStatusSegments,
   macDesktopStripControls,
+  macDesktopStripName,
   macDesktopWindowRowText,
   macDesktopWindowTitle,
 } from "./macDesktopStrip";
@@ -54,6 +56,60 @@ describe("macDesktopStatusPill", () => {
       lease: { laneId: "lane", holder: "user", holderId: "me", holderLabel: "You", grantedAt: "2026-09-17T00:00:00Z", expiresAt: "2026-09-17T00:01:00Z" },
       iHaveControl: true,
     })).toEqual({ label: "Reconnecting", detail: "You are driving", tone: "error" });
+  });
+});
+
+describe("macDesktopStatusSegments", () => {
+  const agentLease = {
+    laneId: "lane",
+    holder: "agent" as const,
+    holderId: "chat",
+    holderLabel: null,
+    grantedAt: "2026-09-17T00:00:00Z",
+    expiresAt: "2026-09-17T00:01:00Z",
+  };
+
+  it("keeps the status word when takeover adds the control segment", () => {
+    // The regression: the takeover banner's width collapsed the status chip to
+    // a sliver that read as a bare separator, and "Live · Idle" disappeared.
+    const idle = macDesktopStatusSegments(
+      macDesktopStatusPill({ live: "playing", lease: agentLease, iHaveControl: false }),
+    );
+    expect(idle).toEqual({ status: "Live", separator: "·", detail: "Agent driving" });
+
+    const takeover = macDesktopStatusSegments(
+      macDesktopStatusPill({
+        live: "playing",
+        lease: { ...agentLease, holder: "user", holderId: "me", holderLabel: "You" },
+        iHaveControl: true,
+      }),
+    );
+    expect(takeover.status).toBe("Live");
+    expect(takeover.detail).toBe("You are driving");
+  });
+
+  it("draws the separator only with the detail it introduces", () => {
+    expect(macDesktopStatusSegments({ label: "Live", detail: "", tone: "live" }))
+      .toEqual({ status: "Live", separator: null, detail: null });
+    expect(macDesktopStatusSegments({ label: "Reconnecting", detail: "Idle", tone: "error" }))
+      .toEqual({ status: "Reconnecting", separator: "·", detail: "Idle" });
+  });
+});
+
+describe("macDesktopStripName", () => {
+  it("leads with the display's own Mission Control name", () => {
+    expect(macDesktopStripName({ displayName: "ADE · docs-fix", laneName: "docs-fix" }))
+      .toBe("ADE · docs-fix");
+  });
+
+  it("falls back to the lane name while the display has not answered", () => {
+    expect(macDesktopStripName({ displayName: "  ", laneName: "docs-fix" })).toBe("ADE · docs-fix");
+    expect(macDesktopStripName({ displayName: null, laneName: "docs-fix" })).toBe("ADE · docs-fix");
+  });
+
+  it("draws nothing rather than a generic name when neither is known", () => {
+    expect(macDesktopStripName({ displayName: null, laneName: null })).toBeNull();
+    expect(macDesktopStripName({ displayName: null, laneName: "   " })).toBeNull();
   });
 });
 

@@ -14,7 +14,11 @@
  * labels wrapped onto two lines in a 700px pane.
  */
 
-import type { MacDesktopLeaseState, MacDesktopWindow } from "../../../shared/types/macDesktop";
+import {
+  macDesktopDisplayName,
+  type MacDesktopLeaseState,
+  type MacDesktopWindow,
+} from "../../../shared/types/macDesktop";
 
 export type MacDesktopLiveStatus = "idle" | "starting" | "playing" | "error";
 
@@ -39,6 +43,52 @@ export function macDesktopStatusPill(args: {
       ? "Agent driving"
       : "Idle";
   return { label, detail, tone };
+}
+
+/**
+ * The status chip's segments, split so the layout cannot orphan one.
+ *
+ * The status word and the detail used to be one truncatable string with a
+ * `·` baked between them, so a narrow row (takeover adds "You have control /
+ * Return to agent") squeezed the whole chip to a sliver that read as a bare
+ * separator, and "Live · Idle" vanished. The status is the part that must
+ * never disappear, the separator belongs to the detail it introduces, and a
+ * detail with nothing to say draws neither.
+ */
+export type MacDesktopStatusSegments = {
+  /** The state word, always present. */
+  status: string;
+  /** The separator, present exactly when the detail is. */
+  separator: string | null;
+  /** The sentence after the separator, or null. */
+  detail: string | null;
+};
+
+export function macDesktopStatusSegments(pill: MacDesktopStatusPill): MacDesktopStatusSegments {
+  const detail = pill.detail?.trim() || null;
+  return {
+    status: pill.label,
+    separator: detail ? "·" : null,
+    detail,
+  };
+}
+
+/**
+ * The strip's first segment: the display's own name.
+ *
+ * The display is created named `ADE · <lane>` and that is what Mission Control
+ * and Displays show, so the strip leads with it. A status whose display has not
+ * arrived yet falls back to the lane name; a lane with no name at all draws no
+ * segment rather than a generic one.
+ */
+export function macDesktopStripName(args: {
+  displayName?: string | null;
+  laneName?: string | null;
+}): string | null {
+  const fromDisplay = args.displayName?.trim();
+  if (fromDisplay) return fromDisplay;
+  const lane = args.laneName?.trim();
+  return lane ? macDesktopDisplayName(lane) : null;
 }
 
 /**

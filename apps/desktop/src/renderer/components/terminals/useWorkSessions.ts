@@ -57,6 +57,7 @@ import {
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 import { seedCrossMachineOptimisticSession } from "../../state/crossMachineLanes";
+import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
 import {
   useRetainedCrossMachineSlices,
   useWorkMachineRouter,
@@ -2109,6 +2110,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   );
 
   const removeSessionFromList = useCallback((sessionId: string) => {
+    // Every caller is a delete: the session record is gone for good, so its
+    // companion UI record goes with it rather than accumulating until the
+    // storage prune evicts a live chat's state instead.
+    clearChatCompanionUiState(sessionId);
     setSessions((prev) => prev.filter((session) => session.id !== sessionId));
   }, []);
 

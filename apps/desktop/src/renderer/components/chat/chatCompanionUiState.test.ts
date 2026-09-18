@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   chatCompanionUiStorageKey,
+  clearChatCompanionUiState,
   closeWorkLiveCardForChat,
   floatWorkLiveCardForChat,
   isWorkLiveCardClosedForChat,
@@ -286,5 +287,20 @@ describe("workLiveCard closed and floating flags", () => {
     const state = readChatCompanionUiState("chat-1");
     expect(state.terminalDrawerOpen).toBe(true);
     expect(state.workLiveCardClosedByTool.browser).toBe("tab-1");
+  });
+
+  it("clears a deleted chat's record instead of leaving it to outlive the chat (L3)", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    floatWorkLiveCardForChat("chat-1", "mac-desktop");
+    expect(companionKeysInStorage()).toContain("chat-1");
+
+    clearChatCompanionUiState("chat-1");
+
+    expect(companionKeysInStorage()).not.toContain("chat-1");
+    expect(readChatCompanionUiState("chat-1")).toEqual(DEFAULT_CHAT_COMPANION_UI_STATE);
+    // …and the neighbouring chat is untouched.
+    closeWorkLiveCardForChat("chat-2", "browser", "tab-2");
+    clearChatCompanionUiState("chat-1");
+    expect(readChatCompanionUiState("chat-2").workLiveCardClosedByTool).toEqual({ browser: "tab-2" });
   });
 });

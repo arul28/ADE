@@ -43,4 +43,33 @@ describe("macDesktopErrorText", () => {
     expect(macDesktopErrorText("   ")).toBeNull();
     expect(macDesktopErrorText("MAC_DESKTOP_NO_DISPLAY:   ")).toBeNull();
   });
+
+  describe("lane ids", () => {
+    const LANE_ID = "ab829725-4f40-4c1f-8582-091b500dd26a";
+
+    it("replaces the lane id with the lane name when one is known", () => {
+      expect(macDesktopErrorText(`Lane ${LANE_ID} is not recording its desktop.`, {
+        laneId: LANE_ID,
+        laneName: "docs-fix",
+      })).toBe("Lane docs-fix is not recording its desktop.");
+    });
+
+    it("drops the id and keeps the sentence when the name is unknown", () => {
+      expect(macDesktopErrorText(`Lane ${LANE_ID} is not recording its desktop.`, {
+        laneId: LANE_ID,
+      })).toBe("This lane is not recording its desktop.");
+    });
+
+    it("replaces a bare id anywhere in the message", () => {
+      expect(macDesktopErrorText(`Could not move a window on ${LANE_ID}.`, {
+        laneId: LANE_ID,
+        laneName: "docs-fix",
+      })).toBe("Could not move a window on docs-fix.");
+    });
+
+    it("leaves the message alone when the caller does not name the lane", () => {
+      expect(macDesktopErrorText(`Lane ${LANE_ID} is not recording its desktop.`))
+        .toBe(`Lane ${LANE_ID} is not recording its desktop.`);
+    });
+  });
 });

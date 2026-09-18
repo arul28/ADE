@@ -188,6 +188,25 @@ export function chatCompanionUiStorageKey(key: string): string {
   return `${CHAT_COMPANION_UI_STORAGE_PREFIX}${key}`;
 }
 
+/**
+ * Drops one chat's companion UI record.
+ *
+ * Called when a chat (or CLI session) is deleted: the namespace is keyed by
+ * session id, and a record nothing will ever read again is not just stale —
+ * under the storage cap it can evict a live chat's state. Removal is not a
+ * reset to defaults: no record is the honest state for a key with no chat.
+ */
+export function clearChatCompanionUiState(key: string): void {
+  if (!key) return;
+  chatCompanionUiStateByKey.delete(key);
+  notifyChatCompanionUiState(key);
+  try {
+    window.localStorage.removeItem(chatCompanionUiStorageKey(key));
+  } catch {
+    // Local storage is best-effort UI state only.
+  }
+}
+
 export function readChatCompanionUiState(key: string): ChatCompanionUiState {
   const cached = chatCompanionUiStateByKey.get(key);
   if (cached) return cached;

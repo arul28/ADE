@@ -3,6 +3,10 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
 import type { H264VideoStatus } from "./H264VideoCanvas";
 import { setMacDesktopFrame } from "./macDesktopFrameStore";
+import {
+  MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY,
+  acquireMacDesktopLiveViewLease,
+} from "./macDesktopLiveViewLease";
 
 /**
  * The lane display's live view: one H.264 reader, one address, one budget.
@@ -85,9 +89,16 @@ export function useMacDesktopLiveView(args: {
   /** The pane is on screen and the display exists. Nothing starts otherwise. */
   enabled: boolean;
   chatSessionId?: string | null;
+  /**
+   * Who this surface is, for the per-lane decoder election. The pane (and full
+   * screen) outranks the corner card, so reopening the pane takes the decoder
+   * back instead of leaving a passive pane. Defaults to the pane.
+   */
+  priority?: number;
 }): MacDesktopLiveView {
   const { laneId, runtimePin, enabled } = args;
   const chatSessionId = args.chatSessionId ?? null;
+  const priority = args.priority ?? MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY;
 
   const [url, setUrl] = useState<string | null>(null);
   const [reconnectNonce, setReconnectNonce] = useState(0);
@@ -101,6 +112,34 @@ export function useMacDesktopLiveView(args: {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
+  /**
+   * Whether this surface holds the lane's one decoder.
+   *
+   * A passive holder — the corner card while the pane is open — keeps the
+   * stream alive without reading it, and goes active when the decoder owner
+   * releases. The lease owns start/stop; this hook only decodes when it wins
+   * the election.
+   */
+  const [ownsDecoder, setOwnsDecoder] = useState(false);
+
+  const pinKey = runtimePin?.key ?? null;
+  useEffect(() => {
+    if (!enabled || !laneId) {
+      setOwnsDecoder(false);
+      return undefined;
+    }
+    const lease = acquireMacDesktopLiveViewLease({
+      laneId,
+      priority,
+      runtimePin: pinRef.current,
+      onDecoderOwnershipChange: setOwnsDecoder,
+    });
+    setOwnsDecoder(lease.ownsDecoder());
+    return () => {
+      setOwnsDecoder(false);
+      lease.release();
+    };
+  }, [enabled, laneId, pinKey, priority]);
 
   const onCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
     canvasRef.current = canvas;
@@ -125,10 +164,10 @@ export function useMacDesktopLiveView(args: {
   /* ── Start and stop ──────────────────────────────────────────────────── */
 
   useEffect(() => {
-    if (!enabled || !laneId) {
+    if (!ownsDecoder || !enabled || !laneId) {
       setUrl(null);
       setStatus("idle");
-      return;
+      return undefined;
     }
     let cancelled = false;
     setResolveFailures(0);
@@ -159,11 +198,11 @@ export function useMacDesktopLiveView(args: {
     return () => {
       cancelled = true;
       setUrl(null);
-      // Stopping is fire-and-forget: the encoder also stops on its own once the
-      // last reader detaches, so a failed stop costs a grace period, not a leak.
-      void window.ade.macDesktop.stopStream({ laneId }, pinRef.current).catch(() => {});
+      // No `stopStream` here: the stream is stopped by the lease when the last
+      // holder releases, not by the first surface that happens to unmount. A
+      // pane→corner-card hand-off must not kill the encoder under the card.
     };
-  }, [chatSessionId, enabled, laneId, restartNonce]);
+  }, [chatSessionId, enabled, laneId, ownsDecoder, restartNonce]);
 
   /* ── Reconnect ───────────────────────────────────────────────────────── */
 

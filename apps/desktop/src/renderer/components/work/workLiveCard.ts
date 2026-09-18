@@ -118,7 +118,12 @@ export function workLiveActivityBelongsToChat(
  *
  * A tool the user explicitly FLOATED (`floatingTools`) suspends that exclusion
  * for itself until it is closed again: the Float button is the one way to ask
- * for the preview of the pane you are already on.
+ * for the preview of the pane you are already on. A floated tool also skips the
+ * live and activity checks — the button was pressed, so the card is the
+ * feedback; a floated tool that has not painted yet is a blank frame with its
+ * name on it, not a lit button that silently does nothing — and it outranks
+ * every non-floated activity, so another tool's newer trace cannot quietly
+ * take the slot the user just asked for.
  *
  * `closed` implements the "×" affordance by session key, not by activity stamp:
  * frames, status refreshes and remounts can never reopen a card, only a new
@@ -136,16 +141,25 @@ export function selectWorkLiveCardTool(args: {
 }): WorkLiveScreenTool | null {
   const { activeTool, activeChatSessionId, activities, floatingTools, closed } = args;
   let best: WorkLiveActivity | null = null;
+  let bestIsFloated = false;
   for (const activity of activities) {
-    if (!activity.available || !activity.live) continue;
+    if (!activity.available) continue;
     if (!workLiveActivityBelongsToChat(activity, activeChatSessionId)) continue;
     const floated = Boolean(floatingTools?.includes(activity.tool));
     if (!floated) {
+      if (!activity.live) continue;
       if (activity.tool === activeTool) continue;
       if (activity.lastActivityAt <= 0) continue;
       if (isWorkLiveCardClosed(closed, activity.tool, activity.sessionKey)) continue;
     }
-    if (!best || activity.lastActivityAt > best.lastActivityAt) best = activity;
+    if (
+      !best
+      || (floated && !bestIsFloated)
+      || (floated === bestIsFloated && activity.lastActivityAt > best.lastActivityAt)
+    ) {
+      best = activity;
+      bestIsFloated = floated;
+    }
   }
   return best?.tool ?? null;
 }
@@ -236,8 +250,38 @@ export type WorkLiveSourceState = {
     laneId?: string | null;
     at?: number | null;
     caption?: string | null;
+    /**
+     * The display's own identity, from {@link workLiveMacDesktopSessionKey}.
+     *
+     * The × marker is keyed by session, and a lane's display is destroyed and
+     * recreated all the time — a stop, an idle release, a host restart. Keying
+     * on the lane id made a closed card stay closed for the lane's whole life;
+     * the display's id and creation time change with the display, so a new
+     * display is honestly a new session.
+     */
+    displayKey?: string | null;
   } | null;
 };
+
+/**
+ * The mac-desktop card's session key: the display, not the lane.
+ *
+ * `display:<displayId>:<createdAt>` is stable for as long as one display
+ * exists — across frames, status refreshes and stream restarts — and changes
+ * when the display is destroyed and recreated. An off-screen-region fallback
+ * has no CoreGraphics id (`displayId: null`), so the creation time carries the
+ * identity there; null when nothing identifies the display at all.
+ */
+export function workLiveMacDesktopSessionKey(
+  display: { displayId?: number | null; createdAt?: string | null } | null | undefined,
+): string | null {
+  if (!display) return null;
+  const createdAt = typeof display.createdAt === "string" && display.createdAt.trim()
+    ? display.createdAt.trim()
+    : null;
+  if (display.displayId == null && !createdAt) return null;
+  return `display:${display.displayId ?? "offscreen"}:${createdAt ?? ""}`;
+}
 
 const AGENT_OWNER_LABEL = "agent";
 
@@ -296,10 +340,10 @@ export const WORK_LIVE_SOURCES: Record<
     caption: macDesktopFrame?.caption ?? null,
     handoff: null,
     recording: null,
-    // A display is per lane and long-lived, so the lane id IS the session
-    // identity for the "×" rule: closing the preview hides it until the display
-    // is replaced (or the user floats it back).
-    sessionKey: macDesktopFrame?.laneId ?? null,
+    // A display is per lane and long-lived, so the display's own identity is
+    // the session key for the "×" rule: closing the preview hides it until
+    // this display is replaced (or the user floats it back).
+    sessionKey: macDesktopFrame?.displayKey ?? macDesktopFrame?.laneId ?? null,
   }),
   ios: ({ iosSession }) => ({
     live: Boolean(iosSession),
@@ -662,6 +706,12 @@ export function workLivePreviewMaxWidth(
  * a column that clears the minimum only by borrowing the composer's rows has no
  * room. Without this term `workLiveCardTravel`'s `Math.max` silently gave up
  * and parked the card ON the composer it was measured to avoid.
+ *
+ * The 380px column floor applies to a FULL-SIZE card: it is the width at which
+ * a default card leaves the conversation room to breathe. A card the caller has
+ * already shrunk toward `WORK_LIVE_CARD_MIN_WIDTH` is measured by its own box
+ * instead — a narrow column shrinks the card rather than hiding it, and only a
+ * host that cannot hold the minimum card at all has no room.
  */
 export function workLiveCardFits(
   host: { width: number; height: number },
@@ -669,7 +719,9 @@ export function workLiveCardFits(
   /** The box actually being placed; defaults to the default card. */
   card: WorkLiveCardSize = { width: WORK_LIVE_CARD_DEFAULT_WIDTH, height: WORK_LIVE_CARD_DEFAULT_WIDTH / WORK_LIVE_CARD_DEFAULT_ASPECT },
 ): boolean {
-  const minWidth = Math.max(WORK_LIVE_CARD_MIN_HOST_WIDTH, card.width + WORK_LIVE_CARD_INSET * 2);
+  const minWidth = card.width >= WORK_LIVE_CARD_DEFAULT_WIDTH
+    ? Math.max(WORK_LIVE_CARD_MIN_HOST_WIDTH, card.width + WORK_LIVE_CARD_INSET * 2)
+    : card.width + WORK_LIVE_CARD_INSET * 2;
   const minHeight = Math.max(WORK_LIVE_CARD_MIN_HOST_HEIGHT, card.height + WORK_LIVE_CARD_INSET * 2);
   return host.width >= minWidth && host.height >= minHeight + Math.max(0, bottomReserve);
 }
