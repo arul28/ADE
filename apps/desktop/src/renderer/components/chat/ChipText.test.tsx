@@ -55,6 +55,7 @@ function renderInChatScope(
         sessions: machine.sessions ?? [],
         prs: [],
         lastSyncedAtMs: null,
+        lanesSyncedAtMs: null,
         error: null,
       },
     },

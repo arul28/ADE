@@ -1563,6 +1563,15 @@ A single hook that owns a lot of state:
   into `sessionsCacheByProject` and does not prune persisted open tabs,
   because React can briefly render the previous project's session list
   after `projectRoot` changes.
+- the draft lane and draft machine of the Work start surface.
+  `setDraftLaneId` writes **only** `draftLaneId` in the project view state; it
+  deliberately does not call `selectLane`. The draft can target a machine the
+  project tab is not bound to, and lane ids are per-machine, so writing a
+  foreign lane id into the global selection points Lanes/PRs/Files at a lane
+  the bound project has never heard of — and the next lane refresh silently
+  rewrites that selection to the bound project's first lane. `WorkStartSurface`
+  owns the global sync instead and performs it only when the draft machine is
+  the bound one.
 - the Work tab's per-session runtime routing, through the single
   `useWorkMachineRouter()` instance it owns. It is re-exported as
   `machineRouter` and `resolveSessionRuntimePin` (which `TerminalsPage` passes

@@ -97,7 +97,11 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
 } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
-import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import {
+  machineNameForBinding,
+  THIS_MACHINE_ID,
+  THIS_MACHINE_NAME,
+} from "../../../shared/machineIdentity";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -275,6 +279,7 @@ import {
 } from "../terminals/LaneCombobox";
 import {
   AUTO_CREATE_DRAFT_LANE_OPTION as AUTO_CREATE_LANE_OPTION,
+  findPrimaryDraftLane,
   useDraftMachineRouting,
   type RoutedDraftLane,
 } from "./useDraftMachineRouting";
@@ -3418,6 +3423,14 @@ export function AgentChatPane({
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
   const laneCacheByProject = useAppStore((s) => s.laneCacheByProject);
   const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  /**
+   * The machines the union intends to read. `null` while it has not resolved
+   * that set yet; once it has, a machine missing from it will never get a lane
+   * catalog, so the composer must not promise one.
+   */
+  const crossMachineLaneIntendedMachineIds = useRootAppStore(
+    (s) => s.crossMachineLaneIntendedMachineIds,
+  );
   const openProjectBindings = useMemo<OpenProjectBinding[]>(() => collectOpenProjectBindings({
     activeBinding: projectBinding ?? null,
     remoteBindings: openRemoteProjectTabs,
@@ -4042,7 +4055,15 @@ export function AgentChatPane({
   const fastModeUpdateCounterRef = useRef(0);
   const pendingFastModeUpdateRef = useRef<{ sessionId: string; updateId: number; promise: Promise<void> } | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
-  const draftExecutionLanesRef = useRef<RoutedDraftLane[]>([]);
+  const draftExecutionLanesRef = useRef<readonly RoutedDraftLane[]>([]);
+  /**
+   * The "still reading that machine's lanes" message, or null when the catalog
+   * is known. A non-null message IS the loading flag — one ref so the async
+   * launch paths and the composer can never word the same state differently.
+   */
+  const draftLaneCatalogLoadingMessageRef = useRef<string | null>(null);
+  /** Whether the BOUND machine's lane list has been read (owned by the routing hook). */
+  const draftBoundLaneCatalogLoadedRef = useRef(false);
   const draftExecutionMachineIdRef = useRef<string | null>(null);
   const draftBoundMachineIdRef = useRef<string | null>(null);
   const draftExecutionBindingRef = useRef<OpenProjectBinding | null>(null);
@@ -9679,10 +9700,11 @@ export function AgentChatPane({
     if (draftLaunchTargetIsAutoCreate) {
       if (!laneId) throw new Error("Select a lane before auto-creating a new lane.");
       const executionLanes = draftExecutionLanesRef.current;
-      const primaryLane = executionLanes.find((candidate) => candidate.laneType === "primary")
-        ?? executionLanes.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
-        ?? null;
-      if (!primaryLane) throw new Error("Auto-create requires a primary lane.");
+      const primaryLane = findPrimaryDraftLane(executionLanes);
+      if (!primaryLane) {
+        const loadingMessage = draftLaneCatalogLoadingMessageRef.current;
+        throw new Error(loadingMessage ?? "Auto-create requires a primary lane.");
+      }
       const namingSeed = buildDraftLaunchNamingSeed(snapshot);
       const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, pin, force: true }).catch(() => null);
       const namingModelId = snapshot.modelId;
@@ -9771,14 +9793,16 @@ export function AgentChatPane({
     // that case the existing lane id is still a valid launch target. Once a
     // catalog is known, however, a missing lane is an unavailable selection
     // and must not fall back to the project's root worktree.
-    const laneCatalogLoaded = availableLanes !== undefined || lanes.length > 0;
     if (
       !launchLane
       && (
         draftExecutionMachineIdRef.current !== draftBoundMachineIdRef.current
-        || laneCatalogLoaded
+        || draftBoundLaneCatalogLoadedRef.current
       )
     ) {
+      // Still reading that machine's lanes: not a rejected selection.
+      const loadingMessage = draftLaneCatalogLoadingMessageRef.current;
+      if (loadingMessage) throw new Error(loadingMessage);
       throw new Error("Selected lane is not available on the selected machine. Choose a lane for that machine.");
     }
     const launchWorktreePath =
@@ -10000,6 +10024,11 @@ export function AgentChatPane({
     }
     if (draftMachineUnavailableRef.current) {
       setError("The selected machine is not currently available.");
+      return;
+    }
+    const draftLaneCatalogLoadingMessage = draftLaneCatalogLoadingMessageRef.current;
+    if (draftLaneCatalogLoadingMessage) {
+      setError(draftLaneCatalogLoadingMessage);
       return;
     }
     if (kind === "chat" && (selectedSessionId || workDraftKind !== "chat")) return;
@@ -12199,6 +12228,8 @@ export function AgentChatPane({
     boundMachineId: boundLaneMachineId,
     selectedMachineId: selectedDraftMachineId,
     selectionReconciled: draftMachineSelectionReconciled,
+    laneCatalogLoading: draftLaneCatalogLoading,
+    boundLaneCatalogLoaded: draftBoundLaneCatalogLoaded,
     executionLanes: draftExecutionLanes,
     executionBinding: draftExecutionBinding,
     selectedMachine: selectedDraftMachine,
@@ -12210,6 +12241,7 @@ export function AgentChatPane({
     projectBinding,
     openProjectTabRoots,
     crossMachineLanesByMachineId,
+    crossMachineLaneIntendedMachineIds,
     lanes,
     availableLanes,
     laneId,
@@ -12362,7 +12394,27 @@ export function AgentChatPane({
     handleDraftMachineChange(THIS_MACHINE_ID);
     setError(null);
   }, [handleDraftMachineChange, setCursorCloudMode, setError]);
+  /**
+   * The bound machine's own name. Reached only when the picked machine IS the
+   * bound one, so it must never label a remote-bound tab "This computer".
+   */
+  const draftBoundMachineDisplayName = selectedDraftMachineId === boundLaneMachineId
+    ? machineNameForBinding(projectBinding)
+    : selectedDraftMachineId;
   draftExecutionLanesRef.current = draftExecutionLanes;
+  /**
+   * A machine whose lane catalog has not landed yet has no answer to "which
+   * lane" — not "that lane is unavailable". Reporting it as unavailable is what
+   * made a Work tab bound to one machine refuse every launch on another one for
+   * as long as the union took to read it. Derived once here so the composer
+   * placeholder and every launch path say the same sentence.
+   */
+  const draftMachineDisplayName = selectedDraftMachine?.name ?? draftBoundMachineDisplayName;
+  const draftLaneCatalogLoadingMessage = draftLaneCatalogLoading
+    ? `Loading lanes for ${draftMachineDisplayName ?? "the selected machine"}\u2026`
+    : null;
+  draftLaneCatalogLoadingMessageRef.current = draftLaneCatalogLoadingMessage;
+  draftBoundLaneCatalogLoadedRef.current = draftBoundLaneCatalogLoaded;
   draftExecutionMachineIdRef.current = selectedDraftMachineId;
   draftBoundMachineIdRef.current = boundLaneMachineId;
   draftExecutionBindingRef.current = draftExecutionBinding;
@@ -12400,15 +12452,12 @@ export function AgentChatPane({
   }, [composerModelCatalogScopeKey]);
   const draftAttachmentMachine = useMemo(() => ({
     id: selectedDraftMachineId,
-    name: selectedDraftMachine?.name ?? (
-      selectedDraftMachineId === boundLaneMachineId ? THIS_MACHINE_NAME : selectedDraftMachineId
-    ),
+    name: draftMachineDisplayName,
     binding: draftExecutionBinding,
   }), [
-    boundLaneMachineId,
     draftExecutionBinding,
+    draftMachineDisplayName,
     selectedDraftMachineId,
-    selectedDraftMachine?.name,
   ]);
   const getLinkedDraftVisualAttachmentPaths = useCallback(
     () => collectDraftVisualAttachmentPaths({
@@ -14919,6 +14968,10 @@ export function AgentChatPane({
                                 // Matches the 28px control height the composer
                                 // pills directly above the shelf already use.
                                 compact
+                                // A machine whose lanes have not been read yet
+                                // has no lane to show — say so rather than
+                                // leaving the previous machine's lane on screen.
+                                placeholder={draftLaneCatalogLoadingMessage ?? "Select lane..."}
                                 aria-label="Select lane"
                               />
                               {cursorCloudMode && !parallelChatMode ? (

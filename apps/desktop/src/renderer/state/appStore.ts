@@ -1221,6 +1221,14 @@ export type CrossMachineMachineLanes = {
    */
   prs: PrSummary[];
   lastSyncedAtMs: number | null;
+  /**
+   * When this machine's LANE list was last read. Separate from
+   * `lastSyncedAtMs` because a sessions-only or PR-only update must not be
+   * mistaken for a lane read — an optimistic foreign launch writes a
+   * sessions-only slice, and treating that as "lanes were read" makes an empty
+   * lane list look authoritative.
+   */
+  lanesSyncedAtMs: number | null;
   /** Last read failure, kept alongside (not instead of) the retained lanes. */
   error: string | null;
 };
@@ -2006,6 +2014,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           entry.lanes || entry.sessions || entry.prs
             ? Date.now()
             : previous?.lastSyncedAtMs ?? null,
+        // Lane-specific on purpose: only an actual lane read advances this, so a
+        // sessions-only or PR-only merge cannot pass itself off as a lane read.
+        lanesSyncedAtMs: entry.lanes ? Date.now() : previous?.lanesSyncedAtMs ?? null,
         error: entry.error !== undefined ? entry.error : previous?.error ?? null,
       };
       const sliceUnchanged = (
@@ -2019,6 +2030,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.sessions === next.sessions
         && previous.prs === next.prs
         && previous.lastSyncedAtMs === next.lastSyncedAtMs
+        && previous.lanesSyncedAtMs === next.lanesSyncedAtMs
         && previous.error === next.error
       );
       if (sliceUnchanged && !intendedChanged) return {};

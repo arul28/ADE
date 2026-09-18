@@ -139,6 +139,7 @@ describe("WorkStartSurface", () => {
         sessions: [],
         prs: [],
         lastSyncedAtMs: 1,
+        lanesSyncedAtMs: 1,
         error: null,
       },
     };

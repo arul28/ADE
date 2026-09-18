@@ -829,9 +829,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     (laneId: string) => {
       const normalizedLaneId = laneId.trim();
       setProjectViewState({ draftLaneId: normalizedLaneId || null });
-      if (normalizedLaneId) selectLane(normalizedLaneId);
+      // Deliberately NOT `selectLane` here. Lane ids are per-machine, and this
+      // draft can target a machine the project tab is not bound to — writing a
+      // foreign lane id into the global selection points Lanes/PRs/Files at a
+      // lane the bound project has never heard of, and the next lane refresh
+      // silently rewrites it to that project's first lane. `WorkStartSurface`
+      // owns the global sync and only performs it for the bound machine.
     },
-    [selectLane, setProjectViewState],
+    [setProjectViewState],
   );
 
   const setDraftMachineId = useCallback(
