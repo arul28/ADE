@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import {
   macDesktopClaimDisabled,
-  macDesktopClaimFlatRows,
-  macDesktopClaimGroups,
+  macDesktopClaimAppIcons,
   macDesktopClaimIsUntitled,
   macDesktopClaimLocation,
   macDesktopClaimNextIndex,
   macDesktopClaimRow,
+  macDesktopClaimRows,
   macDesktopClaimVisibleWindows,
   macDesktopHasLease,
 } from "./macDesktopClaimPicker.logic";
@@ -51,7 +51,7 @@ describe("macDesktopClaimLocation", () => {
       laneId: LANE,
       displayId: DISPLAY,
       laneNames: { "lane-b": "docs-fix" },
-    })).toEqual({ kind: "other-lane", label: "ADE · docs-fix" });
+    })).toEqual({ kind: "other-lane", label: "Lane: docs-fix" });
   });
 
   it("calls an unheld window on a real monitor the main display, not another lane", () => {
@@ -88,7 +88,7 @@ describe("macDesktopClaimDisabled", () => {
       laneId: LANE,
       displayId: DISPLAY,
       laneNames: { "lane-b": "docs-fix" },
-    })).toEqual({ disabled: true, reason: "held by docs-fix" });
+    })).toEqual({ disabled: true, reason: "Held by docs-fix" });
   });
 
   it("allows taking a multi-instance window parked on another lane", () => {
@@ -103,7 +103,7 @@ describe("macDesktopClaimDisabled", () => {
   });
 });
 
-describe("macDesktopClaimGroups", () => {
+describe("macDesktopClaimRows", () => {
   const windows = [
     makeWindow({ id: 2, appName: "Xcode", bundleId: "com.apple.dt.Xcode", title: "ADE.xcodeproj", singleInstance: true, laneId: "lane-b", onDisplayId: 44 }),
     makeWindow({ id: 3, appName: "Safari", title: "Release notes" }),
@@ -111,36 +111,58 @@ describe("macDesktopClaimGroups", () => {
     makeWindow({ id: 9, appName: "Finder", bundleId: null, title: null, laneId: LANE, onDisplayId: DISPLAY }),
   ];
 
-  it("groups by app, sorts groups and rows, and drops what is already here", () => {
-    const groups = macDesktopClaimGroups(windows, { laneId: LANE, displayId: DISPLAY });
-    expect(groups.map((group) => group.appName)).toEqual(["Safari", "Xcode"]);
-    expect(groups[0]!.rows.map((row) => row.title)).toEqual(["ADE", "Release notes"]);
-    expect(groups[1]!.rows[0]!.disabled).toBe(true);
+  it("is one flat table body sorted by app then title, minus what is already here", () => {
+    const rows = macDesktopClaimRows(windows, { laneId: LANE, displayId: DISPLAY });
+    expect(rows.map((row) => [row.appName, row.title]))
+      .toEqual([["Safari", "ADE"], ["Safari", "Release notes"], ["Xcode", "ADE.xcodeproj"]]);
+    expect(rows[2]!.disabled).toBe(true);
   });
 
   it("filters on app name, window title and bundle id", () => {
-    const byTitle = macDesktopClaimGroups(windows, { laneId: LANE, displayId: DISPLAY, query: "release" });
-    expect(macDesktopClaimFlatRows(byTitle).map((row) => row.window.id)).toEqual([3]);
-    const byBundle = macDesktopClaimGroups(windows, { laneId: LANE, displayId: DISPLAY, query: "dt.xcode" });
-    expect(macDesktopClaimFlatRows(byBundle).map((row) => row.window.id)).toEqual([2]);
-    expect(macDesktopClaimGroups(windows, { laneId: LANE, displayId: DISPLAY, query: "nothing" })).toEqual([]);
+    const byTitle = macDesktopClaimRows(windows, { laneId: LANE, displayId: DISPLAY, query: "release" });
+    expect(byTitle.map((row) => row.window.id)).toEqual([3]);
+    const byBundle = macDesktopClaimRows(windows, { laneId: LANE, displayId: DISPLAY, query: "dt.xcode" });
+    expect(byBundle.map((row) => row.window.id)).toEqual([2]);
+    expect(macDesktopClaimRows(windows, { laneId: LANE, displayId: DISPLAY, query: "nothing" })).toEqual([]);
   });
 
   it("falls back to the app name when a window has no title", () => {
-    const groups = macDesktopClaimGroups([makeWindow({ appName: "Finder", title: null })], {
+    const rows = macDesktopClaimRows([makeWindow({ appName: "Finder", title: null })], {
       laneId: LANE,
       displayId: DISPLAY,
     });
-    expect(groups[0]!.rows[0]!.title).toBe("Finder");
+    expect(rows[0]!.title).toBe("Finder");
+  });
+
+  it("joins the app icon onto every row of that app, not only the one that carried it", () => {
+    // The driver sends one PNG per bundle id per reply; without the join the
+    // second Safari window would draw a hole where its icon goes.
+    const rows = macDesktopClaimRows([
+      makeWindow({ id: 1, appName: "Safari", title: "ADE", iconPng: "AAAA" }),
+      makeWindow({ id: 3, appName: "Safari", title: "Release notes" }),
+      makeWindow({ id: 4, appName: "Zed", bundleId: "dev.zed.Zed", title: "lane" }),
+    ], { laneId: LANE, displayId: DISPLAY });
+    expect(rows.map((row) => row.iconPng)).toEqual(["AAAA", "AAAA", null]);
+  });
+});
+
+describe("macDesktopClaimAppIcons", () => {
+  it("keys by bundle id, falls back to the app name, and ignores blanks", () => {
+    expect(macDesktopClaimAppIcons([
+      makeWindow({ id: 1, iconPng: "PNG1" }),
+      makeWindow({ id: 2, iconPng: "   " }),
+      makeWindow({ id: 3, appName: "Finder", bundleId: null, iconPng: "PNG2" }),
+      makeWindow({ id: 4, appName: "Finder", bundleId: null, iconPng: "LATER" }),
+    ])).toEqual({ "com.apple.Safari": "PNG1", Finder: "PNG2" });
   });
 });
 
 describe("macDesktopClaimNextIndex", () => {
-  const rows = macDesktopClaimFlatRows(macDesktopClaimGroups([
+  const rows = macDesktopClaimRows([
     makeWindow({ id: 1, appName: "Safari", title: "One" }),
     makeWindow({ id: 2, appName: "Xcode", bundleId: "x", title: "Locked", singleInstance: true, laneId: "lane-b", onDisplayId: 44 }),
     makeWindow({ id: 3, appName: "Zed", bundleId: "z", title: "Three" }),
-  ], { laneId: LANE, displayId: DISPLAY }));
+  ], { laneId: LANE, displayId: DISPLAY });
 
   it("walks past locked rows and wraps", () => {
     expect(macDesktopClaimNextIndex(rows, -1, 1)).toBe(0);
@@ -150,9 +172,9 @@ describe("macDesktopClaimNextIndex", () => {
   });
 
   it("gives up rather than looping when every row is locked", () => {
-    const locked = macDesktopClaimFlatRows(macDesktopClaimGroups([
+    const locked = macDesktopClaimRows([
       makeWindow({ id: 2, singleInstance: true, laneId: "lane-b", onDisplayId: 44 }),
-    ], { laneId: LANE, displayId: DISPLAY }));
+    ], { laneId: LANE, displayId: DISPLAY });
     expect(macDesktopClaimNextIndex(locked, -1, 1)).toBe(-1);
     expect(macDesktopClaimNextIndex([], -1, 1)).toBe(-1);
   });
@@ -202,9 +224,10 @@ describe("macDesktopClaimVisibleWindows", () => {
     expect(macDesktopClaimVisibleWindows([titled, selfNamed, strip]).map((w) => w.id)).toEqual([1, 2]);
   });
 
-  it("still calls a self-named window untitled in the row it draws", () => {
-    // The LABEL rule is unchanged: the app name is already the group header,
-    // so the row under it does not print it a second time.
+  it("still calls a self-named window untitled", () => {
+    // The flag survives the table rewrite even though the Window cell now
+    // prints the name: a caller may still want to know the window named
+    // itself after its app.
     const selfNamed = makeWindow({ id: 2, appName: "TextEdit", bundleId: "com.apple.TextEdit", title: "TextEdit" });
     expect(macDesktopClaimIsUntitled(selfNamed)).toBe(true);
   });
@@ -227,10 +250,10 @@ describe("macDesktopClaimVisibleWindows", () => {
     expect(macDesktopClaimVisibleWindows([one, twin, elsewhere]).map((w) => w.id)).toEqual([1, 3]);
   });
 
-  it("is applied by macDesktopClaimGroups", () => {
+  it("is applied by macDesktopClaimRows", () => {
     const ade = makeWindow({ id: 10, appName: "ADE", bundleId: "com.ade.desktop", title: "Work" });
-    const groups = macDesktopClaimGroups([ade, makeWindow({ id: 13 })], { laneId: LANE, displayId: DISPLAY });
-    expect(groups.map((group) => group.appName)).toEqual(["Safari"]);
+    const rows = macDesktopClaimRows([ade, makeWindow({ id: 13 })], { laneId: LANE, displayId: DISPLAY });
+    expect(rows.map((row) => row.appName)).toEqual(["Safari"]);
   });
 });
 

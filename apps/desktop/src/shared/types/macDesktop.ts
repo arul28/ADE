@@ -188,6 +188,15 @@ export type MacDesktopWindow = {
   minimized: boolean;
   /** Set when this app refuses to run twice, so one lane holds it at a time. */
   singleInstance: boolean;
+  /**
+   * The owning app's icon, base64 PNG (32x32), for lists that name apps.
+   *
+   * Sent on the FIRST window of each bundle id in a reply and null on the
+   * rest, so a Mac with forty windows across eight apps carries eight icons
+   * and not forty; a reader joins it across an app's rows by bundle id
+   * (`macDesktopClaimAppIcons`). Absent entirely from an older driver.
+   */
+  iconPng?: string | null;
 };
 
 export type MacDesktopOpenArgs = {

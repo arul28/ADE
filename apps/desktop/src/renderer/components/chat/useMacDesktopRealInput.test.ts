@@ -31,7 +31,15 @@ describe("macDesktopPointerUpCall", () => {
     // session id was refused for input the user had just taken control for.
     expect(call.args.controllerId).toBe("ade-window:abc");
     expect(call.args.chatSessionId).toBe("chat-1");
-    expect(call.args).toMatchObject({ laneId: "lane-1", x: 11, y: 12, mode: "real", button: "left", count: 1 });
+    expect(call.args).toMatchObject({
+      laneId: "lane-1",
+      x: 11,
+      y: 12,
+      mode: "real",
+      button: "left",
+      count: 1,
+      silent: true,
+    });
   });
 
   it("reads the right button and the double click off the event", () => {
@@ -92,8 +100,8 @@ describe("macDesktopKeyCall", () => {
       altKey: false,
       ctrlKey: false,
     });
-    expect(call.kind).toBe("type");
-    if (call.kind !== "type") throw new Error("expected a type");
+    expect(call?.kind).toBe("type");
+    if (call?.kind !== "type") throw new Error("expected a type");
     expect(call.args.text).toBe("a");
     expect(call.args.controllerId).toBe("ade-window:abc");
   });
@@ -106,8 +114,8 @@ describe("macDesktopKeyCall", () => {
       altKey: false,
       ctrlKey: false,
     });
-    expect(shortcut.kind).toBe("press");
-    if (shortcut.kind !== "press") throw new Error("expected a press");
+    expect(shortcut?.kind).toBe("press");
+    if (shortcut?.kind !== "press") throw new Error("expected a press");
     expect(shortcut.args.key).toBe("s");
     expect(shortcut.args.modifiers).toEqual(["cmd", "shift"]);
     expect(shortcut.args.controllerId).toBe("ade-window:abc");
@@ -119,10 +127,36 @@ describe("macDesktopKeyCall", () => {
       altKey: false,
       ctrlKey: false,
     });
-    expect(named.kind).toBe("press");
-    if (named.kind !== "press") throw new Error("expected a press");
+    expect(named?.kind).toBe("press");
+    if (named?.kind !== "press") throw new Error("expected a press");
     expect(named.args.key).toBe("enter");
     expect(named.args.modifiers).toEqual([]);
+  });
+
+  it("does not send a bare modifier as a key the driver will refuse", () => {
+    for (const key of ["Control", "Shift", "Meta", "Alt", "CapsLock"]) {
+      expect(macDesktopKeyCall(context, {
+        key,
+        metaKey: key === "Meta",
+        shiftKey: key === "Shift",
+        altKey: key === "Alt",
+        ctrlKey: key === "Control",
+      })).toBeNull();
+    }
+  });
+
+  it("renames ArrowLeft to the driver's left key", () => {
+    const call = macDesktopKeyCall(context, {
+      key: "ArrowLeft",
+      metaKey: true,
+      shiftKey: false,
+      altKey: false,
+      ctrlKey: false,
+    });
+    expect(call?.kind).toBe("press");
+    if (call?.kind !== "press") throw new Error("expected a press");
+    expect(call.args.key).toBe("left");
+    expect(call.args.modifiers).toEqual(["cmd"]);
   });
 });
 
@@ -131,6 +165,9 @@ describe("macDesktopInputRefusal", () => {
     expect(macDesktopInputRefusal(new Error("MAC_DESKTOP_USER_HAS_CONTROL")))
       .toBe("Input refused: MAC_DESKTOP_USER_HAS_CONTROL");
     expect(macDesktopInputRefusal("")).toBe("Input refused: unknown error");
+    expect(macDesktopInputRefusal(
+      new Error("Error invoking remote method 'ade.localRuntime.callAction': Error: invalid_argument: \"control\" is not a key this driver knows."),
+    )).toBe("Input refused: \"control\" is not a key this driver knows.");
   });
 });
 
@@ -166,7 +203,7 @@ describe("every forwarded event a takeover sends", () => {
       macDesktopWheelCall(context, { point: { x: 1, y: 1 }, deltaX: 0, deltaY: 60 }),
       macDesktopKeyCall(context, { key: "a", metaKey: false, shiftKey: false, altKey: false, ctrlKey: false }),
       macDesktopKeyCall(context, { key: "Enter", metaKey: false, shiftKey: false, altKey: false, ctrlKey: false }),
-    ];
+    ].filter((call): call is NonNullable<typeof call> => call != null);
     expect(calls.map((call) => call.kind)).toEqual(["move", "click", "drag", "scroll", "type", "press"]);
     for (const call of calls) expect(call.args.silent).toBe(true);
   });

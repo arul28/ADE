@@ -32,6 +32,9 @@ struct DesktopWindow {
     var onDisplayId: CGDirectDisplayID?
     var minimized: Bool
     var singleInstance: Bool
+    /// The app's icon, base64 PNG. Carried by the first window of each bundle
+    /// id in a listing and nil on the rest — see `WindowControl.appIconBase64`.
+    var iconPng: String? = nil
 
     /// `MacDesktopWindow`, field for field.
     func asJSON() -> [String: JSONValue] {
@@ -52,7 +55,9 @@ struct DesktopWindow {
             "onDisplayId": onDisplayId.map { JSONValue.int(Int($0)) } ?? .null,
             "minimized": .bool(minimized),
             "singleInstance": .bool(singleInstance),
-        ]
+            // Omitted rather than sent as null on every row that does not carry
+            // one: a listing is mostly rows without an icon.
+        ].merging(iconPng.map { ["iconPng": JSONValue.string($0)] } ?? [:]) { _, new in new }
     }
 }
 
@@ -112,6 +117,13 @@ final class WindowControl {
     /// gesture. Set by `DriverRuntime`; defaults to "no" so the watcher is
     /// still testable on its own.
     var isGestureInFlight: () -> Bool = { false }
+
+    /// bundle id → base64 PNG, or nil when that app has no readable icon.
+    ///
+    /// Held for the driver's lifetime: an app's icon does not change while it
+    /// is running, and re-rendering eight PNGs on every refresh of a picker
+    /// that refreshes on every `windows-changed` is pure waste.
+    private var iconCache: [String: String?] = [:]
 
     private var originalFrames: [CGWindowID: CGRect] = [:]
     var reparkAttempts: [CGWindowID: Int] = [:]
@@ -174,6 +186,9 @@ final class WindowControl {
         // One AX read per app, at most, and only for apps that have an entry the
         // window server says is not on screen. See `axWindowMinimizedState`.
         var axStateByPid: [pid_t: [CGWindowID: Bool]?] = [:]
+        // One icon per app per reply: the renderer joins it across the app's
+        // other rows, so forty windows of eight apps cost eight PNGs.
+        var iconSentFor: Set<String> = []
         for entry in raw {
             guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
             guard let windowNumber = entry[kCGWindowNumber as String] as? UInt32 else { continue }
@@ -233,6 +248,13 @@ final class WindowControl {
                     minimized = true
                 }
             }
+            var iconPng: String?
+            let iconKey = bundleId ?? appName
+            if !iconSentFor.contains(iconKey),
+               let icon = appIconBase64(bundleId: bundleId, application: application) {
+                iconSentFor.insert(iconKey)
+                iconPng = icon
+            }
             windows.append(
                 DesktopWindow(
                     id: windowId,
@@ -245,11 +267,55 @@ final class WindowControl {
                     origin: windowOrigins[windowId] ?? "adopted",
                     onDisplayId: displayId(containing: frame),
                     minimized: minimized,
-                    singleInstance: Self.isSingleInstance(bundleId: bundleId, application: application)
+                    singleInstance: Self.isSingleInstance(bundleId: bundleId, application: application),
+                    iconPng: iconPng
                 )
             )
         }
         return windows.sorted { $0.id < $1.id }
+    }
+
+    /// The app's icon as a 32x32 base64 PNG, cached by bundle id.
+    ///
+    /// `.regular` apps only: an agent or a view service has no icon a person
+    /// would recognise, and the list does not show those as apps anyway.
+    func appIconBase64(bundleId: String?, application: NSRunningApplication?) -> String? {
+        guard let bundleId, let application, application.activationPolicy == .regular else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = iconCache[bundleId] { return cached }
+        let encoded = application.bundleURL.flatMap {
+            Self.pngBase64(icon: NSWorkspace.shared.icon(forFile: $0.path), side: 32)
+        }
+        iconCache[bundleId] = encoded
+        return encoded
+    }
+
+    /// Draw an `NSImage` at a fixed size and encode it as PNG.
+    ///
+    /// Drawn into an explicit `NSBitmapImageRep` rather than through
+    /// `lockFocus()`: that one needs a window server context on the calling
+    /// thread, and this runs wherever a `window.list` request was dispatched.
+    static func pngBase64(icon: NSImage, side: Int) -> String? {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: side,
+            pixelsHigh: side,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+        icon.draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])?.base64EncodedString()
     }
 
     /// One app's real windows, and which of them are minimized.

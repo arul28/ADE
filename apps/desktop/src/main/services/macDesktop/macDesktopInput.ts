@@ -256,11 +256,18 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     let resolvedIndex: number | null = null;
     let failure: Error | null = null;
     try {
+      // A silent takeover posts `CGEvent`s at virtual-display coordinates,
+      // which teleports the one system cursor off ADE. The helper restores
+      // it after the post so Electron keeps receiving pointer events. Agent
+      // real-input leaves this off so the pointer stays where the action put
+      // it. Gated on `controllerId` as well as `silent`: `move` is silent by
+      // construction even for a caller that is not a takeover.
+      const restoreCursor = Boolean(args.silent && args.controllerId?.trim());
       const reply = await seat.input({
         laneId,
         command: args.command,
         mode: args.mode,
-        payload: args.payload,
+        payload: restoreCursor ? { ...args.payload, restoreCursor: true } : args.payload,
         // The helper keeps its own lease and refuses a `CGEvent` post rather
         // than trusting its caller. Telling it which holder this process just
         // authorized is what lets the two agree instead of racing.

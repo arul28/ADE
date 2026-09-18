@@ -7,10 +7,12 @@
  * lane already holds a lease on it. Those three questions are here rather than
  * in JSX so a row can be asserted without a driver, a display, or a Mac.
  *
- * Deliberately NOT here: app icons. The service returns a `bundleId` and
- * nothing else, and inventing an icon channel for a picker that opens for two
- * seconds is a worse trade than a neutral glyph, so a row carries the bundle id
- * and the list draws one small window mark (`macDesktopWindowList`).
+ * App icons: the driver attaches a 32x32 base64 PNG (`iconPng`) to the FIRST
+ * window of each bundle id in a `window.list` reply, so a Mac with forty
+ * windows across eight apps pays for eight icons and not forty. Joining that
+ * back onto every row of the same app is this file's job
+ * (`macDesktopClaimAppIcons`), which is why a row carries a resolved
+ * `iconPng` and the table never has to know about the wire's frugality.
  */
 
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
@@ -29,12 +31,15 @@ export type MacDesktopClaimRow = {
   title: string;
   /**
    * True when the window has no name of its own, so `title` is only the app
-   * name again. The row says "Untitled window" rather than printing the app
-   * name twice, once in the group header and once under it.
+   * name again. The Window cell still prints that name in normal text — the
+   * words "Untitled window" say nothing a person can use, and a blank cell
+   * reads as a bug.
    */
   untitled: boolean;
   appName: string;
   bundleId: string | null;
+  /** The app's icon as a `data:`-ready base64 PNG, joined across the app's rows. */
+  iconPng: string | null;
   location: MacDesktopClaimLocation;
   /** True when this lane holds the window (ADE lease chip). */
   hasLease: boolean;
@@ -42,14 +47,6 @@ export type MacDesktopClaimRow = {
   disabled: boolean;
   /** Why the row cannot be clicked, for the tooltip. `null` when enabled. */
   disabledReason: string | null;
-};
-
-export type MacDesktopClaimGroup = {
-  /** Group key: the bundle id when there is one, else the app name. */
-  key: string;
-  appName: string;
-  bundleId: string | null;
-  rows: MacDesktopClaimRow[];
 };
 
 /**
@@ -141,7 +138,7 @@ export function macDesktopClaimLocation(
   const holder = window.laneId;
   if (!holder || holder === args.laneId) return { kind: "main", label: "Main display" };
   const name = args.laneNames?.[holder] ?? holder.slice(0, 8);
-  return { kind: "other-lane", label: `ADE · ${name}` };
+  return { kind: "other-lane", label: `Lane: ${name}` };
 }
 
 /**
@@ -158,7 +155,7 @@ export function macDesktopClaimDisabled(
 ): { disabled: boolean; reason: string | null } {
   if (window.laneId && window.laneId !== args.laneId && window.singleInstance) {
     const name = args.laneNames?.[window.laneId] ?? window.laneId.slice(0, 8);
-    return { disabled: true, reason: `held by ${name}` };
+    return { disabled: true, reason: `Held by ${name}` };
   }
   const location = macDesktopClaimLocation(window, args);
   if (location.kind === "this-lane") {
@@ -169,7 +166,13 @@ export function macDesktopClaimDisabled(
 
 export function macDesktopClaimRow(
   window: MacDesktopWindow,
-  args: { laneId: string; displayId: number | null | undefined; laneNames?: Readonly<Record<string, string>> },
+  args: {
+    laneId: string;
+    displayId: number | null | undefined;
+    laneNames?: Readonly<Record<string, string>>;
+    /** Bundle key → base64 PNG, from `macDesktopClaimAppIcons`. */
+    icons?: Readonly<Record<string, string>>;
+  },
 ): MacDesktopClaimRow {
   const { disabled, reason } = macDesktopClaimDisabled(window, args);
   return {
@@ -178,6 +181,7 @@ export function macDesktopClaimRow(
     untitled: macDesktopClaimIsUntitled(window),
     appName: window.appName,
     bundleId: window.bundleId,
+    iconPng: args.icons?.[macDesktopClaimAppKey(window)] ?? window.iconPng ?? null,
     location: macDesktopClaimLocation(window, args),
     hasLease: macDesktopHasLease(window, args.laneId),
     minimized: window.minimized,
@@ -243,16 +247,44 @@ export function macDesktopClaimVisibleWindows(
   return kept;
 }
 
+/** The key an app is counted by: its bundle id, or its name when it has none. */
+export function macDesktopClaimAppKey(window: MacDesktopWindow): string {
+  return window.bundleId ?? window.appName;
+}
+
 /**
- * Every claimable window, grouped by app.
+ * Bundle key → icon, gathered from whichever window of the app carried one.
  *
- * Groups are ordered by app name and rows inside a group by title, so the list
- * does not reshuffle under the cursor when a refresh returns the same windows
- * in whatever order the window server felt like. Locked rows stay in the list:
- * "Xcode is held by another lane" is the answer the user came for, and hiding
- * it would read as "Xcode is not open".
+ * The driver sends the PNG once per app per reply (see the file header), so
+ * every other row of that app arrives with `iconPng` null and would draw a
+ * blank square if a row only looked at itself.
  */
-export function macDesktopClaimGroups(
+export function macDesktopClaimAppIcons(
+  windows: readonly MacDesktopWindow[],
+): Record<string, string> {
+  const icons: Record<string, string> = {};
+  for (const window of windows) {
+    const icon = window.iconPng?.trim();
+    if (!icon) continue;
+    const key = macDesktopClaimAppKey(window);
+    if (!icons[key]) icons[key] = icon;
+  }
+  return icons;
+}
+
+/**
+ * Every claimable window, as one flat table body.
+ *
+ * Sorted by app and then by window title so the table does not reshuffle under
+ * the cursor when a refresh returns the same windows in whatever order the
+ * window server felt like. There are no group header rows: the app is a
+ * column, which is what makes this a table like the rest of ADE rather than an
+ * outline with a lonely count on every second line.
+ *
+ * Locked rows stay in the list: "Xcode is held by another lane" is the answer
+ * the user came for, and hiding it would read as "Xcode is not open".
+ */
+export function macDesktopClaimRows(
   windows: readonly MacDesktopWindow[],
   args: {
     laneId: string;
@@ -260,31 +292,20 @@ export function macDesktopClaimGroups(
     laneNames?: Readonly<Record<string, string>>;
     query?: string;
   },
-): MacDesktopClaimGroup[] {
-  const groups = new Map<string, MacDesktopClaimGroup>();
+): MacDesktopClaimRow[] {
+  const icons = macDesktopClaimAppIcons(windows);
+  const rows: MacDesktopClaimRow[] = [];
   for (const window of macDesktopClaimVisibleWindows(windows)) {
-    const row = macDesktopClaimRow(window, args);
+    const row = macDesktopClaimRow(window, { ...args, icons });
     if (row.location.kind === "this-lane") continue;
     if (!macDesktopClaimMatches(row, args.query ?? "")) continue;
-    const key = window.bundleId ?? window.appName;
-    const group = groups.get(key)
-      ?? { key, appName: window.appName, bundleId: window.bundleId, rows: [] };
-    group.rows.push(row);
-    groups.set(key, group);
+    rows.push(row);
   }
-  const ordered = [...groups.values()];
-  for (const group of ordered) {
-    group.rows.sort((a, b) => a.title.localeCompare(b.title) || a.window.id - b.window.id);
-  }
-  ordered.sort((a, b) => a.appName.localeCompare(b.appName));
-  return ordered;
-}
-
-/** The rows in the order the arrow keys walk them. */
-export function macDesktopClaimFlatRows(
-  groups: readonly MacDesktopClaimGroup[],
-): MacDesktopClaimRow[] {
-  return groups.flatMap((group) => group.rows);
+  rows.sort((a, b) =>
+    a.appName.localeCompare(b.appName)
+    || a.title.localeCompare(b.title)
+    || a.window.id - b.window.id);
+  return rows;
 }
 
 /**

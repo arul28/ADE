@@ -12,6 +12,7 @@
 /// The driver refuses on its own authority, so a lease-less post is impossible
 /// rather than merely unlikely.
 
+import AppKit
 import CoreGraphics
 import Foundation
 import ADEDesktopDriverCore
@@ -19,10 +20,18 @@ import ADEDesktopDriverCore
 final class RealInput {
     private let leases: InputLeaseStore
     private let log: (String) -> Void
+    /// HID source with suppression 0. A warp/post otherwise eats the next
+    /// ~250ms of events — including the viewer's real mouse over ADE.
+    private let hidSource: CGEventSource?
+    /// Cancels a stale delayed restore when a later post starts its own.
+    private var restoreGeneration: UInt64 = 0
 
     init(leases: InputLeaseStore, log: @escaping (String) -> Void) {
         self.leases = leases
         self.log = log
+        let source = CGEventSource(stateID: .hidSystemState)
+        source?.localEventsSuppressionInterval = 0
+        self.hidSource = source
     }
 
     /// The gate. Called first by every method below, and by nothing else.
@@ -36,17 +45,24 @@ final class RealInput {
         }
     }
 
-    func move(laneId: String, holderId: String?, to point: CGPoint) throws {
+    func move(
+        laneId: String,
+        holderId: String?,
+        to point: CGPoint,
+        restoreCursor: Bool = false
+    ) throws {
         try authorize(laneId: laneId, holderId: holderId)
-        guard let event = CGEvent(
-            mouseEventSource: nil,
-            mouseType: .mouseMoved,
-            mouseCursorPosition: point,
-            mouseButton: .left
-        ) else {
-            throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a pointer event.")
+        try posting(restore: restoreCursor) {
+            guard let event = CGEvent(
+                mouseEventSource: hidSource,
+                mouseType: .mouseMoved,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            ) else {
+                throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a pointer event.")
+            }
+            event.post(tap: .cghidEventTap)
         }
-        event.post(tap: .cghidEventTap)
     }
 
     func click(
@@ -54,32 +70,35 @@ final class RealInput {
         holderId: String?,
         at point: CGPoint,
         button: String,
-        count: Int
+        count: Int,
+        restoreCursor: Bool = false
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
-        let isRight = button.lowercased() == "right"
-        let downType: CGEventType = isRight ? .rightMouseDown : .leftMouseDown
-        let upType: CGEventType = isRight ? .rightMouseUp : .leftMouseUp
-        let mouseButton: CGMouseButton = isRight ? .right : .left
-        for click in 1...max(1, min(3, count)) {
-            guard let down = CGEvent(
-                mouseEventSource: nil,
-                mouseType: downType,
-                mouseCursorPosition: point,
-                mouseButton: mouseButton
-            ),
-            let up = CGEvent(
-                mouseEventSource: nil,
-                mouseType: upType,
-                mouseCursorPosition: point,
-                mouseButton: mouseButton
-            ) else {
-                throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a click event.")
+        try posting(restore: restoreCursor) {
+            let isRight = button.lowercased() == "right"
+            let downType: CGEventType = isRight ? .rightMouseDown : .leftMouseDown
+            let upType: CGEventType = isRight ? .rightMouseUp : .leftMouseUp
+            let mouseButton: CGMouseButton = isRight ? .right : .left
+            for click in 1...max(1, min(3, count)) {
+                guard let down = CGEvent(
+                    mouseEventSource: hidSource,
+                    mouseType: downType,
+                    mouseCursorPosition: point,
+                    mouseButton: mouseButton
+                ),
+                let up = CGEvent(
+                    mouseEventSource: hidSource,
+                    mouseType: upType,
+                    mouseCursorPosition: point,
+                    mouseButton: mouseButton
+                ) else {
+                    throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a click event.")
+                }
+                down.setIntegerValueField(.mouseEventClickState, value: Int64(click))
+                up.setIntegerValueField(.mouseEventClickState, value: Int64(click))
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
             }
-            down.setIntegerValueField(.mouseEventClickState, value: Int64(click))
-            up.setIntegerValueField(.mouseEventClickState, value: Int64(click))
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
         }
     }
 
@@ -97,12 +116,17 @@ final class RealInput {
     /// would leave the whole machine in a held-button state that nothing later
     /// clears, so the mouse comes up at the last point reached first, and the
     /// error is raised after.
+    ///
+    /// Authorize and `verify` run *before* posting, so a bounds refusal never
+    /// warps the pointer. Restore, when asked, wraps the whole gesture so the
+    /// system cursor comes back even if a mid-drag check throws.
     func drag(
         laneId: String,
         holderId: String?,
         from: CGPoint,
         to: CGPoint,
         durationMs: Int,
+        restoreCursor: Bool = false,
         verify: (CGPoint) -> DriverError? = { _ in nil }
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
@@ -110,59 +134,61 @@ final class RealInput {
         // on this lane's display" mistake never starts a gesture at all.
         if let error = verify(from) { throw error }
         if let error = verify(to) { throw error }
-        let steps = max(2, min(60, durationMs / 16))
-        guard let down = CGEvent(
-            mouseEventSource: nil,
-            mouseType: .leftMouseDown,
-            mouseCursorPosition: from,
-            mouseButton: .left
-        ) else {
-            throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a drag event.")
-        }
-        down.post(tap: .cghidEventTap)
-        var reached = from
-        for step in 1...steps {
-            let progress = CGFloat(step) / CGFloat(steps)
-            let point = CGPoint(
-                x: from.x + (to.x - from.x) * progress,
-                y: from.y + (to.y - from.y) * progress
-            )
-            do {
-                try authorize(laneId: laneId, holderId: holderId)
-            } catch {
-                releaseButton(at: reached)
-                log("drag on lane \(laneId) lost its lease mid-gesture; released the button")
-                throw error
-            }
-            if let error = verify(point) {
-                releaseButton(at: reached)
-                log("drag on lane \(laneId) left its display mid-gesture; released the button")
-                throw error
-            }
-            if let moved = CGEvent(
-                mouseEventSource: nil,
-                mouseType: .leftMouseDragged,
-                mouseCursorPosition: point,
+        try posting(restore: restoreCursor) {
+            let steps = max(2, min(60, durationMs / 16))
+            guard let down = CGEvent(
+                mouseEventSource: hidSource,
+                mouseType: .leftMouseDown,
+                mouseCursorPosition: from,
                 mouseButton: .left
-            ) {
-                moved.post(tap: .cghidEventTap)
-                reached = point
+            ) else {
+                throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a drag event.")
             }
-            // Pumped rather than slept: a 5-second drag on one lane must not
-            // hold the health ping and every other lane's request behind it.
-            // Every request in this driver is handled on this thread.
-            RunLoopPump.wait(
-                until: { false },
-                timeout: Double(max(1, durationMs)) / 1000.0 / Double(steps)
-            )
+            down.post(tap: .cghidEventTap)
+            var reached = from
+            for step in 1...steps {
+                let progress = CGFloat(step) / CGFloat(steps)
+                let point = CGPoint(
+                    x: from.x + (to.x - from.x) * progress,
+                    y: from.y + (to.y - from.y) * progress
+                )
+                do {
+                    try authorize(laneId: laneId, holderId: holderId)
+                } catch {
+                    releaseButton(at: reached)
+                    log("drag on lane \(laneId) lost its lease mid-gesture; released the button")
+                    throw error
+                }
+                if let error = verify(point) {
+                    releaseButton(at: reached)
+                    log("drag on lane \(laneId) left its display mid-gesture; released the button")
+                    throw error
+                }
+                if let moved = CGEvent(
+                    mouseEventSource: hidSource,
+                    mouseType: .leftMouseDragged,
+                    mouseCursorPosition: point,
+                    mouseButton: .left
+                ) {
+                    moved.post(tap: .cghidEventTap)
+                    reached = point
+                }
+                // Pumped rather than slept: a 5-second drag on one lane must not
+                // hold the health ping and every other lane's request behind it.
+                // Every request in this driver is handled on this thread.
+                RunLoopPump.wait(
+                    until: { false },
+                    timeout: Double(max(1, durationMs)) / 1000.0 / Double(steps)
+                )
+            }
+            releaseButton(at: to)
         }
-        releaseButton(at: to)
     }
 
     /// The button must come up even when the drag is being abandoned.
     private func releaseButton(at point: CGPoint) {
         guard let up = CGEvent(
-            mouseEventSource: nil,
+            mouseEventSource: hidSource,
             mouseType: .leftMouseUp,
             mouseCursorPosition: point,
             mouseButton: .left
@@ -196,8 +222,8 @@ final class RealInput {
             )
         }
         let flags = KeyCodes.flags(for: modifiers)
-        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
-              let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)
+        guard let down = CGEvent(keyboardEventSource: hidSource, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: hidSource, virtualKey: keyCode, keyDown: false)
         else {
             throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a key event.")
         }
@@ -213,13 +239,53 @@ final class RealInput {
         try authorize(laneId: laneId, holderId: holderId)
         for character in text {
             var utf16 = Array(String(character).utf16)
-            guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+            guard let down = CGEvent(keyboardEventSource: hidSource, virtualKey: 0, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: hidSource, virtualKey: 0, keyDown: false)
             else { continue }
             down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
             up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
             down.post(tap: .cghidEventTap)
             up.post(tap: .cghidEventTap)
         }
+    }
+
+    /// Posts the events, then puts the system cursor back where it was.
+    ///
+    /// A `CGEvent` with `mouseCursorPosition` teleports the ONE system pointer
+    /// to that point. For a human driving the live view, that point is on the
+    /// virtual display — so after the post the pointer is no longer over ADE
+    /// and Electron stops seeing events. Saving the Quartz location first and
+    /// warping back after is what keeps their mouse on the pane. The clicked
+    /// window becoming key will try to pull the cursor onto that display a
+    /// beat later, so the restore is repeated on the next turns of the main
+    /// queue. Agent real-input leaves this off so the pointer stays where the
+    /// action put it.
+    private func posting(restore: Bool, _ body: () throws -> Void) rethrows {
+        let saved = restore ? quartzCursorLocation() : nil
+        defer {
+            if let saved { warpCursorBack(to: saved) }
+        }
+        try body()
+    }
+
+    private func quartzCursorLocation() -> CGPoint? {
+        let cocoa = NSEvent.mouseLocation
+        let primary = NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first
+        guard let height = primary?.frame.height, height > 0 else { return nil }
+        return Geometry.quartzPoint(fromCocoa: cocoa, primaryHeight: height)
+    }
+
+    private func warpCursorBack(to point: CGPoint) {
+        restoreGeneration += 1
+        let generation = restoreGeneration
+        let apply: () -> Void = { [weak self] in
+            guard let self, self.restoreGeneration == generation else { return }
+            CGWarpMouseCursorPosition(point)
+            _ = CGAssociateMouseAndMouseCursorPosition(boolean_t(1))
+        }
+        apply()
+        DispatchQueue.main.async(execute: apply)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(32), execute: apply)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80), execute: apply)
     }
 }

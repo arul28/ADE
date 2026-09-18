@@ -97,7 +97,9 @@ export function MacDesktopTakeoverCursor(props: {
         ? displayPointToViewPoint({ x: point.x, y: point.y, rect: currentRect, display: currentDisplay })
         : null;
       if (!view) {
-        node.style.opacity = "0";
+        // Keep the last place the pointer was. Publishing null (letterbox,
+        // or a warp-induced leave) is what made the yellow arrow vanish
+        // while `cursor-none` had already hidden the OS cursor.
         return;
       }
       node.style.opacity = "1";

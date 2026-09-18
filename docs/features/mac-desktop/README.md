@@ -309,6 +309,18 @@ screenshot with no `--out` stays in the computer-use scratch root.
 - **Never post a `CGEvent` without the lease.** `RealInput.swift` refuses the
   call itself rather than trusting its caller. The lease check is in the driver,
   not only in the service.
+- **Human takeover keeps the system cursor on ADE.** Posting `mouseDown` at a
+  virtual-display coordinate teleports the one system pointer onto that
+  display. The helper posts through a `CGEventSource` with suppression
+  interval 0 (otherwise the warp eats the next ~250ms of Electron events),
+  then warps the cursor back, and repeats the warp on the next turns of the
+  main queue so the clicked window becoming key cannot keep it. Hover
+  `mouseMoved` events are not posted during takeover: a 60Hz warp+post flood
+  stalls ScreenCaptureKit and is what made the yellow glyph vanish. The live
+  view draws a local pointer instead. Agent real-input does not restore: the
+  pointer stays where the action put it. The flag is `restoreCursor` on the
+  nested input payload, and the service only sets it when the call is a
+  silent takeover (`silent` plus a `controllerId`).
 - **Window ids are not stable across relaunch.** A claimed window id dies with
   its process. `windows` re-enumerates; do not cache an id across a restart.
 - **Two chats in one lane can race to start.** `start` is idempotent and

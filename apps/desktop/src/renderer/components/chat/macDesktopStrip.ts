@@ -134,3 +134,95 @@ export function macDesktopRelativeTime(at: number, now: number): string {
   if (minutes < 60) return `${minutes}m ago`;
   return `${Math.round(minutes / 60)}h ago`;
 }
+
+/**
+ * How big the picture is when it owns the whole window.
+ *
+ * Full screen is an overlay over the app, not a pane: there is no aspect-ratio
+ * box for the picture to inherit, so the fit is computed rather than left to
+ * CSS. Both a `width:100%` + `aspect-ratio` box (too tall, clipped) and a
+ * `max-h-full` one (ratio dropped the moment the height was capped) drew the
+ * picture off-centre with dark bands down one side, which is exactly what the
+ * owner saw. The returned box is the picture's own element size, so the
+ * ResizeObserver that feeds `viewRect` measures the PICTURE and every overlay
+ * — takeover cursor, agent cursor, window outline — maps onto it unchanged.
+ *
+ * `margin` is subtracted from both axes before the fit so the picture never
+ * runs into the overlay's edges or the bar above it.
+ */
+export function macDesktopFullscreenPicture(
+  box: { width: number; height: number },
+  display: { width: number; height: number },
+  margin = 0,
+): { width: number; height: number } | null {
+  const availableWidth = box.width - margin * 2;
+  const availableHeight = box.height - margin * 2;
+  if (availableWidth <= 0 || availableHeight <= 0) return null;
+  if (display.width <= 0 || display.height <= 0) return null;
+  const scale = Math.min(availableWidth / display.width, availableHeight / display.height);
+  return {
+    width: Math.round(display.width * scale),
+    height: Math.round(display.height * scale),
+  };
+}
+
+/**
+ * Which controls the chrome row carries, per place it is drawn.
+ *
+ * Full screen used to carry three of them and hide even those after two
+ * seconds, so a person who pressed the button landed on a picture with no
+ * status, no window list and no way back but an undiscoverable Escape. The
+ * answer is that full screen carries the SAME row the pane does — the only
+ * differences are the ones that are facts about the row's place: full screen
+ * spells its exit out in words rather than an icon tooltip, because it is the
+ * one control the user is looking for.
+ */
+export function macDesktopStripControls(args: {
+  expanded: boolean;
+  hostIsLocal: boolean;
+  ownedCount: number;
+  parkedCount: number;
+}): {
+  status: true;
+  windows: true;
+  record: true;
+  present: boolean;
+  takeover: true;
+  fullscreen: { label: string; labelled: boolean };
+} {
+  return {
+    status: true,
+    windows: true,
+    record: true,
+    present: macDesktopPresentAction({
+      hostIsLocal: args.hostIsLocal,
+      ownedCount: args.ownedCount,
+      parkedCount: args.parkedCount,
+    }) != null,
+    takeover: true,
+    fullscreen: args.expanded
+      ? { label: "Exit full screen", labelled: true }
+      : { label: "Full screen", labelled: false },
+  };
+}
+
+/**
+ * The one or two pieces of text a window row prints.
+ *
+ * A row that always printed both lines said "Grok Bot / Grok Bot" for every
+ * single-window app, which is the whole app name twice in a card twice the
+ * height it needed. The window's title is the subject when it is one; the app
+ * name is a secondary column only when it adds something the title does not
+ * already say.
+ */
+export function macDesktopWindowRowText(window: MacDesktopWindow): {
+  primary: string;
+  secondary: string | null;
+} {
+  const app = window.appName?.trim() ?? "";
+  const title = window.title?.trim() ?? "";
+  if (!title || (app && title.toLowerCase() === app.toLowerCase())) {
+    return { primary: app || macDesktopWindowTitle(window), secondary: null };
+  }
+  return { primary: title, secondary: app || null };
+}

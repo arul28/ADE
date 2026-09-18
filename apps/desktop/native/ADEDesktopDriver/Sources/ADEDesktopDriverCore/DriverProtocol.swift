@@ -207,7 +207,7 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// | `display.create` | `laneId,name,width,height,scale` | `MacDesktopDisplay` |
 /// | `display.destroy` | `laneId,reason?` | `{destroyed, releasedWindows}` |
 /// | `display.reconcile` | `liveLaneIds` | `{destroyed: string[]}` |
-/// | `window.list` | `laneId?`, `pid?` | `{windows: MacDesktopWindow[]}` |
+/// | `window.list` | `laneId?`, `pid?` | `{windows: MacDesktopWindow[]}` — a window carries `iconPng` (base64 PNG, 32x32) only on the first window of its bundle id in the reply; readers join it across that app's rows |
 /// | `window.park` | `laneId,windowId` | `MacDesktopWindow` |
 /// | `window.unpark` | `windowId` | `{window: MacDesktopWindow?}` |
 /// | `app.launch` | `laneId,target,args?` | `MacDesktopOpenResult` |

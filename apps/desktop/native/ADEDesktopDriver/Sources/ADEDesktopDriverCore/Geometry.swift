@@ -8,8 +8,9 @@
 /// the caller would need a second space and a conversion it has no reason to get
 /// right.
 ///
-/// So this file owns exactly one conversion, both ways, plus the arithmetic for
-/// the fallback that has to put windows somewhere nobody can see.
+/// So this file owns the global/local conversion, both ways, the Cocoa→Quartz
+/// flip the restore-cursor path needs, and the arithmetic for the fallback that
+/// has to put windows somewhere nobody can see.
 ///
 /// No AppKit. `CGPoint`/`CGRect` are CoreGraphics value types and need no window
 /// server, which is what lets the fallback origin be tested at all.
@@ -103,6 +104,13 @@ public enum Geometry {
             x: min(max(point.x, frame.minX), maxX),
             y: min(max(point.y, frame.minY), maxY)
         )
+    }
+
+    /// Cocoa `NSEvent.mouseLocation` is bottom-left of the primary display.
+    /// Quartz / `CGEvent` / `CGWarpMouseCursorPosition` is top-left of the
+    /// primary. Same x; y flips against the primary's height.
+    public static func quartzPoint(fromCocoa cocoa: CGPoint, primaryHeight: CGFloat) -> CGPoint {
+        CGPoint(x: cocoa.x, y: primaryHeight - cocoa.y)
     }
 
     public static func center(of frame: CGRect) -> CGPoint {

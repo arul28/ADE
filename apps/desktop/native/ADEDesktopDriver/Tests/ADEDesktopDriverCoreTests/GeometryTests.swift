@@ -35,6 +35,20 @@ final class GeometryTests: XCTestCase {
         )
     }
 
+    /// Cocoa origin is the primary's bottom-left; Quartz / CGEvent origin is
+    /// the primary's top-left. A pointer 100pt up from the bottom of a
+    /// 1080-tall primary is y=980 in Quartz.
+    func testQuartzPointFlipsCocoaYAgainstThePrimaryHeight() {
+        XCTAssertEqual(
+            Geometry.quartzPoint(fromCocoa: CGPoint(x: 12, y: 100), primaryHeight: 1080),
+            CGPoint(x: 12, y: 980)
+        )
+        XCTAssertEqual(
+            Geometry.quartzPoint(fromCocoa: CGPoint(x: 0, y: 0), primaryHeight: 1440),
+            CGPoint(x: 0, y: 1440)
+        )
+    }
+
     func testGlobalFrameKeepsItsSize() {
         let frame = CGRect(x: 10, y: 20, width: 300, height: 200)
         let global = Geometry.toGlobal(frame: frame, display: display)

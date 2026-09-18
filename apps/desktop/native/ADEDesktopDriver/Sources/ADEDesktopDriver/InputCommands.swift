@@ -187,6 +187,7 @@ extension DriverRuntime {
         // the call outright when it is absent, so a replayed line stripped of
         // its holder cannot move the pointer.
         let holderId = request.object("lease")?["holderId"]?.stringValue
+        let restoreCursor = payload["restoreCursor"]?.boolValue ?? false
         var resolvedIndex: JSONValue = .null
         // Every real event is a global `CGEvent`: the window server delivers it
         // wherever the coordinate points, including the user's own screen. So
@@ -222,7 +223,12 @@ extension DriverRuntime {
         switch command {
         case "move":
             let target = try point("to")
-            try realInput.move(laneId: laneId, holderId: holderId, to: target)
+            try realInput.move(
+                laneId: laneId,
+                holderId: holderId,
+                to: target,
+                restoreCursor: restoreCursor
+            )
         case "click":
             let target = try point("at")
             try realInput.click(
@@ -230,7 +236,8 @@ extension DriverRuntime {
                 holderId: holderId,
                 at: target,
                 button: payload["button"]?.stringValue ?? "left",
-                count: payload["count"]?.intValue ?? 1
+                count: payload["count"]?.intValue ?? 1,
+                restoreCursor: restoreCursor
             )
         case "drag":
             let from = try point("from")
@@ -250,6 +257,7 @@ extension DriverRuntime {
                 from: from,
                 to: to,
                 durationMs: payload["durationMs"]?.intValue ?? 300,
+                restoreCursor: restoreCursor,
                 verify: laneBoundsCheck(laneId: laneId)
             )
         case "press":

@@ -396,7 +396,12 @@ describe("macDesktopService real input and the lease", () => {
 
     // The event reached the driver...
     const input = driver.calls.find((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input);
-    expect(input?.payload).toMatchObject({ command: "move", mode: "real", lease: { holderId: "ade-window:abc" } });
+    expect(input?.payload).toMatchObject({
+      command: "move",
+      mode: "real",
+      lease: { holderId: "ade-window:abc" },
+      payload: expect.objectContaining({ restoreCursor: true }),
+    });
     // ...and nothing looked at the screen afterwards. No capture, no AX walk.
     expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.observe)).toBe(false);
     // And nothing narrated the user's own pointer back into the chat.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -15,6 +15,7 @@ import type {
   MacDesktopTypeArgs,
 } from "../../../shared/types/macDesktop";
 import { macDesktopApi } from "./macDesktopApi";
+import { macDesktopErrorText } from "./macDesktopErrorText";
 import {
   createMacDesktopTakeoverCursorFeed,
   type MacDesktopTakeoverCursorFeed,
@@ -126,12 +127,18 @@ export function macDesktopKeyCall(
     altKey: boolean;
     ctrlKey: boolean;
   },
-): MacDesktopInputCall {
+): MacDesktopInputCall | null {
   const modifiers: Array<"cmd" | "shift" | "option" | "control"> = [];
   if (event.metaKey) modifiers.push("cmd");
   if (event.shiftKey) modifiers.push("shift");
   if (event.altKey) modifiers.push("option");
   if (event.ctrlKey) modifiers.push("control");
+  const named = macDesktopNamedKey(event.key);
+  // A modifier by itself is not a keystroke. Sending `event.key` of "Control"
+  // as `press key=control` is what printed "is not a key this driver knows"
+  // on every Ctrl/Shift/Cmd tap. The chord is the next key, which already
+  // carries these flags.
+  if (MAC_DESKTOP_MODIFIER_KEYS.has(named)) return null;
   // A bare printable character is text, and typing it as text is what makes
   // dead keys, IME output and pasted-looking input arrive intact. Everything
   // else — and anything with a command modifier — is a key press.
@@ -153,7 +160,7 @@ export function macDesktopKeyCall(
     kind: "press",
     args: {
       laneId: context.laneId,
-      key: event.key.toLowerCase(),
+      key: named,
       modifiers,
       mode: "real",
       silent: true,
@@ -161,6 +168,38 @@ export function macDesktopKeyCall(
       chatSessionId: context.chatSessionId,
     },
   };
+}
+
+/** Browser `event.key` values that are only modifiers. */
+const MAC_DESKTOP_MODIFIER_KEYS = new Set([
+  "control",
+  "shift",
+  "meta",
+  "alt",
+  "option",
+  "cmd",
+  "command",
+  "hyper",
+  "capslock",
+  "os",
+  "fn",
+]);
+
+/** Browser names → the names `KeyCodes` in the driver actually has. */
+const MAC_DESKTOP_KEY_ALIASES: Record<string, string> = {
+  arrowleft: "left",
+  arrowright: "right",
+  arrowup: "up",
+  arrowdown: "down",
+  " ": "space",
+  spacebar: "space",
+  esc: "escape",
+  return: "return",
+};
+
+function macDesktopNamedKey(key: string): string {
+  const lowered = key.toLowerCase();
+  return MAC_DESKTOP_KEY_ALIASES[lowered] ?? lowered;
 }
 
 export function macDesktopMoveCall(
@@ -254,8 +293,8 @@ export function createMacDesktopMovePump(options: {
 /** The one line the strip shows when the host refuses a forwarded event. */
 export function macDesktopInputRefusal(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  const trimmed = message.trim();
-  return `Input refused: ${trimmed || "unknown error"}`;
+  const peeled = macDesktopErrorText(message);
+  return `Input refused: ${peeled || "unknown error"}`;
 }
 
 export type UseMacDesktopRealInput = {
@@ -315,53 +354,30 @@ export function useMacDesktopRealInput(args: {
       },
     );
   }, [laneId, runtimePin]);
-  // The pump is built once and lives for the hook's life, while `send` is
-  // rebuilt whenever the runtime pin changes. Read through a ref so the pump
-  // never holds a sender bound to a connection that has since moved.
-  const sendRef = useRef(send);
-  sendRef.current = send;
-
-  /**
-   * The throttled forwarder, rebuilt whenever the thing it sends through
-   * changes, and torn down with the hook: an interval still holding a point
-   * after the panel unmounted would post a pointer event for a view nobody is
-   * looking at.
-   */
-  const movePumpRef = useRef<MacDesktopMovePump | null>(null);
-  const contextRef = useRef({ laneId, sessionId, controllerId });
-  contextRef.current = { laneId, sessionId, controllerId };
-  if (!movePumpRef.current) {
-    movePumpRef.current = createMacDesktopMovePump({
-      send: (point) => {
-        const context = contextRef.current;
-        sendRef.current(macDesktopMoveCall(
-          { laneId: context.laneId, chatSessionId: context.sessionId, controllerId: context.controllerId },
-          point,
-        ));
-      },
-    });
-  }
-  useEffect(() => () => movePumpRef.current?.stop(), []);
 
   const onPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!enabled) return;
     const point = toDisplayPoint(event.clientX, event.clientY);
-    // The letterbox bars map to nothing, so the glyph is hidden there and no
-    // move is sent: a pointer parked on the black band is not a pointer on the
-    // lane's screen, and clamping it to the nearest pixel of a real window is
-    // the lie `viewPointToDisplayPoint` already refuses to tell.
-    cursorFeed.publish(point);
-    if (!point) return;
-    movePumpRef.current?.push(point);
+    // The local glyph is the pointer the person sees. Hover `CGEvent`s are
+    // not sent: each one teleports the one system cursor onto the virtual
+    // display (and a 60Hz flood of warp+post stalls the capture). Clicks,
+    // drags, scrolls and keys still go through. A letterbox hit does not
+    // hide the glyph — that is what made the yellow arrow vanish.
+    if (point) cursorFeed.publish(point);
   }, [cursorFeed, enabled, toDisplayPoint]);
 
   const onPointerLeave = useCallback(() => {
-    cursorFeed.publish(null);
-    movePumpRef.current?.stop();
-  }, [cursorFeed]);
+    // The system cursor may leave this element for the length of a posted
+    // click; that is the warp, not the person walking off. The glyph stays.
+  }, []);
 
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!enabled) return;
+    event.currentTarget.focus({ preventScroll: true });
+    // Restore-after-post warps the system cursor off this element for a beat
+    // and would otherwise cancel the gesture before `pointerup`. Capture keeps
+    // the click/drag on this target through that warp.
+    event.currentTarget.setPointerCapture(event.pointerId);
     dragStartRef.current = toDisplayPoint(event.clientX, event.clientY);
   }, [enabled, toDisplayPoint]);
 
@@ -389,14 +405,16 @@ export function useMacDesktopRealInput(args: {
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!enabled) return;
-    event.preventDefault();
-    send(macDesktopKeyCall({ laneId, chatSessionId: sessionId, controllerId }, {
+    const call = macDesktopKeyCall({ laneId, chatSessionId: sessionId, controllerId }, {
       key: event.key,
       metaKey: event.metaKey,
       shiftKey: event.shiftKey,
       altKey: event.altKey,
       ctrlKey: event.ctrlKey,
-    }));
+    });
+    if (!call) return;
+    event.preventDefault();
+    send(call);
   }, [controllerId, enabled, laneId, send, sessionId]);
 
   const clearInputError = useCallback(() => {

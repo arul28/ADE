@@ -120,3 +120,37 @@ export function MacDesktopRowAction({
     </button>
   );
 }
+
+/**
+ * The real app icon, at list size.
+ *
+ * `iconPng` is a base64 PNG the driver renders once per app (see
+ * `macDesktopClaimPicker.logic`), so this is an `<img>` and not a font glyph.
+ * The neutral window mark stays as the fallback: an older driver sends no
+ * icons at all, and a row with a hole in its first column reads as broken.
+ */
+export function MacDesktopAppIcon({
+  iconPng,
+  appName,
+  className,
+}: {
+  iconPng?: string | null;
+  appName: string;
+  className?: string;
+}) {
+  if (!iconPng) {
+    return <MacDesktopWindowGlyph className={cn("size-4", className)} />;
+  }
+  return (
+    <img
+      src={`data:image/png;base64,${iconPng}`}
+      alt=""
+      aria-hidden
+      data-testid="mac-desktop-app-icon"
+      title={appName}
+      width={16}
+      height={16}
+      className={cn("size-4 shrink-0 rounded-[3px] object-contain", className)}
+    />
+  );
+}

@@ -11,35 +11,46 @@ import {
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import { cn } from "../ui/cn";
 import { getFocusableElements } from "../ui/dialogFocus";
+import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
+import {
+  USAGE_DIVIDER_COLOR_CLASS,
+  USAGE_HAIRLINE_CLASS,
+  USAGE_HOVER_ROW_CLASS,
+  USAGE_TEXT,
+} from "../usage/usageDesign";
 import { macDesktopErrorText } from "./macDesktopErrorText";
 import {
-  macDesktopClaimFlatRows,
-  macDesktopClaimGroups,
   macDesktopClaimNextIndex,
+  macDesktopClaimRows,
   type MacDesktopClaimRow,
 } from "./macDesktopClaimPicker.logic";
 import {
-  MAC_DESKTOP_LIST_HEADER,
-  MAC_DESKTOP_LIST_META,
-  MAC_DESKTOP_LIST_ROW,
-  MAC_DESKTOP_LIST_TITLE,
+  MacDesktopAppIcon,
   MacDesktopMinimizedBadge,
   MacDesktopRowAction,
-  MacDesktopWindowGlyph,
 } from "./macDesktopWindowList";
 
 /**
  * "Claim a window" — the whole Mac's windows, one click from this lane's screen.
  *
- * What it replaces: a footer that read `No windows yet · ade mac-desktop open
- * <app> · Claim…`, which asked a person to retype a CLI command under a live
- * video of their own screen. A window is a thing you point at, so this is a
- * list of the things.
+ * It is a TABLE, and specifically the table the rest of ADE already uses:
+ * `settings/AdeUsageSection`'s model breakdown and `settings/StorageSection`'s
+ * lane table are both a plain `<table>` with a muted `micro` header row,
+ * `py-2` cells at the `detail` step, a hairline under every row, and a hover
+ * wash — all of it from `usage/usageDesign`, which is where those classes are
+ * defined. This file reuses them rather than restating them, so the picker
+ * cannot drift away from the tables it is supposed to look like.
+ *
+ * What it replaced, twice: a translucent blurred sheet with the chat showing
+ * through it, app-name group headers each carrying a lonely count, a mono
+ * glyph per row, and rows that said "Untitled window". An app is now a column
+ * with its real icon, a window with no name of its own simply prints its app's
+ * name, and the surface is opaque.
  *
  * Kept deliberately thin: every judgement about a row — where it is, whether
- * this lane may take it, whether the lane already leases it — is in
- * `macDesktopClaimPicker.logic`, and this file is the dialog, the keyboard, and
- * one spinner.
+ * this lane may take it, whether the lane already leases it, which app icon it
+ * joins to — is in `macDesktopClaimPicker.logic`, and this file is the dialog,
+ * the keyboard, and one spinner.
  */
 export type MacDesktopClaimPickerProps = {
   laneId: string;
@@ -52,7 +63,15 @@ export type MacDesktopClaimPickerProps = {
   onRefresh: () => void;
   onClaim: (windowId: number) => Promise<void>;
   onClose: () => void;
+  /**
+   * Overlay stacking. Full screen sits at 1000; a picker opened from inside
+   * that overlay has to be one step above or it is behind the picture.
+   */
+  zIndex?: number;
 };
+
+/** Header cell: the muted, normal-weight `micro` step the settings tables use. */
+const HEAD_CELL = "py-2 font-normal";
 
 export function MacDesktopClaimPicker({
   laneId,
@@ -64,6 +83,7 @@ export function MacDesktopClaimPicker({
   onRefresh,
   onClaim,
   onClose,
+  zIndex,
 }: MacDesktopClaimPickerProps) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -71,11 +91,10 @@ export function MacDesktopClaimPicker({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  const groups = useMemo(
-    () => macDesktopClaimGroups(windows, { laneId, displayId, laneNames, query }),
+  const rows = useMemo(
+    () => macDesktopClaimRows(windows, { laneId, displayId, laneNames, query }),
     [displayId, laneId, laneNames, query, windows],
   );
-  const rows = useMemo(() => macDesktopClaimFlatRows(groups), [groups]);
 
   // The cursor is an index into a list that a refresh or a keystroke can
   // shorten, so it is clamped on every change rather than trusted.
@@ -151,7 +170,8 @@ export function MacDesktopClaimPicker({
 
   const body = (
     <div
-      className="fixed inset-0 z-[220] flex items-start justify-center bg-black/55 p-4 pt-[12vh] backdrop-blur-sm"
+      className="fixed inset-0 flex items-start justify-center bg-black/55 p-4 pt-[10vh]"
+      style={{ zIndex: zIndex ?? 220 }}
       role="presentation"
       data-testid="mac-desktop-claim-picker"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
@@ -162,9 +182,13 @@ export function MacDesktopClaimPicker({
         aria-modal="true"
         aria-label="Claim a window"
         className={cn(
-          "grid max-h-[min(520px,calc(100vh-24vh))] w-[min(520px,calc(100vw-32px))]",
-          "grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-2xl",
-          "border border-border/70 bg-surface-overlay text-fg shadow-float",
+          "grid max-h-[min(560px,calc(100vh-20vh))] w-[min(720px,calc(100vw-32px))]",
+          "grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border",
+          // Opaque on purpose: `bg-surface-overlay` is translucent by
+          // construction, which is how the chat ended up showing through this
+          // dialog. `bg-surface-raised` is the settings cards' own surface.
+          USAGE_HAIRLINE_CLASS,
+          "bg-surface-raised text-fg shadow-float",
         )}
         onKeyDown={(event) => {
           if (event.key !== "Tab") return;
@@ -182,24 +206,20 @@ export function MacDesktopClaimPicker({
           }
         }}
       >
-        <header className="flex items-center gap-2 border-b border-border/60 px-3 py-2.5">
-          <MagnifyingGlass size={14} className="shrink-0 text-muted-fg" />
-          <input
-            autoFocus
-            value={query}
-            onChange={(event) => { setQuery(event.target.value); setActive(0); }}
-            placeholder="Search open windows…"
-            aria-label="Search open windows"
-            data-testid="mac-desktop-claim-search"
-            className="min-w-0 flex-1 bg-transparent text-[13px] text-fg outline-none placeholder:text-muted-fg/70"
-          />
+        <header className={cn("flex items-start gap-3 border-b px-4 py-3", USAGE_DIVIDER_COLOR_CLASS)}>
+          <div className="min-w-0 flex-1">
+            <h2 className={cn(USAGE_TEXT.body, "m-0 font-medium text-fg")}>Claim a window</h2>
+            <p className={cn(USAGE_TEXT.micro, "m-0 mt-0.5 text-muted-fg")}>
+              Move a window onto this lane&rsquo;s screen. ADE keeps a lease on it until you release it.
+            </p>
+          </div>
           <button
             type="button"
             onClick={onRefresh}
             aria-label="Refresh window list"
             title="Refresh window list"
             data-testid="mac-desktop-claim-refresh"
-            className="inline-flex size-7 shrink-0 items-center justify-center rounded-[7px] text-muted-fg transition-colors duration-[120ms] hover:bg-white/[0.06] hover:text-fg"
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors duration-150 hover:bg-muted hover:text-fg"
           >
             <ArrowClockwise size={14} className={loading ? "animate-spin" : undefined} />
           </button>
@@ -207,24 +227,41 @@ export function MacDesktopClaimPicker({
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="inline-flex size-7 shrink-0 items-center justify-center rounded-[7px] text-muted-fg transition-colors duration-[120ms] hover:bg-white/[0.06] hover:text-fg"
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors duration-150 hover:bg-muted hover:text-fg"
           >
             <X size={14} />
           </button>
         </header>
 
-        <div ref={listRef} className="min-h-0 overflow-auto p-1.5" role="listbox" aria-label="Open windows">
+        <div className={cn("relative border-b px-4 py-2.5", USAGE_DIVIDER_COLOR_CLASS)}>
+          <MagnifyingGlass
+            size={13}
+            aria-hidden
+            className="pointer-events-none absolute left-[26px] top-1/2 -translate-y-1/2 text-muted-fg"
+          />
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => { setQuery(event.target.value); setActive(0); }}
+            placeholder="Search by app, window or bundle id…"
+            aria-label="Search open windows"
+            data-testid="mac-desktop-claim-search"
+            className={cn(INPUT_CLASS_NAME, "mt-0 h-8 pl-8 text-[12px]")}
+          />
+        </div>
+
+        <div ref={listRef} className="min-h-0 overflow-auto px-4">
           {/* One clean line. `macDesktopErrorText` here too, and not only at the
               caller: a picker that is handed a raw rejection anywhere — a
               claim this dialog made itself, a refresh that failed — must not be
               the surface that prints "Error invoking remote method…". */}
           {error ? (
-            <p className="px-2 py-3 text-[12px] text-amber-300" data-testid="mac-desktop-claim-error">
+            <p className={cn(USAGE_TEXT.detail, "py-3 text-amber-300")} data-testid="mac-desktop-claim-error">
               {macDesktopErrorText(error)}
             </p>
           ) : null}
           {!error && !rows.length ? (
-            <p className="px-2 py-6 text-center text-[12px] text-muted-fg" data-testid="mac-desktop-claim-empty">
+            <p className={cn(USAGE_TEXT.detail, "py-8 text-center text-muted-fg")} data-testid="mac-desktop-claim-empty">
               {loading
                 ? "Looking at this Mac's windows…"
                 : query.trim()
@@ -232,82 +269,91 @@ export function MacDesktopClaimPicker({
                   : "Nothing else is open on this Mac."}
             </p>
           ) : null}
-          {/*
-            App name as a header row with a count, one line per window under it.
-
-            The row is a `div` and the action a real `<button>` inside it: the
-            previous row WAS the button, so "Claim" could only ever be an icon
-            (a button cannot contain a button) and the whole row was one target
-            whatever you were pointing at.
-          */}
-          {groups.map((group, groupIndex) => (
-            <section
-              key={group.key}
-              className={cn("pb-0.5", groupIndex > 0 && "mt-0.5 border-t border-white/[0.06] pt-0.5")}
-            >
-              <p className={MAC_DESKTOP_LIST_HEADER} data-testid="mac-desktop-claim-group">
-                <span className="min-w-0 flex-1 truncate">{group.appName}</span>
-                <span className="shrink-0 tabular-nums text-muted-fg/60">{group.rows.length}</span>
-              </p>
-              {group.rows.map((row) => {
-                const index = rows.indexOf(row);
-                const isActive = index === active;
-                const spinning = claiming === row.window.id;
-                return (
-                  <div
-                    key={row.window.id}
-                    role="option"
-                    aria-selected={isActive}
-                    aria-disabled={row.disabled || undefined}
-                    data-active={isActive ? "true" : undefined}
-                    data-testid="mac-desktop-claim-row"
-                    title={row.disabledReason ?? `Move “${row.title}” onto this lane's screen`}
-                    onMouseEnter={() => { if (!row.disabled) setActive(index); }}
-                    onClick={() => void claim(row)}
-                    className={cn(
-                      MAC_DESKTOP_LIST_ROW,
-                      isActive && !row.disabled ? "bg-white/[0.07]" : "bg-transparent",
-                      row.disabled ? "opacity-45" : "cursor-pointer hover:bg-white/[0.05]",
-                    )}
-                  >
-                    <MacDesktopWindowGlyph />
-                    <span className={MAC_DESKTOP_LIST_TITLE}>
-                      {row.untitled ? "Untitled window" : row.title}
-                    </span>
-                    {row.minimized ? <MacDesktopMinimizedBadge /> : null}
-                    {row.hasLease ? <MacDesktopLeaseChip /> : null}
-                    <span className={MAC_DESKTOP_LIST_META}>
-                      {row.disabled && row.disabledReason ? (
-                        <span className="inline-flex items-center gap-1">
-                          {row.disabledReason.startsWith("held by") ? <Lock size={10} className="shrink-0" /> : null}
-                          {row.disabledReason}
+          {rows.length ? (
+            <table className={cn(USAGE_TEXT.detail, "w-full")}>
+              <thead>
+                <tr className={cn(USAGE_TEXT.micro, "border-b text-left text-muted-fg", USAGE_HAIRLINE_CLASS)}>
+                  <th className={HEAD_CELL}>App</th>
+                  <th className={HEAD_CELL}>Window</th>
+                  <th className={HEAD_CELL}>Where</th>
+                  <th className={HEAD_CELL}>State</th>
+                  <th className={cn(HEAD_CELL, "text-right")}>
+                    <span className="sr-only">Action</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, index) => {
+                  const isActive = index === active;
+                  const spinning = claiming === row.window.id;
+                  const held = row.disabled && row.disabledReason?.startsWith("Held by");
+                  return (
+                    <tr
+                      key={row.window.id}
+                      aria-disabled={row.disabled || undefined}
+                      data-active={isActive ? "true" : undefined}
+                      data-testid="mac-desktop-claim-row"
+                      title={row.disabledReason ?? `Move “${row.title}” onto this lane's screen`}
+                      onMouseEnter={() => { if (!row.disabled) setActive(index); }}
+                      onClick={() => void claim(row)}
+                      className={cn(
+                        "border-b last:border-b-0",
+                        USAGE_DIVIDER_COLOR_CLASS,
+                        USAGE_HOVER_ROW_CLASS,
+                        isActive && !row.disabled ? "bg-muted" : undefined,
+                        row.disabled ? "opacity-55" : "cursor-pointer hover:bg-muted",
+                      )}
+                    >
+                      <td className="max-w-[180px] py-2 pr-3 text-fg">
+                        <span className="flex items-center gap-2">
+                          <MacDesktopAppIcon iconPng={row.iconPng} appName={row.appName} />
+                          <span className="truncate">{row.appName}</span>
                         </span>
-                      ) : row.location.label}
-                    </span>
-                    {spinning ? (
-                      <CircleNotch
-                        size={13}
-                        className="mx-1.5 shrink-0 animate-spin text-muted-fg"
-                        data-testid="mac-desktop-claim-spinner"
-                      />
-                    ) : (
-                      <MacDesktopRowAction
-                        label="Claim"
-                        testId="mac-desktop-claim-action"
-                        title={row.disabledReason ?? `Move “${row.title}” onto this lane's screen`}
-                        disabled={row.disabled || claiming != null}
-                        onClick={() => void claim(row)}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </section>
-          ))}
+                      </td>
+                      {/* A window with no name of its own prints its app's name
+                          in normal text. "Untitled window" is a label for a
+                          thing nobody has, and it was on half the rows. */}
+                      <td className="max-w-[260px] truncate py-2 pr-3 text-fg">{row.title}</td>
+                      <td className="whitespace-nowrap py-2 pr-3 text-muted-fg">
+                        {held ? (
+                          <span className="inline-flex items-center gap-1">
+                            <Lock size={11} className="shrink-0" />
+                            {row.disabledReason}
+                          </span>
+                        ) : (
+                          row.location.label
+                        )}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {row.minimized ? <MacDesktopMinimizedBadge /> : null}
+                      </td>
+                      <td className="py-2 text-right">
+                        {spinning ? (
+                          <CircleNotch
+                            size={13}
+                            className="ml-auto animate-spin text-muted-fg"
+                            data-testid="mac-desktop-claim-spinner"
+                          />
+                        ) : (
+                          <MacDesktopRowAction
+                            label="Claim"
+                            testId="mac-desktop-claim-action"
+                            title={row.disabledReason ?? `Move “${row.title}” onto this lane's screen`}
+                            disabled={row.disabled || claiming != null}
+                            onClick={() => void claim(row)}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : null}
         </div>
 
-        <footer className="border-t border-border/60 px-3 py-2 text-[11px] text-muted-fg">
-          Claiming moves the window onto this lane's screen and gives ADE a lease on it.
+        <footer className={cn(USAGE_TEXT.micro, "border-t px-4 py-2 text-muted-fg", USAGE_DIVIDER_COLOR_CLASS)}>
+          Claiming moves the window onto this lane&rsquo;s screen and gives ADE a lease on it.
         </footer>
       </div>
     </div>
