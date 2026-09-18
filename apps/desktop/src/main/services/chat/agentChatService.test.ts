@@ -31,6 +31,56 @@ import { injectFsFault } from "../../../test/faultInjection";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { loadQwenUserSettings } from "../ai/qwenUserSettings";
 
+/**
+ * `vi.waitFor` polls on a timer it assumes is real. Under `vi.useFakeTimers`
+ * nothing advances that clock, so a condition still waiting on a queued
+ * continuation never becomes true: the wait burns its whole budget without the
+ * system under test moving at all, and the test dies on the suite timeout or on
+ * a stale assertion rather than on anything it meant to check. Whether it passed
+ * came down to whether the work happened to finish before the first synchronous
+ * probe — which is why these were the flakiest tests in the repo.
+ *
+ * This waits correctly under either clock. With fake timers it drains queued
+ * microtasks and steps the clock in 10ms slices, stopping the moment the
+ * condition holds. The slice is deliberately tiny: the watchdogs these tests
+ * assert about are measured in minutes, so a bounded 500ms of fake time can
+ * settle a pending async chain without ever manufacturing the timeout event
+ * under test. A test that needs a watchdog to fire still advances those minutes
+ * itself, explicitly, before waiting. With real timers there was never a
+ * problem, so it defers to `vi.waitFor` unchanged.
+ */
+function usingFakeTimers(): boolean {
+  try {
+    vi.getTimerCount();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForFakeTimers(
+  assertion: () => unknown,
+  options: { steps?: number; stepMs?: number } = {},
+): Promise<void> {
+  if (!usingFakeTimers()) {
+    await vi.waitFor(assertion);
+    return;
+  }
+  const steps = options.steps ?? 50;
+  const stepMs = options.stepMs ?? 10;
+  let lastError: unknown;
+  for (let step = 0; step <= steps; step += 1) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await vi.advanceTimersByTimeAsync(step === 0 ? 0 : stepMs);
+  }
+  throw lastError;
+}
+
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
 const claudeSdkResumeSessionCompat = vi.hoisted(() => vi.fn());
@@ -22719,7 +22769,7 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Original turn.",
       }, { awaitDispatch: true }).catch(() => undefined);
-      await vi.waitFor(() => {
+      await waitForFakeTimers(() => {
         expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(1);
       });
       // The worker's cancel is what actually settles the in-flight run.
@@ -23063,7 +23113,7 @@ describe("createAgentChatService", () => {
       // The run settles late, and its tail runs the cancel the stop earned.
       // The flag is still armed, so the user's other message survives it.
       releaseTurn?.();
-      await vi.waitFor(() => {
+      await waitForFakeTimers(() => {
         expect(events.some((event) =>
           event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
       });
@@ -28558,7 +28608,7 @@ describe("createAgentChatService", () => {
       await restarted.service.refreshScheduledWork();
 
       await vi.advanceTimersByTimeAsync(150_000);
-      await vi.waitFor(() => {
+      await waitForFakeTimers(() => {
         expect(events.some((event) =>
           event.sessionId === session.id
           && event.event.type === "user_message"
@@ -38100,7 +38150,7 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/interrupt")).toBe(false);
 
         await vi.advanceTimersByTimeAsync(10 * 60_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) => event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1")).toBe(true);
         });
@@ -38232,7 +38282,7 @@ describe("createAgentChatService", () => {
         )).toHaveLength(1);
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_recovery"
             && event.event.state === "recovered"
@@ -38364,7 +38414,7 @@ describe("createAgentChatService", () => {
         await Promise.resolve();
         await vi.advanceTimersByTimeAsync(10 * 60_000);
 
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.reason === "no_progress"
@@ -39071,7 +39121,7 @@ describe("createAgentChatService", () => {
           },
         });
 
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "approval_request"
             && event.event.itemId === "cmd-1"
@@ -39117,7 +39167,7 @@ describe("createAgentChatService", () => {
             reason: "Run tests",
           },
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "approval_request"
             && event.event.itemId === "cmd-rearm-1"
@@ -39139,13 +39189,13 @@ describe("createAgentChatService", () => {
         });
         await vi.advanceTimersByTimeAsync(10 * 60_000);
         for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1"
             && event.event.reason === "no_progress"
           )).toBe(true);
-        }, { timeout: 5_000 });
+        });
       } finally {
         vi.useRealTimers();
       }
@@ -39185,7 +39235,7 @@ describe("createAgentChatService", () => {
             reason: "Run tests",
           },
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "approval_request"
             && event.event.itemId === "cmd-auto-resolved-1"
@@ -39196,7 +39246,7 @@ describe("createAgentChatService", () => {
           sessionId: session.id,
           permissionMode: "full-auto",
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "pending_input_resolved"
             && event.event.itemId === "cmd-auto-resolved-1"
@@ -39206,13 +39256,13 @@ describe("createAgentChatService", () => {
 
         await vi.advanceTimersByTimeAsync(10 * 60_000);
         for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1"
             && event.event.reason === "no_progress"
           )).toBe(true);
-        }, { timeout: 5_000 });
+        });
       } finally {
         vi.useRealTimers();
       }
@@ -39245,7 +39295,7 @@ describe("createAgentChatService", () => {
             reason: "Run tests",
           },
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "approval_request"
             && event.event.itemId === "cmd-server-resolved-1"
@@ -39264,14 +39314,14 @@ describe("createAgentChatService", () => {
             requestId: "server-resolved-approval-1",
           },
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "pending_input_resolved"
             && event.event.itemId === "cmd-server-resolved-1"
           )).toBe(true);
         });
         await vi.advanceTimersByTimeAsync(10 * 60_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1"
@@ -39319,7 +39369,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "done"
             && event.event.turnId === "turn-1"
@@ -39384,7 +39434,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "tool_call"
             && event.event.itemId === "mcp-1"
@@ -39574,7 +39624,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "reasoning"
             && event.event.text.includes("Recovered partial reasoning.")
@@ -39584,7 +39634,7 @@ describe("createAgentChatService", () => {
 
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(10 * 60_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.reason === "no_progress"
@@ -39637,7 +39687,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(mockState.pendingCodexResponses).toHaveLength(1);
         });
 
@@ -39701,7 +39751,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(mockState.pendingCodexResponses).toHaveLength(1);
         });
 
@@ -39777,7 +39827,7 @@ describe("createAgentChatService", () => {
         });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.sessionId === parent.id
             && event.event.type === "codex_turn_stalled"
@@ -40559,7 +40609,7 @@ describe("createAgentChatService", () => {
           text: "/goal status paused",
         }, { awaitDispatch: true });
 
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(true);
         });
         await vi.advanceTimersByTimeAsync(10_050);
@@ -47856,7 +47906,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
       await turn;
 
-      await vi.waitFor(() => {
+      await waitForFakeTimers(() => {
         expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
         expect(events.map((entry) => entry.event))
           .toEqual(expect.arrayContaining([
@@ -47867,7 +47917,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
               usage: expect.objectContaining({ percentage: 25 }),
             }),
           ]));
-      }, { timeout: 5_000 });
+      });
       releaseTail();
       await service.dispose({ sessionId: session.id });
     } finally {
@@ -52583,6 +52633,12 @@ describe("suggestLaneNameFromPrompt", () => {
   });
 });
 
+// These tests poll the real filesystem for a write the service performs
+// asynchronously with no completion receipt to await. vitest's default
+// `vi.waitFor` budget is one second, which is simply too tight for that I/O
+// inside a 1150-test file under parallel load — it was the second-largest
+// source of flakes here. The bound below is explicit and generous; a genuine
+// regression still fails the assertion, just later.
 describe("durable chat metadata and transcript continuity", () => {
   const chatSessionsDir = () => path.join(tmpRoot, ".ade", "cache", "chat-sessions");
   const metadataPath = (sessionId: string) => path.join(chatSessionsDir(), `${sessionId}.json`);
@@ -52591,7 +52647,7 @@ describe("durable chat metadata and transcript continuity", () => {
   async function completeCodexTurn(turnPromise: Promise<unknown>, text = "done"): Promise<void> {
     await vi.waitFor(() => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
-    });
+    }, { timeout: 10_000, interval: 25 });
     const turnNumber = mockState.codexTurnCounter;
     mockState.emitCodexPayload({
       jsonrpc: "2.0",
@@ -52642,7 +52698,7 @@ describe("durable chat metadata and transcript continuity", () => {
         "agent_chat.persist_failed",
         expect.objectContaining({ sessionId: session.id, lkgUpdated: true }),
       );
-    });
+    }, { timeout: 10_000, interval: 25 });
     expect(fs.readFileSync(metadataPath(session.id))).toEqual(before);
     expect(readPersistedChatState(session.id).threadId).toBe("thread-resumed");
     expect(fs.readdirSync(chatSessionsDir()).filter((name) => name.includes(".tmp-"))).toEqual([]);
@@ -52687,7 +52743,7 @@ describe("durable chat metadata and transcript continuity", () => {
     const firstTurn = first.service.runSessionTurn({ sessionId: session.id, text: "start a thread" });
     await vi.waitFor(() => {
       expect(readThreadPointerLedger(chatSessionsDir()).get(session.id)?.pointer).toBe("thread-1");
-    });
+    }, { timeout: 10_000, interval: 25 });
     await completeCodexTurn(firstTurn);
     first.service.forceDisposeAll();
     const lineCountBeforeRestart = fs.readFileSync(ledgerPath(), "utf8").trim().split("\n").length;
@@ -52717,7 +52773,7 @@ describe("durable chat metadata and transcript continuity", () => {
     await vi.waitFor(() => {
       expect(fs.statSync(ledgerPath()).size).toBeLessThanOrEqual(64 * 1024);
       expect(readThreadPointerLedger(chatSessionsDir()).get(session.id)?.pointer).toBeNull();
-    });
+    }, { timeout: 10_000, interval: 25 });
     expect(readThreadPointerLedger(chatSessionsDir()).get("older-session")?.pointer).toBe("new");
   });
 
@@ -52743,7 +52799,7 @@ describe("durable chat metadata and transcript continuity", () => {
       const raw = fs.readFileSync(transcriptFile, "utf8");
       expect(raw).toContain(`${fragment}\n{`);
       expect(raw).toContain("fresh user event");
-    });
+    }, { timeout: 10_000, interval: 25 });
     await completeCodexTurn(turn, "fresh response");
 
     const raw = fs.readFileSync(transcriptFile, "utf8");
