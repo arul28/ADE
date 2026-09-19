@@ -76,8 +76,14 @@ export function collapseActivityPhaseRows<T>(
  * Providers stream a thought as deltas and then re-emit the completed block
  * (Claude sends the SDK snapshot after the deltas, Cursor re-sends a run's
  * text), so a blind concatenation doubles the paragraph. Cumulative re-emits
- * (`incoming` extends `existing`) replace, duplicate/suffix re-emits are
- * dropped, and a shared boundary is spliced once instead of twice.
+ * (`incoming` extends `existing`), exact duplicates, and a full suffix re-emit
+ * collapse to the text once.
+ *
+ * A partial boundary overlap is deliberately NOT spliced: two genuine deltas
+ * can share a boundary character (e.g. "look" then "keep going"), and dropping
+ * the overlap would eat real text ("lookeep going"). Only a full containment —
+ * the whole incoming is already present — proves a replay, so anything else is
+ * concatenated verbatim.
  */
 export function mergeReasoningFragment(existing: string, incoming: string): string {
   if (!existing.length) return incoming;
@@ -86,12 +92,6 @@ export function mergeReasoningFragment(existing: string, incoming: string): stri
   if (incoming.startsWith(existing)) return incoming;
   if (existing.startsWith(incoming)) return existing;
   if (incoming.trim().length > 0 && existing.trimEnd().endsWith(incoming.trim())) return existing;
-  const max = Math.min(existing.length, incoming.length, 64);
-  for (let length = max; length > 0; length -= 1) {
-    if (existing.endsWith(incoming.slice(0, length))) {
-      return `${existing}${incoming.slice(length)}`;
-    }
-  }
   return `${existing}${incoming}`;
 }
 

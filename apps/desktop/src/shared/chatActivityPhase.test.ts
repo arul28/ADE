@@ -99,10 +99,12 @@ describe("chatActivityPhase", () => {
       expect(mergeReasoningFragment("The same", "The same thought.")).toBe("The same thought.");
     });
 
-    it("drops a suffix re-emit and splices a shared boundary once", () => {
+    it("drops a full suffix re-emit but concatenates an ambiguous boundary verbatim", () => {
       expect(mergeReasoningFragment("The same thought.", "thought.")).toBe("The same thought.");
-      expect(mergeReasoningFragment("hello wor", "world")).toBe("hello world");
-      expect(mergeReasoningFragment("hello wor", " world")).toBe("hello world");
+      // Two genuine deltas can share a boundary character. Partial-overlap
+      // splicing used to eat it ("lookeep going"); only a full containment
+      // proves a replay, so anything else concatenates verbatim.
+      expect(mergeReasoningFragment("look", "keep going")).toBe("lookkeep going");
     });
 
     it("concatenates disjoint streaming fragments", () => {
