@@ -79,6 +79,8 @@ export type AcpRuntimeCoordinatorCallbacks<TSteer> = {
   ) => void;
   /** Assign the runtime to the owning chat before session config is applied. */
   onRuntimeCreated: (runtime: AcpRuntimeState<TSteer>) => void;
+  /** Remove a runtime whose required mode setup failed before readiness. */
+  onRuntimeSetupFailed?: (runtime: AcpRuntimeState<TSteer>, error: unknown) => void;
   /** Record an open failure before it is returned to the chat service. */
   onOpenFailed: (error: unknown) => void;
   /** Persist and publish the provider-ready state after the session is ready. */
@@ -237,15 +239,30 @@ export async function createAcpRuntime<TSteer>(
     openPermissionIds: new Set<string>(),
   };
   args.callbacks.onRuntimeCreated(runtime);
+  const createdRuntime = runtime as AcpRuntimeState<TSteer>;
 
   if (args.dialect.sessionConfig.declared) {
-    await session.setConfigOption({ configId: "mode", value: args.nativeModeValue }).catch((error) => {
+    const nativeModeValue = args.dialect.nativeModeValue?.(args.nativeModeValue) ?? args.nativeModeValue;
+    try {
+      await session.setConfigOption({ configId: "mode", value: nativeModeValue });
+    } catch (error) {
       args.logger.warn("agent_chat.acp_set_mode_failed", {
         sessionId: args.owner.session.id,
         provider: args.provider,
         error: error instanceof Error ? error.message : String(error),
       });
-    });
+      if (args.dialect.modeSetupRequired) {
+        // A failed mode setup must never fall through to onReady: the agent may
+        // now be running with a broader posture than the user selected.
+        try {
+          await session.close("mode setup failed");
+        } finally {
+          args.callbacks.onRuntimeSetupFailed?.(createdRuntime, error);
+          args.callbacks.onOpenFailed(error);
+        }
+        throw error;
+      }
+    }
   }
   if (args.modelToken) {
     const modelBehavior = behaviorOf(args.dialect.modelSelection);
@@ -254,7 +271,7 @@ export async function createAcpRuntime<TSteer>(
         const call = modelBehavior({ sessionId: session.sessionId, modelId: args.modelToken! });
         await session.connection.request(call.method, call.params);
       }
-      : args.dialect.sessionConfig.declared
+      : args.dialect.sessionConfig.declared && args.dialect.configOptionIds.includes("model")
         ? async () => session.setConfigOption({ configId: "model", value: args.modelToken! })
         : null;
     if (setModel) {
@@ -301,6 +318,8 @@ export async function createAcpRuntime<TSteer>(
     sessionId: args.owner.session.id,
     provider: args.provider,
     acpSessionId: session.sessionId,
+    agentVersion: session.connection.initializeResult?.agentInfo?.version ?? null,
+    advertisedSessionCapabilities: session.connection.initializeResult?.agentCapabilities?.sessionCapabilities ?? null,
     entryMode: session.entryPlan.mode,
     entryReason: session.entryPlan.reason,
     binarySource: args.binarySource,

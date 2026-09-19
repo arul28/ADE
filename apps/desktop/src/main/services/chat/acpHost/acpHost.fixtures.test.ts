@@ -1,10 +1,11 @@
 /**
  * Dialect claims vs captured initialize responses from real binaries.
  *
- * (ACP agent 1.0.4), Grok 1.0.13, and the Kimi Code 0.39.1 compatibility
- * baseline. Kimi Code 2.0.0's current ACP reference is covered by the dialect
- * contract assertions below. Qwen Code 0.24.0 was captured separately on
- * 2026-09-18.
+ * These fixtures were recorded on 2026-09-18 against Copilot CLI 1.0.86,
+ * ACP agent 1.0.4, Grok 1.0.13, Qwen Code 0.24.0, and the Kimi Code 0.39.1
+ * compatibility baseline. Kimi Code 2.0.0's current ACP reference is covered
+ * by the dialect contract assertions below.
+ * Qwen Code 0.24.0 was captured separately on 2026-09-18.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -19,21 +20,23 @@ function loadFixture<T>(name: string): T {
 }
 
 describe("captured initialize fixtures", () => {
-  it("copilot 1.0.82 advertises loadSession and image, not close or resume", () => {
+  it("copilot 1.0.86 advertises load, close, MCP, and image, not resume", () => {
     const init = loadFixture<AcpInitializeResponse>("copilot.initialize.json");
     expect(init.protocolVersion).toBe(1);
+    expect(init.agentInfo?.version).toBe("1.0.86");
     expect(init.agentCapabilities?.loadSession).toBe(true);
+    expect(init.agentCapabilities?.mcpCapabilities).toEqual({ http: true, sse: true });
     expect(init.agentCapabilities?.promptCapabilities?.image).toBe(true);
-    expect(init.agentCapabilities?.sessionCapabilities?.list).toEqual({});
-    expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("close");
+    expect(init.agentCapabilities?.sessionCapabilities).toMatchObject({ close: {}, list: {} });
     expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("resume");
-    // ADE still declares close and degrades on -32601 rather than killing the
-    // process (Copilot can host more than one session). Resume stays unclaimed.
+    expect(copilotDialect.sessionConfig.declared).toBe(true);
+    expect(copilotDialect.configOptionIds).toEqual(["mode", "allow_all"]);
     expect(copilotDialect.closeStyle).toBe("close_request");
     expect(copilotDialect.loadPolicy).toBe("load_only");
     expect(copilotDialect.resumeSession.declared).toBe(false);
     expect(copilotDialect.cancelStyle).toBe("notification");
     expect(copilotDialect.imagePrompts.declared).toBe(true);
+    expect(copilotDialect.mcpInjection.declared).toBe(true);
   });
 
   it("grok remains first-class while preserving its honest capability gates", () => {
@@ -117,6 +120,7 @@ describe("captured initialize fixtures", () => {
     expect(mode?.options?.map((entry) => entry.id)).toEqual([
       "https://agentclientprotocol.com/protocol/session-modes#agent",
       "https://agentclientprotocol.com/protocol/session-modes#plan",
+      "https://agentclientprotocol.com/protocol/session-modes#autopilot",
     ]);
     expect(options.find((option) => option.id === "allow_all")?.value).toBe("off");
   });

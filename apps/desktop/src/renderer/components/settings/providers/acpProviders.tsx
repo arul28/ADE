@@ -11,7 +11,7 @@ import React from "react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../../../shared/modelRegistry";
-import { ACP_PROVIDER_METADATA } from "../../../../shared/acpProviderMetadata";
+import { ACP_PROVIDER_METADATA, COPILOT_NPM_PACKAGE_SPEC } from "../../../../shared/acpProviderMetadata";
 import { CopyableCommand, SubsectionTitle } from "./providerUi";
 import type {
   AcpSettingsProviderId,
@@ -83,7 +83,7 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "copilot",
     tagline: "Uses your GitHub account through the copilot CLI.",
     logoFamily: "github-copilot",
-    installCommand: "npm install -g @github/copilot",
+    installCommand: `npm install -g ${COPILOT_NPM_PACKAGE_SPEC}`,
     credentialSource: "Signed in through `copilot login`; the free plan includes the CLI. ADE does not write ~/.copilot.",
     setup: "Install the Copilot CLI and run `copilot login`. ADE reuses that GitHub login and never writes Copilot's config.json. Cancelled turns can still look finished on Copilot's side; ADE marks them stopped.",
   },

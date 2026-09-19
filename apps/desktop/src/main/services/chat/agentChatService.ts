@@ -805,6 +805,7 @@ import {
   type AcpSlashCommand,
   type AcpRuntimeState,
 } from "./acpHost";
+import { COPILOT_NPM_PACKAGE_SPEC } from "../../../shared/acpProviderMetadata";
 import {
   copilotConfigHome,
   grokConfigHome,
@@ -16472,7 +16473,7 @@ export function createAgentChatService(args: {
     qwen: "npm install -g @qwen-code/qwen-code",
     kimi: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
     grok: "npm install -g @xai-official/grok@1.0.34",
-    copilot: "npm install -g @github/copilot",
+    copilot: `npm install -g ${COPILOT_NPM_PACKAGE_SPEC}`,
   };
 
   /**
@@ -26940,13 +26941,13 @@ export function createAgentChatService(args: {
     mode: AgentChatAcpPermissionMode,
   ): boolean => {
     if (mode !== "yolo") return false;
-    // Qwen and Kimi take the whole posture through
+    // Qwen, Kimi, and Copilot take the whole posture through
     // `session/set_config_option`, so the agent stops asking and there is
     // nothing for ADE to auto-answer.
     return !dialect.sessionConfig.declared;
   };
 
-  /** Native `mode` value for a dialect that accepts one. Qwen's ladder. */
+  /** ADE's abstract value; the dialect maps it to the native wire value. */
   const acpNativeModeValue = (mode: AgentChatAcpPermissionMode): string => mode;
 
   /** Provider-native model token for the spawn plan, when the user picked one. */
@@ -26963,15 +26964,24 @@ export function createAgentChatService(args: {
    * usage, and a user who cannot see why the meter vanished assumes ADE broke.
    * The shown-set is persisted so a runtime restart does not repeat it.
    */
-  const emitAcpDegradationNotes = (managed: ManagedChatSession, dialect: AcpDialect): void => {
-    if (!dialect.degradationNotes.length) return;
+  const emitAcpDegradationNotes = (
+    managed: ManagedChatSession,
+    dialect: AcpDialect,
+    permissionMode?: string | null,
+  ): void => {
+    const modeNote = dialect.degradationNoteForMode?.(permissionMode);
+    const notes = [
+      ...dialect.degradationNotes,
+      ...(modeNote ? [modeNote] : []),
+    ];
+    if (!notes.length) return;
     if (!managed.acpDegradationNotesShown) {
       managed.acpDegradationNotesShown = new Set(
         readPersistedState(managed.session.id)?.acpDegradationNotesShown ?? [],
       );
     }
     let emitted = false;
-    for (const note of dialect.degradationNotes) {
+    for (const note of notes) {
       if (managed.acpDegradationNotesShown.has(note)) continue;
       managed.acpDegradationNotesShown.add(note);
       emitted = true;
@@ -27284,6 +27294,12 @@ export function createAgentChatService(args: {
           managed.seededAcpSessionId = runtime.session.sessionId;
           managed.session.acpPermissionMode = permissionMode;
         },
+        onRuntimeSetupFailed: (runtime) => {
+          if (managed.runtime !== runtime) return;
+          managed.runtime = null;
+          managed.runtimeInvalidated = true;
+          managed.seededAcpSessionId = undefined;
+        },
         onOpenFailed: (error) => {
           const message = error instanceof Error ? error.message : String(error);
           recordAcpAuthProbeResult(
@@ -27348,7 +27364,7 @@ export function createAgentChatService(args: {
       return;
     }
 
-    emitAcpDegradationNotes(managed, runtime.dialect);
+    emitAcpDegradationNotes(managed, runtime.dialect, runtime.permissionMode);
 
     runtime.busy = true;
     runtime.activeTurnId = turnId;

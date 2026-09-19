@@ -6,7 +6,8 @@
  * they are gating writes, and nothing is gated. Grok 1.0.13 does exactly that
  * when it inherits the user's Claude `permissions.defaultMode`, and the fix for
  * that leans on an undocumented environment variable that can disappear in any
- * release. Copilot 1.0.82 does it unconditionally.
+ * release. Copilot ACP has not been proven to route every write through that
+ * reverse request, so the host keeps this observation-based warning active.
  *
  * So the host watches, provider-agnostically:
  *
