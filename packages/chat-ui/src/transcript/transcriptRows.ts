@@ -617,6 +617,25 @@ function sameStatusRow(a: ChatEventStatus, b: ChatEventStatus): boolean {
 }
 
 /**
+ * Join two reasoning fragments of the SAME item without repeating a re-emit.
+ *
+ * Ported from `apps/desktop/src/shared/chatActivityPhase.ts`. Providers stream a
+ * thought as deltas and may re-emit the completed block; cumulative, exact, and
+ * full-suffix re-emits collapse to the text once. A partial boundary overlap is
+ * deliberately NOT spliced — two genuine deltas can share a boundary character
+ * ("look" then "keep going"), and dropping the overlap would eat real text.
+ */
+function mergeReasoningFragment(existing: string, incoming: string): string {
+  if (!existing.length) return incoming;
+  if (!incoming.length) return existing;
+  if (existing === incoming) return existing;
+  if (incoming.startsWith(existing)) return incoming;
+  if (existing.startsWith(incoming)) return existing;
+  if (incoming.trim().length > 0 && existing.trimEnd().endsWith(incoming.trim())) return existing;
+  return `${existing}${incoming}`;
+}
+
+/**
  * Collapse a list of reasoning blocks into the blocks that actually differ.
  *
  * Ported from `apps/desktop/src/shared/chatActivityPhase.ts`: providers stream a
@@ -661,20 +680,35 @@ export function groupTranscriptRows(rows: readonly TranscriptRow[]): TranscriptR
 
     if (row.event.type === "reasoning") {
       const head = row.event;
-      const fragments = [head.text ?? ""];
+      // Fold deltas of the same item first (so a delta split across rows rejoins
+      // as "Hello world", not two `---` blocks), then dedupe distinct blocks.
+      const blocks: string[] = [];
+      let currentItemKey = `${head.itemId ?? ""}\u0000${head.summaryIndex ?? ""}`;
+      let currentText = head.text ?? "";
       let cursor = index + 1;
+      const flushBlock = () => {
+        if (currentText.length) blocks.push(currentText);
+      };
       while (cursor < rows.length) {
         const candidate = rows[cursor]!;
         if (candidate.event.type !== "reasoning") break;
         if ((candidate.event.turnId ?? null) !== (head.turnId ?? null)) break;
-        fragments.push(candidate.event.text ?? "");
+        const nextItemKey = `${candidate.event.itemId ?? ""}\u0000${candidate.event.summaryIndex ?? ""}`;
+        if (nextItemKey === currentItemKey) {
+          currentText = mergeReasoningFragment(currentText, candidate.event.text ?? "");
+        } else {
+          flushBlock();
+          currentText = candidate.event.text ?? "";
+          currentItemKey = nextItemKey;
+        }
         cursor += 1;
       }
       if (cursor > index + 1) {
+        flushBlock();
         grouped.push({
           key: `reasoning-group:${row.key}`,
           timestamp: rows[cursor - 1]!.timestamp,
-          event: { ...head, text: mergeReasoningTextFragments(fragments) },
+          event: { ...head, text: mergeReasoningTextFragments(blocks) },
         });
         index = cursor;
         continue;

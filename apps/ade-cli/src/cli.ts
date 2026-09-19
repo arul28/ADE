@@ -2653,7 +2653,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Omit --dispatch to stage for the next turn.
                                                     Claude and Cursor take inline and interrupt; Codex and
                                                     OpenCode take inline only. Cursor's interrupt cancels
-                                                    + resends on the same thread, and a Cursor cloud run
+                                                    and resends on the same thread, and a Cursor cloud run
                                                     declines inline and stages instead. Other providers
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.

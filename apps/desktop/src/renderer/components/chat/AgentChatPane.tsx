@@ -5833,13 +5833,25 @@ export function AgentChatPane({
   // A spawned child chat can run on a different provider than its parent. Its
   // inline subagent card wears the child's own mark when the session list knows
   // it; an unresolved child falls back to this chat's provider in the card.
-  // Read the latest list through the ref so this callback keeps a stable
-  // identity: it is a dependency of the transcript row memo, and `sessions` is
-  // replaced on every refresh, which would otherwise invalidate the whole memo.
-  const resolveSpawnedChatProvider = useCallback(
-    (id: string): string | null => sessionsRef.current.find((s) => s.sessionId === id)?.provider ?? null,
-    [],
-  );
+  //
+  // `sessions` is replaced on every refresh, so keying the resolver directly on
+  // it would invalidate the transcript row memo constantly. Resolve from a map
+  // keyed on a signature of the child→provider mapping instead: a refresh that
+  // changes only array identity keeps the same resolver, while a child that
+  // appears (or changes provider) produces a new one so its card updates.
+  const spawnedChatProviderSignature = sessions
+    .map((session) => `${session.sessionId}\u0000${session.provider ?? ""}`)
+    .join("\u0001");
+  const resolveSpawnedChatProvider = useMemo(() => {
+    const providerById = new Map<string, string>();
+    for (const session of sessions) {
+      if (session.provider) providerById.set(session.sessionId, session.provider);
+    }
+    return (id: string): string | null => providerById.get(id) ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the signature is a
+    // complete key of the mapping this closure reads; omitting `sessions` is
+    // deliberate so a no-op refresh cannot invalidate the transcript row memo.
+  }, [spawnedChatProviderSignature]);
 
   // Keep configured models selectable unless a caller explicitly constrains
   // this surface. Unconstrained sessions keep their active model visible even

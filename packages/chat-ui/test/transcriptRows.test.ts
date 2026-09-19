@@ -165,13 +165,13 @@ describe("collapseTranscriptEvents", () => {
 });
 
 describe("groupTranscriptRows", () => {
-  it("merges consecutive reasoning from the same block", () => {
+  it("concatenates consecutive deltas of the same reasoning block", () => {
     const rows = buildTranscriptRows([
-      envelope({ type: "reasoning", text: "first", turnId: "t1", itemId: "i1", summaryIndex: 0 }),
-      envelope({ type: "reasoning", text: "second", turnId: "t1", itemId: "i1", summaryIndex: 0 }),
+      envelope({ type: "reasoning", text: "Hello ", turnId: "t1", itemId: "i1", summaryIndex: 0 }),
+      envelope({ type: "reasoning", text: "world", turnId: "t1", itemId: "i1", summaryIndex: 0 }),
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.event).toMatchObject({ type: "reasoning", text: "first\n\n---\n\nsecond" });
+    expect(rows[0]!.event).toMatchObject({ type: "reasoning", text: "Hello world" });
   });
 
   it("merges same-turn reasoning blocks even when the provider used different block ids", () => {

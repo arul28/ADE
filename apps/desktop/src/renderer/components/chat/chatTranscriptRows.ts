@@ -2822,25 +2822,43 @@ export function groupConsecutiveWorkLogRows(
     if (row.event.type === "reasoning") {
       const firstReasoning = row.event;
       const mergedStartTimestamp = firstReasoning.startTimestamp ?? row.timestamp;
-      const fragments = [firstReasoning.text ?? ""];
       const firstTurnId = firstReasoning.turnId ?? null;
+      // Fold deltas of the SAME reasoning item with `mergeReasoningFragment`
+      // first, so a streamed delta split across a removed hidden row rejoins as
+      // "Hello world" rather than two `---`-separated blocks. Claude's
+      // double-persist gives the snapshot a different item id, so cross-item
+      // containment in `mergeReasoningTextFragments` still collapses it.
+      const blocks: string[] = [];
+      let currentItemKey = `${firstReasoning.itemId ?? ""}\u0000${firstReasoning.summaryIndex ?? ""}`;
+      let currentText = firstReasoning.text ?? "";
       let cursor = index + 1;
+      const flushBlock = () => {
+        if (currentText.length) blocks.push(currentText);
+      };
       while (cursor < rows.length) {
         const nextRow = rows[cursor]!;
         if (nextRow.event.type !== "reasoning") break;
         if ((nextRow.event.turnId ?? null) !== firstTurnId) break;
-        fragments.push(nextRow.event.text ?? "");
+        const nextItemKey = `${nextRow.event.itemId ?? ""}\u0000${nextRow.event.summaryIndex ?? ""}`;
+        if (nextItemKey === currentItemKey) {
+          currentText = mergeReasoningFragment(currentText, nextRow.event.text ?? "");
+        } else {
+          flushBlock();
+          currentText = nextRow.event.text ?? "";
+          currentItemKey = nextItemKey;
+        }
         cursor += 1;
       }
       if (cursor > index + 1) {
         // Multiple consecutive reasoning events — merge them
+        flushBlock();
         const lastRow = rows[cursor - 1]!;
         grouped.push({
           key: `reasoning-group:${row.key}`,
           timestamp: lastRow.timestamp,
           event: {
             ...firstReasoning,
-            text: mergeReasoningTextFragments(fragments),
+            text: mergeReasoningTextFragments(blocks),
             startTimestamp: mergedStartTimestamp,
           },
         });
