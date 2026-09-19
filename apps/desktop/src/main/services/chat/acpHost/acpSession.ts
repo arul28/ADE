@@ -261,9 +261,12 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     },
   });
 
+  const supervisionPermissionMode = dialect.supervisionPermissionMode
+    ? dialect.supervisionPermissionMode(args.permissionMode)
+    : args.permissionMode;
   const supervision: AcpSupervisionGuard = createAcpSupervisionGuard({
     providerLabel: dialect.displayName,
-    permissionMode: args.permissionMode ?? null,
+    permissionMode: supervisionPermissionMode ?? null,
     ...(args.supervisionPreflight && !args.supervisionPreflight.ok
       ? { preflightUnverified: true }
       : {}),

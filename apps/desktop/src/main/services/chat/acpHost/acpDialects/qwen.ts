@@ -105,6 +105,7 @@ export const qwenDialect = defineAcpDialect({
   loadSession: capability(standardLoad),
 
   sessionConfig: capability(standardSetConfigOption),
+  modeSetupRequired: true,
   modelSelection: capabilityAbsent,
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),

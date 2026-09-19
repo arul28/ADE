@@ -30,6 +30,7 @@ export {
   COPILOT_TUI_ONLY_COMMANDS,
   copilotPermissionModeDegradationNote,
   copilotNativeModeValue,
+  copilotSupervisionPermissionMode,
   includeCopilotSlashCommand,
 } from "./copilot";
 export {

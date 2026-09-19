@@ -27294,6 +27294,12 @@ export function createAgentChatService(args: {
           managed.seededAcpSessionId = runtime.session.sessionId;
           managed.session.acpPermissionMode = permissionMode;
         },
+        onRuntimeSetupFailed: (runtime) => {
+          if (managed.runtime !== runtime) return;
+          managed.runtime = null;
+          managed.runtimeInvalidated = true;
+          managed.seededAcpSessionId = undefined;
+        },
         onOpenFailed: (error) => {
           const message = error instanceof Error ? error.message : String(error);
           recordAcpAuthProbeResult(
