@@ -100,6 +100,7 @@ export {
   acpInvocationKey,
   createAcpRuntime,
   setAcpReasoningEffort,
+  type AcpReasoningEffortUpdateResult,
   type AcpRuntimeCoordinatorCallbacks,
   type AcpRuntimeOwner,
   type AcpRuntimeState,

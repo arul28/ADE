@@ -54422,6 +54422,45 @@ describe("acp chat runtime", () => {
     expect(harness.agent.methodsReceived().filter((method) => method === "session/new")).toHaveLength(1);
   });
 
+  it("retries a transient Qwen effort update before recreating the runtime", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "low" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "first turn" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    let rejectNextHigh = true;
+    harness.agent.on("session/set_config_option", (params) => {
+      const config = params as { configId?: string; value?: unknown };
+      if (config.configId === "reasoning_effort" && config.value === "high" && rejectNextHigh) {
+        rejectNextHigh = false;
+        return { error: { code: -32001, message: "temporary Qwen ACP failure" } };
+      }
+      return { result: {} };
+    });
+
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "retry turn" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(2);
+    });
+
+    const reasoningCalls = harness.agent.received
+      .filter((entry) => entry.method === "session/set_config_option")
+      .map((entry) => entry.params as { configId?: string; value?: unknown })
+      .filter((params) => params.configId === "reasoning_effort");
+    expect(reasoningCalls.map((params) => params.value)).toEqual(["low", "high", "high"]);
+    expect(harness.agent.methodsReceived().filter((method) => method === "session/new")).toHaveLength(1);
+  });
+
   it("forwards image URL attachments in the ACP prompt payload", async () => {
     const harness = await openAcpHarness({
       provider: "qwen",

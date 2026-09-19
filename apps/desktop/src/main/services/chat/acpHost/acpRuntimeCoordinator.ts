@@ -17,6 +17,7 @@ import type {
 } from "../../../../shared/types";
 import type { Logger } from "../../logging/logger";
 import type { ChatRuntimeBudget } from "../chatRuntimeBudget";
+import { AcpRpcError } from "./acpConnection";
 import {
   openAcpSession,
   type AcpSession,
@@ -124,6 +125,8 @@ export function acpHasTranscript(owner: Pick<AcpRuntimeOwner, "eventSequence" | 
   return owner.eventSequence > 0 || owner.transcriptBytesWritten > 0;
 }
 
+export type AcpReasoningEffortUpdateResult = "applied" | "rejected" | "transient_failure";
+
 /**
  * Apply a provider-native reasoning value to an already-open ACP session.
  *
@@ -135,26 +138,34 @@ export async function setAcpReasoningEffort<TSteer>(
   runtime: AcpRuntimeState<TSteer>,
   value: string,
   args: { sessionId: string; logger: Logger },
-): Promise<void> {
+): Promise<AcpReasoningEffortUpdateResult> {
   if (
     runtime.provider !== "qwen"
     || !runtime.dialect.sessionConfig.declared
     || !runtime.dialect.configOptionIds.includes("reasoning_effort")
   ) {
-    return;
+    return "rejected";
   }
 
   try {
     await runtime.session.setConfigOption({ configId: "reasoning_effort", value });
+    return "applied";
   } catch (error) {
-    // A model without a reasoning profile can reject this optional setting.
-    // Keep the chat alive and let the next provider update retry if needed.
+    // Qwen reports an unsupported model/value as invalid params. Keep that
+    // optional rejection non-fatal; transport and server failures must instead
+    // force a fresh runtime so ADE does not claim a live value Qwen never saw.
+    const result = error instanceof AcpRpcError
+      && (error.code === -32602 || error.isMethodNotFound)
+      ? "rejected"
+      : "transient_failure";
     args.logger.warn("agent_chat.acp_set_reasoning_effort_failed", {
       sessionId: args.sessionId,
       provider: runtime.provider,
       reasoningEffort: value,
+      result,
       error: error instanceof Error ? error.message : String(error),
     });
+    return result;
   }
 }
 

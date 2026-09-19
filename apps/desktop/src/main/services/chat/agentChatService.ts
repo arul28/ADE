@@ -52123,11 +52123,16 @@ export function createAgentChatService(args: {
         && !modelChanged
         && managed.runtime?.kind === "acp"
       ) {
-        await setAcpReasoningEffort(
+        const result = await setAcpReasoningEffort(
           managed.runtime,
           managed.session.reasoningEffort ?? "default",
           { sessionId, logger },
         );
+        if (result === "transient_failure") {
+          managed.runtimeInvalidated = true;
+        } else if (result === "applied" && managed.runtime.session.connection.isAlive() && !managed.runtime.processFailed) {
+          managed.runtimeInvalidated = false;
+        }
       }
 
       // Pre-warm the Claude query when the user selects an Anthropic model.
@@ -52250,12 +52255,17 @@ export function createAgentChatService(args: {
           });
         });
       }
-      if (prev !== next && managed.runtime?.kind === "acp") {
-        await setAcpReasoningEffort(
+      if ((prev !== next || managed.runtimeInvalidated) && managed.runtime?.kind === "acp") {
+        const result = await setAcpReasoningEffort(
           managed.runtime,
           next ?? "default",
           { sessionId, logger },
         );
+        if (result === "transient_failure") {
+          managed.runtimeInvalidated = true;
+        } else if (result === "applied" && managed.runtime.session.connection.isAlive() && !managed.runtime.processFailed) {
+          managed.runtimeInvalidated = false;
+        }
       }
       // A reasoning-only change on the CTO thread must also land in identity
       // modelPreferences, or the next ensured session resurrects the old tier.
