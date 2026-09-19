@@ -776,8 +776,10 @@ without. Image sends echo *before* the upload: the composer's downscaled
 `UIImage` renders behind an uploading state under an `ade-pending-upload://`
 placeholder ref (`WorkPendingUploadPreviewStore`), swapped for the real host
 path before the message is sent so the echo's dedupe key still matches the
-transcript row that returns. `sending` releases when the host accepts the
-message; the transcript/artifact/summary/session refresh runs behind the
+transcript row that returns. The wait for those bytes is bounded (see the
+composer-draft rules below), so an upload that never lands fails the send and
+offers a retry instead of holding the echo at "Sending". `sending` releases when
+the host accepts the message; the transcript/artifact/summary/session refresh runs behind the
 composer, chained so two quick sends cannot interleave two transcript loads.
 
 Because that makes back-to-back identical sends easy, echo suppression counts
@@ -4127,11 +4129,10 @@ the stats and shows update guidance.
   on a 400 ms debounce and flushed on disappear because a cancelled `.task`
   throws out of its sleep before the write. Three rules are load-bearing:
   restore only into an empty field (a failed send that put its text back, or
-  a card already mid-edit, is fresher than disk); clear synchronously on send
-  rather than letting the debounce get there, or a jetsam inside that window
-  resurrects an already-sent message and invites a duplicate; and never write
-  an `isSecret` answer, because that defaults suite is shared with the widget
-  extension and would hold a credential in plaintext. Clearing a host profile
+  a card already mid-edit, is fresher than disk); **a send owns the stored
+  draft until the host confirms it**; and never write an `isSecret` answer,
+  because that defaults suite is shared with the widget extension and would
+  hold a credential in plaintext. Clearing a host profile
   deliberately does **not** touch these stores — `forgetHost()` has no UI
   caller and fires automatically from `handleReconnectFailure` on an
   attributed auth failure, and the stores are keyed by session id rather than
@@ -4144,6 +4145,38 @@ the stats and shows update guidance.
   in-flight task. When the host is unreachable there is no ref to persist, so
   the bytes go to a purgeable `Caches/ade-composer-drafts/<key>` directory
   bounded at 5 files and 10 MB, purged on send, on clear, and on LRU eviction.
+- **An unconfirmed send keeps its whole message, text and attachments.**
+  Tapping send writes the outgoing text (`WorkChatComposerDraftState
+  .beginPendingSend`) and the outgoing attachment refs or cached bytes
+  (`workChatPersistComposerAttachments`) under the chat's draft key *before* the
+  field and tray are emptied, and `finishPendingSend(sent:)` drops the stored
+  copy only once the host has taken the message. While that send is in flight
+  the composer's autosave and its attachment persist both stand down, so the
+  emptied field cannot be written over the payload they are holding. Leaving the
+  chat, switching chats, or relaunching therefore restores the message — the
+  case that used to lose it outright. The reverse cost is explicit: a kill
+  between the host accepting and the confirmation returning restores an
+  already-sent message as a draft, which is what the
+  `SyncRequestTimeout.chatSendMessage` copy already tells the user to check the
+  transcript for.
+- **Waiting for a staged upload is bounded, and a send that cannot complete says
+  so.** `WorkComposerAttachmentUploads.resolve` waits at most
+  `workComposerAttachmentUploadTimeoutNanoseconds` (=
+  `SyncRequestTimeout.chatSendTimeoutNanoseconds`) for the upload that started
+  when the attachment was staged, and reports one of three answers: the host's
+  ref, "stage inline" (nothing tracked, or the upload failed — the send uploads
+  the bytes itself), or "abandoned" (the deadline passed; the send fails rather
+  than queueing a second copy behind a wedged leg). `workAwaitWithDeadline`
+  abandons the *wait*, not the upload, because a task group only returns once
+  every child has finished and the upload legs park in non-cancellable
+  continuations. A failed send restores the composer and shows one retry row
+  above the field — "Couldn't send. Tap to retry." — whose tap runs the same
+  `performSend` the button does, in the same send mode. The upload the tracker
+  runs calls `workChatStageAttachmentOnHost` (the raw host call) and never
+  `workChatSaveInputAttachments`: that wrapper resolves through this tracker, so
+  routing the upload through it made the task await its own completion and every
+  message carrying an image sat at "Sending" forever, with no error, no retry,
+  and the draft already cleared.
 - **The fallback transcript is built lazily, and the guard order that makes
   that work is load-bearing.** `WorkSessionDestinationView` keeps a
   cached-entry fallback alongside the live event transcript, but materializing

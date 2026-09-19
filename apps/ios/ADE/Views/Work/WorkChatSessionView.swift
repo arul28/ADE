@@ -3208,6 +3208,12 @@ private struct WorkChatComposerDraftInput: View {
   @State private var stopHapticToken = 0
   @State private var activeSendMode: WorkActiveSendMode = .inline
   @State private var sendOptionsPresented = false
+  /// Set when a send came back unsent. Drives the one retry row above the
+  /// field; cleared by the next attempt and by a chat switch.
+  @State private var sendFailureNotice: String?
+  /// Mode the failed send used, so Retry repeats that send rather than
+  /// silently downgrading an interrupt to a staged message.
+  @State private var lastSendMode: WorkActiveSendMode = .queue
 
   private var hasSendableDraftOrAttachment: Bool {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
@@ -3328,6 +3334,83 @@ private struct WorkChatComposerDraftInput: View {
     }
   }
 
+  private var sendEnabled: Bool {
+    workChatInputCanSend(
+      text: draftState.text,
+      attachments: inputAttachments,
+      baseEnabled: canSend,
+      canUploadAttachments: canUploadAttachments
+    )
+  }
+
+  /// The composer's one send path, shared by the send button and the retry row.
+  ///
+  /// Order matters: the outgoing text and attachments are written to this
+  /// chat's stored draft BEFORE the field and tray are emptied, and only
+  /// released once the host confirms. A send that hangs or fails therefore
+  /// leaves the message recoverable — leaving the chat mid-send used to discard
+  /// it entirely.
+  @MainActor
+  private func performSend(mode: WorkActiveSendMode) {
+    guard sendEnabled else { return }
+    let key = draftPersistenceKey
+    let originalText = draftState.beginPendingSend()
+    let outgoingAttachments = workChatInputReadyAttachments(inputAttachments)
+    let text = workChatOutgoingText(originalText, attachmentCount: outgoingAttachments.count)
+    let restoredAttachments = inputAttachments
+    workChatPersistComposerAttachments(outgoingAttachments, for: key)
+    inputAttachments.removeAll()
+    sendFailureNotice = nil
+    lastSendMode = mode
+    Task { @MainActor in
+      let sent = await onSend(text, outgoingAttachments, mode)
+      // Drops the stored draft only on a confirmed send; a failure keeps it, so
+      // the composer copy below and the stored copy stay the same message.
+      draftState.finishPendingSend(sent: sent)
+      if sent {
+        // The refs were consumed by the send; drop the upload tracking so a
+        // later attachment can never reuse a sent message's ref.
+        WorkComposerAttachmentUploads.shared.release(restoredAttachments.map(\.id))
+        onSent()
+      } else {
+        inputAttachments = restoredAttachments
+        draftState.restoreUnsentText(originalText)
+        sendFailureNotice = workChatAttachmentUploadTimedOutMessage
+      }
+    }
+  }
+
+  /// One plain sentence and a tap target, directly above the field the message
+  /// was just restored into.
+  @ViewBuilder
+  private var sendFailureRow: some View {
+    if let sendFailureNotice {
+      Button {
+        performSend(mode: lastSendMode)
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .font(.caption2)
+          Text(sendFailureNotice)
+            .font(.caption)
+          Spacer(minLength: 0)
+        }
+        .foregroundStyle(ADEColor.danger)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+          ADEColor.danger.opacity(0.12),
+          in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+      }
+      .buttonStyle(.plain)
+      .accessibilityIdentifier("Work.Chat.Composer.SendFailure")
+      .accessibilityLabel(sendFailureNotice)
+      .accessibilityHint("Sends this message again")
+    }
+  }
+
   private var attachmentTray: some View {
     WorkChatInputAttachmentTray(
       attachments: $inputAttachments,
@@ -3349,6 +3432,8 @@ private struct WorkChatComposerDraftInput: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       composerHeaderRow
+
+      sendFailureRow
 
       if compact {
         if !composerCollapsed {
@@ -3509,6 +3594,8 @@ private struct WorkChatComposerDraftInput: View {
       persistDraftAttachments(for: draftPersistenceKey)
     }
     .task(id: draftPersistenceKey) {
+      // A failure notice belongs to the chat it happened in.
+      sendFailureNotice = nil
       await restoreDraftAttachments()
     }
     // A navigation pop beats the upload wait above; write what is known now so
@@ -3540,21 +3627,15 @@ private struct WorkChatComposerDraftInput: View {
 
   /// Writes refs for everything the host already holds, and bytes (to the
   /// purgeable cache) only for what it does not — the offline leg.
+  ///
+  /// Skipped while a send for this key is still in flight: the send already
+  /// wrote the outgoing set and then emptied the tray, so running this again
+  /// would persist that emptiness over the very payload the user must get back
+  /// if the send never confirms.
   @MainActor
   private func persistDraftAttachments(for key: String) {
-    guard !key.isEmpty else { return }
-    let uploads = WorkComposerAttachmentUploads.shared
-    var refs: [AgentChatFileRef] = []
-    var unsaved: [WorkChatInputAttachment] = []
-    for attachment in inputAttachments where attachment.isReady {
-      if let ref = attachment.hostRef ?? uploads.ref(for: attachment.id) {
-        refs.append(ref)
-      } else {
-        unsaved.append(attachment)
-      }
-    }
-    let localFiles = WorkComposerDraftAttachmentCache.write(unsaved, for: key)
-    WorkComposerDraftStore.saveAttachments(refs, owner: nil, localFiles: localFiles, for: key)
+    guard !draftState.isSendInFlight(for: key) else { return }
+    workChatPersistComposerAttachments(inputAttachments, for: key)
   }
 
   /// Restores the staged attachments for this chat. Refs first (the host still
@@ -3635,10 +3716,7 @@ private struct WorkChatComposerDraftInput: View {
             canUploadAttachments: canUploadAttachments,
             sending: sending,
             accessibilityLabelText: "Stage message",
-            onSend: { text, attachments in
-              await onSend(text, attachments, .queue)
-            },
-            onSent: onSent
+            action: { performSend(mode: .queue) }
           )
         }
       } else {
@@ -3651,10 +3729,7 @@ private struct WorkChatComposerDraftInput: View {
         canSend: canSend,
         canUploadAttachments: canUploadAttachments,
         sending: sending,
-        onSend: { text, attachments in
-          await onSend(text, attachments, .queue)
-        },
-        onSent: onSent
+        action: { performSend(mode: .queue) }
       )
     }
   }
@@ -3671,10 +3746,7 @@ private struct WorkChatComposerDraftInput: View {
         accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
         systemImageName: activeSendModeIcon(effectiveActiveSendMode),
         minimumTapTargetSize: 32,
-        onSend: { text, attachments in
-          await onSend(text, attachments, effectiveActiveSendMode)
-        },
-        onSent: onSent
+        action: { performSend(mode: effectiveActiveSendMode) }
       )
 
       Button {
@@ -4105,6 +4177,10 @@ final class WorkChatComposerDraftState: ObservableObject {
   /// persist" (the key is unresolved), which is the safe default.
   private var persistenceKey = ""
   private var autosaveTask: Task<Void, Never>?
+  /// Key of a send that has left the composer but has not been confirmed by the
+  /// host yet. While it is set, the stored draft belongs to that send — autosave
+  /// must not overwrite it with the emptied field.
+  private var pendingSendKey: String?
 
   var trimmedText: String {
     text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4148,14 +4224,16 @@ final class WorkChatComposerDraftState: ObservableObject {
   func flushDraft() {
     autosaveTask?.cancel()
     autosaveTask = nil
-    guard !persistenceKey.isEmpty else { return }
+    guard !persistenceKey.isEmpty, pendingSendKey != persistenceKey else { return }
     WorkComposerDraftStore.save(text, for: persistenceKey)
   }
 
   /// Keystroke debounce: each edit restarts the timer, so a burst of typing
   /// costs one write instead of one per character.
   private func scheduleAutosave() {
-    guard !persistenceKey.isEmpty else { return }
+    // Only the key whose send is unconfirmed stands down; another chat's
+    // composer must keep autosaving normally.
+    guard !persistenceKey.isEmpty, pendingSendKey != persistenceKey else { return }
     autosaveTask?.cancel()
     let key = persistenceKey
     let value = text
@@ -4170,27 +4248,48 @@ final class WorkChatComposerDraftState: ObservableObject {
     !trimmedText.isEmpty
   }
 
-  func consumeSendableText() -> String {
+  /// Takes the text out of the field and hands ownership of the stored draft to
+  /// the send.
+  ///
+  /// The stored copy is deliberately NOT dropped here. A send can hang (an
+  /// attachment upload that never lands, a host that never answers) or fail,
+  /// and clearing at tap time meant leaving the chat in that window destroyed
+  /// the message — text and attachments — with nothing on screen to show for
+  /// it. It is dropped in `finishPendingSend(sent:)` once the host has actually
+  /// taken the message. The cost is the reverse case: a force-quit between the
+  /// host accepting and this returning restores an already-sent message as a
+  /// draft, which is what `SyncRequestTimeout.chatSendMessage` already tells
+  /// the user to check the transcript for.
+  func beginPendingSend() -> String {
     let value = trimmedText
     isFocused = false
+    autosaveTask?.cancel()
+    autosaveTask = nil
+    if !persistenceKey.isEmpty {
+      pendingSendKey = persistenceKey
+      WorkComposerDraftStore.save(value, for: persistenceKey)
+    }
     text = ""
-    // Drop the stored copy synchronously rather than letting the 400ms debounce
-    // get to it. A jetsam or force-quit inside that window would otherwise
-    // restore an already-sent message into the composer, where it reads as
-    // unsent and invites sending it twice. The Hub and New Chat composers clear
-    // on send for the same reason.
-    clearStoredDraft()
     return value
   }
 
-  /// Cancels any pending autosave and removes the persisted draft. Not
-  /// actor-annotated so `consumeSendableText()` — which runs from the send
-  /// button's synchronous action — can call it directly.
-  func clearStoredDraft() {
-    autosaveTask?.cancel()
-    autosaveTask = nil
-    guard !persistenceKey.isEmpty else { return }
-    WorkComposerDraftStore.clear(persistenceKey)
+  /// Releases the stored draft back to the composer — dropping it when the host
+  /// took the message, keeping it when it did not.
+  func finishPendingSend(sent: Bool) {
+    guard let key = pendingSendKey else { return }
+    pendingSendKey = nil
+    guard sent else { return }
+    WorkComposerDraftStore.clear(key)
+    // Anything typed while the send was in flight was held out of the store by
+    // the guard above; write it now that the key is free again.
+    if key == persistenceKey, !trimmedText.isEmpty {
+      WorkComposerDraftStore.save(text, for: persistenceKey)
+    }
+  }
+
+  /// Whether an unconfirmed send owns this key's stored draft.
+  func isSendInFlight(for key: String) -> Bool {
+    !key.isEmpty && pendingSendKey == key
   }
 
   func restoreUnsentText(_ value: String) {
@@ -4252,8 +4351,10 @@ private struct WorkChatComposerSendButton: View {
   var accessibilityLabelText = "Send message"
   var systemImageName = "arrow.up"
   var minimumTapTargetSize: CGFloat = 28
-  let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
-  let onSent: () -> Void
+  /// The send itself lives on the composer, not here: the retry row runs the
+  /// exact same action, and two copies of "clear the field, stage, restore on
+  /// failure" is how the two drift apart.
+  let action: @MainActor () -> Void
 
   private var sendEnabled: Bool {
     workChatInputCanSend(
@@ -4272,23 +4373,7 @@ private struct WorkChatComposerSendButton: View {
       systemImageName: systemImageName,
       minimumTapTargetSize: minimumTapTargetSize
     ) {
-      let originalText = draftState.consumeSendableText()
-      let outgoingAttachments = workChatInputReadyAttachments(attachments)
-      let text = workChatOutgoingText(originalText, attachmentCount: outgoingAttachments.count)
-      let restoredAttachments = attachments
-      attachments.removeAll()
-      Task { @MainActor in
-        let sent = await onSend(text, outgoingAttachments)
-        if sent {
-          // The refs were consumed by the send; drop the upload tracking so a
-          // later attachment can never reuse a sent message's ref.
-          WorkComposerAttachmentUploads.shared.release(restoredAttachments.map(\.id))
-          onSent()
-        } else {
-          attachments = restoredAttachments
-          draftState.restoreUnsentText(originalText)
-        }
-      }
+      action()
     }
     .adeInspectable(
       "Work.Chat.Composer.SendButton",

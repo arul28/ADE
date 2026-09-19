@@ -233,6 +233,172 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
     )
   }
 
+  // MARK: - Staged uploads and unconfirmed sends
+
+  /// The regression this file exists for as of 2026-09-19: a message with an
+  /// image sat at "Sending" forever.
+  ///
+  /// The send awaits the upload that started when the attachment was staged. As
+  /// long as that wait was unbounded, an upload that never completed — and the
+  /// image path deadlocked on itself, so it never did — held the message with
+  /// no error, no retry, and the draft already cleared. The wait is now bounded
+  /// and reports that it gave up.
+  @MainActor
+  func testAStuckStagedUploadIsAbandonedInsteadOfHangingTheSend() async {
+    let id = UUID()
+    let uploads = WorkComposerAttachmentUploads.shared
+    defer { uploads.release([id]) }
+
+    uploads.begin(id: id) {
+      // Never lands: the wedged leg this bug was made of.
+      try await Task.sleep(nanoseconds: 60_000_000_000)
+      return AgentChatFileRef(path: "/never", type: "image")
+    }
+
+    let resolution = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(resolution, .abandoned)
+  }
+
+  /// The ordinary path: a send that arrives while the upload is still moving
+  /// waits for it and sends the host's ref rather than re-uploading the bytes.
+  @MainActor
+  func testResolveReturnsTheStagedRefWhenTheUploadLands() async {
+    let id = UUID()
+    let uploads = WorkComposerAttachmentUploads.shared
+    defer { uploads.release([id]) }
+
+    uploads.begin(id: id) {
+      await Task.yield()
+      return AgentChatFileRef(path: "/tmp/.ade/attachments/staged.jpg", type: "image")
+    }
+
+    let resolution = await uploads.resolve(id, timeoutNanoseconds: 5_000_000_000)
+    XCTAssertEqual(resolution, .ref(AgentChatFileRef(path: "/tmp/.ade/attachments/staged.jpg", type: "image")))
+  }
+
+  /// Two different "no ref" answers. An untracked attachment and one whose
+  /// upload failed both fall through to an inline upload — only a wait that ran
+  /// out of time fails the send, because a second copy would queue behind the
+  /// same stuck leg.
+  @MainActor
+  func testUntrackedAndFailedUploadsStageInline() async {
+    let uploads = WorkComposerAttachmentUploads.shared
+    let untracked = UUID()
+    let untrackedResolution = await uploads.resolve(untracked, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(untrackedResolution, .stageInline)
+
+    let failing = UUID()
+    defer { uploads.release([failing]) }
+    uploads.begin(id: failing) {
+      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "no route"])
+    }
+    let failedResolution = await uploads.resolve(failing, timeoutNanoseconds: 5_000_000_000)
+    XCTAssertEqual(failedResolution, .stageInline)
+  }
+
+  /// A send owns the stored draft until the host confirms it. Tapping send used
+  /// to clear the draft immediately, so leaving the chat while it said
+  /// "Sending" destroyed the message.
+  @MainActor
+  func testUnconfirmedSendKeepsTheDraftAndAConfirmedOneDropsIt() {
+    let draftKey = key()
+    defer { WorkComposerDraftStore.clear(draftKey) }
+
+    let draft = WorkChatComposerDraftState()
+    draft.bind(persistenceKey: draftKey)
+    draft.text = "look at this screenshot"
+
+    XCTAssertEqual(draft.beginPendingSend(), "look at this screenshot")
+    XCTAssertEqual(draft.text, "")
+    // Still in flight: the stored copy is the only surviving one, so leaving the
+    // chat now must find it.
+    XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "look at this screenshot")
+    XCTAssertTrue(draft.isSendInFlight(for: draftKey))
+
+    // A teardown flush while the send is unconfirmed must not write the emptied
+    // field over it.
+    draft.flushDraft()
+    XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "look at this screenshot")
+
+    draft.finishPendingSend(sent: false)
+    XCTAssertFalse(draft.isSendInFlight(for: draftKey))
+    XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "look at this screenshot")
+
+    draft.text = "look at this screenshot"
+    _ = draft.beginPendingSend()
+    draft.finishPendingSend(sent: true)
+    XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "", "a confirmed send consumes the draft")
+  }
+
+  /// The in-flight message owns the stored draft, but only its own key and
+  /// only until it settles — text typed behind it is written the moment the
+  /// send confirms, instead of being dropped with it.
+  @MainActor
+  func testTextTypedDuringAnUnconfirmedSendIsStoredOnceItConfirms() {
+    let draftKey = key()
+    defer { WorkComposerDraftStore.clear(draftKey) }
+
+    let draft = WorkChatComposerDraftState()
+    draft.bind(persistenceKey: draftKey)
+    draft.text = "first message"
+    _ = draft.beginPendingSend()
+
+    draft.text = "second message"
+    draft.flushDraft()
+    XCTAssertEqual(
+      WorkComposerDraftStore.load(draftKey),
+      "first message",
+      "the unconfirmed send owns the stored draft"
+    )
+
+    draft.finishPendingSend(sent: true)
+    XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "second message")
+  }
+
+  /// The attachment half of the same rule: the outgoing files are written under
+  /// the chat's draft key before the tray is emptied, so an unconfirmed send
+  /// leaves both the text and the image recoverable.
+  @MainActor
+  func testOutgoingAttachmentsArePersistedForAnUnconfirmedSend() {
+    let draftKey = key()
+    defer { WorkComposerDraftStore.clear(draftKey) }
+
+    let staged = WorkChatInputAttachment(
+      uploadData: Data("jpeg-bytes".utf8),
+      filename: "screenshot.jpg",
+      mimeType: "image/jpeg",
+      kind: .image,
+      state: .ready
+    )
+    let alreadyUploaded = WorkChatInputAttachment(
+      filename: "clip.mov",
+      kind: .video,
+      hostRef: AgentChatFileRef(path: "/tmp/.ade/attachments/clip.mov", type: "file"),
+      state: .ready
+    )
+
+    workChatPersistComposerAttachments([staged, alreadyUploaded], for: draftKey)
+
+    let entry = WorkComposerDraftStore.loadEntry(draftKey)
+    XCTAssertEqual(entry?.attachments.first?.path, "/tmp/.ade/attachments/clip.mov")
+    XCTAssertEqual(entry?.localFiles.first?.filename, "screenshot.jpg")
+    XCTAssertEqual(
+      WorkComposerDraftAttachmentCache.read(entry?.localFiles ?? [], for: draftKey).first?.uploadData,
+      Data("jpeg-bytes".utf8)
+    )
+  }
+
+  /// The copy the retry row shows. Short, plain, and one sentence — it is also
+  /// the message the abandoned-upload error carries, so the row and the error
+  /// cannot disagree.
+  func testSendFailureCopyIsPlain() {
+    XCTAssertEqual(workChatAttachmentUploadTimedOutMessage, "Couldn't send. Tap to retry.")
+    XCTAssertEqual(
+      workChatAttachmentUploadTimedOutError("screenshot.jpg").localizedDescription,
+      "Couldn't send. Tap to retry."
+    )
+  }
+
   // MARK: - Preview temp files
 
   /// The other end of the same staging story: a PDF or video preview is

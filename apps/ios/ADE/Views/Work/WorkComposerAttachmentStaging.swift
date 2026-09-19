@@ -136,6 +136,113 @@ func workChatAttachmentSignature(_ attachments: [WorkChatInputAttachment]) -> St
 
 // MARK: - Upload on attach
 
+/// How long a send waits for an upload that started when the attachment was
+/// staged, before it gives up and fails visibly.
+///
+/// Matches `SyncRequestTimeout.chatSendTimeoutNanoseconds`: the same budget the
+/// message itself gets, which is long enough for a 50 MB video on a slow relay
+/// leg and short enough that a wedged upload becomes an error the user can act
+/// on instead of a permanent "Sending".
+let workComposerAttachmentUploadTimeoutNanoseconds: UInt64 = SyncRequestTimeout.chatSendTimeoutNanoseconds
+
+/// Plain-language failure for an upload that never landed. Deliberately the
+/// same sentence the composer's retry row shows, so the banner and the chip
+/// cannot say two different things about one message.
+let workChatAttachmentUploadTimedOutMessage = "Couldn't send. Tap to retry."
+
+func workChatAttachmentUploadTimedOutError(_ filename: String) -> NSError {
+  NSError(
+    domain: "ADE",
+    code: 32,
+    userInfo: [
+      NSLocalizedDescriptionKey: workChatAttachmentUploadTimedOutMessage,
+      "attachmentFilename": filename,
+    ]
+  )
+}
+
+/// What the staged-upload tracker knows about one attachment at send time.
+enum WorkComposerAttachmentUploadResolution: Equatable {
+  /// The host holds the bytes; send this ref.
+  case ref(AgentChatFileRef)
+  /// Nothing usable is tracked — no upload was started, or the one that ran
+  /// failed. The caller stages the bytes itself.
+  case stageInline
+  /// A tracked upload passed its deadline. Retrying inline would queue a second
+  /// copy behind the same wedged leg, so the send fails instead.
+  case abandoned
+}
+
+/// Awaits `work`, giving up after `timeoutNanoseconds` and returning nil.
+///
+/// Deliberately not a task group: a group only returns once *every* child has
+/// finished, so a child parked in a non-cancellable continuation makes the
+/// deadline a lie. This abandons the wait without touching the work, which is
+/// the semantics a send needs — the upload may still land and be reused, but
+/// the user is not held behind it.
+@MainActor
+func workAwaitWithDeadline<T>(
+  timeoutNanoseconds: UInt64,
+  work: @escaping @MainActor () async -> T
+) async -> T? {
+  let box = WorkDeadlineBox<T>()
+  return await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+    box.continuation = continuation
+    box.timer = Task { @MainActor in
+      try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+      guard !Task.isCancelled else { return }
+      box.settle(nil)
+    }
+    Task { @MainActor in
+      let value = await work()
+      box.settle(value)
+    }
+  }
+}
+
+/// One-shot resume guard for `workAwaitWithDeadline`. Both racers call
+/// `settle`; the first one wins and the continuation is dropped, so the loser
+/// cannot resume it twice.
+@MainActor
+private final class WorkDeadlineBox<T> {
+  var continuation: CheckedContinuation<T?, Never>?
+  var timer: Task<Void, Never>?
+
+  func settle(_ value: T?) {
+    guard let continuation else { return }
+    self.continuation = nil
+    timer?.cancel()
+    timer = nil
+    continuation.resume(returning: value)
+  }
+}
+
+/// Writes one composer's staged attachments under a draft key: host refs for
+/// everything already uploaded, purgeable cached bytes for everything else.
+///
+/// Shared by the in-chat composer's autosave and by its send path, which has to
+/// write the outgoing set BEFORE it clears the tray — a send that never
+/// confirms must leave the user their attachments, not an empty composer.
+@MainActor
+func workChatPersistComposerAttachments(
+  _ attachments: [WorkChatInputAttachment],
+  for key: String
+) {
+  guard !key.isEmpty else { return }
+  let uploads = WorkComposerAttachmentUploads.shared
+  var refs: [AgentChatFileRef] = []
+  var unsaved: [WorkChatInputAttachment] = []
+  for attachment in attachments where attachment.isReady {
+    if let ref = attachment.hostRef ?? uploads.ref(for: attachment.id) {
+      refs.append(ref)
+    } else {
+      unsaved.append(attachment)
+    }
+  }
+  let localFiles = WorkComposerDraftAttachmentCache.write(unsaved, for: key)
+  WorkComposerDraftStore.saveAttachments(refs, owner: nil, localFiles: localFiles, for: key)
+}
+
 /// Tracks the host upload that starts the moment an attachment becomes `.ready`,
 /// keyed by the attachment's id.
 ///
@@ -203,16 +310,31 @@ final class WorkComposerAttachmentUploads {
     projectId: String?,
     projectRootPath: String?
   ) {
-    guard entries[attachment.id] == nil, attachment.isReady else { return }
-    let id = attachment.id
-    let task = Task { @MainActor () throws -> AgentChatFileRef in
-      try await workChatUploadSingleAttachment(
+    begin(id: attachment.id, isReady: attachment.isReady) {
+      // The RAW host call, never `workChatSaveInputAttachments`: that wrapper
+      // asks this tracker to resolve the same id, so routing the upload through
+      // it made this task await itself and hang forever.
+      try await workChatStageAttachmentOnHost(
         attachment,
         syncService: syncService,
         chatSessionId: chatSessionId,
         targetProjectId: projectId,
         targetProjectRootPath: projectRootPath
       )
+    }
+  }
+
+  /// Tracking half of `begin`, with the upload itself injected. The only seam a
+  /// test can use to pin the "a stuck upload must not wedge a send" contract
+  /// without a live host.
+  func begin(
+    id: UUID,
+    isReady: Bool = true,
+    upload: @escaping @MainActor () async throws -> AgentChatFileRef
+  ) {
+    guard entries[id] == nil, isReady else { return }
+    let task = Task { @MainActor () throws -> AgentChatFileRef in
+      try await upload()
     }
     insert(id, Entry(task: task, ref: nil, failure: nil, startedAt: Date()))
     Task { @MainActor in
@@ -230,14 +352,36 @@ final class WorkComposerAttachmentUploads {
     }
   }
 
-  /// The ref for an attachment, waiting for an in-flight upload. Returns nil
-  /// when nothing is tracked (the caller then uploads inline) and rethrows a
-  /// tracked failure so the send path can retry.
-  func resolve(_ id: UUID) async -> AgentChatFileRef? {
-    guard let entry = entries[id] else { return nil }
-    if let ref = entry.ref { return ref }
-    if entry.failure != nil { return nil }
-    return try? await entry.task.value
+  /// The ref for an attachment, waiting for an in-flight upload — for at most
+  /// `timeoutNanoseconds`.
+  ///
+  /// The deadline is the reason this returns a case rather than an optional. A
+  /// send awaits this before it can put anything on the wire, so an upload that
+  /// never completes used to hold the message at "Sending" for the life of the
+  /// process: no error, no retry, and the draft already cleared. Waiting is now
+  /// always bounded, and "nothing is tracked" is told apart from "we gave up".
+  func resolve(
+    _ id: UUID,
+    timeoutNanoseconds: UInt64 = workComposerAttachmentUploadTimeoutNanoseconds
+  ) async -> WorkComposerAttachmentUploadResolution {
+    guard let entry = entries[id] else { return .stageInline }
+    if let ref = entry.ref { return .ref(ref) }
+    if entry.failure != nil { return .stageInline }
+    let task = entry.task
+    let settled = await workAwaitWithDeadline(timeoutNanoseconds: timeoutNanoseconds) {
+      try? await task.value
+    }
+    switch settled {
+    case .some(.some(let ref)):
+      return .ref(ref)
+    case .some(.none):
+      // The upload finished by failing. An inline retry is the cheap recovery
+      // for a transient network error.
+      return .stageInline
+    case .none:
+      entries[id]?.failure = workChatAttachmentUploadTimedOutMessage
+      return .abandoned
+    }
   }
 
   func release(_ ids: [UUID]) {
@@ -257,54 +401,6 @@ final class WorkComposerAttachmentUploads {
       entries[oldest] = nil
     }
   }
-}
-
-/// Stages one attachment on the host and returns its ref. Images keep the
-/// historical base64 image route; everything else rides the chunked file route.
-@MainActor
-func workChatUploadSingleAttachment(
-  _ attachment: WorkChatInputAttachment,
-  syncService: SyncService,
-  chatSessionId: String?,
-  targetProjectId: String?,
-  targetProjectRootPath: String?
-) async throws -> AgentChatFileRef {
-  guard let data = attachment.uploadData else {
-    throw NSError(
-      domain: "ADE",
-      code: 30,
-      userInfo: [NSLocalizedDescriptionKey: "This attachment has no data to upload."]
-    )
-  }
-  if attachment.kind == .image {
-    let refs = try await workChatSaveInputAttachments(
-      [attachment],
-      syncService: syncService,
-      chatSessionId: chatSessionId,
-      targetProjectId: targetProjectId,
-      targetProjectRootPath: targetProjectRootPath
-    )
-    guard let ref = refs.first else {
-      throw NSError(
-        domain: "ADE",
-        code: 31,
-        userInfo: [NSLocalizedDescriptionKey: "The host did not accept this image."]
-      )
-    }
-    return ref
-  }
-  let saved = try await syncService.saveChatFileAttachment(
-    data: data,
-    filename: attachment.filename,
-    chatSessionId: chatSessionId,
-    targetProjectId: targetProjectId,
-    targetProjectRootPath: targetProjectRootPath
-  )
-  // `file` is the ref type desktop uses for non-image attachments, so the agent
-  // receives a path rather than an inlined image. The host parser accepts the
-  // exact literals `image` and `file` and silently DROPS anything else, so the
-  // capitalisation here is load-bearing.
-  return AgentChatFileRef(path: saved.path, type: "file")
 }
 
 // MARK: - Offline byte cache

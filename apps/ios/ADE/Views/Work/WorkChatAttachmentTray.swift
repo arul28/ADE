@@ -355,6 +355,69 @@ func workChatInputPasteImages(_ images: [UIImage], into attachments: Binding<[Wo
   attachments.wrappedValue = next
 }
 
+/// Stages one attachment's bytes on the host and returns its ref.
+///
+/// The raw host call, with no upload-tracker lookup in front of it. That
+/// separation is load-bearing: `WorkComposerAttachmentUploads`'s own upload task
+/// calls this, and when it instead went back through
+/// `workChatSaveInputAttachments` the task awaited its own completion — a
+/// permanent deadlock that left every message carrying an image stuck at
+/// "Sending" with no failure and no retry.
+///
+/// Images keep the historical base64 `chat.saveTempAttachment` route (the host
+/// sniffs the bytes); everything else rides the chunked file route.
+@MainActor
+func workChatStageAttachmentOnHost(
+  _ attachment: WorkChatInputAttachment,
+  syncService: SyncService,
+  chatSessionId: String? = nil,
+  targetProjectId: String? = nil,
+  targetProjectRootPath: String? = nil
+) async throws -> AgentChatFileRef {
+  guard let uploadData = attachment.uploadData, !uploadData.isEmpty else {
+    throw NSError(
+      domain: "ADE",
+      code: 30,
+      userInfo: [NSLocalizedDescriptionKey: "This attachment has no data to upload."]
+    )
+  }
+  if attachment.kind != .image {
+    let saved = try await syncService.saveChatFileAttachment(
+      data: uploadData,
+      filename: attachment.filename,
+      chatSessionId: chatSessionId,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
+    // Lowercase: the host ref parser drops any `type` that is not exactly
+    // `image` or `file`.
+    return AgentChatFileRef(path: saved.path, type: "file")
+  }
+  guard let dataUrl = workChatInputAttachmentDataURL(attachment) else {
+    throw NSError(
+      domain: "ADE",
+      code: 30,
+      userInfo: [NSLocalizedDescriptionKey: "This attachment has no data to upload."]
+    )
+  }
+  let saved: SavedChatTempAttachment
+  if let chatSessionId, !chatSessionId.isEmpty {
+    saved = try await syncService.saveChatTempAttachmentForChat(
+      sessionId: chatSessionId,
+      dataUrl: dataUrl,
+      filename: attachment.filename
+    )
+  } else {
+    saved = try await syncService.saveChatTempAttachment(
+      dataUrl: dataUrl,
+      filename: attachment.filename,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
+  }
+  return AgentChatFileRef(path: saved.path, type: "image")
+}
+
 @MainActor
 func workChatSaveInputAttachments(
   _ attachments: [WorkChatInputAttachment],
@@ -374,40 +437,25 @@ func workChatSaveInputAttachments(
     }
     // The upload started when the attachment was staged; wait for it rather
     // than racing a second upload of the same bytes.
-    if let resolved = await WorkComposerAttachmentUploads.shared.resolve(attachment.id) {
+    switch await WorkComposerAttachmentUploads.shared.resolve(attachment.id) {
+    case .ref(let resolved):
       refs.append(workChatNormalizedOutboundRef(resolved))
       continue
+    case .abandoned:
+      // The staged upload passed its deadline. A second inline upload would
+      // queue behind the same wedged leg, so fail now — the send path restores
+      // the draft and offers a retry.
+      throw workChatAttachmentUploadTimedOutError(attachment.filename)
+    case .stageInline:
+      break
     }
-    if attachment.kind != .image {
-      let saved = try await syncService.saveChatFileAttachment(
-        data: attachment.uploadData ?? Data(),
-        filename: attachment.filename,
-        chatSessionId: chatSessionId,
-        targetProjectId: targetProjectId,
-        targetProjectRootPath: targetProjectRootPath
-      )
-      // Lowercase: the host ref parser drops any `type` that is not exactly
-      // `image` or `file`.
-      refs.append(AgentChatFileRef(path: saved.path, type: "file"))
-      continue
-    }
-    guard let dataUrl = workChatInputAttachmentDataURL(attachment) else { continue }
-    let saved: SavedChatTempAttachment
-    if let chatSessionId, !chatSessionId.isEmpty {
-      saved = try await syncService.saveChatTempAttachmentForChat(
-        sessionId: chatSessionId,
-        dataUrl: dataUrl,
-        filename: attachment.filename
-      )
-    } else {
-      saved = try await syncService.saveChatTempAttachment(
-        dataUrl: dataUrl,
-        filename: attachment.filename,
-        targetProjectId: targetProjectId,
-        targetProjectRootPath: targetProjectRootPath
-      )
-    }
-    refs.append(AgentChatFileRef(path: saved.path, type: "image"))
+    refs.append(try await workChatStageAttachmentOnHost(
+      attachment,
+      syncService: syncService,
+      chatSessionId: chatSessionId,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    ))
   }
   return refs
 }
