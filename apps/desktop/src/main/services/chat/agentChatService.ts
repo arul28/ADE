@@ -789,6 +789,7 @@ import {
   createAcpRuntime,
   openAcpSession,
   pendingPermissionToInputRequest,
+  setAcpReasoningEffort,
   textPromptBlock,
   type AcpDialect,
   type AcpPendingPermission,
@@ -52117,6 +52118,18 @@ export function createAgentChatService(args: {
             : validateRuntimeReasoningEffortForDescriptor(requested, descriptor);
       }
 
+      if (
+        reasoningEffort !== undefined
+        && !modelChanged
+        && managed.runtime?.kind === "acp"
+      ) {
+        await setAcpReasoningEffort(
+          managed.runtime,
+          managed.session.reasoningEffort ?? "default",
+          { sessionId, logger },
+        );
+      }
+
       // Pre-warm the Claude query when the user selects an Anthropic model.
       // This gives natural warmup time while the user types their message.
       if (modelChanged && nextProvider === "claude") {
@@ -52236,6 +52249,13 @@ export function createAgentChatService(args: {
             error: error instanceof Error ? error.message : String(error),
           });
         });
+      }
+      if (prev !== next && managed.runtime?.kind === "acp") {
+        await setAcpReasoningEffort(
+          managed.runtime,
+          next ?? "default",
+          { sessionId, logger },
+        );
       }
       // A reasoning-only change on the CTO thread must also land in identity
       // modelPreferences, or the next ensured session resurrects the old tier.

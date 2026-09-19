@@ -99,6 +99,7 @@ export {
   acpHasTranscript,
   acpInvocationKey,
   createAcpRuntime,
+  setAcpReasoningEffort,
   type AcpRuntimeCoordinatorCallbacks,
   type AcpRuntimeOwner,
   type AcpRuntimeState,

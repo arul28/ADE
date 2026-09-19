@@ -124,6 +124,40 @@ export function acpHasTranscript(owner: Pick<AcpRuntimeOwner, "eventSequence" | 
   return owner.eventSequence > 0 || owner.transcriptBytesWritten > 0;
 }
 
+/**
+ * Apply a provider-native reasoning value to an already-open ACP session.
+ *
+ * Qwen 0.24.0 uses the literal `default` value to clear a session-scoped
+ * reasoning selection. Keep that wire detail in the ACP coordinator so the
+ * chat service does not need to know how Qwen represents a reset.
+ */
+export async function setAcpReasoningEffort<TSteer>(
+  runtime: AcpRuntimeState<TSteer>,
+  value: string,
+  args: { sessionId: string; logger: Logger },
+): Promise<void> {
+  if (
+    runtime.provider !== "qwen"
+    || !runtime.dialect.sessionConfig.declared
+    || !runtime.dialect.configOptionIds.includes("reasoning_effort")
+  ) {
+    return;
+  }
+
+  try {
+    await runtime.session.setConfigOption({ configId: "reasoning_effort", value });
+  } catch (error) {
+    // A model without a reasoning profile can reject this optional setting.
+    // Keep the chat alive and let the next provider update retry if needed.
+    args.logger.warn("agent_chat.acp_set_reasoning_effort_failed", {
+      sessionId: args.sessionId,
+      provider: runtime.provider,
+      reasoningEffort: value,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export async function createAcpRuntime<TSteer>(
   args: CreateAcpRuntimeArgs<TSteer>,
 ): Promise<AcpRuntimeState<TSteer>> {

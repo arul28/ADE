@@ -54397,6 +54397,31 @@ describe("acp chat runtime", () => {
     expect(configParams.at(-1)).toMatchObject({ configId: "reasoning_effort", value: "high" });
   });
 
+  it("updates Qwen's live reasoning effort when the ACP runtime is reused", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "low" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "first turn" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: null });
+
+    const configCalls = harness.agent.received.filter((entry) => entry.method === "session/set_config_option");
+    const reasoningCalls = configCalls
+      .map((entry) => entry.params as { configId?: string; value?: unknown })
+      .filter((params) => params.configId === "reasoning_effort");
+    expect(reasoningCalls.map((params) => params.value)).toEqual(["low", "high", "default"]);
+    expect(harness.agent.methodsReceived().filter((method) => method === "session/new")).toHaveLength(1);
+  });
+
   it("forwards image URL attachments in the ACP prompt payload", async () => {
     const harness = await openAcpHarness({
       provider: "qwen",
