@@ -87,7 +87,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   qwen: {
     title: "Set up Qwen Code",
-    body: "Install Qwen Code and configure it in that CLI. ADE reuses ~/.qwen and does not write it. Point Qwen at an OpenAI-compatible key (OPENAI_API_KEY, optional OPENAI_BASE_URL for a local proxy).",
+    body: "Install Qwen Code 0.24.0 and configure it in that CLI (`qwen --auth-type=openai` or `qwen --auth-type=openai-responses`). ADE reuses ~/.qwen and does not write it. Point Qwen at an OpenAI-compatible key (OPENAI_API_KEY, optional OPENAI_BASE_URL for a local proxy).",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Qwen Code docs",

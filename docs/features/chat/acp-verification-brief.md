@@ -74,8 +74,9 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   `session/set_config_option` for mode/model/thinking, now enabled by ADE.
   Usage on the wire is still unverified. Interactive TUI still has no argv
   prompt.
-- Qwen 0.22.3: `--session-id` vs `--resume`/`--continue` and `--yolo` vs
-  `--approval-mode` are parse errors. `session/close` is **not** implemented.
+- Qwen 0.24.0: `--session-id` vs `--resume`/`--continue` and `--yolo` vs
+  `--approval-mode` are parse errors. `session/close` is **not** implemented;
+  the ACP handshake advertises `openai` and `openai-responses`.
 - Copilot: `config.json` is JSONC; live 1.0.82 persists `trustedFolders`
   (camelCase — not the `trusted_folders` older notes claimed). ADE writes
   neither: the trust pre-seed is removed and nothing on the Copilot path may

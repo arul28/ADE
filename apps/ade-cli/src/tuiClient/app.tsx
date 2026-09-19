@@ -2688,7 +2688,7 @@ function loginCommandsForProvider(provider: AdeCodeProvider): ProviderLoginComma
   if (provider === "codex") return [{ command: "codex", args: ["login"], label: "codex login" }];
   if (provider === "opencode") return [{ command: "opencode", args: ["auth", "login"], label: "opencode auth login" }];
   if (provider === "pi") return [{ command: "pi", args: [], label: "pi (then /login)" }];
-  // 0.22.3 removed `qwen auth`. Sign-in is the OpenAI-compatible key path.
+  // 0.24.0 removed `qwen auth`. Sign-in is the OpenAI-compatible key path.
   if (provider === "qwen") return [{ command: "qwen", args: ["--auth-type=openai"], label: "qwen --auth-type=openai" }];
   if (provider === "kimi") return [{ command: "kimi", args: ["login"], label: "kimi login" }];
   if (provider === "grok") return [{ command: "grok", args: ["login"], label: "grok login" }];

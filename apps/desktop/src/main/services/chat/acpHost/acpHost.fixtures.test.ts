@@ -1,10 +1,10 @@
 /**
  * Dialect claims vs captured initialize responses from real binaries.
  *
- * These fixtures were recorded on 2026-08-31 against Copilot CLI 1.0.82
- * (ACP agent 1.0.4), Grok 1.0.13, Qwen Code 0.22.3, and the Kimi Code 0.39.1
- * compatibility baseline. Kimi Code 2.0.0's current ACP reference is covered
- * by the dialect contract assertions below.
+ * (ACP agent 1.0.4), Grok 1.0.13, and the Kimi Code 0.39.1 compatibility
+ * baseline. Kimi Code 2.0.0's current ACP reference is covered by the dialect
+ * contract assertions below. Qwen Code 0.24.0 was captured separately on
+ * 2026-09-18.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -121,10 +121,10 @@ describe("captured initialize fixtures", () => {
     expect(options.find((option) => option.id === "allow_all")?.value).toBe("off");
   });
 
-  it("qwen 0.22.3 advertises resume and image/audio, not close", () => {
+  it("qwen 0.24.0 advertises resume and image/audio, not close", () => {
     const init = loadFixture<AcpInitializeResponse>("qwen.initialize.json");
     expect(init.protocolVersion).toBe(1);
-    expect(init.agentInfo?.version).toBe("0.22.3");
+    expect(init.agentInfo?.version).toBe("0.24.0");
     expect(init.agentCapabilities?.loadSession).toBe(true);
     expect(init.agentCapabilities?.promptCapabilities).toEqual({
       image: true,
@@ -134,7 +134,7 @@ describe("captured initialize fixtures", () => {
     expect(init.agentCapabilities?.mcpCapabilities).toEqual({ sse: true, http: true });
     expect(init.agentCapabilities?.sessionCapabilities).toEqual({ list: {}, resume: {} });
     expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("close");
-    expect(init.authMethods?.map((method) => method.id)).toEqual(["openai"]);
+    expect(init.authMethods?.map((method) => method.id)).toEqual(["openai", "openai-responses"]);
     expect(qwenDialect.closeStyle).toBe("kill_process");
     expect(qwenDialect.oneProcessPerSession).toBe(true);
     expect(qwenDialect.loadPolicy).toBe("resume_preferred");

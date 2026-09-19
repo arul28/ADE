@@ -54377,6 +54377,26 @@ describe("acp chat runtime", () => {
     expect(statuses).toContain("completed");
   });
 
+  it("applies Qwen's selected model and reasoning effort at session startup", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "high" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "use the selected effort" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const configCalls = harness.agent.received.filter((entry) => entry.method === "session/set_config_option");
+    const configParams = configCalls.map((entry) => entry.params as { configId?: string; value?: unknown });
+    expect(configParams.map((params) => params.configId)).toEqual(["mode", "model", "reasoning_effort"]);
+    expect(configParams.at(-1)).toMatchObject({ configId: "reasoning_effort", value: "high" });
+  });
+
   it("forwards image URL attachments in the ACP prompt payload", async () => {
     const harness = await openAcpHarness({
       provider: "qwen",

@@ -53,8 +53,8 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     tagline: "Uses the Qwen Code CLI you already set up.",
     logoFamily: "qwen",
     installCommand: "npm install -g @qwen-code/qwen-code",
-    credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai`. The `qwen auth` subcommand is removed in 0.22.3.",
-    setup: "Install Qwen Code and configure it in that CLI. ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
+    credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai` / `qwen --auth-type=openai-responses`. The `qwen auth` subcommand is removed in 0.24.0.",
+    setup: "Install Qwen Code 0.24.0 and configure it in that CLI. ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
   },
   {
     ...ACP_PROVIDER_METADATA.kimi,

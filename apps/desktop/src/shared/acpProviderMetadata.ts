@@ -20,7 +20,7 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     label: "Qwen Code",
     statusLabel: "Qwen",
     loginCommand: "qwen --auth-type=openai",
-    loginHint: "configure Qwen Code (`qwen --auth-type=openai` or OPENAI_API_KEY / OPENAI_BASE_URL)",
+    loginHint: "configure Qwen Code (`qwen --auth-type=openai` or `qwen --auth-type=openai-responses`, or OPENAI_API_KEY / OPENAI_BASE_URL)",
     configHomeEnv: "QWEN_HOME",
   },
   kimi: {

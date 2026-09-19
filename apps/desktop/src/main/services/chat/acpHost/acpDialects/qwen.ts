@@ -1,23 +1,25 @@
 /**
  * Qwen Code dialect. `qwen --acp`, npm package `@qwen-code/qwen-code`.
  *
- * Live 0.22.3 handshake: `loadSession`, session list/resume, image + audio
- * prompts, MCP http/sse, `session/set_config_option` for mode/model/thinking.
+ * Live 0.24.0 handshake: `loadSession`, session list/resume, image + audio
+ * prompts, MCP http/sse, `session/set_config_option` for mode/model/
+ * reasoning_effort.
  * Slash via `available_commands_update`.
  *
  * It does **not** advertise `session/close`, and a dummy `session/close` is
  * -32601. Ending a chat therefore ends the process (one process per session),
- * the same posture Kimi 0.31.x used. Copilot 1.0.82 has the same missing-close
- * wire and keeps `close_request` + pool by product call; Qwen follows the
- * handshake so leaked agent sessions cannot pile up in a pooled process.
+ * using the private-process posture required by this dialect. Copilot 1.0.82
+ * has the same missing-close wire and keeps `close_request` + pool by product
+ * call; Qwen follows the handshake so leaked agent sessions cannot pile up in
+ * a pooled process.
  *
  * `QWEN_HOME` names the config directory, in the same shape as `CODEX_HOME`.
  *
- * `qwen auth` is removed in 0.22.3. Unauthenticated `session/new` is
+ * `qwen auth` is removed in 0.24.0. Unauthenticated `session/new` is
  * "Authentication required: Use Qwen Code CLI to authenticate first." The
- * advertised method is `openai` (`OPENAI_API_KEY`, `--auth-type=openai`, or a
- * custom provider already saved in `settings.json`). ADE does not write
- * `~/.qwen`; it reuses whatever the Qwen CLI already has.
+ * advertised methods are `openai` and `openai-responses` (both use
+ * `OPENAI_API_KEY`); ADE selects the stable `openai` probe and does not write
+ * `~/.qwen`, reusing whatever the Qwen CLI already has.
  */
 
 import {
@@ -38,7 +40,7 @@ import {
 } from "./shared";
 
 /** Config option ids Qwen exposes through `session/set_config_option`. */
-export const QWEN_CONFIG_OPTION_IDS = ["mode", "model", "thinking"] as const;
+export const QWEN_CONFIG_OPTION_IDS = ["mode", "model", "reasoning_effort"] as const;
 
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   return {
@@ -58,7 +60,7 @@ export const qwenDialect = defineAcpDialect({
 
   cancelStyle: "request",
   poolEnvKeys: ["QWEN_HOME", "QWEN_RUNTIME_DIR", "OPENAI_BASE_URL", "OPENAI_API_KEY"],
-  // 0.22.3 has no `session/close`. A process may never be shared.
+  // 0.24.0 has no `session/close`. A process may never be shared.
   oneProcessPerSession: true,
   advertiseFsCapability: false,
   advertiseTerminalCapability: false,

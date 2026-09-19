@@ -92,6 +92,8 @@ export type CreateAcpRuntimeArgs<TSteer> = {
   invocationKey: string;
   permissionMode: AgentChatAcpPermissionMode;
   modelToken: string | null;
+  /** Provider-native reasoning value, when the dialect advertises one. */
+  reasoningEffort: string | null;
   existingSessionId: string | null;
   supervisionPreflight: { ok: boolean; detail?: string } | null;
   supervisionAlreadyNotified: boolean;
@@ -216,6 +218,19 @@ export async function createAcpRuntime<TSteer>(
           sessionId: args.owner.session.id,
           provider: args.provider,
           model: args.modelToken,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    const reasoningEffort = args.reasoningEffort?.trim();
+    if (reasoningEffort && args.dialect.configOptionIds.includes("reasoning_effort")) {
+      await session.setConfigOption({ configId: "reasoning_effort", value: reasoningEffort }).catch((error) => {
+        // Qwen only exposes this option for models with a reasoning profile.
+        // A provider rejection should not prevent a session from opening.
+        args.logger.warn("agent_chat.acp_set_reasoning_effort_failed", {
+          sessionId: args.owner.session.id,
+          provider: args.provider,
+          reasoningEffort,
           error: error instanceof Error ? error.message : String(error),
         });
       });

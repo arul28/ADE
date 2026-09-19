@@ -45,18 +45,18 @@ providers identically.
 
 ## 3. Per-provider dialects (verified facts — do not re-derive)
 
-### Qwen (`qwen --acp`, npm `@qwen-code/qwen-code` **0.22.3**)
+### Qwen (`qwen --acp`, npm `@qwen-code/qwen-code` **0.24.0**)
 - Caps: loadSession, session list/resume, image **and audio** prompts, MCP
   http/sse. Slash via `available_commands_update`. **`session/close` is not
   advertised and answers -32601.** ADE ends the process (one process per
   session). Default `qwen --help` hides `--acp`, `--approval-mode`,
   `--session-id`, `--yolo`, and `--append-system-prompt`; they exist (error-path
   help lists them).
-- Auth: `qwen auth` is **removed**. Advertised ACP method is `openai`
-  (`OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, `--auth-type=openai`, or a
-  custom provider already saved in `~/.qwen/settings.json`). ADE does **not**
-  write that file — it reuses the Qwen CLI the user already configured, including
-  a local OpenAI-compatible proxy. Unauthenticated `session/new` is
+- Auth: `qwen auth` is **removed**. Advertised ACP methods are `openai` and
+  `openai-responses` (both use `OPENAI_API_KEY`; `OPENAI_BASE_URL` and a custom
+  provider in `~/.qwen/settings.json` remain supported). ADE does **not** write
+  that file — it reuses the Qwen CLI the user already configured, including a
+  local OpenAI-compatible proxy. Unauthenticated `session/new` is
   `-32000 Authentication required: Use Qwen Code CLI to authenticate first.`
   `authenticate` with `openai` and no key is `-32603 Internal error` whose
   `data.details` say "Missing API key" even when the key already lives in
@@ -66,7 +66,9 @@ providers identically.
 - Config home: `QWEN_HOME` names the config dir (CODEX_HOME shape). Runtime
   state axis: `QWEN_RUNTIME_DIR`. Live probe: `QWEN_HOME` relocates
   `installation_id`, extensions, `output-language.md`.
-- Session config via `session/set_config_option` (mode/model/thinking).
+- Session config via `session/set_config_option` (mode/model/reasoning_effort).
+  Qwen 0.24.0 also advertises `openai-responses` alongside `openai`; both
+  use `OPENAI_API_KEY`, and ADE keeps `openai` as its non-interactive probe.
   Approval modes: plan|default|auto-edit|auto|yolo.
 - Tracked CLI: `qwen -i "<prompt>" -m <model> --approval-mode=<m> --session-id
   <uuid>`; resume `--resume <id>` / `--continue`; NEVER pass `--yolo` together

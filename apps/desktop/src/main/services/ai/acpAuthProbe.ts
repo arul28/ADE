@@ -243,8 +243,8 @@ export async function probeAcpProviderAuth(
       const advertised = response.authMethods ?? [];
       const methodId = dialect.authProbe.methodId ?? advertised[0]?.id ?? null;
 
-      // `session/new` is the real gate. Qwen 0.22.3 advertises `openai` and
-      // answers `authenticate` with "Missing API key" even when the key
+      // `session/new` is the real gate. Qwen 0.24.0 advertises `openai` and
+      // `openai-responses`, and answers `authenticate` with "Missing API key" even when the key
       // already lives in settings.json — that RPC is how you *submit* a key,
       // not how you prove one is present. A successful session/new is enough.
       try {

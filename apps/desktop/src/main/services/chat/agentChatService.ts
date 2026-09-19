@@ -27070,6 +27070,7 @@ export function createAgentChatService(args: {
       invocationKey,
       permissionMode,
       modelToken,
+      reasoningEffort: managed.session.reasoningEffort ?? null,
       existingSessionId,
       supervisionPreflight,
       supervisionAlreadyNotified: managed.acpSupervisionNoticeShown === true,
