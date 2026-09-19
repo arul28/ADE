@@ -265,6 +265,7 @@ import {
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
+import { isRemoteOrDataUri } from "../../../shared/chatImageUrls";
 import {
   resolveCliSpawnInvocation,
   terminateProcessTree,
@@ -32020,8 +32021,7 @@ export function createAgentChatService(args: {
       const localPathField = stringOrNull(item.path ?? item.savedPath ?? item.saved_path);
       const looksLikeLocalPath = (value: string | null): boolean => {
         if (!value) return false;
-        if (/^https?:\/\//i.test(value)) return false;
-        if (/^data:/i.test(value)) return false;
+        if (isRemoteOrDataUri(value)) return false;
         return value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("~");
       };
       const savedPath = looksLikeLocalPath(localPathField)
