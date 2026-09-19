@@ -89,7 +89,45 @@ struct WorkToolCardView: View, Equatable {
   let onOpenPr: (Int) -> Void
 
   @Environment(\.openURL) private var openURL
+  @EnvironmentObject private var syncService: SyncService
   @State private var resultExpanded = false
+  /// The full result, once fetched for a row the slim mobile wire truncated.
+  /// Seeded from the service cache on appear so a recycled row does not lose
+  /// what the user already opened.
+  @State private var fetchedFullResult: String?
+  @State private var fetchingFullResult = false
+  @State private var fullResultError: String?
+
+  /// The result this card should render: the fetched full text when there is
+  /// one, otherwise whatever arrived on the wire.
+  private var effectiveResultText: String? {
+    fetchedFullResult ?? toolCard.resultText
+  }
+
+  /// True while the card is showing a head slice and the rest is one tap away.
+  private var hasUnfetchedRemoteResult: Bool {
+    fetchedFullResult == nil && toolCard.remoteResultBytes != nil && toolCard.sessionId != nil
+  }
+
+  private func loadFullResult() {
+    guard let sessionId = toolCard.sessionId, !fetchingFullResult else { return }
+    fetchingFullResult = true
+    fullResultError = nil
+    Task { @MainActor in
+      defer { fetchingFullResult = false }
+      do {
+        fetchedFullResult = try await syncService.fullToolResult(
+          sessionId: sessionId,
+          itemId: toolCard.id
+        )
+        resultExpanded = true
+      } catch {
+        // The slice stays on screen; only the affordance changes. Losing the
+        // preview to an error message would hide what the user already had.
+        fullResultError = (error as NSError).localizedDescription
+      }
+    }
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -170,7 +208,7 @@ struct WorkToolCardView: View, Equatable {
           if let argsText = toolCard.argsText, !argsText.isEmpty {
             WorkStructuredOutputBlock(title: "Arguments", text: argsText)
           }
-          if let resultText = toolCard.resultText, !resultText.isEmpty {
+          if let resultText = effectiveResultText, !resultText.isEmpty {
             let result = workToolResultBlockText(resultText, expanded: resultExpanded)
             // The block displays a slice; Copy and the viewer get the whole
             // result.
@@ -223,6 +261,12 @@ struct WorkToolCardView: View, Equatable {
     displayedText: String,
     didTruncate: Bool
   ) -> some View {
+    if hasUnfetchedRemoteResult {
+      // This machine sent one screen of the result and kept the rest. The row
+      // says how much more there is, fetches it on tap, and shows the fetch
+      // running rather than freezing on the slice.
+      remoteResultAffordance
+    } else {
     let affordance = workTruncatedOutputAffordance(
       isTruncated: didTruncate,
       hasExpandedInPlace: resultExpanded,
@@ -273,6 +317,48 @@ struct WorkToolCardView: View, Equatable {
       }
 
       Spacer(minLength: 0)
+    }
+    }
+  }
+
+  /// "Show all (N)" for a result whose bytes live on the machine, not here.
+  @ViewBuilder
+  private var remoteResultAffordance: some View {
+    HStack(spacing: 12) {
+      if fetchingFullResult {
+        HStack(spacing: 8) {
+          ProgressView()
+            .controlSize(.small)
+          Text("Loading full result…")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        .frame(minHeight: 44)
+        .accessibilityLabel("Loading full tool result")
+      } else {
+        Button(action: loadFullResult) {
+          Text("Show all (\(workToolResultRemoteByteLabel(toolCard.remoteResultBytes ?? 0)))")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show full tool result")
+      }
+
+      if let fullResultError {
+        Text(fullResultError)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(2)
+      }
+
+      Spacer(minLength: 0)
+    }
+    .onAppear {
+      guard fetchedFullResult == nil, let sessionId = toolCard.sessionId else { return }
+      fetchedFullResult = syncService.cachedFullToolResult(sessionId: sessionId, itemId: toolCard.id)
     }
   }
 
@@ -877,6 +963,14 @@ func workToolResultBlockText(
 
 /// Short "N chars" label used in the "Show all" affordance. Uses the raw
 /// character count — this is display copy, not a byte-precise measurement.
+/// Size label for a result this device has not downloaded, so it is measured
+/// in the host's bytes rather than in characters this device does not have.
+func workToolResultRemoteByteLabel(_ bytes: Int) -> String {
+  if bytes < 1_024 { return "\(bytes) bytes" }
+  if bytes < 1_024 * 1_024 { return String(format: "%.1f KB", Double(bytes) / 1_024.0) }
+  return String(format: "%.1f MB", Double(bytes) / (1_024.0 * 1_024.0))
+}
+
 func workToolResultByteLabel(_ text: String) -> String {
   let count = text.count
   if count < 1000 { return "\(count) chars" }
@@ -2825,7 +2919,6 @@ struct WorkChatInfoDetailsSheet: View {
   let nextWakeAt: String?
   let provider: String?
   let selectedTaskId: String?
-  let probingTaskId: String?
   let sessionModel: String?
   @Binding var expandedTaskIds: Set<String>
   let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
@@ -2854,7 +2947,6 @@ struct WorkChatInfoDetailsSheet: View {
     nextWakeAt: String?,
     provider: String?,
     selectedTaskId: String?,
-    probingTaskId: String?,
     expandedTaskIds: Binding<Set<String>>,
     sessionModel: String? = nil,
     onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void,
@@ -2869,7 +2961,6 @@ struct WorkChatInfoDetailsSheet: View {
     self.nextWakeAt = nextWakeAt
     self.provider = provider
     self.selectedTaskId = selectedTaskId
-    self.probingTaskId = probingTaskId
     self.sessionModel = sessionModel
     self._expandedTaskIds = expandedTaskIds
     self.onSelect = onSelect
@@ -3190,7 +3281,6 @@ struct WorkChatInfoDetailsSheet: View {
     WorkChatInfoSubagentRow(
       snapshot: snapshot,
       selected: selectedTaskId == snapshot.taskId,
-      probing: probingTaskId == snapshot.taskId,
       expanded: expandedTaskIds.contains(snapshot.taskId),
       sessionModel: sessionModel,
       treePrefix: workSubagentTreePrefix(snapshot, in: subagents),
@@ -3365,7 +3455,6 @@ private struct WorkSquareStopButton: View {
 private struct WorkChatInfoSubagentRow: View {
   let snapshot: WorkSubagentSnapshot
   let selected: Bool
-  let probing: Bool
   let expanded: Bool
   let sessionModel: String?
   var treePrefix: String = ""
@@ -3417,9 +3506,6 @@ private struct WorkChatInfoSubagentRow: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: 8) {
-              if probing {
-                ProgressView().controlSize(.small)
-              }
               WorkSubagentStatusChip(status: snapshot.status)
               if showsDisclosure {
                 Image(systemName: selected ? "arrow.uturn.left" : "chevron.right")

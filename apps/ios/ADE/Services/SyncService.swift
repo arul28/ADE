@@ -3581,6 +3581,7 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
     "chat_subscribe",
     "chat_unsubscribe",
     "chat_history",
+    "chat_tool_result",
   ]
   guard projectScopedTypes.contains(type) else { return nil }
   return syncNormalizedCommandScopeValue(activeProjectId)
@@ -13802,6 +13803,98 @@ final class SyncService: ObservableObject {
     return page
   }
 
+  /// Full tool results already fetched on this device, keyed
+  /// `sessionId|itemId`.
+  ///
+  /// A tool result is immutable once written, so a hit is always correct and
+  /// re-expanding a row never pays for the round trip twice. Lives here rather
+  /// than in the row so it survives the LazyVStack recycling the row, and so
+  /// the inline card and the turn-activity sheet share one copy. Bounded: a
+  /// long thread must not accumulate every result the user ever opened.
+  private var chatToolResultCache: [String: String] = [:]
+  private var chatToolResultCacheOrder: [String] = []
+  private var chatToolResultInFlight: [String: Task<String, Error>] = [:]
+  private static let chatToolResultCacheLimit = 32
+
+  private func chatToolResultCacheKey(sessionId: String, itemId: String) -> String {
+    "\(sessionId)|\(itemId)"
+  }
+
+  /// The cached full result, if this row has already been expanded once.
+  func cachedFullToolResult(sessionId: String, itemId: String) -> String? {
+    chatToolResultCache[chatToolResultCacheKey(sessionId: sessionId, itemId: itemId)]
+  }
+
+  /// Fetch (or return the cached) full text of one truncated tool result.
+  ///
+  /// Concurrent expands of the same row share one request: a double tap, or an
+  /// inline card and the turn-activity sheet showing the same result, must not
+  /// become two reads of the same transcript.
+  func fullToolResult(sessionId: String, itemId: String) async throws -> String {
+    let key = chatToolResultCacheKey(sessionId: sessionId, itemId: itemId)
+    if let cached = chatToolResultCache[key] { return cached }
+    if let inFlight = chatToolResultInFlight[key] { return try await inFlight.value }
+    let task = Task<String, Error> { [weak self] in
+      guard let self else { throw CancellationError() }
+      let response = try await self.fetchChatToolResult(sessionId: sessionId, itemId: itemId)
+      if response.unavailable == true {
+        throw NSError(
+          domain: "ADE",
+          code: 22,
+          userInfo: [NSLocalizedDescriptionKey: "Could not load the full result from this machine."]
+        )
+      }
+      guard response.found, let result = response.result else {
+        throw NSError(
+          domain: "ADE",
+          code: 23,
+          userInfo: [NSLocalizedDescriptionKey: "This result is no longer in the transcript."]
+        )
+      }
+      return prettyPrintedRemoteJSONValue(result)
+    }
+    chatToolResultInFlight[key] = task
+    defer { chatToolResultInFlight[key] = nil }
+    let text = try await task.value
+    chatToolResultCache[key] = text
+    chatToolResultCacheOrder.append(key)
+    while chatToolResultCacheOrder.count > Self.chatToolResultCacheLimit {
+      let evicted = chatToolResultCacheOrder.removeFirst()
+      chatToolResultCache[evicted] = nil
+    }
+    return text
+  }
+
+  /// Fetch one tool result in full, for a row the slim mobile wire delivered
+  /// as a head slice.
+  ///
+  /// Requires an open subscription, exactly like `chat_history`: the host
+  /// scopes the read to the transcript this device is attached to. There is no
+  /// ADE-RPC fallback on purpose — only a host that honoured
+  /// `mobileChatSlimV1` truncates a result in the first place, and that host
+  /// serves `chat_tool_result` by construction.
+  func fetchChatToolResult(
+    sessionId: String,
+    itemId: String
+  ) async throws -> AgentChatToolResultResponse {
+    let requestId = makeRequestId()
+    var payload = chatSubscriptionPayload(
+      sessionId: sessionId,
+      maxBytes: nil,
+      includeSinceSeq: false
+    )
+    payload["itemId"] = itemId
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      disconnectOnTimeout: false,
+      timeoutMessage: "Timed out loading the full tool result.",
+      timeoutNanoseconds: 8_000_000_000
+    ) {
+      self.sendEnvelope(type: "chat_tool_result", requestId: requestId, payload: payload)
+    }
+    return try decode(raw, as: AgentChatToolResultResponse.self)
+  }
+
   func fetchChatEventHistoryPage(
     sessionId: String,
     beforeOffset: Int,
@@ -13897,16 +13990,6 @@ final class SyncService: ObservableObject {
     var totalEntries: Int
     var nextCursor: Int?
     var cursorKind: String?
-  }
-
-  struct AgentChatSubagentTranscriptMessage: Codable, Equatable {
-    var type: String
-    var uuid: String?
-    var sessionId: String
-    var parentToolUseId: String?
-    var message: RemoteJSONValue?
-    var text: String?
-    var subagentMetadata: RemoteJSONValue?
   }
 
   struct AgentChatSubagentSnapshot: Codable, Equatable {
@@ -14011,46 +14094,6 @@ final class SyncService: ObservableObject {
       nextCursor: nextCursor,
       cursorKind: responseDictionary?["cursorKind"] as? String
     )
-  }
-
-  func fetchSubagentTranscript(
-    sessionId: String,
-    agentId: String,
-    taskId: String? = nil,
-    laneId: String? = nil,
-    limit: Int? = nil,
-    offset: Int? = nil
-  ) async throws -> [AgentChatSubagentTranscriptMessage]? {
-    var args: [String: Any] = [
-      "sessionId": sessionId,
-      "agentId": agentId,
-    ]
-    if let taskId, !taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      args["taskId"] = taskId
-    }
-    if let laneId, !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      args["laneId"] = laneId
-    }
-    if let limit {
-      args["limit"] = limit
-    }
-    if let offset {
-      args["offset"] = offset
-    }
-    let scope = chatCommandScope(for: sessionId)
-    let response = try await sendCommand(
-      action: chatActionName("chat.getSubagentTranscript", sessionId: sessionId),
-      args: args,
-      targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath
-    )
-    if response is NSNull {
-      return nil
-    }
-    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
-      throw QueuedRemoteCommandError(action: "chat.getSubagentTranscript")
-    }
-    return try decode(response, as: [AgentChatSubagentTranscriptMessage].self)
   }
 
   func fetchSubagents(sessionId: String) async throws -> [AgentChatSubagentSnapshot] {
@@ -17569,7 +17612,19 @@ final class SyncService: ObservableObject {
       "deviceType": "phone",
       "siteId": database.localSiteId(),
       "dbVersion": latestRemoteDbVersion,
-      "capabilities": ["changesetAck", "chunkedEnvelopes", "relayReauthorizeV1", "binaryEnvelopes", "foldedReplay"],
+      // `mobileChatSlimV1`: the host may fold subagent progress to the latest
+      // per agent, drop the mirrored `subagent.progress` twin, and send tool
+      // results as a bounded slice this app fetches in full on expand (see
+      // `fetchChatToolResult`). Older hosts ignore the capability and keep
+      // sending the full wire, which this app still renders unchanged.
+      "capabilities": [
+        "changesetAck",
+        "chunkedEnvelopes",
+        "relayReauthorizeV1",
+        "binaryEnvelopes",
+        "foldedReplay",
+        "mobileChatSlimV1",
+      ],
     ]
     if let appVersion = (info["CFBundleShortVersionString"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -19420,7 +19475,8 @@ final class SyncService: ObservableObject {
         let message = dict["message"] as? String ?? "Remote command rejected."
         resolve(requestId: requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
-    case "command_result", "file_response", "terminal_snapshot", "terminal_history", "chat_history":
+    case "command_result", "file_response", "terminal_snapshot", "terminal_history", "chat_history",
+         "chat_tool_result":
       resolve(requestId: requestId, result: .success(payload))
     case "chat_subscribe":
       if supportsChatStreaming,

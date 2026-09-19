@@ -17476,48 +17476,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workSubagentRunningCount(snapshots), 0)
   }
 
-  func testWorkSubagentCapabilityMatchesDesktopTakeoverRules() {
-    XCTAssertTrue(workResolveSubagentCapability(provider: "codex").canViewFullTranscript)
-    XCTAssertTrue(workResolveSubagentCapability(provider: "claude").canViewFullTranscript)
-    XCTAssertTrue(workResolveSubagentCapability(provider: "opencode").canViewFullTranscript)
-    XCTAssertFalse(workResolveSubagentCapability(provider: "cursor").canViewFullTranscript)
-    XCTAssertFalse(workResolveSubagentCapability(provider: "droid").canViewFullTranscript)
-  }
-
-  func testWorkSubagentTranscriptMessagesConvertToChatEnvelopes() {
-    let messages = [
-      SyncService.AgentChatSubagentTranscriptMessage(
-        type: "user",
-        uuid: "u-1",
-        sessionId: "child-1",
-        parentToolUseId: nil,
-        message: nil,
-        text: "Inspect this",
-        subagentMetadata: nil
-      ),
-      SyncService.AgentChatSubagentTranscriptMessage(
-        type: "assistant",
-        uuid: "a-1",
-        sessionId: "child-1",
-        parentToolUseId: nil,
-        message: nil,
-        text: "Done",
-        subagentMetadata: nil
-      ),
-    ]
-
-    let envelopes = workSubagentTranscriptToEnvelopes(messages: messages, sessionId: "parent-1")
-
-    XCTAssertEqual(envelopes.count, 2)
-    guard case .userMessage(let userText, _, _, _, _, _) = envelopes[0].event else {
-      return XCTFail("Expected first subagent transcript row to be a user message.")
+  /// Listing is the whole capability now: the in-thread subagent transcript
+  /// drill-in was removed, so no provider opens one on a phone.
+  func testWorkSubagentCapabilityListsForEverySupportedProvider() {
+    for provider in ["codex", "claude", "opencode", "cursor", "droid", "factory"] {
+      XCTAssertTrue(workResolveSubagentCapability(provider: provider).canList, provider)
     }
-    XCTAssertEqual(userText, "Inspect this")
-    guard case .assistantText(let assistantText, _, let itemId) = envelopes[1].event else {
-      return XCTFail("Expected second subagent transcript row to be assistant text.")
-    }
-    XCTAssertEqual(assistantText, "Done")
-    XCTAssertEqual(itemId, "a-1")
+    XCTAssertFalse(workResolveSubagentCapability(provider: "unknown-provider").canList)
+    XCTAssertFalse(workResolveSubagentCapability(provider: nil).canList)
   }
 
   func testWorkChatTranscriptUsesMessageIdToSplitAssistantMessages() {

@@ -1714,6 +1714,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   transcript pump cannot re-send a collapsed delta. The replay-buffer resume
   path is deliberately not folded: its per-event `seq` monotonicity drives the
   client's `seq <= lastSeq` drop rule),
+  the slim mobile chat wire (`mobileChatSlimV1`, see
+  [iOS Companion → Slim mobile chat wire](ios-companion.md#slim-mobile-chat-wire)),
   the mobile changeset diet
   (`MOBILE_CHANGESET_EXCLUDED_TABLES`: tables the phone
   never reads from a changeset — `attempt_transcripts`, `operations`,
@@ -3307,6 +3309,7 @@ Envelopes are JSON with fields:
         "terminal_snapshot" | "terminal_data" | "terminal_exit" |
         "terminal_input" | "terminal_resize" | "terminal_history" |
         "chat_subscribe" | "chat_unsubscribe" | "chat_event" |
+        "chat_history" | "chat_tool_result" |
         "roster_subscribe" | "roster_unsubscribe" |
         "roster_snapshot" | "roster_delta" |
         "brain_status" |

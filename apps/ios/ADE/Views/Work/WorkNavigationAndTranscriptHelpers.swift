@@ -892,7 +892,12 @@ func buildWorkToolCards(
         startedAt: existing?.startedAt ?? envelope.timestamp,
         completedAt: envelope.timestamp,
         argsText: existing?.argsText,
-        resultText: nonEmpty(resultText)
+        resultText: nonEmpty(resultText),
+        // Only set when the host sent a slice. The card keeps it so the Result
+        // block can offer the fetch instead of pretending the slice is all
+        // there was.
+        remoteResultBytes: envelope.toolResultFullBytes,
+        sessionId: envelope.sessionId
       )
     case .webSearch(let query, let action, let actions, let results, let status, let itemId, _):
       // Web searches are tool calls — render them as tool cards so they're

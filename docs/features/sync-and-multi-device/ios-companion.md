@@ -176,6 +176,82 @@ listings and network failures stay silent. Settings diagnostics shows the
 current version, the latest available version when known, and a manual check
 action.
 
+## Slim mobile chat wire
+
+A phone used to download the same chat bytes a desktop does. On a real 16.1 MB
+/ 21,665-event thread from a four-lane program, three families own most of it:
+`tool_result` 23.1%, `subagent_progress` 19.8% (7,775 events), and
+`subagent.progress` a further 15.2% — a second copy of the same 7,775 facts.
+
+The phone announces `mobileChatSlimV1` in its hello capabilities. A host that
+sees it applies three rules, in `apps/desktop/src/shared/chatMobileSlim.ts`.
+Every other client — desktop, hosted web, the TUI, the CLI — receives exactly
+the wire it received before, and nothing here changes what is written to the
+transcript or what an agent does.
+
+**The `subagent.progress` mirror is dropped.** The host commits a dot-family
+twin beside every underscore subagent lifecycle event
+(`buildCanonicalAgentChatRuntimeEvent`), so both cross the wire; in the
+measured thread the pair is written 1 ms apart with identical ids, and iOS
+decodes both into the same `.subagentProgress` case. The twin is dropped only
+where it *is* a twin — the underscore original for that agent was the previous
+progress event delivered. A transcript that carries dot-family progress with no
+underscore original (an older build) keeps every event, so no subagent loses
+its card.
+
+**Progress is state, not history.** A `subagent_progress` event is a snapshot
+of one agent's summary, tokens and last tool, and iOS never makes a timeline row
+from one — it "enriches the folded snapshot" and nothing else. So the
+`chat_subscribe` snapshot keeps only the latest progress per agent, and the
+live stream sends at most one per agent per second (last write wins, dropped
+when a result supersedes it). `subagent_started` and `subagent_result` are
+never folded: they are what the card's existence and outcome are made of. A
+progress event whose window closes after a newer event already went out is sent
+without a `seq`, because the client drops `seq <= lastSeq` — the event is card
+state, not a new point in the ordered stream, and the resume watermark stays on
+the newer event.
+
+**Tool results are fetched, not pushed.** The shared wire cap is 16 KB; a
+capable phone gets 2 KB — about one screen — plus the true size and
+`resultTruncatedForMobile`. Expanding the row sends `chat_tool_result`
+(`sessionId` + `itemId`, scoped exactly like `chat_history`: the peer must
+already be subscribed and the chat scope must match), which reads the stored
+result back out of the transcript. The row shows a spinner while it loads and
+`SyncService` caches the result per item, so re-expanding it — or opening it
+again from the turn-activity sheet — costs nothing. "Could not read it" and
+"it is no longer in the transcript" are different answers and the row says
+which.
+
+### Before and after, on the measured thread
+
+| | legacy phone | `mobileChatSlimV1` |
+|---|---|---|
+| `chat_subscribe` snapshot, events | 498 | 91 (81.7% fewer) |
+| `chat_subscribe` snapshot, bytes | 237.4 KiB | 86.2 KiB (63.7% smaller) |
+| whole live stream, events | 21,937 | 14,046 (36.0% fewer) |
+| whole live stream, bytes | 14,367.5 KiB | 10,859.0 KiB (24.4% smaller) |
+
+The snapshot is what the phone pays every time it opens a thread, which is why
+it is the number that matters most. In the live stream the mirror is the
+biggest single saving (2,489.8 KiB → 0) and tool results the next
+(2,036.7 → 1,070.8 KiB); the one-per-second coalescing removes only 116 events
+on this thread, because a single subagent already reports more slowly than once
+a second — it bounds a burst rather than thinning a steady stream.
+
+## In-thread subagents have a card, not a transcript
+
+Tapping a subagent that runs INSIDE a main thread — a Claude or Codex native
+Task — expands its card and nothing more. The card carries the label, model,
+status, latest summary and final result, which is everything a phone can act
+on. Opening the transcript replaced the thread the user was reading with a
+read-only copy they had to back out of, and kept a one-and-a-half-second
+transcript poll running for as long as it was open, for content that is the
+parent's own work seen one level down.
+
+This is only about in-thread subagents. A `--type subagent` chat and a child
+lane are full chats with their own rows, their own composer and their own lane,
+and they open exactly as they always have.
+
 ## Project layout
 
 > The same Xcode project also ships `apps/ios/ADE/Debug/ADEInspectorKit/`,

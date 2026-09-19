@@ -80,6 +80,14 @@ struct WorkToolCardModel: Identifiable, Equatable {
   let resultText: String?
   let webSearchActions: [CodexWebSearchAction]?
   let webSearchResults: [CodexWebSearchResult]?
+  /// Size of the stored result when `resultText` is only the head slice the
+  /// slim mobile wire delivered. nil means the card already has everything,
+  /// which is the case for every host and every client that does not use that
+  /// wire.
+  let remoteResultBytes: Int?
+  /// Session this card came from. Needed only to fetch a truncated result, so
+  /// it is optional: a card built without one simply cannot offer the fetch.
+  let sessionId: String?
 
   init(
     id: String,
@@ -90,7 +98,9 @@ struct WorkToolCardModel: Identifiable, Equatable {
     argsText: String?,
     resultText: String?,
     webSearchActions: [CodexWebSearchAction]? = nil,
-    webSearchResults: [CodexWebSearchResult]? = nil
+    webSearchResults: [CodexWebSearchResult]? = nil,
+    remoteResultBytes: Int? = nil,
+    sessionId: String? = nil
   ) {
     self.id = id
     self.toolName = toolName
@@ -101,6 +111,8 @@ struct WorkToolCardModel: Identifiable, Equatable {
     self.resultText = resultText
     self.webSearchActions = webSearchActions
     self.webSearchResults = webSearchResults
+    self.remoteResultBytes = remoteResultBytes
+    self.sessionId = sessionId
   }
 }
 
@@ -1677,6 +1689,10 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// without changing the broad WorkChatEvent associated-value surface.
   let stopSource: String?
   let stopReason: String?
+  /// Size of the stored tool result when this row carries only the head slice
+  /// the slim mobile wire sent, nil when the result is complete. Drives the
+  /// Result block's on-demand fetch.
+  let toolResultFullBytes: Int?
 
   init(
     sessionId: String,
@@ -1692,7 +1708,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
-    stopReason: String? = nil
+    stopReason: String? = nil,
+    toolResultFullBytes: Int? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1708,6 +1725,7 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
     self.stopSource = stopSource
     self.stopReason = stopReason
+    self.toolResultFullBytes = toolResultFullBytes
   }
 }
 

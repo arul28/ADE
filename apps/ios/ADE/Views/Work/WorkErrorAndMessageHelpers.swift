@@ -875,7 +875,8 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       apiErrorStatus: entry.apiErrorStatus,
       isLegacySubagentCompletedFrame: entry.isLegacySubagentCompletedFrame,
       stopSource: entry.stopSource,
-      stopReason: entry.stopReason
+      stopReason: entry.stopReason,
+      toolResultFullBytes: entry.toolResultFullBytes
     )
   }
   .sorted(by: workChatEnvelopeOrderedBefore)

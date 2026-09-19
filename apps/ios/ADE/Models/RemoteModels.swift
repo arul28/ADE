@@ -2590,6 +2590,15 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// AgentChatEvent also exposes the two optional values for direct callers.
   var stopSource: String?
   var stopReason: String?
+  /// Size of the stored tool result when the host sent only a head slice of
+  /// it (`resultTruncatedForMobile` on the wire), nil when the row carries the
+  /// whole thing.
+  ///
+  /// Kept beside the event for the same reason as the fields above: the Result
+  /// block needs "there is more, and it is this big" to label its fetch, and
+  /// `AgentChatEvent.toolResult` already carries seven associated values that
+  /// every construction site in the app and the tests would have to restate.
+  var toolResultFullBytes: Int?
 
   init(
     sessionId: String,
@@ -2606,7 +2615,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
-    stopReason: String? = nil
+    stopReason: String? = nil,
+    toolResultFullBytes: Int? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -2623,6 +2633,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
     self.stopSource = stopSource
     self.stopReason = stopReason
+    self.toolResultFullBytes = toolResultFullBytes
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -2642,6 +2653,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var apiErrorStatus: Int?
     var stopSource: String?
     var stopReason: String?
+    var resultTruncatedForMobile: Bool?
+    var resultOriginalBytes: Int?
 
     private enum CodingKeys: String, CodingKey {
       case type
@@ -2649,6 +2662,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case apiErrorStatusSnake = "api_error_status"
       case stopSource
       case stopReason
+      case resultTruncatedForMobile
+      case resultOriginalBytes
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -2665,6 +2680,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
         ?? nil
       stopSource = (try? container.decodeIfPresent(String.self, forKey: .stopSource)) ?? nil
       stopReason = (try? container.decodeIfPresent(String.self, forKey: .stopReason)) ?? nil
+      resultTruncatedForMobile = (try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)) ?? nil
+      resultOriginalBytes = (try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)) ?? nil
     }
   }
 
@@ -2721,6 +2738,12 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
     stopSource = rawEvent?.stopSource
     stopReason = rawEvent?.stopReason
+    // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
+    // not sends the whole result and no flag, and the row behaves exactly as
+    // it does today.
+    toolResultFullBytes = rawEvent?.resultTruncatedForMobile == true
+      ? (rawEvent?.resultOriginalBytes).map { max(0, $0) }
+      : nil
   }
 }
 
@@ -2780,6 +2803,24 @@ struct AgentChatEventHistoryPage: Decodable, Equatable {
   var hasMore: Bool
   var sessionFound: Bool
   var unavailable: Bool?
+}
+
+/// One tool result fetched on demand, after the slim mobile wire delivered
+/// only its head slice.
+///
+/// `found == false` is final ("that result is no longer in the transcript");
+/// `unavailable == true` is retryable ("this host could not read it"). The row
+/// says different things for the two, so they stay different fields.
+struct AgentChatToolResultResponse: Decodable, Equatable {
+  var sessionId: String
+  var itemId: String
+  var result: RemoteJSONValue?
+  var resultOriginalBytes: Int?
+  var resultOmittedBytes: Int?
+  var status: String?
+  var tool: String?
+  var unavailable: Bool?
+  var found: Bool
 }
 
 struct AgentChatFileRef: Codable, Equatable, Hashable {
