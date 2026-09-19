@@ -140,6 +140,19 @@ export const SYNC_BINARY_ENVELOPES_CAPABILITY = "binaryEnvelopes";
  * Clients that do not declare it receive every individual delta, unchanged.
  */
 export const SYNC_FOLDED_REPLAY_CAPABILITY = "foldedReplay";
+/**
+ * Hello capability a phone declares when it accepts the slim mobile chat wire:
+ * subagent progress folded per agent (snapshot) and coalesced per agent per
+ * second (live), and tool results delivered as a bounded head slice that the
+ * client fetches in full through `chat_tool_result` when the user expands the
+ * row. See `shared/chatMobileSlim.ts` for each rule and why it keeps every
+ * user-visible outcome.
+ *
+ * Desktop, hosted web and the TUI never declare it: they render the full work
+ * timeline and keep every event. A client that does not declare it receives
+ * exactly the wire it receives today.
+ */
+export const SYNC_MOBILE_CHAT_SLIM_CAPABILITY = "mobileChatSlimV1";
 
 export type SyncPayloadEncoding = "json" | "base64";
 
@@ -1657,6 +1670,35 @@ export type SyncChatHistoryRequestPayload = SyncChatUnsubscribePayload & {
 export type SyncChatHistoryResponsePayload = AgentChatEventHistoryPage;
 
 /**
+ * On-demand fetch of one tool result the phone received as a bounded slice.
+ *
+ * Scoped exactly like `chat_history`: the peer must already be subscribed to
+ * the session, and the request carries the same chat-scope fields so a
+ * personal or cross-project quick-look reads from its own transcript and never
+ * from the active project's.
+ */
+export type SyncChatToolResultRequestPayload = SyncChatUnsubscribePayload & {
+  /** `logicalItemId ?? itemId` of the tool_result row the user expanded. */
+  itemId: string;
+};
+
+export type SyncChatToolResultResponsePayload = {
+  sessionId: string;
+  itemId: string;
+  /** Absent when the event could not be found or read. */
+  result?: unknown;
+  /** Size of the stored result, for the row's footer. */
+  resultOriginalBytes?: number;
+  resultOmittedBytes?: number;
+  status?: "running" | "completed" | "failed" | "interrupted";
+  tool?: string;
+  /** True when this host could not answer at all (no service, read failure). */
+  unavailable?: boolean;
+  /** True when the session/item pair resolved to a stored tool result. */
+  found: boolean;
+};
+
+/**
  * Live chat event envelope. `seq` is a host-assigned, per-session,
  * monotonically increasing counter used for resumable streams: clients track
  * the highest seq applied and pass it back as `sinceSeq` on re-subscribe.
@@ -2281,6 +2323,11 @@ export type SyncTerminalHistoryEnvelope = SyncEnvelopeWithPayload<"terminal_hist
 export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload | SyncChatSubscribeSnapshotPayload>;
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
+export type SyncChatToolResultEnvelope = SyncEnvelopeWithPayload<
+  "chat_tool_result",
+  SyncChatToolResultRequestPayload | SyncChatToolResultResponsePayload
+>;
+
 export type SyncChatHistoryEnvelope = SyncEnvelopeWithPayload<
   "chat_history",
   SyncChatHistoryRequestPayload | SyncChatHistoryResponsePayload
@@ -2359,6 +2406,7 @@ export type SyncEnvelope =
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope
   | SyncChatHistoryEnvelope
+  | SyncChatToolResultEnvelope
   | SyncBrainStatusEnvelope
   | SyncPrsUpdatedEnvelope
   | SyncRosterSubscribeEnvelope

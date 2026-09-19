@@ -49,6 +49,7 @@ import {
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
   compactChatEventEnvelopeForSync,
+  compactChatEventEnvelopeForMobileSync,
   createChatEventReplayBuffer,
   createSyncHostService,
   createTerminalInputDedupeLedger,
@@ -11587,6 +11588,39 @@ describe("chat_subscribe snapshots", () => {
   });
 });
 
+
+describe("mobile chat wire (mobileChatSlimV1)", () => {
+  const toolResultEnvelope = (result: unknown) => ({
+    sessionId: "session-slim",
+    timestamp: "2026-09-19T12:00:00.000Z",
+    sequence: 1,
+    event: {
+      type: "tool_result" as const,
+      tool: "Bash",
+      result,
+      itemId: "item-1",
+      status: "completed" as const,
+    },
+  });
+
+  it("caps a tool result far below the shared 16 KB wire cap and flags the fetch", () => {
+    const envelope = toolResultEnvelope("x".repeat(60_000));
+    const shared = compactChatEventEnvelopeForSync(envelope) as typeof envelope;
+    const mobile = compactChatEventEnvelopeForMobileSync(envelope) as typeof envelope;
+    const sharedBytes = Buffer.byteLength(JSON.stringify(shared.event.result), "utf8");
+    const mobileBytes = Buffer.byteLength(JSON.stringify(mobile.event.result), "utf8");
+    expect(sharedBytes).toBeGreaterThan(8_000);
+    expect(mobileBytes).toBeLessThan(3_000);
+    expect((mobile.event as { resultTruncatedForMobile?: boolean }).resultTruncatedForMobile).toBe(true);
+    // The shared wire — desktop, hosted web, the TUI — is untouched.
+    expect((shared.event as { resultTruncatedForMobile?: boolean }).resultTruncatedForMobile).toBeUndefined();
+  });
+
+  it("leaves a small tool result identical on both wires", () => {
+    const envelope = toolResultEnvelope("exit 0");
+    expect(compactChatEventEnvelopeForMobileSync(envelope)).toEqual(compactChatEventEnvelopeForSync(envelope));
+  });
+});
 
 describe("chat event replay buffer (resumable chat streams)", () => {
   const sessionId = "session-replay";

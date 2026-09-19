@@ -978,6 +978,14 @@ export type AgentChatEvent =
       mcp?: AgentChatMcpToolSource;
       resultOriginalBytes?: number;
       resultOmittedBytes?: number;
+      /**
+       * Set only on the mobile wire, by `compactChatEventForMobileWire`, when
+       * `result` is a head slice rather than the whole thing. It is the row's
+       * cue to offer "Show full result" and fetch it through
+       * `chat_tool_result`. Never stored, and never sent to a client that did
+       * not announce `mobileChatSlimV1`.
+       */
+      resultTruncatedForMobile?: boolean;
       itemId: string;
       logicalItemId?: string;
       parentItemId?: string;
