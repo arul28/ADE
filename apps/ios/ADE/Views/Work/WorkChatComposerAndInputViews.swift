@@ -594,6 +594,9 @@ struct WorkQueuedSteerStrip: View {
   @Binding var drafts: [String: String]
   let busy: Bool
   let isLive: Bool
+  /// The provider's active-turn delivery table, so the detail sheet can name
+  /// every option — including the ones this provider cannot do.
+  let capability: WorkActiveSendCapability
   /// Drives the queued card's live indicator: a message waiting behind a
   /// running turn breathes, one waiting on an idle session sits still.
   let turnActive: Bool
@@ -613,6 +616,7 @@ struct WorkQueuedSteerStrip: View {
       ForEach(steers) { steer in
         WorkQueuedSteerRow(
           steer: steer,
+          capability: capability,
           draft: Binding(
             get: { drafts[steer.id] ?? steer.text },
             set: { drafts[steer.id] = $0 }
@@ -686,6 +690,7 @@ private struct WorkQueuedSteerWaitingGlyph: View {
 
 struct WorkQueuedSteerRow: View {
   let steer: WorkPendingSteerModel
+  let capability: WorkActiveSendCapability
   @Binding var draft: String
   let isEditing: Bool
   let busy: Bool
@@ -700,6 +705,7 @@ struct WorkQueuedSteerRow: View {
 
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
+  @State private var showingDetail = false
   private var dictationTargetId: String {
     "work-steer:\(steer.id)"
   }
@@ -752,21 +758,36 @@ struct WorkQueuedSteerRow: View {
         // ("Inter-rupt") that the old titleAndIcon chips hit in this
         // non-scrolling HStack; the tap targets stay 44pt tall regardless.
         HStack(spacing: 8) {
-          WorkQueuedSteerWaitingGlyph(waiting: turnActive)
+          // The summary is the tap target for the detail sheet — the icon
+          // buttons keep their own. A truncated line and four unlabelled
+          // glyphs are not enough to read a staged message or its options.
+          Button {
+            showingDetail = true
+          } label: {
+            HStack(spacing: 8) {
+              WorkQueuedSteerWaitingGlyph(waiting: turnActive)
 
-          VStack(alignment: .leading, spacing: 1) {
-            Text(steer.text)
-              .font(.system(size: 13.5))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .truncationMode(.tail)
+              VStack(alignment: .leading, spacing: 1) {
+                Text(steer.text)
+                  .font(.system(size: 13.5))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                  .truncationMode(.tail)
 
-            Text(dispositionText)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
+                Text(dispositionText)
+                  .font(.caption2)
+                  .foregroundStyle(ADEColor.textMuted)
+                  .lineLimit(1)
+              }
+              .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
+          .buttonStyle(.plain)
+          .accessibilityLabel("Queued message: \(steer.text)")
+          .accessibilityHint("Opens the full message and its send options")
+          .accessibilityIdentifier("Work.Chat.StagedStrip.Open")
 
           HStack(spacing: 0) {
             if let onDispatchInline {
@@ -824,12 +845,28 @@ struct WorkQueuedSteerRow: View {
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
     .accessibilityElement(children: .contain)
+    .sheet(isPresented: $showingDetail) {
+      WorkQueuedSteerDetailSheet(
+        steer: steer,
+        capability: capability,
+        turnActive: turnActive,
+        isLive: isLive,
+        busy: busy,
+        onDispatchInline: onDispatchInline,
+        onDispatchInterrupt: onDispatchInterrupt,
+        onBeginEdit: onBeginEdit,
+        onCancel: onCancel
+      )
+    }
   }
 
   /// Says what happens next, not when it was typed: a queued message's
   /// timestamp is always "a moment ago" and carried no information.
   private var dispositionText: String {
-    turnActive ? "sends when turn ends" : "after turn"
+    guard turnActive else { return "after turn" }
+    // A provider that takes a message mid-turn is not parking this one until
+    // the turn ends — Claude picks it up at the next tool step.
+    return capability.modes.contains(.inline) ? "sends at next step" : "sends when turn ends"
   }
 
   // Icon-only tap target with an accessibility label so the row's actions stay

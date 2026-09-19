@@ -119,6 +119,7 @@
 		E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000050 /* WorkChatAttachmentTray.swift */; };
 		E1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift */; };
 		E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */; };
+		E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */; };
 		E10000000000000000000052 /* LaneDeeplinkHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000052 /* LaneDeeplinkHelpers.swift */; };
 		E10000000000000000000053 /* LaneDetailGitActionsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000053 /* LaneDetailGitActionsPane.swift */; };
 		E10000000000000000000047 /* ADEInspectable.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000047 /* ADEInspectable.swift */; };
@@ -442,6 +443,7 @@
 		D10000000000000000000050 /* WorkChatAttachmentTray.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentTray.swift; path = ADE/Views/Work/WorkChatAttachmentTray.swift; sourceTree = "<group>"; };
 		D1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerAttachmentStaging.swift; path = ADE/Views/Work/WorkComposerAttachmentStaging.swift; sourceTree = "<group>"; };
 		D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentPreviewSheets.swift; path = ADE/Views/Work/WorkChatAttachmentPreviewSheets.swift; sourceTree = "<group>"; };
+		D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkQueuedSteerDetailSheet.swift; path = ADE/Views/Work/WorkQueuedSteerDetailSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000052 /* LaneDeeplinkHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDeeplinkHelpers.swift; path = ADE/Views/Lanes/LaneDeeplinkHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000053 /* LaneDetailGitActionsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitActionsPane.swift; path = ADE/Views/Lanes/LaneDetailGitActionsPane.swift; sourceTree = "<group>"; };
 		D10000000000000000000047 /* ADEInspectable.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEInspectable.swift; path = ADE/Debug/ADEInspectorKit/ADEInspectable.swift; sourceTree = "<group>"; };
@@ -975,6 +977,7 @@
 				D10000000000000000000050 /* WorkChatAttachmentTray.swift */,
 				D1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift */,
 				D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */,
+				D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
 				D10000000000000000000F03 /* WorkPromptStash.swift */,
 				D10000000000000000000F04 /* WorkContextUsageViews.swift */,
@@ -1727,6 +1730,7 @@
 				E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */,
 				E1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift in Sources */,
 				E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */,
+				E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
 				E10000000000000000000F03 /* WorkPromptStash.swift in Sources */,

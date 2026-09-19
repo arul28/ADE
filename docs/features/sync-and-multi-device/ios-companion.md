@@ -3816,9 +3816,24 @@ the stats and shows update guidance.
   disposition beneath, and **Send now** / **Interrupt** / **Edit** / **Cancel**
   as visible icon-only buttons with 44pt-tall touch areas. Only a pile-up gets
   a slim `N queued` count above the rows. While a turn is running the clock
-  glyph breathes and the disposition reads "sends when turn ends"; on an idle
-  session it sits still and reads "after turn". The pulse goes through
-  `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full strength.
+  glyph breathes and the disposition reads "sends at next step" on a provider
+  that takes a message mid-turn and "sends when turn ends" on one that does
+  not; on an idle session it sits still and reads "after turn". The pulse goes
+  through `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full
+  strength.
+- **Tapping a staged row opens its detail sheet.** A truncated line and four
+  unlabelled glyphs cannot show a long message or say what each option does, so
+  the row's summary is a 44pt tap target (the icon buttons keep their own) that
+  presents `WorkQueuedSteerDetailSheet`. The sheet shows the whole message
+  selectable, its attachments, when it was staged, and what happens to it next,
+  then lists every delivery option as a full-width row: **Send now**,
+  **Interrupt & send** / **Interrupt & continue** (the label follows
+  `capability.interruptContinues`), **Edit**, and **Cancel**. Options this
+  provider cannot do are disabled with the reason on the row rather than
+  hidden, so the option set reads the same on every provider. The capability
+  comes from `workChatActiveSendCapability` — the same per-provider table the
+  composer's send-mode picker reads — and every action calls the closure the
+  inline buttons already use, then dismisses.
 - **The Work context meter treats completed compaction as a usage boundary.**
   `RemoteModels.swift`, `WorkEventMapping.swift`, and the persisted JSONL parser
   retain `context_compact.postTokens` plus the automatic `context_usage.state`.
@@ -3967,6 +3982,21 @@ the stats and shows update guidance.
   neither is whole — keeping only the longer one silently dropped part of the
   answer. Fix disagreements on the host, not with a client rule that has to
   guess what a sequence-less envelope contains.
+- **A graduated steer is pruned before the idle rebuild filters anything.**
+  The host writes a steered message twice: a `deliveryState: "queued"` row when
+  it is staged and a non-queued row when the provider consumes it. An idle
+  session prefers the canonical `chat.getTranscript` text and keeps only tool /
+  notice / queued-steer envelopes from the live stream, so a stale queued row
+  that outlived its delivered twin would be the one row the filter kept — the
+  bubble disappeared from the thread and the message reappeared in the staged
+  strip after it had already been sent. `workChatIdleCanonicalEventTranscript`
+  runs `pruneResolvedQueuedSteerEnvelopes` first and filters second, and
+  `preferredWorkTranscript` prunes the merged live transcript before the
+  fallback backfill so `shouldSkipBackfillPlainUserMessage` never suppresses a
+  canonical bubble on the strength of a resolved queued row. A still-pending
+  queued steer has no graduating row, so both prunes leave it exactly where it
+  is. The host half of the same fix is in `transcriptEntriesFromEnvelopes`,
+  which now emits a graduated steer once.
 - **CLI launcher provider IDs are runtime-validated.** The Work
   new-session screen sends `provider` strings that
   `parseCliProvider` matches verbatim against

@@ -1036,6 +1036,21 @@ struct WorkChatSessionView: View {
     )
   }
 
+  /// The same per-provider table the composer's send-mode picker uses, read
+  /// once here for the staged-message strip's detail sheet so the two surfaces
+  /// can never disagree about what this provider can do with a staged message.
+  var stagedSteerCapability: WorkActiveSendCapability {
+    workChatActiveSendCapability(
+      provider: chatSummaryContext.provider,
+      liveRedirectOnly: liveRedirectOnlySends,
+      runsInCloud: workChatCursorSessionRunsInCloud(
+        provider: chatSummaryContext.provider,
+        cursorRuntime: chatSummaryContext.cursorRuntime,
+        cursorCloudAgentId: chatSummaryContext.cursorCloudAgentId
+      )
+    )
+  }
+
   var primaryPendingInput: WorkPendingInputItem? {
     pendingInputs.first
   }
@@ -1713,6 +1728,7 @@ struct WorkChatSessionView: View {
           drafts: $steerEditDrafts,
           busy: actionInFlight,
           isLive: isLive,
+          capability: stagedSteerCapability,
           turnActive: sessionStatus == "active",
           onCancel: { steerId in
             await runSessionAction {
