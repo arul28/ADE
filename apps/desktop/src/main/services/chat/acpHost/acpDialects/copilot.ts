@@ -109,6 +109,11 @@ export function copilotNativeModeValue(mode: string): string {
   return COPILOT_NATIVE_MODE_IDS.agent;
 }
 
+/** Copilot's Agent fallback remains approval-gated for ADE supervision. */
+export function copilotSupervisionPermissionMode(mode: string | null | undefined): string | null | undefined {
+  return mode === "auto-edit" || mode === "auto" ? "default" : mode;
+}
+
 function normalizeCommandName(name: string): string {
   return name.replace(/^\/+/, "").trim().toLowerCase();
 }
@@ -216,6 +221,7 @@ export const copilotDialect = defineAcpDialect({
   loadSession: capability(standardLoad),
 
   nativeModeValue: copilotNativeModeValue,
+  supervisionPermissionMode: copilotSupervisionPermissionMode,
   sessionConfig: capability(standardSetConfigOption),
   modelSelection: capability(standardSetModel),
   mcpInjection: capability(transportGatedMcpInjection),

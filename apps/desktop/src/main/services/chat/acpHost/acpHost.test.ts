@@ -33,6 +33,7 @@ import {
   GROK_YOLO_MODE_CHANGED_METHOD,
   copilotPermissionModeDegradationNote,
   copilotNativeModeValue,
+  copilotSupervisionPermissionMode,
   includeCopilotSlashCommand,
   KIMI_CONFIG_OPTION_IDS,
   kimiDialect,
@@ -377,6 +378,16 @@ describe("spawn plans", () => {
 
   it.each(["auto-edit", "auto"])("copilot explains its %s downgrade", (mode) => {
     expect(copilotPermissionModeDegradationNote(mode)).toContain("approval-gated Agent mode");
+  });
+
+  it.each([
+    ["plan", "plan"],
+    ["default", "default"],
+    ["auto-edit", "default"],
+    ["auto", "default"],
+    ["yolo", "yolo"],
+  ] as const)("copilot supervises %s as %s", (mode, expected) => {
+    expect(copilotSupervisionPermissionMode(mode)).toBe(expected);
   });
 
   // ADE removed its Copilot trust pre-seed: a live three-arm experiment on
@@ -1365,6 +1376,17 @@ describe("unsupervised session invariant", () => {
     const session = await withDeadline("open", harness.open({ permissionMode: "yolo" }));
     await withDeadline("turn", session.prompt({ turnId: "t1", blocks: [textPromptBlock("go")] }));
     expect(notices(harness)).toHaveLength(0);
+  });
+
+  it("treats Copilot's auto-edit downgrade as approval-gated", async () => {
+    const harness = makeHarness(copilotDialect);
+    writingTurn(harness);
+    const session = await withDeadline("open", harness.open({ permissionMode: "auto-edit" }));
+    await withDeadline("turn", session.prompt({ turnId: "t1", blocks: [textPromptBlock("go")] }));
+    expect(notices(harness)).toHaveLength(1);
+    expect(notices(harness)[0]).toMatchObject({
+      message: "GitHub Copilot changed files here without asking ADE to approve. ADE's approval cards can't gate this chat.",
+    });
   });
 
   it("stays silent for a read-only turn, because reads never prompt anywhere", async () => {

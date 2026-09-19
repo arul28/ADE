@@ -286,6 +286,9 @@ export type AcpDialectBase = {
   /** Map ADE's abstract mode to the provider's native config value. */
   readonly nativeModeValue?: (mode: string) => string;
 
+  /** Map ADE's requested mode to the posture the supervision guard should enforce. */
+  readonly supervisionPermissionMode?: (mode: string | null | undefined) => string | null | undefined;
+
   readonly cancelStyle: AcpCancelStyle;
 
   /**
