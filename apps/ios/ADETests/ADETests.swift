@@ -21052,6 +21052,87 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(derivePendingWorkSteers(from: preferred).map(\.id), ["steer-1"])
   }
 
+  func testGraduatedQueuedSteerRendersOnceAndLeavesNoPendingSteer() {
+    // Regression (chat 67757bac, 2026-09-19): the host writes a steered message
+    // twice — `queued` when staged, `inline` when the SDK consumes it — and the
+    // canonical text transcript returned both as plain user rows. The idle
+    // rebuild kept only the stale queued row, so the bubble vanished from the
+    // thread and the message reappeared in the staged strip ~10s after it had
+    // already been delivered.
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "also run the linter", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:03.000Z",
+        sequence: 3,
+        event: .userMessage(text: "also run the linter", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "inline", processed: nil)
+      ),
+    ]
+    // What `chat.getTranscript` really returns today: both rows flattened to
+    // plain user entries with no steer metadata.
+    let fallback = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:01.000Z",
+        sequence: nil,
+        event: .userMessage(text: "also run the linter", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:03.000Z",
+        sequence: nil,
+        event: .userMessage(text: "also run the linter", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+    ]
+
+    for current in [[WorkChatEnvelope](), live] {
+      let preferred = preferredWorkTranscript(
+        current: current,
+        fallback: fallback,
+        eventTranscript: live
+      )
+      XCTAssertEqual(buildWorkChatMessages(from: preferred).map(\.markdown), ["also run the linter"])
+      XCTAssertTrue(derivePendingWorkSteers(from: preferred).isEmpty)
+    }
+
+    // The idle rebuild path: prune runs before the canonical filter, so the
+    // stale queued row never survives into the merge.
+    XCTAssertTrue(workChatShouldPreferFallbackTranscript(
+      fallbackTranscript: { fallback },
+      sessionStatus: "idle",
+      liveTranscript: live
+    ))
+    let canonical = workChatIdleCanonicalEventTranscript(live)
+    XCTAssertTrue(canonical.isEmpty)
+    for current in [[WorkChatEnvelope](), live] {
+      let idle = preferredWorkTranscript(
+        current: current,
+        fallback: fallback,
+        eventTranscript: canonical
+      )
+      XCTAssertEqual(buildWorkChatMessages(from: idle).map(\.markdown), ["also run the linter"])
+      XCTAssertTrue(derivePendingWorkSteers(from: idle).isEmpty)
+    }
+  }
+
+  func testIdleCanonicalEventTranscriptKeepsStillPendingQueuedSteer() {
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "stage me", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+    ]
+    let canonical = workChatIdleCanonicalEventTranscript(live)
+    XCTAssertEqual(derivePendingWorkSteers(from: canonical).map(\.id), ["steer-1"])
+  }
+
   func testWorkTimelineHidesLocalEchoWhenQueuedSteerCoversSameText() {
     let transcript = [
       WorkChatEnvelope(

@@ -2585,9 +2585,7 @@ struct WorkSessionDestinationView: View {
     )
     let canonicalEventTranscript: [WorkChatEnvelope]
     if shouldPreferFallbackTranscript {
-      canonicalEventTranscript = eventTranscript.filter { envelope in
-        workChatEventIncludedInIdleCanonicalEventTranscript(envelope.event)
-      }
+      canonicalEventTranscript = workChatIdleCanonicalEventTranscript(eventTranscript)
     } else {
       canonicalEventTranscript = eventTranscript
     }
@@ -3197,9 +3195,7 @@ struct WorkSessionDestinationView: View {
     )
     let canonicalLiveTranscript: [WorkChatEnvelope]
     if shouldPreferFallbackTranscript {
-      canonicalLiveTranscript = liveTranscript.filter { envelope in
-        workChatEventIncludedInIdleCanonicalEventTranscript(envelope.event)
-      }
+      canonicalLiveTranscript = workChatIdleCanonicalEventTranscript(liveTranscript)
     } else {
       canonicalLiveTranscript = liveTranscript
     }

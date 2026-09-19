@@ -158,6 +158,44 @@ describe("transcriptEntriesFromEnvelopes", () => {
     ]);
   });
 
+  it("emits a graduated steer once, not as queued plus delivered", () => {
+    // Regression: the host writes a steered message twice — `queued` when it is
+    // staged and `inline` when the SDK consumes it. Emitting both showed the
+    // text twice in `ade chat read` and made iOS resurrect the queued strip
+    // entry after the bubble had already landed.
+    const entries = transcriptEntriesFromEnvelopes(SESSION, [
+      envelope({ type: "user_message", text: "also run the linter", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued" }),
+      envelope({ type: "text", text: "working", messageId: "msg-a", turnId: "turn-1" }),
+      envelope({ type: "user_message", text: "also run the linter", turnId: "turn-1", steerId: "steer-1", deliveryState: "inline" }),
+    ]);
+
+    expect(entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["assistant", "working"],
+      ["user", "also run the linter"],
+    ]);
+  });
+
+  it("keeps a still-pending queued steer", () => {
+    const entries = transcriptEntriesFromEnvelopes(SESSION, [
+      envelope({ type: "user_message", text: "queue me", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued" }),
+    ]);
+
+    expect(entries.map((entry) => [entry.role, entry.text])).toEqual([["user", "queue me"]]);
+  });
+
+  it("keeps a queued steer when only another steer graduated", () => {
+    const entries = transcriptEntriesFromEnvelopes(SESSION, [
+      envelope({ type: "user_message", text: "first", turnId: "turn-1", steerId: "steer-a", deliveryState: "queued" }),
+      envelope({ type: "user_message", text: "second", turnId: "turn-1", steerId: "steer-b", deliveryState: "queued" }),
+      envelope({ type: "user_message", text: "first", turnId: "turn-1", steerId: "steer-a", deliveryState: "inline" }),
+    ]);
+
+    expect(entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["user", "second"],
+      ["user", "first"],
+    ]);
+  });
+
   it("preserves message and item identity on entries", () => {
     const entries = transcriptEntriesFromEnvelopes(SESSION, [
       envelope({ type: "text", text: "Stable identified message.", messageId: "message-1", itemId: "item-1", turnId: "turn-ids" }),

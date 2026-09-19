@@ -982,7 +982,13 @@ func preferredWorkTranscript(
 ) -> [WorkChatEnvelope] {
   if !eventTranscript.isEmpty {
     let base = isFallbackOnlyWorkTranscript(current) ? [] : current
-    let merged = mergeWorkChatTranscripts(base: base, live: eventTranscript)
+    // Prune before the backfill, not only after it. A queued row whose steer
+    // has already graduated in the same live stream still looks pending to
+    // `shouldSkipBackfillPlainUserMessage`, which would then drop the canonical
+    // fallback bubble for a message that was actually delivered.
+    let merged = pruneResolvedQueuedSteerEnvelopes(
+      mergeWorkChatTranscripts(base: base, live: eventTranscript)
+    )
     // The live event stream may be missing tail envelopes after a disconnect
     // or when the host didn't replay the full snapshot on re-subscribe. The
     // `chat.getTranscript` fallback always contains the canonical user /
@@ -1030,6 +1036,17 @@ func preferredWorkTranscript(
     result: pruned
   )
   return pruned
+}
+
+/// The live event stream an idle session hands to `preferredWorkTranscript`.
+/// Resolved queued steers are pruned *first*: the filter below keeps queued
+/// rows and drops every other user row, so a stale queued row left in place
+/// outlives the delivered row that graduated it and reappears in the staged
+/// strip while its bubble is suppressed in the thread.
+func workChatIdleCanonicalEventTranscript(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
+  pruneResolvedQueuedSteerEnvelopes(transcript).filter { envelope in
+    workChatEventIncludedInIdleCanonicalEventTranscript(envelope.event)
+  }
 }
 
 /// When an idle session prefers the canonical text transcript, keep tool /
