@@ -54377,6 +54377,173 @@ describe("acp chat runtime", () => {
     expect(statuses).toContain("completed");
   });
 
+  it("applies Qwen's selected model and reasoning effort at session startup", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "high" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "use the selected effort" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const configCalls = harness.agent.received.filter((entry) => entry.method === "session/set_config_option");
+    const configParams = configCalls.map((entry) => entry.params as { configId?: string; value?: unknown });
+    expect(configParams.map((params) => params.configId)).toEqual(["mode", "model", "reasoning_effort"]);
+    expect(configParams.at(-1)).toMatchObject({ configId: "reasoning_effort", value: "high" });
+  });
+
+  it("sends Qwen's default reasoning sentinel when no effort is selected", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "use the provider default" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const reasoningCalls = harness.agent.received
+      .filter((entry) => entry.method === "session/set_config_option")
+      .map((entry) => entry.params as { configId?: string; value?: unknown })
+      .filter((params) => params.configId === "reasoning_effort");
+    expect(reasoningCalls).toHaveLength(1);
+    expect(reasoningCalls[0]).toMatchObject({ configId: "reasoning_effort", value: "default" });
+  });
+
+  it("does not mark Qwen ready after a transient startup effort failure", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "high" },
+    });
+    let promptSeen = false;
+    harness.agent.on("session/prompt", async () => {
+      promptSeen = true;
+      return { result: { stopReason: "end_turn" } };
+    });
+    harness.agent.on("session/set_config_option", (params) => {
+      const config = params as { configId?: string; value?: unknown };
+      if (config.configId === "reasoning_effort" && config.value === "high") {
+        return { error: { code: -32001, message: "temporary Qwen ACP failure" } };
+      }
+      return { result: {} };
+    });
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "start with high effort" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(1);
+    });
+
+    expect(promptSeen).toBe(false);
+    expect(eventsOfType(harness, "done")[0]?.status).toBe("failed");
+    expect(readPersistedChatState(harness.session.id).acpSessionId).toBeUndefined();
+  });
+
+  it("updates Qwen's live reasoning effort when the ACP runtime is reused", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "low" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "first turn" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: null });
+
+    const configCalls = harness.agent.received.filter((entry) => entry.method === "session/set_config_option");
+    const reasoningCalls = configCalls
+      .map((entry) => entry.params as { configId?: string; value?: unknown })
+      .filter((params) => params.configId === "reasoning_effort");
+    expect(reasoningCalls.map((params) => params.value)).toEqual(["low", "high", "default"]);
+    expect(harness.agent.methodsReceived().filter((method) => method === "session/new")).toHaveLength(1);
+  });
+
+  it("retries a transient Qwen effort update before recreating the runtime", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "low" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "first turn" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    let rejectNextHigh = true;
+    harness.agent.on("session/set_config_option", (params) => {
+      const config = params as { configId?: string; value?: unknown };
+      if (config.configId === "reasoning_effort" && config.value === "high" && rejectNextHigh) {
+        rejectNextHigh = false;
+        return { error: { code: -32001, message: "temporary Qwen ACP failure" } };
+      }
+      return { result: {} };
+    });
+
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "retry turn" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(2);
+    });
+
+    const reasoningCalls = harness.agent.received
+      .filter((entry) => entry.method === "session/set_config_option")
+      .map((entry) => entry.params as { configId?: string; value?: unknown })
+      .filter((params) => params.configId === "reasoning_effort");
+    expect(reasoningCalls.map((params) => params.value)).toEqual(["low", "high", "high"]);
+    expect(harness.agent.methodsReceived().filter((method) => method === "session/new")).toHaveLength(1);
+  });
+
+  it("preserves a separate ACP invalidation when a live effort update succeeds", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { permissionMode: "plan", reasoningEffort: "low" },
+    });
+    let releaseFirstPrompt: (() => void) | null = null;
+    let promptCount = 0;
+    harness.agent.on("session/prompt", async () => {
+      promptCount += 1;
+      if (promptCount === 1) {
+        await new Promise<void>((resolve) => { releaseFirstPrompt = resolve; });
+      }
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "first turn" });
+    await harness.agent.waitForMethod("session/prompt");
+
+    // A permission-mode change during an active turn owns the invalidation;
+    // the successful reasoning RPC must not erase it before finalization.
+    await harness.service.updateSession({ sessionId: harness.session.id, permissionMode: "full-auto" });
+    expect(harness.session.acpPermissionMode).toBe("yolo");
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    releaseFirstPrompt!();
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(1);
+    });
+    expect((harness.agent.child as unknown as { killed?: boolean }).killed).toBe(true);
+  });
+
   it("forwards image URL attachments in the ACP prompt payload", async () => {
     const harness = await openAcpHarness({
       provider: "qwen",

@@ -17,6 +17,7 @@ import type {
 } from "../../../../shared/types";
 import type { Logger } from "../../logging/logger";
 import type { ChatRuntimeBudget } from "../chatRuntimeBudget";
+import { AcpRpcError } from "./acpConnection";
 import {
   openAcpSession,
   type AcpSession,
@@ -92,6 +93,8 @@ export type CreateAcpRuntimeArgs<TSteer> = {
   invocationKey: string;
   permissionMode: AgentChatAcpPermissionMode;
   modelToken: string | null;
+  /** Provider-native reasoning value, when the dialect advertises one. */
+  reasoningEffort: string | null;
   existingSessionId: string | null;
   supervisionPreflight: { ok: boolean; detail?: string } | null;
   supervisionAlreadyNotified: boolean;
@@ -120,6 +123,50 @@ export function acpInvocationKey(plan: Pick<AcpSpawnPlan, "command" | "args">): 
 /** True when ADE already has a transcript and must suppress `session/load` replay. */
 export function acpHasTranscript(owner: Pick<AcpRuntimeOwner, "eventSequence" | "transcriptBytesWritten">): boolean {
   return owner.eventSequence > 0 || owner.transcriptBytesWritten > 0;
+}
+
+export type AcpReasoningEffortUpdateResult = "applied" | "rejected" | "transient_failure";
+
+/**
+ * Apply a provider-native reasoning value to an already-open ACP session.
+ *
+ * Qwen 0.24.0 uses the literal `default` value to clear a session-scoped
+ * reasoning selection. Keep that wire detail in the ACP coordinator so the
+ * chat service does not need to know how Qwen represents a reset.
+ */
+export async function setAcpReasoningEffort<TSteer>(
+  runtime: AcpRuntimeState<TSteer>,
+  value: string,
+  args: { sessionId: string; logger: Logger },
+): Promise<AcpReasoningEffortUpdateResult> {
+  if (
+    runtime.provider !== "qwen"
+    || !runtime.dialect.sessionConfig.declared
+    || !runtime.dialect.configOptionIds.includes("reasoning_effort")
+  ) {
+    return "rejected";
+  }
+
+  try {
+    await runtime.session.setConfigOption({ configId: "reasoning_effort", value });
+    return "applied";
+  } catch (error) {
+    // Qwen reports an unsupported model/value as invalid params. Keep that
+    // optional rejection non-fatal; transport and server failures must instead
+    // force a fresh runtime so ADE does not claim a live value Qwen never saw.
+    const result = error instanceof AcpRpcError
+      && (error.code === -32602 || error.isMethodNotFound)
+      ? "rejected"
+      : "transient_failure";
+    args.logger.warn("agent_chat.acp_set_reasoning_effort_failed", {
+      sessionId: args.sessionId,
+      provider: runtime.provider,
+      reasoningEffort: value,
+      result,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return result;
+  }
 }
 
 export async function createAcpRuntime<TSteer>(
@@ -219,6 +266,25 @@ export async function createAcpRuntime<TSteer>(
           error: error instanceof Error ? error.message : String(error),
         });
       });
+    }
+  }
+
+  if (args.provider === "qwen" && args.dialect.configOptionIds.includes("reasoning_effort")) {
+    // Qwen stores this value on the ACP session. Send its explicit reset
+    // sentinel when ADE has no selected tier so a resumed session cannot keep
+    // an older provider-side value by omission.
+    const reasoningEffort = args.reasoningEffort?.trim() || "default";
+    const result = await setAcpReasoningEffort(runtime, reasoningEffort, {
+      sessionId: args.owner.session.id,
+      logger: args.logger,
+    });
+    if (result === "transient_failure") {
+      // Do not mark the runtime ready after a transport/server failure: the
+      // first turn would run with stale provider state. Teardown invalidates
+      // the persisted ACP pointer so the next send opens a clean session and
+      // retries the selected effort.
+      args.teardownExistingRuntime();
+      throw new Error(`Qwen ACP could not apply reasoning effort '${reasoningEffort}'.`);
     }
   }
 

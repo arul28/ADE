@@ -180,7 +180,7 @@ describe("dialect capability declarations", () => {
     expect(acpDialectFor(providerId).advertiseFsCapability).toBe(false);
   });
 
-  it("qwen owns one process per session because 0.22.3 has no session/close", () => {
+  it("qwen owns one process per session because 0.24.0 has no session/close", () => {
     expect(qwenDialect.closeStyle).toBe("kill_process");
     expect(qwenDialect.oneProcessPerSession).toBe(true);
     expect(qwenDialect.authProbe.methodId).toBe("openai");
@@ -977,14 +977,29 @@ describe("slash command advertisement", () => {
 });
 
 describe("session config", () => {
-  it("qwen sets mode, model, and thinking", async () => {
+  it("qwen sets mode, model, and reasoning_effort", async () => {
     const harness = makeHarness(qwenDialect);
     harness.agent.on(ACP_METHOD.sessionSetConfigOption, () => ({ result: {} }));
     const session = await withDeadline("open", harness.open());
     await withDeadline("set", session.setConfigOption({ configId: "model", value: "qwen3-coder" }));
-    const call = harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionSetConfigOption);
-    expect(call?.params).toMatchObject({ sessionId: "session-1", configId: "model", value: "qwen3-coder" });
-    expect([...qwenDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
+    await withDeadline("set reasoning", session.setConfigOption({ configId: "reasoning_effort", value: "high" }));
+    const configIdOf = (entry: { params: unknown }): unknown =>
+      typeof entry.params === "object" && entry.params !== null && "configId" in entry.params
+        ? entry.params.configId
+        : undefined;
+    const modelCall = harness.agent.received.find(
+      (entry) => entry.method === ACP_METHOD.sessionSetConfigOption && configIdOf(entry) === "model",
+    );
+    const reasoningCall = harness.agent.received.find(
+      (entry) => entry.method === ACP_METHOD.sessionSetConfigOption && configIdOf(entry) === "reasoning_effort",
+    );
+    expect(modelCall?.params).toMatchObject({ sessionId: "session-1", configId: "model", value: "qwen3-coder" });
+    expect(reasoningCall?.params).toMatchObject({
+      sessionId: "session-1",
+      configId: "reasoning_effort",
+      value: "high",
+    });
+    expect([...qwenDialect.configOptionIds]).toEqual(["mode", "model", "reasoning_effort"]);
   });
 
   it("kimi forwards mode, model, and thinking config options", async () => {
@@ -1810,7 +1825,7 @@ describe("run | degrade conformance matrix", () => {
     prompt_stream: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
     permission: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
     cancel: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
-    // Qwen 0.22.3 has no session/close. It degrades to ending its private process.
+    // Qwen 0.24.0 has no session/close. It degrades to ending its private process.
     close_eviction: { qwen: "degrade", kimi: "run", grok: "run", copilot: "run" },
     // Copilot's resume is unverified, so ADE uses session/load instead.
     resume: { qwen: "run", kimi: "run", grok: "run", copilot: "degrade" },

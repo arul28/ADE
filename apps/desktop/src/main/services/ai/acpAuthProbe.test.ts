@@ -4,7 +4,7 @@ import { createMockAcpAgent } from "../chat/acpHost/mockAcpAgent";
 import { acpProbeConfigHome, isAcpAuthError, probeAcpProviderAuth, resetAcpAuthProbeCache } from "./acpAuthProbe";
 
 describe("isAcpAuthError", () => {
-  it("matches the live Qwen 0.22.3 session/new message", () => {
+  it("matches the live Qwen 0.24.0 session/new message", () => {
     expect(
       isAcpAuthError("Authentication required: Use Qwen Code CLI to authenticate first."),
     ).toBe(true);
