@@ -2918,7 +2918,6 @@ struct WorkChatInfoDetailsSheet: View {
   let scheduledWorkPaused: Bool
   let nextWakeAt: String?
   let provider: String?
-  let selectedTaskId: String?
   let sessionModel: String?
   @Binding var expandedTaskIds: Set<String>
   let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
@@ -2946,7 +2945,6 @@ struct WorkChatInfoDetailsSheet: View {
     scheduledWorkPaused: Bool,
     nextWakeAt: String?,
     provider: String?,
-    selectedTaskId: String?,
     expandedTaskIds: Binding<Set<String>>,
     sessionModel: String? = nil,
     onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void,
@@ -2960,7 +2958,6 @@ struct WorkChatInfoDetailsSheet: View {
     self.scheduledWorkPaused = scheduledWorkPaused
     self.nextWakeAt = nextWakeAt
     self.provider = provider
-    self.selectedTaskId = selectedTaskId
     self.sessionModel = sessionModel
     self._expandedTaskIds = expandedTaskIds
     self.onSelect = onSelect
@@ -3105,7 +3102,7 @@ struct WorkChatInfoDetailsSheet: View {
 
   private func partitionSubagents(_ items: [WorkSubagentSnapshot]) -> (active: [WorkSubagentSnapshot], earlier: [WorkSubagentSnapshot], clearedCount: Int) {
     let cleared = clearedIds("subagents")
-    let pinned = Set([selectedTaskId].compactMap { $0 }).union(expandedTaskIds)
+    let pinned = expandedTaskIds
     var active: [WorkSubagentSnapshot] = []
     var earlier: [WorkSubagentSnapshot] = []
     var clearedCount = 0
@@ -3161,7 +3158,7 @@ struct WorkChatInfoDetailsSheet: View {
     let backgroundPartition = partitionScheduled(backgroundItems, section: "background", isEarlier: workBackgroundItemIsEarlier)
     let schedulePartition = partitionScheduled(scheduleItems, section: "schedule", isEarlier: workScheduleItemIsEarlier)
     let visibleSubagents = capped(subagentPartition.active, cap: subagentsCap, showAll: showAllSections.contains("subagents")) {
-      $0.status == .failed || selectedTaskId == $0.taskId || expandedTaskIds.contains($0.taskId)
+      $0.status == .failed || expandedTaskIds.contains($0.taskId)
     }
     let visibleBackground = capped(backgroundPartition.active, cap: backgroundCap, showAll: showAllSections.contains("background")) {
       $0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "failed"
@@ -3280,7 +3277,6 @@ struct WorkChatInfoDetailsSheet: View {
   private func subagentRow(_ snapshot: WorkSubagentSnapshot) -> some View {
     WorkChatInfoSubagentRow(
       snapshot: snapshot,
-      selected: selectedTaskId == snapshot.taskId,
       expanded: expandedTaskIds.contains(snapshot.taskId),
       sessionModel: sessionModel,
       treePrefix: workSubagentTreePrefix(snapshot, in: subagents),
@@ -3454,7 +3450,6 @@ private struct WorkSquareStopButton: View {
 
 private struct WorkChatInfoSubagentRow: View {
   let snapshot: WorkSubagentSnapshot
-  let selected: Bool
   let expanded: Bool
   let sessionModel: String?
   var treePrefix: String = ""
@@ -3508,7 +3503,7 @@ private struct WorkChatInfoSubagentRow: View {
             HStack(spacing: 8) {
               WorkSubagentStatusChip(status: snapshot.status)
               if showsDisclosure {
-                Image(systemName: selected ? "arrow.uturn.left" : "chevron.right")
+                Image(systemName: "chevron.right")
                   .font(.system(size: 12, weight: .bold))
                   .foregroundStyle(ADEColor.textMuted)
               }
@@ -3536,11 +3531,11 @@ private struct WorkChatInfoSubagentRow: View {
         .padding(.vertical, 9)
         .background(
           RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(selected ? ADEColor.accent.opacity(0.12) : ADEColor.cardBackground.opacity(0.52))
+            .fill(ADEColor.cardBackground.opacity(0.52))
         )
         .overlay(
           RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .stroke(selected ? ADEColor.accent.opacity(0.45) : ADEColor.glassBorder, lineWidth: 1)
+            .stroke(ADEColor.glassBorder, lineWidth: 1)
         )
       }
       .buttonStyle(.plain)

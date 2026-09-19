@@ -888,11 +888,6 @@ struct WorkSessionDestinationView: View {
   @State var remoteSubagentSnapshots: [WorkSubagentSnapshot] = []
   @State var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
   @State var scheduledWorkSnapshotsRenderSignature = 0
-  @State var subagentView: WorkSubagentSelection?
-  @State var subagentTranscript: [WorkChatEnvelope] = []
-  @State var subagentTranscriptRenderSignature = 0
-  @State var parentTranscriptBeforeSubagent: [WorkChatEnvelope] = []
-  @State var parentFallbackEntriesBeforeSubagent: [AgentChatTranscriptEntry] = []
   @State var chatInfoPresented = false
   @State var expandedSubagentDetailIds: Set<String> = []
   @State var remoteSubagentRefreshInFlight = false
@@ -1073,12 +1068,6 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
-  func setSubagentTranscript(_ next: [WorkChatEnvelope]) {
-    subagentTranscript = next
-    subagentTranscriptRenderSignature &+= 1
-  }
-
-  @MainActor
   func refreshArtifactContentRenderSignature() {
     artifactContentRenderSignature = workLoadedArtifactContentRenderSignature(artifactContent)
   }
@@ -1096,9 +1085,6 @@ struct WorkSessionDestinationView: View {
   }
 
   var sessionDestinationNavigationTitle: String {
-    if let subagentView {
-      return subagentView.name
-    }
     if let navigationTitleOverride {
       return navigationTitleOverride
     }
@@ -1135,14 +1121,7 @@ struct WorkSessionDestinationView: View {
     workResolveSubagentCapability(provider: subagentProvider)
   }
 
-  var selectedSubagentSnapshot: WorkSubagentSnapshot? {
-    guard let subagentView else { return nil }
-    return subagentSnapshots.first { snapshot in
-      snapshot.taskId == subagentView.taskId
-        || snapshot.agentId == subagentView.taskId
-        || (subagentView.agentId != nil && (snapshot.agentId == subagentView.agentId || snapshot.taskId == subagentView.agentId))
-    }
-  }
+
 
   var hostReachable: Bool {
     syncService.connectionState == .connected
@@ -1233,24 +1212,6 @@ struct WorkSessionDestinationView: View {
   var sessionHeaderTrailingControls: some View {
     if let session, isChatSession(session) {
       HStack(spacing: 8) {
-        if subagentView != nil {
-          Button {
-            Task { await dismissSubagentView() }
-          } label: {
-            Image(systemName: "chevron.left")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(ADEColor.accent)
-              .frame(width: 30, height: 30)
-              .background(ADEColor.surfaceBackground.opacity(0.9), in: Circle())
-              .overlay(
-                Circle()
-                  .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.5)
-              )
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Back to main chat")
-        }
-
         WorkChatHeaderMenu(
           model: headerMenuModel(session),
           onShowChatInfo: { Task { await prepareChatInfoPresentation() } },
@@ -1460,7 +1421,6 @@ struct WorkSessionDestinationView: View {
           scheduledWorkPaused: composerChatSummary?.scheduledWorkPaused == true,
           nextWakeAt: composerChatSummary?.nextWakeAt,
           provider: subagentProvider,
-          selectedTaskId: subagentView?.taskId,
           expandedTaskIds: $expandedSubagentDetailIds,
           sessionModel: composerChatSummary?.model,
           onSelect: handleSubagentSelection,
@@ -1711,8 +1671,7 @@ struct WorkSessionDestinationView: View {
         refreshChatInfoSnapshots()
       }
       .onChange(of: chatInfoPresented) { _, presented in
-        guard presented else { return }
-        Task { await refreshRemoteSubagentSnapshots() }
+        handleChatInfoPresentationChange(presented)
       }
       .onDisappear {
         chatDestinationVisible = false
@@ -1875,35 +1834,23 @@ struct WorkSessionDestinationView: View {
 
   @ViewBuilder
   private func chatSessionDestinationRoot(for session: TerminalSessionSummary) -> some View {
-    let viewingSubagent = subagentView != nil
-    makeWorkChatSessionView(for: session, viewingSubagent: viewingSubagent)
-      .id(chatSessionDestinationRootId(for: session, viewingSubagent: viewingSubagent))
-  }
-
-  private func chatSessionDestinationRootId(
-    for session: TerminalSessionSummary,
-    viewingSubagent: Bool
-  ) -> String {
-    if viewingSubagent {
-      return "subagent-\(subagentView?.taskId ?? "unknown")-\(subagentTranscriptRenderSignature)"
-    }
-    return "main-\(session.id)-\(mainChatRenderEpoch)"
+    makeWorkChatSessionView(for: session)
+      .id("main-\(session.id)-\(mainChatRenderEpoch)")
   }
 
   private func makeWorkChatSessionView(
-    for session: TerminalSessionSummary,
-    viewingSubagent: Bool
+    for session: TerminalSessionSummary
   ) -> WorkChatSessionView {
-    let transcriptForView = viewingSubagent ? subagentTranscript : transcript
-    let fallbackEntriesForView: [AgentChatTranscriptEntry] = viewingSubagent ? [] : fallbackEntries
-    let artifactsForView: [ComputerUseArtifactSummary] = viewingSubagent ? [] : artifacts
-    let optimisticPendingSteersForView: [WorkPendingSteerModel] = viewingSubagent ? [] : optimisticPendingSteers
-    let localEchoMessagesForView: [WorkLocalEchoMessage] = viewingSubagent ? [] : localEchoMessages
+    let transcriptForView = transcript
+    let fallbackEntriesForView: [AgentChatTranscriptEntry] = fallbackEntries
+    let artifactsForView: [ComputerUseArtifactSummary] = artifacts
+    let optimisticPendingSteersForView: [WorkPendingSteerModel] = optimisticPendingSteers
+    let localEchoMessagesForView: [WorkLocalEchoMessage] = localEchoMessages
     let sessionStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     let shouldSteer = hostReachable && sessionStatus == "active"
     let prPolicy = WorkChatLanePrPolicy(
       showsLaneActions: showsLaneActions,
-      viewingSubagent: viewingSubagent
+      viewingSubagent: false
     )
     let chatPrBadge: WorkChatPrBadgeModel? = prPolicy.rendersPrBadge
       ? workChatPrBadgeModel(
@@ -1914,9 +1861,7 @@ struct WorkSessionDestinationView: View {
         )
       : nil
     let openPrDetails: (() -> Void)? = prPolicy.rendersPrBadge ? { presentChatPrDetails() } : nil
-    let inputLockMessage: String? = viewingSubagent
-      ? "Viewing subagent transcript. Return to main chat to send."
-      : nil
+    let inputLockMessage: String? = nil
     let openLaneAction: (() -> Void)? = showsLaneActions ? { openSessionLane() } : nil
     // Wired per mode, not per provider, so a provider that gains or loses a
     // mode needs no change here. Matches the desktop pane, which gates each
@@ -1941,11 +1886,9 @@ struct WorkSessionDestinationView: View {
     } else {
       dispatchSteerInterruptAction = nil
     }
-    let resolvedSessionStatus: String? = viewingSubagent ? "ended" : sessionStatus
+    let resolvedSessionStatus: String? = sessionStatus
     let loadOlderTranscriptAction: (@MainActor () async -> WorkChatOlderHistoryLoadResult)?
-    if viewingSubagent {
-      loadOlderTranscriptAction = nil
-    } else if isCrossProject && !syncService.supportsSubscribedChatHistory(sessionId: sessionId) {
+    if isCrossProject && !syncService.supportsSubscribedChatHistory(sessionId: sessionId) {
       // Older hosts have no scoped transcript-page envelope. Do not fall back
       // to a foreign project command, which would activate its runtime just to
       // read history; the next host upgrade makes the same cached view pageable.
@@ -1983,7 +1926,7 @@ struct WorkSessionDestinationView: View {
     } else {
       resumeUsageLimitNowAction = nil
     }
-    let canWriteSpawnKind = !viewingSubagent && syncService.supportsSpawnKindUpdate
+    let canWriteSpawnKind = syncService.supportsSpawnKindUpdate
     let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
     if syncService.supportsChatRemoteAction(
       "chat.restoreCancelledQueue",
@@ -2004,17 +1947,17 @@ struct WorkSessionDestinationView: View {
         }
       ),
       transcript: transcriptForView,
-      transcriptRenderSignature: viewingSubagent ? subagentTranscriptRenderSignature : transcriptRenderSignature,
-      allowsIncrementalTranscriptUpdate: viewingSubagent ? false : transcriptAllowsIncrementalSnapshot,
-      transcriptIncrementalDelta: viewingSubagent ? .constant([]) : $transcriptIncrementalDelta,
+      transcriptRenderSignature: transcriptRenderSignature,
+      allowsIncrementalTranscriptUpdate: transcriptAllowsIncrementalSnapshot,
+      transcriptIncrementalDelta: $transcriptIncrementalDelta,
       fallbackEntries: fallbackEntriesForView,
-      fallbackEntriesRenderSignature: viewingSubagent ? 0 : fallbackEntriesRenderSignature,
+      fallbackEntriesRenderSignature: fallbackEntriesRenderSignature,
       artifacts: artifactsForView,
-      artifactsRenderSignature: viewingSubagent ? 0 : artifactsRenderSignature,
+      artifactsRenderSignature: artifactsRenderSignature,
       optimisticPendingSteers: optimisticPendingSteersForView,
-      optimisticPendingSteersRenderSignature: viewingSubagent ? 0 : workPendingSteersRenderSignature(optimisticPendingSteers),
+      optimisticPendingSteersRenderSignature: workPendingSteersRenderSignature(optimisticPendingSteers),
       localEchoMessages: localEchoMessagesForView,
-      localEchoMessagesRenderSignature: viewingSubagent ? 0 : workLocalEchoMessagesRenderSignature(localEchoMessages),
+      localEchoMessagesRenderSignature: workLocalEchoMessagesRenderSignature(localEchoMessages),
       cardExpansionSnapshot: cardExpansion,
       cardExpansionRenderSignature: workCardExpansionRenderSignature(cardExpansion),
       artifactContentRenderSignature: artifactContentRenderSignature,
@@ -2031,8 +1974,8 @@ struct WorkSessionDestinationView: View {
       errorMessage: $errorMessage,
       isLive: isLiveAndReachable,
       hostUnreachable: syncService.connectionState.isHostUnreachable,
-      canComposeMessages: canComposeChatMessages && !viewingSubagent,
-      canSendMessages: canSendChatMessages && !viewingSubagent,
+      canComposeMessages: canComposeChatMessages,
+      canSendMessages: canSendChatMessages,
       sendWillQueue: sendWillQueueChatMessage || shouldSteer,
       sendWillQueueIsReconnect: sendWillQueueChatMessage,
       activeSendModesAvailable: activeSendModesAvailable,
@@ -2074,23 +2017,23 @@ struct WorkSessionDestinationView: View {
       // Memberwise-init argument order follows property declaration order in
       // WorkChatSessionView, where onOpenParentSession sits after the model
       // controls.
-      onOpenParentSession: viewingSubagent ? nil : { openParentSession() },
+      onOpenParentSession: { openParentSession() },
       resolvedSessionStatus: resolvedSessionStatus,
       lanes: lanes,
       lanesRenderSignature: lanesRenderSignature,
-      hasOlderTranscriptHistory: viewingSubagent ? false : hasOlderTranscriptHistory,
+      hasOlderTranscriptHistory: hasOlderTranscriptHistory,
       onLoadOlderTranscript: loadOlderTranscriptAction,
       subagentSnapshots: subagentSnapshots,
       subagentSnapshotsRenderSignature: subagentSnapshotsRenderSignature,
-      scheduledWorkSnapshots: viewingSubagent ? [] : scheduledWorkSnapshots,
-      scheduledWorkSnapshotsRenderSignature: viewingSubagent ? 0 : scheduledWorkSnapshotsRenderSignature,
-      selectedSubagentTaskId: subagentView?.taskId,
+      scheduledWorkSnapshots: scheduledWorkSnapshots,
+      scheduledWorkSnapshotsRenderSignature: scheduledWorkSnapshotsRenderSignature,
+      selectedSubagentTaskId: nil,
       // One chip, one destination: subagents, background work and schedules
       // all live in the Chat Info sheet. Timeline-row selection stays scoped
       // to the parent chat, so nested transcript state cannot accidentally
       // fetch from itself.
-      onOpenChatInfo: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
-      onSelectSubagentRow: subagentRowSelectionHandler(viewingSubagent: viewingSubagent),
+      onOpenChatInfo: { Task { await prepareChatInfoPresentation() } },
+      onSelectSubagentRow: subagentRowSelectionHandler(),
       onForkChatInLane: {
         let modelId = (composerChatSummary?.modelId ?? composerChatSummary?.model ?? "")
           .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2124,13 +2067,13 @@ struct WorkSessionDestinationView: View {
         || syncService.canInvokeRemoteAction("personalChats.updateSession"),
       onRecoverCodexTurn: workChatCodexRecoveryAvailable(
         hostSupportsRecovery: supportsRecovery,
-        viewingSubagent: viewingSubagent
+        viewingSubagent: false
       ) ? recoverCodexTurn : nil,
-      onRunUnprocessedMessage: !viewingSubagent && supportsUnprocessedResolution
+      onRunUnprocessedMessage: supportsUnprocessedResolution
         ? runUnprocessedMessage
         : nil,
-      onEditUnprocessedMessage: !viewingSubagent ? editUnprocessedMessage : nil,
-      onDismissUnprocessedMessage: !viewingSubagent && supportsUnprocessedResolution
+      onEditUnprocessedMessage: editUnprocessedMessage,
+      onDismissUnprocessedMessage: supportsUnprocessedResolution
         ? dismissUnprocessedMessage
         : nil,
       transcriptLoadState: transcriptLoadState,
@@ -2147,11 +2090,22 @@ struct WorkSessionDestinationView: View {
 
   /// Explicitly-typed handler so the optional async closure doesn't make the
   /// large `WorkChatSessionView(...)` initializer ambiguous at the call site.
-  private func subagentRowSelectionHandler(
-    viewingSubagent: Bool
-  ) -> (@MainActor (WorkSubagentSnapshot) async -> Void)? {
-    guard !viewingSubagent else { return nil }
-    return { snapshot in await handleSubagentSelection(snapshot) }
+  /// Explicitly-typed handler so the optional async closure doesn't make the
+  /// large `WorkChatSessionView(...)` initializer ambiguous at the call site.
+  private func subagentRowSelectionHandler() -> (@MainActor (WorkSubagentSnapshot) async -> Void)? {
+    let handler: @MainActor (WorkSubagentSnapshot) async -> Void = { snapshot in
+      await handleSubagentSelection(snapshot)
+    }
+    return handler
+  }
+
+  /// Extracted from the `.onChange` modifier: the destination's modifier chain
+  /// is long enough that an inline closure body pushes the type checker past
+  /// its budget for the whole expression.
+  @MainActor
+  private func handleChatInfoPresentationChange(_ presented: Bool) {
+    guard presented else { return }
+    Task { await refreshRemoteSubagentSnapshots() }
   }
 
   var pollingKey: String {
@@ -3311,17 +3265,6 @@ struct WorkSessionDestinationView: View {
       subagentSnapshots = next
       subagentSnapshotsRenderSignature = workSubagentSnapshotsRenderSignature(next)
     }
-    if let subagentView,
-       let updated = next.first(where: { snapshot in
-         snapshot.taskId == subagentView.taskId
-           || snapshot.agentId == subagentView.taskId
-           || (subagentView.agentId != nil && (snapshot.agentId == subagentView.agentId || snapshot.taskId == subagentView.agentId))
-       }) {
-      let selection = workSubagentSelection(from: updated)
-      if selection != subagentView {
-        self.subagentView = selection
-      }
-    }
   }
 
   @MainActor
@@ -3375,31 +3318,6 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
-  func clearSubagentView() {
-    subagentView = nil
-    setSubagentTranscript([])
-  }
-
-  @MainActor
-  func rememberParentTranscriptBeforeSubagent() {
-    guard !transcript.isEmpty || !fallbackEntries.isEmpty else { return }
-    parentTranscriptBeforeSubagent = transcript
-    parentFallbackEntriesBeforeSubagent = fallbackEntries
-  }
-
-  @MainActor
-  func restoreParentTranscriptAfterSubagentIfNeeded() {
-    if transcript.isEmpty, !parentTranscriptBeforeSubagent.isEmpty {
-      setTranscript(parentTranscriptBeforeSubagent)
-    }
-    if fallbackEntries.isEmpty, !parentFallbackEntriesBeforeSubagent.isEmpty {
-      setFallbackEntries(parentFallbackEntriesBeforeSubagent)
-    }
-    parentTranscriptBeforeSubagent = []
-    parentFallbackEntriesBeforeSubagent = []
-  }
-
-  @MainActor
   func materializeParentTranscriptFromLiveEventsIfNeeded() {
     guard transcript.isEmpty, fallbackEntries.isEmpty else { return }
     let liveTranscript = liveTranscriptCache.transcript(
@@ -3425,28 +3343,11 @@ struct WorkSessionDestinationView: View {
       await loadTranscript(forceRemote: true, preferLightweight: false)
     }
     materializeParentTranscriptFromLiveEventsIfNeeded()
-    rememberParentTranscriptBeforeSubagent()
     chatInfoPresented = true
     await refreshRemoteSubagentSnapshots()
   }
 
-  @MainActor
-  func dismissSubagentView() async {
-    guard subagentView != nil else { return }
 
-    if transcript.isEmpty && fallbackEntries.isEmpty && shouldHydrateTranscriptFromHost {
-      await refreshChatSummaryFromHost()
-      await loadTranscript(forceRemote: true, preferLightweight: false)
-    }
-
-    clearSubagentView()
-    restoreParentTranscriptAfterSubagentIfNeeded()
-    materializeParentTranscriptFromLiveEventsIfNeeded()
-
-    if transcript.isEmpty && fallbackEntries.isEmpty && shouldHydrateTranscriptFromHost {
-      await hydrateEmptyTranscriptFromHostIfNeeded(force: true)
-    }
-  }
 
   /// Tapping an in-thread subagent expands its card, and nothing more.
   ///
