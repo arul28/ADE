@@ -1172,6 +1172,8 @@ enum ADEPreviewScreen: String, CaseIterable {
   case proofEmpty = "proof-empty"
   case proofViewer = "proof-viewer"
   case tools = "tools"
+  /// Scroll benchmark over a real transcript file. See `WorkChatScrollBench.swift`.
+  case chatScroll = "chat-scroll"
   case queuedSteerDetail = "queued-steer"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
@@ -1221,6 +1223,8 @@ struct ADEPreviewScreenHost: View {
         initialArtifactId: "proof-1",
         onLoadArtifact: { _ in }
       )
+    case .chatScroll:
+      WorkChatScrollBenchScreen(options: .fromLaunchArguments())
     case .tools:
       WorkToolsSheet(
         laneId: WorkProofPreviewData.laneId,

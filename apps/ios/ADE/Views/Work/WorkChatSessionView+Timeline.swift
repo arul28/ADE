@@ -244,6 +244,17 @@ extension WorkChatSessionView {
           // card above the keyboard.
           Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000)
+            WorkChatScrollTrace.write(
+              reason: "question-freeform-focus",
+              target: "id=pending-question-\(question.id)",
+              site: "WorkChatSessionView+Timeline.swift:onFreeformFocusChange",
+              offsetBefore: scrollMetrics.offsetY,
+              contentHeight: scrollMetrics.contentHeight,
+              containerHeight: scrollMetrics.containerHeight,
+              scrollableHeight: scrollMetrics.scrollableHeight,
+              following: isNearBottom,
+              userDrivenPhase: timelineScrollPhaseUserDriven
+            )
             withAnimation(.easeInOut(duration: 0.25)) {
               proxy.scrollTo("pending-question-\(question.id)", anchor: .bottom)
             }

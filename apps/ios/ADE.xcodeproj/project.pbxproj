@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EB000000000000000000UI01 /* WorkChatScrollBenchUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB000000000000000000UI01 /* WorkChatScrollBenchUITests.swift */; };
 		E20000000000000000000091 /* LinearBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000091 /* LinearBrand.swift */; };
 		E20000000000000000000092 /* LinearSVGPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000092 /* LinearSVGPath.swift */; };
 		E20000000000000000000093 /* LinearLaunchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000093 /* LinearLaunchModel.swift */; };
@@ -299,6 +300,7 @@
 		E10000000000000000000057 /* WorkExternalSessionAffordances.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000057 /* WorkExternalSessionAffordances.swift */; };
 		E10000000000000000000051 /* WorkLanePickerDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000051 /* WorkLanePickerDropdown.swift */; };
 		E10000000000000000000042 /* WorkPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000042 /* WorkPreviews.swift */; };
+		E1000000000000000000BB01 /* WorkChatScrollBench.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000BB01 /* WorkChatScrollBench.swift */; };
 		E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000090 /* WorkComposerTypedTriggers.swift */; };
 		E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000045 /* WorkSelectionActionBar.swift */; };
 		E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000046 /* WorkRootScreen+Selection.swift */; };
@@ -334,6 +336,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		EB000000000000000000UI21 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9CBC925352322D208431EFAA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 928432ECB10B6E8870725B02;
+			remoteInfo = ADE;
+		};
 		A17C7B6209E54B4FAE0D11A1 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 9CBC925352322D208431EFAA /* Project object */;
@@ -482,6 +491,7 @@
 		D10000000000000000000057 /* WorkExternalSessionAffordances.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkExternalSessionAffordances.swift; path = ADE/Views/Work/WorkExternalSessionAffordances.swift; sourceTree = "<group>"; };
 		D10000000000000000000051 /* WorkLanePickerDropdown.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLanePickerDropdown.swift; path = ADE/Views/Work/WorkLanePickerDropdown.swift; sourceTree = "<group>"; };
 		D10000000000000000000042 /* WorkPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPreviews.swift; path = ADE/Views/Work/WorkPreviews.swift; sourceTree = "<group>"; };
+		D1000000000000000000BB01 /* WorkChatScrollBench.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatScrollBench.swift; path = ADE/Views/Work/WorkChatScrollBench.swift; sourceTree = "<group>"; };
 		D20000000000000000000090 /* WorkComposerTypedTriggers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTypedTriggers.swift; path = ADE/Views/Work/WorkComposerTypedTriggers.swift; sourceTree = "<group>"; };
 		D10000000000000000000045 /* WorkSelectionActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSelectionActionBar.swift; path = ADE/Views/Work/WorkSelectionActionBar.swift; sourceTree = "<group>"; };
 		D10000000000000000000046 /* WorkRootScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Selection.swift"; path = "ADE/Views/Work/WorkRootScreen+Selection.swift"; sourceTree = "<group>"; };
@@ -658,6 +668,8 @@
 		CCAB2414C359E971B780BF99 /* PreviewHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PreviewHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesCodeSupport.swift; path = ADE/Views/Components/FilesCodeSupport.swift; sourceTree = "<group>"; };
 		E3A5721EB84321D201716BC3 /* ADETests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ADETests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DB000000000000000000UI02 /* ADEUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ADEUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DB000000000000000000UI01 /* WorkChatScrollBenchUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatScrollBenchUITests.swift; path = ADEUITests/WorkChatScrollBenchUITests.swift; sourceTree = "<group>"; };
 		C5A000000000000000000001 /* MobileTrustResetPolicy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileTrustResetPolicy.swift; path = ADE/Services/MobileTrustResetPolicy.swift; sourceTree = "<group>"; };
 		C5A00000000000000000001F /* PairedHostCredentialState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PairedHostCredentialState.swift; path = ADE/Services/PairedHostCredentialState.swift; sourceTree = "<group>"; };
 		C5A000000000000000000002 /* SSHBootstrapModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHBootstrapModels.swift; path = ADE/Services/SSHBootstrapModels.swift; sourceTree = "<group>"; };
@@ -680,6 +692,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		EB000000000000000000UI11 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		DE00988229EE6003DBF8D8FA /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -961,6 +980,7 @@
 				D10000000000000000000057 /* WorkExternalSessionAffordances.swift */,
 				D10000000000000000000051 /* WorkLanePickerDropdown.swift */,
 				D10000000000000000000042 /* WorkPreviews.swift */,
+				D1000000000000000000BB01 /* WorkChatScrollBench.swift */,
 				D20000000000000000000090 /* WorkComposerTypedTriggers.swift */,
 				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
 				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
@@ -1187,6 +1207,7 @@
 			children = (
 				27A125DE2C17BA32F9291513 /* ADE.app */,
 				E3A5721EB84321D201716BC3 /* ADETests.xctest */,
+				DB000000000000000000UI02 /* ADEUITests.xctest */,
 				CCAB2414C359E971B780BF99 /* PreviewHost.app */,
 				AA0000000000000000000002 /* ADEWidgets.appex */,
 				AC0000000000000000000002 /* ADEClip.app */,
@@ -1217,6 +1238,7 @@
 			isa = PBXGroup;
 			children = (
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
+				DB000000000000000000UI01 /* WorkChatScrollBenchUITests.swift */,
 				AC8000000000000000000002 /* ProjectHostRecoveryTests.swift */,
 				AD0000000000000000000A06 /* AccountEmailAuthFlowTests.swift */,
 				B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */,
@@ -1266,6 +1288,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		EB000000000000000000UI40 /* ADEUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EB000000000000000000UI32 /* Build configuration list for PBXNativeTarget "ADEUITests" */;
+			buildPhases = (
+				EB000000000000000000UI10 /* Sources */,
+				EB000000000000000000UI11 /* Frameworks */,
+				EB000000000000000000UI12 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EB000000000000000000UI20 /* PBXTargetDependency */,
+			);
+			name = ADEUITests;
+			productName = ADEUITests;
+			productReference = DB000000000000000000UI02 /* ADEUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		62C217CE2C1C31B3127D1ACF /* ADETests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 7F1C55DA37975982AB8F1BB9 /* Build configuration list for PBXNativeTarget "ADETests" */;
@@ -1447,11 +1487,19 @@
 				AA0000000000000000000001 /* ADEWidgets */,
 				AC0000000000000000000001 /* ADEClip */,
 				62C217CE2C1C31B3127D1ACF /* ADETests */,
+				EB000000000000000000UI40 /* ADEUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		EB000000000000000000UI12 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		0C78157439BD019931D9CBAD /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1515,6 +1563,14 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		EB000000000000000000UI10 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EB000000000000000000UI01 /* WorkChatScrollBenchUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		73ED0BCB9618AA29B41D84DA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1715,6 +1771,7 @@
 				E10000000000000000000057 /* WorkExternalSessionAffordances.swift in Sources */,
 				E10000000000000000000051 /* WorkLanePickerDropdown.swift in Sources */,
 				E10000000000000000000042 /* WorkPreviews.swift in Sources */,
+				E1000000000000000000BB01 /* WorkChatScrollBench.swift in Sources */,
 				E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */,
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
 				E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */,
@@ -1855,6 +1912,12 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		EB000000000000000000UI20 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ADE;
+			target = 928432ECB10B6E8870725B02 /* ADE */;
+			targetProxy = EB000000000000000000UI21 /* PBXContainerItemProxy */;
+		};
 		A17C7B6209E54B4FAE0D11A2 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = ADE;
@@ -1876,6 +1939,36 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		EB000000000000000000UI30 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				DEVELOPMENT_TEAM = VQ372F39G6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = ADE;
+			};
+			name = Debug;
+		};
+		EB000000000000000000UI31 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				DEVELOPMENT_TEAM = VQ372F39G6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = ADE;
+			};
+			name = Release;
+		};
 		46C95E3D8691C9E33C8FBF15 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -2213,6 +2306,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		EB000000000000000000UI32 /* Build configuration list for PBXNativeTarget "ADEUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EB000000000000000000UI31 /* Release */,
+				EB000000000000000000UI30 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		7F1C55DA37975982AB8F1BB9 /* Build configuration list for PBXNativeTarget "ADETests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

@@ -1515,6 +1515,7 @@ extension WorkChatSessionView {
       offsetRetreat: scrollMetrics.stableOffsetY - scrollMetrics.offsetY
     ) {
       cancelPendingInitialBottomPinForUserScroll()
+      WorkChatScrollTrace.follow(false, reason: "user-scroll release")
       releaseBottomStickinessForUserScroll(reason: "user-scroll")
       return
     }
@@ -1532,6 +1533,7 @@ extension WorkChatSessionView {
       bottomStickinessReleasedByUser = false
       if !isNearBottom {
         isNearBottom = true
+        WorkChatScrollTrace.follow(true, reason: "resume-threshold")
       }
       if unreadBelowCount > 0 {
         withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
@@ -1549,6 +1551,7 @@ extension WorkChatSessionView {
 
     if nextIsNearBottom != isNearBottom {
       isNearBottom = nextIsNearBottom
+      WorkChatScrollTrace.follow(nextIsNearBottom, reason: "stickiness-threshold")
     }
 
     guard nextIsNearBottom else { return }
@@ -1635,6 +1638,7 @@ extension WorkChatSessionView {
       ) {
         bottomStickinessReleasedByUser = false
         isNearBottom = true
+        WorkChatScrollTrace.follow(true, reason: "reclaim-after-window-change")
       }
     }
 
@@ -1654,6 +1658,17 @@ extension WorkChatSessionView {
       pinToLatestAfterLayout(proxy, reason: "layout-geometry")
     case .restoreOffset(let y):
       guard abs(y - scrollMetrics.offsetY) > workChatLayoutGeometrySlop else { return }
+      WorkChatScrollTrace.write(
+        reason: "layout-restore-offset",
+        target: "y=\(y)",
+        site: "WorkChatSessionView+Actions.swift:applyLayoutGeometryScrollAdjustment",
+        offsetBefore: scrollMetrics.offsetY,
+        contentHeight: next.contentHeight,
+        containerHeight: next.containerHeight,
+        scrollableHeight: next.scrollableHeight,
+        following: isNearBottom,
+        userDrivenPhase: timelineScrollPhaseUserDriven
+      )
       var transaction = Transaction()
       transaction.disablesAnimations = true
       withTransaction(transaction) {
@@ -1663,8 +1678,19 @@ extension WorkChatSessionView {
   }
 
   @MainActor
-  func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
+  func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool, traceReason: String = "scroll-to-latest") {
     bottomStickinessReleasedByUser = false
+    WorkChatScrollTrace.write(
+      reason: traceReason,
+      target: animated ? "edge=bottom(animated)" : "edge=bottom",
+      site: "WorkChatSessionView+Actions.swift:scrollToLatest",
+      offsetBefore: scrollMetrics.offsetY,
+      contentHeight: scrollMetrics.contentHeight,
+      containerHeight: scrollMetrics.containerHeight,
+      scrollableHeight: scrollMetrics.scrollableHeight,
+      following: isNearBottom,
+      userDrivenPhase: timelineScrollPhaseUserDriven
+    )
     if animated {
       withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
         // Keep the ScrollPosition channel and the id-based reader in agreement.
@@ -1699,19 +1725,26 @@ extension WorkChatSessionView {
 
   @MainActor
   func pinToLatestAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
-    guard isNearBottom, canWriteAutomaticScrollOffset else { return }
+    guard isNearBottom, canWriteAutomaticScrollOffset else {
+      WorkChatScrollTrace.writeSuppressed(
+        reason: "pin:\(reason)",
+        site: "WorkChatSessionView+Actions.swift:pinToLatestAfterLayout",
+        cause: isNearBottom ? "reader-owns-scroll" : "not-following"
+      )
+      return
+    }
     latestPinGeneration &+= 1
     let generation = latestPinGeneration
     latestPinTask?.cancel()
     latestPinTask = Task { @MainActor in
       guard generation == latestPinGeneration, isNearBottom, canWriteAutomaticScrollOffset else { return }
-      scrollToLatest(proxy, animated: false)
+      scrollToLatest(proxy, animated: false, traceReason: "pin:\(reason)")
       try? await Task.sleep(for: .milliseconds(16))
       guard !Task.isCancelled,
             generation == latestPinGeneration,
             isNearBottom,
             canWriteAutomaticScrollOffset else { return }
-      scrollToLatest(proxy, animated: false)
+      scrollToLatest(proxy, animated: false, traceReason: "pin-retry:\(reason)")
       if generation == latestPinGeneration {
         latestPinTask = nil
       }
@@ -1720,7 +1753,17 @@ extension WorkChatSessionView {
 
   @MainActor
   func forcePinToLatestAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
-    guard canWriteAutomaticScrollOffset else { return }
+    guard canWriteAutomaticScrollOffset else {
+      WorkChatScrollTrace.writeSuppressed(
+        reason: "force-pin:\(reason)",
+        site: "WorkChatSessionView+Actions.swift:forcePinToLatestAfterLayout",
+        cause: "reader-owns-scroll"
+      )
+      return
+    }
+    if !isNearBottom {
+      WorkChatScrollTrace.follow(true, reason: "force-pin:\(reason)")
+    }
     isNearBottom = true
     if unreadBelowCount > 0 {
       unreadBelowCount = 0
@@ -1730,14 +1773,14 @@ extension WorkChatSessionView {
     latestPinTask?.cancel()
     latestPinTask = Task { @MainActor in
       guard generation == latestPinGeneration, isNearBottom, canWriteAutomaticScrollOffset else { return }
-      scrollToLatest(proxy, animated: false)
+      scrollToLatest(proxy, animated: false, traceReason: "force-pin:\(reason)")
       for delay in [16, 80, 180, 320] {
         try? await Task.sleep(for: .milliseconds(delay))
         guard !Task.isCancelled,
               generation == latestPinGeneration,
               isNearBottom,
               canWriteAutomaticScrollOffset else { return }
-        scrollToLatest(proxy, animated: false)
+        scrollToLatest(proxy, animated: false, traceReason: "force-pin-retry\(delay):\(reason)")
       }
       if generation == latestPinGeneration {
         latestPinTask = nil

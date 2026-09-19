@@ -1332,12 +1332,24 @@ struct WorkChatSessionView: View {
       probeRowY: scrollMetrics.probeRowY
     ) {
     case .ignore:
+      WorkChatScrollTrace.note(
+        "prepend-arm IGNORE prevFirst=\(previousFirstId ?? "nil") "
+          + "nextFirst=\(nextPresentation.visibleEntries.first?.id ?? "nil") "
+          + "probeRow=\(scrollMetrics.probeRowId ?? "nil") "
+          + "probeY=\(scrollMetrics.probeRowY.map { "\($0)" } ?? "nil") "
+          + "prevCount=\(timelinePresentation.visibleEntries.count) "
+          + "nextCount=\(nextPresentation.visibleEntries.count) "
+          + "distanceFromTop=\(scrollMetrics.distanceFromTop)"
+      )
       return
     case .extendExistingAnchorWindow:
+      WorkChatScrollTrace.note("prepend-arm EXTEND")
       scrollMetrics.prependAnchor?.remainingAttempts = workChatPrependAnchorAttempts
     case .retireAnchor:
+      WorkChatScrollTrace.note("prepend-arm RETIRE")
       scrollMetrics.prependAnchor = nil
     case .arm(let rowId, let rowY):
+      WorkChatScrollTrace.note("prepend-arm ARM row=\(rowId) y=\(rowY)")
       scrollMetrics.prependAnchor = WorkChatPrependAnchor(
         rowId: rowId,
         rowY: rowY,
@@ -1367,10 +1379,20 @@ struct WorkChatSessionView: View {
       )
     ) {
     case .wait:
+      WorkChatScrollTrace.writeSuppressed(
+        reason: "prepend-restore",
+        site: "WorkChatSessionView.swift:restorePrependAnchorIfNeeded",
+        cause: "wait-for-probe"
+      )
       return
     case .retry:
       anchor.remainingAttempts -= 1
       scrollMetrics.prependAnchor = anchor.remainingAttempts > 0 ? anchor : nil
+      WorkChatScrollTrace.writeSuppressed(
+        reason: "prepend-restore",
+        site: "WorkChatSessionView.swift:restorePrependAnchorIfNeeded",
+        cause: "retry attempts=\(anchor.remainingAttempts)"
+      )
       return
     case .apply(let height):
       insertedHeight = height
@@ -1379,8 +1401,26 @@ struct WorkChatSessionView: View {
     scrollMetrics.prependAnchor = nil
     // Bottom-follow owns the scroll position when the reader is parked at the
     // tail; a prepend there is invisible anyway.
-    guard !isNearBottom else { return }
+    guard !isNearBottom else {
+      WorkChatScrollTrace.writeSuppressed(
+        reason: "prepend-restore",
+        site: "WorkChatSessionView.swift:restorePrependAnchorIfNeeded",
+        cause: "following-tail"
+      )
+      return
+    }
 
+    WorkChatScrollTrace.write(
+      reason: "prepend-restore",
+      target: "y=\(min(max(0, scrollMetrics.offsetY + insertedHeight), scrollMetrics.scrollableHeight)) inserted=\(insertedHeight)",
+      site: "WorkChatSessionView.swift:restorePrependAnchorIfNeeded",
+      offsetBefore: scrollMetrics.offsetY,
+      contentHeight: scrollMetrics.contentHeight,
+      containerHeight: scrollMetrics.containerHeight,
+      scrollableHeight: scrollMetrics.scrollableHeight,
+      following: isNearBottom,
+      userDrivenPhase: timelineScrollPhaseUserDriven
+    )
     var transaction = Transaction()
     transaction.disablesAnimations = true
     withTransaction(transaction) {
@@ -1883,7 +1923,7 @@ struct WorkChatSessionView: View {
         },
         onSend: onSend,
         onSent: {
-          scrollToLatest(proxy, animated: true)
+          scrollToLatest(proxy, animated: true, traceReason: "composer-sent")
         }
       )
     }
@@ -1950,6 +1990,7 @@ struct WorkChatSessionView: View {
           .scrollPosition($scrollPosition)
           .onScrollPhaseChange { _, phase in
             let userDriven = workChatScrollPhaseIsUserDriven(phase)
+            WorkChatScrollTrace.phase(userDriven: userDriven, raw: "\(phase)")
             scrollMetrics.phaseIsUserDriven = userDriven
             let layoutRecent = workChatLayoutAdjustedRecently(
               lastAdjustmentUptime: scrollMetrics.lastLayoutAdjustmentUptime,
@@ -2012,6 +2053,15 @@ struct WorkChatSessionView: View {
               scrollMetrics.stableOffsetY = sample.offsetY
             }
             guard sample.containerHeight > 1 else { return }
+            WorkChatScrollTrace.sample(
+              offsetY: sample.offsetY,
+              contentHeight: sample.contentHeight,
+              containerHeight: sample.containerHeight,
+              scrollableHeight: sample.scrollableHeight,
+              distanceFromBottom: sample.distanceFromBottom,
+              userDrivenPhase: timelineScrollPhaseUserDriven,
+              following: isNearBottom
+            )
             updateBottomStickiness(distanceFromBottom: sample.distanceFromBottom, proxy: proxy)
             continueAutomaticOlderHistoryIfNeeded()
             requestOlderHistoryIfScrolledNearTop(distanceFromTop: sample.distanceFromTop)
@@ -2024,6 +2074,14 @@ struct WorkChatSessionView: View {
           .onScrollGeometryChange(for: WorkChatContentSizeSample.self) { geometry in
             WorkChatContentSizeSample(geometry)
           } action: { previous, sample in
+            WorkChatScrollTrace.contentSize(
+              previousContent: previous.contentHeight,
+              nextContent: sample.contentHeight,
+              previousContainer: previous.containerHeight,
+              nextContainer: sample.containerHeight,
+              offsetY: scrollMetrics.offsetY,
+              following: isNearBottom
+            )
             if transcriptContentFitsViewport != sample.contentFitsViewport {
               transcriptContentFitsViewport = sample.contentFitsViewport
             }
@@ -2047,11 +2105,12 @@ struct WorkChatSessionView: View {
           .overlay(alignment: .bottomTrailing) {
             if unreadBelowCount > 0 || !isNearBottom {
               WorkJumpToLatestPill(count: unreadBelowCount) {
+                WorkChatScrollTrace.follow(true, reason: "jump-to-latest-pill")
                 isNearBottom = true
                 if timelineDragActive {
                   timelineDragActive = false
                 }
-                scrollToLatest(proxy, animated: true)
+                scrollToLatest(proxy, animated: true, traceReason: "jump-to-latest-pill")
                 unreadBelowCount = 0
               }
               .padding(.trailing, 16)
