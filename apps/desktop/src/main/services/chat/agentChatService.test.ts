@@ -54377,6 +54377,29 @@ describe("acp chat runtime", () => {
     expect(statuses).toContain("completed");
   });
 
+  it("configures Copilot's native ACP mode without sending an unsupported model option", async () => {
+    const harness = await openAcpHarness({
+      provider: "copilot",
+      model: "claude-sonnet-4.6",
+      modelId: "github-copilot/claude-sonnet-4.6",
+      sessionOverrides: { permissionMode: "plan" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "plan this" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const configCalls = harness.agent.received.filter((entry) => entry.method === "session/set_config_option");
+    expect(configCalls).toHaveLength(1);
+    expect(configCalls[0]?.params).toMatchObject({
+      configId: "mode",
+      value: "https://agentclientprotocol.com/protocol/session-modes#plan",
+    });
+    expect(configCalls.some((entry) => (entry.params as { configId?: string }).configId === "model")).toBe(false);
+  });
+
   it("forwards image URL attachments in the ACP prompt payload", async () => {
     const harness = await openAcpHarness({
       provider: "qwen",

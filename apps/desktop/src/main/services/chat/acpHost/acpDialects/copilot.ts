@@ -6,14 +6,12 @@
  *
  * ## Verified rules
  *
- * - Version 1.0.82 (ACP agent 1.0.4) advertises `loadSession`, image prompts,
- *   and session list. It does **not** advertise `session/resume` or
- *   `session/close`; both answer -32601. ADE still sends `session/close` and
- *   degrades, keeping the pooled process. Live 1.0.82 on this machine completed
- *   real `session/prompt` turns (text `"ping"`, usage on the prompt result and
- *   `usage_update`). Cancel mid-prompt returned `stopReason: "end_turn"` with
- *   partial text — github/copilot-cli #4561, live. Config options arrive as
- *   `currentValue` / nested `value`, not ADE's `value` / `options[].id`.
+ * - The 1.0.86 compatibility baseline advertises `loadSession`, image prompts,
+ *   HTTP/SSE MCP, and session list/close. It does not advertise
+ *   `session/resume`. Config options arrive as `currentValue` / nested `value`,
+ *   not ADE's `value` / `options[].id`. Older 1.0.x binaries may omit close;
+ *   the host gates lifecycle calls against the handshake and keeps a shared
+ *   process alive when it has to degrade.
  * - **Known bug.** Cancel may report `stopReason: "end_turn"`
  *   (github/copilot-cli issue 4561). ADE records its own cancel and marks the
  *   turn interrupted whatever the agent says. That accounting lives in the
@@ -60,6 +58,7 @@ import {
   standardClose,
   standardLoad,
   standardSetModel,
+  standardSetConfigOption,
   transportGatedMcpInjection,
   withOptionalEnv,
 } from "./shared";
@@ -88,6 +87,32 @@ export const COPILOT_TUI_ONLY_COMMANDS: ReadonlySet<string> = new Set([
 
 export const COPILOT_CANCEL_DEGRADATION_NOTE =
   "Copilot sometimes reports a stopped turn as finished. ADE marks it stopped.";
+
+export const COPILOT_PERMISSION_DEGRADATION_NOTE =
+  "Copilot ACP has no auto-edit mode. ADE maps auto-edit and auto to approval-gated Agent mode.";
+
+export function copilotPermissionModeDegradationNote(mode: string | null | undefined): string | null {
+  return mode === "auto-edit" || mode === "auto" ? COPILOT_PERMISSION_DEGRADATION_NOTE : null;
+}
+
+export const COPILOT_NATIVE_MODE_IDS = {
+  agent: "https://agentclientprotocol.com/protocol/session-modes#agent",
+  plan: "https://agentclientprotocol.com/protocol/session-modes#plan",
+  autopilot: "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+} as const;
+
+export const COPILOT_CONFIG_OPTION_IDS = ["mode", "allow_all"] as const;
+
+export function copilotNativeModeValue(mode: string): string {
+  if (mode === "plan") return COPILOT_NATIVE_MODE_IDS.plan;
+  if (mode === "yolo") return COPILOT_NATIVE_MODE_IDS.autopilot;
+  return COPILOT_NATIVE_MODE_IDS.agent;
+}
+
+/** Copilot's Agent fallback remains approval-gated for ADE supervision. */
+export function copilotSupervisionPermissionMode(mode: string | null | undefined): string | null | undefined {
+  return mode === "auto-edit" || mode === "auto" ? "default" : mode;
+}
 
 function normalizeCommandName(name: string): string {
   return name.replace(/^\/+/, "").trim().toLowerCase();
@@ -124,9 +149,14 @@ export const copilotDialect = defineAcpDialect({
   binaryNames: ["copilot"],
   buildSpawnPlan,
 
-  // Copilot 1.0.82 answers a `session/cancel` REQUEST with -32601. The
-  // notification form is the one the binary accepts, same as Grok.
+  // Copilot 1.0.82 answered a `session/cancel` REQUEST with -32601. The
+  // notification form is the compatibility-safe path, same as Grok.
   cancelStyle: "notification",
+  // `--model` and `--effort` are process global, so two chats with different
+  // values must not share a process. Those values are part of the pool key.
+  // `--model` is supported by ACP in the 1.0.86 baseline even though it is not
+  // a session config option.
+  //
   // `--effort` is process global, so two chats with different effort values
   // must not share a process. The environment carries the config home; the
   // effort flag is folded into the pool key by the caller through the spawn
@@ -155,6 +185,7 @@ export const copilotDialect = defineAcpDialect({
   },
 
   degradationNotes: [COPILOT_CANCEL_DEGRADATION_NOTE],
+  degradationNoteForMode: copilotPermissionModeDegradationNote,
 
   usageSource: "usage_update",
   usage: capability(({ usageUpdate, promptUsage }) => {
@@ -189,9 +220,11 @@ export const copilotDialect = defineAcpDialect({
   resumeSession: capabilityAbsent,
   loadSession: capability(standardLoad),
 
-  sessionConfig: capabilityAbsent,
+  nativeModeValue: copilotNativeModeValue,
+  supervisionPermissionMode: copilotSupervisionPermissionMode,
+  sessionConfig: capability(standardSetConfigOption),
   modelSelection: capability(standardSetModel),
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),
-  configOptionIds: [],
+  configOptionIds: COPILOT_CONFIG_OPTION_IDS,
 });

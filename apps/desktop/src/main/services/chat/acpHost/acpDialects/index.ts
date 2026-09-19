@@ -24,7 +24,15 @@ export function acpDialectFor(providerId: AcpProviderId): AcpDialect {
 }
 
 export { copilotDialect, grokDialect, kimiDialect, qwenDialect };
-export { COPILOT_TUI_ONLY_COMMANDS, includeCopilotSlashCommand } from "./copilot";
+export {
+  COPILOT_CONFIG_OPTION_IDS,
+  COPILOT_NATIVE_MODE_IDS,
+  COPILOT_TUI_ONLY_COMMANDS,
+  copilotPermissionModeDegradationNote,
+  copilotNativeModeValue,
+  copilotSupervisionPermissionMode,
+  includeCopilotSlashCommand,
+} from "./copilot";
 export {
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
   GROK_MINIMUM_VERSION,
