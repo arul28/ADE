@@ -34,5 +34,9 @@ export {
   grokSupervisionEnv,
   readGrokPromptUsage,
 } from "./grok";
-export { KIMI_USAGE_DEGRADATION_NOTE, KIMI_WINDOWS_DEGRADATION_NOTE } from "./kimi";
+export {
+  KIMI_CONFIG_OPTION_IDS,
+  KIMI_USAGE_DEGRADATION_NOTE,
+  KIMI_WINDOWS_DEGRADATION_NOTE,
+} from "./kimi";
 export { QWEN_CONFIG_OPTION_IDS } from "./qwen";

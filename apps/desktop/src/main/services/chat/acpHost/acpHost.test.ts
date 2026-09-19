@@ -32,6 +32,7 @@ import {
   GROK_SESSION_NOTIFICATION_METHOD,
   GROK_YOLO_MODE_CHANGED_METHOD,
   includeCopilotSlashCommand,
+  KIMI_CONFIG_OPTION_IDS,
   kimiDialect,
   qwenDialect,
   readGrokPromptUsage,
@@ -185,12 +186,14 @@ describe("dialect capability declarations", () => {
     expect(qwenDialect.authProbe.methodId).toBe("openai");
   });
 
-  it("kimi 0.39.1 implements session/close and still hides usage", () => {
+  it("kimi 0.39.1 baseline implements close and 2.0.0 config controls", () => {
     expect(kimiDialect.closeStyle).toBe("close_request");
     expect(kimiDialect.oneProcessPerSession).toBe(false);
     expect(kimiDialect.usageSource).toBe("none");
     expect(kimiDialect.degradationNotes.length).toBeGreaterThan(0);
     expect(kimiDialect.authProbe.methodId).toBe("login");
+    expect(kimiDialect.sessionConfig.declared).toBe(true);
+    expect([...kimiDialect.configOptionIds]).toEqual([...KIMI_CONFIG_OPTION_IDS]);
   });
 });
 
@@ -984,7 +987,17 @@ describe("session config", () => {
     expect([...qwenDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
   });
 
-  it.each(["kimi", "grok", "copilot"] as const)(
+  it("kimi forwards mode, model, and thinking config options", async () => {
+    const harness = makeHarness(kimiDialect);
+    harness.agent.on(ACP_METHOD.sessionSetConfigOption, () => ({ result: {} }));
+    const session = await withDeadline("open", harness.open());
+    await withDeadline("set", session.setConfigOption({ configId: "thinking", value: "high" }));
+    const call = harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionSetConfigOption);
+    expect(call?.params).toMatchObject({ sessionId: "session-1", configId: "thinking", value: "high" });
+    expect([...kimiDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
+  });
+
+  it.each(["grok", "copilot"] as const)(
     "%s refuses a config option instead of sending a call it does not support",
     async (providerId) => {
       const harness = makeHarness(acpDialectFor(providerId));

@@ -76,13 +76,21 @@ providers identically.
 - Windows: npm `.cmd` shim → prompt rides PTY (`promptRidesInArgv = platform
   !== "win32"`), same rule as Claude.
 
-### Kimi (`kimi acp`, native binary **0.39.1**, repo MoonshotAI/kimi-code — NOT the
-deprecated Python kimi-cli)
+### Kimi (`kimi acp`, compatibility target **2.0.0**, captured baseline **0.39.1**,
+repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
 - Caps: loadSession, list, resume, **`session/close` (implemented; dummy id
   returns `{}`)**, plus delete/fork/additionalDirectories. Image prompts yes,
   audio no. MCP http/sse. `agentCapabilities.auth.logout` is advertised; ADE
   has no ACP logout yet. **Usage on the wire still unverified** (hidden meter
   + degradation note until an authenticated turn proves otherwise).
+- ACP v1 config: Kimi Code 2.0.0 documents `session/set_config_option` for the
+  `mode`, `model`, and `thinking` options. ADE forwards those options to the
+  native ACP session and surfaces the agent's returned values in the generic
+  ACP composer controls. The captured 0.39.1 fixture remains the compatibility
+  baseline; a live authenticated 2.0.0 turn is still required to validate
+  usage and cancellation behavior end to end.
+- Vendor references: [Kimi ACP reference](https://moonshotai.github.io/kimi-code/en/reference/kimi-acp) and
+  [Kimi Code 2.0.0 release](https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai%2Fkimi-code%402.0.0).
 - Auth: `kimi login` / `kimi acp --login` device-code; region
   `mainland-cn` (kimi.com) or `global` (kimi.ai). ADE does **not** write
   `~/.kimi-code/config.toml`. `authenticate` method id

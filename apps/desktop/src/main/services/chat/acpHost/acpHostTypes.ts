@@ -80,7 +80,8 @@ export type AcpCancelStyle = "request" | "notification";
  * `kill_process` means the agent has no `session/close`. Qwen 0.22.3 is in
  * that group: it does not advertise close and answers -32601. Each such chat
  * owns its own process and the host ends the chat by ending the process.
- * Kimi 0.39.1 advertises close and implements it, so it is `close_request`.
+ * Kimi's 0.39.1 compatibility baseline and 2.0.0 reference both advertise
+ * close and implement it, so it is `close_request`.
  */
 export type AcpCloseStyle = "close_request" | "kill_process";
 
