@@ -941,35 +941,33 @@ describe("chatTranscriptRows", () => {
     expect(grouped[0]!.event.entries[0]!.result).toEqual({ error: "permission denied" });
   });
 
-  it("merges consecutive reasoning events with same turn/item/summaryIndex into one entry", () => {
-    // Build rows that bypass collapse (e.g. from different summaryIndex values that
-    // happened to resolve to the same identity after a prior pass). The grouping step
-    // should merge them with a "---" separator.
+  it("concatenates consecutive reasoning deltas with the same turn/item/summaryIndex", () => {
+    // Same identity means streamed deltas of one thought, so they rejoin
+    // verbatim — not two `---`-separated blocks. A hidden context_usage row
+    // between the deltas is removed before grouping, so this is the path that
+    // used to turn "Hello " + "world" into separate Markdown blocks.
     const rows = [
       {
         key: "s1:0:t0",
         timestamp: "2026-04-08T12:00:00.000Z",
-        event: { type: "reasoning" as const, text: "First block.", turnId: "t1", itemId: "r1", summaryIndex: null },
+        event: { type: "reasoning" as const, text: "Hello ", turnId: "t1", itemId: "r1", summaryIndex: null },
       },
       {
         key: "s1:1:t1",
         timestamp: "2026-04-08T12:00:01.000Z",
-        event: { type: "reasoning" as const, text: "Second block.", turnId: "t1", itemId: "r1", summaryIndex: null },
+        event: { type: "reasoning" as const, text: "world", turnId: "t1", itemId: "r1", summaryIndex: null },
       },
     ];
 
     const grouped = groupConsecutiveWorkLogRows(rows as any);
     const reasoning = grouped.filter((r) => r.event.type === "reasoning");
     expect(reasoning).toHaveLength(1);
-    const text = (reasoning[0]!.event as any).text as string;
-    expect(text).toContain("First block.");
-    expect(text).toContain("---");
-    expect(text).toContain("Second block.");
+    expect((reasoning[0]!.event as any).text).toBe("Hello world");
     // Should use the later timestamp
     expect(reasoning[0]!.timestamp).toBe("2026-04-08T12:00:01.000Z");
   });
 
-  it("does not merge consecutive reasoning events with different itemIds", () => {
+  it("merges consecutive reasoning events with different itemIds in the same turn", () => {
     const rows = [
       {
         key: "s1:0:t0",
@@ -980,6 +978,78 @@ describe("chatTranscriptRows", () => {
         key: "s1:1:t1",
         timestamp: "2026-04-08T12:00:01.000Z",
         event: { type: "reasoning" as const, text: "Thought B.", turnId: "t1", itemId: "r2" },
+      },
+    ];
+
+    const grouped = groupConsecutiveWorkLogRows(rows as any);
+    const reasoning = grouped.filter((r) => r.event.type === "reasoning");
+    expect(reasoning).toHaveLength(1);
+    const text = (reasoning[0]!.event as any).text as string;
+    expect(text).toContain("Thought A.");
+    expect(text).toContain("Thought B.");
+  });
+
+  it("drops both earlier blocks when a later reasoning event re-emits them cumulatively", () => {
+    // The whole run is folded in one pass, so a re-emit covering two earlier
+    // fragments leaves neither behind as a duplicate trailing block.
+    const rows = [
+      {
+        key: "s1:0:t0",
+        timestamp: "2026-04-08T12:00:00.000Z",
+        event: { type: "reasoning" as const, text: "First part.", turnId: "t1", itemId: "r1" },
+      },
+      {
+        key: "s1:1:t1",
+        timestamp: "2026-04-08T12:00:01.000Z",
+        event: { type: "reasoning" as const, text: "Second part.", turnId: "t1", itemId: "r2" },
+      },
+      {
+        key: "s1:2:t2",
+        timestamp: "2026-04-08T12:00:02.000Z",
+        event: { type: "reasoning" as const, text: "First part. Second part.", turnId: "t1", itemId: "r3" },
+      },
+    ];
+
+    const grouped = groupConsecutiveWorkLogRows(rows as any);
+    const reasoning = grouped.filter((r) => r.event.type === "reasoning");
+    expect(reasoning).toHaveLength(1);
+    expect((reasoning[0]!.event as any).text).toBe("First part. Second part.");
+  });
+
+  it("collapses a provider-re-emitted reasoning block instead of repeating its text", () => {
+    // Claude persists one thought twice: the stream reports content index 1,
+    // the SDK snapshot reports block index 0. Both carry the full text.
+    const text = "The 2,015,890-character replay text lines up with a budget derived from the 1M-token window at 4 chars/token.";
+    const rows = [
+      {
+        key: "s1:0:t0",
+        timestamp: "2026-04-08T12:00:00.000Z",
+        event: { type: "reasoning" as const, text, turnId: "t1", itemId: "claude-thinking:t1:1" },
+      },
+      {
+        key: "s1:1:t1",
+        timestamp: "2026-04-08T12:00:01.000Z",
+        event: { type: "reasoning" as const, text, turnId: "t1", itemId: "claude-thinking:t1:0" },
+      },
+    ];
+
+    const grouped = groupConsecutiveWorkLogRows(rows as any);
+    const reasoning = grouped.filter((r) => r.event.type === "reasoning");
+    expect(reasoning).toHaveLength(1);
+    expect((reasoning[0]!.event as any).text).toBe(text);
+  });
+
+  it("keeps reasoning from different turns as separate rows", () => {
+    const rows = [
+      {
+        key: "s1:0:t0",
+        timestamp: "2026-04-08T12:00:00.000Z",
+        event: { type: "reasoning" as const, text: "First turn.", turnId: "t1", itemId: "r1" },
+      },
+      {
+        key: "s1:1:t1",
+        timestamp: "2026-04-08T12:00:01.000Z",
+        event: { type: "reasoning" as const, text: "Second turn.", turnId: "t2", itemId: "r2" },
       },
     ];
 

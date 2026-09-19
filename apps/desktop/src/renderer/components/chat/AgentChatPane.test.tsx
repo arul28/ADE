@@ -3497,18 +3497,20 @@ describe("AgentChatPane submit recovery", () => {
 
   it("restores the backend summary and composer after steer dispatch fails", async () => {
     // Queue-only provider, so the single "Send steer message" affordance is the
-    // one on screen. Codex now has an inline channel and renders the split
-    // button instead.
+    // one on screen. Codex, Cursor and OpenCode all have an inline channel now
+    // and render the split button instead.
     const activeSession = buildSession("session-1", {
       status: "active",
-      provider: "opencode",
-      modelId: "opencode/openai/gpt-5.4",
+      provider: "droid",
+      model: "claude-sonnet-4-5",
+      modelId: "droid/claude-sonnet-4-5",
     });
     const idleSession = buildSession("session-1", {
       status: "idle",
       currentTurnStartedAt: null,
-      provider: "opencode",
-      modelId: "opencode/openai/gpt-5.4",
+      provider: "droid",
+      model: "claude-sonnet-4-5",
+      modelId: "droid/claude-sonnet-4-5",
     });
     const { list, steer } = installAdeMocks({
       sessions: [activeSession],
@@ -3684,10 +3686,11 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps the draft cleared after steer succeeds even if session refresh fails", async () => {
-    // Queue-only provider: the plain steer button, not Codex's split send.
+    // Queue-only provider: the plain steer button, not the split send.
     const session = buildSession("session-1", {
-      provider: "opencode",
-      modelId: "opencode/openai/gpt-5.4",
+      provider: "droid",
+      model: "claude-sonnet-4-5",
+      modelId: "droid/claude-sonnet-4-5",
     });
     const { steer } = installAdeMocks({
       sessions: [session],
@@ -4661,8 +4664,9 @@ describe("AgentChatPane submit recovery", () => {
   it("falls back to a normal send when the active-turn marker is stale", async () => {
     // Queue-only provider: the plain steer button, not Codex's split send.
     const session = buildSession("session-1", {
-      provider: "opencode",
-      modelId: "opencode/openai/gpt-5.4",
+      provider: "droid",
+      model: "claude-sonnet-4-5",
+      modelId: "droid/claude-sonnet-4-5",
     });
     const { send, steer } = installAdeMocks({
       sessions: [session],

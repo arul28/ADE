@@ -3631,8 +3631,9 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  * three since `@cursor/sdk` 1.0.31 added `Run.steer()`, which injects a message
  * into the live local run; its interrupt still means something different from
  * Claude's — it cancels the run and resends on the same agent thread — which is
- * why `activeTurnInterruptContinues` keeps saying so. Everything else is
- * queue-only.
+ * why `activeTurnInterruptContinues` keeps saying so. OpenCode takes the v2
+ * session prompt's `delivery: "steer"` input into the live agent loop, so it
+ * has "inline" and no interrupt mode. Everything else is queue-only.
  *
  * Cursor's inline mode is effectively local-only. A cloud run implements
  * `Run.steer` but refuses every call, so a cloud turn degrades to a follow-up
@@ -3648,6 +3649,7 @@ export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, reado
   claude: ["inline", "queue", "interrupt"],
   codex: ["inline", "queue"],
   cursor: ["inline", "queue", "interrupt"],
+  opencode: ["inline", "queue"],
   qwen: ["queue"],
   kimi: ["queue"],
   grok: ["queue"],

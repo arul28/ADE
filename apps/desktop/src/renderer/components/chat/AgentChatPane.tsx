@@ -58,6 +58,7 @@ import {
   type TerminalSessionDetail,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
+import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
 import {
   isUnsupportedAgentChatRecoveryActionError,
   providerForkReplaysTranscript,
@@ -712,7 +713,7 @@ function mergeAdjacentSubagentEvents(left: AgentChatEvent, right: AgentChatEvent
     return { ...right, text: `${left.text}${right.text}`, messageId: left.messageId ?? right.messageId };
   }
   if (left.type === "reasoning" && right.type === "reasoning") {
-    return { ...right, text: `${left.text}${right.text}` };
+    return { ...right, text: mergeReasoningFragment(left.text, right.text) };
   }
   if (left.type === "command" && right.type === "command") {
     if (right.status !== "running") return right;
@@ -5828,6 +5829,29 @@ export function AgentChatPane({
       || null,
     [sessionTitleById, sessions],
   );
+
+  // A spawned child chat can run on a different provider than its parent. Its
+  // inline subagent card wears the child's own mark when the session list knows
+  // it; an unresolved child falls back to this chat's provider in the card.
+  //
+  // `sessions` is replaced on every refresh, so keying the resolver directly on
+  // it would invalidate the transcript row memo constantly. Resolve from a map
+  // keyed on a signature of the child→provider mapping instead: a refresh that
+  // changes only array identity keeps the same resolver, while a child that
+  // appears (or changes provider) produces a new one so its card updates.
+  const spawnedChatProviderSignature = sessions
+    .map((session) => `${session.sessionId}\u0000${session.provider ?? ""}`)
+    .join("\u0001");
+  const resolveSpawnedChatProvider = useMemo(() => {
+    const providerById = new Map<string, string>();
+    for (const session of sessions) {
+      if (session.provider) providerById.set(session.sessionId, session.provider);
+    }
+    return (id: string): string | null => providerById.get(id) ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the signature is a
+    // complete key of the mapping this closure reads; omitting `sessions` is
+    // deliberate so a no-op refresh cannot invalidate the transcript row memo.
+  }, [spawnedChatProviderSignature]);
 
   // Keep configured models selectable unless a caller explicitly constrains
   // this surface. Unconstrained sessions keep their active model visible even
@@ -14727,6 +14751,7 @@ export function AgentChatPane({
                         textPacingEnabled={!subagentView}
                         sessionEnded={selectedSession?.status === "ended"}
                         sessionProvider={selectedSession?.provider ?? sessionProvider}
+                        resolveSpawnedChatProvider={resolveSpawnedChatProvider}
                         runtimePin={chatRuntimePin}
                         className="min-h-0 border-0"
                         surfaceMode={surfaceMode}

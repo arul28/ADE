@@ -136,6 +136,12 @@ const mockState = vi.hoisted(() => ({
     permissionReply: ReturnType<typeof vi.fn>;
   }>(),
   openCodePromptAsyncBarrier: null as Promise<void> | null,
+  /** v2 `session.prompt({ delivery: "steer" })` calls, in call order. */
+  openCodeV2SteerCalls: [] as any[],
+  /** Set to make the mocked v2 steer throw, standing in for a refused steer. */
+  openCodeV2SteerError: null as Error | null,
+  /** When set, the mocked v2 steer waits on this before answering. */
+  openCodeV2SteerBarrier: null as Promise<void> | null,
   openCodeTitleForNextPrompt: null as string | null,
   openCodeQuestionForNextPrompt: null as null | {
     id: string;
@@ -482,6 +488,13 @@ vi.mock("../opencode/openCodeRuntime", async () => {
     { type: "text", text: prompt },
     ...files,
   ]),
+  // The v2 steer input's file shape; only the inline steer path calls this.
+  buildOpenCodeV2PromptAttachments: vi.fn(
+    (files: Array<{ path: string; filename?: string }>) => files.map((file) => ({
+      uri: `file://${file.path}`,
+      name: file.filename ?? file.path,
+    })),
+  ),
   // Faithful stand-in for the real resolver: the E2E assertions below check the
   // `tools` map that actually reaches OpenCode's prompt body, and
   // openCodeRuntime.test.ts covers the real implementation.
@@ -548,6 +561,18 @@ vi.mock("../opencode/openCodeRuntime", async () => {
 
     const client = {
       __sessionId: sessionId,
+      // The v2 API ADE uses for inline steering: one admitted input with
+      // `delivery: "steer"` folded into the live agent loop.
+      v2: {
+        session: {
+          prompt: vi.fn(async (params: any) => {
+            mockState.openCodeV2SteerCalls.push(params);
+            if (mockState.openCodeV2SteerBarrier) await mockState.openCodeV2SteerBarrier;
+            if (mockState.openCodeV2SteerError) throw mockState.openCodeV2SteerError;
+            return { data: {} };
+          }),
+        },
+      },
       session: {
         fork: vi.fn(async ({ sessionID }: { sessionID: string }) => {
           const forkedId = `${sessionID}-fork`;
@@ -2427,6 +2452,9 @@ beforeEach(() => {
   mockState.openCodeForkCalls = [];
   mockState.openCodeSessions.clear();
   mockState.openCodePromptAsyncBarrier = null;
+  mockState.openCodeV2SteerCalls = [];
+  mockState.openCodeV2SteerError = null;
+  mockState.openCodeV2SteerBarrier = null;
   mockState.openCodeTitleForNextPrompt = null;
   mockState.openCodeQuestionForNextPrompt = null;
   mockState.droidSessionCounter = 0;
@@ -46359,6 +46387,486 @@ describe("createAgentChatService", () => {
       );
     });
 
+    it("folds an inline OpenCode steer into the live turn through the v2 delivery", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(firstTurnControl.release).toBeTypeOf("function");
+
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "Fold this into the live turn.",
+        dispatchMode: "inline",
+      });
+      expect(steerResult.queued).toBe(false);
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+      expect(mockState.openCodeV2SteerCalls[0]).toEqual(expect.objectContaining({
+        sessionID: expect.any(String),
+        delivery: "steer",
+        // The server validates its `msg_` message-ID brand; a bare uuid would
+        // 400 and silently degrade every inline steer to the queue.
+        id: expect.stringMatching(/^msg_/),
+        prompt: expect.objectContaining({ text: expect.stringContaining("Fold this into the live turn.") }),
+      }));
+
+      const delivered = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "user_message"
+          && event.event.text === "Fold this into the live turn."
+          && (event.event as any).deliveryState === "inline",
+      );
+      expect((delivered.event as any).steerId).toBe(steerResult.steerId);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("queues an OpenCode steer that carries per-message overrides instead of folding it inline", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      // The v2 steer prompt carries text and file parts only, so an execution
+      // override picked for this message cannot ride it. The row must stage
+      // instead, preserving the directive for the turn boundary.
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "Keep my execution override.",
+        dispatchMode: "inline",
+        executionMode: "focused",
+      });
+      expect(steerResult.queued).toBe(true);
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(0);
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Keep my execution override."
+        && (entry.event as any).deliveryState === "queued"
+      )).toBe(true);
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Keep my execution override."
+        && (entry.event as any).deliveryState === "inline"
+      )).toBe(false);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("keeps a staged OpenCode steer with overrides staged instead of promoting it inline", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Promote me with my override.",
+        executionMode: "focused",
+      });
+      expect(queued.queued).toBe(true);
+      const queuedRow = events.find((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Promote me with my override."
+        && (entry.event as any).deliveryState === "queued"
+      );
+      const steerId = (queuedRow!.event as any).steerId as string;
+
+      const dispatchResult = await service.dispatchSteer({
+        sessionId: session.id,
+        steerId,
+        mode: "inline",
+      });
+      expect(dispatchResult.dispatchedAt).toBeNull();
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(0);
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Promote me with my override."
+        && (entry.event as any).deliveryState === "inline"
+      )).toBe(false);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("queues an inline OpenCode steer when the live delivery is refused", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      mockState.openCodeV2SteerError = new Error("steer delivery refused");
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "This one has to wait.",
+        dispatchMode: "inline",
+      });
+      expect(steerResult.queued).toBe(true);
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "This one has to wait."
+        && (entry.event as any).deliveryState === "queued"
+      )).toBe(true);
+      expect(events.some((entry) =>
+        entry.event.type === "system_notice"
+        && /couldn't go into the running turn/i.test(entry.event.message)
+      )).toBe(true);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("promotes a staged OpenCode steer into the live turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Promote me into the live turn.",
+      });
+      expect(queued.queued).toBe(true);
+      const queuedRow = events.find((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Promote me into the live turn."
+        && (entry.event as any).deliveryState === "queued"
+      );
+      const steerId = (queuedRow!.event as any).steerId as string;
+
+      const dispatchResult = await service.dispatchSteer({
+        sessionId: session.id,
+        steerId,
+        mode: "inline",
+      });
+      expect(dispatchResult.dispatchedAt).not.toBeNull();
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+      expect(mockState.openCodeV2SteerCalls[0]?.prompt?.text).toContain("Promote me into the live turn.");
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Promote me into the live turn."
+        && (entry.event as any).deliveryState === "inline"
+      )).toBe(true);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("names a non-file attachment in the prompt when the inline OpenCode steer skips it", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "Fold in this linked image.",
+        attachments: [{
+          type: "image-url",
+          path: "https://cdn.example.com/reference.png",
+          url: "https://cdn.example.com/reference.png",
+        }],
+        dispatchMode: "inline",
+      });
+      expect(steerResult.queued).toBe(false);
+      const promptText = mockState.openCodeV2SteerCalls[0]?.prompt?.text as string;
+      // The URL cannot be a file part, so it must still reach the model as text.
+      expect(promptText).toContain("Attached context:");
+      expect(promptText).toContain("https://cdn.example.com/reference.png");
+      expect(mockState.openCodeV2SteerCalls[0]?.prompt?.files ?? []).toHaveLength(0);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("refuses a cancel while an OpenCode promotion is in flight", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Do not cancel me mid-flight.",
+      });
+      expect(queued.queued).toBe(true);
+      const queuedRow = events.find((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Do not cancel me mid-flight."
+        && (entry.event as any).deliveryState === "queued"
+      );
+      const steerId = (queuedRow!.event as any).steerId as string;
+
+      let releaseSteer!: () => void;
+      mockState.openCodeV2SteerBarrier = new Promise<void>((resolve) => {
+        releaseSteer = resolve;
+      });
+      const dispatch = service.dispatchSteer({ sessionId: session.id, steerId, mode: "inline" });
+      for (let attempt = 0; attempt < 20 && mockState.openCodeV2SteerCalls.length < 1; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+
+      await expect(service.cancelSteer({ sessionId: session.id, steerId }))
+        .rejects.toThrow("already being dispatched");
+
+      releaseSteer();
+      await expect(dispatch).resolves.toMatchObject({ dispatchedAt: expect.any(Number) });
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Do not cancel me mid-flight."
+        && (entry.event as any).deliveryState === "inline"
+      )).toBe(true);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("sends a refused OpenCode steer as its own turn when the live turn already ended", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      let streamCallCount = 0;
+      vi.mocked(streamText).mockImplementation(() => {
+        streamCallCount += 1;
+        if (streamCallCount === 1) {
+          return {
+            fullStream: (async function* () {
+              await new Promise<void>((resolve) => {
+                firstTurnControl.release = resolve;
+              });
+              yield { type: "finish", usage: {} };
+            })(),
+          } as any;
+        }
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+      vi.mocked(buildOpenCodePromptParts).mockClear();
+      mockState.openCodeV2SteerError = new Error("steer delivery refused");
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      // Hold the refused steer in flight across the turn boundary, so the
+      // queue fallback lands after the tail already drained.
+      let releaseSteer!: () => void;
+      mockState.openCodeV2SteerBarrier = new Promise<void>((resolve) => {
+        releaseSteer = resolve;
+      });
+      const steerResult = service.steer({
+        sessionId: session.id,
+        text: "I should still be delivered.",
+        dispatchMode: "inline",
+      });
+      for (let attempt = 0; attempt < 20 && mockState.openCodeV2SteerCalls.length < 1; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+
+      firstTurnControl.release!();
+      await firstTurn;
+      releaseSteer();
+
+      await expect(steerResult).resolves.toMatchObject({ queued: false });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "user_message"
+          && event.event.text === "I should still be delivered."
+          && (event.event as any).deliveryState !== "queued",
+      );
+      expect(vi.mocked(buildOpenCodePromptParts).mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
     it("bridges OpenCode question events through ADE's question UI", async () => {
       const events: AgentChatEventEnvelope[] = [];
       vi.mocked(streamText).mockImplementation(() => ({
@@ -48653,6 +49161,89 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       agentProgressSummaries: true,
       forwardSubagentText: false,
     }));
+  });
+
+  it("does not duplicate Claude thinking when the snapshot reports a different content index", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-thinking-index",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: { type: "thinking", thinking: "" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: {
+            type: "thinking_delta",
+            thinking: "Checking both imports before editing.",
+          },
+        },
+      };
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      // The SDK strips a redacted/empty thinking block from the snapshot, so
+      // the completed block lands at index 0 although the stream said 1.
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "thinking", thinking: "Checking both imports before editing." }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-thinking-index",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const reasoningEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "reasoning" }> => event.type === "reasoning");
+    expect(reasoningEvents.map((event) => event.text)).toEqual(["Checking both imports before editing."]);
   });
 
   it("groups Claude text deltas by the stable message id and suppresses the repeated snapshot", async () => {

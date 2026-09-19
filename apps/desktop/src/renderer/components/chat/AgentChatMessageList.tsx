@@ -2258,6 +2258,20 @@ function isSameProviderModelHandoffEvent(event: {
   return event.type === "model_handoff" && event.fromProvider === event.toProvider;
 }
 
+/**
+ * Rows that never mount a visible row are dropped before grouping. Must gate
+ * every grouping input — the rendered transcript and the anchor resolver both
+ * group rows, and a row key derived with a hidden row present will not match
+ * one derived without it.
+ */
+function filterVisibleTranscriptRows(
+  rows: readonly TranscriptRenderEnvelope[],
+): TranscriptRenderEnvelope[] {
+  return rows.filter(
+    (row) => !isAutomaticContextUsageEvent(row.event) && !isSameProviderModelHandoffEvent(row.event),
+  );
+}
+
 function QueueRecoveryCard({
   recoveryId,
   messageCount,
@@ -2500,9 +2514,34 @@ function VoiceCallGroupCard({
   );
 }
 
+/**
+ * The provider marks a subagent card can wear. A spawned ADE chat reports its
+ * own provider when the host can resolve it; runtime-native subagents — and any
+ * child session the host cannot resolve — inherit the chat's own provider,
+ * which is the runtime that actually ran them. Shared by the renderer entry,
+ * the row component, and its option bags so a new provider hook is added in one
+ * place.
+ */
+type SpawnedChatProviderProps = {
+  /** Chat runtime provider; the default mark for runtime-native subagents. */
+  sessionProvider?: string | null;
+  /** Resolve a spawned child chat's own provider for its subagent card mark. */
+  resolveSpawnedChatProvider?: (sessionId: string) => string | null;
+};
+
+function subagentCardProvider(
+  childSessionId: string | null | undefined,
+  options?: SpawnedChatProviderProps,
+): string | null {
+  const childProvider = childSessionId
+    ? options?.resolveSpawnedChatProvider?.(childSessionId) ?? null
+    : null;
+  return childProvider ?? options?.sessionProvider ?? null;
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
-  options?: {
+  options?: SpawnedChatProviderProps & {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
@@ -3033,6 +3072,7 @@ function renderEvent(
       <SubagentSpawnCard
         event={event}
         laneId={options?.laneId ?? null}
+        provider={subagentCardProvider(event.childSessionId, options)}
         onStop={
           event.taskId && options?.onStopSubagent
             ? (taskId) => options.onStopSubagent?.(taskId)
@@ -3053,6 +3093,7 @@ function renderEvent(
       <SubagentResultCard
         event={event}
         laneId={options?.laneId ?? null}
+        provider={subagentCardProvider(event.childSessionId, options)}
         onViewTranscript={
           event.childSessionId
             ? undefined
@@ -4815,7 +4856,7 @@ function getGroupedTurnId(envelope: TranscriptGroupedEnvelope | undefined): stri
 
 /* ── Main component ── */
 
-type EventRowProps = {
+type EventRowProps = SpawnedChatProviderProps & {
   envelope: TranscriptGroupedEnvelope;
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
@@ -4897,6 +4938,8 @@ const EventRow = React.memo(function EventRow({
   surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
+  sessionProvider,
+  resolveSpawnedChatProvider,
   turnActive,
   sessionTurnActive,
   sessionEnded,
@@ -4982,6 +5025,8 @@ const EventRow = React.memo(function EventRow({
             surfaceMode,
             surfaceProfile,
             assistantLabel,
+            sessionProvider,
+            resolveSpawnedChatProvider,
             turnActive,
             sessionTurnActive,
             sessionEnded,
@@ -5406,7 +5451,7 @@ export function resolveAnchoredChatRowIndex({
   const eventIndex = findAnchoredChatEventIndex({ events, anchorEvent, hasFullHistory });
   if (eventIndex < 0) return -1;
   const targetRows = groupChatTranscriptRows(
-    collapseChatTranscriptEvents(events.slice(0, eventIndex + 1)),
+    filterVisibleTranscriptRows(collapseChatTranscriptEvents(events.slice(0, eventIndex + 1))),
   );
   const targetRow = targetRows[targetRows.length - 1];
   if (!targetRow) return -1;
@@ -5519,6 +5564,7 @@ function AgentChatMessageListMain({
   turnDiffSummaries,
   sessionEnded = false,
   sessionProvider = null,
+  resolveSpawnedChatProvider,
   hasOlderHistory = false,
   loadingOlderHistory = false,
   olderHistoryError = null,
@@ -5531,7 +5577,7 @@ function AgentChatMessageListMain({
   proofArtifacts = [],
   allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
-}: {
+}: SpawnedChatProviderProps & {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   /**
@@ -5590,7 +5636,6 @@ function AgentChatMessageListMain({
   /** Stable identity for collapse warm-cache isolation when rendering a nested transcript. */
   transcriptCollapseCacheKey?: string | null;
   sessionEnded?: boolean;
-  sessionProvider?: string | null;
   /** True when older transcript pages exist above the loaded events. */
   hasOlderHistory?: boolean;
   /** True while an older transcript page is being fetched. */
@@ -5893,14 +5938,11 @@ function AgentChatMessageListMain({
   }, [rows]);
   const allGroupedRows = useMemo(
     // Drop automatic context-usage snapshots and same-provider "handoffs"
-    // before they become flex rows: an empty (null-rendered) row still consumes
-    // a `--chat-row-gap` on each side, so leaving them in would stack blank
-    // gaps during a streaming turn.
-    () =>
-      groupChatTranscriptRows(rows).filter(
-        (row) =>
-          !isAutomaticContextUsageEvent(row.event) && !isSameProviderModelHandoffEvent(row.event),
-      ),
+    // before grouping: an empty (null-rendered) row still consumes a
+    // `--chat-row-gap` on each side, and leaving it in the group input also
+    // broke activity phases — two Thinking rows separated only by a hidden
+    // `context_usage` row stayed two rows instead of merging into one.
+    () => groupChatTranscriptRows(filterVisibleTranscriptRows(rows)),
     [rows],
   );
   // Same lookup-map shape as turnProofByRowKey / turnEndDurationByRowKey rather
@@ -7041,6 +7083,8 @@ function AgentChatMessageListMain({
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
+          sessionProvider={sessionProvider}
+          resolveSpawnedChatProvider={resolveSpawnedChatProvider}
           turnActive={rowTurnActive}
           sessionTurnActive={sessionTurnActive}
           sessionEnded={sessionEnded}
@@ -7101,6 +7145,8 @@ function AgentChatMessageListMain({
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
+        sessionProvider={sessionProvider}
+        resolveSpawnedChatProvider={resolveSpawnedChatProvider}
         turnActive={rowTurnActive}
         sessionTurnActive={sessionTurnActive}
         sessionEnded={sessionEnded}
@@ -7134,7 +7180,7 @@ function AgentChatMessageListMain({
         pacedTextReveal={envelope.key === pacedTextRowKey}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

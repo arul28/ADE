@@ -2651,11 +2651,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat steer <session> --text "context" --dispatch interrupt
                                                     Deliver into the running turn: inline | interrupt.
                                                     Omit --dispatch to stage for the next turn.
-                                                    Claude and Cursor take inline and interrupt; Cursor's
-                                                    interrupt cancels + resends on the same thread, and a
-                                                    Cursor cloud run declines inline and stages instead.
-                                                    Other providers reject the flag outright and nothing
-                                                    is sent; omit --dispatch to stage the message.
+                                                    Claude and Cursor take inline and interrupt; Codex and
+                                                    OpenCode take inline only. Cursor's interrupt cancels
+                                                    and resends on the same thread, and a Cursor cloud run
+                                                    declines inline and stages instead. Other providers
+                                                    reject the flag outright and nothing is sent; omit
+                                                    --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge

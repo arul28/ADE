@@ -37,14 +37,17 @@ describe("Droid permission vocabulary", () => {
 });
 
 describe("active-turn dispatch modes", () => {
-  it("is the one table every surface reads: Claude and Cursor all three, Codex inline-only, others queue-only", () => {
+  it("is the one table every surface reads: Claude, Cursor and OpenCode inline, Codex inline-only, ACP queue-only", () => {
     expect(activeTurnDispatchModes("claude")).toEqual(["inline", "queue", "interrupt"]);
     // Codex's app-server takes `turn/steer` into the running turn — the service
     // has always sent it; the table was the thing that never said so.
     expect(activeTurnDispatchModes("codex")).toEqual(["inline", "queue"]);
     // Cursor gained inline with `Run.steer()` in @cursor/sdk 1.0.31.
     expect(activeTurnDispatchModes("cursor")).toEqual(["inline", "queue", "interrupt"]);
-    for (const provider of ["opencode", "droid", "pi", "qwen", "unknown-provider", undefined]) {
+    // OpenCode's v2 session prompt admits `delivery: "steer"` into the live
+    // agent loop.
+    expect(activeTurnDispatchModes("opencode")).toEqual(["inline", "queue"]);
+    for (const provider of ["droid", "pi", "qwen", "unknown-provider", undefined]) {
       expect(activeTurnDispatchModes(provider)).toEqual(["queue"]);
     }
   });
@@ -53,6 +56,7 @@ describe("active-turn dispatch modes", () => {
     expect(defaultActiveTurnDispatchMode("claude")).toBe("inline");
     expect(defaultActiveTurnDispatchMode("codex")).toBe("inline");
     expect(defaultActiveTurnDispatchMode("cursor")).toBe("inline");
+    expect(defaultActiveTurnDispatchMode("opencode")).toBe("inline");
     expect(defaultActiveTurnDispatchMode("droid")).toBe("queue");
   });
 

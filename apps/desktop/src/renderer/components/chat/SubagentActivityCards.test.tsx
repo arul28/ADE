@@ -10,6 +10,14 @@ import type {
   SubagentStoppedGroupEvent,
 } from "./chatTranscriptRows";
 
+// The provider mark renders the host's tool logo. Stub it so the test can
+// assert WHICH tool type was derived without depending on lobe icon internals.
+vi.mock("../terminals/ToolLogos", () => ({
+  ToolLogo: ({ toolType }: { toolType?: string | null }) => (
+    <span data-testid="tool-logo" data-tool-type={toolType ?? ""} />
+  ),
+}));
+
 function spawnEvent(overrides: Partial<SubagentSpawnAnchorRenderEvent> = {}): SubagentSpawnAnchorRenderEvent {
   return {
     type: "subagent_spawn_anchor",
@@ -100,6 +108,20 @@ describe("SubagentSpawnCard", () => {
       .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
     expect(navEvent).toBeUndefined();
   });
+
+  it("wears the owning runtime's provider mark on the bottom line", () => {
+    const { container } = render(<SubagentSpawnCard event={spawnEvent()} provider="opencode" />);
+    const mark = container.querySelector("[data-subagent-provider]");
+    expect(mark?.getAttribute("data-subagent-provider")).toBe("opencode");
+    // The same tool-type mapping the Work session rows use.
+    expect(screen.getByTestId("tool-logo").getAttribute("data-tool-type")).toBe("opencode-chat");
+  });
+
+  it("renders no provider mark when the runtime is unknown", () => {
+    const { container } = render(<SubagentSpawnCard event={spawnEvent()} provider={null} />);
+    expect(container.querySelector("[data-subagent-provider]")).toBeNull();
+    expect(screen.queryByTestId("tool-logo")).toBeNull();
+  });
 });
 
 describe("SubagentResultCard", () => {
@@ -150,6 +172,19 @@ describe("SubagentResultCard", () => {
     render(<SubagentResultCard event={resultEvent()} onViewTranscript={onViewTranscript} />);
     fireEvent.click(screen.getByRole("button", { name: /View transcript/i }));
     expect(onViewTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it("wears the owning runtime's provider mark beside the counters", () => {
+    const { container } = render(<SubagentResultCard event={resultEvent()} provider="claude" />);
+    expect(container.querySelector("[data-subagent-provider]")?.getAttribute("data-subagent-provider")).toBe("claude");
+    expect(screen.getByTestId("tool-logo").getAttribute("data-tool-type")).toBe("claude-chat");
+  });
+
+  it("renders the provider mark even when the result has no counters", () => {
+    const { container } = render(
+      <SubagentResultCard event={resultEvent({ toolUseCount: null, totalTokens: null })} provider="codex" />,
+    );
+    expect(container.querySelector("[data-subagent-provider]")?.getAttribute("data-subagent-provider")).toBe("codex");
   });
 });
 

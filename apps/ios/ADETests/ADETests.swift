@@ -14102,7 +14102,15 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(codex.agentLabel, "Codex")
     XCTAssertEqual(WorkActiveSendCapability.forProvider("openai").modes, [.inline, .queue])
 
-    for provider in ["droid", "opencode", "pi", ""] {
+    // OpenCode admits `delivery: "steer"` into the live agent loop; no
+    // interrupt, because it has no cancel-and-resend.
+    let opencode = WorkActiveSendCapability.forProvider("opencode")
+    XCTAssertEqual(opencode.modes, [.inline, .queue])
+    XCTAssertEqual(opencode.defaultMode, .inline)
+    XCTAssertFalse(opencode.interruptContinues)
+    XCTAssertEqual(opencode.agentLabel, "OpenCode")
+
+    for provider in ["droid", "pi", ""] {
       let capability = WorkActiveSendCapability.forProvider(provider)
       XCTAssertEqual(capability.modes, [.queue], "expected queue-only for \(provider)")
       XCTAssertEqual(capability.atomicDispatchModes, [], "expected no atomic dispatch for \(provider)")

@@ -848,7 +848,10 @@ that could not work without it.
   no interrupt-and-resend, so `"interrupt"` is rejected. Cursor gets both
   actions on a local session: **send during turn** folds the staged row into the
   live run through `Run.steer()`, and **Interrupt & continue** promotes it to
-  the cancel-and-resend redirect. A Cursor **Cloud** session gets the interrupt
+  the cancel-and-resend redirect. OpenCode gets **send during turn** only: its
+  v2 session prompt admits the row with `delivery: "steer"`, folded into the
+  live agent loop, and it has no interrupt-and-resend. A Cursor **Cloud**
+  session gets the interrupt
   action only, because a cloud run refuses every steer
   (`cursorSessionRunsInCloud`, see [Agent Routing](agent-routing.md)). A refused
   inline dispatch answers `{ dispatchedAt: null }` **without throwing**: the row
@@ -858,7 +861,7 @@ that could not work without it.
   actually dispatch rather than the provider name alone (`stagedSteerHint`), so
   a cloud Cursor session reads "Interrupt with this message, edit or remove."
   rather than promising an inline send. Both buttons are hidden for the
-  remaining providers (OpenCode, Droid, Pi, the ACP providers), which only
+  remaining providers (Droid, Pi, the ACP providers), which only
   support post-turn delivery — and for those the hint says so outright ("Droid
   cannot take a message mid-turn, so this one waits for the turn to end."). That
   sentence keys off `capability.modes`, not the wired handlers, so a Claude or
@@ -868,7 +871,8 @@ that could not work without it.
   raises "Couldn't remove the queued message: …" in the pane error banner. A
   swallowed rejection read as a cancellation that never happened while the agent
   still sent the message.
-- **Mid-turn split Send button.** While a Claude, Codex, or Cursor turn is
+- **Mid-turn split Send button.** While a Claude, Codex, Cursor, or OpenCode
+  turn is
   active, the composer's primary send control is a split button
   (`ActiveTurnSendButton`, Claude Code parity). The caret selects a delivery
   mode without sending; the primary click and Enter execute the selected mode,
@@ -886,8 +890,9 @@ that could not work without it.
   rather than folding into a live query. That per-provider fact is
   `activeTurnInterruptContinues`, beside the table, which the composer, the TUI
   and the iOS mirror all read. Claude and Cursor both carry all three modes and
-  default to *Send during turn*. Codex is the partial case: its app-server takes
-  a mid-turn `turn/steer` but offers no interrupt-and-resend, so it has *Send
+  default to *Send during turn*. Codex and OpenCode are the partial cases: each
+  takes a mid-turn fold-in (Codex's `turn/steer`, OpenCode's
+  `delivery: "steer"`) but offers no interrupt-and-resend, so each has *Send
   during turn* and no interrupt affordance at all. Mode descriptions name the
   actual provider
   ("Stop and redirect Cursor now."). The selection is held for the session and
@@ -910,7 +915,7 @@ that could not work without it.
   `steer({ dispatchMode })` call rather than queue-then-dispatch. The primary
   action disables on an empty draft, while the caret remains available so the
   user can inspect or change the delivery mode. Providers with no atomic
-  active-turn dispatch (OpenCode, Droid, Pi, the ACP providers) keep the single
+  active-turn dispatch (Droid, Pi, the ACP providers) keep the single
   queue-on-send affordance, and a queued Cursor message still gets the plain
   "Message queued — will be sent when the current turn completes." notice.
 - **The CTO composer never offers *Send after turn*.** `AgentChatPane` passes

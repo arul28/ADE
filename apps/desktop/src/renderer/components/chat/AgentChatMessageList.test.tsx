@@ -92,6 +92,7 @@ import {
 import { looksLikeWireframe } from "./questionOptionPreview";
 import {
   collapseChatTranscriptEvents,
+  groupChatTranscriptRows,
   groupConsecutiveWorkLogRows,
 } from "./chatTranscriptRows";
 import { promptHistoryEventKey } from "./chatPromptHistory";
@@ -162,6 +163,8 @@ function renderMessageList(
     onOpenProofDrawer?: () => void;
     usageLimitResumeActive?: boolean;
     usageLimitResumeTurnId?: string | null;
+    sessionProvider?: string | null;
+    resolveSpawnedChatProvider?: (sessionId: string) => string | null;
   },
 ) {
   return render(
@@ -174,6 +177,8 @@ function renderMessageList(
         showStreamingIndicator={options?.showStreamingIndicator}
         sessionEnded={options?.sessionEnded}
         sessionId={options?.sessionId}
+        sessionProvider={options?.sessionProvider}
+        resolveSpawnedChatProvider={options?.resolveSpawnedChatProvider}
         scrollMemoryKey={options?.scrollMemoryKey}
         transcriptCollapseCacheKey={options?.transcriptCollapseCacheKey}
         laneId={options?.laneId}
@@ -3504,6 +3509,56 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 41, hasFullHistory: false })).toBe(0);
   });
 
+  it("resolves an anchor past a hidden context-usage row against the visible grouping", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        sequence: 40,
+        event: { type: "user_message", text: "first", messageId: "user-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        sequence: 41,
+        event: { type: "reasoning", text: "First thought.", itemId: "thought-1", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        sequence: 42,
+        event: {
+          type: "context_usage",
+          origin: "live",
+          turnId: "turn-1",
+          usage: { categories: [], totalTokens: 1, maxTokens: 2, percentage: 0.1, model: "claude" },
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        sequence: 43,
+        event: { type: "reasoning", text: "Second thought.", itemId: "thought-2", turnId: "turn-1" },
+      },
+    ];
+    // The rendered list drops the hidden snapshot BEFORE grouping, so the two
+    // thoughts merge into one row. The anchor resolver must group the same way,
+    // or its target key will not match the rendered row and the anchor drifts
+    // to an earlier row instead.
+    const groupedRows = groupChatTranscriptRows(
+      collapseChatTranscriptEvents(events).filter(
+        (row) =>
+          !(row.event.type === "context_usage"
+            && row.event.origin !== undefined
+            && row.event.origin !== "command"),
+      ),
+    );
+
+    expect(groupedRows).toHaveLength(2);
+    expect(groupedRows[0]?.event.type).toBe("user_message");
+    expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 43, hasFullHistory: false })).toBe(1);
+  });
+
   it("formats turn elapsed time as working-for seconds then minutes", () => {
     expect(formatElapsedSeconds(0)).toBe("0s");
     expect(formatElapsedSeconds(42)).toBe("42s");
@@ -4183,6 +4238,49 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).not.toContain("Thinking...");
   });
 
+  it("merges Thought rows separated only by a hidden context-usage snapshot", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "reasoning",
+          text: "First thought.",
+          itemId: "claude-thinking:turn-1:1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "context_usage",
+          origin: "live",
+          turnId: "turn-1",
+          usage: {
+            categories: [],
+            totalTokens: 1,
+            maxTokens: 2,
+            percentage: 0.1,
+            model: "claude",
+          },
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "reasoning",
+          text: "Second thought.",
+          itemId: "claude-thinking:turn-1:0",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(screen.getAllByText("Thought")).toHaveLength(1);
+  });
+
   it("does not show a fake one-second duration for un-timed completed reasoning", () => {
     const rendered = renderMessageList([
       {
@@ -4296,6 +4394,63 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(text).not.toContain("2 subagents");
     // The result card exposes a "View transcript" affordance.
     expect(text).toContain("View transcript");
+  });
+
+  it("marks inline subagent cards with the chat's runtime provider", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          agentType: "Explore",
+          description: "Inspect the info pane",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          status: "completed",
+          summary: "Pane mapped",
+          turnId: "turn-1",
+        },
+      },
+    ], { sessionProvider: "opencode" });
+
+    const marks = [...rendered.container.querySelectorAll("[data-subagent-provider]")];
+    expect(marks.length).toBeGreaterThan(0);
+    expect(marks.every((mark) => mark.getAttribute("data-subagent-provider") === "opencode")).toBe(true);
+  });
+
+  it("prefers a spawned child chat's own provider for its card mark", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-9",
+          agentId: "child-9",
+          agentType: "Codex",
+          description: "Investigate the failure",
+          spawnKind: "subagent",
+          turnId: "turn-1",
+        },
+      },
+    ], {
+      sessionProvider: "claude",
+      resolveSpawnedChatProvider: (sessionId) => (sessionId === "child-9" ? "codex" : null),
+    });
+
+    const marks = [...rendered.container.querySelectorAll("[data-subagent-provider]")];
+    expect(marks.map((mark) => mark.getAttribute("data-subagent-provider"))).toContain("codex");
   });
 
   it("renders a single spawn card for a Codex parent placeholder + resolved agent pair", () => {

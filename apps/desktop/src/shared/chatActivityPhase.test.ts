@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   collapseActivityPhaseRows,
+  mergeReasoningFragment,
   mergeReasoningTextFragments,
   shouldCollapseActivityPhase,
 } from "./chatActivityPhase";
@@ -87,5 +88,53 @@ describe("chatActivityPhase", () => {
     expect(shouldCollapseActivityPhase({ totalRows: 2, reasoningRows: 1, workRows: 1 })).toBe(false);
     expect(shouldCollapseActivityPhase({ totalRows: 3, reasoningRows: 2, workRows: 1 })).toBe(true);
     expect(shouldCollapseActivityPhase({ totalRows: 2, reasoningRows: 1, workRows: 2 })).toBe(true);
+  });
+
+  describe("mergeReasoningFragment", () => {
+    it("drops an exact re-emit of the same block", () => {
+      expect(mergeReasoningFragment("The same thought.", "The same thought.")).toBe("The same thought.");
+    });
+
+    it("replaces with a cumulative snapshot", () => {
+      expect(mergeReasoningFragment("The same", "The same thought.")).toBe("The same thought.");
+    });
+
+    it("drops a full suffix re-emit but concatenates an ambiguous boundary verbatim", () => {
+      expect(mergeReasoningFragment("The same thought.", "thought.")).toBe("The same thought.");
+      // Two genuine deltas can share a boundary character. Partial-overlap
+      // splicing used to eat it ("lookeep going"); only a full containment
+      // proves a replay, so anything else concatenates verbatim.
+      expect(mergeReasoningFragment("look", "keep going")).toBe("lookkeep going");
+    });
+
+    it("concatenates disjoint streaming fragments", () => {
+      expect(mergeReasoningFragment("I will check", " the logs.")).toBe("I will check the logs.");
+    });
+  });
+
+  describe("mergeReasoningTextFragments", () => {
+    it("does not repeat an identical fragment", () => {
+      expect(mergeReasoningTextFragments(["Same text.", "Same text."])).toBe("Same text.");
+    });
+
+    it("replaces a prefix with its cumulative fragment", () => {
+      expect(mergeReasoningTextFragments(["The same", "The same thought."])).toBe("The same thought.");
+    });
+
+    it("drops a fragment already contained in another", () => {
+      expect(mergeReasoningTextFragments(["The same thought.", "same thought"])).toBe("The same thought.");
+    });
+
+    it("drops every earlier block a cumulative re-emit swallowed", () => {
+      // The re-emit covers both earlier fragments; neither may survive as a
+      // duplicate trailing block.
+      expect(
+        mergeReasoningTextFragments(["First part.", "Second part.", "First part. Second part."]),
+      ).toBe("First part. Second part.");
+    });
+
+    it("still separates genuinely distinct blocks", () => {
+      expect(mergeReasoningTextFragments(["One", "Two"])).toBe("One\n\n---\n\nTwo");
+    });
   });
 });
