@@ -267,18 +267,24 @@ export async function createAcpRuntime<TSteer>(
         });
       });
     }
-    const reasoningEffort = args.reasoningEffort?.trim();
-    if (reasoningEffort && args.dialect.configOptionIds.includes("reasoning_effort")) {
-      await session.setConfigOption({ configId: "reasoning_effort", value: reasoningEffort }).catch((error) => {
-        // Qwen only exposes this option for models with a reasoning profile.
-        // A provider rejection should not prevent a session from opening.
-        args.logger.warn("agent_chat.acp_set_reasoning_effort_failed", {
-          sessionId: args.owner.session.id,
-          provider: args.provider,
-          reasoningEffort,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+  }
+
+  if (args.provider === "qwen" && args.dialect.configOptionIds.includes("reasoning_effort")) {
+    // Qwen stores this value on the ACP session. Send its explicit reset
+    // sentinel when ADE has no selected tier so a resumed session cannot keep
+    // an older provider-side value by omission.
+    const reasoningEffort = args.reasoningEffort?.trim() || "default";
+    const result = await setAcpReasoningEffort(runtime, reasoningEffort, {
+      sessionId: args.owner.session.id,
+      logger: args.logger,
+    });
+    if (result === "transient_failure") {
+      // Do not mark the runtime ready after a transport/server failure: the
+      // first turn would run with stale provider state. Teardown invalidates
+      // the persisted ACP pointer so the next send opens a clean session and
+      // retries the selected effort.
+      args.teardownExistingRuntime();
+      throw new Error(`Qwen ACP could not apply reasoning effort '${reasoningEffort}'.`);
     }
   }
 

@@ -793,6 +793,7 @@ import {
   textPromptBlock,
   type AcpDialect,
   type AcpPendingPermission,
+  type AcpReasoningEffortUpdateResult,
   type AcpSessionConfigOption,
   type AcpSlashCommand,
   type AcpRuntimeState,
@@ -3797,6 +3798,8 @@ type ManagedChatSession = {
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
   runtimeInvalidated: boolean;
+  /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
+  acpReasoningEffortInvalidated: boolean;
   /** Set after we've emitted the once-per-session Claude plan-limit notice. */
   claudeRateLimitWarningEmitted: boolean;
   /**
@@ -20771,6 +20774,7 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     managed.runtimeInvalidated = !preserveProviderResumeState;
+    managed.acpReasoningEffortInvalidated = false;
     if (!preserveProviderResumeState) {
       clearLaneDirectiveKey(managed);
     }
@@ -21133,6 +21137,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
+      acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       ...(persisted?.usageLimitParkedUntil ? { usageLimitParkedUntil: persisted.usageLimitParkedUntil } : {}),
       ...(persisted?.usageLimitResume ? { usageLimitResume: persisted.usageLimitResume } : {}),
@@ -27119,6 +27124,7 @@ export function createAgentChatService(args: {
           runtime.processFailed = true;
           runtime.interrupted = true;
           managed.runtimeInvalidated = true;
+          managed.acpReasoningEffortInvalidated = false;
           cancelPendingInputsFrom(managed, "acp", "ade");
           logger.warn("agent_chat.acp_process_exit", {
             sessionId: managed.session.id,
@@ -27131,6 +27137,7 @@ export function createAgentChatService(args: {
         onRuntimeCreated: (runtime) => {
           managed.runtime = runtime;
           managed.runtimeInvalidated = false;
+          managed.acpReasoningEffortInvalidated = false;
           managed.seededAcpSessionId = runtime.session.sessionId;
           managed.session.acpPermissionMode = permissionMode;
         },
@@ -35812,6 +35819,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
@@ -37000,6 +37008,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
@@ -51845,6 +51854,28 @@ export function createAgentChatService(args: {
   };
   runtimeBudget.register(runtimeBudgetParticipant);
 
+  const reconcileAcpReasoningEffortUpdate = (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    result: AcpReasoningEffortUpdateResult,
+  ): void => {
+    if (result === "transient_failure") {
+      // Preserve an invalidation that another lifecycle path already owned;
+      // only clear it later if this update was the reason we set it.
+      managed.acpReasoningEffortInvalidated = managed.acpReasoningEffortInvalidated || !managed.runtimeInvalidated;
+      managed.runtimeInvalidated = true;
+      return;
+    }
+    if (
+      managed.acpReasoningEffortInvalidated
+      && runtime.session.connection.isAlive()
+      && !runtime.processFailed
+    ) {
+      managed.runtimeInvalidated = false;
+    }
+    managed.acpReasoningEffortInvalidated = false;
+  };
+
 
   const updateSession = async ({
     sessionId,
@@ -52064,6 +52095,7 @@ export function createAgentChatService(args: {
       if (previousProvider !== nextProvider) {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
+        managed.acpReasoningEffortInvalidated = false;
         clearLaneDirectiveKey(managed);
         stageTranscriptReplayOnSession(
           managed,
@@ -52074,6 +52106,7 @@ export function createAgentChatService(args: {
       } else if (previousProvider === "codex" && !liveCodexSettings) {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
+        managed.acpReasoningEffortInvalidated = false;
         clearLaneDirectiveKey(managed);
       }
       sessionService.updateMeta({
@@ -52128,11 +52161,7 @@ export function createAgentChatService(args: {
           managed.session.reasoningEffort ?? "default",
           { sessionId, logger },
         );
-        if (result === "transient_failure") {
-          managed.runtimeInvalidated = true;
-        } else if (result === "applied" && managed.runtime.session.connection.isAlive() && !managed.runtime.processFailed) {
-          managed.runtimeInvalidated = false;
-        }
+        reconcileAcpReasoningEffortUpdate(managed, managed.runtime, result);
       }
 
       // Pre-warm the Claude query when the user selects an Anthropic model.
@@ -52255,17 +52284,13 @@ export function createAgentChatService(args: {
           });
         });
       }
-      if ((prev !== next || managed.runtimeInvalidated) && managed.runtime?.kind === "acp") {
+      if ((prev !== next || managed.acpReasoningEffortInvalidated) && managed.runtime?.kind === "acp") {
         const result = await setAcpReasoningEffort(
           managed.runtime,
           next ?? "default",
           { sessionId, logger },
         );
-        if (result === "transient_failure") {
-          managed.runtimeInvalidated = true;
-        } else if (result === "applied" && managed.runtime.session.connection.isAlive() && !managed.runtime.processFailed) {
-          managed.runtimeInvalidated = false;
-        }
+        reconcileAcpReasoningEffortUpdate(managed, managed.runtime, result);
       }
       // A reasoning-only change on the CTO thread must also land in identity
       // modelPreferences, or the next ensured session resurrects the old tier.
@@ -52491,6 +52516,7 @@ export function createAgentChatService(args: {
         // ACP turn finalizer tears this runtime down before any queued steer
         // can reuse it; the next turn resumes with the new mode.
         managed.runtimeInvalidated = true;
+        managed.acpReasoningEffortInvalidated = false;
       } else {
         teardownRuntime(managed, "pool_compaction");
       }
