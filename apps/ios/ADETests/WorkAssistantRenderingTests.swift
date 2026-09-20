@@ -328,12 +328,6 @@ final class WorkChatLanePrPolicyTests: XCTestCase {
     XCTAssertTrue(policy.rendersPrBadge)
   }
 
-  func testSubagentTranscriptRendersNoBadgeButStillResolves() {
-    let policy = WorkChatLanePrPolicy(showsLaneActions: true, viewingSubagent: true)
-    XCTAssertTrue(policy.resolvesLanePr)
-    XCTAssertFalse(policy.rendersPrBadge)
-  }
-
   /// The composer badge input itself: even when a lane PR is somehow in state,
   /// a lane-action-free chat passes `nil` to `WorkChatSessionView`.
   func testCtoConfigurationPassesNoPrBadgeEvenWithAResolvedTag() {

@@ -132,13 +132,18 @@ final class WorkChatScrollBenchUITests: XCTestCase {
     sleep(32)
   }
 
-  // (g) Open the keyboard at the tail, then again while scrolled up.
+  // (g) The keyboard, in both states the transcript can be in: scrolled up
+  // (the reader's row must not move) and following (the tail must stay glued).
   func testCaseG_keyboard() {
     let app = launch()
     sleep(6)
     let composer = app.textViews.firstMatch.exists
       ? app.textViews.firstMatch
       : app.textFields.firstMatch
+
+    // (g1) Scrolled up, so the transcript is not following.
+    drag(app, fromY: 0.25, toY: 0.75, duration: 0.5)
+    sleep(2)
     if composer.waitForExistence(timeout: 4) {
       composer.tap()
     } else {
@@ -146,14 +151,25 @@ final class WorkChatScrollBenchUITests: XCTestCase {
         .coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.88))
         .tap()
     }
-    sleep(4)
-    app.windows.firstMatch
-      .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
-      .tap()
+    sleep(5)
+
+    // Interactive dismiss: dragging the transcript down puts the keyboard away.
+    drag(app, fromY: 0.35, toY: 0.9, duration: 0.6)
     sleep(3)
-    // Now scrolled up, reopen the keyboard.
-    drag(app, fromY: 0.25, toY: 0.75, duration: 0.5)
-    sleep(2)
+
+    // (g2) Back to the tail, where the transcript follows again, then reopen.
+    // Through the pill rather than by dragging: the point of this half is the
+    // keyboard, and a drag that stops short leaves the transcript not
+    // following and tests the same thing (g1) already did.
+    let pill = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'latest'")).firstMatch
+    if pill.waitForExistence(timeout: 3) {
+      pill.tap()
+    } else {
+      app.windows.firstMatch
+        .coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.76))
+        .tap()
+    }
+    sleep(4)
     if composer.exists {
       composer.tap()
     }

@@ -303,6 +303,8 @@
 		E10000000000000000000051 /* WorkLanePickerDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000051 /* WorkLanePickerDropdown.swift */; };
 		E10000000000000000000042 /* WorkPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000042 /* WorkPreviews.swift */; };
 		E1000000000000000000BB01 /* WorkChatScrollBench.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000BB01 /* WorkChatScrollBench.swift */; };
+		E1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift */; };
+		E1000000000000000000BB02 /* WorkChatFollowLatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000BB02 /* WorkChatFollowLatch.swift */; };
 		E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000090 /* WorkComposerTypedTriggers.swift */; };
 		E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000045 /* WorkSelectionActionBar.swift */; };
 		E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000046 /* WorkRootScreen+Selection.swift */; };
@@ -494,6 +496,8 @@
 		D10000000000000000000051 /* WorkLanePickerDropdown.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLanePickerDropdown.swift; path = ADE/Views/Work/WorkLanePickerDropdown.swift; sourceTree = "<group>"; };
 		D10000000000000000000042 /* WorkPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPreviews.swift; path = ADE/Views/Work/WorkPreviews.swift; sourceTree = "<group>"; };
 		D1000000000000000000BB01 /* WorkChatScrollBench.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatScrollBench.swift; path = ADE/Views/Work/WorkChatScrollBench.swift; sourceTree = "<group>"; };
+		D1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatTranscriptCollectionView.swift; path = ADE/Views/Work/WorkChatTranscriptCollectionView.swift; sourceTree = "<group>"; };
+		D1000000000000000000BB02 /* WorkChatFollowLatch.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatFollowLatch.swift; path = ADE/Views/Work/WorkChatFollowLatch.swift; sourceTree = "<group>"; };
 		D20000000000000000000090 /* WorkComposerTypedTriggers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTypedTriggers.swift; path = ADE/Views/Work/WorkComposerTypedTriggers.swift; sourceTree = "<group>"; };
 		D10000000000000000000045 /* WorkSelectionActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSelectionActionBar.swift; path = ADE/Views/Work/WorkSelectionActionBar.swift; sourceTree = "<group>"; };
 		D10000000000000000000046 /* WorkRootScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Selection.swift"; path = "ADE/Views/Work/WorkRootScreen+Selection.swift"; sourceTree = "<group>"; };
@@ -985,6 +989,8 @@
 				D10000000000000000000051 /* WorkLanePickerDropdown.swift */,
 				D10000000000000000000042 /* WorkPreviews.swift */,
 				D1000000000000000000BB01 /* WorkChatScrollBench.swift */,
+				D1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift */,
+				D1000000000000000000BB02 /* WorkChatFollowLatch.swift */,
 				D20000000000000000000090 /* WorkComposerTypedTriggers.swift */,
 				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
 				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
@@ -1779,6 +1785,8 @@
 				E10000000000000000000051 /* WorkLanePickerDropdown.swift in Sources */,
 				E10000000000000000000042 /* WorkPreviews.swift in Sources */,
 				E1000000000000000000BB01 /* WorkChatScrollBench.swift in Sources */,
+				E1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift in Sources */,
+				E1000000000000000000BB02 /* WorkChatFollowLatch.swift in Sources */,
 				E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */,
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
 				E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */,

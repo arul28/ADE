@@ -863,48 +863,79 @@ represented rows rather than testing set membership — two sends of "continue"
 share one dedupe key, and one matching transcript row must retire exactly one of
 them (`workUnrepresentedLocalEchoMessages`).
 
-**Prepended history does not move the reader.** Older pages insert above the
-viewport, so the `LazyVStack` grows upward while `contentOffset` stays put. The
-correction is measured on the row that led the list before the insert, via a
-single geometry probe that rides that row (`WorkChatPrependProbePreferenceKey`),
-and is applied through `ScrollPosition` in a non-animated transaction.
-Deliberately not total content height: a reply streaming into the tail grows the
-content at the same time, and a reader scrolled back through history is exactly
-when that happens, so a total-height correction would add the tail's growth and
-overshoot. Bottom-follow and the jump-to-latest pill are untouched.
+**The transcript is a `UICollectionView`, not a `ScrollView`.**
+`WorkChatTranscriptCollectionView` hosts a compositional list layout with a
+diffable data source keyed by the timeline's own row ids, and every existing
+SwiftUI row — bubbles, tool cards, subagent cards, the earlier-messages header,
+the bottom gutter — renders unchanged inside a `UIHostingConfiguration` cell.
+The reason is one property SwiftUI does not offer: UIKit compensates its own
+content offset when a cell self-sizes away from its estimate, so a row
+re-measuring above the viewport does not move the row the reader is looking at.
+A `LazyVStack` has no such writer, and that missing writer was 88% of the
+transcript's measured displacement. `WorkChatTranscriptHeightCache` keys a
+measured height by row id + width + content revision, so a row scrolled back
+into view is restored to the height the layout already believes it has instead
+of re-measuring; the width changing (rotation) drops the cache wholesale.
 
-Three rules keep that correction from becoming a teleport. A probe sample that
-describes a *different* row than the armed anchor is no measurement at all, so
-it waits rather than falling through with a zero row shift — that would reduce
-the correction to the reader's own scroll delta and apply it twice. Overlapping
-prepends keep the *first* anchor rather than re-arming on the new leading row:
-its row was pushed down by both insertions, so the displacement measured on it
-already accumulates them. And a correction is a scroll write, so like every
-other one it defers to the reader for the whole interaction — finger-down
-through the end of the fling (`workChatMayWriteScrollOffset`, fed by
-`onScrollPhaseChange`, not by the drag gesture, which ends at finger-up).
+Row identity is the collection view's identity. A row whose content changed
+carries a new *revision* and is reconfigured — never deleted and re-inserted —
+because an insert would take the measured height and the reader's anchor with
+it. `workChatTranscriptRowRevision` computes that revision, and the timeline
+presentation's own signature is built from the same function, so "did the list
+change" and "is this cell's measured height still valid" cannot drift apart.
 
-**A chat opens where it was left, not at a random offset.** The transcript opens
-at the tail through `defaultScrollAnchor(.bottom, for: .initialOffset)` —
-scoped to the initial offset because the `.sizeChanges` anchor is the
-total-height correction the paragraph above exists to avoid. The force-pin
-remains as belt-and-braces, but it now stays armed until the content size has
-been quiet for 600ms rather than firing on a fixed retry ladder, because
-hydration routinely lands after that ladder ends. It stands down early only for
-a deliberate scroll (the 2pt stickiness deadband — finger jitter and keyboard
-`.interacting` do not count). A transcript shorter than the viewport renders from
-the top, desktop-style; a one-entry chat skips the pin entirely.
+**One latch decides every scroll write.** `workChatFollowLatch` is a pure
+function over `{following, inUserSession}` and a handful of events —
+`reset`, `userScrollBegin`, `userScrollEnd`, `scroll`, `disclosureSettled`,
+`sendMessage`, `jumpToLatest` — and is unit-tested on its own. A scroll frame
+may only break follow *inside* a user session, which spans finger-down through
+the end of momentum (with a 160 ms settle for a drag that reported none), so a
+pin, a jump animation, and UIKit's own layout compensation cannot feed back
+into the decision that authorized them. Exactly one function,
+`performScrollWrite`, moves the viewport, and it refuses any write under 0.5 pt
+— which is what makes the corrections below idempotent rather than a fight.
 
-**Follow survives the keyboard the same way a terminal does.** Opening the
-composer or the system keyboard shrinks the transcript window. A reader who was
-glued to the live tail stays glued: the content-size observer re-pins to
-`chat-end` after that pass (`workChatLayoutScrollAdjustment`), and the
-keyboard's `.interacting` phase is not treated as the reader taking over —
-consulting `distanceFromBottom` there is the same predicate flip the terminal
-refuses to use on a layout resize. A reader who had scrolled up keeps that
-place; the pre-keyboard offset is restored and clamped so a shorter window
-cannot overscroll into blank. The same following re-pin runs when a finishing
-turn collapses cards and the tape shrinks under the viewport.
+**Content inserted above the reader keeps the reader's row in place.** While
+not following, the transcript holds an anchor: the topmost visible row and how
+far its top sat from the viewport's top edge. It is re-sampled only from the
+reader's own scrolling — never from a frame UIKit produced while compensating a
+re-measure, which is the very displacement the anchor exists to undo. After a
+snapshot apply, and again on every layout pass, the anchor is restored by
+setting the offset so that row lands where it was. The restore is absolute
+rather than incremental, so when UIKit has already compensated correctly it
+writes nothing. The pass is caught by a `UICollectionView` subclass that
+reports its own `layoutSubviews`: a cell self-sizing re-lays the list without
+ever changing the controller's view bounds, and that is exactly the pass that
+can move a row above the reader.
+
+**A chat opens at the tail in one frame.** The first non-empty snapshot is
+applied, laid out, and pinned to the bottom in the same pass — there is no
+retry ladder and no quiescence timer. Hydration that lands afterwards is an
+ordinary content change while following, and each one re-pins once. A
+transcript shorter than the viewport renders from the top, which the collection
+view does by construction.
+
+**Follow survives the keyboard the same way a terminal does.** The keyboard,
+the composer growing, and a card collapsing all arrive as a bounds change on
+the transcript. Following stays glued to the tail; a reader who had scrolled up
+has their anchored row put back, which survives a re-measure that a saved
+offset would not. A pin is the app moving the viewport, so it waits out the
+reader's whole interaction even when the latch says they are still on the tail
+— writing an offset under a live finger is what killed flings.
+
+**Revealing buffered history is scroll-back.** The near-top trigger requires
+that the transcript is *not* following. Without that, the first geometry frames
+— which report the top, and a content height that trivially "fits", because the
+opening pin has not landed and the transcript has one row in it — spent the
+whole buffered page before anything was on screen.
+
+The eight bench cases in `ADEUITests/WorkChatScrollBenchUITests.swift` are the
+acceptance test, reduced from the `com.ade.ios.scrollbench` trace. The trace's
+`viewport row=<id> y=<pt>` line is the one that matters: `contentOffset` stopped
+being a usable proxy for "did anything move" the moment UIKit started
+compensating its own self-sizing, and it is emitted after the layout pass, not
+from the `didScroll` UIKit raises mid-pass from a state no frame is composited
+from.
 
 **Assistant messages render whole.** There is no line or character budget, no
 head/tail anchor to pick, no budget floor to preserve, and no "Show more" step —

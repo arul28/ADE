@@ -16806,426 +16806,72 @@ final class ADETests: XCTestCase {
     ), 0)
   }
 
-  // MARK: - Work chat transcript scroll policy
+  // MARK: - Work chat transcript follow latch
 
-  func testProgrammaticScrollWaitsForTheWholeInteractionNotJustTheDrag() {
-    XCTAssertTrue(workChatMayWriteScrollOffset(dragActive: false, scrollPhaseUserDriven: false))
-    XCTAssertFalse(workChatMayWriteScrollOffset(dragActive: true, scrollPhaseUserDriven: false))
-    // Finger-up ends the drag gesture, but the fling it launched still owns the
-    // offset. Writing here is what killed flings mid-deceleration.
-    XCTAssertFalse(workChatMayWriteScrollOffset(dragActive: false, scrollPhaseUserDriven: true))
+  /// The latch is the transcript's whole scroll authority, so these are the
+  /// rules a jump has to be explained by.
+  func testFollowOpensOnAndIsReleasedOnlyByTheReader() {
+    var state = WorkChatFollowState.initial
+    XCTAssertTrue(state.following)
 
-    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.tracking))
-    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.interacting))
-    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.decelerating))
-    XCTAssertFalse(workChatScrollPhaseIsUserDriven(.idle))
-    // `.animating` is OUR animation. Treating it as the reader's would let one
-    // programmatic scroll suppress the next one.
-    XCTAssertFalse(workChatScrollPhaseIsUserDriven(.animating))
+    // A pin, a jump animation, or UIKit compensating a re-measured cell all
+    // arrive as scroll frames outside a user session. None of them may move
+    // the latch — that feedback loop is what the old machinery could not
+    // close.
+    state = workChatFollowLatch(state, .scroll(isAtEnd: false))
+    XCTAssertTrue(state.following)
+
+    state = workChatFollowLatch(state, .userScrollBegin)
+    XCTAssertFalse(state.following)
+    XCTAssertTrue(state.inUserSession)
   }
 
-  func testFollowingViewportShrinkPinsToLatest() {
-    // Keyboard/composer shrink: same class of bug as
-    // `testKeyboardShrinkFlipsTailPredicateWithUnchangedOffset` on the
-    // terminal. Follow must re-glue rather than consult the inflated distance.
-    let viewportDelta = workChatLayoutViewportDelta(contentDelta: 0, scrollableDelta: 340)
-    XCTAssertEqual(viewportDelta, 340)
-    XCTAssertTrue(workChatLayoutWindowChanged(containerDelta: -340, viewportDelta: viewportDelta))
-    XCTAssertTrue(workChatLayoutWindowChanged(containerDelta: 0, viewportDelta: viewportDelta))
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: -340,
-        contentDelta: 0,
-        viewportDelta: viewportDelta,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 4540
-      ),
-      .pinToLatest
-    )
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: 0,
-        viewportDelta: viewportDelta,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 4540
-      ),
-      .pinToLatest
-    )
+  func testFollowResumesOnlyWhenTheReaderLetsGoAtTheEnd() {
+    var away = workChatFollowLatch(.initial, .userScrollBegin)
+    away = workChatFollowLatch(away, .scroll(isAtEnd: false))
+    let settledUp = workChatFollowLatch(away, .userScrollEnd(isAtEnd: false))
+    XCTAssertFalse(settledUp.following)
+    XCTAssertFalse(settledUp.inUserSession)
+
+    let settledAtEnd = workChatFollowLatch(away, .userScrollEnd(isAtEnd: true))
+    XCTAssertTrue(settledAtEnd.following)
+    XCTAssertFalse(settledAtEnd.inUserSession)
   }
 
-  func testFollowingViewportGrowPinsToLatest() {
-    // Keyboard hide grows the window; a following viewport re-glues to the
-    // real end rather than sitting on the offset the smaller window left.
-    let viewportDelta = workChatLayoutViewportDelta(contentDelta: 0, scrollableDelta: -340)
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: 340,
-        contentDelta: 0,
-        viewportDelta: viewportDelta,
-        previousOffsetY: 4540,
-        nextScrollableHeight: 4200
-      ),
-      .pinToLatest
+  /// Ending a session that never started — which is what a stray settle
+  /// timer or a synthesized end would be — must not hand follow back.
+  func testUserScrollEndOutsideASessionCannotGrantFollow() {
+    let state = workChatFollowLatch(
+      WorkChatFollowState(following: false, inUserSession: false),
+      .userScrollEnd(isAtEnd: true)
     )
+    XCTAssertFalse(state.following)
   }
 
-  func testReadingHistoryViewportShrinkRestoresOffsetWithoutPinning() {
-    let viewportDelta = workChatLayoutViewportDelta(contentDelta: 0, scrollableDelta: 340)
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: false,
-        mayWriteScrollOffset: true,
-        containerDelta: -340,
-        contentDelta: 0,
-        viewportDelta: viewportDelta,
-        previousOffsetY: 1800,
-        nextScrollableHeight: 4540
-      ),
-      .restoreOffset(1800)
-    )
+  func testSendingAndJumpingAlwaysFollow() {
+    let reading = WorkChatFollowState(following: false, inUserSession: false)
+    XCTAssertTrue(workChatFollowLatch(reading, .sendMessage).following)
+    XCTAssertTrue(workChatFollowLatch(reading, .jumpToLatest).following)
+    XCTAssertFalse(workChatFollowLatch(reading, .jumpToLatest).inUserSession)
   }
 
-  func testFollowingContentShrinkPinsToLatest() {
-    // Cards collapsing at turn-end shorten the tape under a following
-    // viewport. Pinning to the real end is what avoids the blank-tail look.
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: -400,
-        viewportDelta: 0,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 3800
-      ),
-      .pinToLatest
-    )
+  /// A card collapsing can leave the reader sitting on the end without any
+  /// gesture. That re-follows; a card collapsing while they are mid-fling
+  /// does not, because the fling still owns the offset.
+  func testDisclosureSettleOnlyReclaimsFollowOutsideAUserSession() {
+    let reading = WorkChatFollowState(following: false, inUserSession: false)
+    XCTAssertTrue(workChatFollowLatch(reading, .disclosureSettled(isAtEnd: true)).following)
+    XCTAssertFalse(workChatFollowLatch(reading, .disclosureSettled(isAtEnd: false)).following)
+
+    let flinging = WorkChatFollowState(following: false, inUserSession: true)
+    XCTAssertFalse(workChatFollowLatch(flinging, .disclosureSettled(isAtEnd: true)).following)
   }
 
-  func testReadingHistoryContentShrinkClampsOffsetToNewRange() {
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: false,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: -3000,
-        viewportDelta: 0,
-        previousOffsetY: 4000,
-        nextScrollableHeight: 1200
-      ),
-      .restoreOffset(1200)
-    )
-  }
-
-  func testReadingHistoryContentGrowthDoesNotMoveOffset() {
-    // Streaming into the tail while the reader is in history must not restore
-    // a stale offset or yank to latest. The prepend machinery owns insertion
-    // above; growth below should leave the reader put.
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: false,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: 240,
-        viewportDelta: 0,
-        previousOffsetY: 1800,
-        nextScrollableHeight: 4440
-      ),
-      .none
-    )
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: 240,
-        viewportDelta: 0,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 4440
-      ),
-      .none
-    )
-  }
-
-  func testLayoutPinDefersToReaderDuringFling() {
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: false,
-        containerDelta: -340,
-        contentDelta: 0,
-        viewportDelta: 340,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 4540
-      ),
-      .none
-    )
-  }
-
-  func testKeyboardUserPhaseDoesNotReleaseFollow() {
-    XCTAssertTrue(
-      workChatShouldIgnoreUserScrollPhaseForLayout(
-        userDrivenPhase: true,
-        layoutAdjustedRecently: true
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReleaseFollowForUserScroll(
-        following: true,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: true,
-        distanceFromBottom: 300,
-        offsetRetreat: 0
-      )
-    )
-    XCTAssertTrue(
-      workChatShouldReleaseFollowForUserScroll(
-        following: true,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: true,
-        distanceFromBottom: 300,
-        offsetRetreat: 3
-      )
-    )
-    XCTAssertTrue(
-      workChatLayoutAdjustedRecently(
-        lastAdjustmentUptime: 10,
-        now: 10.2,
-        grace: workChatLayoutFollowGraceSeconds
-      )
-    )
-    XCTAssertFalse(
-      workChatLayoutAdjustedRecently(
-        lastAdjustmentUptime: 10,
-        now: 10.5,
-        grace: workChatLayoutFollowGraceSeconds
-      )
-    )
-  }
-
-  func testUserScrollPhaseReleasesFollowOnceLayoutIsStable() {
-    XCTAssertTrue(
-      workChatShouldReleaseFollowForUserScroll(
-        following: true,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: false,
-        distanceFromBottom: 3,
-        offsetRetreat: 0
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReleaseFollowForUserScroll(
-        following: true,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: false,
-        distanceFromBottom: 0,
-        offsetRetreat: 0
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReleaseFollowForUserScroll(
-        following: false,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: false,
-        distanceFromBottom: 80,
-        offsetRetreat: 80
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldIgnoreUserScrollPhaseForLayout(
-        userDrivenPhase: true,
-        layoutAdjustedRecently: false
-      )
-    )
-  }
-
-  func testKeyboardDoesNotReclaimFollowOnceTheReaderHasLeftTheTail() {
-    XCTAssertTrue(
-      workChatShouldReclaimFollowAfterWindowChange(
-        following: false,
-        distanceFromPreviousTail: 0
-      )
-    )
-    XCTAssertTrue(
-      workChatShouldReclaimFollowAfterWindowChange(
-        following: false,
-        distanceFromPreviousTail: workChatTouchScrollDeadband
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReclaimFollowAfterWindowChange(
-        following: false,
-        distanceFromPreviousTail: workChatTouchScrollDeadband + 1
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReclaimFollowAfterWindowChange(
-        following: true,
-        distanceFromPreviousTail: 0
-      )
-    )
-  }
-
-  func testShortTranscriptRendersFromTheTop() {
-    XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: true), .topLeading)
-    XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: false), .bottomLeading)
-  }
-
-  func testPrependCorrectionBailsOutWhenTheProbeDescribesAnotherRow() {
-    let anchor = WorkChatPrependAnchor(
-      rowId: "message-42",
-      rowY: 100,
-      offsetY: 500,
-      remainingAttempts: workChatPrependAnchorAttempts
-    )
-
-    // The probe is measuring some other row, so it says nothing about the
-    // anchored one. Falling through with a zero row shift would reduce the
-    // correction to the reader's own scroll delta and apply it a second time.
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: WorkChatPrependProbeSample(rowId: "message-99", y: 340),
-        currentOffsetY: 740,
-        mayWriteScrollOffset: true
-      ),
-      .retry
-    )
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: nil,
-        currentOffsetY: 740,
-        mayWriteScrollOffset: true
-      ),
-      .retry
-    )
-  }
-
-  func testPrependCorrectionIsolatesTheInsertionFromTheReadersOwnScrolling() {
-    let anchor = WorkChatPrependAnchor(
-      rowId: "message-42",
-      rowY: 100,
-      offsetY: 500,
-      remainingAttempts: workChatPrependAnchorAttempts
-    )
-    // 900pt inserted above while the reader scrolled 240pt: the row moves
-    // 900 - 240 and the offset moves 240, so the sum is the insertion.
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 100 + 900 - 240),
-        currentOffsetY: 500 + 240,
-        mayWriteScrollOffset: true
-      ),
-      .apply(900)
-    )
-    // A pure scroll with no prepend sums to zero and correctly restores nothing.
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 100 - 240),
-        currentOffsetY: 500 + 240,
-        mayWriteScrollOffset: true
-      ),
-      .retry
-    )
-  }
-
-  func testPrependCorrectionWaitsOutTheReaderWithoutSpendingAnAttempt() {
-    let anchor = WorkChatPrependAnchor(
-      rowId: "message-42",
-      rowY: 100,
-      offsetY: 500,
-      remainingAttempts: 1
-    )
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 1_000),
-        currentOffsetY: 500,
-        mayWriteScrollOffset: false
-      ),
-      .wait
-    )
-  }
-
-  func testOverlappingPrependsKeepTheAnchorThatAccumulatesBoth() {
-    // Second page lands while the first correction is still open. Re-arming on
-    // the new first row would measure only the second insertion and leave the
-    // first one uncorrected.
-    XCTAssertEqual(
-      workChatPrependArmDecision(
-        previousFirstId: "message-20",
-        nextFirstId: "message-10",
-        previousVisibleCount: 40,
-        nextVisibleCount: 60,
-        existingAnchorRowId: "message-42",
-        anchorRowStillVisible: true,
-        previousFirstRowStillVisible: true,
-        probeRowId: "message-42",
-        probeRowY: 220
-      ),
-      .extendExistingAnchorWindow
-    )
-    // Unless the anchored row is gone, in which case there is nothing left to
-    // measure against.
-    XCTAssertEqual(
-      workChatPrependArmDecision(
-        previousFirstId: "message-20",
-        nextFirstId: "message-10",
-        previousVisibleCount: 40,
-        nextVisibleCount: 60,
-        existingAnchorRowId: "message-42",
-        anchorRowStillVisible: false,
-        previousFirstRowStillVisible: true,
-        probeRowId: "message-42",
-        probeRowY: 220
-      ),
-      .retireAnchor
-    )
-  }
-
-  func testPrependAnchorOnlyArmsOnAGenuineInsertionAbove() {
-    func decision(
-      previousFirstId: String? = "message-20",
-      nextFirstId: String? = "message-10",
-      previousVisibleCount: Int = 40,
-      nextVisibleCount: Int = 60,
-      previousFirstRowStillVisible: Bool = true,
-      probeRowId: String? = "message-20",
-      probeRowY: CGFloat? = 180
-    ) -> WorkChatPrependArmDecision {
-      workChatPrependArmDecision(
-        previousFirstId: previousFirstId,
-        nextFirstId: nextFirstId,
-        previousVisibleCount: previousVisibleCount,
-        nextVisibleCount: nextVisibleCount,
-        existingAnchorRowId: nil,
-        anchorRowStillVisible: false,
-        previousFirstRowStillVisible: previousFirstRowStillVisible,
-        probeRowId: probeRowId,
-        probeRowY: probeRowY
-      )
-    }
-
-    XCTAssertEqual(decision(), .arm(rowId: "message-20", rowY: 180))
-    // Appended, not prepended: the list grew but still leads with the same row.
-    XCTAssertEqual(decision(nextFirstId: "message-20"), .ignore)
-    // Rows replaced rather than inserted.
-    XCTAssertEqual(decision(nextVisibleCount: 40), .ignore)
-    // The leading row is gone, so this is not a prepend.
-    XCTAssertEqual(decision(previousFirstRowStillVisible: false), .ignore)
-    // The probe was measuring a different row, so there is no "before" position.
-    XCTAssertEqual(decision(probeRowId: "message-77"), .ignore)
-    XCTAssertEqual(decision(probeRowY: nil), .ignore)
+  func testResetOpensAtTheTailAndClearsAnyUserSession() {
+    let stuck = WorkChatFollowState(following: false, inUserSession: true)
+    let state = workChatFollowLatch(stuck, .reset)
+    XCTAssertTrue(state.following)
+    XCTAssertFalse(state.inUserSession)
   }
 
   func testMobileChatHistoryTriggerAndRenderCapStayBounded() {
@@ -17371,19 +17017,6 @@ final class ADETests: XCTestCase {
       hasError: false,
       hasBufferedEntries: true,
       hasHostHistory: true
-    ))
-
-    XCTAssertTrue(workChatShouldInstallPrependProbe(
-      distanceFromTop: 0,
-      hasPrependAnchor: false
-    ))
-    XCTAssertFalse(workChatShouldInstallPrependProbe(
-      distanceFromTop: workChatOlderHistoryTriggerDistance + 1,
-      hasPrependAnchor: false
-    ))
-    XCTAssertTrue(workChatShouldInstallPrependProbe(
-      distanceFromTop: workChatOlderHistoryTriggerDistance + 1,
-      hasPrependAnchor: true
     ))
 
     XCTAssertEqual(
@@ -20623,15 +20256,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.first?.metadata, ["Automatic recovery"])
   }
 
-  func testCodexRecoveryRemainsAvailableInSubagentTranscriptWhenHostSupportsIt() {
-    XCTAssertTrue(workChatCodexRecoveryAvailable(
-      hostSupportsRecovery: true,
-      viewingSubagent: true
-    ))
-    XCTAssertFalse(workChatCodexRecoveryAvailable(
-      hostSupportsRecovery: false,
-      viewingSubagent: true
-    ))
+  func testCodexRecoveryFollowsTheHostCapability() {
+    XCTAssertTrue(workChatCodexRecoveryAvailable(hostSupportsRecovery: true))
+    XCTAssertFalse(workChatCodexRecoveryAvailable(hostSupportsRecovery: false))
   }
 
   func testMcpConnectorIdentitySurvivesDecodedAndFallbackToolCards() throws {

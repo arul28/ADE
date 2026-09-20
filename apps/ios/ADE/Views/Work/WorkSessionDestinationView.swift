@@ -55,12 +55,10 @@ func workChatSendWillQueueMessage(
   isLive && !hostReachable && chatSendQueueable
 }
 
-/// Child recovery cards carry their own source session id, so viewing a
-/// subagent transcript must not hide actions that the paired host supports.
-func workChatCodexRecoveryAvailable(
-  hostSupportsRecovery: Bool,
-  viewingSubagent _: Bool
-) -> Bool {
+/// Recovery is the host's capability and nothing else's: a recovery card
+/// carries its own source session id, so no view-level state may hide an
+/// action the paired host supports.
+func workChatCodexRecoveryAvailable(hostSupportsRecovery: Bool) -> Bool {
   hostSupportsRecovery
 }
 
@@ -686,15 +684,13 @@ func workChatHasOlderTranscriptHistory(
 /// the composer badge read this policy instead.
 struct WorkChatLanePrPolicy {
   var showsLaneActions: Bool
-  var viewingSubagent = false
 
   /// Gate for every lane→PR lookup. False means no network or IPC work runs and
   /// the badge state stays empty.
   var resolvesLanePr: Bool { showsLaneActions }
 
   /// Gate for the PR badge handed to `WorkChatSessionView` above the composer.
-  /// Subagent transcripts never carry one either.
-  var rendersPrBadge: Bool { resolvesLanePr && !viewingSubagent }
+  var rendersPrBadge: Bool { resolvesLanePr }
 }
 
 struct WorkSessionDestinationView: View {
@@ -1848,10 +1844,7 @@ struct WorkSessionDestinationView: View {
     let localEchoMessagesForView: [WorkLocalEchoMessage] = localEchoMessages
     let sessionStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     let shouldSteer = hostReachable && sessionStatus == "active"
-    let prPolicy = WorkChatLanePrPolicy(
-      showsLaneActions: showsLaneActions,
-      viewingSubagent: false
-    )
+    let prPolicy = WorkChatLanePrPolicy(showsLaneActions: showsLaneActions)
     let chatPrBadge: WorkChatPrBadgeModel? = prPolicy.rendersPrBadge
       ? workChatPrBadgeModel(
           tag: chatDisplayPrTag,
@@ -2027,7 +2020,6 @@ struct WorkSessionDestinationView: View {
       subagentSnapshotsRenderSignature: subagentSnapshotsRenderSignature,
       scheduledWorkSnapshots: scheduledWorkSnapshots,
       scheduledWorkSnapshotsRenderSignature: scheduledWorkSnapshotsRenderSignature,
-      selectedSubagentTaskId: nil,
       // One chip, one destination: subagents, background work and schedules
       // all live in the Chat Info sheet. Timeline-row selection stays scoped
       // to the parent chat, so nested transcript state cannot accidentally
@@ -2065,10 +2057,9 @@ struct WorkSessionDestinationView: View {
         || syncService.canInvokeRemoteAction("personalChats.modelCatalog"),
       personalSessionUpdatesAvailable: !personalChat
         || syncService.canInvokeRemoteAction("personalChats.updateSession"),
-      onRecoverCodexTurn: workChatCodexRecoveryAvailable(
-        hostSupportsRecovery: supportsRecovery,
-        viewingSubagent: false
-      ) ? recoverCodexTurn : nil,
+      onRecoverCodexTurn: workChatCodexRecoveryAvailable(hostSupportsRecovery: supportsRecovery)
+        ? recoverCodexTurn
+        : nil,
       onRunUnprocessedMessage: supportsUnprocessedResolution
         ? runUnprocessedMessage
         : nil,

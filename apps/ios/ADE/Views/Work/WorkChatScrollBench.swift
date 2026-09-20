@@ -189,6 +189,30 @@ enum WorkChatScrollTrace {
     #endif
   }
 
+  /// Position of the topmost visible row inside the viewport.
+  ///
+  /// Two consecutive lines naming the SAME row are a direct reading of how far
+  /// the reader's content moved, which `contentOffset` no longer is: UIKit
+  /// adjusts the offset precisely so that a self-sizing row above the viewport
+  /// does not move what is on screen.
+  @MainActor
+  static func viewport(
+    rowId: String,
+    offsetInViewport: CGFloat,
+    userDriven: Bool,
+    following: Bool
+  ) {
+    #if DEBUG
+    guard enabled else { return }
+    logger.log(
+      """
+      viewport row=\(rowId, privacy: .public) y=\(offsetInViewport, privacy: .public) \
+      user=\(userDriven, privacy: .public) following=\(following, privacy: .public)
+      """
+    )
+    #endif
+  }
+
   @MainActor
   static func note(_ message: String) {
     #if DEBUG

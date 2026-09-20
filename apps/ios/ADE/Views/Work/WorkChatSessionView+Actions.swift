@@ -978,6 +978,11 @@ private func workIncrementalLocalEchoSignature(_ localEchoMessages: [WorkLocalEc
   return hasher.finalize()
 }
 
+/// The only timeline source this view has. Subagent transcripts opened inside
+/// the thread were retired; the key survives as the guard that keeps a stale
+/// background rebuild from writing into a freshly reset snapshot.
+let workChatMainTimelineSourceKey = "main"
+
 extension WorkChatSessionView {
   @MainActor
   func prepareScrollStateForCurrentSessionIfNeeded(reason: String) {
@@ -992,73 +997,14 @@ extension WorkChatSessionView {
     isNearBottom = true
     unreadBelowCount = 0
     lastTimelineTailId = nil
-    scrollMetrics = WorkChatScrollMetrics()
-    timelineDragActive = false
-    timelineScrollPhaseUserDriven = false
-    transcriptContentFitsViewport = true
-    bottomStickinessReleasedByUser = false
     olderHistoryLoadTask?.cancel()
     olderHistoryLoadTask = nil
     olderHistoryLoadInFlight = false
     olderHistoryLoadError = nil
     olderHistoryTriggerArmed = true
     olderHistoryAutomaticContinuationPending = false
-    pendingInitialBottomPinSessionId = session.id
-    initialBottomPinQuiescenceGeneration &+= 1
-    cancelLatestPinTask()
+    transcriptScroller.resetForNewSession()
     timelineIncrementalCache.reset()
-  }
-
-  /// Re-applies the opening pin for as long as the content is still growing.
-  ///
-  /// Called on content-size changes only — never per scroll frame — because it
-  /// scans the visible timeline for the tail entry.
-  ///
-  /// The pin used to fire once and disarm, so any hydration that landed after
-  /// the retry ladder (0/16/80/180/320ms) grew the content under a scroll offset
-  /// nobody re-pinned, which is what opened chats "at a random spot". It now
-  /// stays armed until either the reader takes over
-  /// (`cancelPendingInitialBottomPinForUserScroll`) or the content height has
-  /// been quiet for `workChatInitialPinQuiescence` — the wall-clock reading of
-  /// "stable across consecutive layout passes", since a change-driven observer
-  /// by construction never reports the passes where nothing changed.
-  @MainActor
-  func resolvePendingInitialBottomPinAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
-    guard pendingInitialBottomPinSessionId == session.id else { return }
-    // A brand-new chat has nothing to pin: its single bubble is top-anchored
-    // (desktop parity), and forcing it to the bottom of an empty screen is the
-    // exact layout that rule exists to remove.
-    guard timeline.count > 1 else {
-      pendingInitialBottomPinSessionId = nil
-      return
-    }
-    guard let tailId = timeline.last?.id, !tailId.isEmpty else { return }
-    guard visibleTimeline.contains(where: { $0.id == tailId }) else {
-      return
-    }
-    guard workChatMayWriteScrollOffset(
-      dragActive: timelineDragActive,
-      scrollPhaseUserDriven: timelineScrollPhaseUserDriven
-    ) else { return }
-
-    forcePinToLatestAfterLayout(proxy, reason: "initial-\(reason)")
-    armInitialBottomPinQuiescence()
-  }
-
-  /// Disarms the opening pin once the content stops changing size.
-  @MainActor
-  private func armInitialBottomPinQuiescence() {
-    initialBottomPinQuiescenceGeneration &+= 1
-    let generation = initialBottomPinQuiescenceGeneration
-    let pinnedSessionId = session.id
-    Task { @MainActor in
-      try? await Task.sleep(for: .milliseconds(workChatInitialPinQuiescenceMilliseconds))
-      guard !Task.isCancelled,
-            generation == initialBottomPinQuiescenceGeneration,
-            pendingInitialBottomPinSessionId == pinnedSessionId
-      else { return }
-      pendingInitialBottomPinSessionId = nil
-    }
   }
 
   /// Paints the user's own bubble on the tap frame.
@@ -1072,7 +1018,7 @@ extension WorkChatSessionView {
   @MainActor
   func applyLocalEchoTailImmediatelyIfPossible() -> Bool {
     guard !localEchoMessages.isEmpty else { return false }
-    guard timelineSourceKey == (selectedSubagentTaskId ?? "main") else { return false }
+    guard timelineSourceKey == workChatMainTimelineSourceKey else { return false }
 
     // A brand-new chat has no snapshot to append to; the fold is trivially
     // cheap there, so build it inline rather than wait out the debounce.
@@ -1109,9 +1055,6 @@ extension WorkChatSessionView {
       sourceTimeline: nextSnapshot.timeline,
       rebuildToolActivityIndex: false
     )
-    if isNearBottom, !timelineDragActive {
-      timelineLayoutPinToken &+= 1
-    }
     return true
   }
 
@@ -1190,9 +1133,6 @@ extension WorkChatSessionView {
         )
         transcriptIncrementalDelta = []
         refreshTimelinePresentation(sourceTimeline: nextSnapshot.timeline)
-        if isNearBottom, !timelineDragActive {
-          timelineLayoutPinToken &+= 1
-        }
 
         if timelineRebuildPending {
           continue
@@ -1207,14 +1147,14 @@ extension WorkChatSessionView {
     [
       timelineBuildScopeId,
       session.id,
-      selectedSubagentTaskId ?? "main"
+      workChatMainTimelineSourceKey
     ].joined(separator: "|")
   }
 
   var timelineInputRecoveryKey: String {
     [
       session.id,
-      selectedSubagentTaskId ?? "main",
+      workChatMainTimelineSourceKey,
       String(transcriptRenderSignature),
       String(fallbackEntriesRenderSignature),
       String(artifactsRenderSignature),
@@ -1238,7 +1178,6 @@ extension WorkChatSessionView {
     timelineRebuildTask?.cancel()
     timelineRebuildTask = nil
     timelineRebuildPending = false
-    cancelLatestPinTask()
   }
 
   @MainActor
@@ -1295,9 +1234,6 @@ extension WorkChatSessionView {
       sourceTimeline: nextSnapshot.timeline,
       rebuildToolActivityIndex: !onlyTailMetadataChanged
     )
-    if isNearBottom, !timelineDragActive {
-      timelineLayoutPinToken &+= 1
-    }
     return true
   }
 
@@ -1324,14 +1260,11 @@ extension WorkChatSessionView {
       transcriptRevision: transcriptRenderSignature
     )
     refreshTimelinePresentation(sourceTimeline: nextSnapshot.timeline)
-    if isNearBottom, !timelineDragActive {
-      timelineLayoutPinToken &+= 1
-    }
   }
 
   @MainActor
   func resetTimelineSourceIfNeeded() {
-    let nextSourceKey = selectedSubagentTaskId ?? "main"
+    let nextSourceKey = workChatMainTimelineSourceKey
     guard timelineSourceKey != nextSourceKey else { return }
 
     timelineSourceKey = nextSourceKey
@@ -1339,20 +1272,13 @@ extension WorkChatSessionView {
     isNearBottom = true
     unreadBelowCount = 0
     lastTimelineTailId = nil
-    scrollMetrics = WorkChatScrollMetrics()
-    timelineDragActive = false
-    timelineScrollPhaseUserDriven = false
-    transcriptContentFitsViewport = true
-    bottomStickinessReleasedByUser = false
     olderHistoryLoadTask?.cancel()
     olderHistoryLoadTask = nil
     olderHistoryLoadInFlight = false
     olderHistoryLoadError = nil
     olderHistoryTriggerArmed = true
     olderHistoryAutomaticContinuationPending = false
-    pendingInitialBottomPinSessionId = session.id
-    initialBottomPinQuiescenceGeneration &+= 1
-    cancelLatestPinTask()
+    transcriptScroller.resetForNewSession()
     timelineRebuildTask?.cancel()
     timelineRebuildTask = nil
     timelineRebuildPending = false
@@ -1390,7 +1316,6 @@ extension WorkChatSessionView {
     if !alreadyEmpty {
       timelineSnapshot = .empty
       timelinePresentation = .empty
-      timelineLayoutPinToken &+= 1
     }
     return true
   }
@@ -1467,8 +1392,13 @@ extension WorkChatSessionView {
               hiddenTimelineCount > 0 || result.hasMoreHistory
         else { return }
         olderHistoryAutomaticContinuationPending = true
-        if !revealedBufferedEntries, !result.addedTimelineEntries {
-          continueAutomaticOlderHistoryIfNeeded()
+        if !revealedBufferedEntries,
+           !result.addedTimelineEntries,
+           let geometry = transcriptScroller.currentGeometry {
+          continueAutomaticOlderHistoryIfNeeded(
+            distanceFromBottom: geometry.distanceFromBottom,
+            contentFitsViewport: geometry.contentFitsViewport
+          )
         }
       }
     } else if automatically, hiddenTimelineCount > 0 {
@@ -1477,14 +1407,17 @@ extension WorkChatSessionView {
   }
 
   @MainActor
-  func continueAutomaticOlderHistoryIfNeeded() {
+  func continueAutomaticOlderHistoryIfNeeded(
+    distanceFromBottom: CGFloat,
+    contentFitsViewport: Bool
+  ) {
     guard olderHistoryAutomaticContinuationPending,
           !olderHistoryLoadInFlight,
           olderHistoryLoadError == nil || hiddenTimelineCount > 0
     else { return }
     guard workChatShouldContinueAutomaticOlderHistory(
-      distanceFromBottom: scrollMetrics.distanceFromBottom,
-      contentFitsViewport: scrollMetrics.scrollableHeight <= 0.5,
+      distanceFromBottom: distanceFromBottom,
+      contentFitsViewport: contentFitsViewport,
       loading: olderHistoryLoadInFlight,
       hasError: olderHistoryLoadError != nil,
       hasBufferedEntries: hiddenTimelineCount > 0,
@@ -1496,303 +1429,6 @@ extension WorkChatSessionView {
     olderHistoryAutomaticContinuationPending = false
     olderHistoryTriggerArmed = false
     requestEarlierTimelineEntries(automatically: true)
-  }
-
-  @MainActor
-  func updateBottomStickiness(distanceFromBottom rawDistance: CGFloat, proxy _: ScrollViewProxy) {
-    let distance = max(0, rawDistance)
-    scrollMetrics.distanceFromBottom = distance
-
-    let layoutRecent = workChatLayoutAdjustedRecently(
-      lastAdjustmentUptime: scrollMetrics.lastLayoutAdjustmentUptime,
-      now: ProcessInfo.processInfo.systemUptime
-    )
-    if workChatShouldReleaseFollowForUserScroll(
-      following: isNearBottom,
-      userDrivenPhase: timelineDragActive || scrollMetrics.phaseIsUserDriven,
-      layoutAdjustedRecently: layoutRecent,
-      distanceFromBottom: distance,
-      offsetRetreat: scrollMetrics.stableOffsetY - scrollMetrics.offsetY
-    ) {
-      cancelPendingInitialBottomPinForUserScroll()
-      WorkChatScrollTrace.follow(false, reason: "user-scroll release")
-      releaseBottomStickinessForUserScroll(reason: "user-scroll")
-      return
-    }
-
-    // Keyboard shrink inflates `distanceFromBottom` with an unchanged offset —
-    // the same predicate flip the terminal refuses to consult on layout. Skip
-    // resume/near-bottom inference until that pass has settled; the layout
-    // observer re-glues. A real scroll-up already returned above.
-    if layoutRecent {
-      return
-    }
-
-    if bottomStickinessReleasedByUser {
-      guard distance <= workChatStickResumeThreshold, !timelineDragActive else { return }
-      bottomStickinessReleasedByUser = false
-      if !isNearBottom {
-        isNearBottom = true
-        WorkChatScrollTrace.follow(true, reason: "resume-threshold")
-      }
-      if unreadBelowCount > 0 {
-        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-          unreadBelowCount = 0
-        }
-      }
-      return
-    }
-
-    // Once following, stay following until the reader actually moves (the
-    // deadband check above). A leftover `.interacting` phase from keyboard
-    // avoidance must not drop the pin.
-    let nextIsNearBottom = isNearBottom
-      || (!timelineDragActive && distance <= workChatStickResumeThreshold)
-
-    if nextIsNearBottom != isNearBottom {
-      isNearBottom = nextIsNearBottom
-      WorkChatScrollTrace.follow(nextIsNearBottom, reason: "stickiness-threshold")
-    }
-
-    guard nextIsNearBottom else { return }
-
-    if unreadBelowCount > 0 {
-      withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-        unreadBelowCount = 0
-      }
-    }
-  }
-
-  /// The reader took the transcript over, so the initial bottom pin stands down.
-  ///
-  /// Called from stickiness once the container is stable and the reader has
-  /// actually moved past the 2pt deadband. Keyboard `.interacting` never
-  /// reaches here.
-  @MainActor
-  func cancelPendingInitialBottomPinForUserScroll() {
-    guard pendingInitialBottomPinSessionId == session.id else { return }
-    pendingInitialBottomPinSessionId = nil
-    initialBottomPinQuiescenceGeneration &+= 1
-  }
-
-  @MainActor
-  func releaseBottomStickinessForUserScroll(reason: String) {
-    guard isNearBottom else { return }
-    bottomStickinessReleasedByUser = true
-    isNearBottom = false
-  }
-
-  /// Re-glue or restore the transcript after a window/content layout pass.
-  ///
-  /// Lives on the content-size observer, not the per-frame position observer,
-  /// because a pin is a scroll write and a scan of the tail. Keyboard shrink
-  /// already changes `scrollableHeight`/`containerHeight` here; after the
-  /// opening pin disarms this was previously a no-op, which is what left the
-  /// newest lines cropped below the shorter window.
-  @MainActor
-  func applyLayoutGeometryScrollAdjustment(
-    previous: WorkChatContentSizeSample,
-    next: WorkChatContentSizeSample,
-    proxy: ScrollViewProxy
-  ) {
-    defer {
-      scrollMetrics.containerHeight = next.containerHeight
-      scrollMetrics.contentHeight = next.contentHeight
-    }
-
-    guard previous.containerHeight > 1 || previous.contentHeight > 1 else {
-      scrollMetrics.stableOffsetY = scrollMetrics.offsetY
-      return
-    }
-
-    let containerDelta = next.containerHeight - previous.containerHeight
-    let contentDelta = next.contentHeight - previous.contentHeight
-    let viewportDelta = workChatLayoutViewportDelta(
-      contentDelta: contentDelta,
-      scrollableDelta: next.scrollableHeight - previous.scrollableHeight
-    )
-    let windowChanged = workChatLayoutWindowChanged(
-      containerDelta: containerDelta,
-      viewportDelta: viewportDelta
-    )
-    let contentShrunk = contentDelta < -workChatLayoutGeometrySlop
-
-    if windowChanged || contentShrunk {
-      scrollMetrics.lastLayoutAdjustmentUptime = ProcessInfo.processInfo.systemUptime
-    }
-    // Reclaim write permission before the pin so keyboard `.interacting` cannot
-    // block the very scroll write that re-glues the tail.
-    if windowChanged {
-      if timelineScrollPhaseUserDriven {
-        timelineScrollPhaseUserDriven = false
-      }
-      if timelineDragActive {
-        timelineDragActive = false
-      }
-      // Phase-change can still mark the reader as having taken over before
-      // this observer runs. If they were at the tail, that was the keyboard,
-      // not a scroll-up — put follow back so the pin can run.
-      if workChatShouldReclaimFollowAfterWindowChange(
-        following: isNearBottom,
-        distanceFromPreviousTail: max(0, previous.scrollableHeight - scrollMetrics.stableOffsetY)
-      ) {
-        bottomStickinessReleasedByUser = false
-        isNearBottom = true
-        WorkChatScrollTrace.follow(true, reason: "reclaim-after-window-change")
-      }
-    }
-
-    let adjustment = workChatLayoutScrollAdjustment(
-      following: isNearBottom,
-      mayWriteScrollOffset: canWriteAutomaticScrollOffset,
-      containerDelta: containerDelta,
-      contentDelta: contentDelta,
-      viewportDelta: viewportDelta,
-      previousOffsetY: scrollMetrics.stableOffsetY,
-      nextScrollableHeight: next.scrollableHeight
-    )
-    switch adjustment {
-    case .none:
-      break
-    case .pinToLatest:
-      pinToLatestAfterLayout(proxy, reason: "layout-geometry")
-    case .restoreOffset(let y):
-      guard abs(y - scrollMetrics.offsetY) > workChatLayoutGeometrySlop else { return }
-      WorkChatScrollTrace.write(
-        reason: "layout-restore-offset",
-        target: "y=\(y)",
-        site: "WorkChatSessionView+Actions.swift:applyLayoutGeometryScrollAdjustment",
-        offsetBefore: scrollMetrics.offsetY,
-        contentHeight: next.contentHeight,
-        containerHeight: next.containerHeight,
-        scrollableHeight: next.scrollableHeight,
-        following: isNearBottom,
-        userDrivenPhase: timelineScrollPhaseUserDriven
-      )
-      var transaction = Transaction()
-      transaction.disablesAnimations = true
-      withTransaction(transaction) {
-        scrollPosition.scrollTo(y: y)
-      }
-    }
-  }
-
-  @MainActor
-  func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool, traceReason: String = "scroll-to-latest") {
-    bottomStickinessReleasedByUser = false
-    WorkChatScrollTrace.write(
-      reason: traceReason,
-      target: animated ? "edge=bottom(animated)" : "edge=bottom",
-      site: "WorkChatSessionView+Actions.swift:scrollToLatest",
-      offsetBefore: scrollMetrics.offsetY,
-      contentHeight: scrollMetrics.contentHeight,
-      containerHeight: scrollMetrics.containerHeight,
-      scrollableHeight: scrollMetrics.scrollableHeight,
-      following: isNearBottom,
-      userDrivenPhase: timelineScrollPhaseUserDriven
-    )
-    if animated {
-      withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-        // Keep the ScrollPosition channel and the id-based reader in agreement.
-        // The reader is useful for older OS/layout paths, while the bound
-        // position is the authoritative tail jump when a LazyVStack has not
-        // materialized the sentinel in the current pass.
-        let targetId = latestScrollTargetId
-        proxy.scrollTo(targetId, anchor: .bottom)
-        scrollPosition.scrollTo(edge: .bottom)
-      }
-      return
-    }
-
-    var transaction = Transaction()
-    transaction.animation = nil
-    withTransaction(transaction) {
-      let targetId = latestScrollTargetId
-      proxy.scrollTo(targetId, anchor: .bottom)
-      scrollPosition.scrollTo(edge: .bottom)
-    }
-  }
-
-  /// Whether an automatic pin may run right now. A pin is a scroll write, so it
-  /// defers to the reader for the whole interaction — finger-down through the
-  /// end of the fling — not just while the drag gesture is live.
-  var canWriteAutomaticScrollOffset: Bool {
-    workChatMayWriteScrollOffset(
-      dragActive: timelineDragActive,
-      scrollPhaseUserDriven: timelineScrollPhaseUserDriven
-    )
-  }
-
-  @MainActor
-  func pinToLatestAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
-    guard isNearBottom, canWriteAutomaticScrollOffset else {
-      WorkChatScrollTrace.writeSuppressed(
-        reason: "pin:\(reason)",
-        site: "WorkChatSessionView+Actions.swift:pinToLatestAfterLayout",
-        cause: isNearBottom ? "reader-owns-scroll" : "not-following"
-      )
-      return
-    }
-    latestPinGeneration &+= 1
-    let generation = latestPinGeneration
-    latestPinTask?.cancel()
-    latestPinTask = Task { @MainActor in
-      guard generation == latestPinGeneration, isNearBottom, canWriteAutomaticScrollOffset else { return }
-      scrollToLatest(proxy, animated: false, traceReason: "pin:\(reason)")
-      try? await Task.sleep(for: .milliseconds(16))
-      guard !Task.isCancelled,
-            generation == latestPinGeneration,
-            isNearBottom,
-            canWriteAutomaticScrollOffset else { return }
-      scrollToLatest(proxy, animated: false, traceReason: "pin-retry:\(reason)")
-      if generation == latestPinGeneration {
-        latestPinTask = nil
-      }
-    }
-  }
-
-  @MainActor
-  func forcePinToLatestAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
-    guard canWriteAutomaticScrollOffset else {
-      WorkChatScrollTrace.writeSuppressed(
-        reason: "force-pin:\(reason)",
-        site: "WorkChatSessionView+Actions.swift:forcePinToLatestAfterLayout",
-        cause: "reader-owns-scroll"
-      )
-      return
-    }
-    if !isNearBottom {
-      WorkChatScrollTrace.follow(true, reason: "force-pin:\(reason)")
-    }
-    isNearBottom = true
-    if unreadBelowCount > 0 {
-      unreadBelowCount = 0
-    }
-    latestPinGeneration &+= 1
-    let generation = latestPinGeneration
-    latestPinTask?.cancel()
-    latestPinTask = Task { @MainActor in
-      guard generation == latestPinGeneration, isNearBottom, canWriteAutomaticScrollOffset else { return }
-      scrollToLatest(proxy, animated: false, traceReason: "force-pin:\(reason)")
-      for delay in [16, 80, 180, 320] {
-        try? await Task.sleep(for: .milliseconds(delay))
-        guard !Task.isCancelled,
-              generation == latestPinGeneration,
-              isNearBottom,
-              canWriteAutomaticScrollOffset else { return }
-        scrollToLatest(proxy, animated: false, traceReason: "force-pin-retry\(delay):\(reason)")
-      }
-      if generation == latestPinGeneration {
-        latestPinTask = nil
-      }
-    }
-  }
-
-  @MainActor
-  func cancelLatestPinTask() {
-    latestPinGeneration &+= 1
-    latestPinTask?.cancel()
-    latestPinTask = nil
   }
 
   @MainActor
