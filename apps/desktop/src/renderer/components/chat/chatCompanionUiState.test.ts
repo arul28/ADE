@@ -7,6 +7,8 @@ import {
   clearChatCompanionUiState,
   closeWorkLiveCardForChat,
   floatWorkLiveCardForChat,
+  markWorkLiveCardSeenForChat,
+  unfloatWorkLiveCardForChat,
   isWorkLiveCardClosedForChat,
   patchChatCompanionUiState,
   pruneChatCompanionUiState,
@@ -232,6 +234,28 @@ describe("pruneChatCompanionUiState", () => {
     expect(restored.chatActionsOpen).toBe(true);
     expect(restored.chatActionsTab).toBe("proof");
     expect(restored.prPaneOpen).toBe(false);
+  });
+});
+
+describe("workLiveCard seen markers", () => {
+  it("records the session a chat's pane showed, per chat and per tool, without churn", () => {
+    const first = markWorkLiveCardSeenForChat("chat-1", "browser", "tab-1");
+    expect(first.workLiveCardSeenByTool).toEqual({ browser: "tab-1" });
+    // Same marker again returns the same record: the card calls this per render.
+    expect(markWorkLiveCardSeenForChat("chat-1", "browser", "tab-1")).toBe(first);
+    markWorkLiveCardSeenForChat("chat-1", "ios", "sim-1");
+    resetChatCompanionUiStateCacheForTests();
+    expect(readChatCompanionUiState("chat-1").workLiveCardSeenByTool).toEqual({ browser: "tab-1", ios: "sim-1" });
+    // Another chat has seen nothing: the hand-opened tab does not follow you there.
+    expect(readChatCompanionUiState("chat-2").workLiveCardSeenByTool).toEqual({});
+  });
+
+  it("unfloat drops only the named tool, and is a no-op when it was not floated", () => {
+    floatWorkLiveCardForChat("chat-1", "browser");
+    floatWorkLiveCardForChat("chat-1", "ios");
+    expect(unfloatWorkLiveCardForChat("chat-1", "browser").workLiveCardFloating).toEqual(["ios"]);
+    const current = readChatCompanionUiState("chat-1");
+    expect(unfloatWorkLiveCardForChat("chat-1", "browser")).toBe(current);
   });
 });
 

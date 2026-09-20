@@ -13176,7 +13176,7 @@ export function AgentChatPane({
             <SmartTooltip
               content={{
                 label: appControlOpen ? "Close App Control" : "Open App Control",
-                description: "Launch or attach to an Electron app to inspect, click, and capture context.",
+                description: "Launch or attach to a local Electron app. ADE can click, type, read its logs, answer its prompts, and capture screenshots and DOM context for the chat.",
                 effect: appControlContextItems.length
                   ? `${appControlContextItems.length} element context attached`
                   : undefined,

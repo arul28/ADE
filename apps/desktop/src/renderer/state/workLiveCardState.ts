@@ -87,6 +87,19 @@ export type WorkLiveCardClosedByTool = Partial<Record<WorkLiveScreenTool, string
 export type WorkLiveCardFloatingTools = WorkLiveScreenTool[];
 
 /**
+ * Per-tool "seen" markers for one chat: the session key each screen tool was
+ * showing the last time this chat's tools pane had that tool open.
+ *
+ * A session nobody owns (a tab opened by hand, an attached app) belongs to no
+ * chat, so it used to float over EVERY chat — the card followed you from
+ * conversation to conversation, and × only ever silenced it in the one you
+ * pressed it in. The rule is now: an unowned session may float only in a chat
+ * whose pane has shown it. Same shape as the closed map on purpose, so both
+ * normalize the same way.
+ */
+export type WorkLiveCardSeenByTool = Partial<Record<WorkLiveScreenTool, string>>;
+
+/**
  * Reads a stored closed map. Unknown tool ids and empty keys are dropped so a
  * hand-edited blob cannot hide a card forever with a value nothing can match.
  */
@@ -110,6 +123,16 @@ export function normalizeWorkLiveCardFloatingTools(value: unknown): WorkLiveCard
     next.push(entry);
   }
   return next;
+}
+
+/** True when this chat's pane has shown `tool` at exactly this session key. */
+export function isWorkLiveCardSeen(
+  seen: WorkLiveCardSeenByTool | null | undefined,
+  tool: WorkLiveScreenTool,
+  sessionKey: string | null,
+): boolean {
+  if (sessionKey == null) return false;
+  return seen?.[tool] === sessionKey;
 }
 
 /** True when `tool` is closed for this chat at the given session key. */

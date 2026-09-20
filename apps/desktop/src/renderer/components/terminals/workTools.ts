@@ -101,7 +101,7 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "App Control",
     icon: Desktop,
     color: "#a78bfa",
-    hint: "Drive a desktop app",
+    hint: "Drive an Electron app",
   },
   {
     id: "mac-desktop",

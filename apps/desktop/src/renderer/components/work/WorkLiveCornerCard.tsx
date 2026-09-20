@@ -24,9 +24,13 @@ import {
 } from "../../state/appStore";
 import {
   WORK_LIVE_CARD_DEFAULT_WIDTH,
+  WORK_LIVE_SCREEN_TOOLS,
   isWorkLiveCardClosed,
+  isWorkLiveCardSeen,
+  isWorkLiveScreenTool,
   normalizeWorkLiveCardWidth,
   type WorkLiveCardClosedByTool,
+  type WorkLiveCardSeenByTool,
   type WorkLiveScreenTool,
 } from "../../state/workLiveCardState";
 import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
@@ -38,6 +42,8 @@ import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
 import { MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY } from "../chat/macDesktopLiveViewLease";
 import {
   closeWorkLiveCardForChat,
+  markWorkLiveCardSeenForChat,
+  unfloatWorkLiveCardForChat,
   useChatCompanionUiState,
 } from "../chat/chatCompanionUiState";
 import type { NativeToolFeedScope } from "../terminals/useNativeToolSessions";
@@ -294,6 +300,7 @@ export function WorkLiveCornerCard({
    */
   const [localClosed, setLocalClosed] = useState<WorkLiveCardClosedByTool>({});
   const [localFloating, setLocalFloating] = useState<WorkLiveScreenTool[]>([]);
+  const [localSeen, setLocalSeen] = useState<WorkLiveCardSeenByTool>({});
   /** The picture's own width / height, which the box is built from. */
   const [sourceAspect, setSourceAspect] = useState<number | null>(null);
   /** Live width while a resize gesture is in flight; null otherwise. */
@@ -315,6 +322,17 @@ export function WorkLiveCornerCard({
   const floating: readonly WorkLiveScreenTool[] = chatSessionId
     ? companionUi.workLiveCardFloating
     : localFloating;
+  /**
+   * Which session each tool showed the last time THIS chat's pane had it open.
+   *
+   * An unowned session — a tab you opened by hand, an app you attached — has
+   * no chat, so it used to float over every chat and × only silenced it in
+   * one. Now it may float only in a chat whose pane has shown it, which is
+   * the chat you opened it in (and any chat you later looked at it from).
+   */
+  const seen: WorkLiveCardSeenByTool = chatSessionId
+    ? companionUi.workLiveCardSeenByTool
+    : localSeen;
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -650,6 +668,49 @@ export function WorkLiveCornerCard({
     priority: MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
   });
 
+  /**
+   * The pane is showing a screen tool: remember its session for this chat.
+   *
+   * This is the one place the "seen" marker is written. It runs while the
+   * pane is open on the tool (`activeTool`), so closing the pane floats what
+   * you were just looking at, here, and nowhere else.
+   */
+  const paneSessionKey = activeTool && isWorkLiveScreenTool(activeTool)
+    ? sources[activeTool].sessionKey
+    : null;
+  useEffect(() => {
+    if (!activeTool || !isWorkLiveScreenTool(activeTool) || !paneSessionKey) return;
+    if (chatSessionId) {
+      markWorkLiveCardSeenForChat(chatSessionId, activeTool, paneSessionKey);
+      return;
+    }
+    setLocalSeen((current) => (
+      current[activeTool] === paneSessionKey ? current : { ...current, [activeTool]: paneSessionKey }
+    ));
+  }, [activeTool, chatSessionId, paneSessionKey]);
+
+  /**
+   * A floated tool's session ended (tab closed, app exited, simulator shut
+   * down): the float was for that session, so drop it with the session.
+   * Otherwise the card kept a blank frame with the tool's name on it after
+   * you closed the very thing it was previewing.
+   */
+  const previousSessionKeysRef = useRef<Partial<Record<WorkLiveScreenTool, string | null>>>({});
+  useEffect(() => {
+    const previous = previousSessionKeysRef.current;
+    for (const screenTool of WORK_LIVE_SCREEN_TOOLS) {
+      const next = sources[screenTool].sessionKey;
+      const before = previous[screenTool] ?? null;
+      previous[screenTool] = next;
+      if (before == null || next != null || !floating.includes(screenTool)) continue;
+      if (chatSessionId) {
+        unfloatWorkLiveCardForChat(chatSessionId, screenTool);
+      } else {
+        setLocalFloating((current) => current.filter((entry) => entry !== screenTool));
+      }
+    }
+  }, [chatSessionId, floating, sources]);
+
   const activities = useMemo<WorkLiveActivity[]>(() => [
     {
       tool: "browser",
@@ -658,7 +719,7 @@ export function WorkLiveCornerCard({
       live: sources.browser.live,
       ownerChatSessionId: activeBrowserTab?.ownerChatSessionId ?? null,
       sessionKey: sources.browser.sessionKey,
-      showWhenUnowned: true,
+      showWhenUnowned: isWorkLiveCardSeen(seen, "browser", sources.browser.sessionKey),
     },
     {
       tool: "app-control",
@@ -667,7 +728,7 @@ export function WorkLiveCornerCard({
       live: sources["app-control"].live,
       ownerChatSessionId: appControlSession?.chatSessionId ?? null,
       sessionKey: sources["app-control"].sessionKey,
-      showWhenUnowned: true,
+      showWhenUnowned: isWorkLiveCardSeen(seen, "app-control", sources["app-control"].sessionKey),
     },
     {
       tool: "ios",
@@ -676,7 +737,7 @@ export function WorkLiveCornerCard({
       live: sources.ios.live,
       ownerChatSessionId: iosSession?.chatSessionId ?? null,
       sessionKey: sources.ios.sessionKey,
-      showWhenUnowned: true,
+      showWhenUnowned: isWorkLiveCardSeen(seen, "ios", sources.ios.sessionKey),
     },
     {
       tool: "mac-desktop",
@@ -703,6 +764,7 @@ export function WorkLiveCornerCard({
     laneId,
     macDesktopAuthorized,
     macDesktopSessionKey,
+    seen,
     sources,
     toolContext.supportsMacDesktop,
   ]);

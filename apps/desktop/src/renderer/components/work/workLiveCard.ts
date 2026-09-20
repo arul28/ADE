@@ -2,6 +2,7 @@ import type { WorkSidebarTab } from "../../state/appStore";
 import {
   WORK_LIVE_SCREEN_TOOLS,
   isWorkLiveCardClosed,
+  isWorkLiveCardSeen,
   isWorkLiveScreenTool,
   normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardPosition,
@@ -12,6 +13,7 @@ import {
   type WorkLiveCardClosedByTool,
   type WorkLiveCardFloatingTools,
   type WorkLiveCardPosition,
+  type WorkLiveCardSeenByTool,
   type WorkLiveScreenTool,
 } from "../../state/workLiveCardState";
 
@@ -36,6 +38,7 @@ export {
   WORK_LIVE_SCREEN_TOOLS,
   isWorkLiveScreenTool,
   isWorkLiveCardClosed,
+  isWorkLiveCardSeen,
   normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardPosition,
   normalizeWorkLiveCardWidth,
@@ -47,6 +50,7 @@ export type {
   WorkLiveCardClosedByTool,
   WorkLiveCardFloatingTools,
   WorkLiveCardPosition,
+  WorkLiveCardSeenByTool,
   WorkLiveScreenTool,
 };
 
@@ -80,11 +84,13 @@ export type WorkLiveActivity = {
    */
   sessionKey: string | null;
   /**
-   * Whether a session with no owner is still shown to every chat.
+   * Whether a session with no owner may show in the chat on screen.
    *
-   * True for the three per-chat tools — an unowned tab belongs to nobody, so it
-   * leaks nothing by showing everywhere. False for mac-desktop, which is a lane
-   * resource gated on being a viewer or lease holder.
+   * The card computes this per chat: for browser, App Control and the
+   * simulator it is "this chat's pane has shown exactly this session"
+   * (`isWorkLiveCardSeen`), so a tab opened by hand floats where you opened it
+   * and nowhere else. Always false for mac-desktop, which is a lane resource
+   * gated on being a viewer or lease holder.
    */
   showWhenUnowned: boolean;
 };
@@ -94,9 +100,9 @@ export type WorkLiveActivity = {
 /**
  * Does this activity belong to the chat on screen?
  *
- * Owned sessions only show in their own chat. Unowned sessions show in every
- * chat unless the tool explicitly opts out (`showWhenUnowned: false`), which is
- * how mac-desktop hides itself from a chat that is not watching the lane.
+ * Owned sessions only show in their own chat. Unowned sessions show only where
+ * the caller says they may (`showWhenUnowned`): the card sets it to "this
+ * chat's pane has shown this session", and mac-desktop always to false.
  */
 export function workLiveActivityBelongsToChat(
   activity: Pick<WorkLiveActivity, "ownerChatSessionId" | "showWhenUnowned">,
@@ -144,8 +150,14 @@ export function selectWorkLiveCardTool(args: {
   let bestIsFloated = false;
   for (const activity of activities) {
     if (!activity.available) continue;
-    if (!workLiveActivityBelongsToChat(activity, activeChatSessionId)) continue;
     const floated = Boolean(floatingTools?.includes(activity.tool));
+    // Float is per chat and an explicit ask, so it may show an unowned session
+    // this chat's pane has not (yet) shown — a pane with no tab, floated. It
+    // never overrides another chat's ownership.
+    if (
+      !workLiveActivityBelongsToChat(activity, activeChatSessionId)
+      && !(floated && activity.ownerChatSessionId == null)
+    ) continue;
     if (!floated) {
       if (!activity.live) continue;
       if (activity.tool === activeTool) continue;

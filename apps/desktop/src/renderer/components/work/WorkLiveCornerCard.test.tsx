@@ -17,6 +17,7 @@ import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
 import { resetMacDesktopSupportCache } from "../terminals/useMacDesktopSupport";
 import {
   floatWorkLiveCardForChat,
+  markWorkLiveCardSeenForChat,
   readChatCompanionUiState,
   resetChatCompanionUiStateCacheForTests,
 } from "../chat/chatCompanionUiState";
@@ -96,7 +97,7 @@ function emitAppControlEvent(event: unknown): void {
   });
 }
 
-const APP_CONTROL_SESSION = { id: "app-1", status: "connected", label: "Playground", chatSessionId: null };
+const APP_CONTROL_SESSION = { id: "app-1", status: "connected", label: "Playground", chatSessionId: "chat-1" };
 
 /** One screencast frame, the 30fps feed that used to count as "activity". */
 function appControlFrame() {
@@ -530,10 +531,10 @@ describe("WorkLiveCornerCard dismissal", () => {
     expect(screen.queryByLabelText("Browser live preview")).toBeNull();
   });
 
-  it("keeps a dismissal scoped to its own chat", async () => {
+  it("floats an unowned tab only in the chat whose pane showed it, and keeps the close there", async () => {
     seedProject();
-    // An unowned tab belongs to every chat, so the only thing being tested is
-    // that the close is remembered per chat.
+    // A tab opened by hand belongs to no chat. It floats where the pane showed
+    // it (chat-1), and it must NOT follow you into a chat that never did.
     const unowned = makeBuiltInBrowserStatus({
       visible: false,
       activeTabId: "tab-1",
@@ -546,18 +547,43 @@ describe("WorkLiveCornerCard dismissal", () => {
         }),
       ],
     });
-    const view = renderCard();
+    // The pane is open on the browser in chat-1: the card records the tab as seen.
+    const view = renderCard({ activeTool: "browser" });
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
     emitBrowserEvent({ type: "status", status: unowned });
+    await waitFor(() => expect(readChatCompanionUiState("chat-1").workLiveCardSeenByTool.browser).toBe("tab-1"));
+    expect(screen.queryByLabelText("Browser live preview")).toBeNull();
+    view.rerender(
+      <NativeToolFeedsProvider active runtimePin={null}>
+        <WorkLiveCornerCard active laneId="lane-1" activeTool="git" chatSessionId="chat-1" runtimePin={null} onPick={vi.fn()} />
+      </NativeToolFeedsProvider>,
+    );
     await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
     fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
     await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
     view.unmount();
 
+    // chat-2 never showed the tab: nothing floats there, closed or not.
     renderCard({ chatSessionId: "chat-2" });
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
     emitBrowserEvent({ type: "status", status: unowned });
-    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(screen.queryByLabelText("Browser live preview")).toBeNull();
+    expect(readChatCompanionUiState("chat-2").workLiveCardSeenByTool).toEqual({});
+  });
+
+  it("drops a float when the session it was showing ends", async () => {
+    seedProject();
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    act(() => { floatWorkLiveCardForChat("chat-1", "browser"); });
+    await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+
+    // The tab is closed: no tab, no session key, and the float goes with it.
+    emitBrowserEvent({ type: "status", status: makeBuiltInBrowserStatus({ visible: false, activeTabId: null, tabs: [] }) });
+    await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+    expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toEqual([]);
   });
 
   it("stays closed through new frames, then reopens for a new session key", async () => {
@@ -650,6 +676,19 @@ describe("WorkLiveCornerCard App Control dismissal", () => {
       type: "session-started",
       session: { ...APP_CONTROL_SESSION, id: "app-2", label: "Playground 2" },
     });
+    expect(await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it("shows an unowned session only in a chat whose pane has shown it", async () => {
+    seedProject();
+    const unowned = { ...APP_CONTROL_SESSION, id: "app-9", chatSessionId: null };
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(appControlListeners.size).toBeGreaterThan(0));
+    emitAppControlEvent({ type: "session-started", session: unowned });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
+
+    act(() => { markWorkLiveCardSeenForChat("chat-1", "app-control", "app-9"); });
     expect(await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 })).toBeTruthy();
   });
 });

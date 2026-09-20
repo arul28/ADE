@@ -6,6 +6,7 @@ import {
   normalizeWorkLiveCardFloatingTools,
   type WorkLiveCardClosedByTool,
   type WorkLiveCardFloatingTools,
+  type WorkLiveCardSeenByTool,
   type WorkLiveScreenTool,
 } from "../../state/workLiveCardState";
 
@@ -44,6 +45,12 @@ export type ChatCompanionUiState = {
    * rule until the tool is closed again.
    */
   workLiveCardFloating: WorkLiveCardFloatingTools;
+  /**
+   * The session key each screen tool showed the last time this chat's tools
+   * pane had it open. An unowned session floats only in a chat that has seen
+   * it; without this a hand-opened browser tab followed you into every chat.
+   */
+  workLiveCardSeenByTool: WorkLiveCardSeenByTool;
 };
 
 export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
@@ -55,6 +62,7 @@ export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
   prPaneOpen: false,
   workLiveCardClosedByTool: {},
   workLiveCardFloating: [],
+  workLiveCardSeenByTool: {},
 };
 
 const CHAT_COMPANION_UI_STORAGE_PREFIX = "ade.chat.companionUiState.";
@@ -184,6 +192,38 @@ export function floatWorkLiveCardForChat(
   });
 }
 
+/**
+ * The pane showed `tool` at `sessionKey` in this chat. A no-op when the marker
+ * already matches, so the per-render call from the card never churns storage.
+ */
+export function markWorkLiveCardSeenForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+  sessionKey: string,
+): ChatCompanionUiState {
+  const current = readChatCompanionUiState(key);
+  if (current.workLiveCardSeenByTool[tool] === sessionKey) return current;
+  return patchChatCompanionUiState(key, {
+    workLiveCardSeenByTool: { ...current.workLiveCardSeenByTool, [tool]: sessionKey },
+  });
+}
+
+/**
+ * The session a floated tool was showing has ended (tab closed, app exited,
+ * simulator shut down). The float was for that session, so it ends with it;
+ * otherwise the card kept a blank frame with the tool's name on it.
+ */
+export function unfloatWorkLiveCardForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+): ChatCompanionUiState {
+  const current = readChatCompanionUiState(key);
+  if (!current.workLiveCardFloating.includes(tool)) return current;
+  return patchChatCompanionUiState(key, {
+    workLiveCardFloating: current.workLiveCardFloating.filter((entry) => entry !== tool),
+  });
+}
+
 export function chatCompanionUiStorageKey(key: string): string {
   return `${CHAT_COMPANION_UI_STORAGE_PREFIX}${key}`;
 }
@@ -231,6 +271,7 @@ export function readChatCompanionUiState(key: string): ChatCompanionUiState {
         prPaneOpen: parsed.prPaneOpen === true,
         workLiveCardClosedByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardClosedByTool),
         workLiveCardFloating: normalizeWorkLiveCardFloatingTools(parsed.workLiveCardFloating),
+        workLiveCardSeenByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardSeenByTool),
       };
       chatCompanionUiStateByKey.set(key, state);
       return state;

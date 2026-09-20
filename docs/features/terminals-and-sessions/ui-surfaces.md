@@ -1154,10 +1154,17 @@ dismissal undone by the event it caused would never stick.
 - **It belongs to the chat you are reading.** The card is passed the selected
   chat session id and shows only sessions that chat owns: a browser tab's
   `ownerChatSessionId`, an App Control or simulator session's `chatSessionId`.
-  An unowned session (a manual tab, a lane's display) is shared; mac-desktop is
+  An unowned session (a tab opened by hand, an app attached without a chat)
+  belongs to no chat, so it may float only in a chat whose tools pane has
+  shown it: the card records `workLiveCardSeenByTool` (tool → session key) in
+  the chat's companion state while the pane is open on that tool, and an
+  unowned session is shown only where that marker matches. That is what keeps
+  a hand-opened browser tab from following you into every chat. mac-desktop is
   the exception — it is per lane, so it shows only to a chat that is a current
   viewer of the lane's stream or holds its input lease (the stream status
-  carries the redacted-safe `viewerChatSessionIds`).
+  carries the redacted-safe `viewerChatSessionIds`). When a floated tool's
+  session ends (tab closed, app exited, simulator shut down) the float is
+  dropped with it, so closing the tool never leaves a blank named frame.
 - **It is a viewer, not a copy.** The pane and the card share one decoder per
   lane through `macDesktopLiveViewLease.ts`, a renderer-side refcount that
   starts the stream with the first holder and stops it with the last. The pane

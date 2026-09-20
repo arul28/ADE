@@ -16,6 +16,7 @@ import {
   formatWorkLiveAge,
   isWorkLiveScreenTool,
   isWorkLiveCardClosed,
+  isWorkLiveCardSeen,
   normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardWidth,
   normalizeWorkLiveCardPosition,
@@ -169,6 +170,23 @@ describe("chat scoping", () => {
   });
 });
 
+describe("seen-key semantics", () => {
+  it("matches only the exact session the chat's pane showed", () => {
+    expect(isWorkLiveCardSeen({ browser: "tab-1" }, "browser", "tab-1")).toBe(true);
+    expect(isWorkLiveCardSeen({ browser: "tab-1" }, "browser", "tab-2")).toBe(false);
+    expect(isWorkLiveCardSeen({ browser: "tab-1" }, "ios", "tab-1")).toBe(false);
+    expect(isWorkLiveCardSeen({}, "browser", "tab-1")).toBe(false);
+    expect(isWorkLiveCardSeen(null, "browser", "tab-1")).toBe(false);
+  });
+
+  it("never matches an unknown session key, unlike the closed rule", () => {
+    // Closed errs toward hidden; seen errs toward hidden too — an unowned
+    // session with no key cannot be the one this chat looked at.
+    expect(isWorkLiveCardSeen({ browser: "tab-1" }, "browser", null)).toBe(false);
+    expect(isWorkLiveCardClosed({ browser: "tab-1" }, "browser", null)).toBe(true);
+  });
+});
+
 describe("closed-key semantics", () => {
   it("stays closed for the same session key", () => {
     const browser = activity({ tool: "browser", sessionKey: "tab-1", lastActivityAt: 5_000 });
@@ -247,6 +265,14 @@ describe("floating override", () => {
       activities: [activity({ tool: "browser", live: false, available: false })],
       floatingTools: ["browser"],
     })).toBeNull();
+  });
+
+  it("shows a floated unowned session the chat has not seen, but never another chat's", () => {
+    const unseen = activity({ tool: "browser", live: false, sessionKey: null, showWhenUnowned: false });
+    expect(select({ activeTool: "browser", activities: [unseen] })).toBeNull();
+    expect(select({ activeTool: "browser", activities: [unseen], floatingTools: ["browser"] })).toBe("browser");
+    const theirs = activity({ tool: "browser", ownerChatSessionId: "chat-2", showWhenUnowned: false });
+    expect(select({ activities: [theirs], floatingTools: ["browser"] })).toBeNull();
   });
 
   it("lets a floated tool outrank another tool's newer activity", () => {
