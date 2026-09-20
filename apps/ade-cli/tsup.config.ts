@@ -54,7 +54,12 @@ export default defineConfig([
     // @opencode-ai/sdk is ESM-only (no "require" export); force-inline it so
     // the CJS runtime bundle does not emit a bare require() that packaged
     // Electron-as-node cannot resolve.
-    noExternal: ["@factory/droid-sdk", "@opencode-ai/sdk", "yaml"],
+    // string-width: cli.ts reaches it at module scope through
+    // tuiClient/displayWidth (table formatters); the packaged CLI resolves
+    // externals through NODE_PATH into apps/desktop's production tree, which
+    // does not ship it (v1.2.75 release smoke). verify-built-cli.mjs guards
+    // this class.
+    noExternal: ["@factory/droid-sdk", "@opencode-ai/sdk", "yaml", "string-width"],
     outExtension: () => ({
       js: ".cjs"
     }),
