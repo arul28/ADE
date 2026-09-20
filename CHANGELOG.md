@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.75] - 2026-09-20
+
+### Providers and accounts
+
+- Claude and Codex accounts are first-class rows with their own config homes; the pre-existing login becomes the Default account (#1264).
+- Smart balance and auto-start 5-hour windows per provider (#1264).
+- API keys on every provider that can take one, multi-credential, injected per harness; the two-button custom provider form is replaced (#1264).
+- Custom presets pair any harness with any model source, including a subscription through the CLIProxyAPI supervisor (#1264).
+- Usage popup, iOS, and TUI show one row per account in brand colors with reset-credit redemption on Codex (#1264).
+
+### Chat
+
+- Codex async questions render above the composer and can be dismissed; reset credits show as a chat notice once per window (#1264).
+- Claude `resume_return` dialogs render through the question card (#1264).
+- Persisted chat runtime ownership; stale subagent and background rows are swept and healed (#1264).
+- OpenCode steer, full-auto permissions, and image rows (#1262); Grok ACP graduated (#1259); Kimi config controls (#1261); Qwen 0.24.0 (#1263); Copilot 1.0.86 (#1260); workflow activity details (#1256).
+- Orchestration mode removed; spawn machinery unchanged (#1264).
+
+### Fixes
+
+- YAML 1.1 booleans in slash-command discovery; scoped uncommitted turn diff; multi-question shared note; Codex rate-limit warning re-arms; `CLAUDE_CONFIG_DIR` honored; `FACTORY_HOME_OVERRIDE` (#1264).
+- Work composer scopes lanes to the picked machine; "Update & restart" uses the release tag (#1257).
+
+### CLI and TUI
+
+- `ade providers accounts`, `ade proxy`, `ade chat models` table; `--instance`/`--preset`/`--credential` on every launch surface with merged-argument validation (#1264).
+
+
 ## [1.2.74] - 2026-09-17
 
 ### Account and settings
@@ -1975,6 +2003,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.74...HEAD
+[1.2.75]: https://github.com/arul28/ADE/compare/v1.2.74...v1.2.75
 [1.2.74]: https://github.com/arul28/ADE/compare/v1.2.73...v1.2.74
 [1.2.73]: https://github.com/arul28/ADE/compare/v1.2.72...v1.2.73
 [1.2.72]: https://github.com/arul28/ADE/compare/v1.2.71...v1.2.72
