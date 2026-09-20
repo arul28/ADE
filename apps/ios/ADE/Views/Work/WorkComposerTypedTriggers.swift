@@ -1667,6 +1667,12 @@ struct WorkComposerTextView: UIViewRepresentable {
   var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
   var maxLines = 6
+  /// Called when the field's own scroll pan is a fold swipe. Observing the text
+  /// view's recognizer rather than adding one is what keeps the fold from
+  /// fighting the draft's internal scroll: a scrollable `UITextView` never lets
+  /// a foreign recognizer run simultaneously, so the card's SwiftUI drag is
+  /// only reachable while the draft still fits.
+  var onFoldSwipeDown: (() -> Void)? = nil
 
   private var maxHeight: CGFloat {
     ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight * CGFloat(max(1, maxLines))) + 8
@@ -1721,6 +1727,7 @@ struct WorkComposerTextView: UIViewRepresentable {
 
     context.coordinator.textView = textView
     context.coordinator.installSmartLinkMenu(on: textView)
+    context.coordinator.observeFoldPan(on: textView)
     // Route committed suggestions straight to the live text view.
     controller.onCommit = { [weak coordinator = context.coordinator] suggestion, range in
       coordinator?.commit(suggestion, replacing: range)
@@ -1770,6 +1777,10 @@ struct WorkComposerTextView: UIViewRepresentable {
     private var triggerInputTraitsActive = false
     private let focusScheduler = WorkComposerFocusScheduler()
     private var smartLinkMenu: WorkSmartLinkContextMenuController?
+    /// Whether the pan that is running started with the draft scrolled to its
+    /// top. Dragging down inside a draft the reader has scrolled into is that
+    /// draft scrolling, not a fold.
+    private var foldPanBeganAtTop = false
 
     init(_ parent: WorkComposerTextView) {
       self.parent = parent
@@ -1780,6 +1791,31 @@ struct WorkComposerTextView: UIViewRepresentable {
         .font: UIFont.preferredFont(forTextStyle: .body),
         .foregroundColor: UIColor(ADEColor.textPrimary),
       ]
+    }
+
+    /// Rides the text view's own pan recognizer. `keyboardDismissMode` already
+    /// takes the keyboard down with the finger; this is what takes the card's
+    /// height with it.
+    func observeFoldPan(on textView: UITextView) {
+      textView.panGestureRecognizer.addTarget(self, action: #selector(handleFoldPan(_:)))
+    }
+
+    @objc private func handleFoldPan(_ gesture: UIPanGestureRecognizer) {
+      guard let textView else { return }
+      switch gesture.state {
+      case .began:
+        foldPanBeganAtTop = textView.contentOffset.y <= 0.5
+      case .ended:
+        guard foldPanBeganAtTop else { return }
+        let translation = gesture.translation(in: textView)
+        let swipe = workComposerFoldGesture(
+          translation: CGSize(width: translation.x, height: translation.y),
+          collapsed: false
+        )
+        if swipe == .collapse { parent.onFoldSwipeDown?() }
+      default:
+        break
+      }
     }
 
     func textViewDidBeginEditing(_ textView: UITextView) {

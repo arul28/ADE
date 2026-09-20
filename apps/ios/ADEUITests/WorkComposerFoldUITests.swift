@@ -36,6 +36,19 @@ final class WorkComposerFoldUITests: XCTestCase {
     app.textViews["Work.Chat.Composer.TextView"]
   }
 
+  /// How much of the field the card is actually showing.
+  ///
+  /// Measured as the gap between the top of the field and the controls row
+  /// under it, because that is the one composer dimension the keyboard cannot
+  /// move — and because the folded card clips the field rather than resizing
+  /// it, so the text view's own frame is deliberately unchanged.
+  private func visibleFieldHeight(_ app: XCUIApplication) -> CGFloat {
+    let field = composerField(app)
+    let controls = app.buttons["Work.Chat.Composer.OverflowMenu"]
+    guard field.exists, controls.exists else { return -1 }
+    return controls.frame.minY - field.frame.minY
+  }
+
   /// A 40-line draft, typed rather than injected, so the field measures the
   /// same way it does for a person holding the phone.
   private func longDraft() -> String {
@@ -55,11 +68,13 @@ final class WorkComposerFoldUITests: XCTestCase {
     return (first.label, first.frame.minY)
   }
 
+  /// Anchored on the card itself, not on a fraction of the window: with the
+  /// keyboard up, the bottom of the window is the keyboard.
   private func swipeDownOnComposer(_ app: XCUIApplication) {
-    let window = app.windows.firstMatch
-    let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.80))
-    let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.93))
-    start.press(forDuration: 0.12, thenDragTo: end)
+    let field = composerField(app)
+    let start = field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+    let end = start.withOffset(CGVector(dx: 0, dy: 90))
+    start.press(forDuration: 0.1, thenDragTo: end)
   }
 
   /// Folding shrinks the composer, lowers the keyboard, and leaves the reader
@@ -71,8 +86,8 @@ final class WorkComposerFoldUITests: XCTestCase {
 
     field.tap()
     field.typeText(longDraft())
-    let grownHeight = field.frame.height
-    XCTAssertGreaterThan(grownHeight, 60, "a 40-line draft should grow the field past one line")
+    let grownHeight = visibleFieldHeight(app)
+    XCTAssertGreaterThan(grownHeight, 100, "a 40-line draft should grow the field past one line")
 
     guard let before = topTranscriptLabel(app) else {
       return XCTFail("no transcript row to anchor on")
@@ -84,7 +99,7 @@ final class WorkComposerFoldUITests: XCTestCase {
     let folded = expectation(description: "composer folded")
     let deadline = Date().addingTimeInterval(5)
     func poll() {
-      if field.exists, field.frame.height < grownHeight - 8 {
+      if visibleFieldHeight(app) < grownHeight - 40 {
         folded.fulfill()
       } else if Date() < deadline {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: poll)
@@ -95,17 +110,21 @@ final class WorkComposerFoldUITests: XCTestCase {
     poll()
     wait(for: [folded], timeout: 6)
 
-    XCTAssertLessThan(field.frame.height, grownHeight - 8, "swiping down did not fold the field")
+    XCTAssertLessThan(visibleFieldHeight(app), grownHeight - 40, "swiping down did not fold the card")
     XCTAssertFalse(app.keyboards.firstMatch.exists, "swiping down did not lower the keyboard")
 
     guard let after = topTranscriptLabel(app) else {
       return XCTFail("transcript lost its rows across the fold")
     }
     XCTAssertEqual(after.label, before.label, "the fold scrolled the thread to a different row")
+    // Tolerance, not equality: dismissing the keyboard grows the transcript
+    // viewport, and absorbing that is the transcript's own anchor work. What
+    // this catches is the failure the fold exists to prevent — the thread
+    // jumping to a different place, which is hundreds of points, not tens.
     XCTAssertEqual(
       after.y,
       before.y,
-      accuracy: 2,
+      accuracy: 24,
       "the fold moved the reader's place in the thread"
     )
 

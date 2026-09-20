@@ -3512,7 +3512,8 @@ private struct WorkChatComposerDraftInput: View {
                 workChatInputPasteImages(images, into: $inputAttachments)
               },
               maxLines: 1,
-              collapsed: composerCollapsed
+              collapsed: composerCollapsed,
+              onFoldSwipeDown: { applyFold(.collapse) }
             )
           }
 
@@ -3540,7 +3541,8 @@ private struct WorkChatComposerDraftInput: View {
             workChatInputPasteImages(images, into: $inputAttachments)
           },
           maxLines: composerMaxLines,
-          collapsed: composerCollapsed
+          collapsed: composerCollapsed,
+          onFoldSwipeDown: { applyFold(.collapse) }
         )
 
         if showInterrupt && hasSendableDraftOrAttachment {
@@ -4390,6 +4392,8 @@ private struct WorkChatComposerTextField: View {
   /// line from the top, so folding a long draft animates one frame height
   /// instead of re-laying the text out.
   var collapsed = false
+  /// The field's own downward scroll pan asks the composer to fold.
+  var onFoldSwipeDown: (() -> Void)? = nil
   @State private var measuredHeight: CGFloat = 24
 
   /// One line of body text plus the same 8pt slack `WorkComposerTextView` adds
@@ -4411,7 +4415,8 @@ private struct WorkChatComposerTextField: View {
       measuredHeight: $measuredHeight,
       acceptsPastedImages: acceptsPastedImages,
       onPasteImages: onPasteImages,
-      maxLines: maxLines
+      maxLines: maxLines,
+      onFoldSwipeDown: onFoldSwipeDown
     )
     .frame(height: measuredHeight)
     .frame(height: displayHeight, alignment: .top)
