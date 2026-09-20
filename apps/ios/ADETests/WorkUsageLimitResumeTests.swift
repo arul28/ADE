@@ -644,7 +644,10 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertEqual(model.count, 3)
     XCTAssertEqual(model.reason, .usageLimit)
     XCTAssertEqual(model.headline, "3 agents stopped · usage limit")
-    XCTAssertEqual(folded[0].id, "subagent-usage-limit-group-provider-a")
+    // The group id carries the fold key desktop uses — cause, stop source,
+    // stop reason, first agent — so a failed usage-limit row with no wire
+    // reason folds under `unknown` rather than inheriting a neighbour's.
+    XCTAssertEqual(folded[0].id, "subagent-usage-limit-group-provider-unknown-a")
   }
 
   func testUnrelatedFailureBreaksTheUsageLimitRunAndLoneFailureStaysIndividual() {
