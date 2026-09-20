@@ -14681,14 +14681,26 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func dispatchChatSteer(sessionId: String, steerId: String, mode: String) async throws {
+  /// Returns true only when the host reports it actually dispatched the row.
+  ///
+  /// `chat.dispatchSteer` answers `{ dispatchedAt: null }` WITHOUT throwing when
+  /// the running turn refused the message — a Cursor inline dispatch that the
+  /// live run declines leaves the row staged. Treating a non-throwing reply as
+  /// delivery would mark a still-queued message as sent.
+  ///
+  /// A durably queued command (no `dispatchedAt` key at all, because the machine
+  /// has not answered yet) reads as not-dispatched, which is the safe side: the
+  /// row keeps its queued display until reconciliation says otherwise.
+  func dispatchChatSteer(sessionId: String, steerId: String, mode: String) async throws -> Bool {
     let scope = chatCommandScope(for: sessionId)
-    _ = try await sendChatCommand(
+    let result = try await sendChatCommand(
       action: chatActionName("chat.dispatchSteer", sessionId: sessionId),
       payload: AgentChatDispatchSteerRequest(sessionId: sessionId, steerId: steerId, mode: mode),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
+    guard let record = result as? [String: Any] else { return false }
+    return record["dispatchedAt"] != nil && !(record["dispatchedAt"] is NSNull)
   }
 
   func cancelDispatchedChatSteer(sessionId: String, steerId: String) async throws {
@@ -14733,6 +14745,23 @@ final class SyncService: ObservableObject {
         answers: answers,
         responseText: responseText
       ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  /// Throw a dismissible question away. The host rejects any card the provider
+  /// is still waiting on, and that refusal surfaces as a thrown error rather
+  /// than being quietly swallowed into a decline.
+  func dismissChatPendingInput(
+    sessionId: String,
+    itemId: String
+  ) async throws {
+    try requireInvokableRemoteAction("chat.dismissPendingInput")
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: chatActionName("chat.dismissPendingInput", sessionId: sessionId),
+      payload: AgentChatDismissPendingInputRequest(sessionId: sessionId, itemId: itemId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
@@ -20519,6 +20548,22 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Spend one banked provider reset credit for `accountId`.
+  ///
+  /// The host names the outcome; the phone only phrases it. A machine that
+  /// predates reset credits does not advertise the action, and the caller shows
+  /// its own "update the machine" line rather than a silent no-op.
+  func consumeUsageResetCredit(accountId: String) async throws -> UsageConsumeResetCreditResponse {
+    try requireInvokableRemoteAction("usage.consumeResetCredit")
+    return try await sendDecodableCommand(
+      action: "usage.consumeResetCredit",
+      args: ["accountId": accountId],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 25_000_000_000,
+      as: UsageConsumeResetCreditResponse.self
+    )
+  }
+
   private func sendDecodableCommand<T: Decodable>(
     action: String,
     args: [String: Any] = [:],
@@ -20808,8 +20853,18 @@ final class SyncService: ObservableObject {
         let args = try decodeQueuedArgs(operation)
         switch operation.kind {
         case "command":
-          guard commandPolicy(for: operation.action) != nil else {
+          guard supportsRemoteAction(operation.action) else {
             throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Queued action \(operation.action) is no longer available on this machine."])
+          }
+          guard supportsViewerRemoteAction(operation.action) else {
+            throw NSError(
+              domain: "ADE",
+              code: 17,
+              userInfo: [
+                NSLocalizedDescriptionKey: "This action is not available from a viewer device.",
+                "ADEErrorCode": "unsupported_action",
+              ]
+            )
           }
           // Replay with the operation's stored scope — a queued foreign-project
           // command must not silently retarget to whatever project is active
@@ -21973,6 +22028,16 @@ extension SyncService {
         code: 17,
         userInfo: [
           NSLocalizedDescriptionKey: "This action is not available on this machine version. Update ADE on the machine and reconnect.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    guard supportsViewerRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "This action is not available from a viewer device.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -23585,12 +23650,9 @@ extension SyncService {
 
   /// Creates a projectless (machine-scope) chat on the paired host.
   ///
-  /// `interactionMode` is forwarded verbatim, and the host REFUSES the create
-  /// when it is `"orchestrator-lead"` (a personal chat is never an orchestration
-  /// lead — see `personalChatScope.ts`). Every value iOS can produce comes from
-  /// `workRuntimeWireFields`, which only ever emits `"default"` or `"plan"`, so
-  /// this path cannot trip the refusal today. Keep it that way: if a caller ever
-  /// needs a lead-mode chat, create it inside a project instead.
+  /// `interactionMode` is forwarded verbatim. Every value iOS can produce comes
+  /// from `workRuntimeWireFields`, which only ever emits `"default"` or
+  /// `"plan"`.
   func createPersonalChat(
     provider: String,
     model: String,

@@ -40,6 +40,10 @@ commands, file requests, and chat/terminal streams. Browser environments paired
 before this release can still reconnect over their saved local/direct routes,
 but the hosted client no longer creates non-account pairings.
 
+Fresh controller launches require an ADE account. A previously paired device
+may use its explicitly labeled direct/local recovery path while signed out, but
+that path is not a guest account and never becomes an account-wide view.
+
 Account Activity deliberately does **not** follow that selected machine or
 project binding. Every signed-in brain publishes all of its active projects to
 the account relay, while signed-in desktop, hosted web, ADE Code, and iOS read
@@ -245,7 +249,7 @@ Its `accountSignedIn` gate is *ownership*, not usability — see
 ## Who participates
 
 - **Machine runtime** — the per-channel, per-machine `ade serve` runtime. It owns agent
-  execution, PTYs, worktrees, worker heartbeats, the orchestrator, and
+  execution, PTYs, worktrees, and
   the sync WebSocket server. It can hold **multiple** open projects at
   once behind a single brain-level WebSocket listener on a stable port;
   a phone picks which project to bind to via the machine project
@@ -366,7 +370,7 @@ See `remote-commands.md` and `../linear-integration/README.md`.
 |---|---|---|
 | Replicated ADE runtime tables in `.ade/ade.db` | cr-sqlite CRRs over WebSocket | All connected devices |
 | Source code files | `git push`/`git pull` | Desktop peers only |
-| Shared ADE scaffold/config (`.ade/.gitignore`, `.ade/ade.yaml`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
+| Shared ADE scaffold/config (`.ade/.gitignore`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
 | Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
 | Worktrees, PTY processes, caches, transcripts, artifacts, sockets, secrets, connection drafts | **Never syncs** | Machine-specific |
 | Product-analytics installation IDs, consent, budgets/deduplication state, and the local `usage_events` export ledger | **Never syncs** | Machine/browser/iOS-client specific; paired-client consent is socket-scoped |
@@ -702,7 +706,9 @@ Runtime support files outside `services/sync/`:
   end-to-end failure is never retained. The relay route therefore appears
   in the directory without waiting for an external client to open the first
   tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
-  window. Failed publications retry after 1, 2, 5, 10, then 20 seconds so a
+  window and carries the bounded, token-free provider/model/preset inventory
+  summary used by the Accounts page. Failed publications retry after 1, 2, 5,
+  10, then 20 seconds so a
   short outage normally recovers within the lease, and a 401 forces one token
   refresh before the publication is classified as expired. These operational
   retries and status polls are local logs, not product analytics. Two failure
@@ -777,6 +783,12 @@ Runtime support files outside `services/sync/`:
   `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit controlled-testing escape
   hatch. Source-checkout runtimes and non-development custom issuers keep their
   existing override behavior.
+- `apps/desktop/src/shared/types/machineInventory.ts` — the bounded, token-free
+  summary/detail contract for provider accounts, model counts, and harness
+  presets that can cross the account-directory boundary.
+- `apps/desktop/src/main/services/account/accountMachineInventoryLiveRefresh.ts`
+  — the connected-peer-only detail refresh used when a desktop expands an
+  account-directory machine row; it never pairs or reconnects an offline peer.
 - `apps/ade-cli/src/services/account/hardwareAnchor.ts` — the one piece of
   machine identity a reinstall cannot destroy. Both halves of ADE's identity
   live under `~/.ade` (the machine key in `sync-cloud-relay.json`, the device id
@@ -949,6 +961,75 @@ Runtime support files outside `services/sync/`:
   paths use different backoffs: the read-only path backs off on any miss, while
   the creating path backs off only when the keychain was *unavailable*, so a
   `not_found` miss can never starve first-run item creation.
+- `apps/push-relay/src/accountSettings.ts` and
+  `apps/push-relay/migrations/0008_account_settings.sql` — the account settings
+  store, the half of "sign in once and your setup follows you" that is not a
+  secret. It lives in the push relay rather than the account directory because
+  the directory's only write route is the machine heartbeat, which the brain
+  alone may call; the relay already takes authenticated writes from the brain,
+  iOS, and the hosted web client, so a phone can change a setting without a
+  second Worker growing a client-facing write path. One row per setting, never
+  one document per account: the merge rule is last writer wins **per key**, and
+  a blob cannot express that — a machine that had been offline would post back a
+  whole document and silently revert every key it had not seen. `updated_at` is
+  stamped by the Worker and never by the caller, so no machine with a wrong
+  clock can win an exchange; the caller's own `changedAt` is kept beside it for
+  diagnostics and is never authoritative. Machine-scoped settings never arrive
+  here at all.
+- `apps/ade-cli/src/services/account/accountSettingsStore.ts` and
+  `accountCacheStore.ts` — the machine's copy and its shared owner/epoch,
+  queue, cursor, and encrypted-cache primitives. Reads never touch the
+  network, because a settings page that waited on a
+  Worker would be unusable on a train. A write lands in the cache, is answered
+  at once, and queues; `sync()` uploads the queue and then pulls. Three
+  invariants are load-bearing and each is pinned by a test:
+  **upload before pull**, because a pull that ran first would hand back the
+  server's older row for a key this machine just changed and the user would
+  watch their own edit revert; **a pulled row must be strictly newer than the
+  cached one**, because the page is fetched from a cursor taken before that
+  upload and legitimately contains stale rows; **the queue clears by
+  sequence, not by timestamp**, because two writes to one key inside a
+  millisecond share a timestamp and clearing by it loses the edit a user made
+  while the previous upload was in flight; **a truncated pull is not
+  `ready`**, because migration starts on a complete cache and a partial page
+  would upload this machine's older copies of keys that still live later in
+  the Worker; and **a PUT that landed must drop its seqs even when a later
+  DELETE cannot be sent**, because the Worker stamps `updated_at` on every
+  write and replaying the PUT would last-writer-wins over a newer remote
+  edit. A mutation that cannot be written to disk is rolled back in memory
+  and reported as a failed write, so a restart cannot lose a value the UI
+  already treated as saved. A cache belonging to a different
+  account is discarded rather than merged. The store is keyed by machine ADE
+  directory so every project scope in a brain shares one cache and one cursor,
+  and it is built only when sync is enabled — a `--no-sync` brain has no store
+  at all, which is a stronger guarantee that a test runtime cannot reach the
+  account than a store with its uploads turned off.
+- `apps/ade-cli/src/services/account/accountVaultStore.ts` — the machine's
+  account-credential cache. It uses `account-vault.json.enc`, an atomic
+  machine-key-encrypted envelope with `0600` permissions; a legacy
+  `account-vault.json` is accepted only for migration and is removed after a
+  successful encrypted write. Mutations capture the signed-in owner and cache
+  generation, so a sign-out or account switch drops a delayed write instead of
+  resurrecting another account's credential.
+- `apps/push-relay/src/accountVault.ts` and
+  `apps/push-relay/migrations/0009_account_vault.sql` — the authenticated
+  account-vault Worker routes and per-item D1 table. Values are encrypted before
+  they leave the brain; the Worker stores ciphertext and never returns vault
+  values to viewer-allowed clients.
+- `apps/desktop/src/main/services/account/accountVaultBridge.ts` and
+  `apps/desktop/src/main/services/account/accountMigrationRunner.ts` — the
+  desktop-main bridge to the brain vault and the silent, receipt-backed sign-in
+  migration for provider API keys, Linear OAuth refresh credentials, and
+  repository-scoped project secrets. Migration is write-confirmed, per account
+  and per source, and hydrates local stores without replacing device-origin
+  values. A source that stays pending or fails clears the runtime latch so a
+  later vault-ready tick can retry it; completed sources stay protected by
+  their receipts.
+- `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
+  `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`) — how
+  desktop, `ade code`, the CLI, and iOS reach the stores through the brain.
+  The domains remain separate: settings are non-secret account preferences,
+  while vault reads/writes are host/CTO policy-gated credential operations.
 - `apps/account-directory/src/directory.ts` — the Clerk-scoped machine
   register/list/delete Worker routes. Machine listing selects the owner's 500
   most recently seen rows before computing online-first order and exposes
@@ -1317,6 +1398,15 @@ Cross-machine Work union:
   `isThisMachine` decides whether the amber elsewhere glyph appears. Thus a
   remote-bound tab still labels every remotely owned lane, including those in
   its primary list rather than the foreign union.
+  `requestCrossMachineLanesForMachine(machineId)` is the module's one
+  on-demand escape from the slow foreign lane cadence, for a surface that is
+  about to route work at a machine and needs its lane catalog now. It forgets
+  that machine's lane-read and lane-status-read timestamps together — they are
+  one fact and are never forgotten separately — and schedules a status-depth
+  refresh on the shared coalesced tick, so calling it from a render effect
+  cannot fan out reads. It is a no-op when no consumer is subscribed, because a
+  refresh outside a live scope would read against an empty scope and publish
+  rows nobody asked for.
 - `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx`,
   `SessionListPane.tsx`, and
   `apps/desktop/src/renderer/lib/terminalAttention.ts` — route chat-created
@@ -3700,10 +3790,15 @@ feature is merged or because a deliberately isolated-port host is running.
   per remote IP. Five failures put that IP into a 10-minute cooldown
   during which new pairing requests are rejected without touching the
   PIN store.
-- **Secrets never sync.** `.ade/local.secret.yaml` (provider API keys,
-  ADE CLI configs) is per-machine. Linear tokens stay in the active
-  project's machine-local `.ade/secrets`; GitHub tokens and AI provider
-  tokens stay on the runtime machine.
+- **Only explicitly account-owned credentials sync.** `.ade/local.secret.yaml`
+  and device-only credentials remain per-machine. Account-scoped AI provider
+  keys use the `provider_api_key` vault kind, Linear OAuth refresh tokens use
+  `linear_refresh_token` with a per-device `refreshOwner` so only one machine
+  exchanges the rotating grant, and repository account secrets use `project_secret`
+  under the normalized repository scope. Local credential stores retain
+  provenance and purge account-origin values on sign-out or account switch;
+  access tokens, GitHub tokens, and vendor CLI refresh credentials stay on the
+  machine that owns them.
 - **Transport**: WebSocket auth via PIN / paired secret / bootstrap
   token on every connection. Tailscale WireGuard encryption applies
   when over tailnet; LAN connections rely on pairing token validation.
@@ -3994,3 +4089,20 @@ feature is merged or because a deliberately isolated-port host is running.
   failed to start the turn. iOS therefore does not queue or resend that message:
   it restores the draft and asks the user to check the transcript before a
   manual retry. Do not assume synchronous semantics from the phone side.
+
+### Machine inventory
+
+The Accounts page shows a token-free provider inventory summary on each machine
+row. The 30-second account-directory heartbeat carries provider account and
+model counts plus the number of saved harness presets. Expanding a row fetches
+the live account labels, optional email and plan, and preset bindings through
+`account.getMachineInventory`.
+
+Live detail is requested only for an online machine that is already paired and
+connected; expanding a row never creates a pairing. Reads are capped at twelve
+machines and rate-limited to one attempt per machine every 30 seconds. Offline
+rows keep their heartbeat counts and say “Details unavailable while offline.”
+Older runtimes that do not implement the command are reported as an update
+compatibility issue, while authorization failures remain ordinary access
+errors. Inventory payloads exclude config-home paths, executable paths, and
+credentials.

@@ -395,11 +395,34 @@ export type RemoteRuntimeActionResult = {
   statusHints: Record<string, unknown>;
 };
 
-export type RemoteRuntimeEventCategory =
-  | "orchestrator"
-  | "dag_mutation"
-  | "runtime"
-  | "pty";
+/**
+ * Every category the runtime event buffer carries, in one place.
+ *
+ * It was enumerated in eight — the buffer, this union, the RPC schema enum, the
+ * server's parser, three identical client guards and the bridge's exclusion —
+ * and a category added to some of them is a stream that silently drops. The
+ * tuple is the source; the union, the guard and the schema enum all derive.
+ *
+ * `cto_voice` carries call STATE only: phase, captions, approvals. Audio never
+ * enters the buffer, which is bounded and replayable and would evict every real
+ * event inside seconds under PCM. Who may READ that category is a policy, not
+ * a shape, and lives in `shared/runtimeEventPolicy.ts`.
+ */
+export const REMOTE_RUNTIME_EVENT_CATEGORIES = [
+  "orchestrator",
+  "dag_mutation",
+  "runtime",
+  "pty",
+  "cto_voice",
+] as const;
+
+export type RemoteRuntimeEventCategory = (typeof REMOTE_RUNTIME_EVENT_CATEGORIES)[number];
+
+export function isRemoteRuntimeEventCategory(
+  value: unknown,
+): value is RemoteRuntimeEventCategory {
+  return (REMOTE_RUNTIME_EVENT_CATEGORIES as readonly unknown[]).includes(value);
+}
 
 export type RemoteRuntimeBufferedEvent = {
   id: number;

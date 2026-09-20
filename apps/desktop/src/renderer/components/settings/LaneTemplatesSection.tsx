@@ -6,9 +6,14 @@ import {
   LABEL_STYLE,
   outlineButton,
   primaryButton,
-  cardStyle,
 } from "../lanes/laneDesignTokens";
-import { SettingsDisclosure, SettingsToggle } from "./primitives";
+import { SettingsDisclosure, SettingsSelect, SettingsTextField, SettingsToggle } from "./primitives";
+import {
+  SettingsManagerEmpty,
+  SettingsManagerPage,
+  SettingsManagerRow,
+  SettingsManagerTable,
+} from "./primitives/SettingsManagerPage";
 import { laneSetupScriptHasWork } from "../../../shared/types";
 import type {
   LaneTemplate,
@@ -232,12 +237,22 @@ function removeAt<T>(items: T[], index: number): T[] {
  * Matches `lanes-git.lane-templates` in `settingsManifest.ts`. Every state of
  * this section renders it, so a Cmd-K result or `?tab=lanes-git#lane-templates`
  * deeplink lands here whether templates are still loading or one is open in the
- * editor. `data-settings-anchor` mirrors the id, the way `SettingsCard` and
- * `SettingsSectionShell` do it, so settings search can filter this section too.
+ * editor. `SettingsManagerPage` owns the id and its `data-settings-anchor`
+ * mirror, the way `SettingsCard` does, so settings search can filter this
+ * section too.
  */
 const ANCHOR = "lane-templates";
 
-const sectionStyle: React.CSSProperties = { scrollMarginTop: 16, padding: 16 };
+const TITLE = "Lane templates";
+const DESCRIPTION = "Set up every new lane the same way: copy files in, install packages, run a script.";
+
+/** Template, what it configures, the default marker, actions. */
+const TEMPLATE_COLUMNS = [
+  { label: "Template", width: "minmax(200px, 1.4fr)" },
+  { label: "Configures", width: "minmax(180px, 1.2fr)" },
+  { label: "Default", width: "minmax(80px, 0.5fr)" },
+  { label: "Actions", width: "170px", align: "right" as const },
+];
 
 export function LaneTemplatesSection() {
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
@@ -294,84 +309,99 @@ export function LaneTemplatesSection() {
 
   if (loading) {
     return (
-      <section id={ANCHOR} data-settings-anchor={ANCHOR} style={sectionStyle}>
+      <SettingsManagerPage anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
         <div style={{ fontSize: 12, color: COLORS.textMuted }}>Loading templates...</div>
-      </section>
+      </SettingsManagerPage>
     );
   }
 
   if (editing) {
     return (
-      <section id={ANCHOR} data-settings-anchor={ANCHOR} style={sectionStyle}>
+      <SettingsManagerPage anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
         <TemplateEditor
           template={editing}
           onSave={handleSave}
           onCancel={() => setEditing(null)}
         />
-      </section>
+      </SettingsManagerPage>
     );
   }
 
   return (
-    <section id={ANCHOR} data-settings-anchor={ANCHOR} style={sectionStyle}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-        <div>
-          <div style={{ ...LABEL_STYLE, fontSize: 11, margin: 0 }}>LANE TEMPLATES</div>
-          <div style={{ fontSize: 11, color: COLORS.textDim, marginTop: 4 }}>
-            Set up every new lane the same way: copy files in, install packages, run a script.
-          </div>
-        </div>
+    <SettingsManagerPage
+      anchor={ANCHOR}
+      title={TITLE}
+      description={DESCRIPTION}
+      toolbar={
         <button
           style={outlineButton({ height: 28, fontSize: 11 })}
           onClick={() => setEditing(emptyTemplate())}
         >
           + New template
         </button>
-      </div>
-
+      }
+    >
       {templates.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
+        <div>
           <div style={subLabelStyle}>Use for new lanes</div>
-          <select
+          <SettingsSelect
             value={defaultId ?? ""}
-            onChange={(e) => handleSetDefault(e.target.value)}
+            onChange={handleSetDefault}
+            ariaLabel="Default lane template"
+            options={[
+              { value: "", label: "None" },
+              ...templates.map((template) => ({ value: template.id, label: template.name })),
+            ]}
             style={{ ...inputStyle, maxWidth: 400 }}
-          >
-            <option value="">None</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
+          />
           <div style={hintStyle}>
             Picked for you when you create a lane. You can still choose a different one there.
           </div>
         </div>
       )}
 
-      {templates.length === 0 ? (
-        <EmptyState onCreateTemplate={() => setEditing(emptyTemplate())} />
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {templates.map((t) => (
-            <TemplateCard
+      <SettingsManagerTable columns={TEMPLATE_COLUMNS} minWidth={720}>
+        {templates.length === 0 ? (
+          <SettingsManagerEmpty
+            title="No templates yet"
+            description="A template says what happens when a lane is created: which files get copied in, what gets installed, and what script runs."
+            action={
+              <button
+                style={primaryButton({ height: 34, fontSize: 12 })}
+                onClick={() => setEditing(emptyTemplate())}
+              >
+                Create your first template
+              </button>
+            }
+          />
+        ) : (
+          templates.map((t) => (
+            <TemplateRow
               key={t.id}
               template={t}
               isDefault={t.id === defaultId}
               onEdit={() => setEditing({ ...t })}
               onDelete={() => handleDelete(t.id)}
             />
-          ))}
-        </div>
-      )}
-    </section>
+          ))
+        )}
+      </SettingsManagerTable>
+    </SettingsManagerPage>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Template card
+// Template row
 // ---------------------------------------------------------------------------
 
-function TemplateCard({
+/**
+ * One template in the manager table, plus its expanded configuration preview.
+ *
+ * The preview is a sibling of the row rather than a child because the row is a
+ * grid of the table's columns — a full-width detail block inside it would be
+ * squeezed into the first column.
+ */
+function TemplateRow({
   template,
   isDefault,
   onEdit,
@@ -393,52 +423,58 @@ function TemplateCard({
   if (template.docker?.composePath) features.push("docker");
   if (template.envVars && Object.keys(template.envVars).length > 0) features.push("env vars");
 
+  const name = template.name || "Untitled";
+
   return (
-    <div style={{
-      ...cardStyle({ padding: "12px 16px", borderRadius: 12 }),
-      ...(isDefault ? { borderColor: "color-mix(in srgb, var(--color-info) 40%, transparent)" } : {}),
-      transition: "border-color 150ms ease",
-    }}>
-      <div
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
-        onClick={() => setExpanded(!expanded)}
+    <>
+      <SettingsManagerRow
+        actions={
+          <>
+            <button
+              style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6 })}
+              onClick={onEdit}
+            >
+              Edit
+            </button>
+            <button
+              style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6, color: COLORS.danger, borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)" })}
+              onClick={() => { if (confirm(`Delete template "${template.name}"?`)) onDelete(); }}
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-label={expanded ? `Hide ${name} details` : `Show ${name} details`}
+              onClick={() => setExpanded(!expanded)}
+              style={{ ...removeBtn, fontSize: 10, color: COLORS.textDim, width: 16, textAlign: "center", transition: "transform 150ms ease", transform: expanded ? "rotate(180deg)" : "rotate(0)" }}
+            >
+              {"▾"}
+            </button>
+          </>
+        }
       >
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{template.name || "Untitled"}</span>
-            {isDefault && <span style={pillBadge(COLORS.info)}>DEFAULT</span>}
-          </div>
+        <div style={{ minWidth: 0 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{name}</span>
           {template.description && (
             <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {template.description}
             </div>
           )}
-          {features.length > 0 && (
-            <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
+        </div>
+        <div style={{ minWidth: 0 }}>
+          {features.length > 0 ? (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
               {features.map((f) => <span key={f} style={featureChip}>{f}</span>)}
             </div>
+          ) : (
+            <span style={{ fontSize: 11, color: COLORS.textDim }}>Nothing yet</span>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: 12 }}>
-          <button
-            style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6 })}
-            onClick={(e) => { e.stopPropagation(); onEdit(); }}
-          >
-            Edit
-          </button>
-          <button
-            style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6, color: COLORS.danger, borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)" })}
-            onClick={(e) => { e.stopPropagation(); if (confirm(`Delete template "${template.name}"?`)) onDelete(); }}
-          >
-            Delete
-          </button>
-          <span style={{ fontSize: 10, color: COLORS.textDim, marginLeft: 4, width: 16, textAlign: "center", transition: "transform 150ms ease", transform: expanded ? "rotate(180deg)" : "rotate(0)" }}>
-            {"▾"}
-          </span>
-        </div>
-      </div>
+        <div>{isDefault ? <span style={pillBadge(COLORS.info)}>DEFAULT</span> : null}</div>
+      </SettingsManagerRow>
       {expanded && (
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.borderMuted}`, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ padding: "12px 12px 14px", borderTop: `1px solid ${COLORS.borderMuted}`, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, display: "flex", flexDirection: "column", gap: 6 }}>
           {template.copyPaths && template.copyPaths.length > 0 && (
             <ConfigRow label="Files to copy" items={template.copyPaths.map((p) => p.dest ? `${p.source} → ${p.dest}` : p.source)} />
           )}
@@ -462,9 +498,11 @@ function TemplateCard({
           )}
         </div>
       )}
-    </div>
+    </>
   );
 }
+
+
 
 function ConfigRow({ label, items }: { label: string; items: string[] }) {
   return (
@@ -623,20 +661,18 @@ function TemplateEditor({
         <div style={{ display: "flex", gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={subLabelStyle}>Name</div>
-            <input
-              style={inputStyle}
+            <SettingsTextField
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(next) => setName(next)}
               placeholder="e.g. Web app"
               autoFocus
             />
           </div>
           <div style={{ flex: 2 }}>
             <div style={subLabelStyle}>Description (optional)</div>
-            <input
-              style={inputStyle}
+            <SettingsTextField
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(next) => setDescription(next)}
               placeholder="What this template sets up..."
             />
           </div>
@@ -649,18 +685,20 @@ function TemplateEditor({
         >
           {copyPaths.map((cp, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={cp.source}
-                onChange={(e) => setCopyPaths(updateAt(copyPaths, i, { source: e.target.value }))}
+                onChange={(next) => setCopyPaths(updateAt(copyPaths, i, { source: next }))}
                 placeholder=".claude"
+                mono
+                style={{ flex: 1 }}
               />
               <span style={{ color: COLORS.textDim, fontSize: 11 }}>{"→"}</span>
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={cp.dest ?? ""}
-                onChange={(e) => setCopyPaths(updateAt(copyPaths, i, { dest: e.target.value || undefined }))}
+                onChange={(next) => setCopyPaths(updateAt(copyPaths, i, { dest: next || undefined }))}
                 placeholder="same path if left empty"
+                mono
+                style={{ flex: 1 }}
               />
               <button style={removeBtn} onClick={() => setCopyPaths(removeAt(copyPaths, i))}>{"×"}</button>
             </div>
@@ -685,18 +723,20 @@ function TemplateEditor({
         >
           {envFiles.map((ef, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={ef.source}
-                onChange={(e) => setEnvFiles(updateAt(envFiles, i, { source: e.target.value }))}
+                onChange={(next) => setEnvFiles(updateAt(envFiles, i, { source: next }))}
                 placeholder=".env.template"
+                mono
+                style={{ flex: 1 }}
               />
               <span style={{ color: COLORS.textDim, fontSize: 11 }}>{"→"}</span>
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={ef.dest}
-                onChange={(e) => setEnvFiles(updateAt(envFiles, i, { dest: e.target.value }))}
+                onChange={(next) => setEnvFiles(updateAt(envFiles, i, { dest: next }))}
                 placeholder=".env"
+                mono
+                style={{ flex: 1 }}
               />
               <button style={removeBtn} onClick={() => setEnvFiles(removeAt(envFiles, i))}>{"×"}</button>
             </div>
@@ -716,17 +756,19 @@ function TemplateEditor({
         >
           {dependencies.map((dep, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <input
-                style={{ ...monoInputStyle, flex: 2 }}
+              <SettingsTextField
                 value={dep.command.join(" ")}
-                onChange={(e) => setDependencies(updateAt(dependencies, i, { command: e.target.value.split(/\s+/).filter(Boolean) }))}
+                onChange={(next) => setDependencies(updateAt(dependencies, i, { command: next.split(/\s+/).filter(Boolean) }))}
                 placeholder="npm install"
+                mono
+                style={{ flex: 2 }}
               />
-              <input
-                style={{ ...monoInputStyle, flex: 1 }}
+              <SettingsTextField
                 value={dep.cwd ?? ""}
-                onChange={(e) => setDependencies(updateAt(dependencies, i, { cwd: e.target.value || undefined }))}
+                onChange={(next) => setDependencies(updateAt(dependencies, i, { cwd: next || undefined }))}
                 placeholder="folder (optional)"
+                mono
+                style={{ flex: 1 }}
               />
               <button style={removeBtn} onClick={() => setDependencies(removeAt(dependencies, i))}>{"×"}</button>
             </div>
@@ -803,11 +845,11 @@ function SetupScriptFields({
 
         <div>
           <div style={subLabelStyle}>Or run a script file</div>
-          <input
-            style={monoInputStyle}
+          <SettingsTextField
             value={scriptPath}
-            onChange={(e) => onChange({ scriptPath: e.target.value })}
+            onChange={(next) => onChange({ scriptPath: next })}
             placeholder="scripts/setup-lane.sh"
+            mono
           />
           <div style={hintStyle}>
             Runs after the commands above. Path is relative to your project folder. The file has to
@@ -856,11 +898,11 @@ function SetupScriptFields({
               />
               <div style={{ marginTop: 8 }}>
                 <div style={subLabelStyle}>Script file</div>
-                <input
-                  style={monoInputStyle}
+                <SettingsTextField
                   value={unixScriptPath}
-                  onChange={(e) => onChange({ unixScriptPath: e.target.value })}
+                  onChange={(next) => onChange({ unixScriptPath: next })}
                   placeholder="scripts/setup-lane.sh"
+                  mono
                 />
               </div>
             </div>
@@ -875,11 +917,11 @@ function SetupScriptFields({
               />
               <div style={{ marginTop: 8 }}>
                 <div style={subLabelStyle}>Script file</div>
-                <input
-                  style={monoInputStyle}
+                <SettingsTextField
                   value={windowsScriptPath}
-                  onChange={(e) => onChange({ windowsScriptPath: e.target.value })}
+                  onChange={(next) => onChange({ windowsScriptPath: next })}
                   placeholder="scripts\setup-lane.ps1"
+                  mono
                 />
               </div>
             </div>
@@ -910,20 +952,20 @@ function AdvancedFields({
         <div style={{ display: "flex", gap: 12 }}>
           <div style={{ flex: 2 }}>
             <div style={subLabelStyle}>Compose file</div>
-            <input
-              style={monoInputStyle}
+            <SettingsTextField
               value={dockerCompose}
-              onChange={(e) => onChange({ dockerCompose: e.target.value })}
+              onChange={(next) => onChange({ dockerCompose: next })}
               placeholder="docker-compose.yml"
+              mono
             />
           </div>
           <div style={{ flex: 1 }}>
             <div style={subLabelStyle}>Services</div>
-            <input
-              style={monoInputStyle}
+            <SettingsTextField
               value={dockerServices}
-              onChange={(e) => onChange({ dockerServices: e.target.value })}
+              onChange={(next) => onChange({ dockerServices: next })}
               placeholder="all services if empty"
+              mono
             />
           </div>
         </div>
@@ -935,18 +977,20 @@ function AdvancedFields({
       >
         {mountPoints.map((mp, i) => (
           <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-            <input
-              style={{ ...monoInputStyle, flex: 1 }}
+            <SettingsTextField
               value={mp.source}
-              onChange={(e) => onChange({ mountPoints: updateAt(mountPoints, i, { source: e.target.value }) })}
+              onChange={(next) => onChange({ mountPoints: updateAt(mountPoints, i, { source: next }) })}
               placeholder="agent-profiles/default.json"
+              mono
+              style={{ flex: 1 }}
             />
             <span style={{ color: COLORS.textDim, fontSize: 11 }}>{"→"}</span>
-            <input
-              style={{ ...monoInputStyle, flex: 1 }}
+            <SettingsTextField
               value={mp.dest}
-              onChange={(e) => onChange({ mountPoints: updateAt(mountPoints, i, { dest: e.target.value }) })}
+              onChange={(next) => onChange({ mountPoints: updateAt(mountPoints, i, { dest: next }) })}
               placeholder=".ade/profile.json"
+              mono
+              style={{ flex: 1 }}
             />
             <button style={removeBtn} onClick={() => onChange({ mountPoints: removeAt(mountPoints, i) })}>{"×"}</button>
           </div>
@@ -970,18 +1014,20 @@ function AdvancedFields({
       >
         {envVars.map((v, i) => (
           <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-            <input
-              style={{ ...monoInputStyle, flex: 1 }}
+            <SettingsTextField
               value={v.key}
-              onChange={(e) => onChange({ envVars: updateAt(envVars, i, { key: e.target.value }) })}
+              onChange={(next) => onChange({ envVars: updateAt(envVars, i, { key: next }) })}
               placeholder="KEY"
+              mono
+              style={{ flex: 1 }}
             />
             <span style={{ color: COLORS.textDim, fontSize: 11 }}>=</span>
-            <input
-              style={{ ...monoInputStyle, flex: 2 }}
+            <SettingsTextField
               value={v.value}
-              onChange={(e) => onChange({ envVars: updateAt(envVars, i, { value: e.target.value }) })}
+              onChange={(next) => onChange({ envVars: updateAt(envVars, i, { value: next }) })}
               placeholder="value"
+              mono
+              style={{ flex: 2 }}
             />
             <button style={removeBtn} onClick={() => onChange({ envVars: removeAt(envVars, i) })}>{"×"}</button>
           </div>
@@ -1016,30 +1062,6 @@ function Field({
       <div style={fieldLabelStyle}>{label}</div>
       {hint ? <div style={hintStyle}>{hint}</div> : null}
       <div style={{ marginTop: 10 }}>{children}</div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Empty state
-// ---------------------------------------------------------------------------
-
-function EmptyState({ onCreateTemplate }: { onCreateTemplate: () => void }) {
-  return (
-    <div style={{ ...cardStyle({ borderRadius: 12, padding: 24 }), textAlign: "center" }}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.textPrimary, marginBottom: 6 }}>
-        No templates yet
-      </div>
-      <div style={{ fontSize: 12, color: COLORS.textMuted, maxWidth: 420, margin: "0 auto", lineHeight: 1.5 }}>
-        A template says what happens when a lane is created: which files get copied in,
-        what gets installed, and what script runs.
-      </div>
-      <button
-        style={primaryButton({ height: 34, fontSize: 12, marginTop: 16 })}
-        onClick={onCreateTemplate}
-      >
-        Create your first template
-      </button>
     </div>
   );
 }

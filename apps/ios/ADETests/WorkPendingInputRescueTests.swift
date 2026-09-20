@@ -238,3 +238,93 @@ final class WorkPendingInputRescueTests: XCTestCase {
     XCTAssertEqual(approvalCard?.resolution, "accepted")
   }
 }
+
+/// Answer-payload parity with desktop `buildAnswers`
+/// (`apps/desktop/src/shared/pendingInputAnswers.ts`).
+///
+/// The card used to drop a note typed beside a picked option (the `continue`
+/// after a selection skipped the per-question freeform) and to discard the
+/// shared note on a multi-question card (`if isPaged { return nil }`). Both are
+/// silent losses — the model receives a choice the user qualified, or no note
+/// at all — so they are pinned here rather than only in a screenshot.
+final class WorkQuestionAnswerBuilderTests: XCTestCase {
+  private func question(
+    id: String,
+    options: [String] = [],
+    multiSelect: Bool = false
+  ) -> WorkPendingQuestion {
+    WorkPendingQuestion(
+      questionId: id,
+      question: id,
+      options: options.map { WorkPendingQuestionOption(label: $0, value: $0, description: nil) },
+      allowsFreeform: true,
+      multiSelect: multiSelect
+    )
+  }
+
+  func testPickedOptionKeepsTheNoteTypedBesideIt() {
+    let payload = WorkQuestionAnswerBuilder.build(
+      questions: [question(id: "q1", options: ["ship", "hold"])],
+      selections: ["q1": ["ship"]],
+      freeformByQuestion: ["q1": "  after CI  "],
+      sharedFreeform: "",
+      isPaged: true
+    )
+    XCTAssertEqual(payload.answers["q1"], .strings(["ship", "after CI"]))
+  }
+
+  func testMultiSelectKeepsEveryPickBeforeTheNote() {
+    let payload = WorkQuestionAnswerBuilder.build(
+      questions: [question(id: "q1", options: ["a", "b", "c"], multiSelect: true)],
+      selections: ["q1": ["a", "c"]],
+      freeformByQuestion: ["q1": "only if green"],
+      sharedFreeform: "",
+      isPaged: true
+    )
+    XCTAssertEqual(payload.answers["q1"], .strings(["a", "c", "only if green"]))
+  }
+
+  func testSharedNoteAppendsToTheLastAnsweredQuestion() {
+    let payload = WorkQuestionAnswerBuilder.build(
+      questions: [
+        question(id: "q1", options: ["yes", "no"]),
+        question(id: "q2", options: ["one", "two"]),
+      ],
+      selections: ["q1": ["yes"], "q2": ["two"]],
+      freeformByQuestion: [:],
+      sharedFreeform: "ship it",
+      isPaged: true
+    )
+    XCTAssertEqual(payload.answers["q1"], .string("yes"))
+    XCTAssertEqual(payload.answers["q2"], .strings(["two", "ship it"]))
+    XCTAssertNil(payload.sharedFreeform)
+  }
+
+  func testSharedNoteFallsBackToTheFirstQuestionWhenNoneAnswered() {
+    let payload = WorkQuestionAnswerBuilder.build(
+      questions: [
+        question(id: "q1", options: ["yes", "no"]),
+        question(id: "q2", options: ["one", "two"]),
+      ],
+      selections: [:],
+      freeformByQuestion: [:],
+      sharedFreeform: "see ticket",
+      isPaged: true
+    )
+    XCTAssertEqual(payload.answers["q1"], .string("see ticket"))
+    XCTAssertNil(payload.answers["q2"])
+    XCTAssertNil(payload.sharedFreeform)
+  }
+
+  func testSingleQuestionSharedNoteStillRidesResponseText() {
+    let payload = WorkQuestionAnswerBuilder.build(
+      questions: [question(id: "q1", options: ["ship", "hold"])],
+      selections: ["q1": ["ship"]],
+      freeformByQuestion: [:],
+      sharedFreeform: "after CI",
+      isPaged: false
+    )
+    XCTAssertEqual(payload.answers["q1"], .string("ship"))
+    XCTAssertEqual(payload.sharedFreeform, "after CI")
+  }
+}

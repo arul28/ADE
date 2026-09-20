@@ -52,6 +52,25 @@ function normalizeFileSet(filePaths, label) {
 function collectDesktopRuntimeExecutableCandidates(rootPath) {
   const candidates = [];
 
+  // Native helpers built into `resources/native` and shipped through
+  // `build.extraResources`. They are not npm packages, so nothing else in this
+  // file would ever look at them - and a helper that loses its +x bit (a fresh
+  // clone on a filesystem without exec bits, a zip round-trip, an npm cache
+  // restore in CI) fails to spawn with EACCES, which surfaces as "the gesture
+  // just doesn't work" rather than as a build error. The `.exe` has no mode bit
+  // on Windows but is listed anyway: these scripts also run on POSIX CI that
+  // stages Windows artifacts.
+  for (const helperName of [
+    "ade-capture-helper",
+    "ade-capture-helper.exe",
+    "ade-attention-notch",
+  ]) {
+    candidates.push({
+      filePath: path.join(rootPath, "resources", "native", helperName),
+      label: "native helper binary",
+    });
+  }
+
   for (const buildDir of [
     path.join(rootPath, "node_modules", "node-pty", "build", "Release"),
     path.join(rootPath, "node_modules", "node-pty", "build", "Debug"),

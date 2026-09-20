@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   drainRunningClaudeWorkflowAgents,
+  finalizeClaudeWorkflowProgress,
   parseClaudeWorkflowProgress,
   planClaudeWorkflowAgentTransitions,
   summarizeClaudeWorkflowRun,
   type ClaudeWorkflowAgentEmitState,
 } from "./claudeWorkflowProgress";
+import { isAgentChatWorkflowProgress } from "../../../shared/chatSubagents";
 
 const TASK_ID = "wf-task-1";
 
@@ -38,6 +40,22 @@ describe("parseClaudeWorkflowProgress", () => {
     expect(snapshot!.phases).toEqual([{ index: 0, title: "Scan" }]);
   });
 
+  it("drops fractional and unsafe indexes so synthetic lineage stays addressable", () => {
+    const snapshot = parseClaudeWorkflowProgress([
+      agentEntry({ index: 0.5 }),
+      agentEntry({ index: Number.MAX_SAFE_INTEGER + 1 }),
+      agentEntry({ index: 1, state: "done" }),
+      { type: "workflow_phase", index: 1.5, title: "Fractional" },
+      { type: "workflow_phase", index: Number.MAX_SAFE_INTEGER + 1, title: "Unsafe" },
+      { type: "workflow_phase", index: 0, title: "Valid" },
+    ], TASK_ID);
+
+    expect(snapshot).toMatchObject({
+      phases: [{ index: 0, title: "Valid" }],
+      agents: [expect.objectContaining({ index: 1, status: "completed" })],
+    });
+  });
+
   it("derives status and excludes queued agents while counting them", () => {
     const snapshot = parseClaudeWorkflowProgress([
       agentEntry({ index: 0, state: "start" , startedAt: undefined }), // queued
@@ -68,20 +86,65 @@ describe("parseClaudeWorkflowProgress", () => {
 
   it("builds stable synthetic keys and prefers real agent ids", () => {
     const snapshot = parseClaudeWorkflowProgress([
-      agentEntry({ index: 0 }),
+      agentEntry({ index: 0, model: "claude-opus-5" }),
       agentEntry({ index: 1, agentId: "a-real" }),
     ], TASK_ID);
     expect(snapshot!.agents[0]!.key).toBe(`${TASK_ID}::a0`);
+    expect(snapshot!.agents[0]!.model).toBe("claude-opus-5");
     expect(snapshot!.agents[1]!.key).toBe("a-real");
   });
 
   it("clips oversized previews and surfaces blocked agents", () => {
     const snapshot = parseClaudeWorkflowProgress([
-      agentEntry({ label: "x".repeat(1000), blocked: true, lastToolSummary: "y".repeat(1000) }),
+      agentEntry({
+        label: "x".repeat(1000),
+        blocked: true,
+        lastToolSummary: "y".repeat(1000),
+        lastToolName: "z".repeat(1000),
+      }),
     ], TASK_ID);
     const agent = snapshot!.agents[0]!;
     expect(agent.name.length).toBeLessThanOrEqual(241);
     expect(agent.summary).toContain("blocked by safety filter");
+    expect(agent.lastToolName?.length).toBeLessThanOrEqual(241);
+  });
+
+  it("round-trips clipped provider text through the shared workflow boundary", () => {
+    const long = "x".repeat(1_000);
+    const snapshot = parseClaudeWorkflowProgress([
+      { type: "workflow_phase", index: 0, title: long },
+      agentEntry({
+        label: long,
+        agentId: long,
+        agentType: long,
+        model: long,
+        phaseTitle: long,
+        blocked: true,
+        error: long,
+        resultPreview: long,
+        lastToolSummary: long,
+        lastToolName: long,
+        promptPreview: long,
+      }),
+    ], TASK_ID)!;
+
+    expect(isAgentChatWorkflowProgress(snapshot)).toBe(true);
+    expect(snapshot.agents[0]!.key.length).toBeLessThanOrEqual(241);
+    expect(snapshot.agents[0]!.summary.length).toBeLessThanOrEqual(241);
+    expect(snapshot.agents[0]!.agentId?.length).toBeLessThanOrEqual(241);
+    expect(snapshot.agents[0]!.agentType?.length).toBeLessThanOrEqual(241);
+  });
+
+  it("marks provider-running agents stopped when a terminal workflow snapshot is finalized", () => {
+    const snapshot = parseClaudeWorkflowProgress([
+      agentEntry({ index: 0, state: "start" }),
+      agentEntry({ index: 1, state: "done" }),
+    ], TASK_ID)!;
+    const finalized = finalizeClaudeWorkflowProgress(snapshot);
+    expect(finalized.runningCount).toBe(0);
+    expect(finalized.queuedCount).toBe(0);
+    expect(finalized.agents.map((agent) => agent.status)).toEqual(["stopped", "completed"]);
+    expect(finalized.agents[0]!.summary).toContain("Workflow ended");
   });
 
   it("names agents from label, agentType, then index", () => {

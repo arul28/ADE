@@ -456,8 +456,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
   // other machine or project still throws there. Every adapter member whose
   // Electron signature declares a trailing pin now accepts and guards it:
   // pty/terminal, all of sessions, lanes, prs, git/diff, files, agentChat, and
-  // the three pinned singletons in misc (ai.getStatus, projectConfig.get,
-  // orchestration.runCreate). Declaring the parameter is what makes the guard
+  // the pinned singletons in misc (ai.getStatus, projectConfig.get).
+  // Declaring the parameter is what makes the guard
   // reachable at all — a member that omits it lets JS drop the pin on the floor
   // and serves the call against whichever host this adapter happens to hold.
   const pty: Record<string, unknown> = {
@@ -477,6 +477,10 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
           modelId: record.modelId,
           reasoningEffort: record.reasoningEffort,
           permissionMode: record.permissionMode,
+          // `work.startCliSession` resolves the account on the host that owns
+          // the lane, so only the id crosses — never a config path from this
+          // client's filesystem.
+          instanceId: launchInstanceId(record),
         },
         {
           fallback: null,
@@ -731,6 +735,14 @@ function stringField(record: Record<string, unknown>, key: string): string {
 function numberField(record: Record<string, unknown>, key: string): number | null {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Provider account for a fresh CLI launch, as the renderer stated it on
+ * `runtimeCliLaunch` — the same field the local PTY service reads.
+ */
+function launchInstanceId(record: Record<string, unknown>): string | null {
+  return stringField(asRecord(record.runtimeCliLaunch), "instanceId").trim() || null;
 }
 
 function providerFromToolType(toolType: unknown): string {

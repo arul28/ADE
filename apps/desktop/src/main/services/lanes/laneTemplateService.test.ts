@@ -63,8 +63,6 @@ function makeSnapshot(overrides: {
     trust: {
       sharedHash: "abc",
       localHash: "def",
-      approvedSharedHash: null,
-      requiresSharedTrust: false,
     },
     paths: {
       sharedPath: "/tmp/ade.yaml",

@@ -33,6 +33,7 @@ import { ACP_METHOD } from "../chat/acpHost/acpProtocolTypes";
 import type { Logger } from "../logging/logger";
 import {
   copilotConfigHome,
+  grokConfigHome,
   kimiCodeConfigHome,
   qwenConfigHome,
 } from "../shared/providerConfigHomes";
@@ -63,8 +64,8 @@ function cacheKey(provider: AcpChatProvider, cwd: string): CacheKey {
 /**
  * Config home to export for the probe.
  *
- * Grok is absent on purpose: it reads `~/.grok` and honors no override, so ADE
- * must not invent one. See `providerConfigHomes.grokConfigHome`.
+ * Grok uses the vendor-supported `GROK_HOME` override, just like the other
+ * ACP config-home variables. The dialect exports this same path on spawn.
  */
 export function acpProbeConfigHome(
   provider: AcpChatProvider,
@@ -78,7 +79,7 @@ export function acpProbeConfigHome(
     case "copilot":
       return copilotConfigHome({ env });
     case "grok":
-      return null;
+      return grokConfigHome({ env });
   }
 }
 
@@ -242,8 +243,8 @@ export async function probeAcpProviderAuth(
       const advertised = response.authMethods ?? [];
       const methodId = dialect.authProbe.methodId ?? advertised[0]?.id ?? null;
 
-      // `session/new` is the real gate. Qwen 0.22.3 advertises `openai` and
-      // answers `authenticate` with "Missing API key" even when the key
+      // `session/new` is the real gate. Qwen 0.24.0 advertises `openai` and
+      // `openai-responses`, and answers `authenticate` with "Missing API key" even when the key
       // already lives in settings.json — that RPC is how you *submit* a key,
       // not how you prove one is present. A successful session/new is enough.
       try {

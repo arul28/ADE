@@ -1225,6 +1225,104 @@ describe("multi-project RPC server", () => {
     expect(personalChatScope.dispose).not.toHaveBeenCalled();
   });
 
+  it("never delivers a cto_voice event from the personal chat buffer", async () => {
+    // Nothing puts a voice event in the machine-scoped buffer today, and that
+    // is a property of the producers rather than a guarantee of this boundary.
+    // The project scope has always refused the category; the personal one had
+    // no equivalent, so a future producer would have leaked a call's running
+    // transcript to any agent polling personal chats.
+    const { registry } = createRegistry();
+    const buffer = createEventBuffer();
+    const personalChatScope = {
+      capabilities: vi.fn(() => ({
+        version: 1 as const,
+        actions: ["list" as const],
+        pushEvents: true,
+      })),
+      call: vi.fn(async () => ({ action: "list" as const, result: [] })),
+      streamEvents: vi.fn(async () => buffer.drain(0)),
+      subscribeEvents: vi.fn(async (
+        _args: unknown,
+        listener: (event: BufferedEvent, eventEpoch: string) => void,
+      ) => {
+        const epoch = buffer.epoch();
+        const unsubscribe = buffer.subscribe((event) => listener(event, epoch));
+        return { unsubscribe, replay: buffer.drain(0), eventEpoch: epoch };
+      }),
+      transcriptPath: vi.fn(async () => null),
+      isTurnActive: vi.fn(async () => false),
+      dispose: vi.fn(async () => undefined),
+    };
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      personalChatScope,
+    });
+    const notifications: Array<{ method: string; params: unknown }> = [];
+    handler.setNotifier((method, params) => { notifications.push({ method, params }); });
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      // An agent-role caller: the role the gate exists for.
+      params: { identity: { role: "agent" } },
+    });
+
+    // Asked for by name: refused outright.
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "personalChats.subscribeEvents",
+      params: { category: "cto_voice" },
+    })).rejects.toMatchObject({ message: expect.stringContaining("requires the cto role") });
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "personalChats.streamEvents",
+      params: { category: "cto_voice" },
+    })).rejects.toMatchObject({ message: expect.stringContaining("requires the cto role") });
+
+    // Not asked for at all: filtered out of the stream rather than failing it.
+    const subscribed = await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "personalChats.subscribeEvents",
+      params: {},
+    }) as { subscriptionId: string };
+
+    buffer.push({
+      timestamp: "2026-01-01T00:00:00.000Z",
+      category: "cto_voice",
+      payload: { type: "cto_voice_state", state: { phase: "listening" } },
+    });
+    buffer.push({
+      timestamp: "2026-01-01T00:00:01.000Z",
+      category: "runtime",
+      payload: { type: "chat_event" },
+    });
+
+    // The runtime twin proves the subscription is live; the voice one must not
+    // appear at all.
+    expect(notifications).toHaveLength(1);
+    expect(JSON.stringify(notifications)).not.toContain("cto_voice");
+
+    const polled = await handler({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "personalChats.streamEvents",
+      params: {},
+    }) as { events: Array<{ category: string }> };
+    expect(polled.events.map((event) => event.category)).toEqual(["runtime"]);
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "personalChats.unsubscribeEvents",
+      params: { subscriptionId: subscribed.subscriptionId },
+    });
+    handler.dispose();
+  });
+
   it("pushes machine personal chat events over the connection and unsubscribes", async () => {
     const { registry } = createRegistry();
     const buffer = createEventBuffer();
@@ -2785,6 +2883,127 @@ describe("multi-project RPC server", () => {
     expect(notify).toHaveBeenCalledTimes(1);
 
     handler.dispose();
+  });
+
+  it("refuses a cto_voice subscription from an agent and filters the category out of an open one", async () => {
+    // A call's state events carry its running captions, so listening to one is
+    // the same disclosure as reading the CTO thread — and every `cto_voice`
+    // ACTION is fail-closed to the cto role. Without the same gate here, an
+    // agent that cannot start or drive a call could still sit and listen.
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const eventBuffer = createEventBuffer();
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { eventBuffer, dispose: vi.fn() },
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    const notify = vi.fn();
+    handler.setNotifier(notify);
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: { identity: { role: "agent" } },
+    });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runtimeEvents.subscribe",
+      params: { projectId: added.projectId, category: "cto_voice" },
+    })).rejects.toThrow(/requires the cto role/i);
+
+    const subscribed = await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runtimeEvents.subscribe",
+      params: { projectId: added.projectId },
+    }) as { subscriptionId: string };
+
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:00.000Z",
+      category: "cto_voice",
+      payload: { type: "cto_voice_state", state: { caption: "secret" } },
+    });
+    expect(notify).not.toHaveBeenCalled();
+
+    // An uncategorised subscription is filtered, not failed: everything else
+    // still arrives.
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:01.000Z",
+      category: "runtime",
+      payload: { type: "file_change", event: { path: "README.md" } },
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("runtime/event", expect.objectContaining({
+      subscriptionId: subscribed.subscriptionId,
+      event: expect.objectContaining({ category: "runtime" }),
+    }));
+
+    handler.dispose();
+  });
+
+  it("delivers cto_voice events to a cto subscriber", async () => {
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const { projectRoot, registry } = createRegistry();
+      const added = registry.add(projectRoot);
+      const eventBuffer = createEventBuffer();
+      const scopeRegistry = {
+        get: vi.fn(async () => ({
+          registryProjectId: added.projectId,
+          record: added,
+          runtime: { eventBuffer, dispose: vi.fn() },
+          dispose: vi.fn(),
+        })),
+        ensureSyncHost: vi.fn(),
+        dispose: vi.fn(),
+        disposeAll: vi.fn(),
+      } as unknown as ProjectScopeRegistry;
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        scopeRegistry,
+      });
+      const notify = vi.fn();
+      handler.setNotifier(notify);
+
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+      await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runtimeEvents.subscribe",
+        params: { projectId: added.projectId, category: "cto_voice" },
+      });
+
+      eventBuffer.push({
+        timestamp: "2026-05-10T00:00:00.000Z",
+        category: "cto_voice",
+        payload: { type: "cto_voice_state", state: { phase: "live" } },
+      });
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenCalledWith("runtime/event", expect.objectContaining({
+        event: expect.objectContaining({ category: "cto_voice" }),
+      }));
+
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousRole);
+    }
   });
 
   it("skips screencast frames for a subscriber that did not ask for them", async () => {

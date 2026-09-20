@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { FileCode } from "@phosphor-icons/react";
 
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
+import { hasOpenSceneFence, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import { useChatChromeTint } from "./chatAppearance";
@@ -16,6 +17,7 @@ import {
 } from "./chatWorkspacePaths";
 import { HighlightedCode } from "./CodeHighlighter";
 import { MosaicCard } from "./MosaicCard";
+import { SceneFrame } from "./SceneFrame";
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -120,6 +122,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   onOpenWorkspacePath,
   mosaic,
   mosaicScopeKey,
+  sceneScopeKey,
+  sceneLive,
 }: {
   markdown: string;
   /**
@@ -132,7 +136,36 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   mosaic?: MosaicRenderContext;
   /** Stable transcript-row key scoping mosaic answered state per message. */
   mosaicScopeKey?: string;
+  /**
+   * What names the ROW a scene in this body belongs to, on disk.
+   *
+   * Separate from `mosaicScopeKey` because the two need different things from
+   * a key. Mosaic answers live in this window and die with it, so the render
+   * key is fine; a scene's still is a file in the project, looked up again on
+   * every reopen, and the render key moves when the transcript is rebuilt from
+   * a different window of events. See `sceneRowIdentity`.
+   *
+   * Absent means this body's scenes leave no picture behind — the honest answer
+   * for a caller with no row identity. It is never the mosaic key: the two
+   * would be silently interchangeable, and one of them is wrong on disk.
+   */
+  sceneScopeKey?: string;
+  /**
+   * True while the turn that produced this body is still streaming. A scene
+   * runs only while its own turn is live; afterwards it is snapshotted so
+   * scrollback never re-executes generated code.
+   */
+  sceneLive?: boolean;
 }) {
+  // This component knows both halves of "still arriving", so it answers the
+  // question once instead of handing the frame two flags to combine. Fence
+  // state is read over the WHOLE body — settled prose plus the growing tail —
+  // so a fence that opens in one and closes in the other is read as one fence.
+  // Every scene in the body is held while the last one is open; a message with
+  // two scenes mounts both a tick later rather than mounting one against a
+  // document that is still arriving.
+  const sceneStreaming = Boolean(sceneLive)
+    && hasOpenSceneFence(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown);
   const chromeTint = useChatChromeTint();
   const neu = chromeTint === "neutral";
   const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
@@ -201,6 +234,22 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       if (isBlock && language === MOSAIC_FENCE_LANGUAGE && mosaic) {
         return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text, mosaicScopeKey ?? "")} onSubmit={mosaic.onSubmit} />;
       }
+      // Scenes are not gated on a render context: any agent may draw, and the
+      // sandbox rather than the caller is what makes that safe.
+      if (isBlock && language === SCENE_FENCE_LANGUAGE) {
+        // Per FENCE, not per row: two scenes in one message are two pictures,
+        // and a shared key made them overwrite each other's still.
+        return (
+          <SceneFrame
+            source={text}
+            scopeKey={sceneScopeKey ? sceneScopeKeyFor(sceneScopeKey, text) : null}
+            // A transcript scene belongs to a chat, never to a call.
+            voiceCallId={null}
+            live={sceneLive}
+            streaming={sceneStreaming}
+          />
+        );
+      }
       return isBlock ? (
         <HighlightedCode code={text} language={language} />
       ) : pathIsClickable ? (
@@ -247,7 +296,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, neu, openWorkspacePath]);
+  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming]);
 
   return (
     <div

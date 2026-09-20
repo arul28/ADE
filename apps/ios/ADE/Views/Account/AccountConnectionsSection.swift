@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// ACCOUNT subsection for the connection settings screen. Signed out, it shows a
-/// quiet account prompt; signed in, it shows the identity card plus "Your
-/// machines" from the directory Worker. It sits above the local MACHINE pairing
-/// rows so the two ways to reach a machine — your account, or direct pairing —
-/// read as one connections surface. Hidden entirely when no Clerk key is wired.
+/// Account identity subsection for the connection settings screen. Signed out,
+/// it shows a quiet account prompt; signed in, it shows the identity card. The
+/// parent scope group owns the ACCOUNT heading, while this view stays reusable
+/// as the identity card within that group. Hidden entirely when no Clerk key is
+/// wired.
 struct AccountConnectionsSection: View {
   /// Routes a chosen account machine into the existing pairing/connect flow.
   var onConnectMachine: (AccountMachine) -> Void
@@ -17,8 +17,6 @@ struct AccountConnectionsSection: View {
     Group {
       if account.isConfigured {
         VStack(alignment: .leading, spacing: 12) {
-          SettingsSectionHeader(label: "ACCOUNT")
-
           switch account.phase {
           case .signedIn:
             if let identity = account.identity {
@@ -26,8 +24,8 @@ struct AccountConnectionsSection: View {
                 confirmSignOut = true
               }
             }
-            // Machines now live in the dedicated CONNECTIONS section below, so
-            // this card stays a pure "account identity" surface (M5).
+            // Machines and pairing controls live in the parent ACCOUNT group,
+            // so this card stays a pure "account identity" surface (M5).
           case .loading:
             ADESkeletonView(height: 64, cornerRadius: 16)
           default:

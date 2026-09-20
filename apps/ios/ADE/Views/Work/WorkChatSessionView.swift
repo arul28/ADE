@@ -544,6 +544,11 @@ struct WorkChatSummaryRenderContext: Equatable {
   let reasoningEffort: String
   let effectiveFastMode: Bool
   let runtimeMode: String
+  /// Set once a Cursor chat has been promoted to a cloud agent. A cloud run
+  /// refuses every inline steer, so the send capability withholds that mode.
+  let cursorCloudAgentId: String?
+  /// Host pin for local vs cloud. When present it wins over a leftover agent id.
+  let cursorRuntime: String?
   let fastModeSupported: Bool
   let idleSinceAt: String?
   let endedAt: String?
@@ -575,6 +580,8 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.reasoningEffort = ""
       self.effectiveFastMode = false
       self.runtimeMode = ""
+      self.cursorCloudAgentId = nil
+      self.cursorRuntime = nil
       self.fastModeSupported = false
       self.idleSinceAt = nil
       self.endedAt = nil
@@ -600,6 +607,8 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.reasoningEffort = summary.reasoningEffort ?? ""
     self.effectiveFastMode = summary.effectiveFastMode
     self.runtimeMode = workInitialRuntimeMode(summary)
+    self.cursorCloudAgentId = summary.cursorCloudAgentId
+    self.cursorRuntime = summary.cursorRuntime
     self.fastModeSupported = workChatComposerSupportsFastMode(summary)
     self.idleSinceAt = summary.idleSinceAt
     self.endedAt = summary.endedAt
@@ -768,6 +777,9 @@ struct WorkChatSessionView: View {
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
   let onSubmitQuestionAnswers: @MainActor (String, [String: AgentChatInputAnswerValue], String?) async -> Void
   let onDeclineQuestion: @MainActor (String) async -> Void
+  /// Dismiss a question the host marked dismissible. Absent on hosts/screens
+  /// that cannot dismiss, which is why the card hides the button when it is nil.
+  var onDismissQuestion: (@MainActor (String) async -> Void)? = nil
   let onRespondToPermission: @MainActor (String, AgentChatApprovalDecision) async -> Void
   let onRetryLoad: @MainActor () async -> Void
   let onOpenFile: @MainActor (String) async -> Void
@@ -2547,6 +2559,10 @@ func workSubagentSnapshotsRenderSignature(_ snapshots: [WorkSubagentSnapshot]) -
     hasher.combine(snapshot.parentAgentId)
     hasher.combine(snapshot.spawnDepth ?? Int.min)
     hasher.combine(snapshot.resourceLinks)
+    hasher.combine(snapshot.stopSource)
+    hasher.combine(snapshot.stopReason)
+    hasher.combine(snapshot.resultLanded)
+    hasher.combine(snapshot.lastActivity)
   }
   return hasher.finalize()
 }
@@ -3023,9 +3039,11 @@ func mergeWorkPendingSteers(
 /// also moves the default onto the first remaining mode.
 func workChatActiveSendCapability(
   provider: String,
-  liveRedirectOnly: Bool
+  liveRedirectOnly: Bool,
+  runsInCloud: Bool = false
 ) -> WorkActiveSendCapability {
   let capability = WorkActiveSendCapability.forProvider(provider)
+    .withholdingInlineIfNeeded(runsInCloud: runsInCloud, provider: provider)
   guard liveRedirectOnly else { return capability }
   let liveRedirectModes = capability.modes.filter { $0 != .queue }
   guard !liveRedirectModes.isEmpty else { return capability }
@@ -3185,7 +3203,12 @@ private struct WorkChatComposerDraftInput: View {
   private var activeSendCapability: WorkActiveSendCapability {
     workChatActiveSendCapability(
       provider: chatSummary.provider,
-      liveRedirectOnly: liveRedirectOnlySends
+      liveRedirectOnly: liveRedirectOnlySends,
+      runsInCloud: workChatCursorSessionRunsInCloud(
+        provider: chatSummary.provider,
+        cursorRuntime: chatSummary.cursorRuntime,
+        cursorCloudAgentId: chatSummary.cursorCloudAgentId
+      )
     )
   }
 

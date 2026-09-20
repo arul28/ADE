@@ -8,7 +8,6 @@ import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneGitHubIssue, LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
-import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 import type { RuntimeProcessSummary } from "./sessions";
@@ -17,6 +16,36 @@ import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
 import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
 import type { CursorCloudServiceTier } from "./config";
+
+/** Plain-language causes the interrupted-turn card renders verbatim. */
+export const CHAT_STOP_REASON_BRAIN_RESTARTED = "the ADE brain restarted";
+export const CHAT_STOP_REASON_FOREIGN_BRAIN = "another ADE brain took over this chat";
+export const CHAT_STOP_REASON_RUNTIME_EXITED = "the runtime process exited";
+export const CHAT_STOP_REASON_PROVIDER_ENDED_TURN = "the provider ended the turn";
+/** A workflow reached its end with agent rows still open — nothing crashed. */
+export const CHAT_STOP_REASON_WORKFLOW_ENDED = "the workflow ended";
+export const CHAT_STOP_REASON_CHAT_HANDED_OFF = "this chat was handed off to another model";
+
+/**
+ * Who ended an agent's work, for the one card that has to say it out loud.
+ *
+ * The stopped-subagent card used to read "N agents stopped when you
+ * interrupted" for every `stopped` status, which made an ADE restart and a
+ * second brain taking the chat over both read as the user's own doing. Only
+ * `user` earns that sentence now.
+ *
+ * - `user`          — someone pressed Stop on this turn.
+ * - `system`        — ADE itself ended it: a brain restart, a runtime teardown.
+ * - `foreign-brain` — another ADE brain on this ADE home claimed the chat.
+ * - `provider`      — the model runtime ended the turn under the agent.
+ * - `unknown`       — an event from a build or client that did not say.
+ */
+export type AgentChatStopSource =
+  | "user"
+  | "system"
+  | "foreign-brain"
+  | "provider"
+  | "unknown";
 
 export type AgentChatProvider =
   | "codex"
@@ -364,6 +393,14 @@ export type AgentChatNoticeDetailSection = {
 
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
+  /**
+   * The usage-snapshot account id a notice is about (`<provider>:<instanceId>`).
+   *
+   * Carried by the Codex `reset_credit_available` notice so the "Use reset"
+   * control spends the credit belonging to the account that ran out — not
+   * whichever account the usage popup happens to have selected.
+   */
+  accountId?: string;
   state?: "required" | "reconstructed" | "normal" | "warning" | "critical" | "exhausted";
   reason?: AgentChatResumeFailureKind;
   originalThreadId?: string | null;
@@ -395,10 +432,8 @@ export type AgentChatNoticeDetail = {
   spawnKind?: AgentChatSpawnKind;
   /**
    * True when an inline spawned-chat card (`subagent_started`) accompanies this
-   * `subagent_spawned` notice — i.e. a plain (non-orchestration) spawn. The
-   * renderer suppresses the quiet pill in that case (the card is the surface) and
-   * keeps the pill only for orchestration-run children, which emit the notice but
-   * no inline card. Absent/false → render the pill.
+   * `subagent_spawned` notice. The renderer suppresses the quiet pill in that
+   * case (the card is the surface). Absent/false → render the pill.
    */
   hasInlineCard?: boolean;
   spawnCompletion?: AgentChatSpawnCompletion;
@@ -534,24 +569,9 @@ export type AgentChatGitHubIssueContextAttachment = {
   attachedAt?: string;
 };
 
-/**
- * Ephemeral plan-annotation attachment produced by the orchestration plan
- * panel popover (see `goal.md` §10.7). Lives only in the composer tray; not
- * persisted to the manifest in v1. The payload carries the anchor (what was
- * selected) and the user's free-form comment, so the lead sees what was
- * being commented on when the message is sent.
- */
-export type AgentChatOrchestrationAnnotationContextAttachment = {
-  type: "orchestration_annotation";
-  item: OrchestrationContextItem;
-  source?: "manual";
-  attachedAt?: string;
-};
-
 export type AgentChatContextAttachment =
   | AgentChatLinearIssueContextAttachment
-  | AgentChatGitHubIssueContextAttachment
-  | AgentChatOrchestrationAnnotationContextAttachment;
+  | AgentChatGitHubIssueContextAttachment;
 
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
 export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
@@ -853,6 +873,47 @@ export type AgentChatResourceLink = {
   uri?: string;
   name?: string;
   path?: string;
+};
+
+/**
+ * Cumulative progress published by Claude's dynamic Workflow tool. The host
+ * keeps this deliberately provider-shaped: the renderer can show the phases
+ * and agent roster when Claude supplies it, while other providers continue to
+ * use the ordinary subagent lifecycle fields.
+ */
+export type AgentChatWorkflowPhase = {
+  index: number;
+  title: string;
+};
+
+/** Inclusive bound for provider-derived workflow text crossing client boundaries. */
+export const AGENT_CHAT_WORKFLOW_TEXT_MAX_CHARS = 241;
+
+export type AgentChatWorkflowAgent = {
+  key: string;
+  index: number;
+  name: string;
+  status: "running" | "completed" | "failed" | "stopped";
+  summary: string;
+  /** Real SDK agent id when the provider supplies one. */
+  agentId?: string;
+  agentType?: string;
+  model?: string;
+  phaseTitle?: string;
+  tokens?: number;
+  toolCalls?: number;
+  durationMs?: number;
+  lastToolName?: string;
+};
+
+export type AgentChatWorkflowProgress = {
+  phases: AgentChatWorkflowPhase[];
+  /** Started or finished agents; queued agents are represented by queuedCount. */
+  agents: AgentChatWorkflowAgent[];
+  queuedCount: number;
+  runningCount: number;
+  doneCount: number;
+  failedCount: number;
 };
 
 export type AgentChatEvent =
@@ -1191,6 +1252,7 @@ export type AgentChatEvent =
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       spawnKind?: AgentChatSpawnKind;
       workflowName?: string;
+      workflowProgress?: AgentChatWorkflowProgress;
       /** SDK spawn_depth when the host publishes it; 0 is the top-level agent. */
       spawnDepth?: number;
       resourceLinks?: AgentChatResourceLink[];
@@ -1218,6 +1280,7 @@ export type AgentChatEvent =
       lastToolName?: string;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       workflowName?: string;
+      workflowProgress?: AgentChatWorkflowProgress;
       spawnDepth?: number;
       resourceLinks?: AgentChatResourceLink[];
       turnId?: string;
@@ -1235,6 +1298,14 @@ export type AgentChatEvent =
       status: "completed" | "failed" | "stopped";
       summary: string;
       finalSummary?: string;
+      /**
+       * WHO stopped this agent. Absent on every event written before this field
+       * existed and on every client that does not read it, which is why the
+       * card falls back to "unknown" rather than to "you interrupted".
+       */
+      stopSource?: AgentChatStopSource;
+      /** One plain clause naming the cause, for a non-user stop. Distinct from the provider runtime's turn.completed `stopReason`. */
+      stopReason?: string;
       usage?: {
         totalTokens?: number;
         toolUses?: number;
@@ -1250,6 +1321,7 @@ export type AgentChatEvent =
       toolUseCount?: number;
       spawnDepth?: number;
       resourceLinks?: AgentChatResourceLink[];
+      workflowProgress?: AgentChatWorkflowProgress;
       turnId?: string;
     }
   | {
@@ -1348,6 +1420,17 @@ export type AgentChatEvent =
       sourceTaskId?: string;
       turnId?: string;
       error?: string;
+      /**
+       * WHO ended this work, for a terminal (`stopped`/`cancelled`) row that
+       * nobody asked to end. Same contract as `subagent_result.stopSource`:
+       * additive and optional, so an older client that never reads it still
+       * renders the terminal status correctly and only loses the attribution.
+       * Written by the stale-run reconcile when the process that owned a
+       * background command exited without reporting.
+       */
+      stopSource?: AgentChatStopSource;
+      /** One plain clause naming the cause, for a non-user stop. */
+      stopReason?: string;
     }
   | {
       type: "transcript_retraction";
@@ -1678,6 +1761,123 @@ export type AgentChatEvent =
       turnId?: string;
     };
 
+/**
+ * How a chat session's last settled turn ended, when it ended badly.
+ *
+ * `context_overflow` is the one failure that describes the CONVERSATION rather
+ * than the turn: the thread is too large for its model and every later turn
+ * will fail the same way until it is rotated. Everything else is a single
+ * turn's bad luck.
+ */
+export type AgentChatLastTurnFailure = {
+  kind: "context_overflow" | "error";
+  message: string;
+  at: string;
+  turnId?: string | null;
+};
+
+/** What the last settled turn said about how full the thread is. */
+export type AgentChatSessionContextHealth = {
+  /** 0..100 occupancy of the model's context window, when the runtime reports one. */
+  occupancyPct: number | null;
+  /** Consecutive settled turns at or above the rotation high-water mark. */
+  aboveHighWaterTurns: number;
+  /** True once a compaction — natural or ADE's fallback — has run in this thread. */
+  compactionSeen: boolean;
+  updatedAt: string;
+};
+
+export type AgentChatSessionTurnHealth = {
+  sessionId: string;
+  /** False only when the thread itself is the problem, never for a one-off error. */
+  canTakeTurn: boolean;
+  blockedReason: "context_overflow" | null;
+  lastTurnFailure: AgentChatLastTurnFailure | null;
+  context: AgentChatSessionContextHealth | null;
+  /**
+   * True when the thread should be rotated BEFORE it wedges — see
+   * `AGENT_CHAT_CONTEXT_ROTATION_PCT`. Advice, never an action: ADE offers, the
+   * user presses.
+   */
+  rotationAdvised: boolean;
+};
+
+/**
+ * Occupancy at which ADE starts offering a fresh thread.
+ *
+ * 80% is chosen because compaction has usually already run by then and cannot
+ * win back much more; the remaining fifth is the margin one large turn can
+ * spend. Below this the thread is simply busy, not endangered.
+ */
+export const AGENT_CHAT_CONTEXT_ROTATION_PCT = 80;
+
+/**
+ * How many consecutive settled turns must sit above the mark before ADE says
+ * anything. One spike is a big turn; two in a row is a trend.
+ */
+export const AGENT_CHAT_CONTEXT_ROTATION_TURNS = 2;
+
+/**
+ * The CTO thread's health, with a null session id when there is no thread yet.
+ *
+ * Its own type rather than a widened `AgentChatSessionTurnHealth`, because
+ * "there is no CTO thread" is a real answer the CTO page has to render and an
+ * intersection that merely relaxes the id hides it.
+ */
+/**
+ * Does this failure say the CONVERSATION is too big, rather than that one turn
+ * went wrong?
+ *
+ * The provider sentences are not ours and they are not stable, so this is a
+ * pattern rather than an equality — but it is read in exactly one place (the
+ * turn-health record written when a turn settles) and never used to choose what
+ * the CTO says out loud. The compaction refusal is included because it is the
+ * SECOND half of the same event: ADE tried to shrink the thread and could not,
+ * which is the strongest possible statement that this thread is finished.
+ */
+export function isContextOverflowFailureText(value: string | null | undefined): boolean {
+  if (typeof value !== "string" || !value.trim().length) return false;
+  return /prompt.{0,20}too long|context.{0,30}(?:overflow|window|length)|maximum context|too many tokens|could not be reduced below the context limit/i
+    .test(value);
+}
+
+/**
+ * How a blocking `runSessionTurn` ended.
+ *
+ * The provider's three terminal statuses, plus `skipped` for the two paths that
+ * never reach a provider at all (empty text, and a message the send pipeline
+ * declined to prepare). A caller that speaks the answer aloud needs this: a
+ * failed turn's `outputText` is its error message, and reading that out is how
+ * a CTO ends up saying "Prompt is too long" in its own voice.
+ */
+export type AgentChatBackgroundTurnStatus = "completed" | "interrupted" | "failed" | "skipped";
+
+/** What a blocking `runSessionTurn` hands back. Named so the collector that
+ *  fulfils it and the function that declares it cannot drift apart. */
+export type AgentChatBackgroundTurnResult = {
+  sessionId: string;
+  provider: AgentChatProvider;
+  model: string;
+  modelId?: string;
+  outputText: string;
+  status: AgentChatBackgroundTurnStatus;
+  /** The provider's own failure sentence, for logs. Never spoken to a user. */
+  errorMessage?: string | null;
+  usage?: {
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    cacheReadTokens?: number | null;
+    cacheCreationTokens?: number | null;
+  };
+  turnId?: string;
+  threadId?: string;
+  sdkSessionId?: string | null;
+};
+
+export type CtoThreadHealth = Omit<AgentChatSessionTurnHealth, "sessionId"> & {
+  sessionId: string | null;
+};
+
 export type AgentChatEventEnvelope = {
   sessionId: string;
   timestamp: string;
@@ -1694,10 +1894,28 @@ export type AgentChatEventEnvelope = {
     role?: "user" | "orchestrator" | "worker" | "agent" | null;
     targetKind?: string | null;
     sourceSessionId?: string | null;
+    /**
+     * True when the fork that imported this envelope carried the conversation
+     * as a transcript replay rather than a provider-side fork. A native fork
+     * keeps its own history on the provider, so the source transcript is NOT a
+     * safe thing to re-seed it from.
+     */
+    replayFork?: boolean;
     attemptId?: string | null;
     stepKey?: string | null;
     laneId?: string | null;
     runId?: string | null;
+    /**
+     * The CTO voice call this event was produced by.
+     *
+     * A call runs its thinking on the CTO's own thread, so its turns are real
+     * turns and its tool calls are real tool calls — hiding them would be a
+     * lie. Instead every event a voice turn emits carries the call it belongs
+     * to, and the transcript folds a consecutive run of them into one call
+     * card. Stamped by `agentChatService` while a voice turn is running; no
+     * client may set it.
+     */
+    voiceCallId?: string | null;
   };
 };
 
@@ -1805,18 +2023,13 @@ export function legacyPermissionModeFromDroidPermissionMode(
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatInteractionMode =
   | "default"
-  | "plan"
-  | "orchestrator-lead"
-  | "orchestrator-worker"
-  | "orchestrator-validator";
+  | "plan";
 /**
- * Optional fields persisted on chat sessions/summaries when the session is part
- * of an orchestration run. All fields are optional for migration tolerance —
- * older sessions deserialise cleanly with these absent.
+ * Optional spawn-lineage fields persisted on chat sessions/summaries. All
+ * fields are optional for migration tolerance — older sessions deserialise
+ * cleanly with these absent.
  */
-export type OrchestrationSessionFields = {
-  orchestrationRunId?: string;
-  orchestrationRole?: OrchestrationRole;
+export type SpawnLineageSessionFields = {
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
   /**
@@ -1829,9 +2042,6 @@ export type OrchestrationSessionFields = {
    * the takeover banner instead of resurrecting it against a dead parent.
    */
   orchestrationParentReachable?: boolean;
-  orchestrationTag?: string;
-  orchestrationStepId?: string;
-  orchestrationBundlePath?: string;
 };
 export type AgentChatIdentityKey = "cto";
 export type AgentChatSurface = "work" | "automation" | "personal";
@@ -2030,6 +2240,30 @@ export type AgentChatSession = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  /**
+   * Provider account ("instance") this chat launched under, for `claude` and
+   * `codex` only. Absent means the provider's default account. Resolved
+   * through the machine instance store at launch, so an id that no longer
+   * names an account silently falls back to that default.
+   */
+  instanceId?: string;
+  /**
+   * Saved harness preset this chat launched under (`shared/harnessPresets.ts`).
+   *
+   * A preset names the body, the brain, the model, the permission mode and the
+   * subagent pins as one value, so it is the id that has to survive a resume —
+   * re-deriving the launch from the individual fields would lose whichever of
+   * them the preset set and the session does not carry. A preset that has since
+   * been deleted resolves to `unsupported` at launch and the chat falls back to
+   * the harness's native sign-in with a notice.
+   */
+  presetId?: string;
+  /**
+   * API credential this chat launched under, when the model was chosen from a
+   * provider-card key rather than from a preset. Mutually exclusive with
+   * `presetId` in practice; both are ids into stores, never the secret.
+   */
+  credentialId?: string;
   piProfileId?: string | null;
   piProviderId?: string | null;
   piModelId?: string | null;
@@ -2095,7 +2329,7 @@ export type AgentChatSession = {
   requestedCwd?: string | null;
   createdAt: string;
   lastActivityAt: string;
-} & HostSessionConfigFields & OrchestrationSessionFields;
+} & HostSessionConfigFields & SpawnLineageSessionFields;
 
 /**
  * Usage-limit resume state, computed on the host from the durable
@@ -2158,6 +2392,11 @@ export type AgentChatSessionSummary = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  instanceId?: string;
+  /** Saved harness preset this row's session launched under, when there is one. */
+  presetId?: string;
+  /** API credential this row's session launched under, when there is one. */
+  credentialId?: string;
   piProfileId?: string | null;
   piProviderId?: string | null;
   piModelId?: string | null;
@@ -2227,6 +2466,17 @@ export type AgentChatSessionSummary = {
    * Never persisted; must not set awaitingInput / pendingInputItemId.
    */
   steeringInput?: boolean;
+  /**
+   * Live-only Codex async question (`agentMessage` with `delivery: "async"`).
+   *
+   * The same split as `steeringInput` and for the same reason: the card is real
+   * and the session is NOT blocked by it, so `awaitingInput` and
+   * `pendingInputItemId` must stay unset or the composer locks and the row
+   * reads "Needs you" for a question the user may ignore. Never persisted --
+   * the durable record is the `approval_request` event plus the persisted
+   * `asyncQuestions` entry the host rehydrates from.
+   */
+  asyncQuestion?: boolean;
   /** Earliest armed, unpaused schedule for this chat. */
   nextWakeAt: string | null;
   /**
@@ -2261,6 +2511,18 @@ export type AgentChatSessionSummary = {
    * `ps`. One entry per SDK process; each owns MCP children of its own.
    */
   runtimeProcesses?: RuntimeProcessSummary[];
+  /**
+   * Whether the host still holds a provider runtime for this chat.
+   *
+   * Provider-agnostic, unlike `runtimeProcesses` (Claude subprocess reaper
+   * only) and unlike `activeBackgroundTaskCount` (live bookkeeping that reads
+   * zero for several providers). `false` is a positive statement — there is no
+   * runtime — which is what lets the chat-actions pane stop rendering subagent
+   * and background rows as "running" once the process that owned them is gone.
+   * Absent means an older host that cannot say, and readers must treat that as
+   * unknown rather than as dead.
+   */
+  runtimeAlive?: boolean;
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
   /** KV-backed durable schedules. This is the management source of truth. */
@@ -2276,7 +2538,7 @@ export type AgentChatSessionSummary = {
    * session has no attached issues.
    */
   linearIssueLinks?: SessionLinearIssueLink[];
-} & HostSessionConfigFields & OrchestrationSessionFields;
+} & HostSessionConfigFields & SpawnLineageSessionFields;
 
 /**
  * What `chat.getSessionSummary` returns over the ADE action surface.
@@ -2325,6 +2587,7 @@ export type AgentChatSubagentSnapshot = {
     /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
     costUsd?: number;
   };
+  workflowProgress?: AgentChatWorkflowProgress;
   spawnDepth?: number;
   resourceLinks?: AgentChatResourceLink[];
 };
@@ -2579,6 +2842,12 @@ export type AgentChatModelCatalogModel = AgentChatModelInfo & {
   providerId?: string;
   providerName?: string;
   stale?: boolean;
+  /**
+   * Set on rows a stored API key makes reachable. The launch carries this id so
+   * the runtime resolves the same key the row came from — two keys on one
+   * provider can declare the same model id against different endpoints.
+   */
+  credentialId?: string;
 };
 
 export type AgentChatModelCatalogSubsection = {
@@ -2854,6 +3123,18 @@ export type AgentChatCreateArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  instanceId?: string;
+  /**
+   * Launch this chat from a saved harness preset. The runtime resolves it
+   * against the account-scoped preset list and the machine's own stores; an id
+   * that no longer names a preset produces a notice, not a failed create.
+   */
+  presetId?: string;
+  /**
+   * Launch this chat on a specific stored API credential, for a model chosen
+   * from a provider-card key rather than from a preset.
+   */
+  credentialId?: string;
   piProfileId?: string | null;
   piProviderId?: string | null;
   piModelId?: string | null;
@@ -2878,18 +3159,13 @@ export type AgentChatCreateArgs = {
    * ade_session_id before the ADE chat row exists.
    */
   sessionId?: string;
-  // Orchestration-mode fields — set when spawning into an orchestration run.
-  orchestrationRunId?: string;
-  orchestrationRole?: OrchestrationRole;
+  // Spawn lineage — set when one chat spawns another.
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
-  orchestrationTag?: string;
-  orchestrationStepId?: string;
-  orchestrationBundlePath?: string;
   /**
    * MCP servers injected by the caller for this chat only. Merged with (never
-   * replacing) the ADE-managed servers a session already receives — the CTO and
-   * orchestration leases keep working alongside them. Providers that cannot
+   * replacing) the ADE-managed servers a session already receives — the CTO
+   * leases keep working alongside them. Providers that cannot
    * accept injected servers report it through `mcpCapability` on the session
    * rather than dropping them silently.
    */
@@ -2923,8 +3199,6 @@ export type AgentChatCreateArgs = {
    * which is strict by default to stay lean. An explicit `false` is not the same
    * as absent — it overrides that default and asks for the user's MCP config,
    * which is how an embedder gets `loadUserMcpServers: true` on a personal chat.
-   * Orchestration-lead sessions stay strict regardless; their isolation is a
-   * policy, not a preference.
    */
   strictMcpConfig?: boolean;
   /**
@@ -2995,7 +3269,7 @@ export type AgentChatImportExternalSessionResult = {
  * Creates the session and fires the first turn off without awaiting it, so a
  * caller (e.g. the multi-lane Linear launch flow) can spin up N lanes that each
  * start working immediately. The kickoff text drives the first turn; optional
- * context attachments (Linear issue / orchestration annotations) are forwarded
+ * context attachments (Linear issues) are forwarded
  * to that turn the same way an interactive send would.
  */
 export type AgentChatLaunchArgs = AgentChatCreateArgs & {
@@ -3035,13 +3309,26 @@ export type AgentChatLaunchCliArgs = {
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean | null;
   permissionMode?: AgentChatPermissionMode;
-  /** Optional orchestration role; when present, role policy overrides the requested permission mode. */
-  orchestrationRole?: OrchestrationRole | null;
   /** Prompt submitted to the CLI agent once it starts. */
   kickoffPrompt: string;
   /** Linear issues to attach to the new session before spawn. */
   linearIssues?: LaneLinearIssue[];
   title?: string;
+  /**
+   * Which Claude/Codex provider account the CLI launches as. Absent means the
+   * provider's default. Ignored for every other provider, which has one
+   * identity per machine.
+   */
+  instanceId?: string | null;
+  /**
+   * Saved harness preset the CLI launches under. The preset's env is applied to
+   * the spawned process and its model id reaches the CLI unrewritten. The CLI
+   * gate still applies: a preset on a harness whose CLI cannot take an outside
+   * key launches the native CLI instead.
+   */
+  presetId?: string | null;
+  /** Stored API credential the CLI launches under, when no preset is named. */
+  credentialId?: string | null;
   /** Foreground opens/focuses the session; background leaves focus alone. */
   disposition?: "foreground" | "background";
 };
@@ -3447,9 +3734,19 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  *
  * Claude folds a message into the live query, so it has all three. Codex takes
  * the app-server's `turn/steer` request into the running turn, so it has
- * "inline" — but no interrupt-and-resend, so it stops there. Cursor's SDK has
- * no mid-run message API: its interrupt cancels the run and resends on the same
- * agent thread, so it has no "inline". Everything else is queue-only.
+ * "inline" — but no interrupt-and-resend, so it stops there. Cursor has all
+ * three since `@cursor/sdk` 1.0.31 added `Run.steer()`, which injects a message
+ * into the live local run; its interrupt still means something different from
+ * Claude's — it cancels the run and resends on the same agent thread — which is
+ * why `activeTurnInterruptContinues` keeps saying so. OpenCode takes the v2
+ * session prompt's `delivery: "steer"` input into the live agent loop, so it
+ * has "inline" and no interrupt mode. Everything else is queue-only.
+ *
+ * Cursor's inline mode is effectively local-only. A cloud run implements
+ * `Run.steer` but refuses every call, so a cloud turn degrades to a follow-up
+ * message. This table stays per-provider; the renderer withholds the inline
+ * handler for a cloud Cursor session so the default never lands on a mode that
+ * always degrades.
  *
  * The ACP providers are stated rather than left to the fallback. ACP has no
  * mid-turn message method at all — `session/prompt` is one request per turn —
@@ -3458,12 +3755,34 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
 export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, readonly ActiveTurnSendMode[]>> = {
   claude: ["inline", "queue", "interrupt"],
   codex: ["inline", "queue"],
-  cursor: ["interrupt", "queue"],
+  cursor: ["inline", "queue", "interrupt"],
+  opencode: ["inline", "queue"],
   qwen: ["queue"],
   kimi: ["queue"],
   grok: ["queue"],
   copilot: ["queue"],
 };
+
+/**
+ * True when a Cursor session's turns run in cloud rather than on the local agent.
+ *
+ * Lives beside the dispatch table because it is the one exception to it:
+ * `Run.steer()` is a local-run API, and a cloud run refuses every inline steer.
+ * The table stays per-provider — a session-shaped rule cannot live in a
+ * provider-keyed record — so each surface that knows the session reads this.
+ *
+ * Both fields are checked because `cursorRuntime` is only ever written as
+ * "cloud": a session promoted before that field existed carries only
+ * `cursorCloudAgentId`, and reading the flag alone would call it local.
+ */
+export function cursorSessionRunsInCloud(session: {
+  provider?: string | null;
+  cursorRuntime?: string | null;
+  cursorCloudAgentId?: string | null;
+} | null | undefined): boolean {
+  if (session?.provider !== "cursor") return false;
+  return (session.cursorRuntime ?? (session.cursorCloudAgentId ? "cloud" : "local")) === "cloud";
+}
 
 const QUEUE_ONLY_ACTIVE_TURN_MODES: readonly ActiveTurnSendMode[] = ["queue"];
 
@@ -3554,10 +3873,12 @@ export type AgentChatSteerArgs = {
   interactionMode?: AgentChatInteractionMode | null;
   /**
    * Atomic active-turn delivery. Omit to stage the message for the next turn.
-   * Claude: "inline" maps to SDK priority "next" and "interrupt" to "now".
-   * Cursor: only "interrupt" is accepted — the Cursor SDK has no mid-run
-   * message API, so the redirect is cancel + resend on the same agent thread.
-   * Every other provider rejects the field.
+   * Which providers accept which mode is `ACTIVE_TURN_DISPATCH_MODES` above —
+   * never restated here, because a second copy is how the two drift apart.
+   * Each provider implements the modes differently (Claude maps "inline" to SDK
+   * priority "next" and "interrupt" to "now"; Cursor's "inline" is
+   * `Run.steer()` and its "interrupt" is cancel + resend on the same agent
+   * thread), so read `activeTurnInterruptContinues` for the labelling fact.
    */
   dispatchMode?: AgentChatDispatchSteerMode;
 };
@@ -3911,6 +4232,18 @@ export type AgentChatApproveArgs = {
   itemId: string;
   decision: AgentChatApprovalDecision;
   responseText?: string | null;
+};
+
+/**
+ * Drop a non-blocking provider question without answering it.
+ *
+ * Only a request whose `providerMetadata.dismissible` is true may be dismissed:
+ * a card the provider is actually waiting on has no local "never mind", and
+ * pretending otherwise would strand the turn. The host rejects the rest.
+ */
+export type AgentChatDismissPendingInputArgs = {
+  sessionId: string;
+  itemId: string;
 };
 
 export type AgentChatRespondToInputArgs = {

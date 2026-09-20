@@ -295,6 +295,13 @@ async function main() {
     if (process.env.ADE_DISABLE_HARDWARE_ACCEL === "1") {
       electronArgs.push("--disable-gpu");
     }
+    // Dev-only: a synthetic microphone and camera, and no OS permission prompt.
+    // An Electron launched from an agent or CI shell has no TCC identity on
+    // macOS, so a real microphone is never granted there; this is how the voice
+    // call path is exercised from such a shell.
+    if (process.env.ADE_DEV_FAKE_MEDIA === "1") {
+      electronArgs.push("--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream");
+    }
     // Electron treats the first non-switch argument as the app path. Use the
     // absolute app root so macOS launches do not fall back to default_app.asar.
     electronArgs.push(projectRoot);

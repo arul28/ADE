@@ -8,22 +8,48 @@ import type {
 
 export type CtoCapabilityMode = "full_tooling" | "fallback";
 
-export type CtoPersonalityPreset = "strategic" | "professional" | "hands_on" | "casual" | "minimal" | "custom";
+/**
+ * Which shape of identity record the reader is looking at.
+ *
+ * Distinct from `CtoIdentity.version`, which is a revision counter bumped on
+ * every edit and therefore says nothing about the fields present. This one only
+ * moves when the record's shape changes, so a one-time migration can tell "not
+ * converted yet" from "converted, and edited thirty times since".
+ *
+ * 2 = the fold that carried `constraints`, `personality`, `customPersonality`
+ * and `communicationStyle` into `systemPromptExtension`.
+ */
+export const CTO_IDENTITY_SCHEMA_VERSION = 2;
 
-export type CtoCommunicationStyle = {
-  verbosity: "concise" | "detailed" | "adaptive";
-  proactivity: "reactive" | "balanced" | "proactive";
-  escalationThreshold: "low" | "medium" | "high";
+/**
+ * Fields older identity.yaml files still carry.
+ *
+ * They are no longer part of `CtoIdentity` — the preset personalities and the
+ * separate constraint list were replaced by a single freeform
+ * `systemPromptExtension`. They are declared here so the migration that folds
+ * them into that extension has a name for what it is reading, and so nobody
+ * re-adds them to the live type by accident.
+ */
+export type CtoLegacyIdentityFields = {
+  personality?: "professional" | "casual" | "minimal" | "custom" | null;
+  customPersonality?: string | null;
+  communicationStyle?: {
+    verbosity?: string | null;
+    proactivity?: string | null;
+    escalation?: string | null;
+  } | null;
+  constraints?: string[] | null;
 };
 
 export type CtoIdentity = {
   name: string;
   version: number;
+  /**
+   * Shape of the record, not its revision. Absent on anything written before
+   * the legacy fold existed, which is exactly what marks it as needing one.
+   */
+  schemaVersion?: number;
   persona: string;
-  personality?: CtoPersonalityPreset;
-  customPersonality?: string;
-  communicationStyle?: CtoCommunicationStyle;
-  constraints?: string[];
   systemPromptExtension?: string;
   onboardingState?: CtoOnboardingState;
   /**
@@ -33,6 +59,16 @@ export type CtoIdentity = {
    * the only way out and no CTO thread ever starts on a queue-only provider.
    */
   modelPreferences: CtoModelPreferences | null;
+  /**
+   * How a call sounds, and whether it makes listening noises.
+   *
+   * Optional and additive: an identity written before voice existed has
+   * neither, and both fall back to the defaults in `shared/types/ctoVoice`.
+   * Stored on the identity rather than in machine settings because it is a
+   * property of THIS CTO — a different project may want a different voice.
+   */
+  voiceName?: string | null;
+  voiceBackchannels?: boolean | null;
   updatedAt: string;
 };
 
@@ -53,6 +89,15 @@ export type CtoSessionLogEntry = {
   provider: string;
   modelId: string | null;
   capabilityMode: CtoCapabilityMode;
+  /**
+   * How many turns the user took in this session.
+   *
+   * Optional because the field arrived after the log did: every entry written
+   * before it simply has no count, and nothing backfills them. Null and absent
+   * mean the same thing — "not recorded" — and the UI hides the column rather
+   * than print a zero it cannot stand behind.
+   */
+  turnCount?: number | null;
   createdAt: string;
 };
 
@@ -63,6 +108,25 @@ export type CtoSnapshot = {
 
 export type CtoGetStateArgs = {
   recentLimit?: number;
+};
+
+/**
+ * What starting a fresh CTO thread actually did.
+ *
+ * `handoff` is reported rather than assumed because the case this exists for
+ * is a thread too full to summarize itself: `source` says whether the CTO wrote
+ * its own note or ADE distilled one from the transcript, and `thin` says the
+ * distillation found little to work with. The retired conversation is still in
+ * History with its transcript on disk either way.
+ */
+export type CtoStartFreshSessionResult = {
+  sessionId: string;
+  previousSessionId: string | null;
+  handoff: {
+    written: boolean;
+    thin: boolean;
+    source: "model" | "deterministic" | "none";
+  };
 };
 
 export type CtoEnsureSessionArgs = {
@@ -80,14 +144,19 @@ export type CtoListSessionLogsArgs = {
 
 /* ── Onboarding ── */
 
+/**
+ * Durable per-project markers, not a setup wizard.
+ *
+ * The wizard is gone; what remains is `completedSteps`, which carries the
+ * non-user-facing `intro` and `memory_gardener` markers. The old `dismissedAt`
+ * and `completedAt` went with their last writer and their last reader.
+ */
 export type CtoOnboardingState = {
   completedSteps: string[];
-  dismissedAt?: string;
-  completedAt?: string;
 };
 
 export type CtoSystemPromptPreviewSection = {
-  id: "doctrine" | "personality" | "continuity" | "memory" | "knowledge" | "capabilities";
+  id: "doctrine" | "continuity" | "memory" | "knowledge" | "capabilities";
   title: string;
   content: string;
 };
@@ -98,15 +167,28 @@ export type CtoSystemPromptPreview = {
   sections: CtoSystemPromptPreviewSection[];
 };
 
+/**
+ * The immutable half of the CTO's per-turn context prefix.
+ *
+ * Doctrine, continuity model, memory guidance, the ADE environment knowledge
+ * document and the capability manifest do not change between two turns of the
+ * same conversation, so a provider thread that has already been told them holds
+ * them verbatim. `key` is the content identity of `body`: it changes only when
+ * the prompt itself changes (an identity rename, an edited prompt extension, a
+ * new capability manifest), which is the one case a live thread must be told
+ * again.
+ */
+export type CtoStaticContextSection = {
+  title: string;
+  body: string;
+  key: string;
+};
+
 export type CtoGetOnboardingStateResult = CtoOnboardingState;
 
 export type CtoCompleteOnboardingStepArgs = {
   stepId: string;
 };
-
-export type CtoDismissOnboardingArgs = Record<string, never>;
-
-export type CtoResetOnboardingArgs = Record<string, never>;
 
 export type CtoPreviewSystemPromptArgs = {
   identityOverride?: Partial<CtoIdentity>;

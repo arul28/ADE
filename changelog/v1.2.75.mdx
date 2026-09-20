@@ -1,0 +1,44 @@
+---
+title: "v1.2.75"
+description: "Release notes for ADE v1.2.75 - September 20, 2026"
+---
+
+Provider accounts, API keys on every provider, Custom presets, a proxy for subscriptions in other harnesses, usage per account, Codex async questions and reset credits, and a stale-run sweep for the chat actions pane.
+
+---
+
+## Providers and accounts
+
+- **Claude and Codex accounts are first-class.** Each account has its own config home, label, and accent. The pre-existing login becomes the Default account with no action. Add an account from Settings and sign in through an embedded terminal.
+- **Smart balance and auto-start** per provider. With two or more accounts, ADE picks the account with the most headroom at chat creation. Auto-start sends one trivial request when a 5-hour window closes, so the next window is already open.
+- **API keys on every provider that can take one.** Keys are multi-credential, injected per harness, and models from a key appear under their provider. The old two-button custom provider form is gone.
+- **Custom presets** pair any harness with any model source: a native account, a stored key, or a subscription borrowed through the CLIProxyAPI supervisor, which is downloaded on first use, hash-verified, and supervised by the brain. Presets carry a name, accent, logo, subagent model, and permission mode, and sync through the account.
+- **Usage per account.** The usage popup shows one row per account in the provider brand color, with 5-hour and weekly bars, resets, and a "Use reset" action on Codex rows. The same rows reach iOS and the TUI.
+- The Custom mark is a gear-and-wrench glyph in the ADE purple.
+
+## Chat
+
+- **Codex async questions** render above the open composer and can be dismissed. **Codex reset credits** show as a chat notice once per window, re-armed on reset.
+- **Claude `resume_return` dialogs** render through the question card, with "Don't ask again" per machine.
+- **Chat runtime ownership is persisted.** A second brain never adopts a live chat. Stale subagent and background rows in the chat actions pane are terminalized by a bounded sweep and healed in the renderer, so rows stop reading "running" a day after their runtime died.
+- **OpenCode** gains inline steer, honest full-auto permissions, and image rows. **Grok ACP** graduates from preview. **Kimi** exposes mode, model, and thinking controls. **Qwen** aligns with 0.24.0. **Copilot** moves to 1.0.86.
+- Workflow activity details and Ultra tiers appear in the transcript.
+- Orchestration mode is removed. Spawned chats, lineage, and the CTO spawn path are unchanged.
+
+## Fixes
+
+- Slash-command discovery reads YAML 1.1 booleans, so `user-invocable: no` hides a skill.
+- The turn diff on an uncommitted tree shows only the turn's files.
+- A shared note on a multi-question card reaches the answer.
+- The Codex rate-limit warning re-arms after a reset. Usage tracking honors `CLAUDE_CONFIG_DIR`. Droid uses `FACTORY_HOME_OVERRIDE`.
+- The Work composer scopes lanes to the picked machine, and "Update & restart" targets the right release tag.
+
+## CLI and TUI
+
+- `ade providers accounts` and `ade proxy` manage accounts and subscription sign-ins. `ade chat models` prints a real table.
+- Every launch surface accepts `--instance`, `--preset`, and `--credential`, and rejects bad `--arg` and `--input-json` overrides before they reach the brain.
+- The TUI carries the launch identity through selection, resume, and launch, and spends a reset credit from `/usage`.
+
+## iOS
+
+- Per-account usage rows, the reset-credit notice with "Use reset", and the reset action on the Usage page.

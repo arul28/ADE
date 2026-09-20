@@ -46,7 +46,7 @@ insertable tool type — and falls back to the `contextTarget` sessionId only
 when no session is active.
 
 The same page is the subscriber for `ade:work:select-session`, the
-renderer event dispatched by orchestration and lineage navigation. The
+renderer event dispatched by lineage navigation. The
 handler accepts `{ sessionId, laneId? }`; when the caller omits `laneId`, it
 resolves the target lane from the loaded session list. It then selects that
 lane, focuses the target session, opens its Work tab, and stores it as the
@@ -363,7 +363,7 @@ marker — opening is the acknowledgement.
 After one second of uninterrupted hover, `SessionHoverCard` opens over the
 content area to the right of the sidebar. It uses icon-led fact rows rather
 than `Label: value` text and carries details intentionally removed from the hot
-row: lane, machine, branch, provider, PR, parent thread, orchestration role,
+row: lane, machine, branch, provider, PR, parent thread,
 spawn kind, live-child count, import provenance, grid membership, Claude tag,
 next scheduled wake, non-zero exit, and the long-running process cleanup hint.
 PR and parent-thread facts are clickable. Moving directly from a row whose card
@@ -1608,6 +1608,15 @@ A single hook that owns a lot of state:
   into `sessionsCacheByProject` and does not prune persisted open tabs,
   because React can briefly render the previous project's session list
   after `projectRoot` changes.
+- the draft lane and draft machine of the Work start surface.
+  `setDraftLaneId` writes **only** `draftLaneId` in the project view state; it
+  deliberately does not call `selectLane`. The draft can target a machine the
+  project tab is not bound to, and lane ids are per-machine, so writing a
+  foreign lane id into the global selection points Lanes/PRs/Files at a lane
+  the bound project has never heard of — and the next lane refresh silently
+  rewrites that selection to the bound project's first lane. `WorkStartSurface`
+  owns the global sync instead and performs it only when the draft machine is
+  the bound one.
 - the Work tab's per-session runtime routing, through the single
   `useWorkMachineRouter()` instance it owns. It is re-exported as
   `machineRouter` and `resolveSessionRuntimePin` (which `TerminalsPage` passes

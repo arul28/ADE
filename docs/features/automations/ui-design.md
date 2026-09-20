@@ -165,8 +165,6 @@ Delivery state is surfaced only when a path is missing, never as a green "all go
   `linearIngress.setup()` in place, then `onIngressChanged` re-fetches status.
 - `RuleRow` shows a small amber warning glyph (titled with the `setupError`) when an enabled
   rule's source has no ready delivery path.
-- The left-rail trust banner shows a `Trust config` CTA (calls `projectConfig.confirmTrust`)
-  only when the rule list contains at least one non-`local` (shared-config) rule.
 
 ## Contracts & graceful degradation
 

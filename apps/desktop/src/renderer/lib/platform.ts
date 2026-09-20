@@ -1,4 +1,9 @@
 import { isCursorProviderSupported } from "../../shared/providerPlatformSupport";
+import {
+  captureGestureChordLabel,
+  captureGestureUnavailableReason,
+  isCaptureGestureSupported,
+} from "../../shared/captureGesturePlatformSupport";
 
 function getPlatformValue(): string {
   if (typeof navigator !== "undefined" && typeof navigator.platform === "string") {
@@ -66,6 +71,32 @@ export function rendererPlatformAttribute(
   if (/win/i.test(platformValue)) return "win32";
   if (/linux/i.test(platformValue)) return "linux";
   return "unknown";
+}
+
+/**
+ * Whether this machine can run the global capture gesture (macOS and Windows).
+ *
+ * Reads the preload bridge, NOT `navigator.platform`, and deliberately takes no
+ * argument: `getPlatformValue()` parses a user-agent string, which reports
+ * "Win32" on Windows on ARM and cannot be trusted to answer a question whose
+ * gate is arch-aware. Same reason `cursorProviderAvailable()` is a function
+ * rather than a module-scope const — the bridge must exist before it is read,
+ * so this cannot be hoisted into an `export const` beside `isMac`.
+ */
+export function supportsCaptureGesturePlatform(): boolean {
+  const { platform, arch } = rendererRuntimeTarget();
+  return isCaptureGestureSupported(platform, arch);
+}
+
+/** Why the gesture is unavailable on this machine, or null. */
+export function captureGestureBlocker(): string | null {
+  const { platform, arch } = rendererRuntimeTarget();
+  return captureGestureUnavailableReason(platform, arch);
+}
+
+/** "both ⌘ keys" / "both Ctrl keys", for copy that names the chord. */
+export function captureGestureChord(): string {
+  return captureGestureChordLabel(rendererRuntimeTarget().platform);
 }
 
 export function supportsNativeNotchPlatform(platformValue = getPlatformValue()): boolean {

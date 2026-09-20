@@ -9,9 +9,16 @@ import { IPC } from "../shared/ipc";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
+import type {
+  CtoVoiceBridge,
+  CtoVoiceMicrophoneBlockKind,
+  CtoVoiceStatePayload,
+} from "../shared/types/ctoVoice";
+import type { SceneStillRecord } from "../shared/chatScene";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
+import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -48,7 +55,6 @@ import {
 } from "../shared/types/attention";
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
 import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
-import { createOrchestrationBridge } from "./orchestrationBridge";
 import {
   createRemoteRuntimeFanout,
   dispatchRemoteRuntimeFanouts,
@@ -64,7 +70,6 @@ import {
   REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS,
   REMOTE_RUNTIME_EVENT_IDLE_POLL_MS,
 } from "./pinnedRuntimeEvents";
-import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type {
   WorkToolId,
   WorkToolsGetLaneStateArgs,
@@ -116,7 +121,31 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
+  ProviderInstance,
+  ProviderInstanceCreateArgs,
+  ProviderInstanceCreateResult,
+  ProviderInstanceGetSettingsArgs,
+  ProviderInstanceListArgs,
+  ProviderInstanceLoginCommand,
+  ProviderInstanceLoginCommandArgs,
+  ProviderInstanceRefreshArgs,
+  ProviderInstanceRemoveArgs,
+  ProviderInstanceRemoveResult,
+  ProviderInstanceRenameArgs,
+  ProviderInstanceSetAccentArgs,
+  ProviderInstanceSetDefaultArgs,
+  ProviderInstanceSetSettingsArgs,
+  ProviderInstanceSettings,
 } from "../shared/types";
+import { isRemoteRuntimeEventCategory } from "../shared/types/remoteRuntime";
+import type {
+  ApiCredentialGetArgs,
+  ApiCredentialListArgs,
+  ApiCredentialRemoveArgs,
+  ApiCredentialStoreArgs,
+  ApiCredentialSummary,
+} from "../shared/types/apiCredentials";
+import type { CtoVoiceActionResult } from "../shared/types/ctoVoice";
 import type {
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
@@ -175,6 +204,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -221,6 +251,8 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
   CtoMemorySnapshot,
   CtoUpdateMemoryArgs,
   CtoSearchMemoryArgs,
@@ -350,6 +382,9 @@ import type {
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
   AdeAccountSessionRepairResult,
+  AccountSettingRow,
+  AccountSettingsResult,
+  AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -464,6 +499,7 @@ import type {
   AgentChatModelsArgs,
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
+  AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
@@ -669,6 +705,12 @@ import type {
   PortConflict,
   PortAllocationEvent,
   ProxyStatus,
+  SubscriptionProxyStatus,
+  SubscriptionProxySignInArgs,
+  SubscriptionProxySignInResult,
+  SubscriptionProxySignOutArgs,
+  SubscriptionProxySetDisabledArgs,
+  SubscriptionProxyMutationResult,
   ProxyRoute,
   LanePreviewInfo,
   LaneProxyEvent,
@@ -705,6 +747,7 @@ import type {
   WriteTextAtomicArgs,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
+  UsageResetCreditResult,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCheckArgs,
@@ -1722,6 +1765,7 @@ async function callLocalProjectActionStrictIfBound<T>(
 const MUTATING_CHAT_ACTIONS = new Set<string>([
   "sendMessage",
   "respondToInput",
+  "dismissPendingInput",
   "approveToolUse",
   "interrupt",
   "stopTask",
@@ -2539,12 +2583,6 @@ const remoteBuiltInBrowserRemoteRequestFanout =
     label: "built-in browser request",
     onSubscribe: () => ensureRemoteRuntimeEventPump(),
   });
-const remoteOrchestrationEventFanout = createRemoteRuntimeFanout<OrchestrationEventPayload>({
-  eventType: "orchestration_event",
-  label: "orchestration",
-  onSubscribe: () => ensureRemoteRuntimeEventPump(),
-  extract: (payload) => toOrchestrationRuntimeEvent(payload),
-});
 
 /**
  * The wiring itself. Exported so a test can assert every listed domain reaches
@@ -2585,7 +2623,6 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteMacDesktopEventFanout,
   remoteAppControlEventFanout,
   remoteBuiltInBrowserRemoteRequestFanout,
-  remoteOrchestrationEventFanout,
 ];
 
 function createLocalIpcEventSubscription<T>(
@@ -2766,12 +2803,6 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
   return hasRemoteRuntimeFanoutSubscribers(REMOTE_RUNTIME_FANOUTS);
 }
 
-function registerRemoteOrchestrationEventCallback(
-  cb: (payload: OrchestrationEventPayload) => void,
-): () => void {
-  return remoteOrchestrationEventFanout.subscribe(cb);
-}
-
 function normalizePtyDataSubscriptionIds(value: unknown): Set<string> {
   const ids = new Set<string>();
   if (!Array.isArray(value)) return ids;
@@ -2832,7 +2863,7 @@ function ensureRemoteRuntimeEventPump(): void {
 
 // The active pump owns exactly one main-side subscription at a time. Without an
 // explicit release, a binding the window switched away from keeps streaming
-// orchestrator/dag_mutation/runtime events into a preload that discards them all,
+// dag_mutation/runtime events into a preload that discards them all,
 // for up to the idle-expiry window, once per switch.
 function releaseRuntimeEventSubscriptionForPreviousBinding(
   nextBinding: OpenProjectBinding | null,
@@ -2948,6 +2979,11 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     }
 
     for (const event of batch.events) {
+      // The polled path reaches the renderer without passing through
+      // `toRemoteRuntimeBufferedEvent`: the batch is cast, not normalized. The
+      // category guard therefore has to be applied here too, or the one door
+      // the pushed path closes is simply walked around by the poller.
+      if (!isRendererRuntimeEventCategory(event.category)) continue;
       // `remoteRuntimeEventStartedAtMs` is 0 for remote bindings, so the shared
       // helper's zero guard already restricts this to local ones.
       if (isPinnedRuntimeEventStale(remoteRuntimeEventStartedAtMs, event.timestamp)) {
@@ -3057,15 +3093,23 @@ function toRemoteRuntimeEventNotificationPayload(
   return { bindingKey, event, ...(eventEpoch ? { eventEpoch } : {}) };
 }
 
-function isRemoteRuntimeEventCategory(
+/**
+ * Categories a RENDERER-bound event stream may carry.
+ *
+ * Deliberately narrower than `REMOTE_RUNTIME_EVENT_CATEGORIES`: `cto_voice` is
+ * excluded here — on the pushed path AND on the polled batch — and at both of
+ * main's gates, the subscription guard and `shouldForwardRuntimeEvent`. Four
+ * doors for one rule, because refusing only the subscription name lets an
+ * uncategorised stream carry it anyway, and the poller casts its batch rather
+ * than normalizing it. Nothing consumes it on this side: the voice router
+ * subscribes in the main process and pushes `IPC.ctoVoiceState`. The doors are
+ * in series, so the strictest one decides — which is why each is written to
+ * stand alone rather than to trust the one before it.
+ */
+function isRendererRuntimeEventCategory(
   value: unknown,
 ): value is RemoteRuntimeEventCategory {
-  return (
-    value === "orchestrator" ||
-    value === "dag_mutation" ||
-    value === "runtime" ||
-    value === "pty"
-  );
+  return isRemoteRuntimeEventCategory(value) && value !== "cto_voice";
 }
 
 function toRemoteRuntimeBufferedEvent(
@@ -3075,7 +3119,7 @@ function toRemoteRuntimeBufferedEvent(
   if (typeof value.id !== "number" || !Number.isFinite(value.id)) return null;
   if (typeof value.timestamp !== "string") return null;
   const category = value.category;
-  if (!isRemoteRuntimeEventCategory(category)) {
+  if (!isRendererRuntimeEventCategory(category)) {
     return null;
   }
   const payload = isRecord(value.payload) ? value.payload : {};
@@ -3762,39 +3806,6 @@ function toAutomationsRuntimeEvent(
   return event as unknown as AutomationsEventPayload;
 }
 
-const ORCHESTRATION_EVENT_KINDS = new Set([
-  "manifest",
-  "plan",
-  "asset",
-  "heartbeat",
-  "lifecycle",
-]);
-
-function toOrchestrationRuntimeEvent(
-  payload: unknown,
-): OrchestrationEventPayload | null {
-  if (!isRecord(payload)) return null;
-  if (typeof payload.runId !== "string" || !payload.runId) return null;
-  if (typeof payload.etag !== "string") return null;
-  if (typeof payload.kind !== "string" || !ORCHESTRATION_EVENT_KINDS.has(payload.kind)) {
-    return null;
-  }
-  if (payload.kind === "heartbeat") {
-    if (typeof payload.sessionId !== "string" || !payload.sessionId) return null;
-    if (typeof payload.lastHeartbeatAt !== "string" || !payload.lastHeartbeatAt)
-      return null;
-  }
-  if (
-    payload.kind === "lifecycle" &&
-    payload.status !== "suspended" &&
-    payload.status !== "resumed" &&
-    payload.status !== "deleted"
-  ) {
-    return null;
-  }
-  return payload as unknown as OrchestrationEventPayload;
-}
-
 function toTestEvent(payload: unknown): TestEvent | null {
   if (!isRecord(payload) || typeof payload.type !== "string") return null;
   if (payload.type === "run") {
@@ -3954,6 +3965,36 @@ const projectStateEventFanout = createIpcEventFanout<AdeProjectEvent>(
 );
 const ptyDataEventFanout = createIpcEventFanout<PtyDataEvent>(IPC.ptyData);
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
+
+function normalizeProviderInstanceListResult(
+  result: ProviderInstance[] | { instances: ProviderInstance[] },
+): ProviderInstance[] {
+  return Array.isArray(result) ? result : result.instances;
+}
+
+function normalizeProviderInstanceResult(
+  result: ProviderInstance | { instance: ProviderInstance },
+): ProviderInstance {
+  return isRecord(result) && "instance" in result
+    ? result.instance as ProviderInstance
+    : result as ProviderInstance;
+}
+
+function normalizeProviderInstanceSettingsResult(
+  result: ProviderInstanceSettings | { settings: ProviderInstanceSettings },
+): ProviderInstanceSettings {
+  return isRecord(result) && "settings" in result
+    ? result.settings as ProviderInstanceSettings
+    : result as ProviderInstanceSettings;
+}
+
+function normalizeProviderInstanceLoginCommandResult(
+  result: ProviderInstanceLoginCommand | { loginCommand: ProviderInstanceLoginCommand },
+): ProviderInstanceLoginCommand {
+  return isRecord(result) && "loginCommand" in result
+    ? result.loginCommand as ProviderInstanceLoginCommand
+    : result as ProviderInstanceLoginCommand;
+}
 
 // The bridge object is checked against the declared `Window["ade"]` contract so
 // a preload signature that drifts from global.d.ts — a missing `pin` parameter,
@@ -4744,6 +4785,67 @@ const adeBridge = {
       callProjectRuntimeActionOr("ai", "listApiKeys", {}, () =>
         ipcRenderer.invoke(IPC.aiListApiKeys),
       ),
+    /*
+     * Machine-scoped keys go to the LOCAL runtime, and never to a remote one.
+     *
+     * Two rules, both load bearing. A remote brain is the wrong store outright:
+     * the key follows THIS machine's ADE home, so these use the local-only
+     * helper rather than `callProjectRuntimeActionOr`, whose first stop is the
+     * remote runtime when the window is remote-bound. And among the local
+     * options the runtime is the right one, because desktop main writes through
+     * `createDesktopCredentialStore` (Electron `safeStorage`) while the project
+     * runtime reads through `EncryptedFileCredentialStore` — a key written to
+     * the first is invisible to the second, which is how Settings could report
+     * `configured: true` while the runtime-hosted voice call answered "no
+     * OpenAI key on this machine".
+     *
+     * `callLocalProjectActionStrictIfBound` rather than the fresh-binding
+     * variant: a machine-scoped key is the same secret through any local
+     * binding, so refreshing the binding first would buy nothing and only add
+     * an await — and the strict helper is the one that does not wait on an
+     * in-flight remote project open, which a Settings write has no reason to
+     * block behind.
+     *
+     * The desktop IPC stays as the fallback, and is what answers when no
+     * project is bound, when the window is remote-bound, and in the in-process
+     * runtime mode where there is no daemon to call. The key still travels one
+     * way only — in, on `store` — and never comes back out of these calls.
+     */
+    getMachineApiKeyStatus: async (provider: string): Promise<MachineApiKeyStatus> => {
+      const runtime = await callLocalProjectActionStrictIfBound<MachineApiKeyStatus>(
+        "ai",
+        "getMachineApiKeyStatus",
+        { args: { provider } },
+      );
+      if (runtime.handled) return runtime.result;
+      return ipcRenderer.invoke(IPC.aiGetMachineApiKeyStatus, { provider });
+    },
+    storeMachineApiKey: async (provider: string, key: string): Promise<MachineApiKeyStatus> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        async () => {
+          const runtime = await callLocalProjectActionStrictIfBound<MachineApiKeyStatus>(
+            "ai",
+            "storeMachineApiKey",
+            { args: { provider, key } },
+          );
+          if (runtime.handled) return runtime.result;
+          return ipcRenderer.invoke(IPC.aiStoreMachineApiKey, { provider, key });
+        },
+      ),
+    deleteMachineApiKey: async (provider: string): Promise<MachineApiKeyStatus> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        async () => {
+          const runtime = await callLocalProjectActionStrictIfBound<MachineApiKeyStatus>(
+            "ai",
+            "deleteMachineApiKey",
+            { args: { provider } },
+          );
+          if (runtime.handled) return runtime.result;
+          return ipcRenderer.invoke(IPC.aiDeleteMachineApiKey, { provider });
+        },
+      ),
     verifyApiKey: async (
       provider: string,
     ): Promise<AiApiKeyVerificationResult> =>
@@ -5116,8 +5218,13 @@ const adeBridge = {
     // Check/request macOS microphone permission before capturing. Electron
     // returns a silent track instead of throwing when access is missing, so the
     // renderer must gate getUserMedia on this.
+    // `block` is additive: dictation reads `status` and is unaffected, while
+    // the voice call needs to know WHICH no it got — a development build's
+    // refusal is not one the user can grant in System Settings.
     requestMicAccess: async (): Promise<{
       status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
+      block?: "os-denied" | "dev-build" | "no-device" | "in-use" | "unavailable" | null;
+      deniedBlock?: "os-denied" | "dev-build" | "no-device" | "in-use" | "unavailable";
     }> => ipcRenderer.invoke(IPC.transcriptionRequestMicAccess),
   },
   modelPicker: {
@@ -5558,6 +5665,38 @@ const adeBridge = {
       await ipcRenderer.invoke(IPC.attentionOpenItem, item);
     },
   },
+  captureGesture: {
+    updateSettings: async (
+      settings: import("../shared/types/captureGesture").CaptureGestureSettings,
+    ): Promise<import("../shared/types/captureGesture").CaptureGestureHealth> =>
+      ipcRenderer.invoke(IPC.captureGestureUpdateSettings, settings),
+    getHealth: async (): Promise<import("../shared/types/captureGesture").CaptureGestureHealth> =>
+      ipcRenderer.invoke(IPC.captureGestureGetHealth),
+    retry: async (): Promise<import("../shared/types/captureGesture").CaptureGestureHealth> =>
+      ipcRenderer.invoke(IPC.captureGestureRetry),
+    captureNow: async (): Promise<{ started: boolean }> =>
+      ipcRenderer.invoke(IPC.captureGestureCaptureNow),
+    onShot: (
+      cb: (shot: import("../shared/types/captureGesture").CaptureGestureShot) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        shot: import("../shared/types/captureGesture").CaptureGestureShot,
+      ) => cb(shot);
+      ipcRenderer.on(IPC.captureGestureShot, listener);
+      return () => ipcRenderer.removeListener(IPC.captureGestureShot, listener);
+    },
+    onFailure: (
+      cb: (failure: import("../shared/types/captureGesture").CaptureGestureFailure) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        failure: import("../shared/types/captureGesture").CaptureGestureFailure,
+      ) => cb(failure);
+      ipcRenderer.on(IPC.captureGestureFailed, listener);
+      return () => ipcRenderer.removeListener(IPC.captureGestureFailed, listener);
+    },
+  },
   attentionNotch: {
     publishSnapshot: async (snapshot: AttentionSnapshot): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionNotchPublishSnapshot, snapshot),
@@ -5622,6 +5761,12 @@ const adeBridge = {
     noteDemand: async (): Promise<UsageSnapshot | null> =>
       callProjectRuntimeActionOr("usage", "noteQuotaDemand", {}, () =>
         ipcRenderer.invoke(IPC.usageNoteDemand),
+      ),
+    consumeResetCredit: async (args: {
+      accountId: string;
+    }): Promise<UsageResetCreditResult> =>
+      callProjectRuntimeActionOr("usage", "consumeResetCredit", { args }, () =>
+        ipcRenderer.invoke(IPC.usageConsumeResetCredit, args),
       ),
     checkBudget: async (args: BudgetCheckArgs): Promise<BudgetCheckResult> =>
       callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
@@ -7056,6 +7201,25 @@ const adeBridge = {
         await ipcRenderer.invoke(IPC.agentChatRespondToInput, args);
       agentChatSummaryCache.clear();
     },
+    dismissPendingInput: async (
+      args: AgentChatDismissPendingInputArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "dismissPendingInput", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "dismissPendingInput",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.agentChatDismissPendingInput, args);
+      agentChatSummaryCache.clear();
+    },
     models: async (
       args: AgentChatModelsArgs,
       pin?: OpenProjectBinding | null,
@@ -7674,32 +7838,89 @@ const adeBridge = {
       since?: string;
     }) => ipcRenderer.invoke(IPC.agentChatReadTranscript, args),
   },
-  orchestration: createOrchestrationBridge({
-    callAction: (action, args, ipcChannel, pin) => {
-      const request = { args: args as Record<string, unknown> | undefined };
-      return pin
-        ? callPinnedRuntimeAction(pin, "orchestration", action, request)
-        : callProjectRuntimeActionOr(
-            "orchestration",
-            action,
-            request,
-            () => ipcRenderer.invoke(ipcChannel, args),
-          );
+  /**
+   * CTO voice call. The renderer owns only the microphone and the speaker.
+   */
+  ctoVoice: {
+    start: () => ipcRenderer.invoke(IPC.ctoVoiceStart) as Promise<CtoVoiceActionResult>,
+    // The reason travels with the hang-up: a call ended because the microphone
+    // would not open has something to say, and the main process cannot know it.
+    end: (reason?: string, errorKind?: CtoVoiceMicrophoneBlockKind) =>
+      ipcRenderer.invoke(IPC.ctoVoiceEnd, { reason, errorKind }) as Promise<void>,
+    // `send`, not `invoke`: audio frames arrive about ten times a second for the
+    // life of a call, and a round trip per frame would be pure overhead.
+    pushAudio: (audio: string, level: number) => ipcRenderer.send(IPC.ctoVoicePushAudio, { audio, level }),
+    setMuted: (muted: boolean) => ipcRenderer.invoke(IPC.ctoVoiceSetMuted, { muted }) as Promise<void>,
+    approve: (id: string) => ipcRenderer.invoke(IPC.ctoVoiceApprove, { id }) as Promise<void>,
+    deny: (id: string) => ipcRenderer.invoke(IPC.ctoVoiceDeny, { id }) as Promise<void>,
+    attachImage: (args: { pngBase64: string; note: string }) =>
+      ipcRenderer.invoke(IPC.ctoVoiceAttachImage, args) as Promise<void>,
+    hasKey: () => ipcRenderer.invoke(IPC.ctoVoiceHasKey) as Promise<boolean>,
+    onState: (handler: (state: CtoVoiceStatePayload) => void) => {
+      const listener = (_event: unknown, payload: unknown) => handler(payload as CtoVoiceStatePayload);
+      ipcRenderer.on(IPC.ctoVoiceState, listener);
+      return () => { ipcRenderer.removeListener(IPC.ctoVoiceState, listener); };
     },
-    subscribeRuntimeOrchestrationEvents: registerRemoteOrchestrationEventCallback,
-    parseLegacyEvent: toOrchestrationRuntimeEvent,
-    ipcRenderer,
-  }),
+    onAudio: (handler: (base64: string) => void) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        if (typeof payload === "string") handler(payload);
+      };
+      ipcRenderer.on(IPC.ctoVoiceAudio, listener);
+      return () => { ipcRenderer.removeListener(IPC.ctoVoiceAudio, listener); };
+    },
+    // Checked against the contract the renderer is promised, so the two halves
+    // of this bridge cannot drift the way the duplicated declaration did.
+  } satisfies CtoVoiceBridge,
+  /**
+   * Scenes — agent-authored HTML rendered in a sandboxed frame.
+   *
+   * Strictly local: a scene is prepared, captured and filed on the machine that
+   * is drawing it, so unlike the chat bridge there is no remote-runtime route
+   * here. `SceneFrame` treats every method as optional and falls back on its
+   * own (blob URL, no freeze, no proof button), so an older host simply loses
+   * the polish rather than the scene.
+   */
+  scene: {
+    prepare: (html: string): Promise<string> =>
+      ipcRenderer.invoke(IPC.scenePrepare, { html }),
+    snapshot: (
+      rect: { x: number; y: number; width: number; height: number },
+    ): Promise<string | null> => ipcRenderer.invoke(IPC.sceneSnapshot, rect),
+    attachProof: (
+      args: { dataUrl?: string | null; title: string; sessionId?: string | null },
+    ): Promise<boolean> => ipcRenderer.invoke(IPC.sceneAttachProof, args),
+    storeStill: (
+      args: {
+        dataUrl: string;
+        title: string;
+        sessionId?: string | null;
+        scopeKey?: string | null;
+        voiceCallId?: string | null;
+      },
+    ): Promise<SceneStillRecord | null> => ipcRenderer.invoke(IPC.sceneStoreStill, args),
+  },
   computerUse: {
     listArtifacts: async (
       args: ComputerUseArtifactListArgs = {},
+      // Artifacts live on the machine that owns the chat, so a chat-scoped
+      // listing takes a pin for the same reason `getOwnerSnapshot` does.
+      // Omitted still means the project tab's bound machine, byte for byte
+      // what every existing caller gets.
+      pin?: OpenProjectBinding | null,
     ): Promise<ComputerUseArtifactView[]> =>
-      callProjectRuntimeActionOr(
-        "computer_use_artifacts",
-        "listArtifacts",
-        { args },
-        () => ipcRenderer.invoke(IPC.computerUseListArtifacts, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<ComputerUseArtifactView[]>(
+            pin,
+            "computer_use_artifacts",
+            "listArtifacts",
+            { args },
+          )
+        : callProjectRuntimeActionOr(
+            "computer_use_artifacts",
+            "listArtifacts",
+            { args },
+            () => ipcRenderer.invoke(IPC.computerUseListArtifacts, args),
+          ),
     getOwnerSnapshot: async (
       args: ComputerUseOwnerSnapshotArgs,
       pin?: OpenProjectBinding | null,
@@ -9081,6 +9302,167 @@ const adeBridge = {
       "external session detail updated",
     ),
   },
+  /*
+   * Provider accounts, on the same three-way route every project-scoped surface
+   * uses: a pinned machine first, then the project's own runtime, then local
+   * IPC. The registry is machine-local — it names config directories on ONE
+   * computer — so a window pinned to a remote machine has to ask that machine,
+   * and answering from the local file would list accounts the remote host has
+   * never heard of.
+   */
+  /*
+   * Provider API keys, several per provider.
+   *
+   * Local IPC only, on purpose. The store desktop main writes is Electron
+   * `safeStorage` on THIS machine, so routing a key write at a remote runtime
+   * would file it on a computer that is not the one the harness runs on. And
+   * nothing here reads a secret back: `get` answers with the same non-secret
+   * summary `list` does, so the key travels one way only — in, on `store`.
+   */
+  apiCredentials: {
+    list: (args: ApiCredentialListArgs = {}): Promise<ApiCredentialSummary[]> =>
+      ipcRenderer.invoke(IPC.apiCredentialsList, args),
+    get: (args: ApiCredentialGetArgs): Promise<ApiCredentialSummary | null> =>
+      ipcRenderer.invoke(IPC.apiCredentialsGet, args),
+    store: (args: ApiCredentialStoreArgs): Promise<ApiCredentialSummary | null> =>
+      ipcRenderer.invoke(IPC.apiCredentialsStore, args),
+    remove: (args: ApiCredentialRemoveArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.apiCredentialsRemove, args),
+  },
+  proxy: {
+    status: (): Promise<SubscriptionProxyStatus> =>
+      callProjectRuntimeActionOr("proxy", "status", {}, () =>
+        ipcRenderer.invoke(IPC.proxyStatus),
+      ),
+    ensureRunning: (): Promise<SubscriptionProxyStatus> =>
+      callProjectRuntimeActionOr("proxy", "ensureRunning", {}, () =>
+        ipcRenderer.invoke(IPC.proxyEnsureRunning),
+      ),
+    signIn: (args: SubscriptionProxySignInArgs): Promise<SubscriptionProxySignInResult> =>
+      callProjectRuntimeActionOr("proxy", "signIn", { args }, () =>
+        ipcRenderer.invoke(IPC.proxySignIn, args),
+      ),
+    signOut: (args: SubscriptionProxySignOutArgs): Promise<SubscriptionProxyMutationResult> =>
+      callProjectRuntimeActionOr("proxy", "signOut", { args }, () =>
+        ipcRenderer.invoke(IPC.proxySignOut, args),
+      ),
+    setDisabled: (args: SubscriptionProxySetDisabledArgs): Promise<SubscriptionProxyMutationResult> =>
+      callProjectRuntimeActionOr("proxy", "setDisabled", { args }, () =>
+        ipcRenderer.invoke(IPC.proxySetDisabled, args),
+      ),
+  },
+  providerInstances: {
+    list: async (
+      args: ProviderInstanceListArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance[]> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance[] | { instances: ProviderInstance[] }>(
+        pin,
+        "provider_instances",
+        "list",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesList, args),
+      ).then(normalizeProviderInstanceListResult),
+    create: async (
+      args: ProviderInstanceCreateArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceCreateResult> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceCreateResult>(
+        pin,
+        "provider_instances",
+        "create",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesCreate, args),
+      ),
+    remove: async (
+      args: ProviderInstanceRemoveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceRemoveResult> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceRemoveResult>(
+        pin,
+        "provider_instances",
+        "remove",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesRemove, args),
+      ),
+    rename: async (
+      args: ProviderInstanceRenameArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance | { instance: ProviderInstance }>(
+        pin,
+        "provider_instances",
+        "rename",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesRename, args),
+      ).then(normalizeProviderInstanceResult),
+    setDefault: async (
+      args: ProviderInstanceSetDefaultArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance | { instance: ProviderInstance }>(
+        pin,
+        "provider_instances",
+        "setDefault",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesSetDefault, args),
+      ).then(normalizeProviderInstanceResult),
+    setAccent: async (
+      args: ProviderInstanceSetAccentArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance | { instance: ProviderInstance }>(
+        pin,
+        "provider_instances",
+        "setAccent",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesSetAccent, args),
+      ).then(normalizeProviderInstanceResult),
+    getSettings: async (
+      args: ProviderInstanceGetSettingsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceSettings> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceSettings | { settings: ProviderInstanceSettings }>(
+        pin,
+        "provider_instances",
+        "getSettings",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesGetSettings, args),
+      ).then(normalizeProviderInstanceSettingsResult),
+    setSettings: async (
+      args: ProviderInstanceSetSettingsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceSettings> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceSettings | { settings: ProviderInstanceSettings }>(
+        pin,
+        "provider_instances",
+        "setSettings",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesSetSettings, args),
+      ).then(normalizeProviderInstanceSettingsResult),
+    loginCommand: async (
+      args: ProviderInstanceLoginCommandArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceLoginCommand> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceLoginCommand | { loginCommand: ProviderInstanceLoginCommand }>(
+        pin,
+        "provider_instances",
+        "loginCommand",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesLoginCommand, args),
+      ).then(normalizeProviderInstanceLoginCommandResult),
+    refresh: async (
+      args: ProviderInstanceRefreshArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance[]> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance[] | { instances: ProviderInstance[] }>(
+        pin,
+        "provider_instances",
+        "refresh",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesRefresh, args),
+      ).then(normalizeProviderInstanceListResult),
+  },
   pty: {
     create: async (args: PtyCreateArgs, pin?: OpenProjectBinding | null): Promise<PtyCreateResult> => {
       if (pin) {
@@ -10438,6 +10820,33 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountSignOut),
     listMachines: (): Promise<AdeAccountMachinesResult> =>
       ipcRenderer.invoke(IPC.accountListMachines),
+    getMachineInventory: async (
+      machineKey?: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MachineInventoryDetail> => {
+      const hasExplicitMachineKey = Boolean(machineKey?.trim());
+      const normalizedMachineKey = hasExplicitMachineKey
+        ? machineKey!.trim()
+        : (await ipcRenderer.invoke(IPC.accountGetLocalMachineIdentity)).machineKey;
+      // “This Mac” has no explicit machine key. Its inventory belongs to the
+      // Electron host that rendered the account page, not to the selected
+      // project's runtime, so keep this path on local main-process IPC.
+      if (!hasExplicitMachineKey) {
+        return ipcRenderer.invoke(IPC.accountGetMachineInventory, {
+          machineKey: normalizedMachineKey,
+        });
+      }
+      const request = { args: { machineKey: normalizedMachineKey } };
+      if (pin) {
+        return callPinnedRuntimeAction<MachineInventoryDetail>(
+          pin,
+          "account",
+          "getMachineInventory",
+          request,
+        );
+      }
+      return ipcRenderer.invoke(IPC.accountGetMachineInventory, { machineKey: normalizedMachineKey });
+    },
     renameMachine: (machineKey: string, customName: string | null): Promise<AdeAccountMachine> =>
       ipcRenderer.invoke(IPC.accountRenameMachine, { machineKey, customName }),
     getLocalMachineIdentity: (): Promise<AdeAccountLocalMachineIdentity> =>
@@ -10461,6 +10870,24 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountRepairMachinePairing),
     repairSession: (): Promise<AdeAccountSessionRepairResult> =>
       ipcRenderer.invoke(IPC.accountRepairSession),
+  },
+  /**
+   * The account settings store. Every method resolves to an
+   * `{ ok: false, unavailable: true }` result rather than rejecting when no
+   * brain is reachable, so a renderer that is offline simply keeps its local
+   * copy.
+   */
+  accountSettings: {
+    list: (args?: { scope?: string | null }): Promise<AccountSettingsResult<AccountSettingRow[]>> =>
+      ipcRenderer.invoke(IPC.accountSettingsList, args ?? {}),
+    get: (args: { scope: string; key: string }): Promise<AccountSettingsResult<unknown>> =>
+      ipcRenderer.invoke(IPC.accountSettingsGet, args),
+    set: (
+      args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> =>
+      ipcRenderer.invoke(IPC.accountSettingsSet, args),
+    sync: (): Promise<AccountSettingsResult<null>> =>
+      ipcRenderer.invoke(IPC.accountSettingsSync),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>
@@ -11301,24 +11728,6 @@ const adeBridge = {
         ? runtime.result
         : ipcRenderer.invoke(IPC.projectConfigDiffAgainstDisk);
     },
-    confirmTrust: async (
-      arg: { sharedHash?: string } = {},
-    ): Promise<ProjectConfigTrust> => {
-      projectConfigSnapshotCache.clear();
-      try {
-        const runtime =
-          await callProjectRuntimeActionIfBound<ProjectConfigTrust>(
-            "project_config",
-            "confirmTrust",
-            { args: arg },
-          );
-        return runtime.handled
-          ? runtime.result
-          : ipcRenderer.invoke(IPC.projectConfigConfirmTrust, arg);
-      } finally {
-        projectConfigSnapshotCache.clear();
-      }
-    },
   },
   zoom: {
     getLevel: (): number => webFrame.getZoomLevel(),
@@ -11350,6 +11759,19 @@ const adeBridge = {
     ): Promise<AgentChatSession> =>
       callProjectRuntimeActionOr("chat", "ensureCtoSession", { args }, () =>
         ipcRenderer.invoke(IPC.ctoEnsureSession, args),
+      ),
+    /**
+     * Retire the CTO thread and start a clean one. CTO-only in the action
+     * policy; the plain-IPC fallback is the desktop's own path when no project
+     * runtime is bound.
+     */
+    startFreshSession: async (): Promise<CtoStartFreshSessionResult> =>
+      callProjectRuntimeActionOr("cto_state", "startFreshSession", {}, () =>
+        ipcRenderer.invoke(IPC.ctoStartFreshSession),
+      ),
+    getThreadHealth: async (): Promise<CtoThreadHealth> =>
+      callProjectRuntimeActionOr("cto_state", "getThreadHealth", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetThreadHealth),
       ),
     listSessionLogs: async (
       args: CtoListSessionLogsArgs = {},
@@ -11432,14 +11854,6 @@ const adeBridge = {
         "completeOnboardingStep",
         { arg: args.stepId },
         () => ipcRenderer.invoke(IPC.ctoCompleteOnboardingStep, args),
-      ),
-    dismissOnboarding: async (): Promise<CtoOnboardingState> =>
-      callProjectRuntimeActionOr("cto_state", "dismissOnboarding", {}, () =>
-        ipcRenderer.invoke(IPC.ctoDismissOnboarding),
-      ),
-    resetOnboarding: async (): Promise<CtoOnboardingState> =>
-      callProjectRuntimeActionOr("cto_state", "resetOnboarding", {}, () =>
-        ipcRenderer.invoke(IPC.ctoResetOnboarding),
       ),
     previewSystemPrompt: async (
       args: { identityOverride?: Record<string, unknown> } = {},

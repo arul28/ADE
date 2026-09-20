@@ -26,7 +26,7 @@
  *
  * The host never writes a provider's config directory. Spawn plans carry argv
  * and environment only; nothing under `$COPILOT_HOME`, `$QWEN_HOME`,
- * `$KIMI_CODE_HOME`, or `~/.grok` is modified by ADE.
+ * `$KIMI_CODE_HOME`, `$GROK_HOME`, or `~/.grok` is modified by ADE.
  *
  * The permission callbacks are not optional. `onPermissionRequested` receives a
  * pending object; the host waits until something calls `select` or `cancel` on
@@ -99,6 +99,8 @@ export {
   acpHasTranscript,
   acpInvocationKey,
   createAcpRuntime,
+  setAcpReasoningEffort,
+  type AcpReasoningEffortUpdateResult,
   type AcpRuntimeCoordinatorCallbacks,
   type AcpRuntimeOwner,
   type AcpRuntimeState,

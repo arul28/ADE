@@ -283,6 +283,38 @@ async function assertBundledAttentionNotch(resourcesPath, description) {
   }
 }
 
+/**
+ * The capture helper is a universal Mach-O like the notch, and the arch check is
+ * the point: a helper built for one arch ships happily, then fails to spawn on
+ * the other half of the install base with nothing but an EACCES-shaped silence.
+ */
+async function assertBundledCaptureHelper(resourcesPath, description) {
+  const helperPath = path.join(resourcesPath, "native", "ade-capture-helper");
+  await assertPathExists(helperPath, `native capture helper for ${description}`);
+  await assertExecutable(helperPath, `native capture helper for ${description}`);
+  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
+  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
+  for (const architecture of ["arm64", "x86_64"]) {
+    if (!architectures.has(architecture)) {
+      throw new Error(
+        `[release:mac] Native capture helper for ${description} is missing ${architecture}: ${helperPath}`,
+      );
+    }
+  }
+  // The gesture is useless without the usage string: macOS refuses the Screen
+  // Recording prompt outright for an app that does not declare one, so the
+  // capture fails with no way for the user to find out why.
+  const plistPath = path.join(resourcesPath, "..", "Info.plist");
+  const { stdout: usage } = await execFileAsync("/usr/libexec/PlistBuddy", [
+    "-c", "Print :NSScreenCaptureUsageDescription", plistPath,
+  ]);
+  if (usage.trim().length === 0) {
+    throw new Error(
+      `[release:mac] NSScreenCaptureUsageDescription is empty for ${description}: ${plistPath}`,
+    );
+  }
+}
+
 function assertAppAsarContains(appAsarPath, relativePaths, description) {
   const entries = new Set(asar.listPackage(appAsarPath));
   const missing = relativePaths.filter((relativePath) => !entries.has(`/${relativePath}`));
@@ -478,6 +510,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertBundledAttentionNotch(resourcesPath, description);
   await assertBundledMacDesktopDriver(resourcesPath, description);
+  await assertBundledCaptureHelper(resourcesPath, description);
   await assertNoRuntimeFetchedToolPayload(nodeModulesPath, description);
   await assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, description, expectedArch);
   assertPackagedTuiEsmShims(await fs.readFile(adeCliTuiPath, "utf8"));

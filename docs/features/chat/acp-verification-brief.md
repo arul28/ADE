@@ -69,14 +69,24 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   `~/.claude/settings.json` `defaultMode` leaks into Grok; confirm ADE defeats
   it. This is the single most important Grok check.
 - Grok: cancel must be a notification, not a request.
-- Kimi 0.39.1: `session/close` is advertised and implemented. Usage on the wire
-  is still unverified. Interactive TUI still has no argv prompt.
-- Qwen 0.22.3: `--session-id` vs `--resume`/`--continue` and `--yolo` vs
-  `--approval-mode` are parse errors. `session/close` is **not** implemented.
+- Kimi compatibility baseline 0.39.1: `session/close` is advertised and
+  implemented. Kimi Code 2.0.0's ACP reference also documents
+  `session/set_config_option` for mode/model/thinking, now enabled by ADE.
+  Usage on the wire is still unverified. Interactive TUI still has no argv
+  prompt.
+- Qwen 0.24.0: `--session-id` vs `--resume`/`--continue` and `--yolo` vs
+  `--approval-mode` are parse errors. `session/close` is **not** implemented;
+  the ACP handshake advertises `openai` and `openai-responses`.
 - Copilot: `config.json` is JSONC; live 1.0.82 persists `trustedFolders`
   (camelCase — not the `trusted_folders` older notes claimed). ADE writes
   neither: the trust pre-seed is removed and nothing on the Copilot path may
   write `$COPILOT_HOME` again.
+- Copilot 1.0.86 ACP: `loadSession`, image prompts, HTTP/SSE MCP, and
+  `session/close` are advertised; `session/resume` is absent. `config.json` is
+  JSONC; older live 1.0.82 persisted `trustedFolders` (camelCase — not the
+  `trusted_folders` older notes claimed). ADE writes neither: the trust
+  pre-seed is removed and nothing on the Copilot path may write `$COPILOT_HOME`
+  again. ACP mode options include agent, plan, and autopilot.
   Headless ACP `session/new` did not deadlock without a seed or `--add-dir`.
   Cwd writes emit 0 `session/request_permission` with `allow_all` off.
 

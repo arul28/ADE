@@ -71,6 +71,109 @@ async function assertIsolatedTuiHelp() {
   }
 }
 
+/**
+ * Run `cli.cjs --help` the way the packaged app resolves it.
+ *
+ * tsup externalizes every package dependency, and the packaged CLI sits at
+ * Resources/ade-cli/dist/cli.cjs with no node_modules beside it, so its
+ * externals resolve ONLY through NODE_PATH into the desktop package's
+ * production tree (apps/desktop/src/main/services/runtime/packagedNodePath.ts).
+ * This checkout hoists dev-only packages next to the production ones, so an
+ * unshipped module-scope require passes every in-checkout run here and only
+ * fails inside release-core's packaged smoke, after signing and notarization.
+ * v1.2.75's first release run died exactly that way on `string-width`.
+ *
+ * So: copy the bundle into a directory with no node_modules, expose the
+ * desktop package's production tree — the flattened top-level packages
+ * electron-builder ships into app.asar, read from the lock file — in a
+ * SIBLING directory on NODE_PATH, and run --help.
+ *
+ * Scope: this proves module-scope requires on the --help path only. A deeper
+ * command path can still reach an unshipped external, and the packaged CLI
+ * runs under Electron's Node rather than the CI Node used here; a green gate
+ * is a preflight, not proof of the packaged runtime.
+ */
+async function assertPackagedResolutionCliHelp() {
+  const desktopRoot = path.join(packageRoot, "..", "desktop");
+  const lock = JSON.parse(await fs.readFile(path.join(desktopRoot, "package-lock.json"), "utf8"));
+  const productionNames = Object.keys(lock.packages ?? {})
+    .filter((key) => /^node_modules\/(@[^/]+\/)?[^/]+$/.test(key) && !lock.packages[key].dev)
+    .map((key) => key.slice("node_modules/".length));
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ade-cli-packaged-resolution-"));
+  const createdLinks = [];
+  try {
+    const nodeModules = path.join(tempRoot, "shipped-node-modules");
+    const appDir = path.join(tempRoot, "app");
+    await fs.mkdir(appDir, { recursive: true });
+    // The shipped NAMES come from the desktop lock file. The bytes behind a
+    // name may come from the desktop tree or, when a job builds the CLI
+    // without installing the desktop app (the runtime-binary jobs), from this
+    // package's own copy. A dev-only hoisted package is never exposed either
+    // way, because the name list is production-only.
+    const notInstalled = [];
+    for (const name of productionNames) {
+      let source = null;
+      for (const candidate of [path.join(desktopRoot, "node_modules", name), path.join(packageRoot, "node_modules", name)]) {
+        try {
+          await fs.access(candidate);
+          source = candidate;
+          break;
+        } catch {
+          // try the next location
+        }
+      }
+      if (!source) {
+        notInstalled.push(name);
+        continue;
+      }
+      const target = path.join(nodeModules, name);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.symlink(source, target, process.platform === "win32" ? "junction" : "dir");
+      createdLinks.push(target);
+    }
+    const isolatedCliPath = path.join(appDir, "cli.cjs");
+    await fs.copyFile(cliPath, isolatedCliPath);
+    let stdout = "";
+    try {
+      ({ stdout } = await execFileAsync(process.execPath, [isolatedCliPath, "--help"], {
+        cwd: appDir,
+        env: { ...process.env, NODE_PATH: nodeModules },
+      }));
+    } catch (error) {
+      const stderr = error && typeof error === "object" && "stderr" in error ? String(error.stderr) : "";
+      const missing = stderr.match(/Cannot find module '([^']+)'/)?.[1];
+      const bare = missing?.replace(/^(@[^/]+\/[^/]+|[^/]+).*$/, "$1");
+      let detail = `: ${stderr.trim().split("\n")[0]}`;
+      if (missing && bare && notInstalled.includes(bare)) {
+        // Neither tree has this shipped package, so the gate cannot be
+        // faithful here; the packaging jobs install the desktop app and run
+        // this same check with the full tree.
+        console.warn(
+          `[ade-cli:build] skipping packaged-resolution check: shipped dependency "${bare}" is not installed ` +
+            "in apps/desktop or apps/ade-cli on this host",
+        );
+        return;
+      }
+      if (missing) {
+        detail = `: bare require("${missing}") is reached at module scope but is not in apps/desktop's ` +
+          "production dependency tree. Inline it in tsup noExternal (see string-width), or make it a " +
+          "production dependency of the desktop package.";
+      }
+      throw new Error(`[ade-cli:build] dist/cli.cjs --help failed under packaged module resolution${detail}`);
+    }
+    if (!stdout.includes("Agent-focused command-line interface for ADE")) {
+      throw new Error("[ade-cli:build] packaged-resolution CLI help output did not include the ADE banner text");
+    }
+  } finally {
+    // Remove the links themselves before the tree, so no rm implementation
+    // can be tempted to descend into apps/desktop/node_modules through one.
+    for (const link of createdLinks) {
+      await fs.unlink(link).catch(() => {});
+    }
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
 const contents = await fs.readFile(cliPath, "utf8");
 const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
 const expectedVersion = process.env.ADE_CLI_VERSION?.trim() || packageJson.version;
@@ -122,6 +225,7 @@ if (process.platform !== "win32" && (stat.mode & 0o111) === 0) {
 await runHelp(process.execPath, [cliPath, "--help"]);
 await assertVersion(process.execPath, [cliPath, "--version"], expectedVersion);
 await assertIsolatedTuiHelp();
+await assertPackagedResolutionCliHelp();
 
 if (process.platform !== "win32") {
   await runHelp(cliPath, ["--help"]);

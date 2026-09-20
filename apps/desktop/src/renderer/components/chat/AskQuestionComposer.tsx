@@ -225,6 +225,7 @@ export function AskQuestionComposer({
   answerValue,
   onAnswerValueChange,
   onAttachFiles,
+  onDismiss,
   attachDisabled = false,
   attachBlockedReason,
 }: {
@@ -232,6 +233,16 @@ export function AskQuestionComposer({
   responding?: boolean;
   onSubmit: (answers: Record<string, string | string[]>) => void;
   onDecline: () => void;
+  /**
+   * Throw the question away without answering it.
+   *
+   * Supplied only for a card the provider marked dismissible, and it REPLACES
+   * decline on the header ✕ rather than adding a second one: two ✕ glyphs side
+   * by side would make the user guess which one is destructive. Decline is
+   * still reachable — on a dismissible card the two mean the same thing, since
+   * no provider request is waiting on either.
+   */
+  onDismiss?: (() => void) | null;
   /**
    * The composer's own rich editor, handed in as a slot.
    *
@@ -485,9 +496,23 @@ export function AskQuestionComposer({
       aria-label={pendingInputHeaderLabel(request.source, request.kind, { blocking: request.blocking })}
       data-testid="ask-question-composer"
       onKeyDown={onKeyDown}
+      /* The footer advertises "1-9 pick · ↵ send · esc decline", but the
+         handler is on THIS element: unless focus was already inside the card,
+         every one of those keystrokes went to whatever had focus instead —
+         usually the chat composer. A click anywhere on the card that is not
+         itself a control arms the shortcuts, which is the gesture a user
+         reaching for "1" has already made. Focus is never taken on its own:
+         stealing it from a composer mid-sentence would be the worse bug. */
+      tabIndex={-1}
+      onMouseDown={(event) => {
+        const target = event.target as HTMLElement | null;
+        if (!target) return;
+        if (target.closest("button, a, input, textarea, select, [contenteditable='true']")) return;
+        event.currentTarget.focus({ preventScroll: true });
+      }}
       /* The one structural use of accent: a hairline top edge saying "you are
          in answer mode". Not a glow, not a fill. */
-      className="border-t-[1.5px] border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)]"
+      className="border-t-[1.5px] border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)] outline-none"
     >
       <div className="flex items-center gap-2.5 px-3.5 pt-3">
         <span className="inline-flex h-[17px] w-[17px] flex-none items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)]">
@@ -539,11 +564,11 @@ export function AskQuestionComposer({
         </button>
         <button
           type="button"
-          title="Decline"
-          aria-label="Decline question"
+          title={onDismiss ? "Dismiss without answering" : "Decline"}
+          aria-label={onDismiss ? "Dismiss question" : "Decline question"}
           disabled={responding}
-          data-testid="ask-question-decline-x"
-          onClick={onDecline}
+          data-testid={onDismiss ? "ask-question-dismiss-x" : "ask-question-decline-x"}
+          onClick={onDismiss ?? onDecline}
           className="rounded px-1 py-0.5 text-fg/26 transition-colors hover:bg-white/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
         >
           <X size={13} weight="bold" />

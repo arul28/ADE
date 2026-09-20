@@ -12,12 +12,8 @@ import {
   SECTION_LABEL_STYLE,
   outlineButton,
 } from "../../lanes/laneDesignTokens";
-import { PermissionModePicker } from "../../shared/PermissionModePicker";
-import { getPermissionOptions } from "../../shared/permissionOptions";
-import { toPermissionPickerOption } from "../../chat/crossMachineHandoffPresentation";
-import type { AgentChatPermissionMode } from "../../../../shared/types";
 import { settingsRouteFor } from "../settingsManifest";
-import { panel } from "../providerSectionPrimitives";
+import { ProviderPanel, panel } from "../providerSectionPrimitives";
 import {
   CopyReportButton,
   PathLine,
@@ -29,8 +25,13 @@ import {
   providerStatusColor,
 } from "./providerUi";
 import { providerStatusFor } from "./descriptors";
+import { ProviderAccountsPanel } from "./accounts/ProviderAccountsPanel";
+import { ProviderApiKeysPanel } from "./keys/ProviderApiKeysPanel";
+import { extraKeyProviders } from "./keys/providerKeySpecs";
+import { persistOpenCodeProviderBlock } from "./keys/openCodeCustomProviders";
 import { formatProviderDiagnosticsReport } from "./providerDiagnosticsReport";
 import type { AcpSettingsProviderId, ProviderDescriptor, ProvidersViewContext } from "./types";
+import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
 
 /**
  * Eight rows, then scroll.
@@ -61,13 +62,15 @@ function ModelsPanel({
   }, [models, query]);
 
   return (
-    <section style={panel({ padding: 14, display: "flex", flexDirection: "column", gap: 10 })}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-        <div style={SECTION_LABEL_STYLE}>Models · {models.length}</div>
-        {/* Always present, never conditional on list length: the field moving in
-            and out as a provider's catalog changes size is worse than a field
-            that is occasionally unnecessary. */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: "4px 8px", minWidth: 180 }}>
+    <ProviderPanel
+      title="Models"
+      count={models.length}
+      actions={
+        // Always present, never conditional on list length: the field moving in
+        // and out as a provider's catalog changes size is worse than a field
+        // that is occasionally unnecessary. Its height matches the Add buttons
+        // on the panels above it, so the three header strips line up.
+        <div style={{ display: "flex", alignItems: "center", gap: 6, height: 26, border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: "0 8px", minWidth: 180 }}>
           <MagnifyingGlass size={12} style={{ color: COLORS.textMuted, flexShrink: 0 }} />
           <input
             aria-label={`Search ${descriptor.label} models`}
@@ -77,8 +80,8 @@ function ModelsPanel({
             style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textPrimary }}
           />
         </div>
-      </div>
-
+      }
+    >
       {/* The model list IS the health check: an enumerate that failed says so
           here, in place of a Verify button that would only ask again. Suppressed
           when the left rail already says exactly this — one sentence, once. */}
@@ -139,71 +142,7 @@ function ModelsPanel({
           ))}
         </div>
       )}
-    </section>
-  );
-}
-
-function DefaultsPanel({
-  descriptor,
-  ctx,
-}: {
-  descriptor: ProviderDescriptor;
-  ctx: ProvidersViewContext;
-}) {
-  const options = useMemo(
-    () => getPermissionOptions({
-      family: descriptor.permissions.family,
-      isCliWrapped: descriptor.permissions.isCliWrapped,
-    }).map(toPermissionPickerOption),
-    [descriptor],
-  );
-  const current = (ctx.permissionDefaults[descriptor.permissions.key] as AgentChatPermissionMode | undefined)
-    ?? options[0]?.value as AgentChatPermissionMode;
-  const models = descriptor.models(ctx);
-  const defaultModelIsThisProvider = ctx.defaultModelId != null
-    && models.some((model) => model.id === ctx.defaultModelId);
-
-  return (
-    <section style={panel({ padding: 14, display: "flex", flexDirection: "column", gap: 14 })}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={SECTION_LABEL_STYLE}>Permission default</div>
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-          What new {descriptor.label} chats start with. Each chat can still change it.
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <PermissionModePicker
-            ariaLabel={`${descriptor.label} permission default`}
-            selectedValue={current}
-            options={options}
-            disabled={ctx.savingPermissionFor === descriptor.id}
-            onSelect={(value) => void ctx.actions.setPermissionDefault(descriptor.id, value as AgentChatPermissionMode)}
-          />
-          {ctx.savingPermissionFor === descriptor.id ? (
-            <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>Saving…</span>
-          ) : null}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={SECTION_LABEL_STYLE}>Default model</div>
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-          ADE has one default model across providers.
-          {ctx.defaultModelId && !defaultModelIsThisProvider ? ` It is currently ${ctx.defaultModelId}.` : ""}
-        </div>
-        <select
-          aria-label={`Default model for ${descriptor.label}`}
-          value={defaultModelIsThisProvider ? String(ctx.defaultModelId) : ""}
-          disabled={ctx.savingDefaultModel || models.length === 0}
-          onChange={(event) => void ctx.actions.setDefaultModel(event.target.value || null)}
-          style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBgSolid, color: COLORS.textPrimary, padding: "8px 10px", fontSize: 11, fontFamily: SANS_FONT }}
-        >
-          <option value="">Not set</option>
-          {models.map((model) => (
-            <option key={model.id} value={model.id}>{model.label}</option>
-          ))}
-        </select>
-      </div>
-    </section>
+    </ProviderPanel>
   );
 }
 
@@ -223,6 +162,11 @@ export function ProviderDetailPage({
   const AuthActions = descriptor.AuthActions;
   const Diagnostics = descriptor.Diagnostics;
   const Body = descriptor.Body;
+  // Claude and Codex are the only providers that can hold more than one local
+  // login, so they are the only ones with an Accounts panel. Everything else
+  // has exactly one identity per machine and would get a one-row list that says
+  // nothing the left rail does not already say.
+  const multiAccountProvider = isProviderInstanceProvider(descriptor.id) ? descriptor.id : null;
   const diagnosticReport = formatProviderDiagnosticsReport({
     label: descriptor.label,
     status,
@@ -348,8 +292,41 @@ export function ProviderDetailPage({
 
         {/* ── Right: what it can do ── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
+          {/* Above Models on purpose: which account a chat runs as decides what
+              quota it spends, which is a more consequential answer than which
+              model it picks. */}
+          {multiAccountProvider ? (
+            <ProviderAccountsPanel provider={multiAccountProvider} providerLabel={descriptor.label} />
+          ) : null}
+          {/* Keys sit under accounts and above Models for the same reason: what
+              a chat spends is decided by the credential it runs on, not by the
+              model it picks. */}
+          <ProviderApiKeysPanel
+            provider={descriptor.id}
+            providerLabel={descriptor.label}
+            additionalProviders={extraKeyProviders(descriptor.id, ctx.status?.customProviders)}
+            onAfterSave={
+              descriptor.id === "opencode"
+                ? async (draft) => {
+                    // OpenCode needs a provider block as well as a key: the key
+                    // alone gives its config nothing to attach the endpoint and
+                    // the model ids to.
+                    await persistOpenCodeProviderBlock(ctx.status?.customProviders ?? [], draft);
+                    await ctx.actions.refreshStatus({ force: true, refreshOpenCodeInventory: true });
+                  }
+                : undefined
+            }
+          />
           <ModelsPanel descriptor={descriptor} ctx={ctx} />
-          <DefaultsPanel descriptor={descriptor} ctx={ctx} />
+          {/* The "Permission default" and "Default model" controls used to sit
+              here. Both were removed rather than fixed, because neither
+              reached the product: no chat-launch path ever read
+              `ai.defaultModel`, and the permission picker wrote
+              `ai.permissions.providers.*` while nine of the ten providers read
+              a different key entirely. A control that saves and changes nothing
+              is worse than no control — it answers a question the user then
+              stops asking. Per-chat permission is set at launch, where it
+              works. */}
           {Body ? (
             <section style={panel({ padding: 14 })}>
               <Body ctx={ctx} />

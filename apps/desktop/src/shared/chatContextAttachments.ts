@@ -1,5 +1,4 @@
 import type { AgentChatContextAttachment, LaneGitHubIssue, LaneLinearIssue } from "./types";
-import type { OrchestrationContextItem } from "./types/orchestration";
 import { parseLaneGitHubIssueValue } from "./laneGitHubIssue";
 import { parseLaneLinearIssueValue } from "./laneLinearIssue";
 
@@ -9,23 +8,11 @@ export function chatContextAttachmentKey(attachment: AgentChatContextAttachment)
       return `linear:${attachment.issue.id}`;
     case "github_issue":
       return `github:${attachment.issue.id}`;
-    case "orchestration_annotation":
-      return orchestrationAnnotationAttachmentKey(attachment.item);
     default: {
       const exhaustive: never = attachment;
       return exhaustive;
     }
   }
-}
-
-/**
- * Each annotation gets a unique key so multiple selections of the same anchor
- * still merge as distinct entries. The capturedAt timestamp is the source of
- * uniqueness; the anchor id/kind keep the key human-readable in dev tools.
- */
-function orchestrationAnnotationAttachmentKey(item: OrchestrationContextItem): string {
-  const anchorId = item.anchor.id ?? "anon";
-  return `orchestration-annotation:${item.runId}:${item.anchor.kind}:${anchorId}:${item.capturedAt}`;
 }
 
 export function makeLinearIssueContextAttachment(
@@ -48,17 +35,6 @@ export function makeGitHubIssueContextAttachment(
     type: "github_issue",
     issue,
     source,
-    attachedAt: new Date().toISOString(),
-  };
-}
-
-export function makeOrchestrationAnnotationContextAttachment(
-  item: OrchestrationContextItem,
-): AgentChatContextAttachment {
-  return {
-    type: "orchestration_annotation",
-    item,
-    source: "manual",
     attachedAt: new Date().toISOString(),
   };
 }
@@ -195,24 +171,6 @@ function formatGitHubIssueContext(issue: LaneGitHubIssue): string {
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
-function formatOrchestrationAnnotation(item: OrchestrationContextItem): string {
-  const anchor = item.anchor;
-  const anchorLabel = `${anchor.kind}${anchor.id ? `:${anchor.id}` : ""}`;
-  const preview = anchor.preview.trim();
-  const excerpt = item.selectionExcerpt.trim();
-  const comment = item.comment.trim();
-  return [
-    `- Run id: ${item.runId}`,
-    `- Anchor: ${anchorLabel}`,
-    anchor.href ? `- Href: ${anchor.href}` : null,
-    anchor.sectionId ? `- Section: ${anchor.sectionId}` : null,
-    preview ? `- Preview:\n${preview}` : null,
-    excerpt ? `- Selection excerpt:\n${excerpt}` : null,
-    comment ? `- User comment:\n${comment}` : `- User comment: (none — anchor only)`,
-    `- Captured at: ${item.capturedAt}`,
-  ].filter((line): line is string => Boolean(line)).join("\n");
-}
-
 export function buildChatContextAttachmentPrompt(
   contextAttachments: AgentChatContextAttachment[],
 ): string {
@@ -224,10 +182,6 @@ export function buildChatContextAttachmentPrompt(
   const github = contextAttachments.filter(
     (entry): entry is Extract<AgentChatContextAttachment, { type: "github_issue" }> =>
       entry.type === "github_issue",
-  );
-  const annotations = contextAttachments.filter(
-    (entry): entry is Extract<AgentChatContextAttachment, { type: "orchestration_annotation" }> =>
-      entry.type === "orchestration_annotation",
   );
   const sections: string[] = [];
   if (linear.length) {
@@ -247,15 +201,6 @@ export function buildChatContextAttachmentPrompt(
       ...github.map((attachment, index) => [
         `GitHub issue ${index + 1}:`,
         formatGitHubIssueContext(attachment.issue),
-      ].join("\n")),
-    ].join("\n\n"));
-  }
-  if (annotations.length) {
-    sections.push([
-      "Plan-panel annotations (ephemeral — user selected these in the orchestration plan view):",
-      ...annotations.map((attachment, index) => [
-        `Annotation ${index + 1}:`,
-        formatOrchestrationAnnotation(attachment.item),
       ].join("\n")),
     ].join("\n\n"));
   }

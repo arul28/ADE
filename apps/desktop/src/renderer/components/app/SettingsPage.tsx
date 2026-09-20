@@ -5,6 +5,7 @@ import {
   Bell,
   Brain,
   ChartLineUp,
+  ChatCircle,
   GearSix,
   GitBranch,
   HardDrives,
@@ -16,13 +17,15 @@ import {
 } from "@phosphor-icons/react";
 import { ActivitySection } from "../settings/ActivitySection";
 import { AppearanceSection } from "../settings/AppearanceSection";
+import { ChatSection } from "../settings/ChatSection";
+import { BudgetCapSettings } from "../settings/BudgetCapEditor";
 import { AboutSection } from "../settings/AboutSection";
 import { AdeCliSection } from "../settings/AdeCliSection";
-import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { DictationSection } from "../settings/DictationSection";
 import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
 import { KeepAwakeSection } from "../settings/KeepAwakeSection";
+import { CaptureGestureSection } from "../settings/CaptureGestureSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
@@ -32,6 +35,7 @@ import { BrowserLinksSection } from "../settings/BrowserLinksSection";
 import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
 import { ProjectSection } from "../settings/ProjectSection";
+import { OpenAiKeySection } from "../settings/OpenAiKeySection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { providerDescriptor } from "../settings/providers/descriptors";
 import { SecretsSection } from "../settings/SecretsSection";
@@ -51,9 +55,14 @@ import {
   settingsTabLabel,
   type SettingEntry,
   type SettingsTabId,
+  DEFAULT_SETTINGS_TAB,
+  type SettingsTab,
+  SETTINGS_GROUPS,
+  groupScopeHint,
 } from "../settings/settingsManifest";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 /**
@@ -68,6 +77,7 @@ import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   general: GearSix,
   appearance: Palette,
+  chat: ChatCircle,
   agents: Brain,
   "lanes-git": GitBranch,
   integrations: PlugsConnected,
@@ -126,16 +136,32 @@ function WebNoMachineNotice() {
   );
 }
 
+/**
+ * A `location.hash` as the manifest wants it: no leading `#`, percent-decoding
+ * applied, and a malformed escape treated as literal text rather than thrown.
+ *
+ * Three call sites decoded the hash themselves — provider deeplinks, tab
+ * resolution, and the scroll effect — which meant three chances for one of them
+ * to forget the try/catch and take the settings page down on a URL a user can
+ * type by hand.
+ */
+function decodeSettingsHash(hash: string): string {
+  const raw = hash.replace(/^#/, "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 /** `#ai-provider-<id>` — the deeplink form of one provider's page. */
 const PROVIDER_ANCHOR_PREFIX = "ai-provider-";
 
+/** `#ai-harnesses` — the deeplink form of the harnesses page. */
+const HARNESSES_ANCHOR = "ai-harnesses";
+
 function providerIdFromHash(hash: string): string | null {
-  let raw = hash.replace(/^#/, "");
-  try {
-    raw = decodeURIComponent(raw);
-  } catch {
-    // A malformed hash should never break the settings page.
-  }
+  const raw = decodeSettingsHash(hash);
   if (!raw.startsWith(PROVIDER_ANCHOR_PREFIX)) return null;
   return raw.slice(PROVIDER_ANCHOR_PREFIX.length) || null;
 }
@@ -144,8 +170,9 @@ function providerIdFromHash(hash: string): string | null {
  * Agents & Models. One provider's page is a sub-view of this tab rather than a
  * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
  * manifest entry for each provider deeplinks straight to it. While a provider
- * is open the tab shows only that page — the background helpers and voice
- * settings below it are not part of the provider you drilled into.
+ * is open the tab shows only that page — the OpenAI voice key below the
+ * provider list is not part of the provider you drilled into. Dictation lives
+ * on the chat tab; scheduled work lives on activity.
  */
 function AgentsTabContent() {
   const location = useLocation();
@@ -153,11 +180,14 @@ function AgentsTabContent() {
   const [searchParams] = useSearchParams();
   const requested = searchParams.get("provider")?.trim() || providerIdFromHash(location.hash);
   const providerId = requested && providerDescriptor(requested) ? requested : null;
+  const harnessesOpen =
+    searchParams.get("harnesses") === "1" || decodeSettingsHash(location.hash) === HARNESSES_ANCHOR;
 
   const handleProviderChange = useCallback((next: string | null) => {
     const nextParams = new URLSearchParams(searchParams);
     if (next) nextParams.set("provider", next);
     else nextParams.delete("provider");
+    nextParams.delete("harnesses");
     navigate(
       {
         pathname: location.pathname,
@@ -167,6 +197,36 @@ function AgentsTabContent() {
       { replace: true },
     );
   }, [location.pathname, navigate, searchParams]);
+
+  // Harnesses is the tab's second sub-view. It carries its own search param so
+  // the back button leaves it, and the manifest anchor still deeplinks to it.
+  const handleHarnessesChange = useCallback((next: boolean) => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("provider");
+    if (next) nextParams.set("harnesses", "1");
+    else nextParams.delete("harnesses");
+    navigate(
+      {
+        pathname: location.pathname,
+        search: `?${nextParams.toString()}`,
+        hash: next ? `#${HARNESSES_ANCHOR}` : "",
+      },
+      { replace: true },
+    );
+  }, [location.pathname, navigate, searchParams]);
+
+  if (harnessesOpen) {
+    return (
+      <WebSettingsSection entryIds={["agents.harnesses"]}>
+        <ProvidersSection
+          providerParam={null}
+          onProviderChange={handleProviderChange}
+          harnessesParam
+          onHarnessesChange={handleHarnessesChange}
+        />
+      </WebSettingsSection>
+    );
+  }
 
   if (providerId) {
     return (
@@ -179,134 +239,136 @@ function AgentsTabContent() {
   return (
     <>
       <WebSettingsSection entryIds={["agents.providers"]}>
-        <ProvidersSection forceRefreshOnMount providerParam={null} onProviderChange={handleProviderChange} />
+        <ProvidersSection
+          forceRefreshOnMount
+          providerParam={null}
+          onProviderChange={handleProviderChange}
+          harnessesParam={false}
+          onHarnessesChange={handleHarnessesChange}
+        />
       </WebSettingsSection>
-      <WebSettingsSection entryIds={["agents.background-jobs", "agents.scheduled-work", "agents.budget"]}>
-        <AiFeaturesSection />
-      </WebSettingsSection>
-      <WebSettingsSection entryIds={["agents.dictation"]}>
-        <DictationSection />
+      <WebSettingsSection entryIds={["agents.openai-key"]}>
+        <OpenAiKeySection />
       </WebSettingsSection>
     </>
   );
 }
 
 /**
- * Sections, each declaring which manifest settings it holds. On the desktop
- * `WebSettingsSection` is a passthrough and this renders exactly as it always
- * has; in the browser it drops the sections the manifest marks unreachable and
- * heads the rest with their scope.
+ * One rendered section of a tab, and the manifest settings it holds.
+ *
+ * `"tab"` means "every entry on this tab", which is what a section that IS the
+ * whole tab wants; naming them again would be a second list to keep in sync.
  */
-function TabContent({ tab }: { tab: SettingsTabId }) {
-  switch (tab) {
-    case "general":
-      return (
+type TabSection = {
+  entryIds: readonly string[] | "tab";
+  render: () => React.ReactNode;
+};
+
+/**
+ * What each tab renders, as data rather than as an eleven-arm switch.
+ *
+ * Every arm was the same shape — a `WebSettingsSection` wrapping one or two
+ * section components — so the switch was a table written out longhand, and the
+ * `entryIds` list beside each section is the part that actually matters: on the
+ * desktop `WebSettingsSection` is a passthrough, and in the browser it uses
+ * those ids to drop sections the manifest marks unreachable and head the rest
+ * with their scope.
+ *
+ * `agents` is absent because it is a sub-view router, not a list of sections;
+ * `TabContent` handles it directly.
+ */
+const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
+  general: [
+    {
+      entryIds: ["general.about", "general.auto-updates"],
+      // About has no section file of its own, so the page supplies its anchor.
+      render: () => (
+        <div id="about" data-settings-anchor="about">
+          <AboutSection />
+        </div>
+      ),
+    },
+    { entryIds: ["general.project"], render: () => <ProjectSection /> },
+    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection /> },
+    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection /> },
+    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection /> },
+    { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection /> },
+    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection /> },
+    { entryIds: ["general.diagnostics-sharing"], render: () => <DiagnosticsSharingSection /> },
+  ],
+  appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
+  chat: [
+    {
+      entryIds: "tab",
+      render: () => (
         <>
-          <WebSettingsSection entryIds={["general.about", "general.auto-updates"]}>
-            <div id="about" data-settings-anchor="about">
-              <AboutSection />
-            </div>
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.project"]}>
-            <ProjectSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.ade-cli"]}>
-            <div id="ade-cli">
-              <AdeCliSection />
-            </div>
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.keep-awake"]}>
-            <KeepAwakeSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.link-open-mode"]}>
-            <BrowserLinksSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.analytics"]}>
-            <ProductAnalyticsSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["general.diagnostics-sharing"]}>
-            <DiagnosticsSharingSection />
-          </WebSettingsSection>
+          <ChatSection />
+          {/* Voice input is chat dictation, so it lives with chat. */}
+          <DictationSection />
         </>
-      );
-    case "appearance":
-      return (
-        <WebSettingsSection entryIds={settingsEntryIdsForTab("appearance")}>
-          <AppearanceSection />
-        </WebSettingsSection>
-      );
-    case "agents":
-      return <AgentsTabContent />;
-    case "lanes-git":
-      return (
+      ),
+    },
+  ],
+  "lanes-git": [
+    {
+      entryIds: [
+        "lanes-git.new-lane-base",
+        "lanes-git.auto-rebase",
+        "lanes-git.rebase-suggestions",
+        "lanes-git.rebase-min-behind",
+      ],
+      render: () => <LaneBehaviorSection />,
+    },
+    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection /> },
+    { entryIds: ["lanes-git.pr-chat-transcripts"], render: () => <PrChatTranscriptsSection /> },
+  ],
+  integrations: [
+    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection /> },
+    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection /> },
+  ],
+  notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
+  activity: [{ entryIds: "tab", render: () => <ActivitySection /> }],
+  secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
+  storage: [
+    {
+      entryIds: ["storage.usage", "storage.lane-rules", "storage.diagnostics"],
+      render: () => <StorageSection />,
+    },
+    { entryIds: ["storage.session-lifecycle"], render: () => <SessionLifecycleSection /> },
+  ],
+  stats: [
+    {
+      entryIds: ["stats.usage", "agents.budget"],
+      render: () => (
         <>
-          <WebSettingsSection
-            entryIds={[
-              "lanes-git.new-lane-base",
-              "lanes-git.auto-rebase",
-              "lanes-git.rebase-suggestions",
-              "lanes-git.rebase-min-behind",
-            ]}
-          >
-            <LaneBehaviorSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["lanes-git.lane-templates"]}>
-            <LaneTemplatesSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["lanes-git.pr-chat-transcripts"]}>
-            <PrChatTranscriptsSection />
-          </WebSettingsSection>
-        </>
-      );
-    case "integrations":
-      return (
-        <>
-          <WebSettingsSection entryIds={["integrations.github"]}>
-            <GitHubIntegrationSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["integrations.linear"]}>
-            <LinearIntegrationSection />
-          </WebSettingsSection>
-        </>
-      );
-    case "notifications":
-      return (
-        <WebSettingsSection entryIds={settingsEntryIdsForTab("notifications")}>
-          <NotificationsSection />
-        </WebSettingsSection>
-      );
-    case "activity":
-      return (
-        <WebSettingsSection entryIds={settingsEntryIdsForTab("activity")}>
-          <ActivitySection />
-        </WebSettingsSection>
-      );
-    case "secrets":
-      return (
-        <WebSettingsSection entryIds={["secrets.secrets"]}>
-          <SecretsSection />
-        </WebSettingsSection>
-      );
-    case "storage":
-      return (
-        <>
-          <WebSettingsSection entryIds={["storage.usage", "storage.lane-rules", "storage.diagnostics"]}>
-            <StorageSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["storage.session-lifecycle"]}>
-            <SessionLifecycleSection />
-          </WebSettingsSection>
-        </>
-      );
-    case "stats":
-      return (
-        <WebSettingsSection entryIds={["stats.usage"]}>
           <AdeUsageSection />
-        </WebSettingsSection>
-      );
-    default:
-      return null;
-  }
+          {/* The spend cap lives where spend lives. */}
+          <BudgetCapSettings />
+        </>
+      ),
+    },
+  ],
+};
+
+function TabContent({ tab }: { tab: SettingsTabId }) {
+  // Providers is the one tab that is not a list of sections: it routes between
+  // the grid and one provider's page off `?provider=`.
+  if (tab === "agents") return <AgentsTabContent />;
+  const sections = TAB_SECTIONS[tab];
+  if (!sections) return null;
+  return (
+    <>
+      {sections.map((section) => {
+        const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds;
+        return (
+          <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
+            {section.render()}
+          </WebSettingsSection>
+        );
+      })}
+    </>
+  );
 }
 
 /** Matches for the current query that live on other tabs. */
@@ -357,6 +419,31 @@ function CrossTabResults({
   );
 }
 
+/**
+ * One-shot highlight for the card a search or deep link just landed on.
+ *
+ * Static, so it lives at module scope rather than being rebuilt per render.
+ */
+const FLASH_STYLES = (
+  <style>{`
+    @keyframes ade-settings-flash {
+      0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 55%, transparent); }
+      100% { box-shadow: 0 0 0 10px transparent; }
+    }
+    .ade-settings-flash {
+      animation: ade-settings-flash 1.2s ease-out;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ade-settings-flash {
+        animation: none;
+        outline: 2px solid var(--color-accent);
+        outline-offset: 2px;
+      }
+    }
+  `}</style>
+);
+
+
 export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -390,7 +477,10 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   // entry naming one should land somewhere real rather than on an empty page,
   // so it falls through to the first tab this renderer does serve.
   const tabs = useMemo(() => availableSettingsTabs(), [machineBound]);
-  const defaultTab = tabs[0]?.id ?? "general";
+  // Explicit, so reordering the sidebar cannot move where Settings opens.
+  const defaultTab = tabs.some((tab) => tab.id === DEFAULT_SETTINGS_TAB)
+    ? DEFAULT_SETTINGS_TAB
+    : tabs[0]?.id ?? DEFAULT_SETTINGS_TAB;
   // A `#hash` names one specific setting, so it is strictly more precise than
   // the `?tab=` next to it. When the two disagree — an older link that still
   // says `?tab=general#github-connection` after GitHub moved to Integrations —
@@ -400,13 +490,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   // used to dump people on General.
   const hashEntryTab = useMemo(() => {
     if (!location.hash) return null;
-    let raw = location.hash.slice(1);
-    try {
-      raw = decodeURIComponent(raw);
-    } catch {
-      // A malformed hash should never break tab resolution.
-    }
-    return resolveSettingsHash(raw)?.tab ?? null;
+    return resolveSettingsHash(decodeSettingsHash(location.hash))?.tab ?? null;
   }, [location.hash]);
   const requestedTab = hashEntryTab ?? resolveSettingsTab(tabParam);
   const resolvedTab = requestedTab && tabs.some((tab) => tab.id === requestedTab)
@@ -477,18 +561,24 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   // the manifest means a hash whose anchor has since moved still lands.
   useEffect(() => {
     if (!active || !location.hash) return;
-    let raw = location.hash.slice(1);
-    try {
-      raw = decodeURIComponent(raw);
-    } catch {
-      // A malformed hash should never break the settings page.
-    }
-    const entry = resolveSettingsHash(raw);
+    const entry = resolveSettingsHash(decodeSettingsHash(location.hash));
     if (!entry || entry.tab !== section) return;
+    let flashTimer: ReturnType<typeof setTimeout> | null = null;
     const frame = window.requestAnimationFrame(() => {
-      document.getElementById(entry.anchor)?.scrollIntoView({ block: "start", behavior: "smooth" });
+      const card = document.getElementById(entry.anchor);
+      if (!card) return;
+      card.scrollIntoView({ block: "start", behavior: "smooth" });
+      // Scrolling to a card is not the same as pointing at it. On a page of
+      // near-identical rows the user still has to find which one the search
+      // meant, and on a short page nothing scrolls at all, so the result looks
+      // like it did nothing. One flash answers both.
+      card.classList.add("ade-settings-flash");
+      flashTimer = setTimeout(() => card.classList.remove("ade-settings-flash"), 1_200);
     });
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (flashTimer) clearTimeout(flashTimer);
+    };
   }, [active, section, location.hash]);
 
   // A new tab should open at the top, not wherever the last one was scrolled.
@@ -544,7 +634,57 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     });
   }, [trimmedQuery, matchesThisTab, section]);
 
-  const activeTab = tabs.find((tab) => tab.id === section) ?? tabs[0];
+  const repoGroupLabel = useAppStore((state) => state.project?.displayName) ?? "This repository";
+
+  const renderTabButton = (tab: SettingsTab) => {
+    const Icon = TAB_ICONS[tab.id];
+    const isActive = section === tab.id;
+    const isHovered = hoveredId === tab.id;
+    return (
+      <button
+        key={tab.id}
+        type="button"
+        data-tour={`settings.${TOUR_IDS[tab.id] ?? tab.id}`}
+        onClick={() => navigateToTab(tab.id)}
+        onMouseEnter={() => setHoveredId(tab.id)}
+        onMouseLeave={() => setHoveredId(null)}
+        style={{
+          display: "flex",
+          width: "100%",
+          alignItems: "center",
+          gap: 10,
+          padding: "8px 10px",
+          border: "none",
+          background: isActive
+            ? "var(--shell-sidebar-item-active-bg)"
+            : isHovered
+              ? "var(--shell-sidebar-item-hover-bg)"
+              : "transparent",
+          color: isActive
+            ? "var(--shell-sidebar-item-active-fg)"
+            : isHovered
+              ? "var(--shell-sidebar-item-hover-fg)"
+              : "var(--shell-sidebar-item-fg)",
+          fontFamily: SANS_FONT,
+          fontSize: 11,
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "1px",
+          cursor: "pointer",
+          borderRadius: 8,
+          textAlign: "left",
+          transition: "background 120ms ease, color 120ms ease",
+        }}
+      >
+        <Icon size={14} weight="regular" style={{ flexShrink: 0 }} />
+        <span>{tab.label}</span>
+      </button>
+    );
+  };
+
+  const activeTab = tabs.find((tab) => tab.id === section)
+    ?? tabs.find((tab) => tab.id === defaultTab)
+    ?? tabs[0];
   const tabEntryCount = settingsEntriesForTab(section).length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
 
@@ -566,49 +706,34 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           SETTINGS
         </div>
 
-        {tabs.map((tab) => {
-          const Icon = TAB_ICONS[tab.id];
-          const isActive = section === tab.id;
-          const isHovered = hoveredId === tab.id;
+        {SETTINGS_GROUPS.map((group) => {
+          const groupTabs = tabs.filter((tab) => tab.group === group.id);
+          // A group with nothing in it is not rendered. That is how the repo
+          // group disappears when Settings is opened outside a project: there
+          // is no repository to name and nothing filed under one.
+          if (!groupTabs.length) return null;
+          const label = group.label
+            ?? (group.id === "repo" ? repoGroupLabel : THIS_MACHINE_NAME);
           return (
-            <button
-              key={tab.id}
-              type="button"
-              data-tour={`settings.${TOUR_IDS[tab.id] ?? tab.id}`}
-              onClick={() => navigateToTab(tab.id)}
-              onMouseEnter={() => setHoveredId(tab.id)}
-              onMouseLeave={() => setHoveredId(null)}
-              style={{
-                display: "flex",
-                width: "100%",
-                alignItems: "center",
-                gap: 10,
-                padding: "8px 10px",
-                border: "none",
-                background: isActive
-                  ? "var(--shell-sidebar-item-active-bg)"
-                  : isHovered
-                    ? "var(--shell-sidebar-item-hover-bg)"
-                    : "transparent",
-                color: isActive
-                  ? "var(--shell-sidebar-item-active-fg)"
-                  : isHovered
-                    ? "var(--shell-sidebar-item-hover-fg)"
-                    : "var(--shell-sidebar-item-fg)",
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-                cursor: "pointer",
-                borderRadius: 8,
-                textAlign: "left",
-                transition: "background 120ms ease, color 120ms ease",
-              }}
-            >
-              <Icon size={14} weight="regular" style={{ flexShrink: 0 }} />
-              <span>{tab.label}</span>
-            </button>
+            <div key={group.id} style={{ marginBottom: 14 }}>
+              <div
+                style={{
+                  ...LABEL_STYLE,
+                  fontFamily: SANS_FONT,
+                  paddingLeft: 10,
+                  marginBottom: 6,
+                  // The group name is the scope, so it carries the weight the
+                  // per-row chips used to; muting it would hide the one thing
+                  // this reorganisation exists to say.
+                  color: "var(--shell-sidebar-item-fg)",
+                  opacity: 0.75,
+                }}
+                title={groupScopeHint(group.id)}
+              >
+                {label}
+              </div>
+              {groupTabs.map((tab) => renderTabButton(tab))}
+            </div>
           );
         })}
       </nav>
@@ -617,6 +742,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         {/* The remote banner contrasts a remote machine against this desktop.
             A browser has no "this one", and every section already states its
             own scope, so web gets the per-section lines instead. */}
+        {FLASH_STYLES}
         {isWebClientMode() ? null : <RemoteSettingsBanner />}
         {webMachineSectionsHidden && tabHasMachineSettings(section) ? <WebNoMachineNotice /> : null}
 
@@ -624,7 +750,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           <div
             style={{
               display: "flex",
-              alignItems: "flex-end",
+              alignItems: "center",
               justifyContent: "space-between",
               gap: 16,
               flexWrap: "wrap",
@@ -643,9 +769,15 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
               >
                 {activeTab.label}
               </h1>
-              <p style={{ margin: "4px 0 0", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-                {activeTab.description}
-              </p>
+              {/* No scope badge and no caption. The sidebar already files each
+                  page under where it saves, and a one-line restatement of the
+                  page's own title is the kind of copy that reads as
+                  scaffolding. The search box sits on this same row. */}
+              {activeTab.description ? (
+                <p style={{ margin: "4px 0 0", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
+                  {activeTab.description}
+                </p>
+              ) : null}
             </div>
 
             <label

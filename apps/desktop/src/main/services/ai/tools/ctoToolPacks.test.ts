@@ -66,7 +66,6 @@ function runtimeShapedDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOpe
     iosSimulatorService: {} as any,
     appControlService: {} as any,
     builtInBrowserService: {} as any,
-    orchestrationService: {} as any,
     ...overrides,
   });
 }

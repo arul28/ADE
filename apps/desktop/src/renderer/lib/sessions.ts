@@ -232,9 +232,6 @@ export function buildOptimisticChatSessionSummary(args: {
     | "createdAt"
     | "lastActivityAt"
     | "idleSinceAt"
-    | "orchestrationRunId"
-    | "orchestrationRole"
-    | "orchestrationTag"
   >;
   laneName?: string | null;
 }): TerminalSessionSummary {
@@ -265,13 +262,6 @@ export function buildOptimisticChatSessionSummary(args: {
     runtimeState: isEnded ? "exited" : args.session.status === "active" ? "running" : "idle",
     resumeCommand: null,
     chatIdleSinceAt: args.session.status === "idle" ? args.session.idleSinceAt ?? null : null,
-    ...(args.session.orchestrationRunId
-      ? {
-          orchestrationRunId: args.session.orchestrationRunId,
-          orchestrationRole: args.session.orchestrationRole,
-          orchestrationTag: args.session.orchestrationTag,
-        }
-      : {}),
   };
 }
 

@@ -8,7 +8,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, session logs, daily/onboarding state, immutable doctrine, personality overlays, and system-prompt preview. |
+| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, session logs, daily/onboarding state, the single immutable doctrine, and system-prompt preview. |
 | `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's smart-memory file store (`MEMORY.md`, `thread-state.md`, daily logs, fact tags, the worker-discovery queue, per-lane sections, search, injection sections). |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `saveMemory` / `searchMemory` / `readMemory` / `readDiscoveries` memory tools, and the `loadCtoTools` pack loader. |
 | `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of 13 CTO tool packs and their scopes, shared by the tool factory and the prompt's capability manifest. |
@@ -17,25 +17,26 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation — CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` when the SDK path is unusable. `sdkAvailable` and `cliAvailable` are independent signals. Provider rows are the shared `AiPiProviderStatus` shape; a provider whose `baseUrl` is a loopback host is classified `local` and carries that endpoint through, so a model server the user runs is never mistaken for an API provider on the strength of a placeholder key. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in: enumerates signable providers, drives Pi's own `ModelRuntime.login` on a dedicated inventory-only worker, and relays Pi's prompts and notices to whatever surface is listening. Relays credentials, never stores or logs them. |
 | `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. `ade new chat --mode chat|cli ... --type <subagent|peer>` mirrors the desktop New Chat toggle; parented agent sessions inherit `ADE_CHAT_SESSION_ID` and must choose a type, while `--no-parent` creates an independent top-level session. `ade chat read <session> --limit <n> --max-chars <n>` silently reads a bounded project-backed transcript window across registered projects, and `--page --cursor <offset>` walks older content. Personal chats remain on `ade chat ... --personal`. The file also owns typed Work status, scheduled work, Linear attachment, secrets, iOS Simulator, App Control, and browser command families. |
-| `apps/ade-cli/src/services/account/accountAuthService.ts` | Optional ADE account auth for humans, remote agents, and CI: loopback OAuth, account-directory device authorization, shared `account.session.v1` refresh storage, JWT-`exp`-authoritative access-token refresh, one cross-process refresh-rotation recovery attempt after `invalid_grant`, and ephemeral `ADE_ACCOUNT_TOKEN` credentials. |
+| `apps/ade-cli/src/services/account/accountAuthService.ts` | Required ADE account auth for humans, remote agents, and CI: loopback OAuth, account-directory device authorization, shared `account.session.v1` refresh storage, JWT-`exp`-authoritative access-token refresh, one cross-process refresh-rotation recovery attempt after `invalid_grant`, and ephemeral `ADE_ACCOUNT_TOKEN` credentials. Desktop, CLI, and ADE Code ask the brain-owned refresh broker for access tokens. |
+| `apps/desktop/src/main/services/ai/apiKeyStore.ts`, `apps/desktop/src/main/services/cto/linearCredentialService.ts` | Encrypted provider/Linear credential storage with account/device provenance. Account-origin values hydrate from the brain-backed vault and are purged at sign-out or account switch; device-only values remain local. |
 | `apps/ade-cli/src/adeRpcServer.ts`, `apps/ade-cli/src/multiProjectRpcServer.ts`, `apps/ade-cli/src/runtimeRoles.ts` | Private ADE action RPC, caller-role boundary, and multi-project routing. `start_cli_session` requires `subagent` or `peer` whenever it records parent lineage. The RPC edge derives trusted parent→child turn provenance for `chat.messageSession`, strips spoofed provenance, keeps writes/history/lifecycle scoped, and permits bounded transcript reads from project-backed chats. The machine router locates the owning registered project for a chat id and aggregates foreign-project chat search while excluding personal chats. |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities.ts`, `desktopBridgeServer.ts`; `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`, `desktopBridgeMethods.ts` | Browser-automation security boundary. ADE issues an opaque in-memory capability for each chat-owned agent/terminal; the runtime strips caller routing and carries the token over a separately authenticated bridge, then Electron validates it in the issuing process and restores only its bound browser scope. `desktopBridgeMethods.ts` names the wire constants and the two exceptions to the shape: `issueActorCapability` / `revokeActorCapability` are served by the bridge itself rather than by `BuiltInBrowserService`, because the capability registry lives in Electron main while the daemon that injects `ADE_BROWSER_ACTOR_TOKEN` is a separate process; they need bridge auth and, unlike every browser action, no actor capability of their own. |
 | `apps/ade-cli/src/services/builtInBrowser/remoteBrowserForwarder.ts` | `ade browser open` on a machine with no desktop attached. A box running only `ade serve` has no `WebContentsView`, but a desktop elsewhere may hold a remote pin on this machine's lane and can already reach its loopback ports over a port-forward, so the daemon publishes a `built_in_browser_remote_request` on the runtime event stream those desktops already receive and waits briefly for an acknowledgement. Only `navigate` / `createTab` / `showPanel` forward — they mean "put this URL on a screen", which any attached desktop can satisfy. `observe` / `click` and the rest act on a specific live tab and still fail, now with an error that says where the browser actually runs. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
 | `apps/desktop/resources/agent-skills/ade-cli-control-plane/SKILL.md` | Agent-facing ADE CLI control-plane guidance. |
+| `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` | Agent-facing guidance for discovering, selecting, and launching saved harness presets. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime prompt assembly, including one shared timezone-safe scheduled-work contract for Claude, Codex, Cursor, Droid, OpenCode, and Pi, plus runtime-specific native-subagent versus ADE-child routing guidance. |
 | `apps/desktop/resources/agent-skills/ade-mosaic/SKILL.md` | Agent-facing schema for Mosaic v1 interactive cards: an agent emits a fenced ` ```mosaic ` JSON block to ask the user for structured input (select / multiselect / number / input / approval / table) and the submitted answers return as the next user message. Parsing/rendering live in `apps/desktop/src/shared/chatMosaic.ts` (see [chat composer-and-ui.md](../chat/composer-and-ui.md)). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, using socket-backed live surfaces, registering proof, and cleaning up processes. Injected into Work chats, CLI launches, ADE Code/TUI sessions, the CTO, and mobile-started runtime work. |
 | `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves and formats Agent Skill roots injected into prompts and CLI environments. |
-| `apps/desktop/src/shared/ctoPersonalityPresets.ts` | CTO personality overlays. |
-| `apps/desktop/src/shared/types/cto.ts` | CTO identity, capability mode, personality, onboarding, memory, and prompt-preview types. |
+| `apps/desktop/src/shared/types/cto.ts` | CTO identity, capability mode, onboarding, memory, and prompt-preview types. |
 
 ## Agent surfaces
 
 ### CTO
 
-One persistent project-level identity. The CTO carries a structured `CtoIdentity` document (name, persona, personality preset, communication style, constraints, model preferences, onboarding state, optional prompt extension) plus a smart-memory system that survives sessions, compaction, and model switches. See [CTO](../cto/README.md) and [Identity and Personas](identity-and-personas.md).
+One persistent project-level identity. The CTO carries a structured `CtoIdentity` document (name, persona, nullable model preferences, onboarding state, optional prompt extension) plus a smart-memory system that survives sessions, compaction, and model switches. Its voice is fixed by the immutable doctrine rather than chosen — there are no personality presets and no work-style settings. See [CTO](../cto/README.md) and [Identity and Personas](identity-and-personas.md).
 
 ### Regular chat agents
 
@@ -127,8 +128,7 @@ still match ADE's bundle, preserves modified or unverifiable copies, and then
 retires the manifest.
 
 SDK-backed Claude, Codex, Cursor, Droid, and OpenCode chats receive
-`ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent` (or `orchestrator` for an
-orchestration lead), and their persistent guidance names the concrete
+`ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent`, and their persistent guidance names the concrete
 `--session` argument. Tracked provider CLIs receive the same session binding
 and an `agent` role on both first launch and resume. This keeps the lifecycle
 surface provider-neutral and prevents the host brain's CTO-capable process role
@@ -145,7 +145,7 @@ elicitation consent still applies.
 Ephemeral machine-owned sessions with no user-visible project, lane, repository,
 or PR identity. They share provider/model/turn infrastructure with regular chat
 but receive a neutral general-assistant prompt and a scratch cwd. Project ADE
-guidance, project slash-command discovery, orchestration/Linear metadata, and
+guidance, project slash-command discovery, Linear metadata, and
 project workflow tools are not injected. See [Personal chats](../personal-chats/README.md).
 
 ## Spawning agents and spawn types
@@ -209,22 +209,14 @@ session's `resumeMetadata` and projected onto `TerminalSessionSummary` for
 lineage UI. They do not populate `chatSessionId`, which remains reserved for
 terminal ownership, and a later resume-command refresh preserves the lineage.
 
-The orchestrator's `spawnAgent` tool
-(`services/ai/tools/orchestrationTools.ts`) and the orchestration domain
-spawn path (`services/orchestration/orchestrationDomain.ts`) set the same
-field, defaulting to `spawnKind: "subagent"` so orchestration workers report
-back to their lead without polling. Both child types receive
-`ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and type-specific self-report
-guidance; `chat.messageSession` remains the recovery path.
+Both child types receive `ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and
+type-specific self-report guidance; `chat.messageSession` remains the recovery
+path.
 
-Orchestration `spawnAgent` / `messageAgent` are idempotent: each carries a
-`requestId` (explicit or deterministically derived) backed by a service-owned
-receipt, so a retried call replays its original result rather than spawning a
-second worker. Completion no longer depends on the lead polling transcripts —
-when a worker or validator reaches a terminal state the service enqueues a
-`completion` entry in the run outbox in the same transaction and drains it to
-the lead, and the lead can also block on the `awaitAgent` tool. See
-[Tool Registration › Orchestration sessions](tool-registration.md#in-process-path).
+There is no separate orchestration mode: a coordinating agent spawns its own
+helpers from any thread with
+`ade chat create --type subagent --provider <p> --model <m> [--instance <id>] [--preset <id>]`,
+and reads their results back through the same spawn lineage.
 
 The runtime mechanics — provider-native mid-turn completion steering, the
 idle/fallback message and peer-notice paths, and the navigation/pill/breadcrumb
@@ -255,12 +247,12 @@ opens Settings → Providers rather than spawning a terminal. See
 
 ### ADE account auth for agents and CI
 
-ADE accounts remain optional for local workflows. On an SSH or display-less
-runtime, `ade login` prints a device verification URL and short code that can
-be approved in any browser; browser-capable local runtimes retain the loopback
-OAuth callback. Fully non-interactive automation provisions a versioned,
-self-contained refresh credential once with `ade account token create`, stores
-it in a secret manager, and exposes it to the machine brain as
+ADE account access is required for a fresh local or remote workflow. On an SSH
+or display-less runtime, `ade login` prints a device verification URL and short
+code that can be approved in any browser; browser-capable local runtimes retain
+the loopback OAuth callback. Fully non-interactive automation provisions a
+versioned, self-contained refresh credential once with `ade account token
+create`, stores it in a secret manager, and exposes it to the machine brain as
 `ADE_ACCOUNT_TOKEN`. The envelope includes the public OAuth refresh context, so
 the consuming host needs no local Clerk configuration. The token never enters
 project files or operational logs, and account actions remain CTO-only.
@@ -272,13 +264,9 @@ type CtoIdentity = {
   name: string;
   version: number;
   persona: string;
-  personality?: CtoPersonalityPreset;
-  customPersonality?: string;
-  communicationStyle?: CtoCommunicationStyle;
-  constraints?: string[];
   systemPromptExtension?: string;
   onboardingState?: CtoOnboardingState;
-  modelPreferences: CtoModelPreferences;
+  modelPreferences: CtoModelPreferences | null;
   updatedAt: string;
 };
 ```
@@ -305,35 +293,27 @@ Standalone chat sessions connected through the ADE CLI have elevated tools hidde
 
 The project surfaces use `buildCodingAgentSystemPrompt` with different identity/context prefixes; personal chat deliberately does not:
 
-- **CTO:** immutable CTO doctrine, active personality overlay, persona, continuity model, memory-system guidance, environment knowledge, recent session context, injected durable memory, and the user-defined prompt extension.
+- **CTO:** the immutable CTO doctrine (role, precision rules, how it speaks, and how it helps with ADE itself), persona, continuity model, memory-system guidance, environment knowledge, recent session context, injected durable memory, and the user-defined prompt extension.
 - **Regular chat:** lane context, workflow tool guidance, and permission-mode framing.
 - **Personal chat:** a compact general-assistant directive stating that no
   repository/project is attached and that explicit filesystem/shell work must
   remain inside the supplied scratch cwd.
 
-### Orchestration boundary and provider capabilities
+### Provider capability isolation
 
-The orchestration protocol is injected into the provider system/developer
-prompt only for sessions carrying an orchestration role. Ordinary chats do
-not receive or follow that protocol, and `ade-orchestrator` is not a bundled
-skill. Orchestrator leads may inspect their lane but their provider-native
-mutating tools are denied at each provider's runtime boundary; workers retain
-the tools needed to edit and validate.
-
-Provider capability isolation is role-scoped. In particular, ordinary
-OpenCode chats and workers retain the user's OpenCode configuration, project
-configuration, and MCP servers. Only an OpenCode orchestration lead receives
-ADE's isolated configuration and ADE-owned MCP lease. Other providers apply
-their equivalent lead gate without changing ordinary-chat configuration.
+Provider capability isolation is caller-scoped. Ordinary chats retain the
+user's provider configuration and MCP servers; only a chat whose embedder asked
+for `strictMcpConfig` receives ADE's isolated configuration and ADE-owned MCP
+lease.
 
 That is one instance of a rule every provider adapter follows: ADE's settings
 land at the highest precedence tier each SDK offers, so ADE names a config key
 only when it genuinely owns it and leaves everything else absent for the
-provider's own precedence to resolve. The isolated orchestration-lead server is
-where the rule needs care, because `buildIsolatedOpenCodeEnv` rebuilds the
-environment from scratch and drops every inherited `OPENCODE_*` variable — the
-lead's server therefore sets `OPENCODE_DISABLE_AUTOUPDATE=1` itself rather than
-inheriting it, so it cannot self-update the binary ADE pinned. See
+provider's own precedence to resolve. The isolated OpenCode server is where the
+rule needs care, because `buildIsolatedOpenCodeEnv` rebuilds the environment
+from scratch and drops every inherited `OPENCODE_*` variable — that server
+therefore sets `OPENCODE_DISABLE_AUTOUPDATE=1` itself rather than inheriting it,
+so it cannot self-update the binary ADE pinned. See
 [Provider config ownership](../chat/agent-routing.md#provider-config-ownership).
 
 ## Smart memory and reconstruction
@@ -362,19 +342,19 @@ Representative channels:
 ## Fragile and tricky wiring
 
 - **Post-compaction identity re-injection.** The CTO identity session calls `refreshReconstructionContext()` after chat context compaction. Missing this path loses the persona and durable memory mid-session.
-- **Personality preset lookup.** `getCtoPersonalityPreset()` falls back to `strategic` on unknown input. Keep preset ids stable.
+- **Removed identity keys still appear on disk.** `normalizeIdentity` silently drops `personality`, `customPersonality`, `communicationStyle`, and `constraints` so an `identity.yaml` written by an older build still loads.
 - **Deterministic memory flush is the guarantee.** The LLM summary upgrade is best-effort; the durable write must never depend on it.
 - **Daily log integrity hashes.** Session log entries carry `prevHash`; manual row deletion breaks the chain and is detected by `logIntegrityService`.
 - **Standalone-chat tool filtering at ADE CLI boundary.** Filtering is applied in `apps/ade-cli/src/adeRpcServer.ts` from the initialize payload's identity.
 - **A bound session never inherits CTO authority.** Keep role resolution on
   `resolveSessionBoundRole` in both single-project and multi-project RPC
   servers, and stamp tracked CLI / SDK chat environments with an explicit
-  agent-or-orchestrator role. A daemon may be CTO-capable, but that capability
+  agent role. A daemon may be CTO-capable, but that capability
   is unrelated to the child session's identity.
 
 ## Detail docs
 
-- [Identity and Personas](identity-and-personas.md) — identity storage, reconstruction, personality presets, immutable doctrine, and the memory system.
+- [Identity and Personas](identity-and-personas.md) — identity storage, reconstruction, the immutable doctrine, and the memory system.
 - [Tool Registration](tool-registration.md) — ADE CLI integration, action registration, role-based filtering, and capability fallback.
 
 ## Related docs

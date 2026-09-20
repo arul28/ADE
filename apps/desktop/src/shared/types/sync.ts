@@ -1816,6 +1816,20 @@ export type SyncStartCliSessionArgs = {
   fastMode?: boolean | null;
   /** @deprecated Use fastMode. Accepted for older callers. */
   codexFastMode?: boolean | null;
+  /**
+   * Which Claude/Codex provider account to launch as. Absent means the
+   * provider's default — which is what the phone sends today, and what an id
+   * naming a removed account silently resolves to.
+   */
+  instanceId?: string | null;
+  /**
+   * Saved harness preset to launch under. The id travels; the key and the
+   * config home it resolves to never leave the machine that owns the lane.
+   * Ignored for the four harnesses whose CLI takes no key from the launch.
+   */
+  presetId?: string | null;
+  /** A stored API credential, when the model came from a key rather than a preset. */
+  credentialId?: string | null;
 };
 
 export type SyncStartCliSessionResult = {
@@ -1877,10 +1891,13 @@ export type SyncRemoteCommandAction =
   | "analytics.flush"
   | "analytics.getStatus"
   | "analytics.setClientEnabled"
+  | "account.getMachineInventory"
   | "usage.getAdeStats"
   | "usage.getQuotaSnapshot"
   | "usage.getUsageRollup"
   | "usage.refreshQuota"
+  | "usage.consumeResetCredit"
+  | "proxy.status"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
   | "lanes.listDeleteProgress"
@@ -2014,6 +2031,7 @@ export type SyncRemoteCommandAction =
   | "chat.restoreCancelledQueue"
   | "chat.approve"
   | "chat.respondToInput"
+  | "chat.dismissPendingInput"
   | "chat.restart"
   | "chat.updateSession"
   | "chat.regenerateSessionMetadata"
@@ -2132,7 +2150,6 @@ export type SyncRemoteCommandAction =
   | "ai.cursorCloudResolveLane"
   | "ai.cursorCloudPullIntoLane"
   | "ai.cursorCloudStopRun"
-  | "orchestration.runCreate"
   | "prs.list"
   | "prs.listOpenForRepo"
   | "prs.refresh"

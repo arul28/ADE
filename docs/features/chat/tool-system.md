@@ -223,7 +223,7 @@ uses to act on ADE itself:
 
 The curated set reaches well beyond this table — packs cover files, conflicts,
 scheduling, proof, code review, search, usage/budget reads, project config,
-device control, and orchestration reads. Two guards apply across it:
+and device control. Two guards apply across it:
 destructive tools (replacing or deleting an automation rule, cancelling
 scheduled work) raise the same approval card an agent tool call raises, and
 `getProjectConfig` redacts env bags and credential-shaped values while leaving
@@ -235,9 +235,9 @@ renders only the sections the agent can act on.
 
 ### Registration on a live session
 
-The CTO tool set is a second consumer of the same per-provider tool
-transports the orchestration tool set uses, gated on `identityKey === "cto"`
-via `createCtoRuntimeToolMap(managed)` in `agentChatService.ts`.
+The CTO tool set is registered through the per-provider tool transports below,
+gated on `identityKey === "cto"` via `createCtoRuntimeToolMap(managed)` in
+`agentChatService.ts`.
 
 A single descriptor table, `HTTP_MCP_TOOL_SETS`, names the tool sets ADE can
 register on a session. Each entry carries a `serverName`, a `codexNamespace`,
@@ -246,27 +246,22 @@ identifiers from one place instead of restating them:
 
 | Tool set | `serverName` | `codexNamespace` | `buildTools` |
 | --- | --- | --- | --- |
-| `orchestration` | `ade-orchestration` | `ade_orchestration` | `createOrchestrationRuntimeToolMap` |
 | `cto` | `ade-cto` | `ade_cto` | `createCtoRuntimeToolMap` |
 
 - **Claude** — `buildClaudeSdkMcpServer(managed, "cto")` produces an SDK MCP
   server named `ade-cto`, merged into `opts.mcpServers`. It is deliberately
-  injected *without* the orchestration lead's `allowManagedMcpServersOnly`
-  lockdown, because the CTO is a daily-driver chat that must keep the user's
-  own MCP servers. (When a session ever carries both sets, the orchestration
-  path adds `ade-cto` to `allowedMcpServers` too, so the lockdown cannot
-  silently drop it.)
+  injected *without* an `allowManagedMcpServersOnly` lockdown, because the CTO
+  is a daily-driver chat that must keep the user's own MCP servers.
 - **Codex** — `refreshCodexDynamicTools` walks the whole table and registers
-  each set as dynamic tools under its own namespace (`ade_cto` next to
-  `ade_orchestration`). Both sets must register in that one function: it clears
-  the runtime's dynamic-tool map before rebuilding, so a second refresher would
-  clobber the first. Dispatch falls back by bare name across both namespaces
-  when a call arrives un-namespaced.
+  each set as dynamic tools under its own namespace (`ade_cto`). Every set must
+  register in that one function: it clears the runtime's dynamic-tool map
+  before rebuilding, so a second refresher would clobber the first. Dispatch
+  falls back by bare name across namespaces when a call arrives un-namespaced.
 - **Cursor, Droid, OpenCode** — HTTP MCP leases. `ensureHttpMcpServer(managed,
   toolSet)` starts one server per tool set and caches it in
   `managed.httpMcpServers`, a `Partial<Record<HttpMcpToolSet, HttpMcpLease>>`
-  keyed by the same table. Each lease carries exactly one tool set, so the CTO
-  and orchestration servers stay distinct rather than merging into one.
+  keyed by the same table. Each lease carries exactly one tool set, so separate
+  tool sets stay distinct rather than merging into one.
   Transports call `ensureHttpMcpLeases(managed)`, which resolves every live
   lease in table order and returns `{ serverName, url, config }` for each — the
   per-SDK config shapes differ (record-of-http, record-of-remote, array), so

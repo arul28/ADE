@@ -1074,6 +1074,18 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var model: String
   var modelId: String?
   var sessionProfile: String?
+  /// Which Claude/Codex provider account this chat runs as. Absent means the
+  /// provider's default, which is also what every older host reports.
+  var instanceId: String? = nil
+  /// The saved harness preset this chat launched from, when there is one.
+  /// Additive: older hosts omit it, and a phone cannot resolve one anyway —
+  /// the preset list, the key store and the config homes are all machine-local
+  /// to the host that owns the lane. Carried so the phone can NAME the brain a
+  /// chat runs on, never so it can rebuild it.
+  var presetId: String? = nil
+  /// The stored API credential this chat launched from, when the model came
+  /// from a provider key rather than a preset. Same additive rule.
+  var credentialId: String? = nil
   /// Native Pi identity. Older hosts omit these additive fields; the iOS
   /// picker also derives them from the canonical `pi/...` model id.
   var piProfileId: String? = nil
@@ -1103,6 +1115,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var cursorConfigValues: [String: RemoteJSONValue]?
   /// Cursor Cloud agent id when this chat is a live cloud mirror. Older hosts omit it.
   var cursorCloudAgentId: String? = nil
+  /// `"cloud"` or `"local"`. Older hosts omit it; when present it wins over a
+  /// leftover `cursorCloudAgentId`, matching desktop `cursorSessionRunsInCloud`.
+  var cursorRuntime: String? = nil
   var identityKey: String?
   var surface: String?
   var automationId: String?
@@ -1157,16 +1172,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var activeBackgroundTaskCount: Int? = nil
   var threadId: String?
   var requestedCwd: String?
-  // Orchestration-mode fields (populated when session is part of an orchestration run)
-  var orchestrationRunId: String? = nil
-  var orchestrationRole: String? = nil
+  // Spawn lineage
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
   /// When the takeover banner was dismissed or Take over was chosen. Absent means not shown yet.
   var subagentTakeoverPromptShownAt: String? = nil
-  var orchestrationTag: String? = nil
-  var orchestrationStepId: String? = nil
-  var orchestrationBundlePath: String? = nil
 
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
     lhs.sessionId == rhs.sessionId
@@ -1175,6 +1185,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.model == rhs.model
       && lhs.modelId == rhs.modelId
       && lhs.sessionProfile == rhs.sessionProfile
+      && lhs.instanceId == rhs.instanceId
+      && lhs.presetId == rhs.presetId
+      && lhs.credentialId == rhs.credentialId
       && lhs.piProfileId == rhs.piProfileId
       && lhs.piProviderId == rhs.piProviderId
       && lhs.piModelId == rhs.piModelId
@@ -1197,6 +1210,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
       && lhs.cursorConfigValues == rhs.cursorConfigValues
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
+      && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.computerUse == rhs.computerUse
       && lhs.completion == rhs.completion
       && lhs.claudeGoal == rhs.claudeGoal
@@ -1226,14 +1240,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
-      && lhs.orchestrationRunId == rhs.orchestrationRunId
-      && lhs.orchestrationRole == rhs.orchestrationRole
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.spawnKind == rhs.spawnKind
       && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
-      && lhs.orchestrationTag == rhs.orchestrationTag
-      && lhs.orchestrationStepId == rhs.orchestrationStepId
-      && lhs.orchestrationBundlePath == rhs.orchestrationBundlePath
   }
 }
 
@@ -1489,38 +1498,15 @@ struct CtoModelPreferences: Codable, Hashable {
   var reasoningEffort: String?
 }
 
-struct CtoCommunicationStyle: Codable, Hashable {
-  var verbosity: String
-  var proactivity: String
-  var escalationThreshold: String
-}
-
-/// Mirrors desktop `CtoOnboardingState`. Onboarding is complete once the
-/// required `"identity"` step lands in `completedSteps` (the desktop also
-/// stamps `completedAt` at that point).
+/// Mirrors desktop `CtoOnboardingState`. There is no iOS setup flow any more,
+/// but the host keeps its own non-user markers in `completedSteps` (e.g.
+/// `"intro"`, recording that the CTO's opening turn was already sent, and
+/// `"memory_gardener"`). `cto.updateIdentity` replaces `onboardingState`
+/// wholesale, so the phone has to round-trip whatever the host sent rather
+/// than drop it. The old `dismissedAt` / `completedAt` went with their last
+/// writer on the host.
 struct CtoOnboardingState: Codable, Hashable {
   var completedSteps: [String]
-  var dismissedAt: String?
-  var completedAt: String?
-
-  /// Mirror of desktop `hasCompletedRequiredOnboardingSteps`: the only
-  /// required step is `"identity"`.
-  var isComplete: Bool {
-    completedAt != nil || completedSteps.contains("identity")
-  }
-
-  /// Steps to send when marking setup complete from this device.
-  ///
-  /// `cto.updateIdentity` replaces `onboardingState` wholesale, and the desktop
-  /// keeps non-user markers in this same list (e.g. `"intro"`, recording that
-  /// the CTO's opening turn was already sent). Sending a bare `["identity"]`
-  /// would erase those and make the host redo work it had already done, so the
-  /// required step is unioned into whatever the host already recorded.
-  static func stepsCompletingSetup(existing: [String]?) -> [String] {
-    var steps = existing ?? []
-    if !steps.contains("identity") { steps.append("identity") }
-    return steps
-  }
 }
 
 /// Mirrors desktop `CtoIdentity`. The server has no top-level `id`; we
@@ -1530,10 +1516,6 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   var name: String
   var version: Int?
   var persona: String?
-  var personality: String?
-  var customPersonality: String?
-  var communicationStyle: CtoCommunicationStyle?
-  var constraints: [String]?
   var systemPromptExtension: String?
   var onboardingState: CtoOnboardingState?
   /// Null until a model the CTO can steer live has been picked. The host
@@ -1552,30 +1534,12 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   /// True while no model has been picked — the CTO surface shows its picker
   /// instead of the thread.
   var needsModelPick: Bool { modelPreferences == nil }
-
-  /// True once the CTO has been set up. Mirrors desktop: onboarding is complete
-  /// when the required `"identity"` step has landed (or `completedAt` is set).
-  var isOnboardingComplete: Bool {
-    onboardingState?.isComplete ?? false
-  }
-
-  /// Mirrors the desktop gate (`needsOnboarding` in CtoPage): setup blocks the
-  /// CTO surface only when it is neither complete nor dismissed. A user who
-  /// tapped "Set up later" on any device must still reach the chat here.
-  var isOnboardingBlocking: Bool {
-    guard let state = onboardingState else { return true }
-    return !state.isComplete && state.dismissedAt == nil
-  }
 }
 
 /// Patch sent to `cto.updateIdentity`. Nested `modelPreferences` so the
 /// desktop can merge cleanly.
 struct CtoIdentityPatch: Codable, Hashable {
   var name: String?
-  var personality: String?
-  var customPersonality: String?
-  var communicationStyle: CtoCommunicationStyle?
-  var constraints: [String]?
   var systemPromptExtension: String?
   var onboardingState: CtoOnboardingState?
   var modelPreferences: CtoModelPreferences?
@@ -1591,6 +1555,9 @@ struct CtoRecentSession: Codable, Hashable, Identifiable {
   var provider: String?
   var modelId: String?
   var capabilityMode: String?
+  /// Optional: hosts released before the count shipped omit it, and so does any
+  /// session whose transcript could not be read.
+  var turnCount: Int?
   var createdAt: String?
 }
 
@@ -1946,15 +1913,10 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var requestedCwd: String?
   var createdAt: String
   var lastActivityAt: String
-  // Orchestration-mode fields (populated when session is part of an orchestration run)
-  var orchestrationRunId: String? = nil
-  var orchestrationRole: String? = nil
+  // Spawn lineage
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
   var subagentTakeoverPromptShownAt: String? = nil
-  var orchestrationTag: String? = nil
-  var orchestrationStepId: String? = nil
-  var orchestrationBundlePath: String? = nil
 
   enum CodingKeys: String, CodingKey {
     case id
@@ -1994,14 +1956,9 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case requestedCwd
     case createdAt
     case lastActivityAt
-    case orchestrationRunId
-    case orchestrationRole
     case orchestrationParentSessionId
     case spawnKind
     case subagentTakeoverPromptShownAt
-    case orchestrationTag
-    case orchestrationStepId
-    case orchestrationBundlePath
   }
 
   init(from decoder: Decoder) throws {
@@ -2043,14 +2000,9 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     requestedCwd = try container.decodeIfPresent(String.self, forKey: .requestedCwd)
     createdAt = try container.decode(String.self, forKey: .createdAt)
     lastActivityAt = try container.decodeIfPresent(String.self, forKey: .lastActivityAt) ?? createdAt
-    orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
-    orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
     spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
     subagentTakeoverPromptShownAt = try container.decodeIfPresent(String.self, forKey: .subagentTakeoverPromptShownAt)
-    orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)
-    orchestrationStepId = try container.decodeIfPresent(String.self, forKey: .orchestrationStepId)
-    orchestrationBundlePath = try container.decodeIfPresent(String.self, forKey: .orchestrationBundlePath)
   }
 
   func encode(to encoder: Encoder) throws {
@@ -2090,14 +2042,9 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(requestedCwd, forKey: .requestedCwd)
     try container.encode(createdAt, forKey: .createdAt)
     try container.encode(lastActivityAt, forKey: .lastActivityAt)
-    try container.encodeIfPresent(orchestrationRunId, forKey: .orchestrationRunId)
-    try container.encodeIfPresent(orchestrationRole, forKey: .orchestrationRole)
     try container.encodeIfPresent(orchestrationParentSessionId, forKey: .orchestrationParentSessionId)
     try container.encodeIfPresent(spawnKind, forKey: .spawnKind)
     try container.encodeIfPresent(subagentTakeoverPromptShownAt, forKey: .subagentTakeoverPromptShownAt)
-    try container.encodeIfPresent(orchestrationTag, forKey: .orchestrationTag)
-    try container.encodeIfPresent(orchestrationStepId, forKey: .orchestrationStepId)
-    try container.encodeIfPresent(orchestrationBundlePath, forKey: .orchestrationBundlePath)
   }
 }
 
@@ -2172,6 +2119,12 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   /// Provider handoff divider. Synthesized locally from the `model_handoff`
   /// event — see `workModelHandoffNoticeDetail`.
   case modelHandoff = "model_handoff"
+  /// "A reset credit is banked" — the one usage notice with something to DO.
+  /// The host sends it as `noticeKind: "rate_limit"` with
+  /// `status: "reset_credit_available"`; promoting the status to its own kind
+  /// is what lets the timeline draw the "Use reset" control instead of a dead
+  /// sentence. See `normalizedSystemNoticeKind(from:)`.
+  case resetCreditAvailable = "reset_credit_available"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
@@ -2212,6 +2165,7 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
   case AgentChatNoticeKind.hostAsleep.rawValue: return .hostAsleep
   case AgentChatNoticeKind.hostAwake.rawValue: return .hostAwake
   case "authentication_failed": return .auth
+  case AgentChatNoticeKind.resetCreditAvailable.rawValue: return .resetCreditAvailable
   default: return nil
   }
 }
@@ -2631,6 +2585,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// `collapseLegacyWorkSubagentResultEnvelopes` can drop the twin without
   /// guessing from the fields.
   var isLegacySubagentCompletedFrame: Bool = false
+  /// Optional `subagent_result` stop attribution retained on the envelope so
+  /// raw transcript and WorkChatEvent mapping paths do not lose it. The typed
+  /// AgentChatEvent also exposes the two optional values for direct callers.
+  var stopSource: String?
+  var stopReason: String?
 
   init(
     sessionId: String,
@@ -2645,7 +2604,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     subagentSpawnDepth: Int? = nil,
     subagentResourceLinks: [AgentChatResourceLink]? = nil,
     apiErrorStatus: Int? = nil,
-    isLegacySubagentCompletedFrame: Bool = false
+    isLegacySubagentCompletedFrame: Bool = false,
+    stopSource: String? = nil,
+    stopReason: String? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -2660,6 +2621,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.subagentResourceLinks = subagentResourceLinks
     self.apiErrorStatus = apiErrorStatus
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
+    self.stopSource = stopSource
+    self.stopReason = stopReason
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -2677,11 +2640,15 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   private struct EventRawFields: Decodable {
     var type: String?
     var apiErrorStatus: Int?
+    var stopSource: String?
+    var stopReason: String?
 
     private enum CodingKeys: String, CodingKey {
       case type
       case apiErrorStatus
       case apiErrorStatusSnake = "api_error_status"
+      case stopSource
+      case stopReason
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -2696,6 +2663,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       apiErrorStatus = (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatus))
         ?? (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatusSnake))
         ?? nil
+      stopSource = (try? container.decodeIfPresent(String.self, forKey: .stopSource)) ?? nil
+      stopReason = (try? container.decodeIfPresent(String.self, forKey: .stopReason)) ?? nil
     }
   }
 
@@ -2750,6 +2719,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     let rawEvent = try? container.decode(EventRawFields.self, forKey: .event)
     apiErrorStatus = rawEvent?.apiErrorStatus
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
+    stopSource = rawEvent?.stopSource
+    stopReason = rawEvent?.stopReason
   }
 }
 
@@ -2868,7 +2839,9 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
       label: childTitle,
       model: nil,
       reasoningEffort: nil,
-      turnId: childTurnId ?? fallbackTurnId
+      turnId: childTurnId ?? fallbackTurnId,
+      stopSource: nil,
+      stopReason: nil
     )
   }
 }
@@ -2913,7 +2886,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
   case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String, background: Bool?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
-  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, label: String?, model: String?, reasoningEffort: String?, turnId: String?, stopSource: String?, stopReason: String?)
   case scheduledWorkUpdate(id: String, kind: String, status: String, origin: String?, title: String?, summary: String?, prompt: String?, reason: String?, cron: String?, nextRunAt: String?, lastRunAt: String?, firedAt: String?, late: Bool?, recurring: Bool?, durable: Bool?, sourceToolUseId: String?, sourceTaskId: String?, turnId: String?, error: String?)
   case transcriptRetraction(messageIds: [String], reason: String?, replacementMessageId: String?, turnId: String?)
   case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
@@ -3166,6 +3139,8 @@ extension AgentChatEvent {
     case agentType
     case parentAgentId
     case parentToolUseId
+    case stopSource
+    case stopReason
     case background
     case lastToolName
     case question
@@ -3572,7 +3547,9 @@ extension AgentChatEvent {
         label: try container.decodeIfPresent(String.self, forKey: .label),
         model: try container.decodeIfPresent(String.self, forKey: .model),
         reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        stopSource: try container.decodeIfPresent(String.self, forKey: .stopSource),
+        stopReason: try container.decodeIfPresent(String.self, forKey: .stopReason)
       )
     // The legacy SDK-shaped twin of `subagent_result`. Normalizing it to the
     // same case is right for rendering, but erases the one fact the pair
@@ -3592,7 +3569,9 @@ extension AgentChatEvent {
         label: try container.decodeIfPresent(String.self, forKey: .label),
         model: try container.decodeIfPresent(String.self, forKey: .model),
         reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        stopSource: try container.decodeIfPresent(String.self, forKey: .stopSource),
+        stopReason: try container.decodeIfPresent(String.self, forKey: .stopReason)
       )
     case "scheduled_work_update":
       self = .scheduledWorkUpdate(
@@ -4074,6 +4053,24 @@ struct AgentChatRespondToInputRequest: Codable, Equatable {
   var responseText: String?
 }
 
+/// Throw a non-blocking question away without answering it. The host refuses
+/// any card the provider is still waiting on.
+struct AgentChatDismissPendingInputRequest: Codable, Equatable {
+  var sessionId: String
+  var itemId: String
+}
+
+/// Spend one banked provider reset credit.
+struct UsageConsumeResetCreditRequest: Codable, Equatable {
+  var accountId: String
+}
+
+struct UsageConsumeResetCreditResponse: Codable, Equatable {
+  var ok: Bool?
+  var status: String?
+  var message: String?
+}
+
 struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var sessionId: String
   var title: String?
@@ -4542,11 +4539,10 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// Present when this Work row is a Cursor Cloud chat. Cursor owns that
   /// agent's name, so ADE hides Rename.
   var cursorCloudAgentId: String? = nil
-  // Orchestration-mode fields (populated when the session is part of an orchestration run)
-  var orchestrationRunId: String? = nil
-  var orchestrationRole: String? = nil
-  var orchestrationTag: String? = nil
-  /// Identity key of the orchestration parent, when the parent is an IDENTITY
+  /// `"cloud"` or `"local"`. Older hosts omit it; when present it wins over a
+  /// leftover `cursorCloudAgentId`, matching desktop `cursorSessionRunsInCloud`.
+  var cursorRuntime: String? = nil
+  /// Identity key of the spawn parent, when the parent is an IDENTITY
   /// session rather than an ordinary chat — today only the CTO, whose key is
   /// `"cto"`. Stamped host-side by `chatSessionProjection` and NEVER derived
   /// here: identity sessions are filtered out of every roster the phone
@@ -4610,9 +4606,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.pendingInputItemId == rhs.pendingInputItemId
       && lhs.steeringInput == rhs.steeringInput
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
-      && lhs.orchestrationRunId == rhs.orchestrationRunId
-      && lhs.orchestrationRole == rhs.orchestrationRole
-      && lhs.orchestrationTag == rhs.orchestrationTag
+      && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.parentIdentityKey == rhs.parentIdentityKey
   }
 }
@@ -4659,9 +4653,7 @@ extension TerminalSessionSummary {
     case pendingInputItemId
     case steeringInput
     case cursorCloudAgentId
-    case orchestrationRunId
-    case orchestrationRole
-    case orchestrationTag
+    case cursorRuntime
     case parentIdentityKey
   }
 
@@ -4707,9 +4699,7 @@ extension TerminalSessionSummary {
     pendingInputItemId = try container.decodeIfPresent(String.self, forKey: .pendingInputItemId)
     steeringInput = try container.decodeIfPresent(Bool.self, forKey: .steeringInput)
     cursorCloudAgentId = try container.decodeIfPresent(String.self, forKey: .cursorCloudAgentId)
-    orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
-    orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
-    orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)
+    cursorRuntime = try container.decodeIfPresent(String.self, forKey: .cursorRuntime)
     parentIdentityKey = try container.decodeIfPresent(String.self, forKey: .parentIdentityKey)
   }
 }
@@ -6263,11 +6253,28 @@ struct MobileUsageAccount: Codable, Equatable, Identifiable {
   var provider: String
   var email: String?
   var plan: String?
+  /// The ADE provider account (instance) these readings came from, when the
+  /// provider can hold more than one local login. Absent on older hosts and on
+  /// providers with a single identity per machine.
+  var instanceId: String? = nil
+  /// The user's name for that account, e.g. "Default" / "Work".
+  var label: String? = nil
+  /// `#rrggbb` chosen to tell accounts apart at a glance.
+  var accentColor: String? = nil
   var machines: [MobileUsageAccountMachine]
   /// Provider-hosted limits page. Unprefixed on a type already called
   /// `MobileUsageAccount`; `MobileUsageProviderStatus` keeps `accountUrl`,
   /// where the prefix distinguishes it from the status's own fields.
   var url: String?
+  /// Banked reset credits, when the provider grants them and the host tracks
+  /// them. Additive: a host that omits it has none to spend, which is what the
+  /// absence already means on every other client.
+  var resetCredits: MobileUsageResetCredits? = nil
+}
+
+struct MobileUsageResetCredits: Codable, Equatable {
+  var availableCount: Int
+  var nextExpiresAt: String? = nil
 }
 
 struct MobileUsageProviderStatus: Codable, Equatable {

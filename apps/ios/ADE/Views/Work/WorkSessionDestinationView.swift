@@ -96,16 +96,40 @@ func workChatBlocksManualCompactSend(
 /// on this session. Read off `WorkActiveSendCapability` — the hand mirror of
 /// the desktop's `ACTIVE_TURN_DISPATCH_MODES` — rather than restated here, so
 /// the staged strip and the composer's split send button can never disagree.
-/// Claude can fold a staged row into the live turn or interrupt with it; Cursor
-/// has no mid-run message API, so it gets interrupt only; everything else has
-/// nothing to promote into and keeps the plain staged row.
+/// Claude and Cursor can both fold a staged row into the live turn or interrupt
+/// with it. A Cursor **Cloud** session withholds `.inline` — `Run.steer` refuses
+/// every call there — so the staged strip matches the composer's split send
+/// button. Everything else has nothing to promote into and keeps the plain
+/// staged row.
 func workChatManualSteerDispatchModes(
   session: TerminalSessionSummary?,
   summary: AgentChatSessionSummary?
 ) -> [WorkActiveSendMode] {
   let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType)
   guard let provider else { return [] }
-  return WorkActiveSendCapability.forProvider(provider).atomicDispatchModes
+  let runsInCloud = workChatCursorSessionRunsInCloud(
+    provider: provider,
+    cursorRuntime: summary?.cursorRuntime ?? session?.cursorRuntime,
+    cursorCloudAgentId: summary?.cursorCloudAgentId ?? session?.cursorCloudAgentId
+  )
+  return WorkActiveSendCapability.forProvider(provider)
+    .withholdingInlineIfNeeded(runsInCloud: runsInCloud, provider: provider)
+    .atomicDispatchModes
+}
+
+/// iOS half of desktop `cursorSessionRunsInCloud`.
+///
+/// `cursorRuntime` wins when the host sent it, including `"local"` over a
+/// leftover cloud agent id. Absent runtime plus a non-empty agent id is still
+/// cloud, because sessions promoted before that field existed carry only the id.
+func workChatCursorSessionRunsInCloud(
+  provider: String?,
+  cursorRuntime: String? = nil,
+  cursorCloudAgentId: String?
+) -> Bool {
+  guard providerFamilyKey(provider ?? "") == "cursor" else { return false }
+  if let runtime = cursorRuntime { return runtime == "cloud" }
+  return cursorCloudAgentId?.isEmpty == false
 }
 
 /// The `dispatchMode` that rides `chat.steer` itself, so a busy host dispatches
@@ -213,6 +237,28 @@ func workChatErrorIndicatesActiveTurn(_ error: Error) -> Bool {
   return message.contains("turn already active")
     || message.contains("turn is already active")
     || message.contains("already active")
+}
+
+/// True when the host refused the requested `dispatchMode` outright.
+///
+/// A paired host older than this client advertises `chat.dispatchSteer` but
+/// still rejects Cursor's `"inline"`, because the accepted modes come from its
+/// own copy of `ACTIVE_TURN_DISPATCH_MODES`. The capability gate cannot see
+/// that — it only knows whether the ACTION exists — so the send throws before
+/// anything is queued and the two-step fallback, which only runs on a queued
+/// reply, never gets a chance. Retrying once without the mode stages the
+/// message instead of losing it.
+func workChatErrorIndicatesUnsupportedDispatchMode(_ error: Error) -> Bool {
+  let message = (error as NSError).localizedDescription.lowercased()
+  return message.contains("active-turn dispatch mode")
+}
+
+/// True when a rejected `dispatchMode` should be retried as a staged send.
+///
+/// The CTO surface does not offer queue, so omitting the mode would auto-route
+/// to interrupt — a cancel the user did not pick. Fail that send instead.
+func workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: Bool) -> Bool {
+  !liveRedirectOnly
 }
 
 func workTranscriptEntryIdentity(_ entry: AgentChatTranscriptEntry) -> String {
@@ -1163,7 +1209,7 @@ struct WorkSessionDestinationView: View {
     guard syncService.supportsChatRemoteAction("chat.dispatchSteer", sessionId: sessionId) else {
       return []
     }
-    return workChatManualSteerDispatchModes(session: session, summary: chatSummary)
+    return workChatManualSteerDispatchModes(session: session, summary: composerChatSummary ?? chatSummary)
   }
 
   /// Lane id the header menu acts on. Resolved against the loaded lane list so
@@ -1877,10 +1923,9 @@ struct WorkSessionDestinationView: View {
       ? "Viewing subagent transcript. Return to main chat to send."
       : nil
     let openLaneAction: (() -> Void)? = showsLaneActions ? { openSessionLane() } : nil
-    // Wired per mode, not per provider: Cursor accepts the interrupt promotion
-    // but has no inline channel, so it gets the Interrupt button and not
-    // "Send now". Matches the desktop pane, which gates each handler on the
-    // same table.
+    // Wired per mode, not per provider, so a provider that gains or loses a
+    // mode needs no change here. Matches the desktop pane, which gates each
+    // handler on the same table.
     // Also host-gated: a brain that predates `chat.dispatchSteer` cannot
     // promote a staged row at all, so the buttons would only ever produce an
     // error toast. `manualSteerDispatchModes` carries the same gate.
@@ -2014,6 +2059,7 @@ struct WorkSessionDestinationView: View {
       onRespondToQuestion: respondToQuestion,
       onSubmitQuestionAnswers: submitQuestionAnswers,
       onDeclineQuestion: declineQuestion,
+      onDismissQuestion: dismissPendingQuestion,
       onRespondToPermission: respondToPermission,
       onRetryLoad: load,
       onOpenFile: openFileReference,

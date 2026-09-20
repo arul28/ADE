@@ -218,7 +218,6 @@ import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
 } from "../../../../desktop/src/shared/types";
-import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
 import {
   PERSONAL_CHAT_ACTIONS,
   isPersonalChatActionQueueable,
@@ -313,11 +312,12 @@ import type { createPortAllocationService } from "../../../../desktop/src/main/s
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import { createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
-import { createOrchestrationDomainService } from "../../../../desktop/src/main/services/orchestration/orchestrationDomain";
-import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
+import { resolveProviderInstanceForLaunch } from "../providerInstances/providerInstanceStore";
+import { resolveTrackedCliPreset } from "../../../../desktop/src/main/services/chat/harnessPresetLaunch";
+import { buildCliIdentityResumeMetadata } from "../../../../desktop/src/shared/cliLaunch";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
@@ -326,11 +326,15 @@ import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src
 import { dismissPendingInputBeforeSettle, settleTerminalSession } from "../../../../desktop/src/main/services/sessions/settleTerminalSession";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
+import { readMachineInventoryDetail } from "../account/accountMachinePublisherService";
+import type { AccountSettingsStore } from "../account/accountSettingsStore";
+import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
 import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { getErrorMessage, resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
 import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/terminalSessionSignals";
 import type { SyncPinStore } from "./syncPinStore";
+import type { ProxyService } from "../proxy/proxyService";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -356,6 +360,8 @@ type SyncRemoteCommandServiceArgs = {
    */
   db?: AdeDb;
   usageTrackingService?: UsageTrackingHost | null;
+  getProxyService?: () => Pick<ProxyService, "status"> | null;
+  accountSettingsStore?: AccountSettingsStore | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   projectRoot?: string;
   laneService: ReturnType<typeof createLaneService>;
@@ -374,7 +380,6 @@ type SyncRemoteCommandServiceArgs = {
   agentChatService?: ReturnType<typeof createAgentChatService>;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
-  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
@@ -1380,13 +1385,6 @@ function mergeProjectConfigCandidateForRemote(
   };
 }
 
-function parseOrchestrationRunCreateArgs(value: Record<string, unknown>): OrchestrationRunCreateRequest & { laneId: string } {
-  return {
-    ...(value as OrchestrationRunCreateRequest & { laneId: string }),
-    laneId: requireString(value.laneId, "orchestration.runCreate requires laneId."),
-  };
-}
-
 async function summarizeChatSessionForRemote(
   agentChatService: ReturnType<typeof createAgentChatService>,
   session: AgentChatSession,
@@ -1527,7 +1525,6 @@ function parseAgentChatLaunchCliArgs(value: Record<string, unknown>): AgentChatL
   const model = asTrimmedString(value.model);
   const reasoningEffort = asTrimmedString(value.reasoningEffort);
   const permissionMode = asTrimmedString(value.permissionMode);
-  const orchestrationRole = asTrimmedString(value.orchestrationRole);
   const title = asTrimmedString(value.title);
   const disposition = value.disposition === "background" ? "background" : undefined;
   const fastMode = asOptionalBoolean(value.fastMode);
@@ -1539,7 +1536,9 @@ function parseAgentChatLaunchCliArgs(value: Record<string, unknown>): AgentChatL
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
     ...(permissionMode ? { permissionMode: permissionMode as AgentChatLaunchCliArgs["permissionMode"] } : {}),
-    ...(orchestrationRole ? { orchestrationRole: orchestrationRole as AgentChatLaunchCliArgs["orchestrationRole"] } : {}),
+    ...(asTrimmedString(value.instanceId) ? { instanceId: asTrimmedString(value.instanceId) } : {}),
+    ...(asTrimmedString(value.presetId) ? { presetId: asTrimmedString(value.presetId) } : {}),
+    ...(asTrimmedString(value.credentialId) ? { credentialId: asTrimmedString(value.credentialId) } : {}),
     ...(title ? { title } : {}),
     ...(disposition ? { disposition } : {}),
     ...(Array.isArray(value.linearIssues)
@@ -1789,6 +1788,9 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     modelId: asTrimmedString(value.modelId),
     reasoningEffort: asTrimmedString(value.reasoningEffort),
     fastMode: asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode),
+    instanceId: asTrimmedString(value.instanceId),
+    presetId: asTrimmedString(value.presetId),
+    credentialId: asTrimmedString(value.credentialId),
   };
 }
 
@@ -1895,14 +1897,8 @@ function projectChatOntoSession(
   const base = {
     ...session,
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
-    ...(chat.orchestrationRunId
-      ? {
-          orchestrationRunId: chat.orchestrationRunId,
-          orchestrationRole: chat.orchestrationRole,
-          orchestrationTag: chat.orchestrationTag,
-        }
-      : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
+    ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
   };
   if (chat.awaitingInput) {
     return {
@@ -3998,6 +3994,14 @@ type RemoteCommandRegistrationDeps = {
   register: RemoteCommandRegistrar;
 };
 
+function registerProxyRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register("proxy.status", { viewerAllowed: true }, async () => {
+    const proxyService = args.getProxyService?.();
+    if (!proxyService) throw new Error("Subscription proxy is not available in this runtime.");
+    return proxyService.status();
+  }, "runtime");
+}
+
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
   register("lanes.listDeleteProgress", { viewerAllowed: true }, async () => args.laneService.listDeleteProgress());
@@ -4444,6 +4448,32 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       ? await resolveCodexComputerUseMcpConfig()
       : null;
 
+    const trackedPreset = resolveTrackedCliPreset(provider, {
+      presetId: parsed.presetId,
+      credentialId: parsed.credentialId,
+    });
+    const remotePreset = trackedPreset?.preset;
+    const resolvedInstance = provider === "shell"
+      ? null
+      : resolveProviderInstanceForLaunch(provider, parsed.instanceId);
+    const resolvedModel = trackedPreset?.model || parsed.modelId || parsed.model || null;
+    const resumeMetadata = provider === "shell"
+      ? null
+      : buildCliIdentityResumeMetadata({
+          provider,
+          targetId: provider === "claude" ? preassignedSessionId ?? null : null,
+          permissionMode,
+          ...(parsed.droidPermissionMode !== undefined
+            ? { droidPermissionMode: parsed.droidPermissionMode }
+            : {}),
+          model: resolvedModel,
+          reasoningEffort: parsed.reasoningEffort ?? null,
+          fastMode: parsed.fastMode ?? null,
+          ...(resolvedInstance ? { instanceId: resolvedInstance.id } : {}),
+          ...(parsed.presetId ? { presetId: parsed.presetId } : {}),
+          ...(parsed.credentialId ? { credentialId: parsed.credentialId } : {}),
+        });
+
     function resolveLaunch(): Partial<TrackedCliLaunchCommand> {
       if (provider === "shell") {
         return resolveCleanShellLaunchFields({
@@ -4463,6 +4493,19 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
         ...(provider === "codex" ? { codexComputerUse } : {}),
+        // The phone can pick a provider account too; without this a
+        // remote-started CLI silently ran as the machine's default while the
+        // same launch from the desktop honoured the choice.
+        instance: resolvedInstance,
+        // The phone can pick a saved harness preset too. Resolved HERE, on the
+        // machine that owns the lane: the id travels over sync, the key and the
+        // config home never do.
+        ...(remotePreset
+          ? {
+            preset: remotePreset,
+            ...(trackedPreset?.model ? { model: trackedPreset.model } : {}),
+          }
+          : {}),
       });
     }
 
@@ -4477,6 +4520,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       cols,
       rows,
       ...launch,
+      ...(resumeMetadata ? { resumeMetadata } : {}),
     });
 
     if (initialInputMeta.goal) {
@@ -4957,6 +5001,16 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.respondToInput", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").respondToInput(parseAgentChatRespondToInputArgs(payload));
+    return { ok: true };
+  });
+  // Throwing a non-blocking question away. Viewer-allowed for the same reason
+  // answering one is: it changes nothing on disk and nothing in the repo, and a
+  // viewer looking at a card they cannot clear is the state this removes.
+  register("chat.dismissPendingInput", { viewerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").dismissPendingInput({
+      sessionId: requireString(payload.sessionId, "chat.dismissPendingInput requires sessionId."),
+      itemId: requireString(payload.itemId, "chat.dismissPendingInput requires itemId."),
+    });
     return { ok: true };
   });
   // Restart: fired by iOS Live Activity + Attention Drawer "Restart" pill on
@@ -6191,17 +6245,6 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       requireString(payload.agentId, "ai.cursorCloudStopRun requires agentId."),
     );
   });
-  register("orchestration.runCreate", { viewerAllowed: true }, async (payload) => {
-    const orchestrationService = requireService(args.orchestrationService, "Orchestration service not available.");
-    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-    return createOrchestrationDomainService({
-      orchestrationService,
-      laneService: {
-        getLaneWorktreePath: (laneId: string) => args.laneService.getLaneWorktreePath(laneId),
-      },
-      agentChatService,
-    }).runCreate(parseOrchestrationRunCreateArgs(payload));
-  });
 }
 
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -6556,6 +6599,17 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return args.usageTrackingService.getUsageRollup();
   }, "runtime");
 
+  register("account.getMachineInventory", { viewerAllowed: true }, async (payload) => {
+    const machineKey = asTrimmedString(payload.machineKey);
+    if (!machineKey) throw new Error("account.getMachineInventory requires machineKey.");
+    return await readMachineInventoryDetail({
+      machineKey,
+      providerInstanceStore: getMachineProviderInstanceStore(),
+      accountSettingsStore: args.accountSettingsStore,
+      aiIntegrationService: args.aiIntegrationService,
+    });
+  }, "runtime");
+
   register("usage.getQuotaSnapshot", { viewerAllowed: true }, async () => {
     if (!args.usageTrackingService) throw new Error("Usage quota is not available in this runtime.");
     return args.usageTrackingService.getUsageSnapshot();
@@ -6566,6 +6620,19 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return await args.usageTrackingService.forceRefresh({ allowInteractiveAuth: false });
   }, "runtime");
 
+  // Spending a credit changes the ACCOUNT's limits, not just this machine's
+  // view of them, so it is not viewer-allowed the way reading the meter is.
+  register("usage.consumeResetCredit", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
+    const service = args.usageTrackingService;
+    if (!service) {
+      throw new Error("Reset credits are not available in this runtime.");
+    }
+    return await service.consumeResetCredit({
+      accountId: requireString(payload.accountId, "usage.consumeResetCredit requires accountId."),
+    });
+  }, "runtime");
+
+  registerProxyRemoteCommands({ args, register });
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
   registerChatRemoteCommands({ args, register });

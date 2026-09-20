@@ -381,7 +381,7 @@ export function createTestService({
     },
 
     async run(arg: RunTestSuiteArgs): Promise<TestRunSummary> {
-      const config = projectConfigService.getExecutableConfig();
+      const config = projectConfigService.getEffective();
       const overlay = await getLaneOverlay(arg.laneId, config);
       const suiteMap = getSuiteMap(config);
       const availableSuiteIds = applySuiteFilter(Array.from(suiteMap.keys()), overlay);

@@ -20,13 +20,16 @@
     "build": "tsup && vite build",
     "build:notch": "node ./scripts/build-attention-notch.mjs",
     "build:desktop-driver": "node ./scripts/build-mac-desktop-driver.mjs",
-    "build:mac-native": "npm run build:notch && npm run build:desktop-driver",
+    "build:mac-native": "npm run build:notch && npm run build:desktop-driver && npm run build:capture-helper",
     "test:notch": "swift test --package-path ./native/ADEAttentionNotch",
     "test:desktop-driver": "swift test --package-path ./native/ADEDesktopDriver",
+    "build:capture-helper": "node ./scripts/build-capture-helper.mjs",
+    "build:capture-helper:win": "node ./scripts/build-capture-helper-win.mjs",
+    "test:capture-helper": "swift test --package-path ./native/ADECaptureHelper",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
     "dist:win:test": "node ./scripts/run-windows-test-build.mjs",
-    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && npm run package:win && npm run validate:win:release",
-    "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
+    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build && npm run package:win && npm run validate:win:release",
+    "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
     "package:win": "node ./scripts/run-electron-builder.mjs --win --x64 --publish never",
     "package:win:signed": "node ./scripts/run-electron-builder.mjs --require-signing --win --x64 --publish never",
     "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:mac-native && npm run build && electron-builder --mac --publish never",
@@ -51,14 +54,12 @@
     "validate:win:release": "node ./scripts/validate-win-artifacts.mjs --mode=release",
     "validate:win:release:signed": "node ./scripts/validate-win-artifacts.mjs --mode=release --require-signed",
     "release:mac:local": "node ./scripts/release-mac-local.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run",
     "test:integration": "vitest run .integration.test --passWithNoTests",
     "test:component": "vitest run src/renderer",
     "test:coverage": "vitest run --coverage",
-    "test:orchestrator-smoke": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts --reporter=verbose",
-    "test:orchestrator-complex-mock": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts -t \"complex mock prompt\" --reporter=verbose",
     "test:chat-model-runtime-audit": "node ./scripts/audit-chat-model-runtime.mjs --mode=dry-run --max-per-provider=2",
     "validate:win:proof": "node ./scripts/windows-proof-manifest.mjs validate",
     "validate:win:proof-inventory": "node ./scripts/windows-proof-manifest.mjs validate-inventory && node ./scripts/windows-proof-manifest.mjs validate-provenance",
@@ -76,12 +77,12 @@
   "//dependencies": "Only packages the PACKAGED runtime resolves from node_modules belong here: electron-builder ships every production dependency into app.asar. main/preload are bundled by tsup (dependencies stay external, so a bare require() in dist/main or dist/preload means the package must ship), the packaged ade-cli resolves its own externals through NODE_PATH into app.asar[.unpacked]/node_modules (see src/main/services/runtime/packagedNodePath.ts), and a few binaries are located by path. Everything the renderer uses is inlined into dist/renderer by Vite and belongs in devDependencies.",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.258",
-    "@cursor/sdk": "1.0.27",
+    "@cursor/sdk": "1.0.31",
     "@factory/droid-sdk": "0.2.0",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex": "0.153.4",
-    "@opencode-ai/sdk": "1.18.21",
+    "@opencode-ai/sdk": "1.18.31",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "bonjour-service": "^1.3.0",
@@ -90,7 +91,7 @@
     "graceful-fs": "^4.2.11",
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
-    "opencode-ai": "1.18.21",
+    "opencode-ai": "1.18.31",
     "ssh2": "^1.17.0",
     "ws": "^8.19.0",
     "yaml": "^2.8.2",
@@ -313,6 +314,14 @@
         ]
       },
       {
+        "from": "resources/native",
+        "to": "native",
+        "filter": [
+          "ade-capture-helper",
+          "ade-capture-helper.exe"
+        ]
+      },
+      {
         "from": "../../docs/triage",
         "to": "docs/triage"
       },
@@ -385,7 +394,8 @@
       "category": "public.app-category.developer-tools",
       "extendInfo": {
         "NSAppleEventsUsageDescription": "ADE launches agent terminals that can use local app automation through Codex Computer Use.",
-        "NSMicrophoneUsageDescription": "ADE uses your microphone to dictate chat prompts with on-device voice-to-text.",
+        "NSMicrophoneUsageDescription": "ADE uses your microphone for on-device voice-to-text dictation, and — when you start a voice call with your CTO — to send your speech to OpenAI using the API key you provide.",
+        "NSScreenCaptureUsageDescription": "ADE captures the window in front when you press both Command keys, so you can ask the CTO about what you are looking at.",
         "NSLocalNetworkUsageDescription": "ADE finds and connects to your other Macs and devices running ADE on your local network.",
         "NSBonjourServices": [
           "_ade-sync._tcp"

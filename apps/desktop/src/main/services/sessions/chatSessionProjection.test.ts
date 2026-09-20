@@ -48,6 +48,16 @@ function chat(overrides: Partial<AgentChatSessionSummary> = {}): AgentChatSessio
 }
 
 describe("chatSessionProjection", () => {
+  it("carries the chat's provider account onto the terminal row", () => {
+    expect(projectChatOntoSession(session(), chat({ instanceId: "acct-work" })).instanceId)
+      .toBe("acct-work");
+  });
+
+  it("leaves the account absent when the chat is on the provider default", () => {
+    expect(projectChatOntoSession(session(), chat()).instanceId).toBeUndefined();
+    expect(projectChatOntoSession(session(), chat({ instanceId: "   " })).instanceId).toBeUndefined();
+  });
+
   it("stamps provider_structured only when it can name the card", () => {
     const projected = projectChatOntoSession(session(), chat({ awaitingInput: true, pendingInputItemId: "item-7" }));
     expect(projected.pendingInputItemId).toBe("item-7");
@@ -121,14 +131,16 @@ describe("chatSessionProjection", () => {
     expect(projected.activeBackgroundTaskCount).toBe(0);
   });
 
-  it("copies chat lastActivityAt and cursorCloudAgentId onto the Work row", () => {
+  it("copies chat lastActivityAt, cursorCloudAgentId, and cursorRuntime onto the Work row", () => {
     const projected = projectChatOntoSession(session(), chat({
       lastActivityAt: "2026-08-13T20:26:10.000Z",
       cursorCloudAgentId: "bc-cloud-agent",
+      cursorRuntime: "local",
     }));
 
     expect(projected.lastActivityAt).toBe("2026-08-13T20:26:10.000Z");
     expect(projected.cursorCloudAgentId).toBe("bc-cloud-agent");
+    expect(projected.cursorRuntime).toBe("local");
   });
 
   it("clears a parked usage-limit deadline when the chat no longer has one", () => {
@@ -180,7 +192,7 @@ describe("chatSessionProjection — identity lineage (U8)", () => {
     return { ...session(), id, title: id };
   }
 
-  it("stamps parentIdentityKey on a child whose orchestration parent is the CTO", () => {
+  it("stamps parentIdentityKey on a child whose spawn parent is the CTO", () => {
     const sessions = [
       { ...session(), id: "cto-session", title: "CTO" },
       child("child-of-cto"),

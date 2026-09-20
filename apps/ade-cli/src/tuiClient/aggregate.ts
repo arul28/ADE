@@ -28,6 +28,7 @@ import {
 } from "./format";
 import { terminalReasonLabel } from "./terminalReason";
 import { workEventItemId, workEventParentItemId } from "./workEventIds";
+import { voiceCallLineId, voiceCallRunsByStartIndex } from "./voiceCallRuns";
 import { appendStreamingText, shouldMergeAssistantText } from "./assistantTextIdentity";
 
 export type WorkToolStatus = "running" | "ok" | "failed";
@@ -973,6 +974,10 @@ export function aggregateChatBlocks(args: {
     }
   }
 
+  // Mirrors `renderChatLines`: keyed by the index of each voice call run's
+  // first envelope, empty for every chat that has never been on a call.
+  const voiceCallRuns = voiceCallRunsByStartIndex(args.events);
+
   const passthrough = (id: string, kind: "user-bubble" | "assistant-text" | "approval" | "error" | "notice"): void => {
     const line = linesById.get(id);
     if (!line) return;
@@ -1018,6 +1023,11 @@ export function aggregateChatBlocks(args: {
     }
     const { envelope, index } = entry;
     const event = envelope.event;
+    // The voice-call marker `renderChatLines` puts at the head of a call's run.
+    // Emitted here as well because a line nothing passes through is a line the
+    // transcript never shows: blocks are what ChatView renders.
+    const voiceRun = voiceCallRuns.get(index);
+    if (voiceRun) passthrough(voiceCallLineId(voiceRun.callId), "notice");
     const id = chatEventLineId(envelope, index);
     const turnId = turnIdOf(event);
     const turnKey = turnId ?? "__turn_without_id__";

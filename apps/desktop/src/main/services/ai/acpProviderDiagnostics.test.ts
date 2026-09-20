@@ -39,6 +39,18 @@ describe("acpProviderDiagnostics", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it("reports a custom GROK_HOME instead of the default path", async () => {
+    const run = fakeRun({ "--version": { status: 0, stdout: "1.0.34\n" } });
+    const result = await collectAcpProviderDiagnostics({
+      provider: "grok",
+      cwd: "/repo",
+      env: { ...env, GROK_HOME: "/tmp/grok-custom" },
+      run,
+    });
+
+    expect(result.configHome).toBe("/tmp/grok-custom");
+  });
+
   it("folds doctor output in when asked", async () => {
     const run = fakeRun({
       "--version": { status: 0, stdout: "1.0.14" },

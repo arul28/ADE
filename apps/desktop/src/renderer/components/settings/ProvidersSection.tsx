@@ -10,7 +10,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type {
-  AgentChatPermissionMode,
   AiConfig,
   AiApiKeyVerificationResult,
   AiSettingsStatus,
@@ -20,8 +19,6 @@ import type {
 } from "../../../shared/types";
 import type {
   AcpProviderDiagnostics,
-  AiCustomProviderConfig,
-  AiProviderPermissions,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
 import { toggleDisabledProvider } from "../../../shared/providerEnablement";
@@ -30,7 +27,8 @@ import {
   LOCAL_PROVIDER_LABELS,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
-import { COLORS, LABEL_STYLE } from "../lanes/laneDesignTokens";
+import { CaretRight } from "@phosphor-icons/react";
+import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
@@ -40,18 +38,35 @@ import {
   type ApiKeySource,
   type OpenCodeProviderDetail,
 } from "./OpenCodeProviderDetailModal";
-import { ProviderGrid } from "./providerSectionPrimitives";
-import { availableProviderDescriptors, providerDescriptor } from "./providers/descriptors";
-import { ProviderTileCard } from "./providers/ProviderTileCard";
+import {
+  SettingsManagerPage,
+  SettingsManagerRow,
+  SettingsManagerTable,
+} from "./primitives/SettingsManagerPage";
+import { HarnessesPage } from "./harnesses/HarnessesPage";
+import { useHarnessPresets } from "./harnesses/useHarnessPresets";
+import { CustomToolMark } from "../shared/CustomToolMark";
+import { HelpHint } from "./primitives/HelpHint";
+
+/** The one sentence behind the "?" on the Custom section. */
+const CUSTOM_ENTRY_HELP = "An agent and the model it runs on, saved together — pick one in any model picker to start a chat with that whole setup.";
+import { availableProviderDescriptors, providerDescriptor, providerStatusFor } from "./providers/descriptors";
+import { useProviderAccountCounts } from "./providers/accounts/useProviderInstances";
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
 import { ProviderSignInModal } from "./providers/ProviderSignInModal";
 import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
-import { AlertBanner, prettifyProviderId } from "./providers/providerUi";
+import {
+  AlertBanner,
+  PreviewChip,
+  ProviderStatusChip,
+  normalizeProviderVersion,
+  prettifyProviderId,
+} from "./providers/providerUi";
 import type {
   AcpSettingsProviderId,
-  CustomProviderDraft,
   LocalProviderDraft,
   LocalRuntimeRow,
+  ProviderDescriptor,
   ProvidersViewContext,
   SettingsProviderId,
 } from "./providers/types";
@@ -88,21 +103,210 @@ const API_KEY_PROVIDERS: Array<{
   { provider: "moonshotai", label: "Moonshot AI", envVar: "MOONSHOT_API_KEY", placeholder: "sk-..." },
 ];
 
-const EMPTY_CUSTOM_PROVIDER: CustomProviderDraft = {
-  id: "",
-  name: "",
-  baseUrl: "",
-  npm: "@ai-sdk/openai-compatible",
-  slugs: "",
-  apiKey: "",
-};
+/**
+ * The provider list is a manager page: a table you scan, with one row per
+ * provider and its own page behind each row. The columns are the three facts
+ * the old tile stacked vertically — who it is, what state it is in, and what
+ * ADE knows about it — which is why ten providers now read as a list instead
+ * of as ten little dashboards.
+ */
+const PROVIDER_COLUMNS = [
+  { label: "Provider", width: "minmax(180px, 1.1fr)" },
+  { label: "Status", width: "minmax(130px, 0.7fr)" },
+  { label: "Details", width: "minmax(200px, 1.5fr)" },
+  { label: "", width: "20px", align: "right" as const },
+];
 
-const groupLabelStyle: React.CSSProperties = {
-  ...LABEL_STYLE,
-  fontSize: 11,
-  marginBottom: 0,
-  color: COLORS.textSecondary,
-};
+/**
+ * One provider row.
+ *
+ * The whole row is the button, spanning every column on the table's own track
+ * template, so the accessible name ("Open Claude Code settings") still covers
+ * the status and the message — a screen reader that lands on the control hears
+ * the same three facts a sighted reader sees, and nothing is stranded in a
+ * sibling cell the label does not reach.
+ */
+function ProviderManagerRow({
+  descriptor,
+  ctx,
+  accountCount,
+  onOpen,
+}: {
+  descriptor: ProviderDescriptor;
+  ctx: ProvidersViewContext;
+  /** Local logins for this provider. Only Claude and Codex can exceed one. */
+  accountCount?: number;
+  onOpen: () => void;
+}) {
+  const status = providerStatusFor(descriptor, ctx);
+  const models = descriptor.models(ctx);
+  const version = normalizeProviderVersion(descriptor.version?.(ctx));
+  // A count of zero while the probe is still out is a claim we cannot make.
+  // A disabled provider's count is real but beside the point — the row's job
+  // is to say it is off and to be clickable.
+  const showModelCount = status.state !== "checking" && status.state !== "disabled";
+
+  // The detail line says one of two things. A provider in trouble gets the real
+  // status sentence; a healthy one gets where its credential came from, which
+  // is the only question a working provider still raises.
+  const healthy = status.state === "connected";
+  const problem = status.errorLine ?? (healthy ? null : status.message);
+  const message = healthy ? descriptor.credentialLine?.(ctx) ?? null : problem;
+
+  const metaParts = [
+    // Only when there is more than one: "1 account" is the state every other
+    // provider is permanently in, so saying it is noise on nine rows.
+    ...(accountCount && accountCount > 1 ? [`${accountCount} accounts`] : []),
+    ...(showModelCount ? [`${models.length} model${models.length === 1 ? "" : "s"}`] : []),
+    ...(version ? [version] : []),
+  ];
+
+  return (
+    <SettingsManagerRow>
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`Open ${descriptor.label} settings`}
+        style={{
+          gridColumn: "1 / -1",
+          display: "grid",
+          gridTemplateColumns: "var(--settings-manager-columns)",
+          gap: 12,
+          alignItems: "center",
+          width: "100%",
+          margin: 0,
+          padding: 0,
+          border: "none",
+          background: "transparent",
+          textAlign: "left",
+          cursor: "pointer",
+          font: "inherit",
+          color: "inherit",
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          {descriptor.logo(22)}
+          <span
+            data-testid={`provider-tile-name-${descriptor.id}`}
+            style={{
+              fontSize: 12,
+              fontFamily: SANS_FONT,
+              color: COLORS.textPrimary,
+              minWidth: 0,
+              // Never clipped: the name is the row's identity, and
+              // "GitHub Co…" is a worse row than a two-line title.
+              overflowWrap: "anywhere",
+              lineHeight: 1.3,
+            }}
+          >
+            {descriptor.label}
+          </span>
+          {descriptor.preview ? <PreviewChip /> : null}
+        </span>
+
+        <span style={{ minWidth: 0 }}>
+          <ProviderStatusChip state={status.state} label={status.label} />
+        </span>
+
+        <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+          <span
+            style={{
+              fontSize: 10,
+              fontFamily: SANS_FONT,
+              color: COLORS.textMuted,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {metaParts.join(" · ")}
+          </span>
+          <span
+            style={{
+              fontSize: 10,
+              fontFamily: SANS_FONT,
+              // The dot already carries the state; red here is reserved for a
+              // real probe failure so it still means something.
+              color: status.errorLine ? COLORS.danger : COLORS.textDim,
+              lineHeight: 1.4,
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+              overflowWrap: "anywhere",
+            }}
+            {...(message ? { title: message } : {})}
+          >
+            {message}
+          </span>
+        </span>
+
+        <span aria-hidden style={{ display: "flex", justifyContent: "flex-end", color: COLORS.textDim }}>
+          <CaretRight size={13} />
+        </span>
+      </button>
+    </SettingsManagerRow>
+  );
+}
+
+/**
+ * Custom — its own section, under the provider list.
+ *
+ * It sat as a last row inside the providers table, where it read as an eleventh
+ * provider: a thing you sign in to. It is not. It is the combinations *you*
+ * saved of the ten above, which is a different kind of thing and belongs below
+ * them with its own heading and its own mark — a purple gear and wrench, so the one
+ * entry that is yours is not wearing a vendor's logo or the app's own.
+ *
+ * The count is the whole status: a saved setup has no connection to probe.
+ */
+function CustomPresetsCard({ count, onOpen }: { count: number; onOpen: () => void }) {
+  return (
+    <SettingsManagerPage
+      anchor="ai-harnesses-entry"
+      title="Custom"
+      leading={<CustomToolMark size={18} />}
+      titleAdornment={<HelpHint text={CUSTOM_ENTRY_HELP} />}
+      toolbar={
+        <button type="button" style={outlineButton()} onClick={onOpen}>
+          {count === 0 ? "Add new" : "Manage"}
+        </button>
+      }
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        data-custom-presets-entry="true"
+        aria-label="Open custom setups"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          width: "100%",
+          padding: "10px 12px",
+          borderRadius: 8,
+          border: `1px solid ${COLORS.outlineBorder}`,
+          background: "var(--color-card)",
+          textAlign: "left",
+          cursor: "pointer",
+          font: "inherit",
+          color: COLORS.textPrimary,
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+          <CustomToolMark size={20} />
+          <span style={{ fontFamily: SANS_FONT, fontSize: 12 }}>
+            {count === 0 ? "Nothing custom yet" : `${count} saved`}
+          </span>
+        </span>
+        <span aria-hidden style={{ display: "flex", color: COLORS.textDim }}>
+          <CaretRight size={13} />
+        </span>
+      </button>
+    </SettingsManagerPage>
+  );
+}
 
 function buildLocalProviderDrafts(
   snapshot: ProjectConfigSnapshot | null | undefined,
@@ -131,25 +335,31 @@ export function ProvidersSection({
   forceRefreshOnMount = false,
   providerParam = null,
   onProviderChange,
+  harnessesParam = false,
+  onHarnessesChange,
 }: {
   forceRefreshOnMount?: boolean;
   /** `?provider=<id>` — which provider's page to show, if any. */
   providerParam?: string | null;
   /** Lets the settings shell keep the URL in step with the sub-view. */
   onProviderChange?: (providerId: string | null) => void;
+  /** `#ai-harnesses` — whether the harnesses page is the open sub-view. */
+  harnessesParam?: boolean;
+  onHarnessesChange?: (open: boolean) => void;
 } = {}) {
   const navigate = useNavigate();
+  // Claude and Codex can hold several local logins; the row says how many so
+  // the count is visible without opening the page.
+  const accountCounts = useProviderAccountCounts();
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);
   const [projectConfigSnapshot, setProjectConfigSnapshot] = useState<ProjectConfigSnapshot | null>(null);
   const [storedProviders, setStoredProviders] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [editingLocalProvider, setEditingLocalProvider] = useState<LocalProviderFamily | null>(null);
   const [savingLocalProvider, setSavingLocalProvider] = useState<LocalProviderFamily | null>(null);
   const [localProviderDrafts, setLocalProviderDrafts] = useState<Record<LocalProviderFamily, LocalProviderDraft>>(() =>
     buildLocalProviderDrafts(null, null),
   );
-  const [editValue, setEditValue] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dismissedApiKeyStoreWarning, setDismissedApiKeyStoreWarning] = useState<string | null>(null);
@@ -160,15 +370,12 @@ export function ProvidersSection({
   const [detailProviderId, setDetailProviderId] = useState<string | null>(null);
   const [providerSearch, setProviderSearch] = useState("");
   const [refreshingCatalog, setRefreshingCatalog] = useState(false);
-  const [customProviderDraft, setCustomProviderDraft] = useState<CustomProviderDraft>(EMPTY_CUSTOM_PROVIDER);
   const [customModelSlugs, setCustomModelSlugs] = useState("");
   const [savingAdvanced, setSavingAdvanced] = useState(false);
   const [statusLoadError, setStatusLoadError] = useState<string | null>(null);
   const [cursorAuth, setCursorAuth] = useState<CursorSdkAuthStatus | null>(null);
   const [cursorLoginBusy, setCursorLoginBusy] = useState(false);
   const [cursorLoginUrl, setCursorLoginUrl] = useState<string | null>(null);
-  const [savingPermissionFor, setSavingPermissionFor] = useState<SettingsProviderId | null>(null);
-  const [savingDefaultModel, setSavingDefaultModel] = useState(false);
   const [savingDisabledFor, setSavingDisabledFor] = useState<SettingsProviderId | null>(null);
   // ACP CLI facts. Loaded when a provider's page opens, because reading them
   // spawns the CLI — see `acpProviderDiagnostics` in main.
@@ -181,6 +388,11 @@ export function ProvidersSection({
   // owned here so the section works standalone (and in tests) without a router
   // that writes search params.
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(providerParam);
+  // The harnesses page is the second sub-view of this tab. Same ownership rule
+  // as the provider page: seeded from the URL, owned here so the section still
+  // works standalone and in tests.
+  const [harnessesOpen, setHarnessesOpen] = useState<boolean>(harnessesParam);
+  const { presets: harnessPresets } = useHarnessPresets();
   const statusKnownRef = useRef(false);
   const pendingRefreshTimerRef = useRef<number | null>(null);
   // Seed the slugs field from config exactly once — saves send the full list
@@ -191,6 +403,15 @@ export function ProvidersSection({
   useEffect(() => {
     setSelectedProviderId(providerParam);
   }, [providerParam]);
+
+  useEffect(() => {
+    setHarnessesOpen(harnessesParam);
+  }, [harnessesParam]);
+
+  const openHarnesses = useCallback((next: boolean) => {
+    setHarnessesOpen(next);
+    onHarnessesChange?.(next);
+  }, [onHarnessesChange]);
 
   const selectProvider = useCallback((next: string | null) => {
     setSelectedProviderId(next);
@@ -406,15 +627,33 @@ export function ProvidersSection({
         name: patch.name ?? prev?.name ?? inventory?.name ?? apiSpec?.label ?? prettifyProviderId(id),
         methods,
         connected: patch.connected ?? prev?.connected ?? inventory?.connected === true,
-        hasKey: hasKeyFor(id),
+        hasKey: hasKeyFor(id) || Boolean(patch.credentialSource ?? prev?.credentialSource ?? inventory?.credentialSource),
         modelCount: patch.modelCount ?? prev?.modelCount ?? inventory?.modelCount,
-        envVar: patch.envVar ?? prev?.envVar ?? apiSpec?.envVar,
+        envVars: patch.envVars
+          ?? prev?.envVars
+          ?? (inventory?.envVars?.length ? inventory.envVars : undefined)
+          ?? (apiSpec?.envVar ? [apiSpec.envVar] : undefined),
+        credentialSource: patch.credentialSource
+          ?? prev?.credentialSource
+          ?? inventory?.credentialSource,
+        verificationSupported: patch.verificationSupported
+          ?? prev?.verificationSupported
+          ?? (apiSpec ? true : undefined),
+        envVar: patch.envVar
+          ?? prev?.envVar
+          ?? (inventory?.envVars?.length === 1 ? inventory.envVars[0] : undefined)
+          ?? apiSpec?.envVar,
         placeholder: patch.placeholder ?? prev?.placeholder ?? apiSpec?.placeholder,
       });
     };
 
     for (const p of opencodeProviders) {
-      upsert(p.id, { name: p.name, modelCount: p.modelCount, connected: p.connected });
+      upsert(p.id, {
+        name: p.name,
+        modelCount: p.modelCount,
+        connected: p.connected,
+        envVars: p.envVars,
+      });
     }
     for (const [id, methods] of Object.entries(authMethods ?? {})) {
       upsert(id, { methods });
@@ -423,6 +662,7 @@ export function ProvidersSection({
       upsert(api.provider, {
         name: api.label,
         envVar: api.envVar,
+        envVars: [api.envVar],
         placeholder: api.placeholder,
       });
     }
@@ -431,6 +671,7 @@ export function ProvidersSection({
     upsert(KIMI_PROVIDER_ID, {
       name: "Kimi for Coding",
       envVar: "KIMI_API_KEY",
+      envVars: ["KIMI_API_KEY"],
       placeholder: "sk-…",
       connected: kimiInventory?.connected === true || hasKeyFor(KIMI_PROVIDER_ID),
     });
@@ -484,18 +725,6 @@ export function ProvidersSection({
     setDetailProviderId(id);
   }, []);
 
-  const beginEditing = useCallback((provider: string) => {
-    setEditingProvider(provider);
-    setEditValue("");
-    setError(null);
-    setNotice(null);
-  }, []);
-
-  const cancelEditing = useCallback(() => {
-    setEditingProvider(null);
-    setEditValue("");
-  }, []);
-
   const deleteApiKey = useCallback(async (provider: string, options?: { alsoOpenCode?: boolean }) => {
     setError(null);
     setNotice(null);
@@ -512,7 +741,6 @@ export function ProvidersSection({
         API_KEY_PROVIDERS.find((row) => row.provider === provider)?.label
         ?? (provider === KIMI_PROVIDER_ID ? "Kimi for Coding" : prettifyProviderId(provider));
       setNotice(`${label} disconnected.`);
-      setEditingProvider((current) => (current === provider ? null : current));
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next[provider];
@@ -552,39 +780,6 @@ export function ProvidersSection({
       setVerifyingProvider(null);
     }
   }, [refreshStatus]);
-
-  const saveCursorApiKey = useCallback(async () => {
-    const trimmed = editValue.trim();
-    if (!trimmed) return;
-
-    setError(null);
-    setNotice(null);
-    setVerifyingProvider("cursor");
-    setVerificationByProvider((prev) => {
-      const next = { ...prev };
-      delete next.cursor;
-      return next;
-    });
-    try {
-      await window.ade.ai.storeApiKey("cursor", trimmed);
-      invalidateAiDiscoveryCache();
-      setStoredProviders((prev) => Array.from(new Set([...prev, "cursor"])));
-      const result = await window.ade.ai.verifyApiKey("cursor");
-      invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
-      setVerificationByProvider((prev) => ({ ...prev, cursor: result }));
-      if (result.ok) {
-        setNotice("Cursor connection verified.");
-        cancelEditing();
-      } else {
-        setError(result.message || "Cursor verification failed.");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setVerifyingProvider(null);
-    }
-  }, [cancelEditing, editValue, refreshStatus]);
 
   const loginWithCursor = useCallback(async () => {
     setError(null);
@@ -675,48 +870,6 @@ export function ProvidersSection({
     });
   }, [status?.availableModelIds, refreshStatus, loadAuthMethods]);
 
-  const saveAdvancedProvider = useCallback(async () => {
-    const draft = customProviderDraft;
-    const id = draft.id.trim();
-    const baseURL = draft.baseUrl.trim();
-    const slugs = draft.slugs.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!id || !baseURL || slugs.length === 0) {
-      setError("A custom provider needs an id, a base URL, and at least one model slug.");
-      return;
-    }
-    setSavingAdvanced(true);
-    setError(null);
-    setNotice(null);
-    try {
-      if (draft.apiKey.trim()) {
-        await window.ade.ai.storeApiKey(id, draft.apiKey.trim());
-      }
-      // Full-list write: config merge uses replace semantics, so include every
-      // existing provider (replacing any same-id entry) or they'd be dropped.
-      const existingProviders = (status?.customProviders ?? []).filter((entry) => entry.id !== id);
-      await window.ade.ai.updateConfig({
-        customProviders: [
-          ...existingProviders,
-          {
-            id,
-            name: draft.name.trim() || prettifyProviderId(id),
-            baseURL,
-            npm: draft.npm as AiCustomProviderConfig["npm"],
-            models: slugs,
-          },
-        ],
-      });
-      invalidateAiDiscoveryCache();
-      setNotice(`Custom provider ${id} saved.`);
-      setCustomProviderDraft(EMPTY_CUSTOM_PROVIDER);
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingAdvanced(false);
-    }
-  }, [customProviderDraft, refreshStatus, status?.customProviders]);
-
   const saveCustomModelSlugs = useCallback(async () => {
     const slugs = customModelSlugs.split(",").map((s) => s.trim()).filter(Boolean);
     setSavingAdvanced(true);
@@ -788,10 +941,6 @@ export function ProvidersSection({
     }
   }, [localProviderDrafts, refreshStatus]);
 
-  const permissionDefaults: AiProviderPermissions = useMemo(
-    () => projectConfigSnapshot?.effective.ai?.permissions?.providers ?? {},
-    [projectConfigSnapshot],
-  );
   const disabledProviders = useMemo(
     () => new Set((projectConfigSnapshot?.effective.ai?.disabledProviders ?? []).map((id) => id.toLowerCase())),
     [projectConfigSnapshot],
@@ -878,48 +1027,6 @@ export function ProvidersSection({
     if (!command) return;
     setSignInProvider(provider);
   }, []);
-  const defaultModelId = projectConfigSnapshot?.effective.ai?.defaultModel ?? null;
-
-  const setPermissionDefault = useCallback(async (
-    provider: SettingsProviderId,
-    mode: AgentChatPermissionMode,
-  ) => {
-    const descriptor = providerDescriptor(provider);
-    if (!descriptor) return;
-    setSavingPermissionFor(provider);
-    setError(null);
-    setNotice(null);
-    try {
-      // The detail page writes the ABSTRACT mode only. Translating it to each
-      // runtime's native flags stays where it already lives — one way, at
-      // launch — so this cannot drift from what a chat actually does.
-      await window.ade.ai.updateConfig({
-        permissions: { providers: { [descriptor.permissions.key]: mode } },
-      } as Partial<AiConfig>);
-      setNotice(`${descriptor.label} permission default saved.`);
-      await refreshStatus({ force: false, silent: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingPermissionFor(null);
-    }
-  }, [refreshStatus]);
-
-  const setDefaultModel = useCallback(async (modelId: string | null) => {
-    setSavingDefaultModel(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await window.ade.ai.updateConfig({ defaultModel: (modelId ?? undefined) as AiConfig["defaultModel"] });
-      invalidateAiDiscoveryCache();
-      setNotice(modelId ? `Default model set to ${modelId}.` : "Default model cleared.");
-      await refreshStatus({ force: false, silent: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingDefaultModel(false);
-    }
-  }, [refreshStatus]);
 
   const ctx = useMemo((): ProvidersViewContext => ({
     status,
@@ -932,8 +1039,6 @@ export function ProvidersSection({
     hasKeyFor,
     verificationByProvider,
     verifyingProvider,
-    editingProvider,
-    editValue,
     cursorAuth,
     cursorLoginBusy,
     cursorLoginUrl,
@@ -949,13 +1054,8 @@ export function ProvidersSection({
     localProviderDrafts,
     editingLocalProvider,
     savingLocalProvider,
-    customProviderDraft,
     customModelSlugs,
     savingAdvanced,
-    permissionDefaults,
-    savingPermissionFor,
-    defaultModelId,
-    savingDefaultModel,
     disabledProviders,
     savingDisabledFor,
     acpDiagnostics,
@@ -967,12 +1067,8 @@ export function ProvidersSection({
       loadAuthMethods,
       setError,
       setNotice,
-      beginEditing,
-      cancelEditing,
-      setEditValue,
       deleteApiKey,
       verifyApiKey,
-      saveCursorApiKey,
       loginWithCursor,
       logoutCursor,
       cancelCursorLogin,
@@ -983,12 +1079,8 @@ export function ProvidersSection({
       beginEditingLocalRuntime,
       cancelEditingLocalRuntime,
       saveLocalProvider,
-      setCustomProviderDraft,
       setCustomModelSlugs,
-      saveAdvancedProvider,
       saveCustomModelSlugs,
-      setPermissionDefault,
-      setDefaultModel,
       revealClaudeLoginTerminal: revealClaudeLoginTerminalInWork,
       setProviderDisabled,
       loadAcpDiagnostics,
@@ -996,16 +1088,16 @@ export function ProvidersSection({
       openSignInTerminal,
     },
   }), [
-    apiKeySources, authMethods, authMethodsError, beginEditing, beginEditingLocalRuntime, cancelCursorLogin, cancelEditing,
+    apiKeySources, authMethods, authMethodsError, beginEditingLocalRuntime, cancelCursorLogin,
     cancelEditingLocalRuntime, connectedOpenCodeProviders, cursorAuth, cursorLoginBusy,
-    cursorLoginUrl, customModelSlugs, customProviderDraft, defaultModelId, deleteApiKey, editValue,
-    editingLocalProvider, editingProvider, handleRefreshCatalog, hasKeyFor, isInitialCheckInFlight,
+    cursorLoginUrl, customModelSlugs, deleteApiKey,
+    editingLocalProvider, handleRefreshCatalog, hasKeyFor, isInitialCheckInFlight,
     loadAuthMethods, loading, localProviderDrafts, localRuntimes, loginWithCursor, logoutCursor,
-    openCodeCatalog, openProviderDetail, permissionDefaults, popularOpenCodeProviders,
-    projectConfigSnapshot, providerSearch, refreshStatus, refreshingCatalog, saveAdvancedProvider,
-    saveCursorApiKey, saveCustomModelSlugs, saveLocalProvider, savingAdvanced, savingDefaultModel,
-    savingLocalProvider, savingPermissionFor, searchableOpenCodeProviders, setDefaultModel,
-    setPermissionDefault, status, statusLoadError, storedProviders, updateLocalProviderDraft,
+    openCodeCatalog, openProviderDetail, popularOpenCodeProviders,
+    projectConfigSnapshot, providerSearch, refreshStatus, refreshingCatalog,
+    saveCustomModelSlugs, saveLocalProvider, savingAdvanced,
+    savingLocalProvider, searchableOpenCodeProviders,
+    status, statusLoadError, storedProviders, updateLocalProviderDraft,
     verificationByProvider, verifyApiKey, verifyingProvider, revealClaudeLoginTerminalInWork,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
     acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignInTerminal,
@@ -1030,7 +1122,11 @@ export function ProvidersSection({
   const signInCommand = signInProvider ? acpLoginCommand(signInProvider) : null;
 
   return (
-    <div id="ai-providers" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+    // The `ai-providers` anchor moved onto the manager page below, so the
+    // template owns the id, the scope chip and the heading in one place. This
+    // wrapper is layout only — giving it the id too would put the same anchor
+    // in the DOM twice whenever the grid is on screen.
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {notice && (
         <AlertBanner tone="success" message={notice} onDismiss={() => setNotice(null)} />
       )}
@@ -1047,7 +1143,9 @@ export function ProvidersSection({
         />
       )}
 
-      {selectedDescriptor ? (
+      {harnessesOpen ? (
+        <HarnessesPage onBack={() => openHarnesses(false)} />
+      ) : selectedDescriptor ? (
         <div id={`ai-provider-${selectedDescriptor.id}`}>
           <ProviderDetailPage
             descriptor={selectedDescriptor}
@@ -1056,21 +1154,29 @@ export function ProvidersSection({
           />
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={groupLabelStyle}>Providers</div>
-          {/* 320, not 280: at this window width 280 fits five columns, and five
-              columns is where "GitHub Copilot" stopped fitting on one line. */}
-          <ProviderGrid minWidth={320} autoFit gap={10}>
+        <SettingsManagerPage
+          anchor="ai-providers"
+          title="AI providers"
+          description="Every coding agent ADE can run. Open one to sign in, choose models, or turn it off."
+        >
+          <SettingsManagerTable columns={PROVIDER_COLUMNS} minWidth={620}>
             {descriptors.map((descriptor) => (
-              <ProviderTileCard
+              <ProviderManagerRow
                 key={descriptor.id}
                 descriptor={descriptor}
                 ctx={ctx}
+                {...(accountCounts[descriptor.id as keyof typeof accountCounts] != null
+                  ? { accountCount: accountCounts[descriptor.id as keyof typeof accountCounts] }
+                  : {})}
                 onOpen={() => selectProvider(descriptor.id)}
               />
             ))}
-          </ProviderGrid>
-        </div>
+          </SettingsManagerTable>
+        </SettingsManagerPage>
+      )}
+
+      {harnessesOpen || selectedDescriptor ? null : (
+        <CustomPresetsCard count={harnessPresets.length} onOpen={() => openHarnesses(true)} />
       )}
 
       {signInProvider && signInCommand ? (
@@ -1100,7 +1206,8 @@ export function ProvidersSection({
       {detailProvider ? (
         <OpenCodeProviderDetailModal
           provider={detailProvider}
-          keySource={apiKeySources.get(detailProvider.id) ?? (storedProviders.includes(detailProvider.id) ? "store" : undefined)}
+          keySource={apiKeySources.get(detailProvider.id)
+            ?? (storedProviders.includes(detailProvider.id) ? "store" : detailProvider.credentialSource)}
           verification={verificationByProvider[detailProvider.id]}
           verifying={verifyingProvider === detailProvider.id}
           authMethodsError={authMethodsError}

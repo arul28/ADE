@@ -54,6 +54,12 @@ its own (single D1 database, no Durable Objects, no queues).
 | PUT, DELETE | `/attention/account/devices/:deviceId/activities/:activityId` | Register or remove an account Live Activity update token |
 | DELETE | `/attention/account/machines/:machineKey` | Remove a machine from the account feed: purge and tombstone its items, drop its presence link, release the installs it seeded, drop its legacy `device_registrations`/`live_activity_tokens`, and revoke it so it cannot publish again. Only revokes a machine the account currently holds. Called by the account directory when the user removes a machine. |
 | POST | `/attention/account/machines/:machineKey/pairing` | Clear that revocation when the user deliberately pairs the machine again |
+| GET | `/attention/account/settings?since=<iso>&scope=<key>` | Read account settings changed after a cursor. `scope` is `all` or `repo:<normalized-repo>`. |
+| PUT | `/attention/account/settings` | Upsert a batch of settings. One invalid item rejects the whole batch. |
+| DELETE | `/attention/account/settings/:scope/:key` | Remove one setting. Idempotent, so a retry after a dropped response is not an error. |
+| GET | `/attention/account/vault?since=<iso>&scope=<key>` | Read vault items changed after a cursor. Values are opened with the Worker's key; an item the key cannot open returns `value: null`. |
+| PUT | `/attention/account/vault` | Upsert a batch of credentials. Values arrive as plaintext over TLS and are sealed before storage. |
+| DELETE | `/attention/account/vault/:scope/:kind/:key` | Revoke one credential. Idempotent. |
 
 ### Account Activity semantics
 
@@ -127,6 +133,72 @@ its own (single D1 database, no Durable Objects, no queues).
 - The relay owns one account-wide Live Activity per iPhone. It focuses the
   highest-priority work across machines and avoids competing per-machine
   activities when the account publisher is healthy.
+
+### Account settings semantics
+
+The store behind "sign in once and your setup follows you". It lives in this
+Worker rather than the account directory because the directory's only write
+route is the machine heartbeat, which the brain alone may call; this Worker
+already takes authenticated writes from the brain, iOS, and the hosted web
+client, so a phone can change a setting without a second Worker growing a
+client-facing write path.
+
+- **One row per setting, never one document per account.** The merge rule is
+  last writer wins *per key*. A single JSON blob cannot express that: a machine
+  that had been offline would post back a whole document and silently revert
+  every key it had not seen.
+- **`updated_at` is stamped by the Worker, never by the caller.** Machine clocks
+  disagree, and ADE has already had one sync defect caused by trusting a peer's
+  clock for ordering. "Last writer wins" therefore means last to reach the
+  server, which no machine with a wrong date can move. The caller's own
+  `changedAt` is stored beside it for diagnostics and is never authoritative.
+- **Machine-scoped settings never arrive here.** A value naming a path, a port,
+  or a piece of hardware is meaningless on another computer, so it stays local
+  by design. `scope_key` carries only the other axis: `all`, or
+  `repo:<normalized-repo>`.
+- **A rejected batch writes nothing.** A partial success is the worst outcome:
+  the caller believes its settings landed, and the one that silently did not is
+  the one it never checks again.
+- **Bounds.** 16 KB per value, 200 settings per write, 1,000 per read page
+  (with an explicit `truncated` flag and a resumable `cursor`), and 5,000 per
+  account. The read page reports truncation rather than leaving a client to
+  infer it from a full page.
+- **Deleting is a first-class route,** because a setting you can set but never
+  unset is a one-way door and every reset control depends on it.
+
+### Vault semantics
+
+Secrets, provider API keys, and integration credentials that follow a user to
+every machine.
+
+- **Platform encryption, not end-to-end.** Values arrive over TLS and are sealed
+  here with `VAULT_ENCRYPTION_KEY`, so they are ciphertext at rest in D1 and a
+  database dump alone reveals nothing. An operator who can read the Worker's
+  secret can read the values. That is a real limit, stated rather than implied.
+  It is also the only honest option today: end-to-end needs a key the user's
+  machines share and this Worker never sees, and sign-in is Clerk OAuth, so
+  there is no password to derive one from and a device-held key cannot open what
+  a brand-new machine must read on first sign-in.
+- **It fails closed.** With no key configured, every vault route answers `503`.
+  A vault that quietly stored plaintext because a secret was missing would be
+  worse than one that refuses, because nobody would find out until it mattered.
+  `npm run deploy` refuses without the secret for the same reason.
+- **An unopenable row says so.** A rotated or wrong key returns `value: null`
+  rather than omitting the item, because a client that saw it simply missing
+  would helpfully overwrite a credential that is still good on another machine.
+- **A caller may not supply its own ciphertext.** That would assume an
+  encryption model this Worker does not implement and would store a row nothing
+  here can ever open.
+- **Vendor CLI logins are deliberately absent** — Claude, Codex, Cursor. They
+  rotate their refresh tokens and their issuers rate-limit refresh storms; ADE
+  already carries a 24-hour rejection cooldown because of it. Two machines
+  holding one single-use refresh token is the bug behind every unexplained
+  sign-out in this product's history, and syncing them would reproduce it on
+  purpose. The Machines page shows a per-machine sign-in checklist instead.
+- **`refresh_owner` names the machine allowed to exchange a rotating
+  credential.** Nothing rotating is stored yet, so it is null everywhere; the
+  column exists so one can join later without a migration and without repeating
+  that bug.
 
 ### Publish semantics
 
@@ -208,6 +280,25 @@ TestFlight/App Store builds register `production`), and uses the registration's
 
 Until `APNS_KEY`/`APNS_KEY_ID`/`APNS_TEAM_ID` are set, registration endpoints
 work but `publish` returns 503 (`/health` reports `apnsConfigured: false`).
+
+### Vault encryption key (required before the vault works)
+
+One 32-byte key, base64, held only by this Worker:
+
+```sh
+npx wrangler secret put VAULT_ENCRYPTION_KEY
+# value: openssl rand -base64 32
+```
+
+The Worker refuses anything that is not exactly 32 bytes rather than hashing
+whatever it is given, so a weak or mistyped secret fails loudly instead of
+silently weakening every credential. Every vault route answers `503` until it is
+set, and `npm run deploy` refuses to publish without it.
+
+**Rotating this key orphans every stored credential.** There is no re-encrypt
+path: rows sealed with the old key return `value: null`, which clients report as
+"ADE cannot read this" rather than treating as absent. Plan a rotation as a
+re-entry of credentials, not as a transparent operation.
 
 ### Clerk verification (required for account Activity)
 

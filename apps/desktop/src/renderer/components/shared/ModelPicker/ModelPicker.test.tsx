@@ -339,6 +339,26 @@ describe("composeModelPickerTriggerLabel", () => {
     expect(composeModelPickerTriggerLabel({ model: undefined, value: "  ", fastMode: true }))
       .toBe("Select model");
   });
+
+  it("names a preset chat by the preset and suffixes nothing onto it", () => {
+    // The trigger is 152px wide. "<preset> - <model> Fast" truncates to
+    // neither, and the preset is the thing the user chose and recognises; the
+    // model reaches them through the trigger's title instead.
+    expect(composeModelPickerTriggerLabel({
+      model: FAST_GPT,
+      value: FAST_GPT.id,
+      fastMode: true,
+      presetName: "Opus on work",
+    })).toBe("Opus on work");
+  });
+
+  it("falls back to the model when the preset name is blank or absent", () => {
+    // A preset the user deleted or renamed to nothing must not blank the chip.
+    expect(composeModelPickerTriggerLabel({ model: OPUS, value: OPUS.id, presetName: "  " }))
+      .toBe(OPUS.displayName);
+    expect(composeModelPickerTriggerLabel({ model: OPUS, value: OPUS.id, presetName: null }))
+      .toBe(OPUS.displayName);
+  });
 });
 
 describe("ModelPicker", () => {
@@ -599,6 +619,48 @@ describe("ModelPicker", () => {
     expect(favoriteStore.has(OPUS.id)).toBe(true);
   });
 
+  it("gives every row one line of detail under the name", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelPicker value={SONNET.id} onChange={vi.fn()} models={[SONNET, OPUS]} />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    // The complaint this answers: rows were a name and nothing else, so two
+    // models that differ only in what they can hold looked identical.
+    expect((await findModelRow(SONNET.id)).textContent).toContain("Anthropic · 200K context · reasoning");
+    expect((await findModelRow(OPUS.id)).textContent).toContain("Anthropic · 1M context · reasoning");
+  });
+
+  it("names the route a model actually takes on its detail line", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelPicker
+        value={OPENCODE_MODEL.id}
+        onChange={vi.fn()}
+        models={[OPENCODE_MODEL]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect((await findModelRow(OPENCODE_MODEL.id)).textContent)
+      .toContain("OpenCode · Anthropic · 200K context · reasoning");
+  });
+
+  it("names the Pi provider on a pi/ row whose descriptor carries no pi-sdk route", async () => {
+    const user = userEvent.setup();
+    // The shape that regressed: the rail grouped this as Pi (it matches on the
+    // id) while the detail line matched on `providerRoute` alone and dropped
+    // the provider entirely.
+    const routeless: ModelDescriptor = { ...PI_MODEL, providerRoute: "openai-responses" };
+    render(
+      <ModelPicker value={routeless.id} onChange={vi.fn()} models={[routeless]} />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect((await findModelRow(routeless.id)).textContent).toContain("OpenAI · OpenAI Codex · work");
+  });
+
   it("does not render popover content when closed", () => {
     renderPicker();
     expect(screen.queryByRole("listbox", { name: /models/i })).toBeNull();
@@ -662,7 +724,6 @@ describe("ModelPicker", () => {
     const props = {
       value: tiered.id,
       onChange: vi.fn(),
-      surfaceKey: "cursor-cloud-tier-test",
       models: [tiered],
       serviceTierMode: true,
       onServiceTierChange,
@@ -2199,6 +2260,9 @@ describe("ModelPicker", () => {
       const railKeys = Array.from(document.querySelectorAll("[data-rail-selection]"))
         .map((entry) => entry.getAttribute("data-rail-selection"));
       const expectedRailKeys = [
+        // Harnesses leads the rail: a saved preset is a whole launch
+        // configuration, so it sits above the model-level views.
+        "harnesses",
         "favorites",
         "recents",
         "provider:anthropic",
@@ -2215,6 +2279,21 @@ describe("ModelPicker", () => {
         "provider:lmstudio",
       ].filter((key) => key !== "provider:cursor" || cursorProviderAvailable());
       expect(railKeys).toEqual(expectedRailKeys);
+    });
+
+    it("drops the Harnesses rail entry when the surface launches a CLI", async () => {
+      // The locked CLI gate has two halves. This is the one that stops the
+      // choice being offered: four harnesses take no key from the launch, so a
+      // preset picked here would be dropped, and a choice that is then ignored
+      // is worse than no choice. The launch path enforces the other half.
+      const user = userEvent.setup();
+      renderPicker({ listsHarnessPresets: false });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      const railKeys = Array.from(document.querySelectorAll("[data-rail-selection]"))
+        .map((entry) => entry.getAttribute("data-rail-selection"));
+      expect(railKeys).not.toContain("harnesses");
+      expect(railKeys[0]).toBe("favorites");
+      expect(screen.queryByRole("tab", { name: /^Harnesses$/i })).toBeNull();
     });
 
     it("lists curated Qwen models when the Qwen rail is selected", async () => {

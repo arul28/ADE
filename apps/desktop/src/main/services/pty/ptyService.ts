@@ -106,6 +106,10 @@ import {
   backgroundUtilityReasoningEffort,
 } from "../../../shared/backgroundUtilityModel";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import {
+  providerInstanceEnvPatch,
+  resolveProviderInstanceForLaunch,
+} from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
   buildOpenCodeReplayResumeLaunchCommand,
@@ -117,9 +121,14 @@ import {
   isLaunchProfile,
   sanitizeTrackedCliPromptSeed,
   shellCommandLineArgIndex,
+  trackedCliResumeCredentialId,
+  trackedCliResumeInstanceId,
+  trackedCliResumePresetId,
   trackedCliTitleFromPromptSeed,
   withOpenCodeAdeInstructions,
+  type ProviderInstanceLaunchTarget,
   type TrackedCliLaunchCommand,
+  type TrackedCliPresetLaunch,
   type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
   withClaudeSessionIdInCommandLine,
@@ -127,6 +136,7 @@ import {
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
+import { resolveTrackedCliPreset } from "../chat/harnessPresetLaunch";
 import {
   commandArrayToLine,
   commandArrayToWindowsShellLine,
@@ -201,11 +211,26 @@ export function materializeRuntimeCliLaunch(
   }
   const sessionId = runtimeCliLaunch.sessionId?.trim()
     || (provider === "claude" ? randomUUID() : undefined);
+  const instance = resolveProviderInstanceForLaunch(provider, runtimeCliLaunch.instanceId);
+  // The CLI gate is locked here as well as at the chat seam: this is the path a
+  // remote runtime materializes, and a gated harness must launch natively there
+  // too rather than inheriting a half-applied preset environment.
+  const trackedPreset = resolveTrackedCliPreset(provider, {
+    presetId: runtimeCliLaunch.presetId ?? null,
+    credentialId: runtimeCliLaunch.credentialId ?? null,
+  });
   return buildTrackedCliLaunchCommand({
     ...runtimeCliLaunch,
     provider,
     laneWorktreePath,
     ...(sessionId ? { sessionId } : {}),
+    ...(instance ? { instance } : {}),
+    ...(trackedPreset?.preset
+      ? {
+        preset: trackedPreset.preset,
+        ...(trackedPreset.model ? { model: trackedPreset.model } : {}),
+      }
+      : {}),
   });
 }
 
@@ -5372,6 +5397,52 @@ export function createPtyService({
     ...directShellLaunchForCommandLine(command),
   });
 
+  /** Idempotent: the Windows builder already emitted the same entry. */
+  const withProviderInstanceEnv = <T extends TrackedCliLaunchCommand | null>(
+    launch: T,
+    instance: ProviderInstanceLaunchTarget | null,
+  ): T => {
+    if (!launch || !instance) return launch;
+    const patch = providerInstanceEnvPatch(instance);
+    if (!Object.keys(patch).length) return launch;
+    return { ...launch, env: { ...(launch.env ?? {}), ...patch } } as T;
+  };
+
+  /**
+   * The same merge for a resumed harness preset, applied AFTER the account env
+   * so a preset that owns its own config home wins — the rule every other
+   * launch path in ADE follows.
+   */
+  const withHarnessPresetEnv = <T extends TrackedCliLaunchCommand | null>(
+    launch: T,
+    preset: TrackedCliPresetLaunch | null,
+  ): T => {
+    if (!launch || !preset?.env || !Object.keys(preset.env).length) return launch;
+    return { ...launch, env: { ...(launch.env ?? {}), ...preset.env } } as T;
+  };
+
+  /**
+   * Re-resolve the preset a tracked CLI launched under, for a resume.
+   *
+   * Gated harnesses never get one (see `harnessPresetCliGate.ts`), and a preset
+   * that has since been deleted resolves to nothing — in both cases the
+   * terminal comes back on the harness's native sign-in rather than failing.
+   */
+  const resolveResumePresetLaunch = (
+    provider: string,
+    metadata: Pick<TerminalResumeMetadata, "launch" | "presetId" | "credentialId"> | null | undefined,
+  ): TrackedCliPresetLaunch | null => {
+    if (!metadata) return null;
+    const presetId = trackedCliResumePresetId(metadata);
+    const credentialId = trackedCliResumeCredentialId(metadata);
+    if (!presetId && !credentialId) return null;
+    try {
+      return resolveTrackedCliPreset(provider, { presetId, credentialId })?.preset ?? null;
+    } catch {
+      return null;
+    }
+  };
+
   const buildResumeCommandForSession = (
     session: TerminalSessionSummary,
     provider: TerminalResumeProvider,
@@ -5391,11 +5462,25 @@ export function createPtyService({
             launch: parseTrackedCliLaunchConfig(session.resumeCommand ?? "", session.toolType) ?? {},
           } satisfies TerminalResumeMetadata
         : null);
+    // Resolved once and applied to BOTH resume renderings below: the Windows
+    // builder emits the account env itself, while the POSIX path goes through
+    // `legacyResumeLaunch`, which only carries a command line. Without the
+    // merge a resumed Claude/Codex terminal would silently land in whichever
+    // account the ambient environment names.
+    const resumeInstance = metadata
+      ? resolveProviderInstanceForLaunch(metadata.provider, trackedCliResumeInstanceId(metadata))
+      : null;
+    const resumePreset = resolveResumePresetLaunch(provider, metadata);
+    const baseOverrides = {
+      ...overrides,
+      ...(resumeInstance ? { instance: resumeInstance } : {}),
+      ...(resumePreset ? { preset: resumePreset } : {}),
+    };
     const metadataOverrides = provider === "cursor"
-      ? { ...overrides, prompt: null }
+      ? { ...baseOverrides, prompt: null }
       : provider === "codex"
-        ? { ...overrides, codexComputerUse }
-        : overrides;
+        ? { ...baseOverrides, codexComputerUse }
+        : baseOverrides;
     const metadataResumeCommand = metadata
       ? buildTrackedCliResumeCommand(metadata, metadataOverrides)
       : null;
@@ -5445,7 +5530,7 @@ export function createPtyService({
       return candidate;
     })();
     return {
-      launch,
+      launch: withHarnessPresetEnv(withProviderInstanceEnv(launch, resumeInstance), resumePreset),
       promptAtLaunch: Boolean(launch && promptAtLaunch),
     };
   };
@@ -5776,6 +5861,46 @@ export function createPtyService({
           launch: {
             ...initialResumeMetadata.launch,
             model: runtimeLaunchModel,
+          },
+        };
+        if (existingSession) {
+          sessionService.updateMeta({ sessionId, resumeMetadata: initialResumeMetadata });
+        }
+      }
+      // The RESOLVED id, not the requested one: if the caller named an account
+      // that has since been removed, the launch already fell back to the
+      // provider's default, and the resume must land in that same default
+      // rather than re-resolving a dead id on every relaunch.
+      const runtimeLaunchInstance = runtimeCliLaunch
+        ? resolveProviderInstanceForLaunch(String(runtimeCliLaunch.provider), runtimeCliLaunch.instanceId)
+        : null;
+      const runtimeLaunchPresetId = runtimeCliLaunch?.presetId?.trim() || null;
+      const runtimeLaunchCredentialId = runtimeCliLaunch?.credentialId?.trim() || null;
+      if ((runtimeLaunchPresetId || runtimeLaunchCredentialId) && initialResumeMetadata) {
+        // Mirrored onto both the metadata and its launch config, the same way
+        // the account id is, so a reader that holds only one of the two can
+        // still bring the terminal back on the same brain.
+        initialResumeMetadata = {
+          ...initialResumeMetadata,
+          ...(runtimeLaunchPresetId ? { presetId: runtimeLaunchPresetId } : {}),
+          ...(runtimeLaunchCredentialId ? { credentialId: runtimeLaunchCredentialId } : {}),
+          launch: {
+            ...initialResumeMetadata.launch,
+            ...(runtimeLaunchPresetId ? { presetId: runtimeLaunchPresetId } : {}),
+            ...(runtimeLaunchCredentialId ? { credentialId: runtimeLaunchCredentialId } : {}),
+          },
+        };
+        if (existingSession) {
+          sessionService.updateMeta({ sessionId, resumeMetadata: initialResumeMetadata });
+        }
+      }
+      if (runtimeLaunchInstance && initialResumeMetadata) {
+        initialResumeMetadata = {
+          ...initialResumeMetadata,
+          instanceId: runtimeLaunchInstance.id,
+          launch: {
+            ...initialResumeMetadata.launch,
+            instanceId: runtimeLaunchInstance.id,
           },
         };
         if (existingSession) {
@@ -7375,21 +7500,32 @@ export function createPtyService({
         const codexComputerUse = metadata?.provider === "codex"
           ? await resolveCodexComputerUseMcpConfig()
           : null;
-        const resumeOverrides = metadata?.provider === "codex"
-          ? { codexComputerUse }
-          : {};
-        const resumeLaunch = metadata && process.platform === "win32"
-          ? buildTrackedCliResumeLaunchCommand(
-              metadata,
-              resumeOverrides,
-              { platform: "win32" },
-            )
-          : (() => {
-              const command = metadata
-                ? buildTrackedCliResumeCommand(metadata, resumeOverrides)
-                : normalizeResumeCommand(session.resumeCommand, session.toolType);
-              return command ? legacyResumeLaunch(command) : null;
-            })();
+        const reattachInstance = metadata
+          ? resolveProviderInstanceForLaunch(metadata.provider, trackedCliResumeInstanceId(metadata))
+          : null;
+        const reattachPreset = metadata
+          ? resolveResumePresetLaunch(metadata.provider, metadata)
+          : null;
+        const resumeOverrides = {
+          ...(metadata?.provider === "codex" ? { codexComputerUse } : {}),
+          ...(reattachInstance ? { instance: reattachInstance } : {}),
+          ...(reattachPreset ? { preset: reattachPreset } : {}),
+        };
+        const resumeLaunch = withHarnessPresetEnv(withProviderInstanceEnv(
+          metadata && process.platform === "win32"
+            ? buildTrackedCliResumeLaunchCommand(
+                metadata,
+                resumeOverrides,
+                { platform: "win32" },
+              )
+            : (() => {
+                const command = metadata
+                  ? buildTrackedCliResumeCommand(metadata, resumeOverrides)
+                  : normalizeResumeCommand(session.resumeCommand, session.toolType);
+                return command ? legacyResumeLaunch(command) : null;
+              })(),
+          reattachInstance,
+        ), reattachPreset);
         if (!resumeLaunch) {
           throw new Error(`Chat CLI session '${chatSessionId}' has no resume command available.`);
         }

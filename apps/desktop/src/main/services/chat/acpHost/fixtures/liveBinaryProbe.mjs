@@ -240,7 +240,7 @@ export function summarizeCaps(init) {
 }
 
 async function probeCopilot() {
-  const report = { provider: "copilot", binary: "copilot", version: "1.0.82", steps: [] };
+  const report = { provider: "copilot", binary: "copilot", version: null, steps: [] };
   const client = new AcpClient({
     command: "copilot",
     args: ["--acp", "--add-dir", scratchDir, "--no-auto-update"],
@@ -251,6 +251,7 @@ async function probeCopilot() {
 
   try {
     const init = await client.initialize();
+    report.version = init.agentInfo?.version ?? null;
     writeFileSync(path.join(here, "copilot.initialize.json"), `${JSON.stringify(init, null, 2)}\n`);
     report.steps.push({ step: "initialize", ok: true, caps: summarizeCaps(init) });
 

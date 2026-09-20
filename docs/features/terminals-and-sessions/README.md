@@ -221,7 +221,7 @@ and in tests.
   `terminal_sessions` row used by Work, detail reads, ADE runtime actions,
   and lane snapshots.
   It projects active/idle/waiting state, pending input, the live
-  `currentTurnStartedAt` timer anchor, wake time, and orchestration lineage.
+  `currentTurnStartedAt` timer anchor, wake time, and spawn lineage.
   If chat hydration fails, a persisted resumable
   `status = "running"` row falls back to quiet idle/waiting instead of
   presenting a false live/green agent.
@@ -287,7 +287,7 @@ and in tests.
   per-lane cwd resolution that gates PTY creation to the lane worktree.
 - `apps/desktop/src/main/services/externalSessions/` —
   external CLI session discovery and import. `externalSessionsService.ts`
-  orchestrates provider discovery, capability flags, project/all scoping,
+  drives provider discovery, capability flags, project/all scoping,
   already-imported detection, active-session hints, CLI import into tracked
   PTYs, chat import delegation, cwd checks, and provider-specific resume/fork
   commands. The per-provider discovery modules scan Claude JSONL transcripts
@@ -659,7 +659,7 @@ Renderer surfaces:
   (`clearSessionWokeMarker`): opening *is* the acknowledgement, since the marker
   exists only to explain an unexpected return.
   It also listens for the renderer-wide `ade:work:select-session` event
-  used by orchestration panels and lineage links; the listener uses the
+  used by lineage links; the listener uses the
   supplied lane when present or resolves it from the loaded session list,
   then focuses the target session, opens its Work tab, and updates
   `selectedSessionId`.
@@ -1977,7 +1977,7 @@ awaited drain into a no-op.
 `session.moveOnBoard` and `session.undoBoardMove` are in the action allowlist
 and are **CTO-only**. A board move writes the same lifecycle columns a settle
 does and then tells the agent the user moved it; both halves are the user's, so
-a session-bound agent authenticating as `agent` or `orchestrator` cannot move
+a session-bound agent authenticating as `agent` cannot move
 its own card and then congratulate itself on being told to. Unattended
 automations cannot call them either, since the automation predicate is
 "allowlisted and not CTO-only".
@@ -2072,8 +2072,8 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    `ade chat ask` clears settle, persists the blocking question and its
    `agent_explicit` provenance, marks a live tracked CLI as waiting-input, and
    publishes a time-sensitive push; the next accepted user message clears it,
-   including an active-turn steer. Agent-to-agent and orchestration steers do
-   not dismiss the user's pending question. Provider
+   including an active-turn steer. Agent-to-agent steers do not dismiss the
+   user's pending question. Provider
    structured input carries its own pending item id. OSC markers and
    prompt-looking output never create `Needs you`. `ade chat note ""` clears
    only the status line. Status notes are trimmed to at
@@ -2384,7 +2384,7 @@ per-request system channel.
   entries land in the same assembled system block as `AGENTS.md`, after the base
   prompt, and never appear in the transcript. Config layers union this key rather
   than overwrite it, so ADE's entry is appended to the user's own instruction
-  files instead of replacing them (verified against opencode 1.18.21).
+  files instead of replacing them (verified against opencode 1.18.31).
 
 `openCodeAdeInstructions.ts` writes the file to `.ade/cache/opencode-instructions/`
 keyed by lane worktree. Two other placements are wrong: the lane worktree is the

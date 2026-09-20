@@ -26,7 +26,6 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/desktop/src/main/services/computerUse/` | `docs/features/computer-use/` | — |
 | `apps/desktop/src/main/services/macDesktop/`, `apps/desktop/native/ADEDesktopDriver/` (keywords: mac desktop, virtual display, desktop seat, `ade mac-desktop`, accessibility driver, window parking, input lease) | `docs/features/mac-desktop/README.md` + `docs/features/computer-use/` | — |
 | `apps/desktop/src/main/services/deeplinks/` | `docs/features/deeplinks/` | — |
-| `apps/desktop/src/main/services/orchestration/` | `docs/features/agents/` (orchestrator) | — |
 | `apps/desktop/src/main/services/conflicts/` | `docs/features/conflicts/` | — |
 | `apps/desktop/src/main/services/files/` | `docs/features/files-and-editor/` | `ade-perf-work` |
 | `apps/desktop/src/main/services/history/` | `docs/features/history/` | — |

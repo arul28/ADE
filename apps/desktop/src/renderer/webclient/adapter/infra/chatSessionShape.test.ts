@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { cursorSessionRunsInCloud } from "../../../../shared/types/chat";
 import { chatSessionFromRemoteSummary } from "./chatSessionShape";
 
 describe("chatSessionFromRemoteSummary", () => {
@@ -24,5 +25,16 @@ describe("chatSessionFromRemoteSummary", () => {
     const session = chatSessionFromRemoteSummary({ id: "chat-9", createdAt: "2026-01-01T00:00:00.000Z" });
     expect(session.id).toBe("chat-9");
     expect(session.createdAt).toBe("2026-01-01T00:00:00.000Z");
+  });
+
+  it("keeps cursorRuntime so a leftover cloud agent id does not reclassify a local chat", () => {
+    const session = chatSessionFromRemoteSummary({
+      sessionId: "chat-cursor-1",
+      startedAt: "2026-09-17T00:00:00.000Z",
+      provider: "cursor",
+      cursorRuntime: "local",
+      cursorCloudAgentId: "agent-1",
+    });
+    expect(cursorSessionRunsInCloud(session)).toBe(false);
   });
 });

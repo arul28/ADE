@@ -152,6 +152,78 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  // A tracked CLI launched with `--instance` / `--preset` / `--credential` is
+  // signed in as that account or brain. If the store forgets which one, the
+  // resume silently reattaches under the provider's default — the session comes
+  // back looking fine while talking to the wrong identity.
+  it("keeps the launch identity across a round trip through the store", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-identity",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Claude CLI",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-identity.log",
+      toolType: "claude",
+      resumeMetadata: {
+        provider: "claude",
+        targetKind: "session",
+        targetId: null,
+        launch: { permissionMode: "default", instanceId: "work", presetId: "hp_opus_work" },
+        instanceId: "work",
+        presetId: "hp_opus_work",
+      },
+    });
+
+    const created = service.get("session-identity");
+    expect(created?.resumeMetadata?.instanceId).toBe("work");
+    expect(created?.resumeMetadata?.presetId).toBe("hp_opus_work");
+    expect(created?.resumeMetadata?.launch.instanceId).toBe("work");
+    expect(created?.resumeMetadata?.launch.presetId).toBe("hp_opus_work");
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  // A writer that filled in only the `launch` copy (or only the mirror) still
+  // gets both back, so no reader has to know which half a given writer set.
+  it("mirrors a launch-only credential id onto the metadata and back", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-credential",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Claude CLI",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-credential.log",
+      toolType: "claude",
+      resumeMetadata: {
+        provider: "claude",
+        targetKind: "session",
+        targetId: null,
+        launch: { permissionMode: "default", credentialId: "openrouter" },
+      },
+    });
+
+    const created = service.get("session-credential");
+    expect(created?.resumeMetadata?.credentialId).toBe("openrouter");
+    expect(created?.resumeMetadata?.launch.credentialId).toBe("openrouter");
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("projects tracked CLI spawn lineage from resume metadata without assigning a chat owner", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-lineage-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

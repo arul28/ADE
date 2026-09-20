@@ -110,12 +110,7 @@ export type PersonalChatCreateArgs = Omit<
   | "surface"
   | "automationId"
   | "automationRunId"
-  | "orchestrationRunId"
-  | "orchestrationRole"
   | "orchestrationParentSessionId"
-  | "orchestrationTag"
-  | "orchestrationStepId"
-  | "orchestrationBundlePath"
 > & { kickoffText?: string };
 
 export type PersonalChatCallArgs =

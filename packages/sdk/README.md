@@ -123,12 +123,17 @@ refused rather than opening a tool-less thread):
 
 | Provider | Strict mode | What still loads under strict |
 |---|---|---|
-| claude | **enforced** | nothing MCP-wise (user rules/commands/output styles still load — they are not MCP) |
+| claude | enforced | nothing MCP-wise (user rules/commands/output styles still load — they are not MCP) |
 | codex | best-effort | servers contributed by a Codex *plugin* |
-| cursor | best-effort | user-layer servers (`~/.cursor`) |
+| cursor | best-effort | user-layer servers (`~/.cursor`; ADE's own preToolUse hook lives there) |
 | droid | best-effort | tools that appear only after the first disable pass |
 | opencode | best-effort | the global OpenCode config directory (for auth) |
 | pi | unsupported | n/a — create refuses injected servers |
+
+The server shape is checked against the selected provider before launch. Codex
+does not support `sse`, so a Codex request containing an SSE entry is rejected.
+Server names `computer_use` and `ade-cto` are reserved, and a request may
+contain at most 32 servers.
 
 Read `thread.mcpCapability` after open. `strictRequested` first, then `level`.
 `"enforced"` is the only value that means "nothing but the servers I supplied".

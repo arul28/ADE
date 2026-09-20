@@ -34,7 +34,7 @@ import type {
   OpenCodeRuntimeSnapshot,
   ProjectConfigFile,
 } from "../../../shared/types";
-import { orchestrationLeadOpenCodeToolSelection } from "../../../shared/orchestrationRuntimePolicy";
+import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { stableStringify } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import type { PermissionMode } from "../ai/tools/universalTools";
@@ -60,7 +60,6 @@ export type OpenCodeSessionHandle = {
   sessionId: string;
   initialTitle: string | null;
   directory: string;
-  toolSelection: Record<string, boolean> | null;
   close(reason?: OpenCodeServerShutdownReason): Promise<void>;
   touch(): void;
   setBusy(busy: boolean): void;
@@ -100,6 +99,17 @@ type BuildOpenCodeConfigArgs = {
   mcp?: OpenCodeConfig["mcp"];
   /** Lead servers inherit no user config, so ADE must supply what they need. */
   isolatedConfig?: boolean;
+  /**
+   * Provider blocks a harness preset contributes for THIS session only.
+   *
+   * A preset's key is not in the project's `ai.customProviders` — it is one
+   * credential in the key store, chosen per chat — so it cannot be resolved by
+   * the same `resolveStoredApiKey` lookup the configured providers use. The
+   * resolved block (endpoint, key, declared models) arrives already built and
+   * is merged LAST, so a preset outranks a same-named configured provider for
+   * the session that asked for it and changes nothing for any other.
+   */
+  presetProviders?: NonNullable<OpenCodeConfig["provider"]>;
 };
 
 type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
@@ -110,7 +120,7 @@ type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
   ownerId?: string | null;
   ownerKey?: string | null;
   leaseKind?: "shared" | "dedicated";
-  /** Isolate user/project config for an orchestrator lead only. */
+  /** Isolate user/project config for this session only. */
   isolatedConfig?: boolean;
   logger?: Logger | null;
 };
@@ -199,11 +209,19 @@ function buildPermissionConfig(
       // means no prompts.
       read: "allow",
       task: "allow",
-      // external_directory is deliberately NOT stated here, and "ask" is what
-      // omitting it means. That boundary is ADE's lane worktree, not a
-      // permission tier the user picked — the same reason the system prompt
-      // confines edits to the lane. See the note on the edit ruleset below for
-      // why the key must be absent rather than spelled out.
+      // Full access means no prompts AT ALL — including for a path outside the
+      // lane worktree. Never stating this key (the rule for every other ADE
+      // ruleset, see the canonical note below) leaves OpenCode's own default in
+      // force, which is "ask", so an agent reading a screenshot outside the
+      // worktree raised an approval card the user had to click through on a
+      // mode that exists precisely to not do that. A bare "allow" expands to a
+      // single `{pattern:"*"}` rule, appended after OpenCode's built-ins and
+      // winning the `findLast` for every path — so it grants unrestricted
+      // external read/write, including paths OpenCode would otherwise ask about
+      // or deny. That is exactly what full auto promises. "ask"/"deny" are the
+      // values that cannot be stated here: they would revoke OpenCode's access
+      // to its own temp/skill/reference directories.
+      external_directory: "allow",
       question: "allow",
     };
   }
@@ -237,16 +255,17 @@ function buildPermissionConfig(
     bash: "ask",
     webfetch: "allow",
     doom_loop: "ask",
-    // Never state `external_directory` in ANY ADE ruleset — this note is the
-    // canonical one and the other three point at it.
+    // Never state `external_directory` in an ASKING/DENYING ADE ruleset — this
+    // note is the canonical one and the other non-full-auto rulesets point at
+    // it. (Full auto states "allow"; its ruleset comment owns that exception.)
     //
     // OpenCode's own default is `{"*": "ask", <tmp>: "allow", <skill dirs>:
     // "allow", <reference dirs>: "allow"}`. A bare string expands to a single
     // `{pattern: "*"}` rule that an agent block appends AFTER those defaults,
-    // and rule lookup is a `findLast` over the merged list — so the bare rule
+    // and rule lookup is a `findLast` over the merged list — so a bare rule
     // wins for every path and silently revokes OpenCode's access to its own
-    // temp, skill, and reference directories. That is equally true of "deny"
-    // and "ask", which is why all four rulesets omit the key.
+    // temp, skill, and reference directories. That is true of "deny" and
+    // "ask", which is why all the non-full-auto rulesets omit the key.
     //
     // The trade, stated honestly: plan and helper used to hard-DENY every path
     // outside the worktree, and now they ASK for one. That is a real loosening,
@@ -511,14 +530,21 @@ function mergeCustomModelSlugs(
 }
 
 export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConfig {
-  const provider = buildProviderConfig(args.projectConfig, args.discoveredLocalModels, args.isolatedConfig);
+  const configuredProviders = buildProviderConfig(args.projectConfig, args.discoveredLocalModels, args.isolatedConfig);
+  const presetProviders = args.presetProviders && Object.keys(args.presetProviders).length
+    ? args.presetProviders
+    : undefined;
+  const provider = presetProviders
+    ? { ...(configuredProviders ?? {}), ...presetProviders }
+    : configuredProviders;
   const helperPermission = {
     edit: "deny",
     bash: "deny",
     webfetch: "deny",
     doom_loop: "deny",
-    // No `external_directory`, matching every other ADE ruleset — see the
-    // canonical note in `buildPermissionConfig`. The helper has no UI to show an
+    // No `external_directory` on this restrictive ruleset — see the
+    // canonical note in `buildPermissionConfig`; only `ade-full-auto` states it
+    // (as "allow"). The helper has no UI to show an
     // approval card, so `runOpenCodeTextPrompt` answers any ask by rejecting it
     // at once, which is what the old bare "deny" achieved.
     question: "deny",
@@ -628,6 +654,21 @@ export function buildOpenCodePromptParts(args: {
 }
 
 /**
+ * The v2 session prompt's file-attachment shape (`{uri, name}`), which is a
+ * different wire type from the v1 `FilePartInput` above. Lives here beside its
+ * sibling so the runtime module stays the one place that knows how an OpenCode
+ * prompt file is expressed on either API.
+ */
+export function buildOpenCodeV2PromptAttachments(
+  files: readonly OpenCodePromptFile[],
+): Array<{ uri: string; name: string }> {
+  return files.map((file) => ({
+    uri: pathToFileURL(file.path).toString(),
+    name: file.filename ?? basenameCrossPlatform(file.path),
+  }));
+}
+
+/**
  * True only when an OpenCode server call failed with a confirmed
  * "session does not exist" (HTTP 404 / `NotFoundError`). Anything else — a
  * transport blip, timeout, HTML version-mismatch guard, auth hiccup — must NOT
@@ -676,7 +717,6 @@ function createOpenCodeSessionHandle(args: {
   sessionId: string;
   initialTitle?: string | null;
   directory: string;
-  toolSelection: Record<string, boolean> | null;
 }): OpenCodeSessionHandle {
   return {
     client: args.client,
@@ -690,7 +730,6 @@ function createOpenCodeSessionHandle(args: {
     sessionId: args.sessionId,
     initialTitle: trimToUndefined(args.initialTitle) ?? null,
     directory: args.directory,
-    toolSelection: args.toolSelection,
     async close(reason = "handle_close") {
       args.lease.close(reason);
     },
@@ -751,7 +790,6 @@ async function startOpenCodeSessionInternal(
         sessionId: resolvedSessionId,
         initialTitle: existing.data?.title,
         directory: args.directory,
-        toolSelection: null,
       });
     } catch (error) {
       // Only a confirmed "session missing" may fall through to creation. Any
@@ -785,7 +823,6 @@ async function startOpenCodeSessionInternal(
     sessionId: created.data.id,
     initialTitle: created.data.title,
     directory: args.directory,
-    toolSelection: null,
   });
 }
 
@@ -810,7 +847,7 @@ export function __resetOpenCodeRuntimeDiagnosticsForTests(): void {
  * The incremental text an older OpenCode may have attached to
  * `message.part.updated`.
  *
- * 1.18.21 does not send one: `Session.updatePart` publishes `{ sessionID, part,
+ * 1.18.31 does not send one: `Session.updatePart` publishes `{ sessionID, part,
  * time }` and routes incremental text to the separate `message.part.delta`
  * event, which is why the field is absent from the current SDK types. Callers
  * already reconstruct the delta by diffing against the text they last saw, so
@@ -855,24 +892,6 @@ export async function openCodeEventStream(args: {
   return result.stream as AsyncGenerator<OpenCodeRuntimeEvent>;
 }
 
-/**
- * Resolves the `tools` map ADE sends with every OpenCode prompt.
- *
- * OpenCode has no server-side role model: whatever it exposes, the model may
- * call. `session.prompt`'s `tools` map is the only lever, so an orchestrator
- * lead gets every write/shell tool explicitly switched off here. Every other
- * session keeps OpenCode's defaults (`null` — field omitted entirely).
- */
-export async function refreshOpenCodeSessionToolSelection(
-  handle: OpenCodeSessionHandle,
-  options?: { orchestrationLead?: boolean },
-): Promise<Record<string, boolean> | null> {
-  handle.toolSelection = options?.orchestrationLead
-    ? orchestrationLeadOpenCodeToolSelection()
-    : null;
-  return handle.toolSelection;
-}
-
 export async function runOpenCodeTextPrompt(
   args: RunOpenCodePromptArgs,
 ): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null }> {
@@ -895,8 +914,6 @@ export async function runOpenCodeTextPrompt(
       directory: handle.directory,
       signal: controller.signal,
     });
-    const toolSelection = await refreshOpenCodeSessionToolSelection(handle);
-
     await handle.client.session.promptAsync(
       {
         sessionID: handle.sessionId,
@@ -908,7 +925,6 @@ export async function runOpenCodeTextPrompt(
         // model context entirely, so the prompt would silently never reach
         // the model.
         ...(args.system?.trim() ? { system: args.system.trim() } : {}),
-        ...(toolSelection ? { tools: toolSelection } : {}),
         parts: buildOpenCodePromptParts({
           prompt: args.prompt,
           files: args.files,
@@ -955,8 +971,9 @@ export async function runOpenCodeTextPrompt(
       }
 
       // A one-shot prompt has no UI and nobody to ask, so an approval request
-      // must fail fast rather than hang. ADE states no `external_directory`
-      // rule any more, which means OpenCode's default ASKS for a path outside
+      // must fail fast rather than hang. This helper runs under a restrictive
+      // ruleset that states no `external_directory` rule, which means
+      // OpenCode's default ASKS for a path outside
       // the worktree instead of denying it outright — without this responder
       // that ask would sit unanswered until the caller's abort fires, minutes
       // later. Rejecting immediately reproduces the old hard deny: the tool

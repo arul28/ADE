@@ -265,11 +265,14 @@ export function SessionLaunchModelControls({
   onChange,
   disabled = false,
   showSessionType = true,
+  onOpenHarnessSettings,
 }: {
   config: SessionLaunchModelConfig;
   onChange: (patch: Partial<SessionLaunchModelConfig>) => void;
   disabled?: boolean;
   showSessionType?: boolean;
+  /** Opens Settings › Providers › Custom from the Custom empty state. */
+  onOpenHarnessSettings?: () => void;
 }) {
   const patchNative = useCallback((nativeControls: NativeControlState) => {
     onChange({ nativeControls });
@@ -292,6 +295,10 @@ export function SessionLaunchModelControls({
         })}
         compact
         triggerClassName={COMPOSER_MODEL_TRIGGER}
+        // CLI mode never lists presets: four of the harnesses take no key from
+        // the launch, so a preset chosen here would be silently dropped.
+        listsHarnessPresets={config.sessionType !== "cli"}
+        {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
         fastMode={config.fastMode}
         onFastModeChange={(fastMode) => onChange({ fastMode })}
         fastModeSupported={batchLaunchSupportsFastMode(config.modelId)}

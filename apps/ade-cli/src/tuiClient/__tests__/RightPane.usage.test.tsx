@@ -197,4 +197,30 @@ describe("RightPane usage", () => {
     expect(text).toContain("97%");
     expect(text).toContain("No session usage yet.");
   });
+
+  it("renders every reset-credit row and marks the selected account", () => {
+    const { lastFrame } = render(
+      <SpinTickProvider active={false}>
+        <RightPane
+          content={{
+            kind: "usage",
+            title: "Usage",
+            resetCredits: [
+              { accountId: "codex:one", label: "one@example.com", availableCount: 1 },
+              { accountId: "codex:two", label: "two@example.com", availableCount: 2 },
+            ],
+            quotaWindows: [],
+            session: null,
+          }}
+          selectedIndex={1}
+          width={48}
+        />
+      </SpinTickProvider>,
+    );
+    const text = lastFrame() ?? "";
+    expect(text).toContain("one@example.com · 1");
+    expect(text).toContain("two@example.com · 2");
+    expect(text).toContain("↑↓ choose · r to use");
+    expect(text).toContain("▎ two@example.com · 2");
+  });
 });

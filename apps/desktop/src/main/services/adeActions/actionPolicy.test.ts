@@ -5,6 +5,7 @@ import {
   ADE_ACTION_CTO_ONLY,
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
+  callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
 } from "./actionPolicy";
@@ -13,11 +14,90 @@ import type { AdeActionDomain } from "./domains";
 /**
  * The gate, tested over the tables alone.
  *
- * Deliberately loads nothing but `actionPolicy` and its two pure siblings: a
- * question about who may call what is answered by two tables and four
- * predicates, and a test that has to stand up the registry's whole service
- * graph to ask it would be measuring the wiring instead of the policy.
+ * Deliberately loads nothing but `actionPolicy` and its pure siblings — the
+ * domain names, the input contracts and the voice action list, none of which
+ * import anything at all. A question about who may call what is answered by two
+ * tables and four predicates, and a test that has to stand up the registry's
+ * whole service graph to ask it would be measuring the wiring instead of the
+ * policy.
  */
+
+describe("machine-scoped API keys on the ai domain", () => {
+  it("is reachable on the bus, because the runtime owns the store the UI writes", () => {
+    expect(isAllowedAdeAction("ai", "getMachineApiKeyStatus")).toBe(true);
+    expect(isAllowedAdeAction("ai", "storeMachineApiKey")).toBe(true);
+    expect(isAllowedAdeAction("ai", "deleteMachineApiKey")).toBe(true);
+  });
+
+  it("gates the writes like the project-scoped pair, and leaves the status read open", () => {
+    // Writing or destroying a provider credential is operator work; asking
+    // whether one is configured is not, and never returns the key.
+    expect(isCtoOnlyAdeAction("ai", "storeMachineApiKey")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "deleteMachineApiKey")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "getMachineApiKeyStatus")).toBe(false);
+    // The project-scoped pair it mirrors.
+    expect(isCtoOnlyAdeAction("ai", "storeApiKey")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "deleteApiKey")).toBe(true);
+  });
+
+  it("documents the input shape of each", () => {
+    for (const action of ["getMachineApiKeyStatus", "storeMachineApiKey", "deleteMachineApiKey"]) {
+      const contract = getAdeActionInputContract("ai", action);
+      expect(contract, `ai.${action} needs an input contract`).toBeDefined();
+      expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("the cto_voice gate", () => {
+  const VOICE_ACTIONS = [
+    "getState",
+    "hasKey",
+    "start",
+    "end",
+    "setMuted",
+    "pushAudio",
+    "pullAudio",
+    "resolveApproval",
+    "sendCapture",
+  ] as const;
+
+  it("puts the whole call surface on the bus, so desktop main can route to it", () => {
+    for (const action of VOICE_ACTIONS) {
+      expect(isAllowedAdeAction("cto_voice", action), action).toBe(true);
+    }
+  });
+
+  it("is fail-closed: every voice action needs cto role, with no exceptions", () => {
+    for (const action of VOICE_ACTIONS) {
+      expect(isCtoOnlyAdeAction("cto_voice", action), action).toBe(true);
+    }
+    // The polarity matters more than the list: an action added later must be
+    // CTO-only by omission rather than by someone remembering this file.
+    expect(isCtoOnlyAdeAction("cto_voice", "somethingAddedLater")).toBe(true);
+    expect(ADE_ACTION_CTO_ONLY.cto_voice).toEqual({ allExcept: [] });
+  });
+
+  it("denies an agent-role caller every voice action", () => {
+    for (const action of VOICE_ACTIONS) {
+      const gated = isCtoOnlyAdeAction("cto_voice", action);
+      expect(gated && !callerHasRoleAtLeast("agent", "cto"), action).toBe(true);
+      expect(gated && !callerHasRoleAtLeast("external", "cto"), action).toBe(true);
+    }
+    // Desktop main launches the project runtime with ADE_DEFAULT_ROLE=cto and
+    // refuses to connect to one that answers with anything else.
+    expect(callerHasRoleAtLeast("cto", "cto")).toBe(true);
+  });
+
+  it("documents the input shape of every voice action", () => {
+    for (const action of VOICE_ACTIONS) {
+      const contract = getAdeActionInputContract("cto_voice", action);
+      expect(contract, `cto_voice.${action} needs an input contract`).toBeDefined();
+      expect(contract?.description?.length ?? 0).toBeGreaterThan(10);
+      expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
+    }
+  });
+});
 
 describe("isAllowedAdeAction", () => {
   it("accepts a canonical action from the allowlist", () => {
@@ -49,6 +129,22 @@ describe("isAllowedAdeAction", () => {
   it("exposes CLI agent launch through the chat runtime action surface", () => {
     expect(isAllowedAdeAction("chat", "launchCli")).toBe(true);
     expect(isCtoOnlyAdeAction("chat", "launchCli")).toBe(false);
+  });
+
+  it("gates every account-vault credential mutation and read behind the CTO", () => {
+    // `remove` and `set` reach every machine the user signs in on, a strictly
+    // larger blast radius than a project secret, so an ordinary agent session
+    // may list and sync the vault but never read, write, or revoke a credential.
+    for (const action of ["get", "set", "remove"]) {
+      expect(isAllowedAdeAction("account_vault", action)).toBe(true);
+      expect(isCtoOnlyAdeAction("account_vault", action)).toBe(true);
+    }
+    for (const action of ["list", "sync"]) {
+      expect(isAllowedAdeAction("account_vault", action)).toBe(true);
+      expect(isCtoOnlyAdeAction("account_vault", action)).toBe(false);
+    }
+    // Settings carry no credentials and stay agent-writable end to end.
+    expect(isCtoOnlyAdeAction("account_settings", "set")).toBe(false);
   });
 
   it("exposes caller lifecycle writes through the runtime session surface", () => {
@@ -429,6 +525,24 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(isCtoOnlyAdeAction("cto_memory", "someMethodAddedLater")).toBe(true);
   });
 
+  it("keeps starting a fresh CTO session operator-only, and its reads open", () => {
+    const actions = ADE_ACTION_ALLOWLIST.cto_state ?? [];
+    expect(actions).toContain("startFreshSession");
+    expect(actions).toContain("getThreadHealth");
+
+    // Retiring the thread every other CTO surface is talking to is the
+    // operator's call — an agent could otherwise quietly drop the context it is
+    // being supervised with.
+    expect(isCtoOnlyAdeAction("cto_state", "startFreshSession")).toBe(true);
+
+    // Everything else on this domain is a read the whole fleet depends on and
+    // stays open, including the new health probe (it creates nothing).
+    expect(isCtoOnlyAdeAction("cto_state", "getThreadHealth")).toBe(false);
+    expect(isCtoOnlyAdeAction("cto_state", "getSnapshot")).toBe(false);
+    expect(isCtoOnlyAdeAction("cto_state", "getAttention")).toBe(false);
+    expect(isCtoOnlyAdeAction("cto_state", "updateIdentity")).toBe(false);
+  });
+
   it("gives recordDiscovery an input contract so any provider can call it", () => {
     const contract = getAdeActionInputContract("cto_memory", "recordDiscovery");
     expect(contract?.description).toContain("CTO");
@@ -482,7 +596,6 @@ const CTO_DOMAIN_COVERAGE: ReadonlyArray<{
   { domain: "ios_simulator", why: "simulator reads", actions: ["getStatus", "listDevices", "listLaunchTargets", "getScreenSnapshot"] },
   { domain: "app_control", why: "desktop app-control reads", actions: ["getStatus", "listTargets", "getSnapshot"] },
   { domain: "built_in_browser", why: "browser reads", actions: ["getStatus", "listSessions", "getTrace"] },
-  { domain: "orchestration", why: "orchestration run and bundle reads", actions: ["runList", "bundleRead"] },
 ];
 
 const ROWS = CTO_DOMAIN_COVERAGE.flatMap(({ domain, actions, why }) =>
@@ -521,7 +634,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
       ["ios_simulator", "listDevices"],
       ["app_control", "listTargets"],
       ["built_in_browser", "getStatus"],
-      ["orchestration", "runList"],
       ["project_config", "get"],
       ["project_secret", "list"],
     ] as Array<[AdeActionDomain, string]>) {

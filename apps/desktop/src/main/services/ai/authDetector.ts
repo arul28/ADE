@@ -17,6 +17,7 @@ import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { loadQwenUserSettings } from "./qwenUserSettings";
+import { grokConfigHome } from "../shared/providerConfigHomes";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -138,11 +139,11 @@ async function inspectAcpCliCredentials(
   };
 
   if (cli === "grok") {
-    // `~/.grok` only — Grok honours no config-home override, so ADE must not
-    // invent one. A stored session token outranks XAI_API_KEY inside Grok
-    // itself, but either one means the CLI can start.
+    // A stored session token outranks XAI_API_KEY inside Grok itself, but
+    // either one means the CLI can start. GROK_HOME is vendor-supported and
+    // must be the same path used by the ACP host and diagnostics.
     if (env.XAI_API_KEY?.trim()) return { authenticated: true, verified: false };
-    return { authenticated: await fileExists(path.join(home, ".grok", "auth.json")), verified: false };
+    return { authenticated: await fileExists(path.join(grokConfigHome({ env, homeDir: home }), "auth.json")), verified: false };
   }
 
   if (cli === "qwen") {

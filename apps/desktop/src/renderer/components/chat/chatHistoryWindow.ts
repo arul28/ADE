@@ -3,6 +3,7 @@ import type {
   AgentChatEventHistoryPage,
 } from "../../../shared/types";
 import { agentChatEventIdentityKey } from "../../../shared/chatHistoryMerge";
+import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
 
 const chatEventResidentSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
 
@@ -26,6 +27,16 @@ export function estimatedChatEventResidentBytes(event: AgentChatEventEnvelope): 
   return eventBytes;
 }
 
+/**
+ * Keep the newest `maxEvents` (and at most `maxBytes`) — plus every
+ * `approval_request` that has no receipt yet, wherever it falls.
+ *
+ * The carve-out is the same rule the host applies in `getChatEventHistory`, and
+ * it is shared rather than re-derived: a card aged out of the renderer's window
+ * is a card the user cannot answer while the backend still refuses their next
+ * send. Every renderer path — desktop and the hosted web client, which share
+ * this module — goes through here.
+ */
 export function trimChatEventHistory(
   events: AgentChatEventEnvelope[],
   maxEvents: number,
@@ -33,7 +44,9 @@ export function trimChatEventHistory(
 ): AgentChatEventEnvelope[] {
   const countStart = Math.max(0, events.length - maxEvents);
   if (!Number.isFinite(maxBytes)) {
-    return countStart > 0 ? events.slice(countStart) : events;
+    return countStart > 0
+      ? retainUnresolvedApprovalRequests(events, events.slice(countStart))
+      : events;
   }
   let estimatedBytes = 0;
   let byteStart = events.length;
@@ -44,7 +57,7 @@ export function trimChatEventHistory(
     byteStart = index;
   }
   const start = Math.max(countStart, byteStart);
-  return start > 0 ? events.slice(start) : events;
+  return start > 0 ? retainUnresolvedApprovalRequests(events, events.slice(start)) : events;
 }
 
 function trimChatEventHistoryFromStart(

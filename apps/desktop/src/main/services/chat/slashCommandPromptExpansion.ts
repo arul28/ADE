@@ -12,6 +12,11 @@ export type SlashCommandExpansionContext = {
   codexBuiltInNames: ReadonlySet<string>;
   claudeRuntimeSlashCommandNames: ReadonlySet<string>;
   codexRuntimeSlashCommandNames: ReadonlySet<string>;
+  /**
+   * The chat's environment, carrying its provider-account `CODEX_HOME`. Absent
+   * means the process environment, which is the machine's default account.
+   */
+  env?: NodeJS.ProcessEnv;
 };
 
 export function resolveProviderSlashCommandPrompt(
@@ -38,7 +43,7 @@ export function resolveProviderSlashCommandPrompt(
       }
       const claudeProjectPrompt = resolveClaudeSlashCommandInvocation(context.cwd, context.trimmedInput)?.promptText;
       if (claudeProjectPrompt) return claudeProjectPrompt;
-      return resolveCodexSlashCommandInvocation(context.cwd, context.trimmedInput)?.promptText ?? null;
+      return resolveCodexSlashCommandInvocation(context.cwd, context.trimmedInput, context.env)?.promptText ?? null;
     }
     case "cursor":
       return resolveCursorSlashCommandInvocation(context.cwd, context.trimmedInput)?.promptText ?? null;

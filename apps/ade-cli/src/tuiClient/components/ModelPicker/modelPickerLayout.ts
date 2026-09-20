@@ -22,6 +22,7 @@ import type {
   ModelPickerState,
   ModelPickerAuthStatus,
 } from "./types";
+import { modelPickerEntryKey } from "./types";
 import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
 import { normalizeProvider, providerFamilyLabel as providerLabel, titleCaseProviderName } from "../../providerMetadata";
 
@@ -201,28 +202,34 @@ function entriesFromCatalog(
     for (const provider of group.providers ?? []) {
       for (const subsection of provider.subsections ?? []) {
         for (const model of subsection.models ?? []) {
-          if (seen.has(model.id)) continue;
-          seen.add(model.id);
+          const entryKey = modelPickerEntryKey({ modelId: model.id, credentialId: model.credentialId });
+          if (seen.has(entryKey)) continue;
+          seen.add(entryKey);
           const family = providerFromCatalogGroup(String(model.groupKey || group.key), model.family);
           const authStatus = modelPickerProviderAuthStatus(aiStatus, family, interfaceMode);
+          const credentialLabel = model.credentialId
+            ? subsection.label || model.providerName || provider.displayName || model.credentialId
+            : null;
           const catalogSubProvider = family === "pi"
             ? subsection.label || model.providerName || provider.displayName || providerLabel(family)
             : family === "cursor" || family === "droid"
             ? subsection.label || model.providerName || provider.displayName || undefined
             : family === "claude" || family === "codex" || isAcpProvider(family)
               // Single-vendor rails: one tab named after the provider, rather
-              // than a sub-tab per catalog subsection label.
-              ? providerLabel(family)
+              // than a sub-tab per catalog subsection label, except for
+              // credential-backed rows, whose key label is part of the choice.
+              ? credentialLabel || providerLabel(family)
               : model.providerName || provider.displayName || subsection.label || undefined;
           const catalogSubProviderKey = family === "pi"
             ? subsection.key || model.providerId || provider.key || family
             : family === "cursor" || family === "droid"
             ? subsection.key || model.providerId || provider.key || undefined
             : family === "claude" || family === "codex" || isAcpProvider(family)
-              ? family
+              ? model.credentialId || family
               : model.providerId || provider.key || subsection.key || undefined;
           entries.push({
             modelId: model.id,
+            ...(model.credentialId ? { credentialId: model.credentialId } : {}),
             runtimeModelId: model.runtimeModelId || model.id,
             displayName: model.displayName,
             family,
@@ -328,6 +335,7 @@ export type BuildLayoutInput = {
   favorites: string[];
   recents: string[];
   activeModelId: string | null;
+  activeCredentialId?: string | null;
   activeReasoningEffort?: string | null;
   aiStatus?: AiSettingsStatus | null;
   settingsRows?: SetupPaneRow[];
@@ -378,10 +386,10 @@ export function collectModelPickerEntries(input: CollectModelPickerEntriesInput)
     : input.models.map((m) => entryFromModelInfo(m, favoritesSet, input.aiStatus, input.activeReasoningEffort, input.interfaceMode));
   const entriesById = new Map<string, ModelPickerEntry>();
   for (const entry of staticRegistryFallbackEntries(favoritesSet, input.aiStatus, input.activeReasoningEffort, input.interfaceMode)) {
-    entriesById.set(entry.modelId, entry);
+    entriesById.set(modelPickerEntryKey(entry), entry);
   }
   for (const entry of runtimeEntries) {
-    entriesById.set(entry.modelId, entry);
+    entriesById.set(modelPickerEntryKey(entry), entry);
   }
   const interfaceMode = input.interfaceMode ?? "chat";
   return [...entriesById.values()].map((entry) => applyInterfaceAvailability(entry, interfaceMode));
@@ -471,7 +479,15 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
     if (input.providerTabKey && providerTabs.some((tab) => tab.key === input.providerTabKey)) {
       return input.providerTabKey;
     }
-    const active = input.activeModelId ? allEntries.find((entry) => entry.modelId === input.activeModelId) : null;
+    const active = input.activeModelId
+      ? allEntries.find((entry) => (
+          entry.modelId === input.activeModelId
+          && (input.activeCredentialId
+            ? entry.credentialId === input.activeCredentialId
+            : !entry.credentialId)
+        ))
+        ?? allEntries.find((entry) => entry.modelId === input.activeModelId)
+      : null;
     if (active?.subProviderKey && providerTabs.some((tab) => tab.key === active.subProviderKey)) {
       return active.subProviderKey;
     }

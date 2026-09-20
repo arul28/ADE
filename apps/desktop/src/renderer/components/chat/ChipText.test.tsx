@@ -55,12 +55,13 @@ function renderInChatScope(
         sessions: machine.sessions ?? [],
         prs: [],
         lastSyncedAtMs: null,
+        lanesSyncedAtMs: null,
         error: null,
       },
     },
   });
   return render(
-    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={null}>
+    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={null} sessionId={null}>
       <ChipText text={text} />
     </ChatRuntimeScopeProvider>,
   );

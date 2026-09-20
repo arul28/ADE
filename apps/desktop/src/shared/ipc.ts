@@ -59,6 +59,12 @@ export const IPC = {
   appWriteClipboardImage: "ade.app.writeClipboardImage",
   appOpenPathInEditor: "ade.app.openPathInEditor",
   appLogDebugEvent: "ade.app.logDebugEvent",
+  captureGestureUpdateSettings: "ade.captureGesture.updateSettings",
+  captureGestureGetHealth: "ade.captureGesture.getHealth",
+  captureGestureRetry: "ade.captureGesture.retry",
+  captureGestureCaptureNow: "ade.captureGesture.captureNow",
+  captureGestureShot: "ade.captureGesture.shot",
+  captureGestureFailed: "ade.captureGesture.failed",
   attentionNotchPublishSnapshot: "ade.attentionNotch.publishSnapshot",
   attentionNotchPublishToast: "ade.attentionNotch.publishToast",
   attentionNotchUpdateSettings: "ade.attentionNotch.updateSettings",
@@ -271,6 +277,11 @@ export const IPC = {
   lanesProxyGetPreviewInfo: "ade.lanes.proxy.getPreviewInfo",
   lanesProxyOpenPreview: "ade.lanes.proxy.openPreview",
   lanesProxyEvent: "ade.lanes.proxy.event",
+  proxyStatus: "ade.proxy.status",
+  proxyEnsureRunning: "ade.proxy.ensureRunning",
+  proxySignIn: "ade.proxy.signIn",
+  proxySignOut: "ade.proxy.signOut",
+  proxySetDisabled: "ade.proxy.setDisabled",
   lanesOAuthGetStatus: "ade.lanes.oauth.getStatus",
   lanesOAuthUpdateConfig: "ade.lanes.oauth.updateConfig",
   lanesOAuthGenerateRedirectUris: "ade.lanes.oauth.generateRedirectUris",
@@ -339,6 +350,7 @@ export const IPC = {
   agentChatRecoverContinuity: "ade.agentChat.recoverContinuity",
   agentChatApprove: "ade.agentChat.approve",
   agentChatRespondToInput: "ade.agentChat.respondToInput",
+  agentChatDismissPendingInput: "ade.agentChat.dismissPendingInput",
   agentChatModels: "ade.agentChat.models",
   agentChatModelCatalog: "ade.agentChat.modelCatalog",
   agentChatDelete: "ade.agentChat.delete",
@@ -382,21 +394,33 @@ export const IPC = {
   agentChatCodexClearGoal: "ade.agentChat.codex.goal.clear",
   agentChatCodexResetMemory: "ade.agentChat.codex.memory.reset",
   agentChatCodexTerminateBackgroundTerminal: "ade.agentChat.codex.backgroundTerminals.terminate",
-  orchestrationRunCreate: "ade.orchestration.runCreate",
-  orchestrationBundleRead: "ade.orchestration.bundleRead",
-  orchestrationManifestReadSection: "ade.orchestration.manifestReadSection",
-  orchestrationManifestPatch: "ade.orchestration.manifestPatch",
-  orchestrationPlanAppend: "ade.orchestration.planAppend",
-  orchestrationPlanWrite: "ade.orchestration.planWrite",
-  orchestrationSpawnAgent: "ade.orchestration.spawnAgent",
-  orchestrationAgentInject: "ade.orchestration.agentInject",
-  orchestrationAssetRegister: "ade.orchestration.assetRegister",
-  orchestrationClaimTask: "ade.orchestration.claimTask",
-  orchestrationReleaseTask: "ade.orchestration.releaseTask",
-  orchestrationRunList: "ade.orchestration.runList",
-  orchestrationSubscribe: "ade.orchestration.subscribe",
-  orchestrationUnsubscribe: "ade.orchestration.unsubscribe",
-  orchestrationEvent: "ade.orchestration.event",
+  // CTO voice call. The renderer owns only the microphone and the speaker; the
+  // socket, the delegation loop and every confirmation decision stay in main.
+  ctoVoiceStart: "cto-voice:start",
+  ctoVoiceEnd: "cto-voice:end",
+  ctoVoicePushAudio: "cto-voice:push-audio",
+  ctoVoiceSetMuted: "cto-voice:set-muted",
+  ctoVoiceApprove: "cto-voice:approve",
+  ctoVoiceDeny: "cto-voice:deny",
+  ctoVoiceAttachImage: "cto-voice:attach-image",
+  ctoVoiceHasKey: "cto-voice:has-key",
+  /** Main → renderer: the whole call state, on every change. */
+  ctoVoiceState: "cto-voice:state",
+  /** Main → renderer: one chunk of output audio, base64 PCM16. */
+  ctoVoiceAudio: "cto-voice:audio",
+  // Scenes — agent-authored HTML rendered in a sandboxed frame. `prepare` mints
+  // an ade-scene:// URL, `snapshot` freezes the drawn frame, `attachProof`
+  // files that snapshot into the proof drawer.
+  scenePrepare: "ade.scene.prepare",
+  sceneSnapshot: "ade.scene.snapshot",
+  sceneAttachProof: "ade.scene.attachProof",
+  /**
+   * Keep a scene's settle-time still: write the PNG into the project's artifact
+   * store and answer the record the renderer shows it back from. Separate from
+   * `attachProof` because the two want opposite things from a failed filing —
+   * proof deletes bytes it could not file, a still keeps them.
+   */
+  sceneStoreStill: "ade.scene.storeStill",
   computerUseListArtifacts: "ade.computerUse.listArtifacts",
   computerUseGetOwnerSnapshot: "ade.computerUse.getOwnerSnapshot",
   computerUseDeleteArtifacts: "ade.computerUse.deleteArtifacts",
@@ -591,6 +615,16 @@ export const IPC = {
   externalSessionsWatchDetail: "ade.externalSessions.watchDetail",
   externalSessionsUnwatchDetail: "ade.externalSessions.unwatchDetail",
   externalSessionsDetailUpdated: "ade.externalSessions.detailUpdated",
+  providerInstancesList: "ade.providerInstances.list",
+  providerInstancesCreate: "ade.providerInstances.create",
+  providerInstancesRemove: "ade.providerInstances.remove",
+  providerInstancesRename: "ade.providerInstances.rename",
+  providerInstancesSetDefault: "ade.providerInstances.setDefault",
+  providerInstancesSetAccent: "ade.providerInstances.setAccent",
+  providerInstancesGetSettings: "ade.providerInstances.getSettings",
+  providerInstancesSetSettings: "ade.providerInstances.setSettings",
+  providerInstancesLoginCommand: "ade.providerInstances.loginCommand",
+  providerInstancesRefresh: "ade.providerInstances.refresh",
   diffGetChanges: "ade.diff.getChanges",
   diffGetFile: "ade.diff.getFile",
   diffGetFilePatch: "ade.diff.getFilePatch",
@@ -708,22 +742,6 @@ export const IPC = {
   reviewQualityReport: "ade.review.qualityReport",
   reviewEvent: "ade.review.event",
   adeActionsListRegistry: "ade.actions.listRegistry",
-  orchestratorListRuns: "ade.orchestrator.listRuns",
-  orchestratorGetRunGraph: "ade.orchestrator.getRunGraph",
-  orchestratorStartRun: "ade.orchestrator.startRun",
-  orchestratorStartAttempt: "ade.orchestrator.startAttempt",
-  orchestratorCompleteAttempt: "ade.orchestrator.completeAttempt",
-  orchestratorTickRun: "ade.orchestrator.tickRun",
-  orchestratorPauseRun: "ade.orchestrator.pauseRun",
-  orchestratorResumeRun: "ade.orchestrator.resumeRun",
-  orchestratorCancelRun: "ade.orchestrator.cancelRun",
-  orchestratorCleanupTeamResources: "ade.orchestrator.cleanupTeamResources",
-  orchestratorHeartbeatClaims: "ade.orchestrator.heartbeatClaims",
-  orchestratorListTimeline: "ade.orchestrator.listTimeline",
-  orchestratorGetGateReport: "ade.orchestrator.getGateReport",
-  orchestratorEvent: "ade.orchestrator.event",
-  orchestratorThreadEvent: "ade.orchestrator.threadEvent",
-  orchestratorDagMutation: "ade.orchestrator.dagMutation",
   keybindingsGet: "ade.keybindings.get",
   keybindingsSet: "ade.keybindings.set",
   aiGetStatus: "ade.ai.getStatus",
@@ -732,6 +750,26 @@ export const IPC = {
   aiStoreApiKey: "ade.ai.storeApiKey",
   aiDeleteApiKey: "ade.ai.deleteApiKey",
   aiListApiKeys: "ade.ai.listApiKeys",
+  /**
+   * Multi-credential provider keys — several named keys per provider, each with
+   * its own label, env var, endpoint, protocol and model list.
+   *
+   * Deliberately local-IPC only, and deliberately never a read path for the
+   * secret: `get` answers with the same non-secret summary `list` does, so a
+   * compromised renderer cannot pull a key back out of the store.
+   */
+  apiCredentialsList: "ade.apiCredentials.list",
+  apiCredentialsStore: "ade.apiCredentials.store",
+  apiCredentialsRemove: "ade.apiCredentials.remove",
+  apiCredentialsGet: "ade.apiCredentials.get",
+  /**
+   * Machine-scoped API keys — the key follows this machine's ADE home, not the
+   * open project, so these deliberately do NOT route through the project
+   * runtime action the way the `ai` calls above do.
+   */
+  aiGetMachineApiKeyStatus: "ade.ai.getMachineApiKeyStatus",
+  aiStoreMachineApiKey: "ade.ai.storeMachineApiKey",
+  aiDeleteMachineApiKey: "ade.ai.deleteMachineApiKey",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
   aiUpdateConfig: "ade.ai.updateConfig",
   /**
@@ -842,6 +880,7 @@ export const IPC = {
   accountCancelDeviceLogin: "ade.account.cancelDeviceLogin",
   accountSignOut: "ade.account.signOut",
   accountListMachines: "ade.account.listMachines",
+  accountGetMachineInventory: "ade.account.getMachineInventory",
   accountRenameMachine: "ade.account.renameMachine",
   accountPairMachine: "ade.account.pairMachine",
   accountPairMachineProgress: "account:pairMachineProgress",
@@ -849,6 +888,17 @@ export const IPC = {
   accountRemoveMachine: "ade.account.removeMachine",
   accountRepairMachinePairing: "ade.account.repairMachinePairing",
   accountRepairSession: "ade.account.repairSession",
+
+  /**
+   * The account settings store, reached through the brain's `account_settings`
+   * action domain. Every one of these resolves to an "unavailable" result
+   * rather than rejecting when no brain is reachable — a machine with no
+   * runtime keeps its local copy, it does not lose its theme.
+   */
+  accountSettingsList: "ade.accountSettings.list",
+  accountSettingsGet: "ade.accountSettings.get",
+  accountSettingsSet: "ade.accountSettings.set",
+  accountSettingsSync: "ade.accountSettings.sync",
   prsCreateFromLane: "ade.prs.createFromLane",
   prsLinkToLane: "ade.prs.linkToLane",
   prsPreflightCreateLaneFromPrBranch: "ade.prs.preflightCreateLaneFromPrBranch",
@@ -968,39 +1018,13 @@ export const IPC = {
   projectConfigValidate: "ade.projectConfig.validate",
   projectConfigSave: "ade.projectConfig.save",
   projectConfigDiffAgainstDisk: "ade.projectConfig.diffAgainstDisk",
-  projectConfigConfirmTrust: "ade.projectConfig.confirmTrust",
-  orchestratorGetWorkerStates: "ade.orchestrator.getWorkerStates",
-  orchestratorGetModelCapabilities: "ade.orchestrator.getModelCapabilities",
-  orchestratorGetTeamMembers: "ade.orchestrator.getTeamMembers",
-  orchestratorGetTeamRuntimeState: "ade.orchestrator.getTeamRuntimeState",
-  orchestratorFinalizeRun: "ade.orchestrator.finalizeRun",
-  orchestratorSendChat: "ade.orchestrator.sendChat",
-  orchestratorGetChat: "ade.orchestrator.getChat",
-  orchestratorListChatThreads: "ade.orchestrator.listChatThreads",
-  orchestratorGetThreadMessages: "ade.orchestrator.getThreadMessages",
-  orchestratorSendThreadMessage: "ade.orchestrator.sendThreadMessage",
-  orchestratorGetWorkerDigest: "ade.orchestrator.getWorkerDigest",
-  orchestratorListWorkerDigests: "ade.orchestrator.listWorkerDigests",
-  orchestratorGetContextCheckpoint: "ade.orchestrator.getContextCheckpoint",
-  orchestratorListLaneDecisions: "ade.orchestrator.listLaneDecisions",
-  orchestratorGetExecutionPlanPreview:
-    "ade.orchestrator.getExecutionPlanPreview",
-  orchestratorListArtifacts: "ade.orchestrator.listArtifacts",
-  orchestratorListWorkerCheckpoints: "ade.orchestrator.listWorkerCheckpoints",
-  orchestratorGetPromptInspector: "ade.orchestrator.getPromptInspector",
-  orchestratorGetPlanningPromptPreview:
-    "ade.orchestrator.getPlanningPromptPreview",
-  orchestratorGetCheckpointStatus: "ade.orchestrator.getCheckpointStatus",
-  orchestratorSendAgentMessage: "ade.orchestrator.sendAgentMessage",
-  orchestratorGetGlobalChat: "ade.orchestrator.getGlobalChat",
-  orchestratorDeliverMessage: "ade.orchestrator.deliverMessage",
-  orchestratorGetActiveAgents: "ade.orchestrator.getActiveAgents",
   getAggregatedUsage: "ade.usage.getAggregated",
   usageGetAdeStats: "ade.usage.getAdeStats",
   usageGetSnapshot: "ade.usage.getSnapshot",
   usageRefresh: "ade.usage.refresh",
   usageRefreshHistory: "ade.usage.refreshHistory",
   usageNoteDemand: "ade.usage.noteDemand",
+  usageConsumeResetCredit: "ade.usage.consumeResetCredit",
   usageCheckBudget: "ade.usage.checkBudget",
   usageGetCumulativeUsage: "ade.usage.getCumulativeUsage",
   usageGetBudgetConfig: "ade.usage.getBudgetConfig",
@@ -1009,6 +1033,8 @@ export const IPC = {
   ctoGetState: "ade.cto.getState",
   ctoGetAttention: "ade.cto.getAttention",
   ctoEnsureSession: "ade.cto.ensureSession",
+  ctoStartFreshSession: "ade.cto.startFreshSession",
+  ctoGetThreadHealth: "ade.cto.getThreadHealth",
   ctoListSessionLogs: "ade.cto.listSessionLogs",
   ctoUpdateIdentity: "ade.cto.updateIdentity",
   ctoGetMemory: "ade.cto.getMemory",
@@ -1019,8 +1045,6 @@ export const IPC = {
   ctoClearLinearToken: "ade.cto.clearLinearToken",
   ctoGetOnboardingState: "ade.cto.getOnboardingState",
   ctoCompleteOnboardingStep: "ade.cto.completeOnboardingStep",
-  ctoDismissOnboarding: "ade.cto.dismissOnboarding",
-  ctoResetOnboarding: "ade.cto.resetOnboarding",
   ctoPreviewSystemPrompt: "ade.cto.previewSystemPrompt",
   ctoGetLinearProjects: "ade.cto.getLinearProjects",
   ctoGetLinearQuickView: "ade.cto.getLinearQuickView",

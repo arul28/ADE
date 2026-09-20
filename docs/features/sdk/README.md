@@ -46,7 +46,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `packages/sdk/src/fsProbe.ts` | One copy of "does this path exist and is it the kind I expect". Missing, unreadable, and wrong-kind are all "no", so a resolution step falls through instead of throwing. |
 | `apps/ade-cli/src/bootstrap.ts` | `runtimeProfile: "embedded"` — chat-only trim plus withheld machine-update/power controls and forced-off sync. |
 | `apps/ade-cli/src/services/runtime/parentDeathWatchdog.ts` | Polls `ADE_EMBEDDED_PARENT_PID`; shuts the guest down if the host dies without unwinding. |
-| `apps/desktop/src/shared/callerMcpServers.ts` | Caller MCP validation + the per-provider honesty table (`CALLER_MCP_SUPPORT`). |
+| `apps/desktop/src/shared/callerMcpServers.ts` | Caller MCP validation + the per-provider honesty table (`CALLER_MCP_SUPPORT`), including Codex's config.toml server-name enumeration, its unsupported SSE transport, reserved names, and 32-server cap. |
 | `apps/desktop/src/shared/hostSessionConfig.ts` | Host session configuration: the three per-provider honesty tables (`INSTRUCTIONS_SUPPORT`, `SETTING_SOURCES_SUPPORT`, `PERMISSION_POLICY_SUPPORT`), the Claude `settingSources` map, and the normalizers and capability resolvers. |
 | `apps/desktop/src/shared/permissionPolicy.ts` | The permission policy's rules: normalization, neutral ⇄ Claude tool-name translation, pattern matching, and the Claude tool lists. |
 | `apps/desktop/src/shared/pathContainment.ts` | `pathIsWithinRoot` / `pathsEqual` — the one containment rule, its platform case-fold, and the base a relative target resolves against. Used by the permission policy and by the CLI's personal-chat cwd guard. |
@@ -126,6 +126,8 @@ The SDK speaks the machine JSON-RPC surface, not desktop IPC.
 | `personalChats.streamEvents` | Cursor drain. Fallback when the runtime omits `pushEvents`. |
 | `runtime/info` | Capabilities, including `personalChats.mcpServers`. |
 
+**`BufferedEvent.category` is deliberately open.** The runtime is downloaded and can be newer than the SDK driving it, so a category this build has never heard of is an ordinary event, not a bug: the type is `KnownBufferedEventCategory | (string & {})`, listed for autocomplete rather than for exhaustiveness. `chatEnvelopeFromBufferedEvent` gates on `"runtime"` exactly, which is what keeps an unknown category from ever being mistaken for chat, and the drain fallback polls `personalChats.streamEvents` with no category filter so the cursor still advances past everything. `runtime` is the only category the SDK decodes: `pty` is terminal bytes it has no surface for, and `cto_voice` carries a live call's running transcript and is fail-closed to the `cto` role at the runtime — it never reaches an `agent`-role sidecar like this one (`apps/desktop/src/shared/runtimeEventPolicy.ts`).
+
 Create args the SDK actually sends:
 
 - `mcpServers` — caller-owned servers for this thread only.
@@ -134,7 +136,6 @@ Create args the SDK actually sends:
 - `requestedCwd` — absolute, validated client-side first (no relative path, no `~`, no root, not `os.homedir()`, not inside the SDK home).
 - `settingSources` — `none` (default) | `project` | `user` | `all`.
 - `permissionPolicy` — the policy form of `permissions`, sent alongside `permissionMode: "default"` so a runtime that ignores it degrades toward more prompting, never toward full-auto.
-- Orchestrator-lead markers are refused on this surface. A projectless chat cannot be an orchestration lead.
 
 Actions beyond the original nine: `approve` (answers one blocked request) and `pendingInputs` (read-only list, gated on the advertised action list — when it is absent the SDK derives the pending set from observed `approval_request` minus `pending_input_resolved` events and logs the hole once).
 
@@ -150,7 +151,7 @@ Every host-configuration arg above applies on CREATE ONLY. A resume rebuilds the
 
 `loadUserMcpServers: false` (the default when you supply servers) is a real guarantee **only on Claude**. Everywhere else ADE applies the strongest mechanism the provider exposes. Pi has no MCP surface and the create is refused rather than opening a tool-less thread.
 
-| Provider | Strict level | What still loads under strict |
+| Provider | Strict mode | What still loads under strict |
 |---|---|---|
 | claude | enforced | nothing MCP-wise (user rules/commands/output styles still load — they are not MCP) |
 | codex | best-effort | servers contributed by a Codex *plugin* |
@@ -158,6 +159,11 @@ Every host-configuration arg above applies on CREATE ONLY. A resume rebuilds the
 | droid | best-effort | tools that appear only after the first disable pass |
 | opencode | best-effort | the global OpenCode config directory (for auth) |
 | pi | unsupported | n/a — create refuses injected servers |
+
+The server shape is checked against the selected provider before launch. Codex
+does not support `sse`, so a Codex request containing an SSE entry is rejected.
+Server names `computer_use` and `ade-cto` are reserved, and a request may
+contain at most 32 servers.
 
 Source of truth: `CALLER_MCP_SUPPORT` in `apps/desktop/src/shared/callerMcpServers.ts`. The session summary carries `mcpCapability`:
 
@@ -667,7 +673,7 @@ Native `windows-latest` CI still has to repeat the Windows-sensitive files; para
   which the CLI applies itself; the gate stays wired as a second line only.
 - Never assign over `opts.managedSettings.allowedMcpServers`. ADE's own managed
   servers are already in that object on the paths that build one, and replacing
-  it takes the orchestration or CTO tools away with no diagnostic. Merge.
+  it takes the CTO tools away with no diagnostic. Merge.
 - Never re-derive a capability report at a second site. The persisted-state
   loader already re-derives all three from the stored args plus the live
   provider before it returns, so a record written before a table row changed

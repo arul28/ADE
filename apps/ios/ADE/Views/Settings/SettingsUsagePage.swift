@@ -388,7 +388,8 @@ struct SettingsUsagePage: View {
               windows: snapshot.windows.filter { $0.provider == provider },
               accounts: pooledAccounts(snapshot),
               status: snapshot.providerStatus?[provider],
-              spendControlReached: provider == "codex" && snapshot.spendControlReached == true
+              spendControlReached: provider == "codex" && snapshot.spendControlReached == true,
+              resetCredits: resetCreditAccounts(in: snapshot, provider: provider)
             )
           }
         }

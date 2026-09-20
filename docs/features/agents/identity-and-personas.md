@@ -1,6 +1,6 @@
 # Identity and Personas
 
-The CTO carries a persistent identity that survives across sessions, context compaction, and model switches. This doc explains how that identity is stored, how it is reconstructed into sessions, how personality/persona overlays shape behavior, and how the smart-memory system keeps the thread grounded.
+The CTO carries a persistent identity that survives across sessions, context compaction, and model switches. This doc explains how that identity is stored, how it is reconstructed into sessions, how the single immutable doctrine shapes behavior, and how the smart-memory system keeps the thread grounded.
 
 There is one persistent identity: the CTO. The former worker/hiring agent identities were removed, and `AgentChatIdentityKey` is now just `"cto"`.
 
@@ -16,13 +16,11 @@ There is one persistent identity: the CTO. The former worker/hiring agent identi
 | `apps/desktop/src/main/services/chat/codexCtoToolDeferral.ts` | Codex dynamic-tool specs and the CTO pack defer predicate. |
 | `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Hosts `recordDiscovery`, the append-only memory contribution every agent gets. |
 | `apps/desktop/src/main/services/projects/logIntegrityService.ts` | Hash-chained integrity for CTO session logs. |
-| `apps/desktop/src/shared/ctoPersonalityPresets.ts` | Built-in personality overlays plus `custom`. |
-| `apps/desktop/src/renderer/components/cto/IdentityEditor.tsx` | UI for editing CTO name, persona, personality, and work style. |
 | `apps/desktop/src/shared/types/cto.ts` | CTO identity, onboarding, prompt-preview, memory, and capability types. |
 
 ## CTO identity
 
-`CtoIdentity` is versioned and stored per project. It contains name, persona, personality overlay, communication style (work style), constraints, model preferences, onboarding state, and an optional prompt extension.
+`CtoIdentity` is versioned and stored per project. It contains name, persona, model preferences (nullable), onboarding state, and an optional prompt extension. There is no personality preset and no work style: the CTO has one voice, fixed by the immutable doctrine, and it is not user-configurable.
 
 Storage:
 
@@ -31,45 +29,17 @@ Storage:
 
 Startup reconciliation compares timestamps and writes the newer copy back to the stale side. Users should edit through ADE's UI so version ordering stays clear.
 
-## Personality presets
-
-`CTO_PERSONALITY_PRESETS` in `shared/ctoPersonalityPresets.ts` contains:
-
-| Preset id | Label | Description |
-|---|---|---|
-| `strategic` | Strategic | Long-range, architectural, decisive without losing execution detail. |
-| `professional` | Executive | Calm, structured, leadership-oriented for day-to-day technical direction. |
-| `hands_on` | Hands-on | Deep in the code, practical in execution, quick to unblock delivery. |
-| `casual` | Collaborative | Warm, human, easy to work with while still acting like the technical lead. |
-| `minimal` | Concise | Low-noise, direct, focused on decisions, blockers, next actions. |
-| `custom` | Custom | User-supplied overlay text via `customPersonality`. |
-
-`getCtoPersonalityPreset(id)` falls back to `strategic` on unknown ids. Do not rename preset ids without a migration.
-
-## Communication style (work style)
-
-```ts
-type CtoCommunicationStyle = {
-  verbosity: "concise" | "detailed" | "adaptive";
-  proactivity: "reactive" | "balanced" | "proactive";
-  escalationThreshold: "low" | "medium" | "high";
-};
-```
-
-These fields drive prompt adjustments for detail level, initiative, and when to escalate. The onboarding card and `IdentityEditor` set them via the `Segmented` work-style rows.
-
 ## Immutable doctrine and prompt layers
 
 `ctoStateService.ts` composes the CTO system prompt from layered sections, immutable first:
 
-- `IMMUTABLE_CTO_DOCTRINE` — CTO role, responsibilities, and precision rules.
-- Selected personality overlay (+ `customPersonality` for the `custom` preset).
+- `IMMUTABLE_CTO_DOCTRINE` — CTO role, responsibilities, precision rules, how the CTO speaks, and how it helps with ADE itself. This is the whole of the CTO's voice. It says to lead with state then read then recommendation, to stay level (no exclamation marks, no "great question"), to say plainly when it does not know and then go check, to disagree once with a reason and then drop it, and never to call something done before verifying it. It also tells the CTO that it knows the ADE application and not only the repository: when the user is lost in ADE it answers as a question about the product, consults ADE's own documentation before guessing, and hands back a deeplink rather than navigation directions.
 - `CTO_CONTINUITY_OPERATING_MODEL` — how ADE re-grounds the CTO across compaction and resumes.
 - `CTO_MEMORY_SYSTEM_GUIDANCE` — teaches the CTO that it has durable, model-agnostic memory and how to use the memory tools.
 - Environment knowledge — ADE surfaces, tools, task-routing rules, the live model registry, and instructions to discover installed-version capabilities through bundled `ade-*` skills plus `ade actions list --text` / `ade actions run`.
 - `CTO_CAPABILITY_MANIFEST` — the available CTO operator tools, generated from `createCtoOperatorTools()` and injected verbatim.
 
-`previewSystemPrompt()` returns exactly these sections, which the settings and onboarding UI render.
+`previewSystemPrompt()` returns exactly these sections, which the settings UI renders. The section ids are `doctrine`, `continuity`, `memory`, `knowledge`, `capabilities`.
 
 ## Smart memory system
 
@@ -121,7 +91,7 @@ The CTO maintains an append-only session log with hash chaining. Each entry incl
 
 ## Onboarding state
 
-`CtoOnboardingState` tracks completed setup steps. `CTO_REQUIRED_ONBOARDING_STEPS = ["identity"]`; the one-card setup collects personality, work style, and an optional name, then marks the `identity` step complete.
+`CtoOnboardingState` tracks completed setup steps. There is no setup wizard — a new CTO opens on the model picker, and the pick is the whole of first run. The remaining steps are internal markers that are never shown to the user: `intro` records that the opening turn was sent, and `memory_gardener` records the nightly gardening job. `getOnboardingState` and `completeOnboardingStep` exist only to carry them.
 
 ## IPC surface
 
@@ -129,16 +99,15 @@ The CTO maintains an append-only session log with hash chaining. Each entry incl
 |---|---|
 | `ade.cto.getState` | Fetch CTO identity and recent sessions. |
 | `ade.cto.previewSystemPrompt` | Render the current layered system prompt for settings/onboarding. |
-| `ade.cto.updateIdentity` | Patch identity fields (name, personality, work style, model preferences). |
+| `ade.cto.updateIdentity` | Patch identity fields (name, persona, model preferences, prompt extension). |
 | `ade.cto.ensureSession` | Get or create the single CTO chat session. |
 | `ade.cto.listSessionLogs` | Read the CTO session log. |
 | `ade.cto.getMemory` / `ade.cto.updateMemory` / `ade.cto.searchMemory` | Read, rewrite, and search durable memory. |
-| `ade.cto.getOnboardingState` / `completeOnboardingStep` / `dismissOnboarding` / `resetOnboarding` | Onboarding lifecycle. |
+| `ade.cto.getOnboardingState` / `completeOnboardingStep` | Internal step markers (`intro`, `memory_gardener`). No user-facing wizard. |
 
 ## Fragile and tricky wiring
 
-- **Personality preset id stability.** Changing an id silently remaps unknown existing identities to `strategic`.
-- **Custom personality text size.** `customPersonality` is injected as-is; very long values consume prompt budget.
+- **Old identity.yaml files still carry removed keys.** `normalizeIdentity` silently drops `personality`, `customPersonality`, `communicationStyle`, and `constraints` rather than rejecting the file, so a project written by an older build still loads.
 - **Deterministic flush is the guarantee.** The LLM summary upgrade is best-effort — never make the durable memory write depend on it.
 - **Injected memory is authoritative.** The prompt tells the CTO not to claim memory it does not have injected; injection caps/order in `ctoMemoryService`/`ctoStateService` directly change what the CTO "knows."
 - **Capability knowledge is generated and runtime-aware.** `buildCtoCapabilityManifest()` derives its curated operator-tool inventory from `createCtoOperatorTools()`. Service actions outside that set must be discovered from the installed runtime's `ade actions list --text` catalog and bundled `ade-*` skills rather than copied into a second static list.

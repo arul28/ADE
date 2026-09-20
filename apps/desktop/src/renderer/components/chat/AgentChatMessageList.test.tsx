@@ -92,10 +92,13 @@ import {
 import { looksLikeWireframe } from "./questionOptionPreview";
 import {
   collapseChatTranscriptEvents,
+  groupChatTranscriptRows,
   groupConsecutiveWorkLogRows,
 } from "./chatTranscriptRows";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
+import { rememberCallStill, resetSceneStillsForTest } from "./sceneStillStore";
+import { stubSceneCaptureBridge } from "./sceneStillTestHarness";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
@@ -160,6 +163,8 @@ function renderMessageList(
     onOpenProofDrawer?: () => void;
     usageLimitResumeActive?: boolean;
     usageLimitResumeTurnId?: string | null;
+    sessionProvider?: string | null;
+    resolveSpawnedChatProvider?: (sessionId: string) => string | null;
   },
 ) {
   return render(
@@ -172,6 +177,8 @@ function renderMessageList(
         showStreamingIndicator={options?.showStreamingIndicator}
         sessionEnded={options?.sessionEnded}
         sessionId={options?.sessionId}
+        sessionProvider={options?.sessionProvider}
+        resolveSpawnedChatProvider={options?.resolveSpawnedChatProvider}
         scrollMemoryKey={options?.scrollMemoryKey}
         transcriptCollapseCacheKey={options?.transcriptCollapseCacheKey}
         laneId={options?.laneId}
@@ -1961,7 +1968,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("keeps the subagent_spawned deep-link pill when there is no inline card (orchestration/continuity)", () => {
+  it("keeps the subagent_spawned deep-link pill when there is no inline card (continuity spawn)", () => {
     const dispatchSpy = vi.spyOn(window, "dispatchEvent");
     renderMessageList([
       {
@@ -1975,7 +1982,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           detail: {
             spawnedSession: { sessionId: "child-worker-1", laneId: null, title: "Worker A" },
             spawnKind: "subagent",
-            // No accompanying card (orchestration-run child / continuity spawn) →
+            // No accompanying card (continuity spawn) →
             // the quiet deep-link pill is retained.
             hasInlineCard: false,
           },
@@ -3502,6 +3509,56 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 41, hasFullHistory: false })).toBe(0);
   });
 
+  it("resolves an anchor past a hidden context-usage row against the visible grouping", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        sequence: 40,
+        event: { type: "user_message", text: "first", messageId: "user-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        sequence: 41,
+        event: { type: "reasoning", text: "First thought.", itemId: "thought-1", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        sequence: 42,
+        event: {
+          type: "context_usage",
+          origin: "live",
+          turnId: "turn-1",
+          usage: { categories: [], totalTokens: 1, maxTokens: 2, percentage: 0.1, model: "claude" },
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        sequence: 43,
+        event: { type: "reasoning", text: "Second thought.", itemId: "thought-2", turnId: "turn-1" },
+      },
+    ];
+    // The rendered list drops the hidden snapshot BEFORE grouping, so the two
+    // thoughts merge into one row. The anchor resolver must group the same way,
+    // or its target key will not match the rendered row and the anchor drifts
+    // to an earlier row instead.
+    const groupedRows = groupChatTranscriptRows(
+      collapseChatTranscriptEvents(events).filter(
+        (row) =>
+          !(row.event.type === "context_usage"
+            && row.event.origin !== undefined
+            && row.event.origin !== "command"),
+      ),
+    );
+
+    expect(groupedRows).toHaveLength(2);
+    expect(groupedRows[0]?.event.type).toBe("user_message");
+    expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 43, hasFullHistory: false })).toBe(1);
+  });
+
   it("formats turn elapsed time as working-for seconds then minutes", () => {
     expect(formatElapsedSeconds(0)).toBe("0s");
     expect(formatElapsedSeconds(42)).toBe("42s");
@@ -4181,6 +4238,49 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).not.toContain("Thinking...");
   });
 
+  it("merges Thought rows separated only by a hidden context-usage snapshot", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "reasoning",
+          text: "First thought.",
+          itemId: "claude-thinking:turn-1:1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "context_usage",
+          origin: "live",
+          turnId: "turn-1",
+          usage: {
+            categories: [],
+            totalTokens: 1,
+            maxTokens: 2,
+            percentage: 0.1,
+            model: "claude",
+          },
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "reasoning",
+          text: "Second thought.",
+          itemId: "claude-thinking:turn-1:0",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(screen.getAllByText("Thought")).toHaveLength(1);
+  });
+
   it("does not show a fake one-second duration for un-timed completed reasoning", () => {
     const rendered = renderMessageList([
       {
@@ -4294,6 +4394,63 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(text).not.toContain("2 subagents");
     // The result card exposes a "View transcript" affordance.
     expect(text).toContain("View transcript");
+  });
+
+  it("marks inline subagent cards with the chat's runtime provider", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          agentType: "Explore",
+          description: "Inspect the info pane",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          status: "completed",
+          summary: "Pane mapped",
+          turnId: "turn-1",
+        },
+      },
+    ], { sessionProvider: "opencode" });
+
+    const marks = [...rendered.container.querySelectorAll("[data-subagent-provider]")];
+    expect(marks.length).toBeGreaterThan(0);
+    expect(marks.every((mark) => mark.getAttribute("data-subagent-provider") === "opencode")).toBe(true);
+  });
+
+  it("prefers a spawned child chat's own provider for its card mark", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-9",
+          agentId: "child-9",
+          agentType: "Codex",
+          description: "Investigate the failure",
+          spawnKind: "subagent",
+          turnId: "turn-1",
+        },
+      },
+    ], {
+      sessionProvider: "claude",
+      resolveSpawnedChatProvider: (sessionId) => (sessionId === "child-9" ? "codex" : null),
+    });
+
+    const marks = [...rendered.container.querySelectorAll("[data-subagent-provider]")];
+    expect(marks.map((mark) => mark.getAttribute("data-subagent-provider"))).toContain("codex");
   });
 
   it("renders a single spawn card for a Codex parent placeholder + resolved agent pair", () => {
@@ -5926,5 +6083,140 @@ describe("usage-limit turn footer", () => {
     // transcript still reads.
     const withoutPill = renderMessageList(events, { usageLimitResumeActive: false });
     expect(withoutPill.container.textContent).toContain("Claude session limit");
+  });
+});
+
+describe("AgentChatMessageList voice calls", () => {
+  function voiceEnvelope(
+    sequence: number,
+    event: AgentChatEventEnvelope["event"],
+    voiceCallId?: string,
+  ): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-voice",
+      timestamp: new Date(Date.UTC(2026, 8, 16, 12, 0, sequence)).toISOString(),
+      sequence,
+      event,
+      ...(voiceCallId ? { provenance: { voiceCallId } } : {}),
+    } as AgentChatEventEnvelope;
+  }
+
+  const callEvents: AgentChatEventEnvelope[] = [
+    voiceEnvelope(1, { type: "user_message", text: "what is failing on main?", deliveryState: "delivered" }, "call-1"),
+    voiceEnvelope(2, { type: "text", text: "Two checks are red.", itemId: "a-1" }, "call-1"),
+    voiceEnvelope(3, { type: "user_message", text: "fix the first one", deliveryState: "delivered" }, "call-1"),
+  ];
+
+  it("renders a whole call collapsed as one card, not as loose bubbles", () => {
+    renderMessageList(callEvents);
+
+    const card = screen.getByTestId("voice-call-card");
+    expect(card.getAttribute("data-voice-call-id")).toBe("call-1");
+    expect(card.textContent).toContain("Voice call");
+    expect(card.textContent).toContain("2 exchanges");
+    expect(card.textContent).toContain("what is failing on main?");
+    // Collapsed is the default: nothing the model said is in the transcript yet.
+    expect(document.body.textContent).not.toContain("Two checks are red.");
+    expect(screen.queryByTestId("voice-call-rows")).toBeNull();
+  });
+
+  it("reveals the call's own rows when expanded", () => {
+    renderMessageList(callEvents);
+
+    const toggle = screen.getByRole("button", { expanded: false, name: /Voice call/ });
+    fireEvent.click(toggle);
+
+    expect(screen.getByRole("button", { name: /Voice call/ }).getAttribute("aria-expanded")).toBe("true");
+    const rows = screen.getByTestId("voice-call-rows");
+    expect(rows.textContent).toContain("what is failing on main?");
+    expect(rows.textContent).toContain("Two checks are red.");
+    expect(rows.textContent).toContain("fix the first one");
+  });
+
+  /** The caret is the one thing in the row that LOOKS like a toggle. */
+  it("expands from the caret, not only from the title", () => {
+    renderMessageList(callEvents);
+
+    const caret = screen.getByTestId("voice-call-caret");
+    expect(screen.getByRole("button", { expanded: false, name: /Voice call/ }).contains(caret)).toBe(true);
+
+    fireEvent.click(caret);
+
+    expect(screen.getByTestId("voice-call-rows")).toBeTruthy();
+  });
+
+  /**
+   * The owner's report: "after an image scene the CTO makes, make sure there is
+   * a still". A call's scene is drawn by the HUD, which is gone by the time the
+   * card exists, so the picture has to be carried into the card or the call
+   * reads as if it never drew anything.
+   */
+  it("shows the views the call drew, collapsed as a thumbnail and expanded in full", () => {
+    rememberCallStill("call-1", {
+      uri: ".ade/artifacts/computer-use/red-checks.png",
+      artifactId: "a1",
+      title: "Red checks",
+    });
+    try {
+      renderMessageList(callEvents);
+
+      const thumb = screen.getByTestId("voice-call-still-thumb");
+      expect(thumb.getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/computer-use/red-checks.png");
+
+      fireEvent.click(screen.getByTestId("voice-call-caret"));
+      expect(screen.queryByTestId("voice-call-still-thumb")).toBeNull();
+      const stills = screen.getByTestId("voice-call-stills");
+      expect(stills.textContent).toContain("Red checks");
+      expect(screen.getByTestId("voice-call-still")).toBeTruthy();
+    } finally {
+      resetSceneStillsForTest();
+    }
+  });
+
+  /**
+   * A reopened window has nothing in memory: the pictures come back from the
+   * artifact index, matched to this call by the id stored with them.
+   */
+  it("finds a finished call's views in the artifact index", async () => {
+    const bridge = stubSceneCaptureBridge({
+      artifacts: [{
+        id: "a1",
+        uri: ".ade/artifacts/computer-use/red-checks.png",
+        title: "Generated view",
+        metadata: { kind: "scene_still", voiceCallId: "call-1", sceneTitle: "Red checks" },
+      }],
+    });
+    try {
+      renderMessageList(callEvents, { sessionId: "chat-1" });
+      await waitFor(() => expect(screen.getByTestId("voice-call-still-thumb")).toBeTruthy());
+      expect(screen.getByTestId("voice-call-still-thumb").getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/computer-use/red-checks.png");
+      expect(bridge.listArtifacts.mock.calls[0]?.[0]).toMatchObject({
+        ownerKind: "chat_session",
+        ownerId: "chat-1",
+        metadataKind: "scene_still",
+      });
+    } finally {
+      resetSceneStillsForTest();
+    }
+  });
+
+  it("draws no tile for a call that never drew anything", () => {
+    renderMessageList(callEvents);
+    expect(screen.queryByTestId("voice-call-still-thumb")).toBeNull();
+    fireEvent.click(screen.getByTestId("voice-call-caret"));
+    expect(screen.queryByTestId("voice-call-stills")).toBeNull();
+  });
+
+  it("leaves a transcript with no voice events untouched", () => {
+    renderMessageList([
+      voiceEnvelope(1, { type: "user_message", text: "typed by hand", deliveryState: "delivered" }),
+      voiceEnvelope(2, { type: "text", text: "answered in text", itemId: "a-1" }),
+    ]);
+
+    expect(screen.queryByTestId("voice-call-card")).toBeNull();
+    expect(document.body.textContent).toContain("typed by hand");
+    expect(document.body.textContent).toContain("answered in text");
   });
 });

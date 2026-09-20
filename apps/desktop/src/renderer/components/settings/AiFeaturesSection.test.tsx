@@ -60,11 +60,8 @@ describe("AiFeaturesSection", () => {
       </MemoryRouter>,
     );
 
-    const label = await screen.findByText("Pause all scheduled work");
-    const row = label.closest(".ai-feature-row");
-    const toggle = row?.querySelector("button");
-    expect(toggle).toBeTruthy();
-    fireEvent.click(toggle!);
+    const toggle = await screen.findByRole("switch", { name: "Pause all scheduled work" });
+    fireEvent.click(toggle);
 
     await waitFor(() => {
       expect((window as any).ade.ai.updateConfig).toHaveBeenCalledWith({

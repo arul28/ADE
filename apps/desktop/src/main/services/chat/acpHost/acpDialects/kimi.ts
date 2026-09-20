@@ -3,13 +3,15 @@
  *
  * This is NOT the deprecated Python `kimi-cli`.
  *
- * Live 0.39.1 handshake: `loadSession`, list, resume, **and `session/close`**
- * (also delete/fork/additionalDirectories). A dummy `session/close` returns
- * `{}`. The 0.31.x "no close → one process per session" hole is gone on this
- * version, so ADE pools like Qwen used to. **No usage on the wire** is still
- * assumed until a live authenticated turn proves otherwise; the meter stays
- * hidden. Image prompts yes. Audio no. `agentCapabilities.auth.logout` is
- * advertised; ADE has no ACP logout action yet.
+ * Captured 0.39.1 handshake (the compatibility baseline): `loadSession`, list,
+ * resume, **and `session/close`** (also delete/fork/additionalDirectories).
+ * A dummy `session/close` returns `{}`. Kimi Code 2.0.0's ACP v1 reference
+ * retains that lifecycle surface and adds the documented mode/model/thinking
+ * `session/set_config_option` dispatcher, which ADE exposes below. **No usage
+ * on the wire** is still assumed until a live authenticated turn proves
+ * otherwise; the meter stays hidden. Image prompts yes. Audio no.
+ * `agentCapabilities.auth.logout` is advertised; ADE has no ACP logout action
+ * yet.
  *
  * Kimi cannot take a session id at launch. The host reads the id the agent
  * reports at `session/new`, and W4 stores it. The ids are ULID shaped.
@@ -41,6 +43,7 @@ import {
   standardClose,
   standardLoad,
   standardResume,
+  standardSetConfigOption,
   transportGatedMcpInjection,
   withOptionalEnv,
 } from "./shared";
@@ -50,6 +53,9 @@ export const KIMI_USAGE_DEGRADATION_NOTE =
 
 export const KIMI_WINDOWS_DEGRADATION_NOTE =
   "Kimi needs Git for Windows on this machine, because Git Bash is its shell.";
+
+/** Config option ids Kimi Code exposes through `session/set_config_option`. */
+export const KIMI_CONFIG_OPTION_IDS = ["mode", "model", "thinking"] as const;
 
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   const args: string[] = [];
@@ -79,7 +85,8 @@ export const kimiDialect = defineAcpDialect({
 
   cancelStyle: "request",
   poolEnvKeys: ["KIMI_CODE_HOME", "MOONSHOT_API_KEY"],
-  // 0.39.1 implements `session/close`. Two chats in the same lane may share.
+  // The 0.39.1 baseline and Kimi Code 2.0.0 both implement `session/close`.
+  // Two chats in the same lane may share.
   oneProcessPerSession: false,
   advertiseFsCapability: false,
   // Kimi has no terminal reverse RPC, so advertising the capability would be a
@@ -117,11 +124,12 @@ export const kimiDialect = defineAcpDialect({
   resumeSession: capability(standardResume),
   loadSession: capability(standardLoad),
 
-  // `session/set_config_option` is not part of Kimi's surface. Permission mode
-  // and model travel on the command line instead.
-  sessionConfig: capabilityAbsent,
+  // Kimi Code 2.0.0 documents this ACP v1 dispatcher for mode, model, and
+  // thinking. Older supported binaries that omit a given option simply return
+  // their normal ACP error, which the runtime already logs and degrades.
+  sessionConfig: capability(standardSetConfigOption),
   modelSelection: capabilityAbsent,
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),
-  configOptionIds: [],
+  configOptionIds: KIMI_CONFIG_OPTION_IDS,
 });

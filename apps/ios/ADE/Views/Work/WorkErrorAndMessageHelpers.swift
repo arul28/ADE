@@ -873,7 +873,9 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       subagentSpawnDepth: entry.subagentSpawnDepth,
       subagentResourceLinks: entry.subagentResourceLinks ?? [],
       apiErrorStatus: entry.apiErrorStatus,
-      isLegacySubagentCompletedFrame: entry.isLegacySubagentCompletedFrame
+      isLegacySubagentCompletedFrame: entry.isLegacySubagentCompletedFrame,
+      stopSource: entry.stopSource,
+      stopReason: entry.stopReason
     )
   }
   .sorted(by: workChatEnvelopeOrderedBefore)
@@ -893,7 +895,7 @@ private func workSubagentParentItemId(_ event: AgentChatEvent) -> String? {
   switch event {
   case .subagentStarted(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _),
        .subagentProgress(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _, _, _),
-       .subagentResult(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _, _):
+       .subagentResult(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _, _, _, _):
     return normalizedWorkEventId(parentToolUseId) ?? normalizedWorkEventId(parentAgentId)
   default:
     return nil
@@ -1628,6 +1630,19 @@ func workBoolValue(_ value: Any?) -> Bool? {
   return nil
 }
 
+/// `providerMetadata.dismissible` on the first object that carries a request.
+/// Absent means "not dismissible", which is what every older host means too.
+func workReadIsDismissible(_ objects: [[String: Any]?]) -> Bool {
+  for object in objects {
+    guard let object else { continue }
+    let metadata = object["providerMetadata"] as? [String: Any] ?? [:]
+    if let value = workBoolValue(metadata["dismissible"]) {
+      return value
+    }
+  }
+  return false
+}
+
 func workReadIsBlocking(_ objects: [[String: Any]?]) -> Bool {
   for object in objects {
     guard let object else { continue }
@@ -1760,7 +1775,8 @@ func pendingWorkQuestionFromApproval(
       title: optionalString(request["title"]),
       body: optionalString(request["body"]) ?? optionalString(request["description"]),
       source: optionalString(request["source"]) ?? optionalString(detailObject["source"]),
-      blocking: workReadIsBlocking([request])
+      blocking: workReadIsBlocking([request]),
+      dismissible: workReadIsDismissible([request])
     )
   }
 
@@ -1792,7 +1808,8 @@ func pendingWorkQuestionFromApproval(
     body: optionalString(detailObject["body"]) ?? optionalString(detailObject["description"]),
     source: optionalString(request["source"])
       ?? optionalString(detailObject["source"]),
-    blocking: workReadIsBlocking([request, detailObject])
+    blocking: workReadIsBlocking([request, detailObject]),
+    dismissible: workReadIsDismissible([request, detailObject])
   )
 }
 

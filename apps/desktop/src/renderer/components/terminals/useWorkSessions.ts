@@ -666,7 +666,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const activeItemId = projectViewState.activeItemId;
   const selectedSessionId = projectViewState.selectedItemId;
   const draftKind = projectViewState.draftKind;
-  const orchestratorEnabled = projectViewState.orchestratorEnabled;
   const draftLaneId = projectViewState.draftLaneId;
   const draftMachineId = projectViewState.draftMachineId;
   const filterLaneId = projectViewState.laneFilter;
@@ -802,23 +801,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       setProjectViewState((prev) => ({
         ...prev,
         draftKind: nextKind,
-        // CLI has no orchestrator form — switching to it forces the flag off
-        // (lane/model/prompt persist via the shared draft bucket).
-        orchestratorEnabled: nextKind === "cli" ? false : prev.orchestratorEnabled,
-        activeItemId: null,
-        selectedItemId: null,
-      }));
-    },
-    [setProjectViewState],
-  );
-
-  const setOrchestratorEnabled = useCallback(
-    (enabled: boolean) => {
-      setProjectViewState((prev) => ({
-        ...prev,
-        orchestratorEnabled: enabled,
-        // Orchestrator only exists for chat drafts; enabling it implies chat mode.
-        draftKind: enabled ? "chat" : prev.draftKind,
         activeItemId: null,
         selectedItemId: null,
       }));
@@ -830,9 +812,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     (laneId: string) => {
       const normalizedLaneId = laneId.trim();
       setProjectViewState({ draftLaneId: normalizedLaneId || null });
-      if (normalizedLaneId) selectLane(normalizedLaneId);
+      // Deliberately NOT `selectLane` here. Lane ids are per-machine, and this
+      // draft can target a machine the project tab is not bound to — writing a
+      // foreign lane id into the global selection points Lanes/PRs/Files at a
+      // lane the bound project has never heard of, and the next lane refresh
+      // silently rewrites it to that project's first lane. `WorkStartSurface`
+      // owns the global sync and only performs it for the bound machine.
     },
-    [selectLane, setProjectViewState],
+    [setProjectViewState],
   );
 
   const setDraftMachineId = useCallback(
@@ -2004,7 +1991,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const launchFields = args.runtimeCliLaunch ? {} : resolveLaunchFields({
         profile: args.profile,
         ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
-        ...(args.orchestrationRole !== undefined ? { orchestrationRole: args.orchestrationRole } : {}),
         ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
         ...(args.command !== undefined ? { command: args.command } : {}),
         ...(args.args !== undefined ? { args: args.args } : {}),
@@ -2193,9 +2179,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
               createdAt: chat.startedAt,
               lastActivityAt: chat.lastActivityAt,
               idleSinceAt: chat.idleSinceAt,
-              orchestrationRunId: chat.orchestrationRunId,
-              orchestrationRole: chat.orchestrationRole,
-              orchestrationTag: chat.orchestrationTag,
             },
             laneName: lanes.find((lane) => lane.id === chat.laneId)?.name ?? chat.laneId,
           });
@@ -2327,8 +2310,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     activeItemId,
     setActiveItemId,
     draftKind,
-    orchestratorEnabled,
-    setOrchestratorEnabled,
     draftLaneId,
     setDraftLaneId,
     draftMachineId,

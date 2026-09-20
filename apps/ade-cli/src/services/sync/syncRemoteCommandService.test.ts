@@ -17,6 +17,7 @@ import {
   createAttachmentUploadRegistry,
   type AttachmentUploadRegistry,
 } from "./attachmentUploadService";
+import { resetSharedProviderInstanceStoresForTests } from "../providerInstances/providerInstanceStore";
 
 function makePayload(
   action: string,
@@ -55,6 +56,7 @@ function createService(options?: {
   getLinearIssueTracker?: () => Record<string, unknown> | null;
   usageTrackingService?: Record<string, unknown>;
   productAnalyticsService?: Record<string, unknown>;
+  getProxyService?: () => { status: ReturnType<typeof vi.fn> } | null;
   pushPublisherService?: Record<string, unknown>;
   attachmentUploads?: AttachmentUploadRegistry | null;
   personalChatScope?: {
@@ -116,6 +118,7 @@ function createService(options?: {
     ...(options?.getLinearIssueTracker ? { getLinearIssueTracker: options.getLinearIssueTracker } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
     ...(options?.productAnalyticsService ? { productAnalyticsService: options.productAnalyticsService } : {}),
+    ...(options?.getProxyService ? { getProxyService: options.getProxyService } : {}),
     ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
     ...(options?.attachmentUploads ? { attachmentUploads: options.attachmentUploads } : {}),
@@ -141,6 +144,41 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("registers machine inventory as a viewer-allowed runtime command", () => {
+    const { service } = createService();
+
+    expect(service.getDescriptor("account.getMachineInventory")).toEqual({
+      action: "account.getMachineInventory",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    });
+  });
+
+  it("exposes only proxy status to paired viewers", async () => {
+    const status = vi.fn().mockResolvedValue({
+      installed: false,
+      running: false,
+      port: null,
+      version: null,
+      logins: [],
+    });
+    const { service } = createService({ getProxyService: () => ({ status }) });
+
+    expect(service.getDescriptor("proxy.status")).toEqual({
+      action: "proxy.status",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    });
+    await expect(service.execute(makePayload("proxy.status"))).resolves.toEqual({
+      installed: false,
+      running: false,
+      port: null,
+      version: null,
+      logins: [],
+    });
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects an oversized Cursor Cloud artifact before returning it to a peer", async () => {
     const downloadCursorCloudArtifact = vi.fn().mockResolvedValue({
       path: "build.zip",
@@ -711,6 +749,26 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("usage.getAdeStats", { until: "not-a-date" }))).rejects.toThrow(
       "usage.getAdeStats until must be an ISO timestamp.",
     );
+  });
+
+  it("uses the typed reset-credit host contract", async () => {
+    const consumeResetCredit = vi.fn(async ({ accountId }: { accountId: string }) => ({
+      ok: true,
+      accountId,
+    }));
+    const { service } = createService({ usageTrackingService: { consumeResetCredit } });
+
+    // Spending a credit is a controller-only mutation: viewers must not reach
+    // it, but a paired phone pressing "Use reset" is an interactive controller
+    // and the host rejects every peer when `controllerAllowed` is missing.
+    expect(service.getDescriptor("usage.consumeResetCredit")).toEqual({
+      action: "usage.consumeResetCredit",
+      scope: "runtime",
+      policy: { viewerAllowed: false, controllerAllowed: true },
+    });
+    await expect(service.execute(makePayload("usage.consumeResetCredit", { accountId: "codex:work" })))
+      .resolves.toEqual({ ok: true, accountId: "codex:work" });
+    expect(consumeResetCredit).toHaveBeenCalledWith({ accountId: "codex:work" });
   });
 
   it("registers CTO-gated Linear credential commands and refreshes status after each mutation", async () => {
@@ -2037,9 +2095,6 @@ describe("createSyncRemoteCommandService", () => {
       currentTurnStartedAt: "2026-07-31T12:00:00.000Z",
       awaitingInput: true,
       pendingInputItemId: "provider-question-1",
-      orchestrationRunId: "run-1",
-      orchestrationRole: "worker",
-      orchestrationTag: "impl",
     });
     const { service, ptyService, sessionService } = createService({
       sessionService: { get: vi.fn().mockReturnValue(session) },
@@ -2065,9 +2120,6 @@ describe("createSyncRemoteCommandService", () => {
       pendingInputItemId: "provider-question-1",
       attentionSource: "provider_structured",
       currentTurnStartedAt: "2026-07-31T12:00:00.000Z",
-      orchestrationRunId: "run-1",
-      orchestrationRole: "worker",
-      orchestrationTag: "impl",
     }));
 
     getSessionSummary.mockResolvedValueOnce({
@@ -2405,7 +2457,6 @@ describe("createSyncRemoteCommandService", () => {
       "projectConfig.get",
       "projectConfig.save",
       "ai.getStatus",
-      "orchestration.runCreate",
     ]));
     expect(service.getDescriptor("chat.saveTempAttachment")?.scope).toBe("project");
     expect(service.getDescriptor("chat.listPromptStashes")?.scope).toBe("project");
@@ -3649,7 +3700,11 @@ describe("web-reachable settings and lane-risk commands", () => {
     const refreshScheduledWork = vi.fn();
     const { service } = createService({
       projectConfigService: {
-        get: vi.fn().mockReturnValue({ shared: { ai: { defaultModel: "old-model" } }, local: {} }),
+        // `defaultModel` used to stand in here. It is gone: nothing ever read
+        // it, so the Settings control that wrote it was deleted and the key
+        // with it. Any surviving `ai` key proves the same thing this test is
+        // about — that a paired device's write reaches `save`.
+        get: vi.fn().mockReturnValue({ shared: { ai: { defaultProvider: "claude" } }, local: {} }),
         save,
       },
       agentChatService: { refreshScheduledWork },
@@ -3658,11 +3713,11 @@ describe("web-reachable settings and lane-risk commands", () => {
     expect(service.getPolicy("ai.updateConfig")?.viewerAllowed).toBe(true);
     expect(service.getPolicy("ai.deleteApiKey")?.viewerAllowed).toBe(true);
 
-    await service.execute(makePayload("ai.updateConfig", { defaultModel: "new-model" }));
+    await service.execute(makePayload("ai.updateConfig", { defaultProvider: "codex" }));
 
     expect(save).toHaveBeenCalledTimes(1);
     expect(save.mock.calls[0]![0].shared.ai).toEqual(
-      expect.objectContaining({ defaultModel: "new-model" }),
+      expect.objectContaining({ defaultProvider: "codex" }),
     );
     // The desktop IPC handler does this too; omitting it leaves scheduled runs
     // on the previous AI configuration.
@@ -3696,6 +3751,105 @@ describe("web-reachable settings and lane-risk commands", () => {
       .rejects.toThrow(/laneId/);
     await expect(service.execute(makePayload("chat.launchCli", { laneId: "lane-1", provider: "claude" })))
       .rejects.toThrow(/kickoffPrompt/);
+  });
+
+  it("forwards preset and credential identity through chat CLI launches", async () => {
+    const create = vi.fn().mockResolvedValue({ sessionId: "session-chat-cli", ptyId: "pty-chat-cli", pid: 1 });
+    const { service } = createService({
+      laneService: {
+        getLaneWorktreePath: vi.fn(() => "/repo/lane-1"),
+        getLaneBaseAndBranch: vi.fn(() => undefined),
+      },
+      ptyService: { create },
+    });
+
+    await service.execute(makePayload("chat.launchCli", {
+      laneId: "lane-1",
+      provider: "opencode",
+      kickoffPrompt: "Use the selected harness.",
+      presetId: "preset-work",
+      credentialId: "credential-work",
+    }));
+
+    const createArg = create.mock.calls[0]?.[0] as {
+      resumeMetadata?: Record<string, unknown>;
+    };
+    expect(createArg.resumeMetadata).toEqual(expect.objectContaining({
+      provider: "opencode",
+      presetId: "preset-work",
+      credentialId: "credential-work",
+      launch: expect.objectContaining({
+        presetId: "preset-work",
+        credentialId: "credential-work",
+      }),
+    }));
+  });
+
+  it("persists the selected account and preset for remote CLI resume and reattach", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-cli-identity-"));
+    const adeHome = path.join(tempRoot, ".ade");
+    const configHome = path.join(tempRoot, "provider-homes", "claude", "acct-work");
+    fs.mkdirSync(adeHome, { recursive: true });
+    fs.writeFileSync(path.join(adeHome, "provider-instances.json"), JSON.stringify({
+      version: 1,
+      instances: [{
+        id: "acct-work",
+        provider: "claude",
+        label: "Work",
+        configHome,
+        createdAt: "2026-04-09T12:00:00.000Z",
+      }],
+      defaults: {},
+      settings: {},
+    }), "utf8");
+    process.env.ADE_HOME = adeHome;
+    resetSharedProviderInstanceStoresForTests();
+
+    try {
+      const create = vi.fn().mockResolvedValue({ sessionId: "session-sync-cli", ptyId: "pty-sync-cli", pid: 1 });
+      const { service } = createService({
+        laneService: {
+          getLaneBaseAndBranch: vi.fn(() => ({ worktreePath: "/repo/lane-1" })),
+        },
+        ptyService: { create },
+      });
+
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "claude",
+        initialInput: "Use the selected account.",
+        instanceId: "acct-work",
+        presetId: "preset-work",
+        credentialId: "credential-work",
+        model: "anthropic/claude-sonnet-4-5",
+      }));
+
+      const createArg = create.mock.calls[0]?.[0] as {
+        env?: Record<string, string>;
+        sessionId?: string;
+        resumeMetadata?: Record<string, unknown>;
+      };
+      expect(createArg.env?.CLAUDE_CONFIG_DIR).toBe(configHome);
+      expect(createArg.resumeMetadata).toEqual(expect.objectContaining({
+        provider: "claude",
+        targetId: createArg.sessionId,
+        instanceId: "acct-work",
+        presetId: "preset-work",
+        credentialId: "credential-work",
+        launch: expect.objectContaining({
+          instanceId: "acct-work",
+          presetId: "preset-work",
+          credentialId: "credential-work",
+          model: "anthropic/claude-sonnet-4-5",
+        }),
+      }));
+    } finally {
+      if (previousAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+      resetSharedProviderInstanceStoresForTests();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("routes Cursor Cloud fleet reads and actions to the fleet service", async () => {

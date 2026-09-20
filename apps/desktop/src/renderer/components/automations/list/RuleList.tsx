@@ -78,7 +78,6 @@ export function RuleList({
   search,
   loading,
   error,
-  configTrustRequired,
   ingressStatus,
   delivery,
   onSearch,
@@ -91,14 +90,12 @@ export function RuleList({
   onOpenTemplates,
   onUseTemplate,
   onRefresh,
-  onConfirmTrust,
 }: {
   rules: AutomationRuleSummary[];
   selectedRuleId: string | null;
   search: string;
   loading: boolean;
   error: string | null;
-  configTrustRequired: boolean;
   ingressStatus: AutomationIngressStatus | null;
   delivery: AutomationIngressDelivery | null;
   onSearch: (value: string) => void;
@@ -111,7 +108,6 @@ export function RuleList({
   onOpenTemplates: () => void;
   onUseTemplate: (draft: Omit<AutomationRuleDraft, "id">) => void;
   onRefresh: () => void;
-  onConfirmTrust: () => void;
 }) {
   const [originFilter, setOriginFilter] = useState<RuleOriginFilter>("all");
   // Counts come from the rules the list was handed, so they track the search
@@ -188,18 +184,6 @@ export function RuleList({
 
       <IngressStatusStrip ingressStatus={ingressStatus} />
 
-      {/* The parent computes this from the UNFILTERED rules so search can't hide the recovery CTA. */}
-      {configTrustRequired ? (
-        <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-100">
-          <div className="font-semibold">Shared automations are paused</div>
-          <div className="mt-0.5 leading-relaxed text-amber-100/80">
-            <span className="font-mono">.ade/ade.yaml</span> changed outside this app. Review it, then trust it to let shared automations run.
-          </div>
-          <Button size="sm" variant="outline" className="mt-2 text-amber-100" onClick={onConfirmTrust}>
-            Trust config
-          </Button>
-        </div>
-      ) : null}
       {error ? (
         <div className="shrink-0 border-b border-red-500/20 bg-red-500/10 px-4 py-2.5 text-[11px] text-red-200">{error}</div>
       ) : null}

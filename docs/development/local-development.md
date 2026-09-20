@@ -119,7 +119,7 @@ of the shell env (`PATH`, `HOME`, `ADE_PERF_RUN_ID`, …), but variables that
 identify the *launching* agent shell rather than the shared daemon are stripped
 by name: `ADE_DEFAULT_ROLE`, `ADE_CHAT_SESSION_ID`,
 `ADE_PARENT_CHAT_SESSION_ID`, `ADE_SPAWN_KIND`, `ADE_BROWSER_ACTOR_TOKEN`, the
-orchestration run identity (`ADE_RUN_ID`, `ADE_STEP_ID`, `ADE_ATTEMPT_ID`,
+run identity (`ADE_RUN_ID`, `ADE_STEP_ID`, `ADE_ATTEMPT_ID`,
 `ADE_OWNER_ID`), and the location binding (`ADE_LANE_ID`, `ADE_PROJECT_ROOT`,
 `ADE_WORKSPACE_ROOT`). This matters when an ADE chat is what launched the
 script: `ptyService` stamps `ADE_DEFAULT_ROLE=agent` on every tracked agent CLI

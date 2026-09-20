@@ -6,6 +6,7 @@ import {
   percentLeft,
   poolAccounts,
 } from "./usageLimitModel";
+import { paceOutlook, paceVisual, shortWindowLabel } from "./usageWindowFormat";
 
 const NOW = Date.parse("2026-09-10T12:00:00.000Z");
 
@@ -159,5 +160,84 @@ describe("buildLimitCards", () => {
   it("reads an expired window as fully restored rather than stale", () => {
     const expired = window({ windowType: "weekly", percentUsed: 90, resetsAt: new Date(NOW - 1000).toISOString() });
     expect(percentLeft(expired, NOW)).toBe(100);
+  });
+});
+
+/**
+ * The window vocabulary, where the popover's copy actually comes from.
+ *
+ * These two strings were the owner's read of the popover: `weekly_oauth_apps`
+ * rendered as "apps", a three-letter riddle for the OAuth-apps allowance, and
+ * the pace pill said "12% ahead" with nothing to say ahead of what.
+ */
+describe("usage window vocabulary", () => {
+  it("names the OAuth-apps allowance in full", () => {
+    expect(shortWindowLabel({ windowType: "weekly_oauth_apps" })).toBe("OAuth apps");
+    expect(shortWindowLabel({ windowType: "weekly" })).toBe("wk");
+    expect(shortWindowLabel({ windowType: "five_hour", windowDurationMs: 5 * 3_600_000 })).toBe("5h");
+  });
+
+  it("says what the pace is measured against", () => {
+    expect(paceVisual({
+      weekElapsedPercent: 50,
+      status: "ahead",
+      deltaPercent: 12,
+      projectedWeeklyPercent: 90,
+      expectedPercent: 50,
+      etaHours: 40,
+      willLastToReset: true,
+      resetsInHours: 100,
+    })?.label).toBe("12% ahead of pace");
+
+    expect(paceVisual({
+      weekElapsedPercent: 50,
+      status: "behind",
+      deltaPercent: -8,
+      projectedWeeklyPercent: 40,
+      expectedPercent: 50,
+      etaHours: 90,
+      willLastToReset: true,
+      resetsInHours: 100,
+    })?.label).toBe("8% behind pace");
+
+    expect(paceVisual({
+      weekElapsedPercent: 50,
+      status: "on-track",
+      deltaPercent: 0,
+      projectedWeeklyPercent: 50,
+      expectedPercent: 50,
+      etaHours: 80,
+      willLastToReset: true,
+      resetsInHours: 100,
+    })?.label).toBe("on pace");
+  });
+
+  /**
+   * The projection and its outcome are two rows, not one sentence: joined, they
+   * truncated mid-word in the 300px details panel.
+   */
+  it("splits the projection from its outcome", () => {
+    const now = Date.UTC(2026, 4, 8, 7, 0, 0);
+    expect(paceOutlook({
+      weekElapsedPercent: 50,
+      status: "far-ahead",
+      deltaPercent: 40,
+      projectedWeeklyPercent: 126,
+      expectedPercent: 50,
+      etaHours: 5,
+      willLastToReset: false,
+      resetsInHours: 100,
+    }, now)).toEqual({ projected: "126% by reset", outcome: expect.stringContaining("runs dry") });
+
+    expect(paceOutlook({
+      weekElapsedPercent: 50,
+      status: "on-track",
+      deltaPercent: 0,
+      projectedWeeklyPercent: 51,
+      expectedPercent: 50,
+      etaHours: 200,
+      willLastToReset: true,
+      resetsInHours: 100,
+    }, now)).toEqual({ projected: "51% by reset", outcome: "lasts to reset" });
   });
 });

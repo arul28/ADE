@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } 
 import { ArrowRight } from "@phosphor-icons/react";
 import { SignInCard } from "../account/AccountPage";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { accountSessionState, useAccountStatus } from "../../lib/account";
+import { accountGateMode, accountSessionState, useAccountStatus } from "../../lib/account";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { WelcomeVideoGate } from "./WelcomeVideoGate";
 
@@ -15,9 +15,10 @@ export function LaunchGate({ children }: LaunchGateProps) {
 }
 
 /**
- * The hosted client's gate is mandatory: every byte it can show comes through
- * ADE Relay, and the relay only routes for a signed-in account. There is
- * nothing to "continue without an account" into, so there is no skip.
+ * The hosted client's gate is absolute: every byte it can show comes through
+ * ADE Relay, and the relay only routes for a signed-in account. A signed-out
+ * browser has nothing to pass through to, so it never offers one — not even in
+ * the `recoverable` case the desktop gate handles.
  */
 function WebLaunchGate({ children }: LaunchGateProps) {
   const { status, loading } = useAccountStatus();
@@ -159,6 +160,7 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
 
   const checking = launchStateLoading || welcomeChecking || accountLoading;
   const showAccountChoice = !checking && !welcomeVisible && !status.signedIn;
+  const gateMode = accountGateMode(status);
 
   useEffect(() => {
     if (!showAccountChoice || resolved) return;
@@ -223,26 +225,37 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
             onSignedIn={enterAde}
             sessionState={accountSessionState(status)}
           />
-          <button
-            type="button"
-            onClick={enterAde}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              border: 0,
-              padding: "7px 10px",
-              background: "transparent",
-              color: COLORS.textSecondary,
-              cursor: "pointer",
-              fontFamily: SANS_FONT,
-              fontSize: 12.5,
-              WebkitAppRegion: "no-drag",
-            } as CSSProperties}
-          >
-            Continue without an account
-            <ArrowRight size={13} weight="bold" />
-          </button>
+          {/*
+            ADE requires an account, so `required` — no session has ever existed
+            on this computer — has nothing to pass through to.
+
+            `recoverable` is the opposite case: the user already signed in, and
+            something took the session away. Their work is on this disk and
+            blocking it would be a brick. They get one full screen, then the
+            permanent shell bar nags on every surface until they sign in.
+          */}
+          {gateMode === "recoverable" ? (
+            <button
+              type="button"
+              onClick={enterAde}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                border: 0,
+                padding: "7px 10px",
+                background: "transparent",
+                color: COLORS.textSecondary,
+                cursor: "pointer",
+                fontFamily: SANS_FONT,
+                fontSize: 12.5,
+                WebkitAppRegion: "no-drag",
+              } as CSSProperties}
+            >
+              Continue to your work
+              <ArrowRight size={13} weight="bold" />
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

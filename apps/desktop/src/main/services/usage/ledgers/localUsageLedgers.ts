@@ -6,6 +6,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type { SqlValue } from "../../state/kvDb";
+import { factoryConfigHome } from "../../shared/providerConfigHomes";
 import { isRecord, safeJsonParse } from "../../shared/utils";
 
 /**
@@ -889,8 +890,21 @@ export async function scanOpenClawLogs(agentRoots = defaultOpenClawAgentRoots())
   return entries;
 }
 
-function defaultDroidSessionsDir(): string {
-  return path.join(process.env.FACTORY_DIR ?? path.join(os.homedir(), ".factory"), "sessions");
+/**
+ * Where the Droid CLI keeps its sessions.
+ *
+ * Read through the same `factoryConfigHome()` the launcher uses, so a spawned
+ * Droid process and this ledger cannot disagree: `FACTORY_HOME_OVERRIDE`
+ * replaces the HOME Droid appends `.factory` to, and the launcher honours it.
+ * `FACTORY_DIR` is ADE's older override and stays a fallback only for setups
+ * that already relied on it, secondary to the provider's own variable.
+ */
+export function defaultDroidSessionsDir(): string {
+  if (!process.env.FACTORY_HOME_OVERRIDE?.trim()) {
+    const legacyDir = process.env.FACTORY_DIR?.trim();
+    if (legacyDir) return path.join(path.resolve(legacyDir), "sessions");
+  }
+  return path.join(factoryConfigHome(), "sessions");
 }
 
 function stripDroidModelPrefix(raw: string): string {

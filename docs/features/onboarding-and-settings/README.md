@@ -8,10 +8,15 @@ Two related but distinct flows:
   Work immediately; AI runtimes, GitHub, and Linear live in Settings. There is
   no blocking project setup dashboard.
 - **Settings** — long-lived configuration organized by tab. Project
-  configuration persists to `.ade/ade.yaml` (shared) and `.ade/local.yaml`
-  (local) through `projectConfigService`; machine-level desktop preferences
+  configuration persists to `.ade/local.yaml` through `projectConfigService`
+  (the committed `.ade/ade.yaml` is retired); machine-level desktop preferences
   such as automatic update installation persist in the Electron user-data
   `ade-state.json`.
+
+ADE account identity is required for a fresh launch on every client. The
+desktop, `ade code`, CLI, hosted web client, and iOS gate account-backed
+surfaces on the signed-in account; a lost or unreadable session is reported as
+its actual state rather than being treated as an optional guest account.
 
 The runtime no longer assumes first-run setup must hydrate every
 service. Project open favors a cheap first pass; secondary hydration
@@ -25,9 +30,8 @@ directories. Onboarding writes to both.
 
 | Scope | Location | Owner | Contents |
 |---|---|---|---|
-| Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
+| Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and the config homes it names (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
 | Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff/reconciliation state, and machine-local automatic-install preferences. |
-| Project (shared) | `<project>/.ade/ade.yaml` | `projectConfigService` | Version-controlled team config: tests, overlays, automations, lane templates, AI mode, providers, Linear sync. |
 | Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides for ports, env vars, and machine-specific paths. |
 | Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
 
@@ -43,10 +47,10 @@ Main process:
 
 - `apps/desktop/src/main/main.ts`,
   `apps/desktop/src/main/services/ipc/registerIpc.ts` — packaged-launch machine
-  trust migration plus the process-local launch-gate state exposed through
+  trust reset plus the process-local account launch-gate state exposed through
   `ade.app.getLaunchGateState` / `ade.app.resolveLaunchGate`. Resolving the gate
-  applies to every window and renderer reload in that desktop process; the next
-  fresh signed-out launch asks again.
+  applies to every window and renderer reload in that desktop process; a fresh
+  signed-out launch requires account sign-in again.
 - `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
   one-release, packaged-build reset of saved machine connection grants. It
   clears only remote targets, desktop paired-machine credentials, mobile/web
@@ -66,10 +70,36 @@ Main process:
   `sessionState`, the mark-dead-not-delete rejection markers, the attributed
   `account.session_mutation` audit line, and
   `accountSessionRetainsMachineOwnership` — see
-  [Account session state](#account-session-state-is-a-tri-state-not-a-boolean).
+  [Account session state](#account-session-state-is-a-four-state-not-a-boolean).
   `accountBridge.ts` mirrors `sessionState` onto `AdeAccountStatus` for the
   renderer, deriving it from the older `sessionReadState` when the runtime does
   not report one.
+- `apps/ade-cli/src/services/account/accountSettingsStore.ts`,
+  `accountVaultStore.ts`, and `accountCacheStore.ts` — the four-scope,
+  owner-tagged account settings cache and encrypted account-vault cache.
+  Settings are non-secret and survive sign-out; vault credentials are encrypted,
+  purged at deliberate sign-out or account switch, and never exposed through
+  the renderer settings bridge. Both stores keep local reads immediate while
+  the brain and Worker remain the account authority. A sync pulls every
+  truncated page before it reports ready, and it drops uploaded write seqs
+  even when a later delete cannot be sent. A cache write that cannot hit
+  disk rolls the in-memory mutation back and reports failure rather than
+  pretending the value is saved. Renderer preferences that already exist
+  locally are uploaded after a successful Worker sync when the account still
+  has no row for them. A cold empty cache does not seed, because that cache
+  has not merged the Worker yet. Vault writes that fail while the brain is
+  down retry a few times on an unref'd timer.
+- `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
+  `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
+  receipt-backed sign-in migration and hydration for provider API keys, Linear
+  OAuth refresh credentials, and repository-scoped project secrets. A source is
+  marked complete only after the account confirms the write; crashes and
+  unavailable contexts leave it pending, and a later vault-ready tick retries
+  those pending sources.
+- `apps/ade-cli/src/services/account/sharedAccountAuthService.ts`,
+  `cliRefreshBroker.ts`, and `apps/desktop/src/main/services/account/accountBridge.ts` —
+  the brain-owned refresh broker used by desktop, CLI, and ADE Code; a
+  non-brain local exchange is only the explicit unavailable-brain fallback.
 - `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts` — the
   crash-safe refresh-rotation journal (`account.session.rotation.v1`), kept in
   the same file-backed credential bucket as the session it describes so the
@@ -91,6 +121,73 @@ Main process:
 - `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
+- `apps/desktop/src/renderer/components/settings/openAiKey.tsx` — the
+  machine-scoped OpenAI key parts, shared by the settings card and the modal
+  the CTO's **Talk** button opens: `useMachineOpenAiKey` (status in, secret
+  only out), `OpenAiKeyCostLine` (`OPENAI_VOICE_COST_LINE` + the
+  `platform.openai.com` link, opened through ADE's own opener so it honours
+  the "open links in" preference), and `OpenAiKeyField`.
+  `OPENAI_VOICE_PROVIDER` is `"openai"` — the same secret as the
+  `OPENAI_API_KEY` provider key, not a second one.
+- `apps/desktop/src/renderer/components/settings/OpenAiKeySheet.tsx` — the
+  modal sheet, composed from those parts.
+- `apps/desktop/src/renderer/components/settings/OpenAiKeySection.tsx` — the
+  card, with `OPENAI_KEY_ANCHOR` pinned to the `agents.openai-key` manifest
+  entry. Add → store → **Connected** → Replace / Delete, and Replace/Delete
+  offered only when `status.source === "store"`.
+- `apps/desktop/src/main/services/ai/apiKeyStore.ts` — the machine-scope half:
+  `initMachineApiKeyStore`, `createMachineScopeState` (store path under
+  `resolveMachineAdeLayout().secretsDir`, `projectRootPath: null`),
+  `storeMachineApiKey` / `deleteMachineApiKey` / `listMachineStoredProviders`,
+  and `getMachineApiKeyStatus`, which reports `store` vs `env` without ever
+  handing the value back. Every helper takes its `ApiKeyScopeState` as the
+  first argument, so each call names the store it reads.
+- `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts` — this
+  machine's provider accounts (Claude and Codex only): the plain-JSON registry,
+  the always-present base account whose `configHome` is recomputed on every read,
+  default selection, `resolve(provider, requestedId)` used by every launch path,
+  and the per-provider settings (smart balance, auto-start windows). Backs the
+  `provider_instances.*` action domain and `ade providers accounts`.
+- `apps/desktop/src/shared/types/providerInstances.ts` — the shared provider,
+  account, environment-key, and per-provider-settings contracts used by the
+  registry, IPC, renderer, and CLI action surface.
+- `apps/desktop/src/shared/types/apiCredentials.ts` — secret-free credential
+  summaries for the stored-key panel and harness launch catalog; values are
+  represented by provider, id, label, source, and masked tail rather than the
+  secret itself.
+- `apps/desktop/src/shared/types/subscriptionProxy.ts` — the public proxy
+  status and provider-route contracts shared by the desktop and CLI surfaces;
+  they intentionally contain no proxy credentials.
+- `apps/desktop/src/shared/types/machineInventory.ts` — token-free account and
+  harness summaries published to paired machines, with detail expansion kept
+  behind the already-connected peer path.
+- `apps/desktop/src/shared/safeIdentifier.ts` — the containment rule every
+  ADE-owned id must pass before it becomes a path or storage-key segment, so an
+  account, preset or credential id cannot escape the directory ADE owns.
+- `apps/desktop/src/shared/providerColors.ts` — the one provider colour table
+  (usage light/dark pairs, picker badge tokens), so a second hex map cannot
+  drift from the iOS mirror.
+- `apps/desktop/src/main/services/account/accountMachineInventoryLiveRefresh.ts`
+  — live detail for one account-directory machine row. Asks only machines
+  already online and already connected in the paired pool, so expanding a row
+  never creates a pairing or spends a reconnect attempt; the durable directory
+  summary stays the floor.
+- `apps/desktop/src/renderer/components/settings/providers/accounts/` — the
+  Accounts panel: rows with the Default badge, the ⋯ menu (rename / default /
+  remove), the Add-account sheet with its embedded terminal, the accent
+  swatches, and `useProviderInstances`.
+- `apps/desktop/src/renderer/components/settings/providers/keys/` — the stored
+  API keys panel, the add-key sheet (only the fields a harness actually has),
+  the OpenCode custom-provider panel, and `useApiCredentials`.
+- `apps/ade-cli/src/services/proxy/` — the local subscription proxy behind
+  `ade proxy` and the `proxy.*` actions: hash-verified release download,
+  install/config management (config written 0600, state carries no secrets),
+  the start/stop/health supervisor, and the shared provider vocabulary.
+- `apps/desktop/src/renderer/components/settings/CaptureGestureSection.tsx` —
+  the capture-gesture switch plus the native helper's health line and its
+  retry. Reads `supportsCaptureGesturePlatform()` / `captureGestureBlocker()`
+  from `renderer/lib/platform.ts`, which wrap the shared
+  `captureGesturePlatformSupport` rules.
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
   status, stack detection, existing lane detection, and suggested config
   application. The active renderer
@@ -105,7 +202,7 @@ Main process:
   [agent-tools-cache.md](./agent-tools-cache.md).
 - `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
   pure GitHub Actions workflow parsing and suggested test/automation/provider
-  config generation for `.ade/ade.yaml`.
+  config generation for `.ade/local.yaml`.
 - `apps/desktop/src/main/services/github/githubService.ts`,
   `githubCredentialHealth.ts`, and `githubRateLimit.ts` — GitHub App,
   environment, PAT, and GitHub CLI credential discovery; `/user` and repository
@@ -216,8 +313,7 @@ Shared types and IPC:
 - `apps/desktop/src/shared/ipc.ts` — channels:
   - `ade.onboarding.*` (status, detectDefaults, applySuggestedConfig,
     complete, setDismissed)
-  - `ade.projectConfig.*` (get, validate, save, diffAgainstDisk,
-    confirmTrust, export)
+  - `ade.projectConfig.*` (get, validate, save, diffAgainstDisk, export)
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
     getSnapshot, initializeOrRepair, runIntegrityCheck)
   - `ade.projectSecrets.*` (list, get, set, delete, chooseEnvFile,
@@ -254,16 +350,31 @@ Renderer — onboarding:
   `DidYouKnow` hint toast were removed with their renderer surfaces.
 - `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx`
   — process-launch gate. New installations show the welcome card before
-  account choice; returning signed-out launches show account choice directly.
-  The signed-out surface keeps one direct sign-in/create-account action, a
-  short ADE Relay requirement link, and **Continue without an account**. Its
+  sign-in; returning signed-out launches show sign-in directly. ADE requires
+  an account, so what the gate offers beside sign-in depends on
+  `accountGateMode`: a machine that has never held a session is `required`
+  and gets no pass-through, while a session that expired or became unreadable
+  is `recoverable` and always offers **Continue to your work**. Local work is
+  never blocked; `AccountSignedOutBanner` carries the nagging instead. The
+  signed-out surface also keeps a short ADE Relay requirement link. Its
   top strip is draggable even though the normal shell header is not mounted.
   Renderer reloads or extra windows in the same desktop process do not repeat
-  the choice. Directly paired machines stay saved across account sign-out;
+  the gate. Directly paired machines stay saved across account sign-out;
   account-directory targets and their paired credentials are owner-tagged and
   removed with that account.
-- `apps/desktop/src/renderer/components/account/AccountPage.tsx` — optional
-  account status/sign-in/out shell. The signed-out page receives an explicit
+- `apps/desktop/src/renderer/components/account/AccountSignedOutBanner.tsx` —
+  the permanent bar ADE shows while the account is not usable. It renders the
+  shared `Banner` primitive with `dismiss: false`, because `bannerDismiss.ts`
+  is for banners a user may reasonably live with and this is not one of them:
+  the only way to clear it is to sign in, or to repair a store ADE could not
+  read. It mounts in `AppShell` above `AutoUpdateBanner` and outside every
+  project condition, because `IntegrationBannerHost` renders only inside an
+  open project and this bar has to reach welcome and projectless windows too.
+  It hides itself on `/account`, where its own action would lead. All four
+  states' copy lives in one record in `renderer/lib/account.ts`, so a new
+  state is a type error rather than a missing case.
+- `apps/desktop/src/renderer/components/account/AccountPage.tsx` — account
+  status/sign-in/out shell. The signed-out page receives an explicit
   in-app return route from the sidebar or Connections and falls back safely to
   `/work` when opened directly. It routes pairing work back to the
   beginner-facing Connections panel rather than owning a second
@@ -319,9 +430,10 @@ Renderer — onboarding:
   of internal/public doc URLs that `SmartTooltip`, `HelpMenu`, welcome,
   and account surfaces link to, including the public ADE Relay explainer used by
   account sign-in surfaces.
-- `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
-  single lightweight card covering personality and work-style setup.
-  Model selection and Linear are deferred to the CTO Settings sheet.
+- `apps/desktop/src/renderer/components/cto/...` — CTO first-run is the
+  model picker. There is no setup wizard: a project with no stored model
+  preference opens on `ModelPickCard`, and picking a model is the whole
+  of first run. Linear and the rest live in the CTO Settings sheet.
 
 Renderer — settings:
 
@@ -337,6 +449,8 @@ Renderer — settings:
   `keybindings`, dropped because it pointed at a tab with no keybindings
   UI. Welcome video replay and help preferences live under the Help menu
   in the top bar, not as a Settings tab.
+  The manifest assigns each setting to one of four persistence scopes:
+  `account`, `account-repo`, `machine`, or `machine-repo`.
 - `apps/desktop/src/renderer/components/settings/BrowserLinksSection.tsx`
   — the General tab's **Links** group (`general.link-open-mode`, scope
   `machine`, `web: "hidden"` because a hosted tab has no Electron browser
@@ -371,9 +485,11 @@ Renderer — settings:
   when the block already holds a value and an existing config never
   hides itself. There is **no Save button anywhere in settings**:
   every control persists on change and reports via `SavedFlash`.
-  `ScopeChip` (Team / This Mac / This app) is shown only where the
+  `ScopeChip` uses the shared four-scope copy and is shown only where the
   backing store would surprise — clicking it names the file and who it
-  affects.
+  affects. `SettingsCard`, `SettingsManagerPage`, and
+  `SettingsDashboardPage` are the three page templates; section files choose
+  one instead of drawing their own page layout.
 - `GeneralSection.tsx` and `EnvironmentSection.tsx` were dissolved in the
   IA rewrite — General was a flat stack of 11 unrelated sections, and
   `EnvironmentSection` was App version + ADE CLI (now in General and
@@ -784,8 +900,12 @@ Renderer — settings:
   values in a select-all/individual-selection review modal, atomically import
   the selected rows, and export all secrets as a mode-`0600`
   `ade-secrets.env` file in Downloads. Values are backed by
-  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`. When the
-  active project is remote, only the Finder read happens on the controller Mac:
+  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`. New
+  secrets default to the account and can be saved to the current repository's
+  account scope or this device only; an account choice falls back to this
+  device when the repository has no Git remote. The list shows the effective
+  destination for every secret. When the active project is remote, only the
+  Finder read happens on the controller Mac:
   the bounded file content is parsed/imported by the active runtime and export
   writes to Downloads on the remote project host.
 - `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`
@@ -866,13 +986,13 @@ Renderer — settings:
   reload both quota and provider-connection state when the binding changes.
   This keeps the compact percentages and the open panel on the same live
   machine-brain snapshot even across fast project or machine switches.
-  `UsageLimitsBand` is one component with two hosts — the popover body and the
-  **Live limits** band on Settings > Usage — so a window reads identically in
-  both. It renders one `UsageLimitCard` per window (5-hour first, then weekly,
-  then monthly, then anything else the provider reports), with explicit source,
-  updated time, stale state, and inline provider errors. The provider heading's
-  external-link target comes from `status.accountUrl` falling back to the shared
-  `usageProviderAccountUrl`, never from a second URL map in the component.
+  `UsageLimitsBand` renders one row per ACCOUNT (`UsageAccountRow.tsx`): the
+  provider mark, the provider, `email · plan`, and that account's windows side
+  by side as meters (5-hour first, then weekly, then monthly, then anything else
+  the provider reports). Inline provider errors, stale state, and the source and
+  updated time stay on the row. The external-link target comes from
+  `status.accountUrl` falling back to the shared `usageProviderAccountUrl`,
+  never from a second URL map in the component.
   Claude background polling never prompts Keychain and explicit local refresh
   can fall back from OAuth to a bounded CLI probe. When a non-interactive
   caller cannot authoritatively read Claude credentials, the service preserves
@@ -953,19 +1073,35 @@ Renderer — settings:
   `formatCountdown` is the bare "6d 7h" form for a segment chip whose glyph
   already says "resets"; `formatResetClock` is the absolute time beside it.
 - `apps/desktop/src/renderer/components/usage/usageLimitModel.ts` and
-  `UsageLimitCard.tsx` — the headroom reading of a live window. The model is
+  `UsageAccountRow.tsx` — the headroom reading of a live window. The model is
   pure and clock-injected: `poolAccounts` merges the same login reported by two
-  machines into one `UsageAccountView` with a `machines` list (freshest first)
-  and derives its initials chip; `buildLimitCards` groups a provider's windows
-  into one card per window label with one segment per account, computes pooled
-  headroom, and computes what each account's reset restores to that pool. A
+  machines into one `UsageAccountView` with a `machines` list (freshest first);
+  `buildLimitCards` groups a provider's windows into one card per window label
+  with one segment per account, computes pooled headroom, and computes what each
+  account's reset restores to that pool; `buildAccountRows` transposes those
+  cards into one row per account, so both shapes read one set of numbers. A
   window with no `accountId` (a host predating account attribution) falls back
-  to the provider's single account. The card renders the pooled number, the next
-  restore that actually returns something, and a segment strip; hover, focus, or
-  click on a segment opens that account's detail panel (plan, machines,
-  headroom, absolute reset, pace, and the provider limits link), edge-anchored
-  so it cannot overhang the 420px popover. Full behaviour in
+  to the provider's single account, and a provider with no account directory at
+  all falls back to `status.accountEmail`, then to "This machine". Each meter
+  fills to the HEADROOM in the provider's brand colour — the same quantity its
+  number names — with the spent remainder hatched, and takes its pressure
+  colour from consumption so a nearly-dry window still reads hot; hover, focus,
+  or click opens that window's detail panel (plan,
+  machines, headroom, absolute reset, pace, model split, restore, and the
+  provider limits link), edge-anchored so it cannot overhang the 420px popover.
+  A row carrying a banked reset credit also offers **Use reset**
+  (`ade.usage.consumeResetCredit`). Full behaviour in
   [usage-tracking.md](usage-tracking.md).
+- `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
+  balance selector for new Claude/Codex chats. It weights the remaining weekly
+  headroom by the window's elapsed fraction, then falls back to the default
+  account and finally to the first usable signed-in account.
+- `apps/desktop/src/main/services/usage/windowAutoStart.ts` — schedules one
+  best-effort lightweight request per enabled Claude/Codex account shortly
+  after a future five-hour reset, with provider-specific model selection and
+  no persisted timer state.
+- `apps/desktop/src/shared/usageResetCredit.ts` — the shared reset-credit
+  outcome and copy contract used by desktop, CLI, and paired action callers.
 - `apps/desktop/src/main/services/usage/providerAccountIdentity.ts` — which
   account the live numbers belong to. Reads Codex's `auth.json` `id_token`
   payload (`email`, `chatgpt_plan_type`) and Claude's `.claude.json`
@@ -1138,9 +1274,12 @@ Renderer — settings:
   brand color palette for usage bars and legends. `providerColor(provider,
   theme)` returns a per-provider brand color (Claude's rust family, distinct
   hues for the other providers) with a deterministic hashed fallback for
-  unknown providers. `accountAccentColor(accountId, theme)` gives an account
-  chip a stable accent from that same fallback palette — accounts have no brand
-  of their own, and a palette used by one surface only is a palette that drifts.
+  unknown providers. **This table is the product's source of truth for a
+  provider's colour**: `shared/modelCatalog.ts`'s `PROVIDER_GROUP_COLORS` and
+  both iOS tables (`ADESharedTheme`, `ADEDesignSystem`) mirror its dark values.
+  Accounts deliberately have no colour of their own — the per-account hash that
+  used to tint a chip could draw a Claude account in Gemini's blue, and the
+  email on every row is what tells accounts apart.
 Diagnostics are rendered inside `StorageSection.tsx`
 (`storage/StorageDiagnostics.tsx`) under Diagnostics. The
 standalone `ProxyAndPreviewSection.tsx` and
@@ -1329,10 +1468,13 @@ banner):
 ## Detail docs
 
 - [configuration-schema.md](./configuration-schema.md) — shape of
-  `.ade/ade.yaml` and `.ade/local.yaml` as consumed by
+  `.ade/local.yaml` and the one-time legacy carry-over as consumed by
   `projectConfigService`; types in `shared/types/config.ts`.
 - [first-run.md](./first-run.md) — first launch lands on Work. There is
   no blocking project-setup dashboard; optional integrations live in Settings.
+- [harness-presets.md](./harness-presets.md) — saved pairings of an agent
+  (the body) and a model source (the brain), managed in Settings › Providers ›
+  Harnesses and selectable from the Harnesses tab of every model picker.
 
 ## Onboarding responsibilities
 
@@ -1476,34 +1618,56 @@ for the full flow and environment overrides.
 
 ### CTO first-run setup
 
-CTO (the agent identity used in the Chat tab) has its own lightweight
-wizard:
-
-1. **Identity** — name, provider/model preference, persona. System
-   prompt preview is generated live, debounced.
-2. **Project context** — seed from repo-detected defaults or existing
-   CTO core continuity; user can edit summary, conventions, focus areas.
-3. **Integrations** — Linear is optional. Primary action finishes
-   onboarding with or without Linear. Fastest path is a personal API
-   key; OAuth is available but not the default recommendation.
+The CTO has no wizard. A project whose `modelPreferences` is null opens
+on `ModelPickCard` instead of the thread, the user picks a model that can
+steer a live turn, and that pick is the entire setup — there is no
+personality question, no project-context step, and nothing to re-run.
+Reasoning effort, Fast mode, and Linear all layer in afterward from the
+CTO's own settings sheet. `CtoOnboardingState` survives only as an
+internal marker list (`intro`, `memory_gardener`) that is never shown.
+See [CTO › The welcome screen](../cto/README.md#the-welcome-screen).
 
 ## Settings responsibilities
 
-Top-level tabs, organized to match the kind of thing the user is
-changing rather than which service backs it:
+Settings is organised by **scope**. The sidebar group is the answer to "where
+does this save, and who does it affect", said once at the top of a group instead
+of repeated as a badge on every row:
+
+| Group | Saves to | Pages |
+|---|---|---|
+| **Account** | Your ADE account, everywhere | Secrets, Usage (including the spend cap) |
+| **Preferences** | Your ADE account, everywhere | Appearance, Chat, Providers, Lanes, Notifications, Activity |
+| **&lt;repository&gt;** | Your account, for this repository | Integrations |
+| **This computer** | This machine only | General, Diagnostics |
+
+Preferences are account-scoped too, so strictly they belong under Account. They
+get their own group because they are what people change most, and burying the
+theme switch under an identity heading would organise the page around the
+storage engine rather than around the person using it.
+
+The repository group is named after the repository, and a group with no pages
+does not render — which is how it disappears when Settings is opened outside a
+project. "This computer" comes from `THIS_MACHINE_NAME`, never a literal, so it
+cannot read "This Mac" on Windows.
+
+`DEFAULT_SETTINGS_TAB` names where Settings opens. It used to be `tabs[0]`, so
+reordering the sidebar silently moved the landing page.
+
+The pages themselves:
 
 | Tab | Section file | What lives here |
 |---|---|---|
 | General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
-| Appearance | `AppearanceSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Theme, chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt-stash bookmark, launch-prompt clipboard, live preview), and terminal text. Rebuilt on the primitives — the old version used `font-mono` for every prose line and four different control idioms. Persisted to `localStorage` under `ade.userPreferences.v1`. |
-| Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
+| Appearance | `AppearanceSection.tsx` | Theme and terminal text. Everything chat-shaped moved to the Chat page. |
+| Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt stash, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
+| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx` | Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the agent completion sound, and the Lanes banner budget. The per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this tab. |
-| Activity | `ActivitySection.tsx`, `ActivitySettingsControls.tsx` | The surfaces Activity itself paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle, so neither had a card left for search to land on. `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the two entry points cannot drift. Legacy `?tab=attention` plus the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
+| Activity | `ActivitySection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | The surfaces Activity itself paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle, so neither had a card left for search to land on. `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the two entry points cannot drift. Legacy `?tab=attention` plus the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
 | Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
-| Usage | `AdeUsageSection.tsx`, `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsageLimitCard.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
+| Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
 > Live provider quota windows render from one component, `UsageLimitsBand.tsx`, in two places: the top-bar Usage popup (`HeaderUsageControl.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) and the Live limits band on Settings > Usage. The rest of that page is the retrospective cross-client dashboard.
 
@@ -1577,11 +1741,100 @@ For what happens when the machine sleeps anyway, see
 [chat → When the host machine sleeps](../chat/README.md#when-the-host-machine-sleeps)
 and [machine power and sleep in the account directory](../sync-and-multi-device/README.md#account-directory-and-connection-leases).
 
+### The OpenAI key follows the machine
+
+**Settings > Agents & Models > Connections > OpenAI API key** (anchor
+`openai-api-key`, `OpenAiKeySection.tsx`) is the only key on that page
+bound to the **machine** rather than the project. It resolves through the
+machine-scoped half of `apiKeyStore.ts`. The machine-scoped exports pass an
+`ApiKeyScopeState` that points at `resolveMachineAdeLayout().secretsDir` —
+`~/.ade/secrets`, or `$ADE_HOME` — instead of `<project>/.ade/secrets`. It
+sets `projectRootPath: null`, so the per-project legacy migration, the one
+step that makes a key follow a project, never runs. `initMachineApiKeyStore`
+registers the credential store at app start, so a window with no project open
+still writes where the runtime and the `ade` CLI read, and it registers an
+`EncryptedFileCredentialStore` over `~/.ade/secrets` rather than
+`createDesktopCredentialStore`'s safeStorage-primary routed store — the headless
+runtime and the `ade` CLI cannot decrypt an Electron safeStorage file, which is
+how Settings once answered `configured: true` while Talk answered "no OpenAI key
+on this machine", both honestly, about two different stores. The
+credential store itself is already machine-wide, so both scopes share it: one
+provider key is one secret, whichever door it came in by.
+
+The scope is the point, not an implementation detail. This key pays for
+CTO voice calls *this machine* makes, and scoping it to a project would
+mean asking the same person for the same secret in every repo they open.
+Hence `scope: "machine"` with `showScopeChip: true` in
+`settingsManifest.ts` — "machine" is the surprise here, sitting next to
+ten project-bound provider connections.
+
+Three rules govern the secret itself:
+
+- **It is never returned to the renderer.** `storeMachineApiKey` takes a
+  key and gives back only a `MachineApiKeyStatus` — `{ provider,
+  configured, source, envVar }` — which carries a *source*, not a value.
+  `useMachineOpenAiKey` drops the draft from React state the instant the
+  save succeeds, so a re-render cannot put it back on screen, and a
+  failed save reports a deliberately generic message because the thrown
+  error can quote the request.
+- **It states its cost before it asks.** `OPENAI_VOICE_COST_LINE` renders
+  above the field in both surfaces: about $0.05 a minute, billed by the
+  second, and — the sentence that actually unblocks people — the CTO's own
+  thinking stays on whatever model and plan it already runs on. One
+  constant, shared by the settings card and the modal sheet, so the two
+  cannot drift.
+- **An inherited key is read-only.** `status.source` distinguishes a key
+  ADE stored (`store`) from an `OPENAI_API_KEY` the machine's environment
+  owns (`env`). Replace and Delete are offered only for the former,
+  because deleting an environment variable from a settings card would
+  delete nothing while leaving the user believing otherwise; the `env`
+  case gets a line saying where to go instead.
+
+`openAiKey.tsx` exports the cost line and the field, and `OpenAiKeySheet.tsx`
+composes them into the modal another surface can mount. The CTO's **Talk**
+button mounts it the first time someone starts a call with no key stored. One
+implementation of the ask, so the never-re-display rule has one enforcement
+point.
+
+The manifest entry is `web: "hidden"`, like every other machine-scoped
+setting on this page: a machine secret has no meaning in a browser tab,
+and the write would resolve against nothing.
+
+### Capturing a window with a key gesture
+
+**Settings > General > Screen capture > "Capture with a key gesture"**
+(anchor `capture-gesture`, `CaptureGestureSection.tsx`) arms the global
+screenshot chord — both ⌘ on macOS, both Ctrl on Windows — described in
+[Capture gesture](../capture-gesture/README.md).
+
+The switch is `scope: "machine"`, `showScopeChip: true`, `web: "hidden"`,
+and it is stored in this renderer's `localStorage` under
+`ade:capture-gesture:enabled` (defaulting **on**) rather than in synced
+settings — for the same reason the activity notch is: what a native
+helper does on *this* computer is not a preference that should travel to
+another machine through the account. A second Mac has its own Screen
+Recording grant and its own opinion about whether a global key gesture is
+welcome. `GlobalCaptureGestureHost` pushes the stored value down through
+`captureGesture.updateSettings` on mount, because the setting lives in the
+renderer and the main process cannot know whether to run the helper until
+a window tells it.
+
+The card shows helper **health**, not just a toggle, because the two
+interesting failures are both things only the user can fix: macOS has not
+been told ADE may record the screen (`permission_denied`, recovery
+`grant_permission`), or the helper is missing from the install
+(`missing`, recovery `reinstall_or_update`). A bare switch that is on
+while the gesture does nothing is the exact state this card exists to
+prevent. On Linux the card renders `CAPTURE_GESTURE_UNSUPPORTED_BLOCKER`
+rather than a toggle, and `captureGestureBridgeAvailable()` is an `in`
+probe rather than a property read — the hosted web adapter's fallback
+proxy fabricates callable namespaces for missing properties, so
+`window.ade.captureGesture` is truthy there even with no helper behind it.
+
 ### Where durable data lives
 
 | What | Location | Notes |
 |---|---|---|
-| Project config (shared) | `.ade/ade.yaml` | committed to git |
 | Project config (local) | `.ade/local.yaml` | gitignored |
 | Onboarding status | `AdeDb` via `STATUS_KEY = "onboarding:status"` | `completedAt`, `dismissedAt`, `freshProject` |
 | Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
@@ -1589,7 +1842,13 @@ and [machine power and sleep in the account directory](../sync-and-multi-device/
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
 | Keep-awake level | `GlobalState` in `<userData>/ade-state.json` under `keepAwakePreferences` | machine-scoped; anything unreadable normalizes to `never` |
 | GitHub credentials | Keychain via `safeStorage` | tokens encrypted; a store ADE cannot decrypt reports `credentialStoreUnreadable` rather than "not connected" |
-| Linear credentials | Active project's `.ade/secrets` | project-local token/OAuth state, encrypted on disk |
+| Account settings cache | `~/.ade/account-settings.json` | Plaintext, owner-tagged cache; settings survive sign-out and stamps are namespaced by account |
+| Account vault cache | `~/.ade/account-vault.json.enc` | Encrypted with the machine credential-store key, written atomically with `0600`; legacy plaintext is removed after a successful encrypted write |
+| AI provider API keys | Machine credential store plus account vault | Every local value records device/account provenance; account-hydrated keys are purged on sign-out or account switch, while device-origin keys remain |
+| Linear credentials | Encrypted machine credential store or active project's `.ade/secrets`, plus account vault | The OAuth refresh token is the `linear_refresh_token` account item, stamped with a `refreshOwner` device id. Only that owner hydrates or refreshes the grant; provenance purges account-origin values on sign-out or account switch, while device-origin API keys and custom OAuth-client settings remain local |
+| Repository account secrets | Encrypted project-secret store plus account vault | Repository-scoped `project_secret` values follow the account and are keyed by normalized Git origin; device-only secrets remain local |
+| OpenAI API key (CTO voice) | Machine ADE home — `~/.ade/secrets` (or `$ADE_HOME`) via `resolveMachineAdeLayout` | machine-scoped, never read back to the renderer; an `OPENAI_API_KEY` in the environment is the read-only last tier |
+| Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
 
 ## AI mode and provider behavior
 
@@ -1604,17 +1863,178 @@ Legacy `providers.mode` migration ran during earlier releases and is
 no longer part of the contract; `projectConfigService` still contains
 the migration path but it is idempotent for current configs.
 
+## Provider accounts
+
+A machine can hold several Claude logins and several Codex logins. Each one is a
+provider config directory plus a label, selected at launch by a single
+environment variable — `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Only those two
+providers participate; the rest have no config-home override or no local account
+file, so they have exactly one identity per machine.
+
+- **The registry is a brain-owned JSON file**, `provider-instances.json`, in the
+  machine ADE home beside `projects.json`. It is deliberately not a SQLite
+  table: every table with a primary key in this repo auto-becomes a cr-sqlite
+  CRR and replicates to every paired device, and a list of directory paths on
+  this laptop is meaningless on the phone. Accounts created through ADE get a
+  config home at `<adeHome>/provider-homes/<provider>/<instanceId>/`, created
+  `0700` because the provider CLI writes its own credentials there. ADE never
+  reads, copies, or revokes those credentials.
+- **The default account is synthesized on read.** The login the machine already
+  had is the default account: its id IS the provider slug (`claude`, `codex`)
+  and its config home is whatever `providerConfigHomes.ts` resolves right now,
+  recomputed every read rather than frozen. There is no migration step and no
+  first-boot write — a machine that has never used this feature and one that has
+  both describe the same state, and deleting the registry file is a complete
+  reset. The default account's identity is also read WITHOUT a scoped home,
+  because the Claude CLI records `oauthAccount` in `~/.claude.json`, beside the
+  config directory rather than inside it.
+- **Exactly one account per provider is the default**, stored as a pointer. A
+  pointer at an account that no longer exists resolves to the base identity
+  rather than erroring — the same silent fallback a chat takes.
+- **Removing an account deletes nothing on disk.** It is forgotten from the
+  registry and the config home is returned so the user can be told what is still
+  there. The machine's own login and the current default both refuse removal.
+- **Action domain `provider_instances`** carries `list`, `create`, `remove`,
+  `rename`, `setDefault`, `setAccent`, `getSettings`, `setSettings`,
+  `loginCommand`, and `refresh` — on the agent tier for reads *and* mutations,
+  with no CTO gate, because an account is a directory path and a label, never a
+  token. Reachable from the desktop IPC surface, the preload three-way route
+  (pinned runtime → project runtime → local IPC), the daemon action bus, and
+  `ade providers accounts list|add|remove|rename|default`.
+- **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the
+  same file under `settings.<provider>` and default to off.
+- **Signing in is a command ADE returns, not a flow it drives.**
+  `loginCommand` gives back the resolved provider binary, its argv, and the one
+  env var pointing at that account's config home. `ade providers accounts add`
+  prints it so a shell user can run it directly.
+
+### Accounts panel
+
+Settings → Agents & Models → Claude Code (or Codex CLI) opens the provider page,
+and the first panel of its right column is **Accounts**, above Models. It is the
+only surface that shows the whole set of local logins for that provider. No
+other provider page has the panel, because no other provider can hold more than
+one identity per machine.
+
+- **One row per account**: an accent dot (the account's own `accentColor`, or
+  the provider's brand colour from `usage/providerColors.ts`), the label, and
+  `email · plan` — or `Not signed in` with a **Sign in** button that reopens the
+  login sheet for that account. Under it, the mini usage line `5h NN% · wk NN%`,
+  read from the usage snapshot by matching `UsageAccount.instanceId`, never by
+  email: two logins can share an email, and a login whose email cannot be read
+  still has quota. The default account is marked `Default`.
+- **The row menu (⋯)** carries Rename, Set as default, Change accent (eight
+  fixed swatches plus a `#rrggbb` field), and Remove. Remove asks for
+  confirmation first, and when the store refuses — it will not remove the
+  default account — the store's own sentence is shown rather than a guess.
+- **Two header switches**, each gated on the fact that makes it meaningful.
+  *Smart balance* appears only with two or more accounts and picks the account
+  with the most room when a chat starts, weighting the weekly window more as the
+  week goes on; chats stay on the account they started on, and with it off new
+  chats use the Default account. *Auto-start 5-hour windows* appears only while
+  the provider reports a five-hour window, and sends one tiny request on the
+  cheapest model when a window ends so the next one starts right away, each
+  request logged with its cost. Both read and write `provider_instances`
+  `getSettings`/`setSettings` for that provider. A (?) beside each explains it
+  on hover.
+- **Add account** opens a sheet: a label, an accent, and the sentence "This
+  account gets its own sign-in. Your other accounts are not touched."
+  **Sign in →** creates the account and then runs the returned login command in
+  an embedded terminal — a real PTY created through `pty.create` with the
+  command's own env, the same mechanism the provider sign-in modal uses.
+  Nothing is spawned from the renderer. Below the terminal the sheet says
+  `Waiting for sign-in…` with a one-shot **Check again**; when the terminal
+  exits the registry is refreshed once and the sheet either shows `✓ <email>`
+  and closes, or says "Sign-in did not complete." with **Try again** and
+  **Close**.
+- **The provider list row** shows `N accounts` in its Details column once a
+  provider has more than one.
+- **The model picker** adds one muted line under the provider header —
+  "Smart balance is on for Claude Code" — while that provider is balancing.
+  Nothing else about the picker changes: every model is still listed and an
+  explicit pick is still honoured.
+
+### API credentials
+
+Provider API credentials support multiple non-secret entries per provider. The
+default entry keeps the legacy provider slot; additional entries use a
+provider-and-credential id, while `ai.api_credentials.index.v1` stores labels,
+endpoints, protocols, models, timestamps, and masked tails without storing
+secrets. Environment variables appear only as the provider's default,
+read-only credential. Account-vault mirrors use the provider name for the
+default and `provider#credentialId` for additional entries, so legacy callers
+continue to read only default credentials.
+
+### API keys panel
+
+Every provider page carries an **API keys** panel, between Accounts and Models.
+It lists one row per key ADE can see for that provider: the label, the variable
+the key is exported as, the masked tail, a source badge (Local store,
+Environment, Project config), the endpoint host when one is set, and how many
+models the key declares.
+
+- **Local store** rows offer **Replace** and **Delete**. Delete confirms first.
+- **Environment** and **Project config** rows are read-only and say
+  "Managed outside ADE — clear the env/config value to remove." ADE did not
+  write them, so it does not offer to delete them.
+- **Verify** appears only on the default key of a provider that has a live
+  probe — Claude Code, Codex, Cursor, Grok and Kimi. The verification path reads
+  one key per provider, so a second key gets no button rather than a button that
+  would verify a different key than the row it sits on.
+
+**+ Add** opens a sheet that asks only what that provider's harness reads. Every
+field carries a one-line description, there is one Save, and no field is shown
+that would do nothing:
+
+| Provider | Stored under | Key variable | Endpoint | Protocol | Models | Provider id |
+| --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | `anthropic` | `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` when an endpoint is set | `ANTHROPIC_BASE_URL` | — | yes | — |
+| Codex | `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | — | yes | — |
+| Cursor | `cursor` | `CURSOR_API_KEY` | — | — | — | — |
+| Droid | `droid` | `FACTORY_API_KEY` | base URL | yes | yes | — |
+| Pi | `pi` | — | — | — | — | — |
+| OpenCode | per custom provider id | — | base URL | yes | yes | yes |
+| Qwen Code | `qwen` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | — | — | — |
+| Kimi | `moonshotai` | `MOONSHOT_API_KEY` | — | — | — | — |
+| Grok | `xai` | `XAI_API_KEY` | — | — | — | — |
+| GitHub Copilot | `copilot` | `GITHUB_TOKEN` | — | — | — | — |
+
+A key is filed under the vendor's id rather than the page's id where the two
+differ, which is what makes an `ANTHROPIC_API_KEY` that is already set show up
+as an Environment row on the Claude page, and what lets Verify reach a probe
+that exists. The first key a provider holds takes the default slot, so every
+single-key reader in the app finds it. Cursor writes through the legacy single
+slot, because that is the slot its SDK signs in from.
+
+Pi is the one provider with no endpoint field: it reads its own `models.json`
+for endpoints and model ids, and the sheet says so.
+
+### OpenCode custom providers
+
+The OpenCode page's **Advanced** section lists the custom providers OpenCode is
+configured with — name, id, base URL, model count — with **Edit** and **Delete**
+on each. Add and Edit open the same key sheet, with a **Provider id** field and
+a **Protocol** select in place of the npm package name (each package is one wire
+protocol). An edit may leave the key empty to keep the saved one.
+
+Every write sends the whole provider list: `ai.updateConfig` merges arrays with
+replace semantics, so a write that carried only the entry being changed would
+drop every other custom provider. **Custom model slugs** stays a separate field
+with its own Save.
+
 ## UX contract
 
 Onboarding and settings follow a simple rule:
 
+- require account sign-in for a fresh launch, while preserving explicit
+  recovery for an existing paired/local session
 - do not block on optional integrations
 - keep setup responsive
 - show the fastest path first
 - defer advanced or heavy configuration to the feature surface that
   owns it
 
-## Account session state is a tri-state, not a boolean
+## Account session state is a four-state, not a boolean
 
 "Not signed in" was one word for three different situations, and treating them
 alike is how a perfectly good session gets destroyed. `AccountAuthStatus`
@@ -1649,7 +2069,7 @@ computer can open what was set aside so a fresh sign-in is required, or the
 repair itself failed. The store mechanics are in
 [ARCHITECTURE](../../ARCHITECTURE.md) under the machine credential stores. The CLI's `account-auth` text
 formatter makes the same three distinctions rather than printing one
-"Not signed in — local use does not require an account." for all of them.
+"Not signed in — run `ade login`." for all of them.
 
 Older runtimes that predate `sessionState` are derived from the existing
 `sessionReadState`, so a mixed-version pair degrades to the old behaviour
@@ -1682,6 +2102,42 @@ and overridable with `ADE_ACCOUNT_SESSION_SOURCE`), and the
 `tokenGeneration` it acted on — a truncated SHA-256 of the refresh token, so a
 grant can be followed across processes with no token material in any log file
 or journal entry.
+
+**Only the brain exchanges the refresh credential.** The journal below made
+rotation crash-safe and made a live peer a mutex, but it could not remove the
+race, because two processes were still both entitled to exchange a single-use
+token. `accountAuthService` therefore takes a `getRefreshBroker`, and every
+process that is not the brain installs one through
+`setSharedAccountRefreshBroker`. A brokered process never POSTs the credential:
+it asks the brain for an access token over `account.call` -> `getToken`, and the
+desktop's broker is `createBrainRefreshBroker` in `accountBridge.ts`. The
+brokered path deliberately does **not** forward `forceRefresh` — a caller able
+to force an exchange would be a second refresher wearing a different hat.
+
+The broker is read at call time rather than at construction, because
+`getSharedAccountAuthService` caches one service per secrets directory and on
+desktop the first caller can run before the runtime pool exists; installing the
+broker separately means startup order cannot decide whether a process refreshes
+locally.
+
+**The broker probes dynamically.** CLI and TUI install it unconditionally on
+their non-brain paths, then probe the brain socket for each refresh. A missing
+brain returns null so the service safely uses its local exchange; a brain that
+was reachable but fails still raises transient
+`AccountRefreshUnavailableError` and leaves the stored record untouched. Only
+a definitive `invalid_grant` marks a session dead.
+
+**An unreadable store repairs itself once before the user sees it.**
+`accountBridge.status()` runs `repairCredentialStore()` on the first
+`unreadable` read in a desktop process, then reports whatever is true
+afterwards. The flag is set before the attempt, so a repair that throws cannot
+turn every later status read into another attempt at the same broken file. The
+brain is not restarted on this path: that half is disruptive, needs the user's
+intent, and cannot fix a credential-store condition anyway. The manual
+**Repair** control still does both. The motivation is in the numbers — 1,148
+`account.session_read_failed` entries in a single day on one machine, every one
+`ENOSPC` on `credentials.json.enc.lock` — a condition that resolves itself and
+should never have raised a question the user had to answer.
 
 **Rotation is crash-safe, and a live peer's journal is a mutex.**
 `accountSessionRotationJournal.ts` records that a refresh exchange *started*
@@ -1762,15 +2218,29 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
 
 ## Gotchas
 
-- **Shared vs local.** Shared config is version-controlled and visible
-  to the whole team; saving to shared triggers a trust confirmation
-  dialog. Local config is per-user and gitignored — use it for ports,
-  machine-specific paths, and personal env. Both are merged into
-  `effective`.
-- **Trust boundary.** `projectConfigService.getExecutableConfig` gates
-  on trust before returning a config that can spawn processes. Callers
-  that skip trust (`{ skipTrust: true }`) do so only after trust has
-  been confirmed in the same session.
+- **A provider account is a path, not a credential.** The registry stores config
+  home paths and labels; the tokens inside those directories belong to the
+  provider CLI that wrote them. That is why the registry is plain JSON rather
+  than the encrypted credential store, why `remove` deletes nothing, and why the
+  action domain is not CTO-gated. Do not add a field to this file that a
+  credential would fit in.
+- **The default account's config home is resolved, never stored.** Freezing it
+  would make ADE read one directory and launch the provider against another the
+  moment a user sets `CLAUDE_CONFIG_DIR` in a shell profile. The stored record
+  for the base identity carries a label and an accent; its `configHome` is
+  recomputed on every read and any persisted copy is ignored.
+- **Scope is two axes, not one.** Who owns a setting — your account or this
+  computer — and how much it covers — everything, or one repository. The
+  placement rule is mechanical so it can be checked: a value holding a path, a
+  port, or a fact about hardware is machine scope, because it means nothing on
+  another computer. Everything else is account scope and follows the user.
+  `SettingScope` is the four combinations, and the sidebar group IS the scope.
+- **No trust gate, and no committed config.** `.ade/ade.yaml` is no longer read
+  at all — it is carried over into `local.yaml` once (non-executable keys only)
+  and deleted. The gate went with the file it guarded;
+  see [configuration-schema.md](./configuration-schema.md#no-trust-gate).
+  `getExecutableConfig` is gone too — it had become `getEffective` with an extra
+  throw.
 - **Phone-sync port 8787.** Bind order always tries 8787 first, even when
   `lastPort` is 8788. A replacement brain that lands on 8788 keeps retrying
   8787 at runtime so phones that saved 8787 reconnect without a restart.

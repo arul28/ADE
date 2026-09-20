@@ -189,7 +189,7 @@ describe.skipIf(!LIVE)("ACP host live handshake", () => {
       );
       expect(response.agentCapabilities?.loadSession).toBe(true);
       expect(response.agentCapabilities?.sessionCapabilities).not.toHaveProperty("close");
-      expect(response.authMethods?.map((method) => method.id)).toEqual(["openai"]);
+      expect(response.authMethods?.map((method) => method.id)).toEqual(["openai", "openai-responses"]);
       await expect(
         connection.request(ACP_METHOD.sessionNew, { cwd: tmp, mcpServers: [] }),
       ).rejects.toSatisfy((error: unknown) => isAcpAuthError(error));

@@ -22,10 +22,11 @@ rather than being inferred from the name.
 1. Sign in to the same ADE account on the phone and computer. This is the
    primary path: the computer appears through the account directory and the
    phone adopts it through Relay without a PIN.
-2. For a direct connection without an account, open the computer's
+2. For an explicitly paired/direct recovery connection, open the computer's
    **Connections** panel. The **This Mac** card owns the pairing PIN and QR.
    On the phone, scan that QR or choose the Mac from Nearby; there is no
-   pairing-link paste or manual address + PIN entry.
+   pairing-link paste or manual address + PIN entry. Fresh app access still
+   begins at the account gate.
 3. Enter the 6-digit PIN for a new QR/Nearby pairing. The phone receives a
    durable per-device secret and stores it in Keychain, so future reconnects
    do not ask for the PIN again.
@@ -34,12 +35,26 @@ rather than being inferred from the name.
    host owns the connection, and the user-facing model stays
    machine -> projects.
 
-Every fresh signed-out launch shows the account choice before the app. Signing
-in is not required for local-first use: **Continue without an account** keeps
-QR + PIN, Nearby + PIN, and the advanced SSH bootstrap available. If
-the phone already has a direct pairing, continuing resumes its ordinary saved
-reconnect without asking for the PIN again. A signed-in launch enters the app
-directly.
+Every fresh signed-out launch shows the account choice before the app. ADE
+requires an account, so a phone with no saved pairing has no account-less
+pass-through. A phone with an existing paired host may choose **Continue to
+your work** to recover cached/local work while signed out; a saved pairing whose
+credential cannot be read instead offers **Pair again** and explains the fault.
+Signing in enters the app and enables account-directory/Relay adoption; direct
+QR/Nearby/SSH pairing remains an explicit connection flow rather than a guest
+mode.
+
+### Account settings and vault boundary
+
+The account settings store is the non-secret, per-key account preference store;
+the brain and Push Relay own its account copy, while a host keeps an immediate
+local cache. iOS uses only the settings and push-preference commands the host
+advertises and never receives raw vault values. Provider API keys, Linear OAuth
+refresh credentials, and repository account secrets stay in the host's
+encrypted account vault and are hydrated there after sign-in. The host performs
+the silent, receipt-backed migration from device-local credentials; the phone
+does not copy or migrate secrets. Sign-out closes Relay and clears account
+authorization while preserving explicit direct pairing trust for recovery.
 
 Choosing a signed-in account machine performs first-time adoption through the
 directory using LAN, Tailscale, then Relay. LAN/Tailscale adoption is allowed
@@ -179,7 +194,8 @@ apps/ios/
 │   │   ├── ADEAppDelegate.swift     # UIApplicationDelegate: APNs device-token
 │   │   │                            # callbacks + notification presentation,
 │   │   │                            # feeds PushNotificationService
-│   │   ├── ContentView.swift        # signed-in-or-continue launch gate, then
+│   │   ├── ContentView.swift        # account-required launch gate with an
+│   │   │                            # explicit paired-host recovery path, then
 │   │   │                            # 5-tab TabView with a custom
 │   │   │                            # `ADERootBottomTabBar` overlay
 │   │   │                            # (Work/Lanes/PRs/Files/CTO + Work
@@ -231,7 +247,7 @@ apps/ios/
 │   │   │                            # ensureColumn migrations for upgrades)
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
-│   │   ├── AccountService.swift     # Clerk-backed optional account identity,
+│   │   ├── AccountService.swift     # Clerk-backed account identity,
 │   │   │                            # transferable social auth outcomes,
 │   │   │                            # durable sign-out/device-ownership epochs,
 │   │   │                            # serialized account push registration,
@@ -599,9 +615,10 @@ apps/ios/
 │   │   │                            # CreatePrWizardView, PrRebaseScreen,
 │   │   │                            # PrTargetBranchPickerDropdown,
 │   │   │                            # PrDetailOverviewPreviews (preview fixtures)
-│   │   ├── Settings/                # ConnectionSettingsView (account card →
-│   │   │                            #   connection status → machines list → ways
-│   │   │                            #   to add one), SettingsMachinesSection
+│   │   ├── Settings/                # ConnectionSettingsView (connection header
+│   │   │                            #   plus Account, Preferences, repository,
+│   │   │                            #   and this-device groups),
+│   │   │                            # SettingsMachinesSection
 │   │   │                            #   (reachable-machine list: top 3 + See all),
 │   │   │                            # SettingsMachineRenameSheet (account-wide
 │   │   │                            #   custom name set/clear),
@@ -2862,6 +2879,10 @@ seam: when set, `refresh` installs them instead of asking the sync socket.
 
 ### Shipped
 
+Settings keeps the connection header outside four scope groups: Account,
+Preferences, this repository, and this device. Fresh access is account-required;
+the existing paired-host recovery path is the only account-less continuation.
+
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
 | **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/manage, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane detail screen (full-screen, custom tab bar hidden) is organized into collapsible sections (`LaneDetailSectionChrome`): each section auto-opens when it has content and auto-collapses when empty (`LaneSectionDisclosure`), and stays where the user last put it once they toggle it manually. Header chips and the git action buttons flow through `LaneChipFlowLayout`, a wrapping flow layout that wraps onto new lines instead of horizontally scrolling. Lane rows in the list carry a cheap render-relevant signature (mirroring the Hub row-signature pattern) so `.equatable()` re-renders only rows whose visible state changed. It embeds `LaneDetailGitActionsPane`, a port of desktop's git actions pane: commit message field with amend toggle and an AI "Suggest message" button (gated by runtime capability, with a setup-hint when the runtime reports "AI commit messages are off"), pull (rebase/merge mode) / push (with force-with-lease) / fetch, staged + unstaged file lists with per-file and bulk stage / unstage / discard / restore / open-diff / open-files, stash push/apply/pop/drop, recent-commit history with context-menu view-files / copy-message / revert / cherry-pick, and a "more actions" menu holding switch branch plus the destructive escape hatches (rebase lane, rebase + descendants, rebase and push, force push). A conflict banner offers rebase **and merge** continue/abort (`git.rebaseContinue`/`Abort`, `git.mergeContinue`/`Abort`), and a rescue sheet creates a new lane from uncommitted changes. The lane options menu copies shareable deeplinks (`LaneDeeplinkHelpers`: `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens `LaneManageSheet`, a tabbed manage dialog (delete / appearance / stack / archive) mirroring desktop's `ManageLaneDialog`. The sheet keeps the lane name in the nav bar with a pencil rename on the right (hidden for the primary lane and hosts that omit `lanes.rename`), drops the oversized body title, and shows branch and path as icon rows. Every lane is managed the same way regardless of where its worktree lives, so there is no adopt or "move into `.ade/worktrees`" action. The previous `LaneAdvancedScreen`, `LaneCommitSheet`, `LaneStashesScreen`, and `LaneCommitHistoryScreen` destinations were deleted in favor of this single pane. |
@@ -3278,9 +3299,11 @@ The usage commands are viewer-allowed project actions:
   quota-only refresh with interactive host authentication disabled. Work shows
   a compact provider-icon summary using the host's percent-used values directly.
   Live limits mirror the desktop band as headroom cards — one group per
-  provider, one card per window, one segment per account — with provider icons,
-  pressure colors, reset countdowns, source/freshness/error state, explicit
-  refresh, and the provider limits link. The snapshot carries `accounts[]` and a
+  provider, one card per window, and **one named row per account, always**
+  (the email is no longer hidden when a provider has a single login) — with
+  provider icons, provider brand colours from `ADESharedTheme` rather than a
+  per-account hash, pressure colors, reset countdowns, source/freshness/error
+  state, explicit refresh, and the provider limits link. The snapshot carries `accounts[]` and a
   per-window `accountId`; the link comes from `MobileUsageProviderStatus.accountUrl`
   stamped by the host, so the URL lives in exactly one place and an older host
   simply hides it. The arithmetic is `adeUsagePoolAccounts` /
@@ -3708,13 +3731,19 @@ the stats and shows update guidance.
   `WorkModels.swift` — a hand-mirrored copy of the desktop's canonical
   `ACTIVE_TURN_DISPATCH_MODES` table in `apps/desktop/src/shared/types/chat.ts`,
   kept in step by hand because iOS cannot import the TS. Modes are in menu order
-  and the first is the default, so Claude mirrors desktop's three choices
-  (**Send during turn**, **Send after turn**, **Interrupt & send**, defaulting to
-  *Send during turn*) and Cursor gets two (**Interrupt & continue**, **Send after
-  turn**, defaulting to *Interrupt & continue*). `interruptContinues` is mirrored
-  alongside the table, so Cursor's button and hint say "continue" — its SDK has
-  no mid-run message API, and the redirect cancels and resends on the same agent
-  thread. Every provider name in the option titles, details, hints and VoiceOver
+  and the first is the default; read the table for the per-provider lists rather
+  than a copy here, and the mirror for the iOS copy. Claude and Cursor both
+  carry all three choices (**Send during turn**, **Send after turn**, and an
+  interrupt), and `interruptContinues` is mirrored alongside the table so
+  Cursor's button and hint read **Interrupt & continue** — its interrupt cancels
+  the run and resends on the same agent thread rather than folding into a live
+  query, which is the one thing its inline channel (`Run.steer()`) did not
+  change. A Cursor **Cloud** session withholds *Send during turn* the same way
+  the desktop pane does: `workChatCursorSessionRunsInCloud` is the iOS half of
+  `cursorSessionRunsInCloud`, and it reads `cursorRuntime` when the host sent
+  it so a leftover `cursorCloudAgentId` cannot hide inline on a local chat.
+  Older hosts omit `cursorRuntime`; those still key off a non-empty agent id.
+  Every provider name in the option titles, details, hints and VoiceOver
   strings comes from the capability's `agentLabel` rather than hard-coded
   "Claude". The primary button's icon/label communicates the selected behavior,
   the chevron opens a custom SwiftUI popover, and selection dismisses it
@@ -3782,11 +3811,25 @@ the stats and shows update guidance.
   provider with no such channel, and for a brain that does not advertise
   `chat.dispatchSteer` — the same gate the staged strip's buttons read, so the
   composer can never request a promotion the strip is hiding the recovery for.
-  A host old enough to advertise `chat.dispatchSteer` but too old to accept
-  `dispatchMode` on `chat.steer` answers `queued: true`; that one case falls
-  back to the legacy two-step promotion rather than dropping the user's choice,
-  and if the promotion fails the single queued message remains and the draft is
-  not restored as a duplicate.
+  A `queued: true` answer now has two causes: a host old enough to advertise
+  `chat.dispatchSteer` but too old to accept `dispatchMode` on `chat.steer`, and
+  a current host that staged the row on purpose because the live run refused an
+  inline steer. Both fall back to the legacy two-step promotion — right for the
+  first, harmless for the second — rather than dropping the user's choice, and
+  if the promotion fails the single queued message remains and the draft is not
+  restored as a duplicate.
+- **A non-throwing `chat.dispatchSteer` is not a delivery.** The host answers
+  `{ dispatchedAt: null }` without throwing when the running turn refused the
+  message, which a Cursor inline dispatch can hit at any time, so
+  `SyncService.dispatchChatSteer` returns a `Bool` read off `dispatchedAt`
+  instead of discarding the result. The staged chip and the queued echo are
+  cleared only when that reads true; otherwise the row keeps its queued display
+  until the turn boundary sends it. A durably queued command carries no
+  `dispatchedAt` key at all (the machine has not answered yet) and reads as
+  not-dispatched, which is the safe side — reconciliation corrects it. Both the
+  composer's promotion path and the staged strip's **Send now** / **Interrupt**
+  buttons go through the one private `dispatchSteer(_:mode:)` helper so they
+  cannot disagree about what a null answer means.
 - **The staged strip is only ever "you queued this".** With active-turn sends
   atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
   queue, so it no longer hides behind an accordion: one queued message is a

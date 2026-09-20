@@ -52,7 +52,7 @@ function buildStatus(
     localRuntimeHealth?: "ready" | "reachable" | "reachable_no_models" | "not_configured" | "unreachable";
     localRuntimeBlocker?: string | null;
     opencodeBinaryInstalled?: boolean;
-    opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
+    opencodeProviders?: AiSettingsStatus["opencodeProviders"];
     opencodeProvidersStale?: boolean;
     modelsDevLastFetchedAt?: number | null;
     piInstallation?: AiSettingsStatus["piInstallation"];
@@ -468,91 +468,7 @@ describe("ProvidersSection", () => {
     expect(current.queryByText("LM Studio is reachable at http://localhost:1234. ADE can use 2 loaded models from this runtime (ready).")).toBeNull();
   });
 
-  it("keeps Cursor API key setup in the Cursor runtime card and verifies on save", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
-    listApiKeysMock.mockReset();
-    listApiKeysMock
-      .mockResolvedValueOnce([])
-      .mockResolvedValue(["cursor"]);
-
-    renderProvidersSection("cursor");
-
-    await waitFor(() => {
-      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
-      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
-    });
-
-    await act(async () => {
-      screen.getByLabelText("Add Cursor API key").click();
-    });
-
-    fireEvent.change(screen.getByLabelText("Cursor API key"), { target: { value: "crsr_test" } });
-
-    await act(async () => {
-      screen.getByLabelText("Save Cursor API key").click();
-    });
-
-    await waitFor(() => {
-      expect(window.ade.ai.storeApiKey).toHaveBeenCalledWith("cursor", "crsr_test");
-      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor");
-    });
-    expect(await screen.findByText("Cursor connection verified.")).toBeTruthy();
-    expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
-  });
-
-  it("shows failed Cursor verification as a dismissible error", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
-    listApiKeysMock.mockReset();
-    listApiKeysMock
-      .mockResolvedValueOnce([])
-      .mockResolvedValue(["cursor"]);
-    const verifyApiKeyMock = window.ade.ai.verifyApiKey as ReturnType<typeof vi.fn>;
-    verifyApiKeyMock.mockResolvedValueOnce({
-      provider: "cursor",
-      ok: false,
-      message: "Verification request failed: Cannot find package '@cursor/sdk'",
-      source: "store",
-      verifiedAt: "2026-03-17T19:00:00.000Z",
-    });
-
-    renderProvidersSection("cursor");
-
-    await waitFor(() => {
-      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
-      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
-    });
-
-    await act(async () => {
-      screen.getByLabelText("Add Cursor API key").click();
-    });
-
-    fireEvent.change(screen.getByLabelText("Cursor API key"), { target: { value: "crsr_test" } });
-
-    await act(async () => {
-      screen.getByLabelText("Save Cursor API key").click();
-    });
-
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Cannot find package '@cursor/sdk'");
-    expect(screen.queryByText("Cursor verification failed.")).toBeNull();
-    expect(screen.queryByText("Invalid key")).toBeNull();
-    // The grid has exactly six status words; a failed verify is one of them,
-    // not a seventh phrase invented by the Cursor descriptor.
-    expect(screen.getByText("Needs attention")).toBeTruthy();
-
-    await act(async () => {
-      screen.getByLabelText("Dismiss error message").click();
-    });
-    expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("presents Cursor Sign in and API key as equal peers", async () => {
+  it("keeps Cursor key entry in the keys panel instead of the page body", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, []));
@@ -565,7 +481,9 @@ describe("ProvidersSection", () => {
 
     expect(screen.getByText("Sign in with Cursor or use a Cursor API key.")).toBeTruthy();
     expect(screen.getByLabelText("Sign in with Cursor")).toBeTruthy();
-    expect(screen.getByLabelText("Add Cursor API key")).toBeTruthy();
+    // Key entry is owned by ProviderApiKeysPanel; the old inline field is gone.
+    expect(screen.queryByLabelText("Add Cursor API key")).toBeNull();
+    expect(screen.queryByLabelText("Cursor API key")).toBeNull();
     expect(screen.queryByLabelText("Sign out of Cursor")).toBeNull();
   });
 
@@ -715,34 +633,6 @@ describe("ProvidersSection", () => {
     });
   });
 
-  it("forces a provider status refresh after verifying a stored Cursor API key", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
-    listApiKeysMock.mockReset();
-    listApiKeysMock.mockResolvedValue(["cursor"]);
-
-    renderProvidersSection("cursor");
-
-    await waitFor(() => {
-      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
-      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
-    });
-
-    await act(async () => {
-      screen.getByLabelText("Verify Cursor API key").click();
-    });
-
-    await waitFor(() => {
-      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor");
-      expect(window.ade.ai.getStatus).toHaveBeenCalledWith({
-        force: true,
-        refreshOpenCodeInventory: true,
-      });
-    });
-  });
-
   it("renders one labelled tile per provider on the grid", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
@@ -758,6 +648,55 @@ describe("ProvidersSection", () => {
       .toBeGreaterThan(0);
     // The catalogs are behind their provider, not spilled onto the grid.
     expect(screen.queryByLabelText("Search all OpenCode providers")).toBeNull();
+  });
+
+  /**
+   * Custom is not an eleventh provider.
+   *
+   * It sat as the last row INSIDE the providers table, where it read as a
+   * thing you sign in to. It is the combinations you saved of the ten above,
+   * so it is its own section, below them, with its own mark — a purple gear-and-wrench mark,
+   * not the ADE logo it used to wear and not a vendor's.
+   */
+  it("puts Custom in its own section below the provider table, under the Custom mark", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+
+    const { container } = renderProvidersSection();
+
+    const entry = await waitFor(() => {
+      const node = container.querySelector('[data-custom-presets-entry="true"]');
+      expect(node).toBeTruthy();
+      return node as HTMLElement;
+    });
+
+    const providerTable = container.querySelector('[data-settings-manager="ai-providers"]');
+    const customSection = container.querySelector('[data-settings-manager="ai-harnesses-entry"]');
+    expect(providerTable).toBeTruthy();
+    expect(customSection).toBeTruthy();
+    // Document order: the whole provider table, then Custom.
+    expect(providerTable!.compareDocumentPosition(customSection!) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+    expect(providerTable!.contains(customSection!)).toBe(false);
+    expect(customSection!.querySelector("[data-custom-mark]")).toBeTruthy();
+    expect(entry.querySelector("[data-harness-logo]")).toBeNull();
+  });
+
+  /**
+   * Every settings header used to wear a violet "Account" or amber "This
+   * computer" tag. Forty copies of the same four words is decoration, not
+   * information — the sidebar already groups the pages by where they save.
+   */
+  it("wears no scope badge on the providers table or the Custom section", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+
+    const { container } = renderProvidersSection();
+    await screen.findByLabelText("Open Claude Code settings");
+
+    expect(container.querySelector("[data-scope]")).toBeNull();
   });
 
   // "GitHub Copilot" is the longest name on the grid, and it used to render as
@@ -1420,6 +1359,71 @@ describe("ProvidersSection", () => {
     expect(screen.queryByLabelText("Connect LM Studio")).toBeNull();
   });
 
+  it("uses OpenCode provider env metadata for API-key-only providers", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProviders: [{
+        id: "zai",
+        name: "Z.AI",
+        connected: false,
+        modelCount: 16,
+        envVars: ["ZHIPU_API_KEY"],
+      }],
+    }));
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockResolvedValue({ methods: {} });
+
+    renderProvidersSection("opencode");
+
+    fireEvent.change(await screen.findByLabelText("Search all OpenCode providers"), {
+      target: { value: "Z.AI" },
+    });
+    const card = await screen.findByLabelText("Connect Z.AI");
+    await act(async () => {
+      card.click();
+    });
+
+    expect(screen.getByRole("dialog", { name: "Z.AI provider" })).toBeTruthy();
+    expect(screen.getByText("ZHIPU_API_KEY")).toBeTruthy();
+    expect(screen.getByLabelText("Add Z.AI key")).toBeTruthy();
+    expect(screen.queryByText(/No sign-in methods or API key fields are available/)).toBeNull();
+  });
+
+  it("treats environment-backed dynamic OpenCode credentials as externally managed", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProviders: [{
+        id: "zai",
+        name: "Z.AI",
+        connected: true,
+        modelCount: 16,
+        envVars: ["ZHIPU_API_KEY"],
+        credentialSource: "env",
+      }],
+    }));
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockResolvedValue({ methods: {} });
+
+    renderProvidersSection("opencode");
+
+    fireEvent.change(await screen.findByLabelText("Search all OpenCode providers"), {
+      target: { value: "Z.AI" },
+    });
+    const card = (await screen.findAllByLabelText("Open Z.AI"))[0];
+    await act(async () => {
+      card.click();
+    });
+
+    expect(screen.getByText(/Managed outside ADE/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Disconnect Z.AI" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Verify" })).toBeNull();
+    expect(screen.queryByLabelText("Add Z.AI key")).toBeNull();
+  });
+
   it("offers a retry when the initial OpenCode status probe fails", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
@@ -1612,7 +1616,7 @@ describe("ProvidersSection", () => {
     // The chip is a claim about the models, so it must come from the registry's
     // `previewTier`, not from a hand-maintained list of provider names.
     it("marks only the preview-tier providers with a Preview chip", async () => {
-      for (const [provider, expected] of [["grok", true], ["copilot", true], ["qwen", false], ["kimi", false]] as const) {
+      for (const [provider, expected] of [["grok", false], ["copilot", true], ["qwen", false], ["kimi", false]] as const) {
         const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
         getStatusMock.mockReset();
         getStatusMock.mockResolvedValue(buildStatus(true));
@@ -1733,7 +1737,7 @@ describe("ProvidersSection", () => {
           (await current.findAllByText("Sign in with Cursor or use a Cursor API key.")).length,
           `${platform}-${arch}`,
         ).toBeGreaterThan(0);
-        expect(current.queryByLabelText("Add Cursor API key"), `${platform}-${arch}`).toBeTruthy();
+        expect(current.queryByLabelText("Sign in with Cursor"), `${platform}-${arch}`).toBeTruthy();
         cleanup();
       }
     });

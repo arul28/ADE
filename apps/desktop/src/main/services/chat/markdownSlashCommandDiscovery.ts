@@ -8,6 +8,13 @@ export type DiscoveredMarkdownSlashCommand = {
   description: string;
   argumentHint?: string;
   filePath: string;
+  /**
+   * Whether the model may invoke this command/skill on its own. A skill opts
+   * out with `disable-model-invocation: true`; command files and agent files
+   * default to true. Consumers that inject skills into a system prompt must
+   * skip rows where this is false.
+   */
+  modelInvocable: boolean;
 };
 
 export type ResolvedMarkdownSlashCommandInvocation = {
@@ -26,6 +33,8 @@ type SkillFrontmatter = CommandFrontmatter & {
   name?: unknown;
   "user-invocable"?: unknown;
   userInvocable?: unknown;
+  "disable-model-invocation"?: unknown;
+  disableModelInvocation?: unknown;
 };
 
 type AgentFrontmatter = CommandFrontmatter & {
@@ -81,6 +90,40 @@ export function slashCommandKey(value: string): string {
 
 export function maybeString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/**
+ * A lenient read of a frontmatter boolean.
+ *
+ * The `yaml` package parses YAML 1.2 core, where only `true`/`false` are
+ * booleans — `no`, `off`, and `0` stay strings/numbers. A skill written with
+ * `user-invocable: no` (the YAML 1.1 spelling, which other harnesses accept)
+ * therefore stayed invocable and was advertised to the model. Treat every
+ * conventional spelling as a boolean and leave anything unrecognized
+ * undefined so the caller can pick its own default.
+ */
+export function frontmatterFlag(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return undefined;
+  }
+  if (typeof value !== "string") return undefined;
+  switch (value.trim().toLowerCase()) {
+    case "true":
+    case "yes":
+    case "on":
+    case "1":
+      return true;
+    case "false":
+    case "no":
+    case "off":
+    case "0":
+      return false;
+    default:
+      return undefined;
+  }
 }
 
 export function maybeArgumentHint(value: unknown): string | undefined {
@@ -187,6 +230,7 @@ export function discoverMarkdownCommandFiles(
       description,
       argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
       filePath: entryPath,
+      modelInvocable: true,
     });
   }, maxDepth);
   return commands;
@@ -216,6 +260,7 @@ export function discoverMarkdownAgentFiles(
       description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
       argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
       filePath: entryPath,
+      modelInvocable: true,
     });
   }, maxDepth);
   return commands;
@@ -298,17 +343,21 @@ export function discoverSkillCommands(
     const frontmatter = readFrontmatter(content) as SkillFrontmatter;
     if (
       respectUserInvocable
-      && (frontmatter["user-invocable"] === false || frontmatter.userInvocable === false)
+      && (frontmatterFlag(frontmatter["user-invocable"]) === false
+        || frontmatterFlag(frontmatter.userInvocable) === false)
     ) {
       continue;
     }
     const name = normalizeSlashCommandName(maybeString(frontmatter.name) ?? entry.name, { lowercase: lowercaseNames });
     if (!name) continue;
+    const disableModelInvocation = frontmatterFlag(frontmatter["disable-model-invocation"]) === true
+      || frontmatterFlag(frontmatter.disableModelInvocation) === true;
     commands.push({
       name,
       description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
       argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
       filePath: skillPath,
+      modelInvocable: !disableModelInvocation,
     });
   }
 
@@ -336,7 +385,8 @@ export function resolveSkillCommandFile(skillsDir: string, commandName: string):
       continue;
     }
     const frontmatter = readFrontmatter(content) as SkillFrontmatter;
-    if (frontmatter["user-invocable"] === false || frontmatter.userInvocable === false) continue;
+    if (frontmatterFlag(frontmatter["user-invocable"]) === false
+      || frontmatterFlag(frontmatter.userInvocable) === false) continue;
     const declaredName = maybeString(frontmatter.name);
     const candidateNames = new Set<string>();
     const dirNormalized = normalizeSlashCommandName(entry.name);

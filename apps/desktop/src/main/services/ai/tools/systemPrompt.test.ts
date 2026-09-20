@@ -195,67 +195,6 @@ describe("buildCodingAgentSystemPrompt", () => {
     });
   });
 
-  describe("orchestration role guidance", () => {
-    const orchestrationArgs = {
-      cwd: "/repo",
-      orchestrationRunId: "run-1",
-      orchestrationBundlePath: "/repo/.ade/orchestration/run-1",
-      adeSkillRoots: ["/repo/apps/desktop/resources/agent-skills"],
-    };
-
-    it("guides leads through the isolated orchestration protocol and planning gates", () => {
-      const result = buildCodingAgentSystemPrompt({
-        ...orchestrationArgs,
-        orchestrationRole: "lead",
-      });
-
-      expect(result).toContain("orchestration **LEAD**");
-      expect(result).toContain("read the matching `ade-*` skill");
-      expect(result).toContain("This protocol is active only because this prompt declares an orchestration role");
-      expect(result).toContain("provider-native child agents do not inherit it automatically");
-      expect(result).toContain("Leads never mutate the worktree or system");
-      expect(result).toContain("Planning is a deterministic, server-enforced sequence");
-      expect(result).toContain("recordCodebaseIntake");
-      expect(result).toContain("askPlanningRound");
-      expect(result).toContain("validationStrategy.steps");
-      expect(result).toContain("askUserForModelSelection");
-      expect(result).toContain("workDescription");
-      expect(result).toContain("plan.md is the single source of truth");
-      expect(result).toContain("Out of scope");
-      expect(result).toContain("Implementation order");
-      expect(result).toContain("Agent plan");
-      expect(result).toContain("Validation plan");
-      expect(result).toContain("UI decisions");
-      expect(result).toContain("Coordination");
-      expect(result).toContain("artifacts/ui/*.html");
-      expect(result).toContain("Lead live coordination");
-      expect(result).toContain("Implement button");
-      expect(result).toContain("requestPlanApproval");
-      expect(result).toContain("Spawn brief discipline");
-      expect(result).toContain("recoverStaleTasks` is a lead-invoked liveness sweep");
-      expect(result).toContain("Register externally visible results in the bundle");
-    });
-
-    it("guides workers to read shared state, stay scoped, update the plan, and report blockers", () => {
-      const result = buildCodingAgentSystemPrompt({
-        ...orchestrationArgs,
-        orchestrationRole: "worker",
-        orchestrationParentSessionId: "S-lead",
-        orchestrationStepId: "T-1",
-        orchestrationTag: "prompt-tools",
-      });
-
-      expect(result).toContain("orchestration **WORKER**");
-      expect(result).toContain("This protocol is active only because this prompt declares an orchestration role");
-      expect(result).toContain("Before editing, read `manifest.json`, `plan.md`, your spawn brief, and `## PEERS`");
-      expect(result).toContain("Only work in this lane and only on the assigned task");
-      expect(result).toContain("Use `planAppend` when you start");
-      expect(result).toContain("when you are stuck");
-      expect(result).toContain("Use `messageAgent` to report status");
-      expect(result).toContain("inter-worker coordination goes through the lead");
-    });
-  });
-
   it("includes interactive question guidance by default", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
     expect(result).toContain("ask one concise question");

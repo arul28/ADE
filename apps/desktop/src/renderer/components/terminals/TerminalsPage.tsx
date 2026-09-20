@@ -514,8 +514,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [projectBinding?.key, work],
   );
 
-  // Jump-to-session bridge for the orchestration panel (and the worker→lead
-  // button): `onOpenSession` dispatches `ade:work:select-session`; this is the
+  // Jump-to-session bridge for spawned-chat deep links: `onOpenSession`
+  // dispatches `ade:work:select-session`; this is the
   // listener that actually focuses the target chat in the Work tab. Without it
   // the buttons are dead (the event had no subscriber).
   useEffect(() => {
@@ -1159,7 +1159,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     setTool: setWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
   } = useWorkSidebarTool(activeLaneId);
-  const { setOrchestratorEnabled } = work;
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
@@ -1173,24 +1172,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.((event) => {
       if (event.type === "open-request" && browserEventMatchesProject(event, projectRoot)) openBrowserSidebar();
     }) ?? null;
-    // The composer's "+" menu fires `ade:work:start-orchestrator-chat` to flip
-    // the orthogonal orchestrator flag on the shared chat draft (keeps prompt /
-    // model / lane intact); the stop event clears it back to a normal chat.
-    const startOrchestratorChat = () => {
-      setOrchestratorEnabled(true);
-    };
-    const stopOrchestratorChat = () => {
-      setOrchestratorEnabled(false);
-    };
-    window.addEventListener("ade:work:start-orchestrator-chat", startOrchestratorChat);
-    window.addEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
     return () => {
       window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
-      window.removeEventListener("ade:work:start-orchestrator-chat", startOrchestratorChat);
-      window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
-  }, [active, isRemoteProject, projectRoot, setWorkSidebarTool, setOrchestratorEnabled]);
+  }, [active, isRemoteProject, projectRoot, setWorkSidebarTool]);
 
   // "Open this tool" asked for from outside the Work page — the app shell's
   // browser open-request handler, the command palette. Only this page knows the
@@ -1446,7 +1432,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         visibleSessions={work.visibleSessions}
         activeItemId={work.activeItemId}
         draftKind={work.draftKind}
-        orchestratorEnabled={work.orchestratorEnabled}
         draftLaneId={work.draftLaneId}
         draftMachineId={work.draftMachineId}
         draftContextTargetId={draftContextTargetId}
@@ -1489,7 +1474,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.visibleSessions,
       work.activeItemId,
       work.draftKind,
-      work.orchestratorEnabled,
       work.draftLaneId,
       work.draftMachineId,
       draftContextTargetId,

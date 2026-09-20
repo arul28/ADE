@@ -6,6 +6,7 @@ import { getModelById, resolveModelDescriptor, resolveChatProviderForDescriptor 
 import type {
   AgentChatCreateArgs,
   AgentChatInterruptArgs,
+  AgentChatScheduledWorkItem,
   AgentChatSendArgs,
   AgentChatSession,
   AgentChatSessionSummary,
@@ -20,6 +21,7 @@ import type {
   TestRunSummary,
   TestSuiteDefinition,
 } from "../../../../shared/types";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../../shared/types";
 import type { IssueTracker } from "../../cto/issueTracker";
 import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
@@ -202,7 +204,7 @@ export interface CtoOperatorToolDeps {
   }) => Promise<any>;
   scheduledWorkService?: {
     create: (args: { sessionId: string; prompt: string; cron?: string; runAt?: string; delaySeconds?: number; recurring?: boolean; reason?: string }) => Promise<any>;
-    list: (args?: { sessionId?: string; includeTerminal?: boolean }) => Promise<any[]>;
+    list: (args?: { sessionId?: string; includeTerminal?: boolean }) => Promise<AgentChatScheduledWorkItem[]>;
     getState: (args: { sessionId: string }) => Promise<any>;
     cancel: (args: { sessionId: string; scheduleId: string }) => Promise<any>;
     setPaused: (args: { sessionId: string; paused: boolean }) => Promise<any>;
@@ -258,15 +260,6 @@ export interface CtoOperatorToolDeps {
     getStatus: (args?: any) => Promise<any> | any;
     listSessions: (args?: any) => Promise<any> | any;
     getTrace?: (args?: any) => Promise<any> | any;
-  } | null;
-  /**
-   * Orchestration reads. Positional args, matching the real service — the CTO
-   * tools adapt, rather than the service being reshaped for one caller.
-   */
-  orchestrationService?: {
-    runList: (laneId?: string, options?: { limit?: number }) => Promise<any[]>;
-    bundleRead: (runId: string, bundlePath: string) => Promise<any>;
-    bundleRootFor: (laneId: string, runId: string) => string;
   } | null;
 }
 
@@ -626,7 +619,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   const insights = inPack("insights");
   const config = inPack("config");
   const devices = inPack("devices");
-  const orchestration = inPack("orchestration");
 
   tools.listLanes = core({
     description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work.",
@@ -2310,6 +2302,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           kind: kind ?? null,
           ownerKind: ownerKind ?? undefined,
           ownerId: ownerId ?? undefined,
+          // This tool lists PROOF. A scene still is the picture a generated
+          // view left behind — the CTO drew it itself, moments ago — so
+          // offering it back as evidence is the CTO citing its own drawing.
+          ...PROOF_LISTING_ARTIFACT_FILTER,
           limit,
         });
         return {
@@ -2839,6 +2835,39 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   // ── Scheduled work ─────────────────────────────────────────────────────────
 
+  /**
+   * A project-wide `listScheduledWork` used to hand the model every field of
+   * every job, full prompts included — one real call came back at 50 KB and was
+   * the single result that tipped a live CTO thread into auto-compaction. The
+   * model needs to know what is armed and where, not to re-read prompts it
+   * wrote; `getScheduledWorkState` is still there for one chat's full picture.
+   */
+  const MAX_SCHEDULED_WORK_ITEMS = 50;
+  const SCHEDULED_WORK_PROMPT_PREVIEW_CHARS = 120;
+
+  const truncatePreview = (value: string, max: number): string => {
+    const collapsed = value.replace(/\s+/g, " ").trim();
+    return collapsed.length > max ? `${collapsed.slice(0, max - 1).trimEnd()}…` : collapsed;
+  };
+
+  const toCompactScheduledWorkRecord = (item: AgentChatScheduledWorkItem) => ({
+    id: item.id,
+    sessionId: item.sessionId,
+    kind: item.kind,
+    status: item.status,
+    ...(item.cron ? { cron: item.cron } : {}),
+    ...(item.nextRunAt ? { nextRunAt: item.nextRunAt } : {}),
+    ...(item.lastRunAt ? { lastRunAt: item.lastRunAt } : {}),
+    ...(item.late ? { late: true } : {}),
+    // Guarded rather than trusted: these rows come back over the runtime RPC,
+    // where the declared type is a promise about the sender and not about the
+    // bytes. A row from an older brain with no `prompt` threw here and took the
+    // whole listing down.
+    ...(typeof item.prompt === "string" && item.prompt.trim()
+      ? { prompt: truncatePreview(item.prompt, SCHEDULED_WORK_PROMPT_PREVIEW_CHARS) }
+      : {}),
+  });
+
   tools.scheduleWork = scheduling({
     description:
       "Schedule durable work on a chat: a one-shot wakeup (delaySeconds or runAt) or a recurring five-field cron in the "
@@ -2868,7 +2897,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.listScheduledWork = scheduling({
-    description: "List ADE-managed wakeups, cron jobs, and loops — for one chat, or across the project.",
+    description:
+      "List ADE-managed wakeups, cron jobs, and loops — for one chat, or across the project. "
+      + `Returns a compact record per job (prompts truncated to ${SCHEDULED_WORK_PROMPT_PREVIEW_CHARS} characters) `
+      + `and at most ${MAX_SCHEDULED_WORK_ITEMS} of them; read 'count' for the real total and 'truncated' to know `
+      + "the list was cut. Narrow with sessionId, or call getScheduledWorkState for one chat's full picture.",
     inputSchema: z.object({
       sessionId: z.string().optional(),
       includeTerminal: z.boolean().optional().default(false),
@@ -2876,10 +2909,27 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     execute: async ({ sessionId, includeTerminal }) => {
       const scheduledWork = deps.scheduledWorkService;
       if (!scheduledWork) return unavailable("Scheduled work");
-      return attempt(() => scheduledWork.list({
-        ...(sessionId?.trim() ? { sessionId: sessionId.trim() } : {}),
-        includeTerminal,
-      }));
+      try {
+        const items = await scheduledWork.list({
+          ...(sessionId?.trim() ? { sessionId: sessionId.trim() } : {}),
+          includeTerminal,
+        });
+        // The dep's type says this is an array, but the dep is injected — a
+        // remote or mocked scheduler that returns something else would otherwise
+        // crash the tool instead of reporting an empty list.
+        const all = Array.isArray(items) ? items : [];
+        const kept = all.slice(0, MAX_SCHEDULED_WORK_ITEMS);
+        return {
+          success: true as const,
+          count: all.length,
+          truncated: all.length > kept.length,
+          // `result` stays the item array so the shape the CTO already knows
+          // (and the destructive-tool tests assert) keeps working.
+          result: kept.map(toCompactScheduledWorkRecord),
+        };
+      } catch (error) {
+        return { success: false as const, error: getErrorMessage(error) };
+      }
     },
   });
 
@@ -3283,41 +3333,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       const getTrace = browser?.getTrace;
       if (!getTrace) return unavailable("Browser traces");
       return attempt(() => getTrace.call(browser, { sessionId }));
-    },
-  });
-
-  // ── Orchestration reads ────────────────────────────────────────────────────
-
-  tools.listOrchestrationRuns = orchestration({
-    description:
-      "List orchestration runs and their status. Read-only — leads and workers drive the runs themselves. "
-      + "Omit laneId to list runs across every lane.",
-    inputSchema: z.object({
-      laneId: z.string().optional().describe("Restrict to one lane. Read-only, so any lane is fine."),
-      limit: z.number().int().min(1).max(100).optional().default(25),
-    }),
-    execute: async ({ laneId, limit }) => {
-      const orchestration = deps.orchestrationService;
-      if (!orchestration) return unavailable("Orchestration");
-      return attempt(() => orchestration.runList(laneId?.trim() || undefined, { limit }));
-    },
-  });
-
-  tools.readOrchestrationBundle = orchestration({
-    description:
-      "Read one orchestration run's bundle: its manifest, plan, and registered assets. "
-      + "Both ids come from listOrchestrationRuns.",
-    inputSchema: z.object({
-      runId: z.string().min(1),
-      laneId: z.string().min(1).describe("Lane the run belongs to — its bundle lives in that lane's worktree."),
-    }),
-    execute: async ({ runId, laneId }) => {
-      const orchestration = deps.orchestrationService;
-      if (!orchestration) return unavailable("Orchestration");
-      return attempt(() => orchestration.bundleRead(
-        runId,
-        orchestration.bundleRootFor(laneId, runId),
-      ));
     },
   });
 

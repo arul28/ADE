@@ -1017,7 +1017,6 @@ export type AiFeatureKey =
   | "commit_messages"
   | "pr_descriptions"
   | "terminal_summaries"
-  | "orchestrator"
   | "initial_context";
 
 export type AiModelDescriptor = {
@@ -1116,7 +1115,7 @@ export type AcpProviderDiagnostics = {
   /** Null when nothing was found — the bare command name is a guess, not a path. */
   binaryPath: string | null;
   binarySource: "env" | "auth" | "path" | "common-dir" | "fallback-command";
-  /** Directory the CLI reads its config from. Grok's is fixed at `~/.grok`. */
+  /** Directory the CLI reads its config from, including Grok's `GROK_HOME`. */
   configHome: string | null;
   version: string | null;
   /** Why no version, when there is none. */
@@ -1126,6 +1125,28 @@ export type AcpProviderDiagnostics = {
   /** Present only when the vendor ships a `doctor` command and it was run. */
   doctor: { command: string; exitCode: number | null; output: string } | null;
   checkedAt: string;
+};
+
+/**
+ * Where a machine-scoped API key was resolved from.
+ *
+ * Only `store` is ADE's to replace or delete — an `env` key belongs to the
+ * machine's environment and the UI must present it read-only.
+ */
+export type MachineApiKeySource = "store" | "env";
+
+/**
+ * What a settings surface needs to render a machine-scoped key without ever
+ * receiving the secret itself.
+ */
+export type MachineApiKeyStatus = {
+  provider: string;
+  /** Whether ADE can resolve a key at all, from any tier. */
+  configured: boolean;
+  /** Where the resolved key came from, or null when there is none. */
+  source: MachineApiKeySource | null;
+  /** The environment variable checked as the last tier, so the UI can name it. */
+  envVar: string | null;
 };
 
 export type AiApiKeyVerificationResult = {
@@ -1573,6 +1594,19 @@ export type PiLoginProvider = {
   isSubscription?: boolean;
 };
 
+/** Non-secret OpenCode provider metadata shared by main, preload, and renderer. */
+export type OpenCodeProviderSummary = {
+  id: string;
+  name: string;
+  connected: boolean;
+  modelCount: number;
+  availableModelCount?: number;
+  /** Environment variable names OpenCode associates with credentials. */
+  envVars?: string[];
+  /** Non-secret source of an API credential visible to the ADE process. */
+  credentialSource?: "config" | "env";
+};
+
 export type PiAuthPromptKind = "text" | "secret" | "select" | "confirm" | "manual_code";
 
 export type PiAuthPrompt = {
@@ -1630,6 +1664,25 @@ export type CursorSdkLoginResult =
   | { ok: true; email?: string; apiKeyExpiresAtMs?: number }
   | { ok: false; error: string };
 
+/** One saved harness preset, as an agent-facing row. */
+export type AiHarnessPresetSummary = {
+  id: string;
+  name: string;
+  harness: string;
+  model: string;
+  /** "Claude account · Work", "API key · OpenRouter", "Codex subscription". */
+  source: string;
+};
+
+/** One provider account on this machine. Never carries the config path. */
+export type AiProviderAccountSummary = {
+  id: string;
+  provider: string;
+  label: string;
+  isDefault: boolean;
+  signedIn: boolean;
+};
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -1661,7 +1714,7 @@ export type AiSettingsStatus = {
   /** Mirrors OpenCodeBinarySource in main/services/opencode/openCodeBinaryManager.ts. */
   opencodeBinarySource?: "user-installed" | "tools-cache" | "bundled" | "missing";
   opencodeInventoryError?: string | null;
-  opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
+  opencodeProviders?: OpenCodeProviderSummary[];
   /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */
   opencodeProvidersStale?: boolean;
   customProviders?: AiCustomProviderConfig[];
@@ -1679,6 +1732,14 @@ export type AiSettingsStatus = {
     encryptedStorePath?: string | null;
     legacyPlaintextPath?: string | null;
   };
+  /**
+   * Saved harness presets and this machine's provider accounts. Agents read
+   * these from `ade actions run ai getStatus` to answer "what brains exist"
+   * without a second round trip; the `ade-harnesses` skill documents them.
+   * Omitted when the machine has none.
+   */
+  harnessPresets?: AiHarnessPresetSummary[];
+  providerAccounts?: AiProviderAccountSummary[];
 };
 export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
 
@@ -1759,34 +1820,6 @@ export type AiConflictResolutionConfig = {
   autoApplyThreshold?: number;
 };
 
-export type AiOrchestratorHookEvent = "TeammateIdle" | "TaskCompleted";
-
-export type AiOrchestratorHookConfig = {
-  command: string;
-  timeoutMs?: number;
-};
-
-export type AiOrchestratorConfig = {
-  teammatePlanMode?: "off" | "auto" | "required";
-  maxParallelWorkers?: number;
-  defaultMergePolicy?: "sequential" | "batch-at-end" | "per-step";
-  defaultConflictHandoff?: "auto-resolve" | "ask-user" | "orchestrator-decides";
-  workerHeartbeatIntervalMs?: number;
-  workerHeartbeatTimeoutMs?: number;
-  workerIdleTimeoutMs?: number;
-  stepTimeoutDefaultMs?: number;
-  maxRetriesPerStep?: number;
-  contextPressureThreshold?: number;
-  progressiveLoading?: boolean;
-  maxTotalTokenBudget?: number;
-  maxPerStepTokenBudget?: number;
-  defaultOrchestratorModel?: ModelConfig;
-  autoResolveInterventions?: boolean;
-  interventionConfidenceThreshold?: number;
-  hooks?: Partial<Record<AiOrchestratorHookEvent, AiOrchestratorHookConfig>>;
-  laneExclusivity?: boolean;
-};
-
 /** Unified config for AI-generated titles and summaries across all session types (chat, CLI, terminal). */
 export type SessionIntelligenceConfig = {
   titles?: {
@@ -1838,10 +1871,8 @@ export type AiConfig = {
   budgets?: AiBudgets;
   permissions?: AiPermissionSettings;
   conflictResolution?: AiConflictResolutionConfig;
-  orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
   // OpenCode/runtime-backed fields
-  defaultModel?: ModelId;
   apiKeys?: Record<string, string>;
   localProviders?: AiLocalProviderConfigs;
   /** User-defined OpenAI-compatible providers injected into the OpenCode server config. */
@@ -2058,8 +2089,6 @@ export type ProjectConfigValidationResult = {
 export type ProjectConfigTrust = {
   sharedHash: string;
   localHash: string;
-  approvedSharedHash: string | null;
-  requiresSharedTrust: boolean;
 };
 
 export type ProjectConfigSnapshot = {
@@ -2079,8 +2108,6 @@ export type ProjectConfigDiff = {
   localChanged: boolean;
   sharedHash: string;
   localHash: string;
-  approvedSharedHash: string | null;
-  requiresSharedTrust: boolean;
 };
 
 export type TestRunSummary = {

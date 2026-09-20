@@ -31,7 +31,11 @@ import {
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
   GROK_SESSION_NOTIFICATION_METHOD,
   GROK_YOLO_MODE_CHANGED_METHOD,
+  copilotPermissionModeDegradationNote,
+  copilotNativeModeValue,
+  copilotSupervisionPermissionMode,
   includeCopilotSlashCommand,
+  KIMI_CONFIG_OPTION_IDS,
   kimiDialect,
   qwenDialect,
   readGrokPromptUsage,
@@ -179,18 +183,20 @@ describe("dialect capability declarations", () => {
     expect(acpDialectFor(providerId).advertiseFsCapability).toBe(false);
   });
 
-  it("qwen owns one process per session because 0.22.3 has no session/close", () => {
+  it("qwen owns one process per session because 0.24.0 has no session/close", () => {
     expect(qwenDialect.closeStyle).toBe("kill_process");
     expect(qwenDialect.oneProcessPerSession).toBe(true);
     expect(qwenDialect.authProbe.methodId).toBe("openai");
   });
 
-  it("kimi 0.39.1 implements session/close and still hides usage", () => {
+  it("kimi 0.39.1 baseline implements close and 2.0.0 config controls", () => {
     expect(kimiDialect.closeStyle).toBe("close_request");
     expect(kimiDialect.oneProcessPerSession).toBe(false);
     expect(kimiDialect.usageSource).toBe("none");
     expect(kimiDialect.degradationNotes.length).toBeGreaterThan(0);
     expect(kimiDialect.authProbe.methodId).toBe("login");
+    expect(kimiDialect.sessionConfig.declared).toBe(true);
+    expect([...kimiDialect.configOptionIds]).toEqual([...KIMI_CONFIG_OPTION_IDS]);
   });
 });
 
@@ -266,15 +272,24 @@ describe("spawn plans", () => {
     ).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits"]));
   });
 
-  it("grok sets no config home, even though GROK_HOME is a real override", () => {
-    // `xai-dirs` honors GROK_HOME. ADE declines it on purpose: a private home
-    // would hide the user's own `grok login` credential and rules.
-    const plan = grokDialect.buildSpawnPlan({ binaryPath: "/bin/grok", cwd: "/lane", baseEnv: { PATH: "/bin" } });
+  it("grok passes its vendor-supported config home through the child environment", () => {
+    const plan = grokDialect.buildSpawnPlan({
+      binaryPath: "/bin/grok",
+      cwd: "/lane",
+      baseEnv: { PATH: "/bin" },
+      configHome: "/tmp/ade-grok-home",
+    });
     expect(plan.env.PATH).toBe("/bin");
-    expect(plan.env.GROK_HOME).toBeUndefined();
+    expect(plan.env.GROK_HOME).toBe("/tmp/ade-grok-home");
     expect(plan.env.QWEN_HOME).toBeUndefined();
     expect(plan.env.KIMI_CODE_HOME).toBeUndefined();
     expect(plan.env.COPILOT_HOME).toBeUndefined();
+  });
+
+  it("keeps Grok pools separate when their config homes differ", () => {
+    const first = hashPoolEnv({ GROK_HOME: "/tmp/grok-one", XAI_API_KEY: "key" }, grokDialect.poolEnvKeys);
+    const second = hashPoolEnv({ GROK_HOME: "/tmp/grok-two", XAI_API_KEY: "key" }, grokDialect.poolEnvKeys);
+    expect(first).not.toBe(second);
   });
 
   it("qwen exports QWEN_HOME only when a config home exists", () => {
@@ -333,16 +348,46 @@ describe("spawn plans", () => {
     expect(plan.env.COPILOT_HOME).toBe("/home/.copilot");
   });
 
-  it("passes the selected model to Copilot's ACP process", () => {
-    const plan = copilotDialect.buildSpawnPlan({
+  it("copilot passes the selected model and effort as process-global ACP flags", () => {
+    const context = {
       binaryPath: "/bin/copilot",
       cwd: "/lane/worktree",
       baseEnv: {},
       modelId: "github-copilot/gpt-5.4",
-    });
+      reasoningEffort: "high",
+    };
+    const plan = copilotDialect.buildSpawnPlan(context);
+    const planWithoutModel = copilotDialect.buildSpawnPlan({ ...context, modelId: undefined });
+    expect(plan.args).toEqual(expect.arrayContaining(["--model", "gpt-5.4", "--effort", "high"]));
+    expect(hashSpawnInvocation(plan)).not.toBe(hashSpawnInvocation(planWithoutModel));
+  });
 
-    expect(plan.args).toContain("--model");
-    expect(plan.args[plan.args.indexOf("--model") + 1]).toBe("gpt-5.4");
+  it.each([
+    ["plan", "https://agentclientprotocol.com/protocol/session-modes#plan"],
+    ["default", "https://agentclientprotocol.com/protocol/session-modes#agent"],
+    ["auto-edit", "https://agentclientprotocol.com/protocol/session-modes#agent"],
+    ["auto", "https://agentclientprotocol.com/protocol/session-modes#agent"],
+    ["yolo", "https://agentclientprotocol.com/protocol/session-modes#autopilot"],
+  ] as const)("copilot maps ADE %s to an honest 1.0.86 ACP mode", (mode, expected) => {
+    expect(copilotNativeModeValue(mode)).toBe(expected);
+  });
+
+  it.each(["plan", "default", "yolo", null])("copilot only warns about an autonomy downgrade for auto modes (%s)", (mode) => {
+    expect(copilotPermissionModeDegradationNote(mode)).toBeNull();
+  });
+
+  it.each(["auto-edit", "auto"])("copilot explains its %s downgrade", (mode) => {
+    expect(copilotPermissionModeDegradationNote(mode)).toContain("approval-gated Agent mode");
+  });
+
+  it.each([
+    ["plan", "plan"],
+    ["default", "default"],
+    ["auto-edit", "default"],
+    ["auto", "default"],
+    ["yolo", "yolo"],
+  ] as const)("copilot supervises %s as %s", (mode, expected) => {
+    expect(copilotSupervisionPermissionMode(mode)).toBe(expected);
   });
 
   // ADE removed its Copilot trust pre-seed: a live three-arm experiment on
@@ -550,6 +595,28 @@ describe("session entry policy", () => {
       adeHasTranscript: true,
     });
     expect(plan.mode).toBe("resume");
+    expect(plan.suppressReplay).toBe(false);
+  });
+
+  it("falls back to load when the agent handshake omits resume", () => {
+    const plan = resolveAcpSessionEntry({
+      dialect: qwenDialect,
+      existingSessionId: "s1",
+      adeHasTranscript: true,
+      agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} } },
+    });
+    expect(plan.mode).toBe("load");
+    expect(plan.suppressReplay).toBe(true);
+  });
+
+  it("starts a fresh session when the agent handshake omits rejoin support", () => {
+    const plan = resolveAcpSessionEntry({
+      dialect: copilotDialect,
+      existingSessionId: "s1",
+      adeHasTranscript: true,
+      agentCapabilities: { sessionCapabilities: { list: {} } },
+    });
+    expect(plan.mode).toBe("new");
     expect(plan.suppressReplay).toBe(false);
   });
 
@@ -965,17 +1032,42 @@ describe("slash command advertisement", () => {
 });
 
 describe("session config", () => {
-  it("qwen sets mode, model, and thinking", async () => {
+  it("qwen sets mode, model, and reasoning_effort", async () => {
     const harness = makeHarness(qwenDialect);
     harness.agent.on(ACP_METHOD.sessionSetConfigOption, () => ({ result: {} }));
     const session = await withDeadline("open", harness.open());
     await withDeadline("set", session.setConfigOption({ configId: "model", value: "qwen3-coder" }));
-    const call = harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionSetConfigOption);
-    expect(call?.params).toMatchObject({ sessionId: "session-1", configId: "model", value: "qwen3-coder" });
-    expect([...qwenDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
+    await withDeadline("set reasoning", session.setConfigOption({ configId: "reasoning_effort", value: "high" }));
+    const configIdOf = (entry: { params: unknown }): unknown =>
+      typeof entry.params === "object" && entry.params !== null && "configId" in entry.params
+        ? entry.params.configId
+        : undefined;
+    const modelCall = harness.agent.received.find(
+      (entry) => entry.method === ACP_METHOD.sessionSetConfigOption && configIdOf(entry) === "model",
+    );
+    const reasoningCall = harness.agent.received.find(
+      (entry) => entry.method === ACP_METHOD.sessionSetConfigOption && configIdOf(entry) === "reasoning_effort",
+    );
+    expect(modelCall?.params).toMatchObject({ sessionId: "session-1", configId: "model", value: "qwen3-coder" });
+    expect(reasoningCall?.params).toMatchObject({
+      sessionId: "session-1",
+      configId: "reasoning_effort",
+      value: "high",
+    });
+    expect([...qwenDialect.configOptionIds]).toEqual(["mode", "model", "reasoning_effort"]);
   });
 
-  it.each(["kimi", "grok", "copilot"] as const)(
+  it("kimi forwards mode, model, and thinking config options", async () => {
+    const harness = makeHarness(kimiDialect);
+    harness.agent.on(ACP_METHOD.sessionSetConfigOption, () => ({ result: {} }));
+    const session = await withDeadline("open", harness.open());
+    await withDeadline("set", session.setConfigOption({ configId: "thinking", value: "high" }));
+    const call = harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionSetConfigOption);
+    expect(call?.params).toMatchObject({ sessionId: "session-1", configId: "thinking", value: "high" });
+    expect([...kimiDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
+  });
+
+  it.each(["grok"] as const)(
     "%s refuses a config option instead of sending a call it does not support",
     async (providerId) => {
       const harness = makeHarness(acpDialectFor(providerId));
@@ -997,6 +1089,18 @@ describe("session config", () => {
       method: ACP_METHOD.sessionSetModel,
       params: { sessionId: "session-1", modelId: "gpt-5.4" },
     });
+  });
+
+  it("copilot accepts its native mode config option", async () => {
+    const harness = makeHarness(copilotDialect);
+    harness.agent.on(ACP_METHOD.sessionSetConfigOption, () => ({ result: {} }));
+    const session = await withDeadline("open", harness.open());
+    await withDeadline("set", session.setConfigOption({
+      configId: "mode",
+      value: "https://agentclientprotocol.com/protocol/session-modes#plan",
+    }));
+    expect(harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionSetConfigOption)?.params)
+      .toMatchObject({ configId: "mode", value: "https://agentclientprotocol.com/protocol/session-modes#plan" });
   });
 });
 
@@ -1289,6 +1393,17 @@ describe("unsupervised session invariant", () => {
     expect(notices(harness)).toHaveLength(0);
   });
 
+  it("treats Copilot's auto-edit downgrade as approval-gated", async () => {
+    const harness = makeHarness(copilotDialect);
+    writingTurn(harness);
+    const session = await withDeadline("open", harness.open({ permissionMode: "auto-edit" }));
+    await withDeadline("turn", session.prompt({ turnId: "t1", blocks: [textPromptBlock("go")] }));
+    expect(notices(harness)).toHaveLength(1);
+    expect(notices(harness)[0]).toMatchObject({
+      message: "GitHub Copilot changed files here without asking ADE to approve. ADE's approval cards can't gate this chat.",
+    });
+  });
+
   it("stays silent for a read-only turn, because reads never prompt anywhere", async () => {
     const harness = makeHarness(grokDialect);
     writingTurn(harness, "read");
@@ -1570,8 +1685,18 @@ describe("close and eviction", () => {
     const harness = makeHarness(copilotDialect);
     const session = await withDeadline("open", harness.open());
     await withDeadline("close", session.close("chat ended"));
-    // Copilot 1.0.82 answers -32601. Degraded, not thrown. The pooled process
-    // stays usable for other chats.
+    // Older Copilot ACP builds can answer -32601. Degraded, not thrown. The
+    // pooled process stays usable for other chats.
+    expect(session.connection.isAlive()).toBe(true);
+  });
+
+  it("does not send close when an older Copilot handshake omits it", async () => {
+    const harness = makeHarness(copilotDialect, {
+      agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} } },
+    });
+    const session = await withDeadline("open", harness.open());
+    await withDeadline("close", session.close("chat ended"));
+    expect(harness.agent.methodsReceived()).not.toContain(ACP_METHOD.sessionClose);
     expect(session.connection.isAlive()).toBe(true);
   });
 });
@@ -1788,7 +1913,7 @@ describe("run | degrade conformance matrix", () => {
     prompt_stream: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
     permission: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
     cancel: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
-    // Qwen 0.22.3 has no session/close. It degrades to ending its private process.
+    // Qwen 0.24.0 has no session/close. It degrades to ending its private process.
     close_eviction: { qwen: "degrade", kimi: "run", grok: "run", copilot: "run" },
     // Copilot's resume is unverified, so ADE uses session/load instead.
     resume: { qwen: "run", kimi: "run", grok: "run", copilot: "degrade" },

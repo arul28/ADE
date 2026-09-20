@@ -46,9 +46,8 @@
  * 8. Never advertise the client `fs` capability. Grok proxies binary reads
  *    through the text file system and corrupts the bytes.
  * 9. `GROK_HOME` IS a valid config-home override (`xai-dirs` reads it). ADE
- *    still sets nothing, because a private home would hide the user's own
- *    `grok login` credential and rules. Reusing `~/.grok` is a choice, not a
- *    limitation.
+ *    passes the resolved value through unchanged so the auth probe, diagnostics,
+ *    and session all inspect the same credential directory. ADE never writes it.
  */
 
 import {
@@ -65,6 +64,7 @@ import {
   standardLoad,
   standardResume,
   transportGatedMcpInjection,
+  withOptionalEnv,
 } from "./shared";
 import { grokSupervisionEnv } from "../../../../../shared/grokSupervision";
 
@@ -220,24 +220,27 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
     command: context.binaryPath,
     args,
     cwd: context.cwd,
-    // `GROK_HOME` is a real override, but ADE deliberately does not set one:
-    // the user's `~/.grok` holds the login token and their own rules. The only
-    // provider environment ADE adds is the Claude-import kill switch, which
-    // must travel with the `--permission-mode` flag above or neither works.
-    env: { ...context.baseEnv, ...grokSupervisionEnv() },
+    // `GROK_HOME` is vendor-supported. Passing the resolved path keeps an
+    // explicit override and the default ~/.grok path consistent with the
+    // diagnostics/auth-probe surfaces. The supervision marker must travel
+    // alongside --permission-mode or neither half works.
+    env: withOptionalEnv(context.baseEnv, {
+      GROK_HOME: context.configHome,
+      ...grokSupervisionEnv(),
+    }),
   };
 }
 
 export const grokDialect = defineAcpDialect({
   providerId: "grok",
   displayName: "Grok",
-  tier: "preview",
+  tier: "first_class",
   binaryNames: ["grok"],
   buildSpawnPlan,
 
   // A `session/cancel` REQUEST answers -32601. The notification form works.
   cancelStyle: "notification",
-  poolEnvKeys: ["XAI_API_KEY"],
+  poolEnvKeys: ["GROK_HOME", "XAI_API_KEY"],
   oneProcessPerSession: false,
   // Grok corrupts binary assets when it proxies reads through the client text
   // file system. This must stay false.

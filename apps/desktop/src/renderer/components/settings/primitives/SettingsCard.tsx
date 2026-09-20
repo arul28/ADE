@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
-import type { SettingScope } from "../settingsManifest";
-import { ScopeChip } from "./ScopeChip";
+import { SettingsPageShell } from "./SettingsPageShell";
 
 /**
  * One setting, one card. The card owns its anchor id, so a Cmd-K result or a
@@ -12,9 +11,6 @@ export function SettingsCard({
   title,
   description,
   control,
-  scope,
-  showScopeChip = false,
-  remoteMachineName,
   children,
   /** Renders the control below the description instead of to its right. */
   stacked = false,
@@ -24,71 +20,22 @@ export function SettingsCard({
   title: string;
   description?: React.ReactNode;
   control?: React.ReactNode;
-  scope?: SettingScope;
-  showScopeChip?: boolean;
-  remoteMachineName?: string | null;
   children?: React.ReactNode;
   stacked?: boolean;
   disabled?: boolean;
 }) {
   return (
-    <section
-      id={anchor}
-      data-settings-anchor={anchor}
-      style={{
-        scrollMarginTop: 16,
-        padding: 16,
-        background: "color-mix(in srgb, var(--color-card) 90%, var(--color-bg) 10%)",
-        border: `1px solid ${COLORS.borderMuted}`,
-        borderRadius: 12,
-        opacity: disabled ? 0.6 : 1,
-      }}
+    <SettingsPageShell
+      anchor={anchor}
+      title={title}
+      description={description}
+      sectionStyle={{ opacity: disabled ? 0.6 : 1 }}
+      headerStacked={stacked}
+      aside={control ? <div style={{ flexShrink: 0 }}>{control}</div> : null}
+      bodyStyle={{ marginTop: 14 }}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: stacked ? "flex-start" : "center",
-          justifyContent: "space-between",
-          gap: 16,
-          flexDirection: stacked ? "column" : "row",
-        }}
-      >
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <h3
-              style={{
-                margin: 0,
-                fontFamily: SANS_FONT,
-                fontSize: 13,
-                fontWeight: 600,
-                color: COLORS.textPrimary,
-                letterSpacing: "-0.01em",
-              }}
-            >
-              {title}
-            </h3>
-            {scope && showScopeChip ? (
-              <ScopeChip scope={scope} remoteMachineName={remoteMachineName} />
-            ) : null}
-          </div>
-          {description ? (
-            <p
-              style={{
-                margin: "4px 0 0",
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                lineHeight: 1.55,
-                color: COLORS.textMuted,
-              }}
-            >
-              {description}
-            </p>
-          ) : null}
-        </div>
-        {control ? <div style={{ flexShrink: 0 }}>{control}</div> : null}
-      </div>
-      {children ? <div style={{ marginTop: 14 }}>{children}</div> : null}
-    </section>
+      {children}
+    </SettingsPageShell>
   );
 }
 

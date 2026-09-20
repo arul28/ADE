@@ -19,6 +19,7 @@ export function buildModelPickerLayoutInput(args: {
   favorites: string[];
   recents: string[];
   modelState: Pick<AdeCodeModelState, "modelId" | "reasoningEffort" | "interfaceMode">;
+  activeCredentialId?: string | null;
   aiStatus: AiSettingsStatus | null;
   interfaceMode?: AdeCodeInterfaceMode;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
@@ -29,6 +30,7 @@ export function buildModelPickerLayoutInput(args: {
     favorites: args.favorites,
     recents: args.recents,
     activeModelId: args.modelState.modelId,
+    ...(args.activeCredentialId !== undefined ? { activeCredentialId: args.activeCredentialId } : {}),
     activeReasoningEffort: args.modelState.reasoningEffort,
     aiStatus: args.aiStatus,
     interfaceMode: args.interfaceMode ?? args.modelState.interfaceMode,

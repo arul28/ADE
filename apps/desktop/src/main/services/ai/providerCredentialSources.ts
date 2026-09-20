@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import type { Logger } from "../logging/logger";
 import { isRecord, safeJsonParse } from "../shared/utils";
 import { killWindowsProcessTree } from "../shared/processExecution";
+import { pathKey } from "../shared/pathCompare";
 
 const CLAUDE_TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token";
 const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -143,12 +144,53 @@ export function runShellCommand(
 export type ClaudeCredentialReadOptions = {
   /** Keychain reads can display macOS UI. Automatic/background callers must disable them. */
   allowKeychain?: boolean;
+  /**
+   * One ADE provider account's config directory (`CLAUDE_CONFIG_DIR`).
+   *
+   * Absent means this machine's DEFAULT account, and that path is byte-for-byte
+   * what this module has always done: `~/.claude/.credentials.json` plus the
+   * macOS Keychain. Present means "read exactly this directory and nothing
+   * else" — a second login must never fall back to the first one's token.
+   */
+  configHome?: string;
 };
+
+/**
+ * Where one account's OAuth credentials live.
+ *
+ * Deliberately NOT `claudeConfigHome()` for the default account: that helper
+ * honours `CLAUDE_CONFIG_DIR`, and adopting it here would silently move the
+ * default account's credential file on every install that sets the variable.
+ * The default account keeps today's fixed path; a scoped account names its own.
+ */
+function claudeCredentialsFile(configHome?: string): string {
+  const scoped = configHome?.trim();
+  return scoped
+    ? path.join(path.resolve(scoped), ".credentials.json")
+    : path.join(os.homedir(), ".claude", ".credentials.json");
+}
+
+/**
+ * Cache identity for one account's credentials.
+ *
+ * `""` is the default account. Scoped accounts fold through `pathKey` so
+ * Windows and macOS spellings of one directory share an entry instead of
+ * caching the same token twice under two keys.
+ */
+function claudeCacheKey(configHome?: string): string {
+  const scoped = configHome?.trim();
+  return scoped ? pathKey(path.resolve(scoped)) : "";
+}
 
 export async function readClaudeCredentials(
   options: ClaudeCredentialReadOptions = {},
 ): Promise<ClaudeLocalAuthCredentials | null> {
-  if (process.platform === "darwin" && options.allowKeychain !== false) {
+  // The Keychain item `Claude Code-credentials` is the MACHINE's login — the
+  // one the CLI writes when no `CLAUDE_CONFIG_DIR` is set. There is no
+  // per-instance Keychain equivalent, so a scoped account must never consult
+  // it: doing so would hand account B the default account's token. Windows and
+  // Linux never had this branch, so they behave identically minus the Keychain.
+  if (!options.configHome?.trim() && process.platform === "darwin" && options.allowKeychain !== false) {
     try {
       const result = await runShellCommand(
         "security find-generic-password -s 'Claude Code-credentials' -w",
@@ -175,7 +217,7 @@ export async function readClaudeCredentials(
     }
   }
 
-  const credentialsPath = path.join(os.homedir(), ".claude", ".credentials.json");
+  const credentialsPath = claudeCredentialsFile(options.configHome);
   try {
     const raw = await fs.promises.readFile(credentialsPath, "utf8");
     return parseClaudeCredentials(
@@ -198,16 +240,36 @@ type ClaudeTokenRefreshResponse = {
   expires_in?: number;
 };
 
-let failedClaudeRefresh: { refreshToken: string; untilMs: number } | null = null;
+/**
+ * Refresh tokens the endpoint already rejected, and when to stop refusing.
+ *
+ * Keyed by the token itself rather than held in one slot: a machine with
+ * several Claude accounts refreshes several distinct tokens, and a single slot
+ * meant account B's failure erased the memory of account A's — which reopens
+ * the per-poll refresh storm this map exists to prevent.
+ */
+const failedClaudeRefreshes = new Map<string, number>();
+const MAX_TRACKED_CLAUDE_REFRESH_FAILURES = 32;
 
 function noteClaudeRefreshFailure(refreshToken: string, ttlMs: number): void {
-  failedClaudeRefresh = { refreshToken, untilMs: Date.now() + ttlMs };
+  const now = Date.now();
+  for (const [token, untilMs] of failedClaudeRefreshes) {
+    if (untilMs <= now) failedClaudeRefreshes.delete(token);
+  }
+  failedClaudeRefreshes.set(refreshToken, now + ttlMs);
+  while (failedClaudeRefreshes.size > MAX_TRACKED_CLAUDE_REFRESH_FAILURES) {
+    const oldest = failedClaudeRefreshes.keys().next();
+    if (oldest.done) break;
+    failedClaudeRefreshes.delete(oldest.value);
+  }
 }
 
 function isClaudeRefreshBlocked(refreshToken: string): boolean {
-  return failedClaudeRefresh != null
-    && failedClaudeRefresh.refreshToken === refreshToken
-    && Date.now() < failedClaudeRefresh.untilMs;
+  const untilMs = failedClaudeRefreshes.get(refreshToken);
+  if (untilMs == null) return false;
+  if (Date.now() < untilMs) return true;
+  failedClaudeRefreshes.delete(refreshToken);
+  return false;
 }
 
 export async function refreshClaudeCredentials(refreshToken: string): Promise<ClaudeLocalAuthCredentials | null> {
@@ -250,7 +312,7 @@ export async function refreshClaudeCredentials(refreshToken: string): Promise<Cl
         ? Date.now() + payload.expires_in * 1000
         : undefined;
 
-    failedClaudeRefresh = null;
+    failedClaudeRefreshes.delete(refreshToken);
     return {
       accessToken: payload.access_token,
       refreshToken: payload.refresh_token ?? refreshToken,
@@ -265,13 +327,33 @@ export async function refreshClaudeCredentials(refreshToken: string): Promise<Cl
   }
 }
 
-let cachedClaudeCreds: ClaudeLocalAuthCredentials | null = null;
-let cachedClaudeMissUntilMs = 0;
+/**
+ * Cached credentials PER ACCOUNT config home.
+ *
+ * One slot used to be enough because the machine had one Claude login. It no
+ * longer is: a shared slot hands whichever account polled first its token to
+ * whichever account polls next, which reads as "both accounts have the same
+ * quota" and, worse, sends one account's bearer token for the other. The key is
+ * the config home (see {@link claudeCacheKey}); `""` is the default account.
+ */
+type ClaudeCredentialCacheEntry = {
+  credentials: ClaudeLocalAuthCredentials | null;
+  missUntilMs: number;
+};
+const claudeCredentialCache = new Map<string, ClaudeCredentialCacheEntry>();
 
+function claudeCacheEntry(key: string): ClaudeCredentialCacheEntry {
+  const existing = claudeCredentialCache.get(key);
+  if (existing) return existing;
+  const created: ClaudeCredentialCacheEntry = { credentials: null, missUntilMs: 0 };
+  claudeCredentialCache.set(key, created);
+  return created;
+}
+
+/** Clears every account's cache and the whole refresh-refusal memory. */
 export function clearClaudeCredentialCache(): void {
-  cachedClaudeCreds = null;
-  cachedClaudeMissUntilMs = 0;
-  failedClaudeRefresh = null;
+  claudeCredentialCache.clear();
+  failedClaudeRefreshes.clear();
 }
 
 /**
@@ -279,37 +361,43 @@ export function clearClaudeCredentialCache(): void {
  * Keeps the refresh-token refusal memory intact — a 401 on the usage API
  * must not reopen per-poll refresh attempts for a token the token endpoint
  * already rejected.
+ *
+ * Scoped to one account when `configHome` is given; the default account
+ * otherwise, which is what every pre-instance caller means.
  */
-export function invalidateCachedClaudeCredentials(): void {
-  cachedClaudeCreds = null;
-  cachedClaudeMissUntilMs = 0;
+export function invalidateCachedClaudeCredentials(configHome?: string): void {
+  claudeCredentialCache.delete(claudeCacheKey(configHome));
 }
 
-export function cacheClaudeCredentials(credentials: ClaudeLocalAuthCredentials): void {
-  cachedClaudeCreds = credentials;
-  cachedClaudeMissUntilMs = 0;
+export function cacheClaudeCredentials(
+  credentials: ClaudeLocalAuthCredentials,
+  configHome?: string,
+): void {
+  claudeCredentialCache.set(claudeCacheKey(configHome), { credentials, missUntilMs: 0 });
 }
 
 export async function readClaudeCredentialsWithRefresh(
   logger: Logger,
   options: ClaudeCredentialReadOptions = {},
 ): Promise<ClaudeLocalAuthCredentials | null> {
-  if (cachedClaudeCreds && !isClaudeTokenExpiredOrExpiring(cachedClaudeCreds)) {
-    return cachedClaudeCreds;
+  const cacheKey = claudeCacheKey(options.configHome);
+  const cached = claudeCredentialCache.get(cacheKey);
+  if (cached?.credentials && !isClaudeTokenExpiredOrExpiring(cached.credentials)) {
+    return cached.credentials;
   }
 
   const userInitiated = options.allowKeychain !== false;
-  if (!userInitiated && cachedClaudeMissUntilMs > Date.now()) return null;
+  if (!userInitiated && (cached?.missUntilMs ?? 0) > Date.now()) return null;
 
   const creds = await readClaudeCredentials(options);
   if (!creds) {
-    cachedClaudeMissUntilMs = Date.now() + CLAUDE_CREDENTIAL_MISS_TTL_MS;
+    claudeCacheEntry(cacheKey).missUntilMs = Date.now() + CLAUDE_CREDENTIAL_MISS_TTL_MS;
     return null;
   }
-  cachedClaudeMissUntilMs = 0;
+  claudeCacheEntry(cacheKey).missUntilMs = 0;
 
   if (!isClaudeTokenExpiredOrExpiring(creds)) {
-    cachedClaudeCreds = creds;
+    cacheClaudeCredentials(creds, options.configHome);
     return creds;
   }
 
@@ -320,7 +408,7 @@ export async function readClaudeCredentialsWithRefresh(
       logger.info("usage.token_refresh.success", {
         expiresIn: refreshed.expiresAt ? Math.round((refreshed.expiresAt - Date.now()) / 1000) : "unknown",
       });
-      cachedClaudeCreds = refreshed;
+      cacheClaudeCredentials(refreshed, options.configHome);
       return refreshed;
     }
     logger.warn("usage.token_refresh.failed", {
@@ -332,12 +420,25 @@ export async function readClaudeCredentialsWithRefresh(
   // guarantees a 401 (and another doomed refresh attempt) on every poll —
   // enough of those and Anthropic rate-limits the whole client. Report
   // "no usable credentials" instead so callers surface a reconnect state.
-  cachedClaudeMissUntilMs = Date.now() + CLAUDE_CREDENTIAL_MISS_TTL_MS;
+  const entry = claudeCacheEntry(cacheKey);
+  entry.credentials = null;
+  entry.missUntilMs = Date.now() + CLAUDE_CREDENTIAL_MISS_TTL_MS;
   return null;
 }
 
-export async function readCodexCredentials(): Promise<CodexLocalAuthCredentials | null> {
-  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+/**
+ * `configHome` names ONE account's `CODEX_HOME`. It outranks the environment
+ * variable, which describes this process's own default account — a machine with
+ * several logins reads each one by passing its home, never by mutating
+ * `process.env`.
+ */
+export async function readCodexCredentials(
+  configHome?: string,
+): Promise<CodexLocalAuthCredentials | null> {
+  const scoped = configHome?.trim();
+  const codexHome = scoped
+    ? path.resolve(scoped)
+    : process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const authPath = path.join(codexHome, "auth.json");
   try {
     const raw = await fs.promises.readFile(authPath, "utf8");

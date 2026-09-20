@@ -12,7 +12,8 @@
  *  - `buildRenderKey` / `buildTextRenderKey` / `buildCollapseKey`
  *  - tool call → tool result upgrade-in-place keyed on `logicalItemId ?? itemId`
  *    (the same template drives approval request → decision)
- *  - consecutive-reasoning merge and consecutive-status dedupe from
+ *  - consecutive-reasoning merge (same turn, deduped through
+ *    `mergeReasoningTextFragments`) and consecutive-status dedupe from
  *    `groupConsecutiveWorkLogRows`
  *  - `formatStructuredValue`, `eventHasPayload`, `readRecord`
  *
@@ -22,6 +23,16 @@
  * `ade_card` merging, localhost URL extraction, diff stats, and the
  * incremental `CollapseTranscriptContext` (this package re-collapses whole
  * histories; they are bounded by the host's `history()` window).
+ *
+ * Also deliberately dropped: the CTO voice-call fold (`voice_call_group`).
+ * ADE folds a consecutive run of rows sharing `provenance.voiceCallId` into one
+ * call card. That id is stamped only while a CTO voice turn is running, and a
+ * voice call belongs to the CTO's own thread — which an `@ade-dev/sdk` sidecar
+ * holds the `agent` role against and therefore never reads. Porting the fold
+ * would add a row kind that can never be produced here. If the id does somehow
+ * appear on an envelope, it rides through untouched: it is one more key under
+ * the provenance index signature, and the rows render individually, which is
+ * the honest reading of events this package cannot attribute to a call.
  */
 
 import type {
@@ -597,14 +608,6 @@ export function collapseTranscriptEvents(
 /* Group                                                                       */
 /* -------------------------------------------------------------------------- */
 
-function sameReasoningBlock(a: ChatEventReasoning, b: ChatEventReasoning): boolean {
-  return (
-    (a.turnId ?? null) === (b.turnId ?? null)
-    && (a.itemId ?? null) === (b.itemId ?? null)
-    && (a.summaryIndex ?? null) === (b.summaryIndex ?? null)
-  );
-}
-
 function sameStatusRow(a: ChatEventStatus, b: ChatEventStatus): boolean {
   return (
     a.turnStatus === b.turnStatus
@@ -614,7 +617,58 @@ function sameStatusRow(a: ChatEventStatus, b: ChatEventStatus): boolean {
 }
 
 /**
- * Second pass: merge consecutive reasoning from the same block into one
+ * Join two reasoning fragments of the SAME item without repeating a re-emit.
+ *
+ * Ported from `apps/desktop/src/shared/chatActivityPhase.ts`. Providers stream a
+ * thought as deltas and may re-emit the completed block; cumulative, exact, and
+ * full-suffix re-emits collapse to the text once. A partial boundary overlap is
+ * deliberately NOT spliced — two genuine deltas can share a boundary character
+ * ("look" then "keep going"), and dropping the overlap would eat real text.
+ */
+function mergeReasoningFragment(existing: string, incoming: string): string {
+  if (!existing.length) return incoming;
+  if (!incoming.length) return existing;
+  if (existing === incoming) return existing;
+  if (incoming.startsWith(existing)) return incoming;
+  if (existing.startsWith(incoming)) return existing;
+  if (incoming.trim().length > 0 && existing.trimEnd().endsWith(incoming.trim())) return existing;
+  return `${existing}${incoming}`;
+}
+
+/**
+ * Collapse a list of reasoning blocks into the blocks that actually differ.
+ *
+ * Ported from `apps/desktop/src/shared/chatActivityPhase.ts`: providers stream a
+ * thought as deltas and then re-emit the completed block (Claude can persist one
+ * thought twice, under the stream index and the snapshot index), so identical
+ * and contained blocks drop instead of repeating. Genuinely distinct blocks are
+ * joined by `---`.
+ */
+function mergeReasoningTextFragments(texts: readonly string[]): string {
+  const fragments: string[] = [];
+  for (const raw of texts) {
+    const text = raw.trim();
+    if (!text.length) continue;
+    if (fragments.includes(text)) continue;
+    const contained = fragments
+      .map((fragment, index) => (text.includes(fragment) ? index : -1))
+      .filter((index) => index >= 0);
+    if (contained.length) {
+      const firstIndex = contained[0]!;
+      fragments[firstIndex] = text;
+      for (const index of contained.slice(1).sort((left, right) => right - left)) {
+        fragments.splice(index, 1);
+      }
+      continue;
+    }
+    if (fragments.some((fragment) => fragment.includes(text))) continue;
+    fragments.push(text);
+  }
+  return fragments.join("\n\n---\n\n");
+}
+
+/**
+ * Second pass: merge consecutive reasoning from the same turn into one
  * collapsible row and drop repeated identical status rows.
  */
 export function groupTranscriptRows(rows: readonly TranscriptRow[]): TranscriptRow[] {
@@ -626,20 +680,35 @@ export function groupTranscriptRows(rows: readonly TranscriptRow[]): TranscriptR
 
     if (row.event.type === "reasoning") {
       const head = row.event;
-      let mergedText = head.text ?? "";
+      // Fold deltas of the same item first (so a delta split across rows rejoins
+      // as "Hello world", not two `---` blocks), then dedupe distinct blocks.
+      const blocks: string[] = [];
+      let currentItemKey = `${head.itemId ?? ""}\u0000${head.summaryIndex ?? ""}`;
+      let currentText = head.text ?? "";
       let cursor = index + 1;
+      const flushBlock = () => {
+        if (currentText.length) blocks.push(currentText);
+      };
       while (cursor < rows.length) {
         const candidate = rows[cursor]!;
         if (candidate.event.type !== "reasoning") break;
-        if (!sameReasoningBlock(head, candidate.event)) break;
-        mergedText += `\n\n---\n\n${candidate.event.text ?? ""}`;
+        if ((candidate.event.turnId ?? null) !== (head.turnId ?? null)) break;
+        const nextItemKey = `${candidate.event.itemId ?? ""}\u0000${candidate.event.summaryIndex ?? ""}`;
+        if (nextItemKey === currentItemKey) {
+          currentText = mergeReasoningFragment(currentText, candidate.event.text ?? "");
+        } else {
+          flushBlock();
+          currentText = candidate.event.text ?? "";
+          currentItemKey = nextItemKey;
+        }
         cursor += 1;
       }
       if (cursor > index + 1) {
+        flushBlock();
         grouped.push({
           key: `reasoning-group:${row.key}`,
           timestamp: rows[cursor - 1]!.timestamp,
-          event: { ...head, text: mergedText },
+          event: { ...head, text: mergeReasoningTextFragments(blocks) },
         });
         index = cursor;
         continue;

@@ -59,7 +59,7 @@ export type BatchLaunchIssueConfig = {
   nativeControls?: NativeControlState;
   /** When launching into an existing lane (skips lane creation). */
   existingLaneId?: string | null;
-  /** When true the orchestrator only creates the lane (no agent kickoff). */
+  /** When true the launcher only creates the lane (no agent kickoff). */
   laneOnly?: boolean;
 };
 

@@ -4,7 +4,7 @@ import { theme } from "../../theme";
 import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
 import { useHoveredHitId } from "../../hitTestRegistry";
 import { KeyHints } from "../designKit";
-import type { ModelPickerAuthStatus, ModelPickerEntry, ModelPickerRailEntry, ModelPickerState } from "./types";
+import { modelPickerEntryKey, type ModelPickerAuthStatus, type ModelPickerEntry, type ModelPickerRailEntry, type ModelPickerState } from "./types";
 import { normalizeProviderToken, providerFamilyLabel, titleCaseProviderName } from "../../providerMetadata";
 // The model list is a FIXED-height window so a long catalog (e.g. OpenCode's
 // dozens of providers) scrolls inside its own region instead of shoving the
@@ -552,7 +552,7 @@ export function ModelPickerPane({
     [state.railEntries],
   );
   const visibleLogoKey = React.useMemo(
-    () => visibleEntries.map((entry) => `${entry.modelId}:${entry.family}:${entry.subProvider ?? ""}`).join("|"),
+    () => visibleEntries.map((entry) => `${modelPickerEntryKey(entry)}:${entry.family}:${entry.subProvider ?? ""}`).join("|"),
     [visibleEntries],
   );
   // Content sits right of the rail (full width while searching). Each row
@@ -614,10 +614,10 @@ export function ModelPickerPane({
       const flatIndex = window.start + sliceIndex;
       listRows.push(
         <ModelListRow
-          key={entry.modelId || `entry-${flatIndex}`}
+          key={modelPickerEntryKey(entry) || `entry-${flatIndex}`}
           entry={entry}
           selected={flatIndex === state.focusedIndex}
-          hovered={hoveredId === `right:model-picker:entry:${entry.modelId}`}
+          hovered={hoveredId === `right:model-picker:entry:${modelPickerEntryKey(entry)}`}
           listFocused={listFocused}
           contentWidth={contentWidth}
           showProviderMark={rowProviderMarksVisible}

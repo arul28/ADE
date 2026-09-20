@@ -37,6 +37,8 @@ import type {
   CostSnapshot,
   CostTokenBreakdown,
   ExtraUsage,
+  UsageResetCreditResult,
+  UsageResetCreditStatus,
   UsageSnapshot,
 } from "../../../shared/types";
 import {
@@ -53,7 +55,26 @@ import {
   resolveModelAlias,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { resolveProviderAccounts } from "./providerAccountIdentity";
+import {
+  readClaudeAccount,
+  readCodexAccount,
+  resolveProviderAccounts,
+  type ProviderAccountIdentity,
+} from "./providerAccountIdentity";
+import {
+  claudeConfigHome,
+  codexConfigHome,
+  factoryConfigHome,
+} from "../shared/providerConfigHomes";
+import {
+  PROVIDER_INSTANCE_ENV_KEY,
+  defaultProviderInstanceId,
+  isBaseProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../shared/types/providerInstances";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { pickInstanceForNewChat } from "./accountBalance";
+import { createWindowAutoStartScheduler } from "./windowAutoStart";
 import {
   cacheClaudeCredentials,
   invalidateCachedClaudeCredentials,
@@ -106,7 +127,15 @@ import {
 } from "./accountUsageRollup";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
+import {
+  resetCreditOutcomeKey,
+  type ResetCreditOutcomeKey,
+} from "../../../shared/usageResetCredit";
 import { usageScopeSelectedCapture } from "../analytics/usageScopeAnalytics";
+import {
+  captureResetCreditAnalytics,
+  type ResetCreditAnalyticsOutcome,
+} from "../analytics/featureProductAnalytics";
 import { getOrCreateLocalAccountMachineIdentity } from "../account/localMachineIdentity";
 import {
   createAccountUsageRollupStore,
@@ -141,7 +170,9 @@ import {
   parseClaudeWindows,
   parseCodexRateLimitSnapshot,
   parseCodexRateLimitWindows,
+  parseCodexResetCredits,
   type ClaudeUsageResponse,
+  type CodexResetCredits,
 } from "./providerQuotaParsers";
 
 // ── Constants ────────────────────────────────────────────────────
@@ -472,11 +503,15 @@ function parseClaudeCliUsage(text: string): UsageWindow[] {
   ].filter((window): window is UsageWindow => window != null);
 }
 
-async function captureClaudeCliUsage(logger: Logger): Promise<string> {
+async function captureClaudeCliUsage(logger: Logger, configHome?: string): Promise<string> {
   const module = await import("node-pty");
   const nodePty = ((module as unknown as { default?: typeof module }).default ?? module);
   const resolved = resolveClaudeCodeExecutable();
-  const env = { ...process.env, TERM: "xterm-256color" };
+  const env = {
+    ...process.env,
+    TERM: "xterm-256color",
+    ...(configHome ? { [PROVIDER_INSTANCE_ENV_KEY.claude]: configHome } : {}),
+  };
   const invocation = resolveCliSpawnInvocation(resolved.path, [], env);
   const cwd = path.join(os.homedir(), ".ade", "cache", "claude-usage-probe");
   await fs.promises.mkdir(cwd, { recursive: true });
@@ -567,9 +602,12 @@ async function captureClaudeCliUsage(logger: Logger): Promise<string> {
   });
 }
 
-async function pollClaudeViaCli(logger: Logger): Promise<FreshUsageProviderPollResult> {
+async function pollClaudeViaCli(
+  logger: Logger,
+  configHome?: string,
+): Promise<FreshUsageProviderPollResult> {
   try {
-    const output = await captureClaudeCliUsage(logger);
+    const output = await captureClaudeCliUsage(logger, configHome);
     const windows = parseClaudeCliUsage(output);
     if (windows.length === 0) {
       return {
@@ -595,24 +633,251 @@ async function pollClaudeViaCli(logger: Logger): Promise<FreshUsageProviderPollR
 // /teams/daily-usage-data) with no personal-user surface, so the per-user
 // drawer state could never be meaningful for the typical ADE user.
 
-async function pollClaudeUsage(
+/**
+ * One local provider account the quota poller has to read.
+ *
+ * A machine can hold several Claude or Codex logins, each one a provider config
+ * directory (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`). The poller therefore reads a
+ * *set* of homes rather than one, and never by mutating `process.env` — every
+ * read takes the home explicitly and every spawn gets a per-call env object.
+ */
+type QuotaInstance = {
+  id: string;
+  label: string;
+  accentColor?: string;
+  /** Absolute path to this account's provider config directory. */
+  configHome: string;
+  isDefault: boolean;
+  /** What the registry last recorded for this account, if anything. */
+  account?: ProviderAccountIdentity;
+};
+
+/** Providers that can hold more than one local login. */
+type QuotaInstanceProvider = "claude" | "codex";
+
+/**
+ * Account identity for one window or reading.
+ *
+ * The instance id, not the email: two logins can share an email (a personal and
+ * a work seat on one address) and a login can have no readable email at all, so
+ * the email cannot key the directory that windows are attributed through.
+ */
+function accountIdForInstance(provider: UsageProvider, instanceId: string): string {
+  return `${provider}:${instanceId}`;
+}
+
+/** The one account a machine with no registry (or an unreadable one) has. */
+function fallbackQuotaInstance(provider: QuotaInstanceProvider): QuotaInstance {
+  return {
+    id: defaultProviderInstanceId(provider),
+    label: "Default",
+    configHome: provider === "claude" ? claudeConfigHome() : codexConfigHome(),
+    isDefault: true,
+  };
+}
+
+/**
+ * Every local account for a provider, the default first.
+ *
+ * The registry synthesizes the machine's pre-existing login as the default
+ * instance, so a machine that has never created a second account returns
+ * exactly one entry and the poller behaves as it did before accounts existed.
+ * An unreadable registry degrades to that same single entry rather than to a
+ * poll that reads nothing.
+ *
+ * Default first because its result decides the provider-level facts that stay
+ * singular: the status line's account email, the poll `source`, and the Codex
+ * spend-control / 7-day series.
+ */
+function listQuotaInstances(provider: QuotaInstanceProvider): QuotaInstance[] {
+  try {
+    const mapped: QuotaInstance[] = getMachineProviderInstanceStore()
+      .list(provider)
+      .filter((instance) => instance.configHome.trim().length > 0)
+      .map((instance) => ({
+        id: instance.id,
+        label: instance.label,
+        ...(instance.accentColor ? { accentColor: instance.accentColor } : {}),
+        configHome: instance.configHome,
+        isDefault: instance.isDefault,
+        ...(instance.account ? { account: instance.account } : {}),
+      }));
+    if (mapped.length === 0) return [fallbackQuotaInstance(provider)];
+    return mapped.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+  } catch {
+    return [fallbackQuotaInstance(provider)];
+  }
+}
+
+/**
+ * The config home to pass to a per-account reader, or `undefined` for the
+ * base identity.
+ *
+ * `undefined` is load-bearing rather than lazy: the credential readers treat an
+ * absent home as "this machine's default account" and run exactly the code path
+ * they ran before accounts existed — the fixed `~/.claude/.credentials.json`
+ * and, on macOS, the Keychain item that has no per-account equivalent. Passing
+ * the default account's resolved home instead would quietly change both. The
+ * selected/default flag is mutable: a secondary account can be promoted to
+ * default, but it must still read its own home.
+ */
+function scopedConfigHome(
+  provider: QuotaInstanceProvider,
+  instance: QuotaInstance,
+): string | undefined {
+  return isBaseProviderInstance({ id: instance.id, provider }) ? undefined : instance.configHome;
+}
+
+/**
+ * Fold one provider's per-account results into the single result the scheduler
+ * consumes.
+ *
+ * `null` means the account holds no login at all: it contributes no windows and
+ * no error, because a second account the user has not signed into yet must not
+ * raise a failure a single-account machine would never have seen.
+ *
+ * Windows are stamped with their own account here, which is the only place that
+ * knows which home produced them. Provider-level facts that cannot be plural
+ * (`source`, `errorKind`, `retryAfterMs`, Codex's spend control and 7-day
+ * series, Claude's extra usage) come from the DEFAULT account, so a
+ * single-account machine gets byte-equivalent output.
+ */
+function mergeInstancePollResults(
+  provider: QuotaInstanceProvider,
+  entries: ReadonlyArray<{ instance: QuotaInstance; result: UsageProviderPollResult | null }>,
+  previousSnapshot?: UsageSnapshot,
+): UsageProviderPollResult {
+  const fresh: Array<{ instance: QuotaInstance; result: FreshUsageProviderPollResult }> = [];
+  let preservedSource: UsageProviderSource | undefined;
+  let preservedDefaultSource: UsageProviderSource | undefined;
+  let preservedDefault: QuotaInstance | undefined;
+  let preserved = false;
+  for (const entry of entries) {
+    if (!entry.result) continue;
+    if (entry.result.disposition === "preserve_previous") {
+      preserved = true;
+      if (entry.instance.isDefault) {
+        preservedDefault = entry.instance;
+        preservedDefaultSource = entry.result.source;
+      }
+      preservedSource = preservedSource ?? entry.result.source;
+      continue;
+    }
+    fresh.push({ instance: entry.instance, result: entry.result });
+  }
+  if (fresh.length === 0) {
+    // Nothing was authoritatively checked. Preserving is the whole-provider
+    // answer, which is what it was when a provider had one account.
+    if (preserved && preservedSource) {
+      return { disposition: "preserve_previous", windows: [], errors: [], source: preservedSource };
+    }
+    if (preserved) return { disposition: "preserve_previous", windows: [], errors: [] };
+    return { windows: [], errors: [] };
+  }
+  const base = (fresh.find((entry) => entry.instance.isDefault) ?? fresh[0]!).result;
+  const previousDefaultStatus = preservedDefault
+    ? previousSnapshot?.providerStatus?.[provider]
+    : undefined;
+  const previousDefaultAccountId = preservedDefault
+    ? accountIdForInstance(provider, preservedDefault.id)
+    : undefined;
+  const polledAt = nowIso();
+  const windows: UsageWindow[] = previousDefaultAccountId
+    ? filterUnexpiredCarriedWindows(
+      previousSnapshot?.windows
+        .filter((window) => window.provider === provider
+          && (!window.accountId || window.accountId === previousDefaultAccountId))
+        .map((window) => ({ ...window, accountId: window.accountId ?? previousDefaultAccountId })) ?? [],
+      polledAt,
+    )
+    : [];
+  const errors: string[] = [];
+  for (const { instance, result } of fresh) {
+    const accountId = accountIdForInstance(provider, instance.id);
+    if (result.windows.length > 0) {
+      for (const window of result.windows) windows.push({ ...window, accountId });
+    } else if (!instance.isDefault) {
+      // A secondary account's empty/error response must not erase its last
+      // usable windows while the provider is transiently unavailable. The
+      // error remains below so the UI can show the degraded poll honestly.
+      windows.push(...filterUnexpiredCarriedWindows(
+        previousSnapshot?.windows.filter((window) => (
+          window.provider === provider && window.accountId === accountId
+        )) ?? [],
+        polledAt,
+      ));
+    }
+    errors.push(...result.errors);
+  }
+  const previousExtraUsage = preservedDefault
+    ? previousSnapshot?.extraUsage.find((extra) => extra.provider === provider)
+    : undefined;
+  const previousDailyUsage7d = preservedDefault
+    ? previousSnapshot?.dailyUsage7d?.[provider]
+    : undefined;
+  const previousProviderMessages = preservedDefault
+    ? previousSnapshot?.providerMessages?.filter((message) => message.provider === provider)
+    : undefined;
+  const previousSpendControlReached = preservedDefault
+    ? previousSnapshot?.spendControlReached
+    : undefined;
+  const source = previousDefaultStatus?.source
+    ?? preservedDefaultSource
+    ?? (preservedDefault ? preservedSource : base.source);
+  return {
+    windows,
+    errors,
+    ...(source ? { source } : {}),
+    ...(base.errorKind ? { errorKind: base.errorKind } : {}),
+    ...(base.retryAfterMs != null ? { retryAfterMs: base.retryAfterMs } : {}),
+    ...(previousExtraUsage !== undefined
+      ? { extraUsage: previousExtraUsage }
+      : (base.extraUsage !== undefined ? { extraUsage: base.extraUsage } : {})),
+    ...(previousDailyUsage7d !== undefined
+      ? { dailyUsage7d: previousDailyUsage7d }
+      : (base.dailyUsage7d ? { dailyUsage7d: base.dailyUsage7d } : {})),
+    ...(previousProviderMessages !== undefined
+      ? { providerMessages: previousProviderMessages }
+      : (base.providerMessages ? { providerMessages: base.providerMessages } : {})),
+    ...(typeof previousSpendControlReached === "boolean"
+      ? { spendControlReached: previousSpendControlReached }
+      : (typeof base.spendControlReached === "boolean"
+        ? { spendControlReached: base.spendControlReached }
+        : {})),
+  };
+}
+
+/**
+ * Quota for ONE Claude account. `null` = this account's config home holds no
+ * login, so it has nothing to report.
+ */
+async function pollClaudeInstance(
   logger: Logger,
-  context: UsageProviderPollContext = { reason: "user" },
-): Promise<UsageProviderPollResult> {
-  const allowInteractiveSources = context.reason === "user";
+  context: UsageProviderPollContext,
+  instance: QuotaInstance,
+): Promise<UsageProviderPollResult | null> {
+  // The interactive fallbacks belong to the default account alone: the macOS
+  // Keychain item is the machine's login, and the `/usage` CLI probe drives the
+  // CLI with the ambient environment. A scoped account reads its own directory.
+  const allowInteractiveSources = context.reason === "user" && instance.isDefault;
+  const configHome = scopedConfigHome("claude", instance);
   const creds = await measureUsagePhase(
     logger,
     { provider: "claude", phase: "credentials", reason: context.reason },
-    () => readClaudeCredentialsWithRefresh(logger, { allowKeychain: allowInteractiveSources }),
+    () => readClaudeCredentialsWithRefresh(logger, {
+      allowKeychain: allowInteractiveSources,
+      ...(configHome ? { configHome } : {}),
+    }),
   );
   if (!creds) {
     if (allowInteractiveSources) {
       return await measureUsagePhase(
         logger,
         { provider: "claude", phase: "cli_fallback", reason: context.reason },
-        () => pollClaudeViaCli(logger),
+        () => pollClaudeViaCli(logger, configHome),
       );
     }
+    if (!instance.isDefault) return null;
     return {
       disposition: "preserve_previous",
       windows: [],
@@ -634,14 +899,14 @@ async function pollClaudeUsage(
     if (!result.ok) {
       if (result.status === 401 && creds.refreshToken) {
         logger.info("usage.token_refresh.401_retry");
-        invalidateCachedClaudeCredentials();
+        invalidateCachedClaudeCredentials(configHome);
         const refreshed = await measureUsagePhase(
           logger,
           { provider: "claude", phase: "token_refresh", reason: context.reason },
           () => refreshClaudeCredentials(creds.refreshToken!),
         );
         if (refreshed) {
-          cacheClaudeCredentials(refreshed);
+          cacheClaudeCredentials(refreshed, configHome);
           const retry = await measureUsagePhase(
             logger,
             { provider: "claude", phase: "oauth_http_retry", reason: context.reason },
@@ -663,7 +928,7 @@ async function pollClaudeUsage(
         const fallback = await measureUsagePhase(
           logger,
           { provider: "claude", phase: "cli_fallback", reason: context.reason },
-          () => pollClaudeViaCli(logger),
+          () => pollClaudeViaCli(logger, configHome),
         );
         if (fallback.windows.length > 0) return fallback;
       }
@@ -686,7 +951,7 @@ async function pollClaudeUsage(
         const fallback = await measureUsagePhase(
           logger,
           { provider: "claude", phase: "cli_fallback", reason: context.reason },
-          () => pollClaudeViaCli(logger),
+          () => pollClaudeViaCli(logger, configHome),
         );
         if (fallback.windows.length > 0) return fallback;
       }
@@ -704,7 +969,7 @@ async function pollClaudeUsage(
       const fallback = await measureUsagePhase(
         logger,
         { provider: "claude", phase: "cli_fallback", reason: context.reason },
-        () => pollClaudeViaCli(logger),
+        () => pollClaudeViaCli(logger, configHome),
       );
       if (fallback.windows.length > 0) return fallback;
     }
@@ -718,18 +983,39 @@ async function pollClaudeUsage(
   }
 }
 
-// ── Codex Usage Polling ──────────────────────────────────────────
-
-async function pollCodexUsage(
+/** Claude quota for every local account, merged into one provider result. */
+async function pollClaudeUsage(
   logger: Logger,
   context: UsageProviderPollContext = { reason: "user" },
-): Promise<FreshUsageProviderPollResult> {
+  instances: readonly QuotaInstance[] = listQuotaInstances("claude"),
+): Promise<UsageProviderPollResult> {
+  const entries = await Promise.all(instances.map(async (instance) => ({
+    instance,
+    result: await pollClaudeInstance(logger, context, instance),
+  })));
+  return mergeInstancePollResults("claude", entries, context.previousSnapshot);
+}
+
+// ── Codex Usage Polling ──────────────────────────────────────────
+
+/**
+ * Quota for ONE Codex account. `null` = this account's config home holds no
+ * login, which only a non-default account can be: the default account keeps
+ * reporting "no credentials found" exactly as it always has.
+ */
+async function pollCodexInstance(
+  logger: Logger,
+  context: UsageProviderPollContext,
+  instance: QuotaInstance,
+): Promise<FreshUsageProviderPollResult | null> {
+  const configHome = scopedConfigHome("codex", instance);
   const creds = await measureUsagePhase(
     logger,
     { provider: "codex", phase: "credentials", reason: context.reason },
-    () => readCodexCredentials(),
+    () => readCodexCredentials(configHome),
   );
   if (!creds) {
+    if (!instance.isDefault) return null;
     return {
       windows: [],
       source: "http",
@@ -755,7 +1041,7 @@ async function pollCodexUsage(
       const fallback = await measureUsagePhase(
         logger,
         { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
-        () => pollCodexViaCliRpc(logger),
+        () => pollCodexViaCliRpc(logger, configHome),
       );
       return fallback.windows.length > 0
         ? { ...fallback, source: "cli", errors: [] }
@@ -770,7 +1056,7 @@ async function pollCodexUsage(
       const fallback = await measureUsagePhase(
         logger,
         { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
-        () => pollCodexViaCliRpc(logger),
+        () => pollCodexViaCliRpc(logger, configHome),
       );
       if (fallback.windows.length > 0) return { ...fallback, source: "cli", errors: [] };
       return {
@@ -799,13 +1085,74 @@ async function pollCodexUsage(
   }
 }
 
-async function pollCodexViaCliRpc(logger: Logger): Promise<FreshUsageProviderPollResult> {
-  const windows: UsageWindow[] = [];
-  const errors: string[] = [];
-  let spendControlReached: boolean | undefined;
+/** Codex quota for every local account, merged into one provider result. */
+async function pollCodexUsage(
+  logger: Logger,
+  context: UsageProviderPollContext = { reason: "user" },
+  instances: readonly QuotaInstance[] = listQuotaInstances("codex"),
+): Promise<UsageProviderPollResult> {
+  const entries = await Promise.all(instances.map(async (instance) => ({
+    instance,
+    result: await pollCodexInstance(logger, context, instance),
+  })));
+  return mergeInstancePollResults("codex", entries, context.previousSnapshot);
+}
 
-  try {
-    const initPayload = JSON.stringify({
+/**
+ * `configHome` points the spawned `codex app-server` at ONE account via a
+ * per-call env object. `process.env` is never mutated: the poller runs inside
+ * the same process as every chat and PTY launch, and a mutation there would
+ * move their config home too.
+ */
+/**
+ * The app-server started and then exited non-zero.
+ *
+ * Distinguished from a spawn failure or a timeout because the quota poll
+ * reports it with its own sentence — the CLI ran and refused, which is a
+ * different fact for the user than "Codex could not be reached".
+ */
+class CodexAppServerExitError extends Error {
+  constructor(readonly exitCode: number | null) {
+    super("codex CLI RPC exited with non-zero code");
+    this.name = "CodexAppServerExitError";
+  }
+}
+
+type CodexAppServerRpcRequest = {
+  id: number;
+  method: string;
+  params?: unknown;
+};
+
+/**
+ * Run one short-lived `codex app-server` and collect the JSON-RPC results.
+ *
+ * Every Codex app-server read outside a chat goes through here — the quota
+ * fallback, the reset-credit probe, and spending a credit — so the spawn
+ * shape is stated once: read-only sandbox, never-ask approvals (Codex 0.153 dropped `untrusted`), a per-call env
+ * pointing `CODEX_HOME` at ONE account, and a hard timeout that kills the
+ * process tree. `process.env` is never mutated; this poller shares a process
+ * with every chat and PTY launch, and a mutation here would move their config
+ * home too.
+ *
+ * Throws on a missing binary, a spawn failure, a non-zero exit, or the timeout.
+ * Callers decide what an unavailable app-server means for them — a poll
+ * degrades, a credit spend fails loudly.
+ */
+async function runCodexAppServerJsonRpc(args: {
+  logger: Logger;
+  configHome?: string;
+  requests: readonly CodexAppServerRpcRequest[];
+  timeoutMs?: number;
+}): Promise<Map<number, Record<string, unknown>>> {
+  const { logger, configHome, requests } = args;
+  const timeoutMs = args.timeoutMs ?? CODEX_CLI_RPC_TIMEOUT_MS;
+  const codexPath = resolveCodexExecutable().path;
+  if (!codexPath.trim().length) {
+    throw new Error("codex executable not found");
+  }
+  const lines = [
+    JSON.stringify({
       jsonrpc: "2.0",
       id: 0,
       method: "initialize",
@@ -818,137 +1165,145 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<FreshUsageProviderPol
           version: "0.47.0",
         },
       },
-    });
-
-    const initializedPayload = JSON.stringify({
+    }),
+    JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }),
+    ...requests.map((request) => JSON.stringify({
       jsonrpc: "2.0",
-      method: "notifications/initialized",
-      params: {},
-    });
+      id: request.id,
+      method: request.method,
+      params: request.params ?? {},
+    })),
+  ];
+  const combined = `${lines.join("\n")}\n`;
 
-    const rateLimitsPayload = JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "account/rateLimits/read",
-      params: {},
-    });
+  const env = {
+    ...process.env,
+    ...(configHome ? { [PROVIDER_INSTANCE_ENV_KEY.codex]: configHome } : {}),
+  };
+  const invocation = resolveCliSpawnInvocation(
+    codexPath,
+    ["-s", "read-only", "-a", "never", "app-server"],
+    env,
+  );
 
-    const combined = `${initPayload}\n${initializedPayload}\n${rateLimitsPayload}\n`;
-
-    const codexPath = resolveCodexExecutable().path;
-    const env = { ...process.env };
-    const invocation = resolveCliSpawnInvocation(
-      codexPath,
-      ["-s", "read-only", "-a", "untrusted", "app-server"],
-      env,
-    );
-
-    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number | null }>(
-      (resolve, reject) => {
-        let settled = false;
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        const finish = (callback: () => void) => {
-          if (settled) return;
-          settled = true;
-          if (timer) {
-            clearTimeout(timer);
-            timer = null;
-          }
-          callback();
-        };
-        const child = spawn(invocation.command, invocation.args, {
-          stdio: ["pipe", "pipe", "pipe"],
-          env,
-          windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-          windowsHide: true,
-        });
-
-        let stdout = "";
-        let stderr = "";
-        const maxStdout = 50_000;
-        const maxStderr = 10_000;
-        child.stdout?.on("data", (chunk: Buffer) => {
-          if (stdout.length >= maxStdout) return;
-          const s = chunk.toString("utf8");
-          stdout += s.slice(0, maxStdout - stdout.length);
-        });
-        child.stderr?.on("data", (chunk: Buffer) => {
-          if (stderr.length >= maxStderr) return;
-          const s = chunk.toString("utf8");
-          stderr += s.slice(0, maxStderr - stderr.length);
-        });
-
-        timer = setTimeout(() => {
-          terminateProcessTree(child, "SIGKILL", (detail) => {
-            logger.warn("usage.poll.codex_cli_rpc_taskkill_failed", {
-              ...detail,
-              error: detail.error ? getErrorMessage(detail.error) : null,
-            });
-          });
-          logger.warn("usage.poll.codex_cli_rpc_timeout", {
-            timeoutMs: CODEX_CLI_RPC_TIMEOUT_MS,
-          });
-          finish(() => reject(new Error(`codex CLI RPC timed out after ${CODEX_CLI_RPC_TIMEOUT_MS}ms`)));
-        }, CODEX_CLI_RPC_TIMEOUT_MS);
-
-        child.on("error", (error) => {
-          logger.warn("usage.poll.codex_cli_rpc_spawn_failed", {
-            error: getErrorMessage(error),
-          });
-          finish(() => reject(error));
-        });
-        child.on("close", (code) => {
-          finish(() => resolve({ stdout, stderr, exitCode: code }));
-        });
-        child.stdin?.on("error", (error) => {
-          if (isBenignStdinCloseError(error)) return;
-          logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
-            error: getErrorMessage(error),
-          });
-          finish(() => reject(error));
-        });
-
-        try {
-          child.stdin?.write(combined);
-          child.stdin?.end();
-        } catch (err) {
-          if (isBenignStdinCloseError(err)) return;
-          logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
-            error: getErrorMessage(err),
-          });
-          finish(() => reject(err));
+  const result = await new Promise<{ stdout: string; stderr: string; exitCode: number | null }>(
+    (resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
         }
-      },
-    );
-
-    if (result.exitCode !== 0) {
-      logger.warn("usage.poll.codex_cli_rpc_non_zero_exit", {
-        exitCode: result.exitCode,
-        stderr: result.stderr,
+        callback();
+      };
+      const child = spawn(invocation.command, invocation.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        env,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        windowsHide: true,
       });
+
+      let stdout = "";
+      let stderr = "";
+      const maxStdout = 50_000;
+      const maxStderr = 10_000;
+      child.stdout?.on("data", (chunk: Buffer) => {
+        if (stdout.length >= maxStdout) return;
+        const s = chunk.toString("utf8");
+        stdout += s.slice(0, maxStdout - stdout.length);
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        if (stderr.length >= maxStderr) return;
+        const s = chunk.toString("utf8");
+        stderr += s.slice(0, maxStderr - stderr.length);
+      });
+
+      timer = setTimeout(() => {
+        terminateProcessTree(child, "SIGKILL", (detail) => {
+          logger.warn("usage.poll.codex_cli_rpc_taskkill_failed", {
+            ...detail,
+            error: detail.error ? getErrorMessage(detail.error) : null,
+          });
+        });
+        logger.warn("usage.poll.codex_cli_rpc_timeout", { timeoutMs });
+        finish(() => reject(new Error(`codex CLI RPC timed out after ${timeoutMs}ms`)));
+      }, timeoutMs);
+
+      child.on("error", (error) => {
+        logger.warn("usage.poll.codex_cli_rpc_spawn_failed", {
+          error: getErrorMessage(error),
+        });
+        finish(() => reject(error));
+      });
+      child.on("close", (code) => {
+        finish(() => resolve({ stdout, stderr, exitCode: code }));
+      });
+      child.stdin?.on("error", (error) => {
+        if (isBenignStdinCloseError(error)) return;
+        logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
+          error: getErrorMessage(error),
+        });
+        finish(() => reject(error));
+      });
+
+      try {
+        child.stdin?.write(combined);
+        child.stdin?.end();
+      } catch (err) {
+        if (isBenignStdinCloseError(err)) return;
+        logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
+          error: getErrorMessage(err),
+        });
+        finish(() => reject(err));
+      }
+    },
+  );
+
+  if (result.exitCode !== 0) {
+    logger.warn("usage.poll.codex_cli_rpc_non_zero_exit", {
+      exitCode: result.exitCode,
+      stderr: result.stderr,
+    });
+    throw new CodexAppServerExitError(result.exitCode);
+  }
+
+  const responses = new Map<number, Record<string, unknown>>();
+  for (const line of result.stdout.split("\n").filter((entry: string) => entry.trim())) {
+    const parsed = safeJsonParse<Record<string, unknown>>(line, {});
+    if (!parsed.result || typeof parsed.result !== "object") continue;
+    if (typeof parsed.id !== "number") continue;
+    responses.set(parsed.id, parsed.result as Record<string, unknown>);
+  }
+  return responses;
+}
+
+/**
+ * `configHome` points the spawned `codex app-server` at ONE account via a
+ * per-call env object.
+ */
+async function pollCodexViaCliRpc(
+  logger: Logger,
+  configHome?: string,
+): Promise<FreshUsageProviderPollResult> {
+  const windows: UsageWindow[] = [];
+  const errors: string[] = [];
+  let spendControlReached: boolean | undefined;
+
+  let responses: Map<number, Record<string, unknown>>;
+  try {
+    responses = await runCodexAppServerJsonRpc({
+      logger,
+      ...(configHome ? { configHome } : {}),
+      requests: [{ id: 1, method: "account/rateLimits/read" }],
+    });
+  } catch (err) {
+    if (err instanceof CodexAppServerExitError) {
       errors.push("codex: CLI RPC exited with non-zero code");
       return { windows, errors };
     }
-
-    // Parse JSONL responses
-    const lines = result.stdout.split("\n").filter((line: string) => line.trim());
-    for (const line of lines) {
-      const parsed = safeJsonParse<Record<string, unknown>>(line, {});
-      if (!parsed.result || typeof parsed.result !== "object") continue;
-      const res = parsed.result as Record<string, unknown>;
-      const id = typeof parsed.id === "number" ? parsed.id : null;
-
-      if (id === 1) {
-        const snapshot = parseCodexRateLimitSnapshot(res);
-        if (snapshot.windows.length > 0) {
-          windows.push(...snapshot.windows);
-        }
-        if (typeof snapshot.spendControlReached === "boolean") {
-          spendControlReached = snapshot.spendControlReached;
-        }
-      }
-    }
-  } catch (err) {
     errors.push(`codex: CLI RPC error: ${getErrorMessage(err)}`);
     return {
       windows,
@@ -956,6 +1311,19 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<FreshUsageProviderPol
       errors,
       errorKind: errorKindForThrown(err) === "timeout" ? "timeout" : "unavailable",
     };
+  }
+
+  const rateLimitsResult = responses.get(1);
+  if (rateLimitsResult) {
+    const snapshot = parseCodexRateLimitSnapshot(rateLimitsResult);
+    if (snapshot.windows.length > 0) windows.push(...snapshot.windows);
+    if (typeof snapshot.spendControlReached === "boolean") {
+      spendControlReached = snapshot.spendControlReached;
+    }
+    // The credits ride on the same response the quota poll already pays for, so
+    // a poll that falls back to the CLI refreshes them for free. The HTTP path
+    // cannot see them at all, which is what the standalone probe is for.
+    rememberCodexResetCredits(configHome, parseCodexResetCredits(rateLimitsResult));
   }
 
   if (windows.length === 0 && errors.length === 0) {
@@ -969,6 +1337,208 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<FreshUsageProviderPol
     ...(windows.length === 0 ? { errorKind: "invalid_response" as const } : {}),
   };
 }
+
+// ── Codex reset credits ──────────────────────────────────────────────────
+//
+// A reset credit is a single-use token that clears an account's rate-limit
+// windows. Only the app-server reports them, so the HTTP quota poll — the fast
+// path this service prefers — can never see one. That is why there is a
+// separate, bounded probe rather than a field on the poll result.
+
+/** At most one probe per account per this interval; explicit refresh bypasses it. */
+const CODEX_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
+const CODEX_RESET_CREDIT_CONSUME_TIMEOUT_MS = 20_000;
+
+type CodexResetCreditCacheEntry = {
+  credits: CodexResetCredits;
+  readAt: number;
+};
+
+/** Keyed by config home; `""` is the machine default account. */
+const codexResetCreditCache = new Map<string, CodexResetCreditCacheEntry>();
+/** Probes in flight, so a burst of snapshot reads spawns one app-server. */
+const codexResetCreditProbesInFlight = new Map<string, Promise<void>>();
+
+function codexResetCreditCacheKey(configHome: string | undefined): string {
+  return configHome?.trim() ?? "";
+}
+
+function rememberCodexResetCredits(
+  configHome: string | undefined,
+  credits: CodexResetCredits | null,
+): void {
+  if (!credits) return;
+  codexResetCreditCache.set(codexResetCreditCacheKey(configHome), {
+    credits,
+    readAt: Date.now(),
+  });
+}
+
+function readCachedCodexResetCredits(
+  configHome: string | undefined,
+): CodexResetCredits | null {
+  return codexResetCreditCache.get(codexResetCreditCacheKey(configHome))?.credits ?? null;
+}
+
+/**
+ * Read one account's banked credits, at most once per
+ * {@link CODEX_RESET_CREDIT_PROBE_INTERVAL_MS} unless `force` is set.
+ *
+ * Never throws: a machine with no Codex binary, a signed-out account, or an
+ * app-server that does not know the method all mean "no credits to offer",
+ * which is what the absent field already means to every client.
+ */
+async function probeCodexResetCredits(args: {
+  logger: Logger;
+  configHome?: string;
+  force?: boolean;
+}): Promise<void> {
+  const key = codexResetCreditCacheKey(args.configHome);
+  const cached = codexResetCreditCache.get(key);
+  if (!args.force && cached && Date.now() - cached.readAt < CODEX_RESET_CREDIT_PROBE_INTERVAL_MS) {
+    return;
+  }
+  const inFlight = codexResetCreditProbesInFlight.get(key);
+  if (inFlight) return inFlight;
+  const probe = (async () => {
+    try {
+      const responses = await runCodexAppServerJsonRpc({
+        logger: args.logger,
+        ...(args.configHome ? { configHome: args.configHome } : {}),
+        requests: [{ id: 1, method: "account/rateLimits/read" }],
+      });
+      const result = responses.get(1);
+      // A response with no credit container is a real answer: this account has
+      // none. Cached as zero so the probe does not re-run every snapshot.
+      codexResetCreditCache.set(key, {
+        credits: (result ? parseCodexResetCredits(result) : null) ?? { availableCount: 0 },
+        readAt: Date.now(),
+      });
+    } catch (error) {
+      args.logger.warn("usage.codex_reset_credit_probe_failed", {
+        error: getErrorMessage(error),
+      });
+      // Remembered as a failed attempt so a machine without Codex does not
+      // spawn a process on every snapshot. The previous reading is kept when
+      // there was one; only the clock moves.
+      codexResetCreditCache.set(key, {
+        credits: cached?.credits ?? { availableCount: 0 },
+        readAt: Date.now(),
+      });
+    } finally {
+      codexResetCreditProbesInFlight.delete(key);
+    }
+  })();
+  codexResetCreditProbesInFlight.set(key, probe);
+  return probe;
+}
+
+/** Spends in flight, keyed by config home — one per account at a time. */
+const codexResetCreditConsumeInFlight = new Map<string, Promise<UsageResetCreditResult>>();
+/**
+ * The idempotency key held for an account until an outcome comes back.
+ *
+ * Held rather than minted per attempt: a spend that times out may already have
+ * been applied server-side, and a retry with a fresh key would burn a second
+ * credit. Cleared only once an outcome is known.
+ */
+const codexResetCreditIdempotencyKeys = new Map<string, string>();
+
+type CodexResetCreditOutcome = Exclude<UsageResetCreditStatus, "failure">;
+
+/**
+ * One analytics outcome per outcome key. Keyed by the shared classifier's
+ * verdict, not by the raw wire status, so analytics and the sentence every
+ * client shows can never disagree about what happened. A table rather than a
+ * chain so adding an outcome is a compile error here instead of a silent
+ * "failed".
+ */
+const RESET_CREDIT_ANALYTICS_OUTCOME: Record<ResetCreditOutcomeKey, ResetCreditAnalyticsOutcome> = {
+  reset: "completed",
+  nothingToReset: "nothing_to_reset",
+  noCredit: "no_credit",
+  alreadyRedeemed: "already_redeemed",
+  failure: "failed",
+  // The host explained itself instead of naming an outcome; that is a spend
+  // that did not happen.
+  hostMessage: "failed",
+};
+
+function codexResetCreditOutcomeStatus(value: unknown): CodexResetCreditOutcome | null {
+  return value === "reset"
+    || value === "nothingToReset"
+    || value === "noCredit"
+    || value === "alreadyRedeemed"
+    ? value
+    : null;
+}
+
+async function consumeCodexResetCredit(args: {
+  logger: Logger;
+  configHome?: string;
+}): Promise<UsageResetCreditResult> {
+  const key = codexResetCreditCacheKey(args.configHome);
+  const inFlight = codexResetCreditConsumeInFlight.get(key);
+  if (inFlight) return inFlight;
+  const idempotencyKey = codexResetCreditIdempotencyKeys.get(key) ?? randomUUID();
+  codexResetCreditIdempotencyKeys.set(key, idempotencyKey);
+  const attempt = (async (): Promise<UsageResetCreditResult> => {
+    try {
+      const responses = await runCodexAppServerJsonRpc({
+        logger: args.logger,
+        ...(args.configHome ? { configHome: args.configHome } : {}),
+        requests: [{ id: 1, method: "account/rateLimitResetCredit/consume", params: { idempotencyKey } }],
+        timeoutMs: CODEX_RESET_CREDIT_CONSUME_TIMEOUT_MS,
+      });
+      const outcome = codexResetCreditOutcomeStatus(responses.get(1)?.outcome);
+      if (!outcome) {
+        // The call came back but said nothing ADE understands. Reporting
+        // success here would tell the user their windows cleared when nothing
+        // proves they did.
+        return {
+          ok: false,
+          status: "failure",
+          message: "Codex did not report what the reset did. Check your limits before retrying.",
+        };
+      }
+      // An outcome — any outcome — is the server having decided. The key has
+      // done its job and a later spend is a new intent.
+      codexResetCreditIdempotencyKeys.delete(key);
+      return {
+        ok: outcome === "reset",
+        status: outcome,
+        ...(outcome === "reset"
+          ? {}
+          : { message: CODEX_RESET_CREDIT_OUTCOME_MESSAGE[outcome] }),
+      };
+    } catch (error) {
+      // The key is deliberately KEPT: this attempt may have been applied and
+      // the retry must be able to say "this is the same spend".
+      args.logger.warn("usage.codex_reset_credit_consume_failed", {
+        error: getErrorMessage(error),
+      });
+      return {
+        ok: false,
+        status: "failure",
+        message: `Could not reach Codex to spend the credit: ${getErrorMessage(error)}`,
+      };
+    } finally {
+      codexResetCreditConsumeInFlight.delete(key);
+    }
+  })();
+  codexResetCreditConsumeInFlight.set(key, attempt);
+  return attempt;
+}
+
+/** The three non-success outcomes, phrased once for every client. */
+const CODEX_RESET_CREDIT_OUTCOME_MESSAGE: Record<
+  Exclude<CodexResetCreditOutcome, "reset">,
+  string
+> = {
+  nothingToReset: "Nothing to reset — this account is not over a limit.",
+  noCredit: "No reset credit is banked on this account.",
+  alreadyRedeemed: "That reset credit was already redeemed.",
+};
 
 // ── Local Cost Scanning ──────────────────────────────────────────
 
@@ -2152,50 +2722,142 @@ function filterUnexpiredCarriedWindows(prevWindows: UsageWindow[], polledAt: str
  * plus the per-provider status and the timestamp of the last real success.
  */
 /**
- * Stamp account identity onto each provider status and pool it into the
- * snapshot's account directory.
+ * Who a NON-default account is signed in as.
  *
- * `resolveProviderAccounts` owns the carry rule (a transiently unreadable
- * config keeps the last identity it read; a config that is simply gone means
- * the user signed out and reports nothing), so this is a plain read of what it
- * returns. The limits URL is a constant, so it is always rewritten.
+ * Read straight from that account's config home, uncached: the shared TTL cache
+ * in `providerAccountIdentity` is keyed by provider, which is exactly right for
+ * the one identity a provider had before accounts and exactly wrong for a
+ * second. The files are two small JSON reads and the poll interval is a minute
+ * at its fastest, so re-reading them is cheaper than a second cache that can
+ * hand one account another's email.
  *
- * Accounts are keyed by email, which is what makes the same login seen from two
- * machines one account with two `machines` entries. Today only this machine
- * polls quota — the fan-out in `accountUsageLiveRefresh` carries history
- * rollups, not live windows — so a directory normally has one machine per
- * account. Nothing here assumes that.
+ * Never throws: an unreadable home falls back to whatever the registry last
+ * recorded, and then to nothing.
+ */
+async function readInstanceAccountIdentity(
+  provider: QuotaInstanceProvider,
+  instance: QuotaInstance,
+): Promise<ProviderAccountIdentity> {
+  try {
+    return provider === "claude"
+      ? await readClaudeAccount(os.homedir(), instance.configHome)
+      : await readCodexAccount(os.homedir(), instance.configHome);
+  } catch {
+    // An unreadable home is not a sign-out, so the row keeps whatever the
+    // account registry last recorded rather than blanking.
+    return instance.account ?? {};
+  }
+}
+
+/**
+ * Stamp account identity onto each provider status and pool every local account
+ * into the snapshot's account directory.
+ *
+ * Two different questions, deliberately answered from two sources:
+ *
+ *  - `providerStatus[provider].accountEmail` is the DEFAULT account's email. It
+ *    is the one-line "who is this" on a provider, so it stays singular and it
+ *    keeps coming from `resolveProviderAccounts`, which owns the carry rule (a
+ *    transiently unreadable config keeps the last identity it read; a config
+ *    that is simply gone means the user signed out and reports nothing).
+ *  - `accounts` is one entry per local login, because a machine with two Claude
+ *    accounts has two quotas and a window has to say which one it describes.
+ *
+ * The default account is always listed, so a machine that has never added a
+ * second one produces the single account it always did. A second account is
+ * listed once it has an identity to show or has actually reported a window —
+ * an account the user created but has not signed into yet would otherwise
+ * render as a blank row with no numbers in it.
+ *
+ * The limits URL is a constant, so it is always rewritten.
  */
 async function stampProviderAccounts(
   providerStatus: UsageProviderStatusMap,
   machineLabel: string,
-): Promise<UsageAccount[]> {
+  activeAccountIds: ReadonlySet<string>,
+  listInstances: (provider: QuotaInstanceProvider) => QuotaInstance[],
+): Promise<{ accounts: UsageAccount[]; defaultAccountIdByProvider: Map<UsageProvider, string> }> {
   // `resolveProviderAccounts` never rejects — it is total by construction.
   const { identities } = await resolveProviderAccounts();
   const accounts: UsageAccount[] = [];
+  const defaultAccountIdByProvider = new Map<UsageProvider, string>();
   for (const key of Object.keys(providerStatus) as UsageProvider[]) {
     const status = providerStatus[key];
     if (!status) continue;
-    const email = identities[key]?.email;
-    const plan = identities[key]?.plan;
+    // The machine's own login — the identity `resolveProviderAccounts` owns,
+    // including its carry rule. It belongs to the BASE instance, which is not
+    // necessarily the default one: promoting a second account moves the
+    // default pointer, it does not move this identity.
+    const baseIdentity: ProviderAccountIdentity = {
+      ...(identities[key]?.email ? { email: identities[key]!.email! } : {}),
+      ...(identities[key]?.plan ? { plan: identities[key]!.plan! } : {}),
+    };
     const url = usageProviderAccountUrl(key);
-    providerStatus[key] = {
-      ...status,
-      ...(email ? { accountEmail: email } : {}),
-      ...(plan ? { accountPlan: plan } : {}),
-      ...(url ? { accountUrl: url } : {}),
+    const stampStatus = (identity: ProviderAccountIdentity): void => {
+      providerStatus[key] = {
+        ...status,
+        ...(identity.email ? { accountEmail: identity.email } : {}),
+        ...(identity.plan ? { accountPlan: identity.plan } : {}),
+        ...(url ? { accountUrl: url } : {}),
+      };
     };
     const checkedAt = status.updatedAt ?? status.lastSuccessAt ?? undefined;
-    accounts.push({
-      id: accountIdFor(key, email),
-      provider: key,
-      ...(email ? { email } : {}),
-      ...(plan ? { plan } : {}),
-      machines: [{ label: machineLabel, ...(checkedAt ? { checkedAt } : {}) }],
-      ...(url ? { url } : {}),
-    });
+    const machines = [{ label: machineLabel, ...(checkedAt ? { checkedAt } : {}) }];
+    if (!isQuotaInstanceProvider(key)) {
+      // A provider with exactly one local identity keeps the older id shape.
+      stampStatus(baseIdentity);
+      accounts.push({
+        id: accountIdFor(key, baseIdentity.email),
+        provider: key,
+        ...(baseIdentity.email ? { email: baseIdentity.email } : {}),
+        ...(baseIdentity.plan ? { plan: baseIdentity.plan } : {}),
+        machines,
+        ...(url ? { url } : {}),
+      });
+      continue;
+    }
+    // The provider line stays singular and describes the DEFAULT account, so it
+    // is stamped once the loop below has read whichever account that is.
+    let defaultIdentity = baseIdentity;
+    for (const instance of listInstances(key)) {
+      const id = accountIdForInstance(key, instance.id);
+      if (instance.isDefault) defaultAccountIdByProvider.set(key, id);
+      // Per ACCOUNT, never per default: the base row is the machine identity
+      // (its `.claude.json` sits beside the home directory, so reading it with
+      // a scoped home reports a signed-in machine as signed out), and every
+      // other row is read from its own home (stamping the base email on a
+      // promoted secondary shows one account under another's address).
+      const identity = isBaseProviderInstance({ id: instance.id, provider: key })
+        ? baseIdentity
+        : await readInstanceAccountIdentity(key, instance);
+      if (instance.isDefault) defaultIdentity = identity;
+      const known = Boolean(identity.email || identity.plan);
+      if (!instance.isDefault && !known && !activeAccountIds.has(id)) continue;
+      // Codex-only: Claude grants no reset credits, so the field stays absent
+      // there and every client reads that as "nothing to spend".
+      const resetCredits = key === "codex"
+        ? readCachedCodexResetCredits(scopedConfigHome(key, instance))
+        : null;
+      accounts.push({
+        id,
+        provider: key,
+        ...(identity.email ? { email: identity.email } : {}),
+        ...(identity.plan ? { plan: identity.plan } : {}),
+        instanceId: instance.id,
+        label: instance.label,
+        ...(instance.accentColor ? { accentColor: instance.accentColor } : {}),
+        machines,
+        ...(url ? { url } : {}),
+        ...(resetCredits ? { resetCredits } : {}),
+      });
+    }
+    stampStatus(defaultIdentity);
   }
-  return accounts;
+  return { accounts, defaultAccountIdByProvider };
+}
+
+function isQuotaInstanceProvider(provider: UsageProvider): provider is QuotaInstanceProvider {
+  return provider === "claude" || provider === "codex";
 }
 
 /** Stable per snapshot: the email when known, else "this machine's <provider>". */
@@ -2347,6 +3009,16 @@ type UsageTrackingDependencies = {
   localMachineIdentity?: () => LocalMachineIdentity | null;
   /** Transcript roots to fingerprint for cross-machine dedupe. */
   transcriptRoots?: () => string[];
+  /**
+   * This machine's local provider accounts. Omitted = the real machine
+   * registry; injected by tests so they never read the developer's own logins.
+   */
+  listProviderInstances?: (provider: QuotaInstanceProvider) => QuotaInstance[];
+  /** Provider account/settings seam used by chat balancing and auto-start. */
+  providerInstanceStore?: Pick<
+    ReturnType<typeof getMachineProviderInstanceStore>,
+    "list" | "getProviderSettings"
+  >;
   /** Home directory holding the shared-source marker (injected for tests). */
   transcriptHome?: string;
   /** Filesystem seam for the shared-source marker (injected for tests). */
@@ -2357,6 +3029,8 @@ type UsageTrackingDependencies = {
    * is what every non-desktop host and every test does.
    */
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
+  /** Brain/main-owned sink for the low-frequency reset-credit mutation. */
+  captureInternalAnalytics?: (input: ProductAnalyticsCapture) => unknown;
 };
 
 /**
@@ -2492,27 +3166,45 @@ function defaultLocalMachineIdentity(): LocalMachineIdentity | null {
  * because the other side also has Codex installed. Paths are folded through
  * `pathKey` at comparison time, so separators and case are handled per platform.
  */
-function defaultTranscriptRoots(costs: readonly CostSnapshot[]): string[] {
+function defaultTranscriptRoots(
+  costs: readonly CostSnapshot[],
+  listInstances: (provider: QuotaInstanceProvider) => QuotaInstance[] = listQuotaInstances,
+): string[] {
   const home = os.homedir();
-  const byProvider: Record<string, string> = {
-    claude: path.join(home, ".claude"),
-    codex: process.env.CODEX_HOME || path.join(home, ".codex"),
-    cursor: path.join(home, ".cursor"),
-    "cursor-agent": path.join(home, ".cursor"),
-    droid: process.env.FACTORY_DIR || path.join(home, ".factory"),
-    copilot: path.join(home, ".copilot"),
-    gemini: path.join(home, ".gemini"),
-    openclaw: path.join(home, ".openclaw"),
-    opencode: process.env.XDG_DATA_HOME
+  const factoryDir = process.env.FACTORY_DIR?.trim();
+  const byProvider: Record<string, string[]> = {
+    // The config-home helpers, not a re-derived `~/.claude`: `CLAUDE_CONFIG_DIR`
+    // and `CODEX_HOME` move the directory ADE's own CLI launches read, and a
+    // fingerprint of a directory nobody writes to identifies nothing. Every
+    // additional account's home joins it, since each one is a separate
+    // transcript corpus on this machine.
+    claude: [claudeConfigHome(), ...listInstances("claude").map((instance) => instance.configHome)],
+    codex: [codexConfigHome(), ...listInstances("codex").map((instance) => instance.configHome)],
+    cursor: [path.join(home, ".cursor")],
+    "cursor-agent": [path.join(home, ".cursor")],
+    // `FACTORY_HOME_OVERRIDE` is the variable Droid's own binary honours (it
+    // appends `.factory` to it); `FACTORY_DIR` is kept as a secondary root so
+    // an install that set it keeps being fingerprinted.
+    droid: [factoryConfigHome(), ...(factoryDir ? [factoryDir] : [])],
+    copilot: [path.join(home, ".copilot")],
+    gemini: [path.join(home, ".gemini")],
+    openclaw: [path.join(home, ".openclaw")],
+    opencode: [process.env.XDG_DATA_HOME
       ? path.join(process.env.XDG_DATA_HOME, "opencode")
-      : path.join(home, ".local", "share", "opencode"),
+      : path.join(home, ".local", "share", "opencode")],
   };
-  const roots = new Set<string>();
+  // Keyed through `pathKey`, not `Set<string>`: two accounts can name one
+  // directory in two spellings, and on Windows and macOS those are the same
+  // directory. The first spelling wins so the value stays displayable.
+  const roots = new Map<string, string>();
   for (const cost of costs) {
-    const root = byProvider[cost.provider];
-    if (root) roots.add(root);
+    for (const root of byProvider[cost.provider] ?? []) {
+      if (!root) continue;
+      const key = pathKey(root);
+      if (!roots.has(key)) roots.set(key, root);
+    }
   }
-  return [...roots];
+  return [...roots.values()];
 }
 
 type PollOptions = {
@@ -2648,8 +3340,12 @@ export function createUsageTrackingService({
   let lastDemandAtMs = Date.now();
   const providerFailureCount: Partial<Record<UsageProvider, number>> = {};
   const providerNextRetryAtMs: Partial<Record<UsageProvider, number>> = {};
-  const runClaudeUsagePoll = dependencies?.pollClaudeUsage ?? ((context) => pollClaudeUsage(logger, context));
-  const runCodexUsagePoll = dependencies?.pollCodexUsage ?? ((context) => pollCodexUsage(logger, context));
+  const providerInstanceStore = dependencies?.providerInstanceStore ?? getMachineProviderInstanceStore();
+  const readQuotaInstances = dependencies?.listProviderInstances ?? listQuotaInstances;
+  const runClaudeUsagePoll = dependencies?.pollClaudeUsage
+    ?? ((context) => pollClaudeUsage(logger, context, readQuotaInstances("claude")));
+  const runCodexUsagePoll = dependencies?.pollCodexUsage
+    ?? ((context) => pollCodexUsage(logger, context, readQuotaInstances("codex")));
   const providerStrategies: UsageProviderStrategy[] = [
     { provider: "claude", poll: (context) => runClaudeUsagePoll(context) },
     { provider: "codex", poll: (context) => runCodexUsagePoll(context) },
@@ -2789,7 +3485,7 @@ export function createUsageTrackingService({
   const readLocalMachineIdentity = dependencies?.localMachineIdentity
     ?? defaultLocalMachineIdentity;
   const readTranscriptRoots = dependencies?.transcriptRoots
-    ?? (() => defaultTranscriptRoots(cachedCosts));
+    ?? (() => defaultTranscriptRoots(cachedCosts, readQuotaInstances));
   const transcriptHome = dependencies?.transcriptHome ?? os.homedir();
   let fetchAccountRollups: AccountRollupFetcher | null = null;
   /** The one fan-out that may be running. The work is range-independent. */
@@ -3129,6 +3825,13 @@ export function createUsageTrackingService({
     }
   }
 
+  const autoStartScheduler = createWindowAutoStartScheduler({
+    logger,
+    listInstances: (provider) => providerInstanceStore.list(provider),
+    getProviderSettings: (provider) => providerInstanceStore.getProviderSettings(provider),
+    requestQuotaRefresh: () => forceRefresh({ allowInteractiveAuth: false }),
+  });
+
   /**
    * The one way a new snapshot becomes visible: stamp it, store it, emit it,
    * and hand the *same* object back to whoever asked. A return path that built
@@ -3139,6 +3842,7 @@ export function createUsageTrackingService({
     const published = stampRevision(snapshot);
     lastSnapshot = published;
     emitUpdate(published);
+    autoStartScheduler.onSnapshot(published);
     return published;
   }
 
@@ -3427,7 +4131,7 @@ export function createUsageTrackingService({
             };
           }
           try {
-            const result = await strategy.poll({ reason });
+            const result = await strategy.poll({ reason, previousSnapshot: lastSnapshot });
             if (result.disposition === "preserve_previous") {
               return {
                 provider: strategy.provider,
@@ -3596,16 +4300,33 @@ export function createUsageTrackingService({
         // Identity of the account these windows describe, plus the provider's
         // own limits page. Stamped here so every client renders the same two
         // facts from one source instead of each keeping its own copy.
-        const accounts = await stampProviderAccounts(
-          providerStatus,
-          readLocalMachineIdentity()?.label ?? os.hostname(),
-        );
         // Every window carries the account it describes, so a client can group
         // one card per window with one segment per account without re-deriving
-        // the mapping from provider names.
-        const accountIdByProvider = new Map(accounts.map((account) => [account.provider, account.id]));
+        // the mapping from provider names. The per-account pollers already
+        // stamped theirs — this pass only names the account for a window that
+        // arrived without one (a carried-forward window from a host that
+        // predates accounts, or an injected poller in a test), and the honest
+        // answer there is the provider's default account.
+        // Reset credits live only on the app-server, which the HTTP quota path
+        // never touches — so they are read here rather than inside the provider
+        // poll, which stays spawn-free by design on its fast path. Bounded to
+        // one short-lived app-server per account per 15 minutes; an explicit
+        // user refresh bypasses that, because a Refresh that does not refresh
+        // is a lie. Never throws: a machine without Codex simply has none.
+        await Promise.all(readQuotaInstances("codex").map((instance) => probeCodexResetCredits({
+          logger,
+          ...(scopedConfigHome("codex", instance) ? { configHome: scopedConfigHome("codex", instance)! } : {}),
+          force: reason === "user",
+        })));
+        const { accounts, defaultAccountIdByProvider } = await stampProviderAccounts(
+          providerStatus,
+          readLocalMachineIdentity()?.label ?? os.hostname(),
+          new Set(allWindows.map((window) => window.accountId).filter((id): id is string => Boolean(id))),
+          readQuotaInstances,
+        );
         allWindows = allWindows.map((window) => {
-          const accountId = accountIdByProvider.get(window.provider);
+          if (window.accountId) return window;
+          const accountId = defaultAccountIdByProvider.get(window.provider);
           return accountId ? { ...window, accountId } : window;
         });
 
@@ -3734,6 +4455,97 @@ export function createUsageTrackingService({
     } finally {
       if (timeout) clearTimeout(timeout);
     }
+  }
+
+  function captureResetCreditOutcome(result: UsageResetCreditResult): void {
+    // `resetCreditOutcomeKey` is the one classifier: it already rejects an
+    // unrecognized (or inherited, like `toString`) wire status, so the key it
+    // returns can index the table directly. Reading the same verdict the user's
+    // sentence is rendered from is the point — analytics that re-derived the
+    // outcome would eventually report a different story than the popup showed.
+    const outcome: ResetCreditAnalyticsOutcome =
+      RESET_CREDIT_ANALYTICS_OUTCOME[resetCreditOutcomeKey(result)];
+    const sink = dependencies?.captureInternalAnalytics;
+    if (!sink) return;
+    try {
+      captureResetCreditAnalytics({
+        analytics: { captureInternal: sink },
+        surface: "api",
+        outcome,
+      });
+    } catch (error) {
+      logger.debug("usage.reset_credit_analytics_failed", { error: getErrorMessage(error) });
+    }
+  }
+
+  /**
+   * Spend one banked reset credit for `accountId`.
+   *
+   * Single-flight per config home, with the idempotency key held across a
+   * timeout: a reset that timed out may already have applied, and a retry that
+   * minted a fresh key would burn a second credit for one user intent.
+   *
+   * The windows are re-read afterwards because the outcome alone is not the
+   * user-visible fact — "reset" is only believable once the meter says so, and
+   * the poll is what makes the popup stop showing the old numbers.
+   */
+  async function consumeResetCredit(
+    args: { accountId: string },
+  ): Promise<UsageResetCreditResult> {
+    // Reached straight off the action domain, so the argument is whatever the
+    // caller sent — a missing one must answer like every other bad account id
+    // rather than throwing a TypeError out of the RPC.
+    const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
+    if (!accountId) {
+      const failure: UsageResetCreditResult = {
+        ok: false,
+        status: "failure",
+        message: "Name the Codex account whose reset credit to spend.",
+      };
+      captureResetCreditOutcome(failure);
+      return failure;
+    }
+    // Use the injected account registry too, so reset spending targets the same
+    // selected account that polling and credit probing use.
+    const instance = readQuotaInstances("codex")
+      .find((entry) => accountIdForInstance("codex", entry.id) === accountId);
+    if (!instance) {
+      // Deliberately specific: the caller named an account this machine does
+      // not have, which is different from a spend that failed.
+      const failure: UsageResetCreditResult = {
+        ok: false,
+        status: "failure",
+        message: "That Codex account is not signed in on this computer.",
+      };
+      captureResetCreditOutcome(failure);
+      return failure;
+    }
+    const configHome = scopedConfigHome("codex", instance);
+    const result = await consumeCodexResetCredit({
+      logger,
+      ...(configHome ? { configHome } : {}),
+    });
+    // Re-read regardless of outcome: `nothingToReset` and `alreadyRedeemed`
+    // both mean the displayed numbers may be stale too.
+    await probeCodexResetCredits({
+      logger,
+      ...(configHome ? { configHome } : {}),
+      force: true,
+    });
+    try {
+      await forceRefresh({ allowInteractiveAuth: false });
+    } catch (error) {
+      // The credit was still spent, and the answer is returned unchanged.
+      // Every client phrases a `reset` status itself (shared
+      // `resetCreditOutcomeText`, and `workResetCreditOutcomeText` on iOS), so
+      // a `message` added here would never be shown; the stale meter is what
+      // the log is for.
+      logger.warn("usage.codex_reset_credit_refresh_failed", {
+        error: getErrorMessage(error),
+      });
+    }
+    captureResetCreditOutcome(result);
+    return result;
   }
 
   async function refreshHistory(
@@ -3909,6 +4721,32 @@ export function createUsageTrackingService({
     return buildLocalRollup(Date.now());
   }
 
+  function resolveBalancedInstance(provider: ProviderInstanceProvider) {
+    try {
+      const settings = providerInstanceStore.getProviderSettings(provider);
+      if (!settings.smartBalance) return null;
+      const instances = providerInstanceStore.list(provider);
+      if (instances.filter((instance) => instance.signedIn).length < 2) return null;
+      const windowsByAccountId = new Map<string, UsageWindow[]>();
+      for (const window of lastSnapshot.windows) {
+        if (!window.accountId) continue;
+        const accountWindows = windowsByAccountId.get(window.accountId) ?? [];
+        accountWindows.push(window);
+        windowsByAccountId.set(window.accountId, accountWindows);
+      }
+      return pickInstanceForNewChat({
+        provider,
+        instances,
+        accounts: lastSnapshot.accounts ?? [],
+        windowsByAccountId,
+        nowMs: Date.now(),
+      });
+    } catch (error) {
+      logger.warn("usage.account_balance_resolve_failed", { error: getErrorMessage(error), provider });
+      return null;
+    }
+  }
+
   function refreshStatsInBackground(
     range: ResolvedAdeUsageRange,
     requested: { provider: boolean; github: boolean },
@@ -4020,9 +4858,12 @@ export function createUsageTrackingService({
       getUsageSnapshot,
       noteQuotaDemand,
       forceRefresh,
+      consumeResetCredit,
       refreshHistory,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getUsageRollup,
+      resolveBalancedInstance,
+      getAutoStartState: autoStartScheduler.getAutoStartState,
       setAccountRollupFetcher,
       applyAccountRollups,
       poll,
@@ -4050,9 +4891,12 @@ export function createUsageTrackingService({
     getUsageSnapshot,
     noteQuotaDemand,
     forceRefresh,
+    consumeResetCredit,
     refreshHistory,
     getAdeUsageStats,
     getUsageRollup,
+    resolveBalancedInstance,
+    getAutoStartState: autoStartScheduler.getAutoStartState,
     setAccountRollupFetcher,
     applyAccountRollups,
     poll,
@@ -4062,6 +4906,7 @@ export function createUsageTrackingService({
     dispose: () => {
       disposed = true;
       ledgerAbortController.abort();
+      autoStartScheduler.dispose();
       stop();
     },
   };
@@ -4094,6 +4939,14 @@ export const _testing = {
   isUsageSnapshot,
   pollClaudeUsage,
   pollCodexUsage,
+  consumeCodexResetCredit,
+  probeCodexResetCredits,
+  readCachedCodexResetCredits,
+  listQuotaInstances,
+  mergeInstancePollResults,
+  defaultTranscriptRoots,
+  stampProviderAccounts,
+  accountIdForInstance,
   discoverClaudeProjectDirs,
   scanClaudeLogs,
   scanCodexLogs,

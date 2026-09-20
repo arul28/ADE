@@ -6,7 +6,6 @@ import type {
   RemoteRuntimeActionResult,
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
-  RemoteRuntimeEventCategory,
   RemoteRuntimePortForward,
   RemoteRuntimePortForwardRequest,
   RemoteRuntimeMachineProjectCapability,
@@ -16,6 +15,8 @@ import type {
   RemoteRuntimeRouteKind,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
+import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
+
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
 import {
   isRemoteRuntimeConnectionError,
@@ -1337,17 +1338,6 @@ function clampLimit(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(1, Math.min(1000, Math.floor(value)))
     : 100;
-}
-
-function isRemoteRuntimeEventCategory(
-  value: unknown,
-): value is RemoteRuntimeEventCategory {
-  return (
-    value === "orchestrator" ||
-    value === "dag_mutation" ||
-    value === "runtime" ||
-    value === "pty"
-  );
 }
 
 function normalizeBufferedEvent(

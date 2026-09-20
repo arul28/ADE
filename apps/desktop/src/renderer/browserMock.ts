@@ -71,6 +71,14 @@ import {
   type PromptStashEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
+import type { AccountSettingRow } from "../shared/types/accountSettings";
+import type {
+  ApiCredentialGetArgs,
+  ApiCredentialListArgs,
+  ApiCredentialRemoveArgs,
+  ApiCredentialStoreArgs,
+  ApiCredentialSummary,
+} from "../shared/types/apiCredentials";
 import type {
   IosSimulatorDeviceSettings,
   IosSimulatorElementActionKind,
@@ -227,6 +235,98 @@ const MOCK_PROJECT =
 
 // ── Timestamps ────────────────────────────────────────────────
 const now = new Date().toISOString();
+
+/**
+ * The two accounts every machine has: the pre-existing Claude and Codex logins
+ * the real store synthesizes on read. Mutable so the mock's create/rename/
+ * remove handlers round-trip in the preview instead of looking broken.
+ */
+const mockProviderInstances: Array<{
+  id: string;
+  provider: "claude" | "codex";
+  label: string;
+  accentColor?: string;
+  configHome: string;
+  isDefault: boolean;
+  createdAt: string;
+  account?: { email?: string; plan?: string };
+  signedIn: boolean;
+}> = [
+  {
+    id: "claude",
+    provider: "claude",
+    label: "Default",
+    configHome: "/mock/.claude",
+    isDefault: true,
+    createdAt: new Date(0).toISOString(),
+    account: { email: "ada.lovelace@example.com", plan: "Claude Max 20x" },
+    signedIn: true,
+  },
+  // A second Claude sign-in: the preview needs one to show the states that
+  // only exist with more than one account (smart balance, the per-account
+  // usage rows, a preset that names which account it launches on).
+  {
+    id: "claude-work",
+    provider: "claude",
+    label: "Work",
+    accentColor: "#5ba8d9",
+    configHome: "/mock/.ade/provider-homes/claude/work",
+    isDefault: false,
+    createdAt: new Date(0).toISOString(),
+    account: { email: "jo.martin@example.com", plan: "Claude Pro" },
+    signedIn: true,
+  },
+  {
+    id: "codex",
+    provider: "codex",
+    label: "Default",
+    configHome: "/mock/.codex",
+    isDefault: true,
+    createdAt: new Date(0).toISOString(),
+    account: { email: "dev@example.com", plan: "ChatGPT Pro 20x Subscription" },
+    signedIn: true,
+  },
+];
+
+/**
+ * Provider API keys, stateful for the same reason the accounts above are: the
+ * keys panel adds, replaces and deletes rows, and a frozen stub would make
+ * every one of those look broken in the Vite-only preview. One Anthropic row
+ * is seeded from the environment so the read-only "managed outside ADE" case
+ * is visible without anyone having to set a variable.
+ */
+const mockApiCredentials: ApiCredentialSummary[] = [
+  {
+    provider: "anthropic",
+    credentialId: "default",
+    label: "Anthropic",
+    envVar: "ANTHROPIC_API_KEY",
+    source: "env",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    maskedTail: "••••3c1x",
+  },
+];
+
+const mockProviderInstanceSettings: Record<
+  "claude" | "codex",
+  { smartBalance: boolean; autoStartWindows: boolean }
+> = {
+  claude: { smartBalance: false, autoStartWindows: false },
+  codex: { smartBalance: false, autoStartWindows: false },
+};
+
+function mockProviderInstanceById(id: string) {
+  const instance = mockProviderInstances.find((entry) => entry.id === id);
+  if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+  return instance;
+}
+
+function mockProviderInstanceLoginCommand(instance: { provider: "claude" | "codex"; configHome: string }) {
+  return instance.provider === "claude"
+    ? { command: "claude", args: ["auth", "login"], env: { CLAUDE_CONFIG_DIR: instance.configHome } }
+    : { command: "codex", args: ["login"], env: { CODEX_HOME: instance.configHome } };
+}
 
 // ── iOS simulator preview stubs ───────────────────────────────
 // The browser preview has no simulator, so every device call answers with the
@@ -459,160 +559,10 @@ function mockBrowserLaneHealth(laneId: string) {
 }
 
 const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
-const thirtyMinAgo = new Date(Date.now() - 1800000).toISOString();
-const tenMinAgo = new Date(Date.now() - 600000).toISOString();
-const fiveMinAgo = new Date(Date.now() - 300000).toISOString();
 const yesterday = new Date(Date.now() - 86400000).toISOString();
 const twoDaysAgo = new Date(Date.now() - 172800000).toISOString();
 const threeDaysAgo = new Date(Date.now() - 259200000).toISOString();
 const fourHoursFromNow = new Date(Date.now() + 4 * 3600000).toISOString();
-
-// ── Orchestration demo data ──────────────────────────────────
-const MOCK_ORCH_RUN_ID = "orch-run-demo-001";
-const MOCK_ORCH_BUNDLE = "/tmp/mock/.ade/orchestration/" + MOCK_ORCH_RUN_ID;
-const MOCK_ORCH_LEAD_SESSION = "mock-orch-lead";
-const MOCK_ORCH_WORKER_1 = "mock-orch-worker-auth";
-const MOCK_ORCH_WORKER_2 = "mock-orch-worker-dashboard";
-const MOCK_ORCH_VALIDATOR = "mock-orch-validator";
-
-const MOCK_ORCH_MANIFEST: any = {
-  version: 1,
-  runId: MOCK_ORCH_RUN_ID,
-  laneId: "lane-main",
-  bundlePath: MOCK_ORCH_BUNDLE,
-  etag: "etag-42",
-  serverGeneration: 42,
-  createdAt: oneHourAgo,
-  updatedAt: fiveMinAgo,
-  title: "Implement user authentication + dashboard",
-  goalSummary: "Add OAuth login flow with Google/GitHub, session management, and a post-login dashboard showing recent activity and quick actions.",
-  currentPhase: "developing",
-  phases: [
-    { id: "planning", title: "Planning", status: "done", startedAt: oneHourAgo, completedAt: thirtyMinAgo },
-    { id: "developing", title: "Developing", status: "active", startedAt: thirtyMinAgo },
-    { id: "validating", title: "Validating", status: "pending" },
-    { id: "wrapup", title: "Wrap-up", status: "pending" },
-  ],
-  agents: [
-    { sessionId: MOCK_ORCH_LEAD_SESSION, role: "lead", goalSummary: "Coordinate auth + dashboard implementation", status: "running", lastHeartbeatAt: fiveMinAgo, spawnedAt: oneHourAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-5", resolvedAt: oneHourAgo, routingKey: "default" } },
-    { sessionId: MOCK_ORCH_WORKER_1, role: "worker", tag: "auth", displayName: "Auth flow worker", goalSummary: "Build OAuth login with Google + GitHub providers", status: "running", currentStepId: "T-auth-oauth", lastHeartbeatAt: fiveMinAgo, spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-5", resolvedAt: thirtyMinAgo, routingKey: "byTag" } },
-    { sessionId: MOCK_ORCH_WORKER_2, role: "worker", tag: "dashboard", displayName: "Dashboard worker", goalSummary: "Build post-login dashboard with activity feed and quick actions", status: "running", currentStepId: "T-dash-layout", lastHeartbeatAt: tenMinAgo, spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "codex", modelId: "openai/o3", resolvedAt: thirtyMinAgo, routingKey: "byRoleTag" } },
-    { sessionId: MOCK_ORCH_VALIDATOR, role: "validator", tag: "quality", displayName: "Quality validator", goalSummary: "Verify test coverage, type safety, and security review", status: "pending", spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-5", resolvedAt: thirtyMinAgo, routingKey: "byRole" } },
-  ],
-  tasks: [
-    { id: "T-auth-oauth", phaseId: "developing", title: "OAuth provider integration", description: "Implement Google and GitHub OAuth flows with passport.js", status: "in_progress", tag: "auth", labels: ["backend", "security"], priority: "high", estimatedComplexity: "medium", filesHint: ["src/auth/oauth.ts", "src/auth/providers/google.ts", "src/auth/providers/github.ts"], assigneeSessionId: MOCK_ORCH_WORKER_1, claimedAt: thirtyMinAgo, validationGate: { required: true, stepIds: ["VS-auth-security"] }, attempts: [{ id: "att-1", sessionId: MOCK_ORCH_WORKER_1, startedAt: thirtyMinAgo, outcome: "succeeded" }] },
-    { id: "T-auth-session", phaseId: "developing", title: "Session management", description: "Cookie-based session with Redis store, CSRF protection", status: "pending", tag: "auth", labels: ["backend", "security"], priority: "high", estimatedComplexity: "small", blockedBy: ["T-auth-oauth"], filesHint: ["src/auth/session.ts", "src/middleware/csrf.ts"], validationGate: { required: true, stepIds: ["VS-auth-security"] } },
-    { id: "T-dash-layout", phaseId: "developing", title: "Dashboard layout + routing", description: "Post-login dashboard shell with sidebar nav and content area", status: "in_progress", tag: "dashboard", labels: ["frontend", "ui"], priority: "normal", estimatedComplexity: "medium", filesHint: ["src/pages/Dashboard.tsx", "src/components/DashboardShell.tsx"], assigneeSessionId: MOCK_ORCH_WORKER_2, claimedAt: thirtyMinAgo, validationGate: { required: false, stepIds: [] }, attempts: [{ id: "att-2", sessionId: MOCK_ORCH_WORKER_2, startedAt: thirtyMinAgo, outcome: "succeeded" }] },
-    { id: "T-dash-activity", phaseId: "developing", title: "Activity feed component", description: "Real-time activity feed with infinite scroll and skeleton loading", status: "pending", tag: "dashboard", labels: ["frontend"], priority: "normal", estimatedComplexity: "small", blockedBy: ["T-dash-layout"], filesHint: ["src/components/ActivityFeed.tsx"], validationGate: { required: false, stepIds: [] } },
-    { id: "T-dash-actions", phaseId: "developing", title: "Quick actions grid", description: "Grid of action cards with keyboard navigation", status: "pending", tag: "dashboard", labels: ["frontend"], priority: "low", estimatedComplexity: "trivial", blockedBy: ["T-dash-layout"], filesHint: ["src/components/QuickActions.tsx"], validationGate: { required: false, stepIds: [] } },
-    { id: "T-plan-review", phaseId: "planning", title: "Architecture review", description: "Review proposed architecture, confirm tech stack", status: "done", tag: "planning", labels: ["planning"], priority: "critical", estimatedComplexity: "small", assigneeSessionId: MOCK_ORCH_LEAD_SESSION, validationGate: { required: false, stepIds: [] } },
-  ],
-  validationStrategy: {
-    steps: [
-      { id: "VS-auth-security", concern: "reverify_changes", scope: "per_worker", required: true, prompt: "Verify OAuth token handling, CSRF protection, and session cookie security flags", evidenceRequired: ["test_log", "diff_summary"] },
-      { id: "VS-test-coverage", concern: "test_suite_truthfulness", scope: "mission_exit", required: true, prompt: "Run full test suite, verify >80% branch coverage on new code", evidenceRequired: ["test_log"] },
-    ],
-    checklist: [],
-  },
-  modelRouting: {
-    default: { provider: "claude", modelId: "claude-sonnet-5" },
-    byRole: { validator: { provider: "claude", modelId: "claude-sonnet-5", reasoningEffort: "high" } },
-    byTag: { auth: { provider: "claude", modelId: "claude-sonnet-5" } },
-    byRoleTag: { "worker:dashboard": { provider: "codex", modelId: "openai/o3" } },
-  },
-  assets: [
-    { id: "asset-1", path: "artifacts/ui/dashboard-wireframe.html", kind: "html_spec", version: 1, approval: "approved" },
-    { id: "asset-2", path: "artifacts/auth-flow-diagram.md", kind: "doc", version: 1 },
-  ],
-  decisions: [
-    { id: "D-1", at: oneHourAgo, source: "user", summary: "Use passport.js for OAuth instead of custom implementation" },
-    { id: "D-2", at: thirtyMinAgo, source: "lead", summary: "Split auth and dashboard into parallel work streams" },
-  ],
-  userOverrides: [],
-  leadState: { lastSnapshotEtag: "etag-40", lastSnapshotSeenAt: tenMinAgo, planApprovedAt: thirtyMinAgo },
-  history: [
-    { etag: "etag-1", at: oneHourAgo, summary: "Run created", patchKindSummary: "core" },
-    { etag: "etag-20", at: thirtyMinAgo, summary: "Plan approved, entering development", patchKindSummary: "phase" },
-    { etag: "etag-30", at: thirtyMinAgo, summary: "Workers spawned for auth and dashboard", patchKindSummary: "agent" },
-    { etag: "etag-42", at: fiveMinAgo, summary: "Auth worker claimed T-auth-oauth", patchKindSummary: "task" },
-  ],
-};
-
-const MOCK_ORCH_PLAN_MD = `# Auth + Dashboard Implementation Plan
-
-## Architecture
-
-OAuth flow uses passport.js with Google and GitHub strategies.
-Sessions stored in Redis with \`connect-redis\`.
-Dashboard is a React SPA with server-side data fetching.
-
-\`\`\`mermaid
-graph LR
-  A[Login Page] --> B{OAuth Provider}
-  B --> C[Google]
-  B --> D[GitHub]
-  C --> E[Callback Handler]
-  D --> E
-  E --> F[Session Created]
-  F --> G[Dashboard]
-\`\`\`
-
-## Task Breakdown
-
-### Auth Stream (tag: auth)
-1. **T-auth-oauth** — OAuth provider integration (Google + GitHub)
-2. **T-auth-session** — Session management (Redis, CSRF, expiry)
-
-### Dashboard Stream (tag: dashboard)
-3. **T-dash-layout** — Dashboard layout + routing
-4. **T-dash-activity** — Activity feed component
-5. **T-dash-actions** — Quick actions grid
-
-## Validation Strategy
-
-- **Security review** (per-worker): OAuth token handling, CSRF, cookie flags
-- **Test coverage** (exit gate): >80% branch coverage on new code
-
-## Decisions
-
-- passport.js over custom OAuth (user decision)
-- Parallel auth + dashboard streams (lead decision, no shared code)
-`;
-
-const MOCK_ORCH_SESSIONS: any[] = [
-  {
-    id: MOCK_ORCH_LEAD_SESSION, laneId: "lane-main", laneName: "main", ptyId: null, tracked: true, pinned: false, manuallyNamed: false,
-    goal: "Coordinate auth + dashboard implementation", toolType: "claude-chat", title: "Orchestrator Lead", status: "running",
-    startedAt: oneHourAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
-    lastOutputPreview: "Workers spawned. Auth and dashboard streams running in parallel.", summary: null, runtimeState: "running", resumeCommand: null,
-    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_LEAD_SESSION, modelId: "claude-sonnet-5", model: "Sonnet 5", interactionMode: "orchestrator-lead", launch: {} },
-    orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "lead", orchestrationBundlePath: MOCK_ORCH_BUNDLE,
-  },
-  {
-    id: MOCK_ORCH_WORKER_1, laneId: "lane-main", laneName: "main", ptyId: null, tracked: true, pinned: false, manuallyNamed: false,
-    goal: "Build OAuth login with Google + GitHub providers", toolType: "claude-chat", title: "Auth flow worker", status: "running",
-    startedAt: thirtyMinAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
-    lastOutputPreview: "Implementing Google OAuth callback handler…", summary: null, runtimeState: "running", resumeCommand: null,
-    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_WORKER_1, modelId: "claude-sonnet-5", model: "Sonnet 5", interactionMode: "orchestrator-worker", launch: {} },
-    orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "worker", orchestrationTag: "auth", orchestrationStepId: "T-auth-oauth", orchestrationParentSessionId: MOCK_ORCH_LEAD_SESSION, orchestrationBundlePath: MOCK_ORCH_BUNDLE,
-  },
-  {
-    id: MOCK_ORCH_WORKER_2, laneId: "lane-main", laneName: "main", ptyId: null, tracked: true, pinned: false, manuallyNamed: false,
-    goal: "Build dashboard layout and routing", toolType: "codex-chat", title: "Dashboard worker", status: "running",
-    startedAt: thirtyMinAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
-    lastOutputPreview: "Setting up dashboard shell with sidebar navigation…", summary: null, runtimeState: "running", resumeCommand: null,
-    resumeMetadata: { provider: "codex", targetKind: "session", targetId: MOCK_ORCH_WORKER_2, modelId: "openai/o3", model: "o3", interactionMode: "orchestrator-worker", launch: {} },
-    orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "worker", orchestrationTag: "dashboard", orchestrationStepId: "T-dash-layout", orchestrationParentSessionId: MOCK_ORCH_LEAD_SESSION, orchestrationBundlePath: MOCK_ORCH_BUNDLE,
-  },
-  {
-    id: MOCK_ORCH_VALIDATOR, laneId: "lane-main", laneName: "main", ptyId: null, tracked: true, pinned: false, manuallyNamed: false,
-    goal: "Verify test coverage and security review", toolType: "claude-chat", title: "Quality validator", status: "idle",
-    startedAt: thirtyMinAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
-    lastOutputPreview: "Waiting for development phase to complete…", summary: null, runtimeState: "idle", resumeCommand: null,
-    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_VALIDATOR, modelId: "claude-sonnet-5", model: "Sonnet 5", interactionMode: "orchestrator-validator", launch: {} },
-    orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "validator", orchestrationTag: "quality", orchestrationParentSessionId: MOCK_ORCH_LEAD_SESSION, orchestrationBundlePath: MOCK_ORCH_BUNDLE,
-  },
-];
 
 // ── Lane defaults (fields required by LaneSummary) ────────────
 function makeLane(
@@ -853,11 +803,9 @@ const ADE_DB_SESSIONS: any[] =
   USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.sessions)
     ? ADE_DB_SNAPSHOT.sessions
     : [];
-/** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file.
- *  Always append orchestration demo sessions so the orchestration panel is populated. */
+/** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file. */
 const MOCK_SESSIONS: any[] = [
   ...(ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS),
-  ...MOCK_ORCH_SESSIONS,
 ];
 const ADE_DB_CHAT_TRANSCRIPTS: Record<
   string,
@@ -1116,11 +1064,129 @@ function inferMockChatProvider(
   return "opencode";
 }
 
+/**
+ * The session the preview hangs its two question cards off.
+ *
+ * Pending input is derived from transcript events, never from a static field,
+ * so the only way a browser preview can show a question card at all is to end
+ * one transcript with the `approval_request` events a real provider would have
+ * emitted. Two of them, because the blocking and non-blocking cards differ in
+ * exactly the way that is worth being able to look at: only the non-blocking
+ * one may be dismissed.
+ */
+const BROWSER_MOCK_QUESTION_SESSION_ID = "26abbf0f-20fb-4a97-a1e7-ce6b6dd6ee08";
+
+function browserMockQuestionEvents(sessionId: string): any[] {
+  if (sessionId !== BROWSER_MOCK_QUESTION_SESSION_ID) return [];
+  const at = new Date(Date.now() - 60_000).toISOString();
+  return [
+    // The turn's own diff row. Scoped to the turn the transcript actually ends
+    // on, so the preview shows the "N files changed" summary where a real one
+    // would land rather than inventing a turn of its own.
+    {
+      sessionId,
+      timestamp: at,
+      sequence: 990_000,
+      event: {
+        type: "turn_diff_summary",
+        turnId: "01a0ba94-3c3a-7ed1-8335-e3cf1b6da7a4",
+        beforeSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        afterSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        files: [
+          { path: "apps/desktop/src/renderer/components/usage/UsageAccountRow.tsx", additions: 42, deletions: 9, status: "M" },
+        ],
+        totalAdditions: 42,
+        totalDeletions: 9,
+      },
+    },
+    {
+      sessionId,
+      timestamp: at,
+      sequence: 990_001,
+      event: {
+        type: "approval_request",
+        itemId: "mock-question-blocking",
+        description: "Which migration should this lane take?",
+        turnId: "mock-question-turn",
+        detail: {
+          request: {
+            requestId: "mock-question-blocking",
+            itemId: "mock-question-blocking",
+            source: "codex",
+            kind: "structured_question",
+            title: "Migration strategy",
+            description: "The old routes still have callers, so the answer changes the rollout.",
+            blocking: true,
+            allowsFreeform: true,
+            canProceedWithoutAnswer: false,
+            turnId: "mock-question-turn",
+            questions: [
+              {
+                id: "strategy",
+                header: "Rollout",
+                question: "Which migration should this lane take?",
+                allowsFreeform: true,
+                options: [
+                  { label: "Keep /api/v1 for one release", value: "keep", description: "Dual-serve, delete next release.", recommended: true },
+                  { label: "Redirect /api/v1 to /api/v2", value: "redirect", description: "One hop, no dual maintenance." },
+                  { label: "Break it now", value: "break", description: "Callers are all in this repo." },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    },
+    {
+      sessionId,
+      timestamp: at,
+      sequence: 990_002,
+      event: {
+        type: "approval_request",
+        itemId: "mock-question-async",
+        description: "Want a changelog entry for this too?",
+        turnId: "mock-question-turn",
+        detail: {
+          request: {
+            requestId: "mock-question-async",
+            itemId: "mock-question-async",
+            source: "codex",
+            kind: "structured_question",
+            title: "Changelog entry",
+            description: "Answer whenever — this one does not hold the turn.",
+            blocking: false,
+            allowsFreeform: true,
+            canProceedWithoutAnswer: true,
+            // The flag the renderer reads for the dismiss affordance: only a
+            // provider that says the answer is optional gets an ✕ that walks
+            // away without answering.
+            providerMetadata: { dismissible: true },
+            turnId: "mock-question-turn",
+            questions: [
+              {
+                id: "changelog",
+                header: "Changelog",
+                question: "Want a changelog entry for this too?",
+                allowsFreeform: true,
+                options: [
+                  { label: "Yes, add one", value: "yes" },
+                  { label: "No", value: "no" },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    },
+  ];
+}
+
 function getMockChatTranscriptEvents(sessionId: string): any[] {
   const events = ADE_DB_CHAT_TRANSCRIPTS[sessionId]?.events;
-  return Array.isArray(events)
+  const base = Array.isArray(events)
     ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event)
     : [];
+  return [...base, ...browserMockQuestionEvents(sessionId)];
 }
 
 function latestMockDoneEvent(events: any[]): any | null {
@@ -1215,13 +1281,8 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
     summary: session.summary ?? null,
     threadId: session.resumeMetadata?.threadId ?? undefined,
     requestedCwd: session.resumeMetadata?.requestedCwd ?? null,
-    orchestrationRunId: session.orchestrationRunId ?? undefined,
-    orchestrationRole: session.orchestrationRole ?? undefined,
     orchestrationParentSessionId: session.orchestrationParentSessionId ?? undefined,
     spawnKind: session.spawnKind ?? undefined,
-    orchestrationTag: session.orchestrationTag ?? undefined,
-    orchestrationStepId: session.orchestrationStepId ?? undefined,
-    orchestrationBundlePath: session.orchestrationBundlePath ?? undefined,
   };
 }
 
@@ -2744,6 +2805,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     accounts: [
       {
         id: "claude:ada.lovelace@example.com",
+        instanceId: "claude",
+        label: "Default",
         provider: "claude",
         email: "ada.lovelace@example.com",
         plan: "Claude Max 20x",
@@ -2755,6 +2818,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       {
         id: "claude:jo.martin@example.com",
+        instanceId: "claude-work",
+        label: "Work",
         provider: "claude",
         email: "jo.martin@example.com",
         plan: "Claude Pro",
@@ -2763,7 +2828,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       {
         id: "codex:dev@example.com",
+        instanceId: "codex",
+        label: "Default",
         provider: "codex",
+        // One spendable reset credit: the preview needs the state that makes
+        // the "Use reset" button appear at all.
+        resetCredits: {
+          availableCount: 1,
+          nextExpiresAt: new Date(Date.now() + 36 * 60 * 60 * 1000).toISOString(),
+        },
         email: "dev@example.com",
         plan: "ChatGPT Pro 20x Subscription",
         machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }],
@@ -3016,10 +3089,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       git: { autoRebaseOnHeadChange: false },
       laneCleanup: {},
       ai: {
-        orchestrator: {
-          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-5" },
-          teammatePlanMode: "auto",
-        },
         permissions: {
           cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
           inProcess: { mode: "full-auto" },
@@ -3040,10 +3109,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       git: { autoRebaseOnHeadChange: false },
       ai: {
         featureModelOverrides: { pr_descriptions: "anthropic/claude-sonnet-5" },
-        orchestrator: {
-          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-5" },
-          teammatePlanMode: "auto",
-        },
         permissions: {
           cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
           inProcess: { mode: "full-auto" },
@@ -3060,8 +3125,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     trust: {
       sharedHash: "mock",
       localHash: "mock",
-      approvedSharedHash: null,
-      requiresSharedTrust: false,
     },
     paths: {
       sharedPath: "/tmp/.ade/ade.yaml",
@@ -3202,6 +3265,39 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           setSignedOut(true);
           return signedOutStatus;
         },
+        // This computer, so the account page has a row it can expand into live
+        // detail (the local row is the only one a preview can actually serve).
+        getLocalMachineIdentity: async () => ({
+          machineKey: "mk_studio",
+          deviceId: "dev_studio",
+          name: "Studio",
+        }),
+        getMachineInventory: async (machineKey?: string) => ({
+          machineKey: machineKey ?? "mk_studio",
+          providers: [
+            {
+              provider: "claude",
+              modelCount: 6,
+              accounts: [
+                { instanceId: "claude", label: "Default", email: "ada.lovelace@example.com", plan: "Claude Max 20x", isDefault: true },
+                { instanceId: "claude-work", label: "Work", email: "jo.martin@example.com", plan: "Claude Pro", isDefault: false },
+              ],
+            },
+            {
+              provider: "codex",
+              modelCount: 4,
+              accounts: [
+                { instanceId: "codex", label: "Default", email: "dev@example.com", plan: "ChatGPT Pro 20x Subscription", isDefault: true },
+              ],
+            },
+          ],
+          // One preset bound to something this machine has, one that is not:
+          // the unbound row is the state the "not set up here" note exists for.
+          presets: [
+            { id: "hp_1", name: "Opus on work account", harness: "claude", model: "claude-opus-4-1", bound: true },
+            { id: "hp_9", name: "Droid on a key this Mac lacks", harness: "droid", model: "claude-sonnet-4-5", bound: false },
+          ],
+        }),
         listMachines: async () => {
           if (signedOut()) {
             return { state: "signed_out" as const, machines: [], message: null };
@@ -3211,6 +3307,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             message: null,
             machines: [
               {
+                inventory: {
+                  providers: [
+                    { provider: "claude", accounts: 2, models: 6 },
+                    { provider: "codex", accounts: 1, models: 4 },
+                  ],
+                  presets: 2,
+                },
                 machineKey: "mk_studio",
                 deviceId: "dev_studio",
                 name: "Studio",
@@ -3255,6 +3358,36 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           name: "Studio",
         }),
         onPairMachineProgress: () => () => {},
+      };
+    })(),
+    // The account settings store, backed by an in-memory map so the preview
+    // exercises the real hydrate/write-through path without a brain. Rows are
+    // per-reload: the mock is a stand-in for another machine, not a cache.
+    accountSettings: (() => {
+      const rows = new Map<string, AccountSettingRow>();
+      const rowKey = (scope: string, key: string) => `${scope}\u0000${key}`;
+      return {
+        list: async (args?: { scope?: string | null }) => ({
+          ok: true as const,
+          value: [...rows.values()].filter((row) => !args?.scope || row.scope === args.scope),
+        }),
+        get: async (args: { scope: string; key: string }) => ({
+          ok: true as const,
+          value: rows.get(rowKey(args.scope, args.key))?.value,
+        }),
+        set: async (args: { scope: string; key: string; value: unknown }) => {
+          const at = new Date().toISOString();
+          rows.set(rowKey(args.scope, args.key), {
+            scope: args.scope,
+            key: args.key,
+            value: args.value,
+            updatedAt: at,
+            changedAt: at,
+            writerDeviceId: "browser-mock",
+          });
+          return { ok: true as const, value: null };
+        },
+        sync: async () => ({ ok: true as const, value: null }),
       };
     })(),
     app: {
@@ -3530,8 +3663,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           trust: {
             sharedHash: "",
             localHash: "",
-            approvedSharedHash: null,
-            requiresSharedTrust: false,
           },
         },
       }),
@@ -3841,6 +3972,27 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       storeApiKey: resolvedArg(undefined),
       deleteApiKey: resolvedArg(undefined),
       listApiKeys: resolved([]),
+      // Machine-scoped provider keys. The preview has no credential store, so
+      // report "not configured" rather than letting the card show a key-store
+      // failure the user cannot act on in a browser.
+      getMachineApiKeyStatus: async (provider: string) => ({
+        provider,
+        configured: false,
+        source: null,
+        envVar: "OPENAI_API_KEY",
+      }),
+      storeMachineApiKey: async (provider: string) => ({
+        provider,
+        configured: true,
+        source: "store" as const,
+        envVar: "OPENAI_API_KEY",
+      }),
+      deleteMachineApiKey: async (provider: string) => ({
+        provider,
+        configured: false,
+        source: null,
+        envVar: "OPENAI_API_KEY",
+      }),
       verifyApiKey: resolvedArg({
         provider: "mock",
         ok: false,
@@ -3893,6 +4045,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         totalCostUsd: 0,
         weekKey: "2026-W01",
       }),
+      consumeResetCredit: async () => ({ ok: true as const, remaining: 0 }),
       getBudgetConfig: resolved(BROWSER_MOCK_BUDGET_CONFIG),
       saveBudgetConfig: resolvedArg(BROWSER_MOCK_BUDGET_CONFIG),
       onUpdate: (cb: (snapshot: any) => void) => {
@@ -3905,6 +4058,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         });
         return () => {};
       },
+    },
+    /**
+     * The browser preview has no `ade-scene:` scheme and no window to capture,
+     * so `prepare` hands back a blob URL — a separate origin, with the same
+     * policy carried by the document's own meta tag — and the other two say so
+     * honestly instead of pretending they filed something.
+     */
+    scene: {
+      prepare: async (html: string) =>
+        URL.createObjectURL(new Blob([String(html ?? "")], { type: "text/html" })),
+      snapshot: resolvedArg(null),
+      attachProof: resolvedArg(false),
     },
     computerUse: {
       listArtifacts: resolvedArg([]),
@@ -5196,6 +5361,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       approve: resolvedArg(undefined),
       respondToInput: resolvedArg(undefined),
+      dismissPendingInput: resolvedArg(undefined),
       models: resolvedArg([]),
       modelCatalog: resolvedArg({ groups: [], fetchedAt: new Date(0).toISOString() }),
       archive: resolvedArg(undefined),
@@ -5693,11 +5859,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         completedSteps: ["identity"],
         completedAt: now,
       }),
-      dismissOnboarding: resolved({
-        completedSteps: ["identity"],
-        dismissedAt: now,
-      }),
-      resetOnboarding: resolved({ completedSteps: [] }),
       getMemory: resolved({
         memory: [
           "## Facts",
@@ -5749,11 +5910,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             id: "doctrine",
             title: "Immutable ADE doctrine",
             content: "You are the CTO for this project inside ADE.",
-          },
-          {
-            id: "personality",
-            title: "Selected personality overlay",
-            content: "Operate as a strategic CTO.",
           },
           {
             id: "continuity",
@@ -5917,6 +6073,130 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     externalSessions: {
       list: async () => [],
       import: async () => ({ kind: "cli" as const, sessionId: "mock-session", ptyId: "mock", laneId: "mock-lane" }),
+    },
+    // Stateful on purpose: the accounts UI adds, renames and removes rows, and
+    // a stub that always returned the same two entries would make every one of
+    // those interactions look broken in the Vite-only preview.
+    apiCredentials: {
+      list: async (args?: ApiCredentialListArgs) =>
+        mockApiCredentials.filter((row) => !args?.provider || row.provider === args.provider),
+      get: async (args: ApiCredentialGetArgs) =>
+        mockApiCredentials.find(
+          (row) => row.provider === args.provider
+            && row.credentialId === (args.credentialId ?? "default"),
+        ) ?? null,
+      store: async (args: ApiCredentialStoreArgs) => {
+        const credentialId = args.credentialId
+          ?? `${args.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-mock`;
+        const stamp = new Date().toISOString();
+        const next: ApiCredentialSummary = {
+          provider: args.provider,
+          credentialId,
+          label: args.label,
+          ...(args.envVar ? { envVar: args.envVar } : {}),
+          ...(args.baseUrl ? { baseUrl: args.baseUrl } : {}),
+          ...(args.protocol ? { protocol: args.protocol } : {}),
+          ...(args.models?.length ? { models: args.models } : {}),
+          source: "store",
+          createdAt: stamp,
+          updatedAt: stamp,
+          maskedTail: `••••${args.key.slice(-4)}`,
+        };
+        const index = mockApiCredentials.findIndex(
+          (row) => row.provider === args.provider && row.credentialId === credentialId,
+        );
+        if (index >= 0) mockApiCredentials.splice(index, 1, next);
+        else mockApiCredentials.push(next);
+        return next;
+      },
+      remove: async (args: ApiCredentialRemoveArgs) => {
+        const index = mockApiCredentials.findIndex(
+          (row) => row.provider === args.provider
+            && row.credentialId === (args.credentialId ?? "default"),
+        );
+        if (index >= 0) mockApiCredentials.splice(index, 1);
+      },
+    },
+    proxy: {
+      status: async () => ({
+        installed: false,
+        running: false,
+        port: null,
+        version: null,
+        logins: [],
+      }),
+      ensureRunning: async () => ({
+        installed: false,
+        running: false,
+        port: null,
+        version: null,
+        logins: [],
+      }),
+      signIn: async () => ({
+        status: "error" as const,
+        error: "Subscription sign-in needs the ADE desktop app.",
+      }),
+      signOut: async () => ({ ok: true as const }),
+      setDisabled: async () => ({ ok: true as const }),
+    },
+    providerInstances: {
+      list: async (args?: { provider?: "claude" | "codex" }) =>
+        mockProviderInstances.filter((instance) => !args?.provider || instance.provider === args.provider),
+      create: async (args: { provider: "claude" | "codex"; label: string; accentColor?: string }) => {
+        const instance = {
+          id: `${args.provider}-${mockProviderInstances.length + 1}`,
+          provider: args.provider,
+          label: args.label,
+          ...(args.accentColor ? { accentColor: args.accentColor } : {}),
+          configHome: `/mock/.ade/provider-homes/${args.provider}/${mockProviderInstances.length + 1}`,
+          isDefault: false,
+          createdAt: now,
+          signedIn: false,
+        };
+        mockProviderInstances.push(instance);
+        return { instance, loginCommand: mockProviderInstanceLoginCommand(instance) };
+      },
+      remove: async (args: { id: string }) => {
+        const index = mockProviderInstances.findIndex((instance) => instance.id === args.id);
+        const configHome = index >= 0 ? mockProviderInstances[index]!.configHome : "";
+        if (index >= 0) mockProviderInstances.splice(index, 1);
+        return { removed: index >= 0, configHome };
+      },
+      rename: async (args: { id: string; label: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        instance.label = args.label;
+        return instance;
+      },
+      setDefault: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        for (const other of mockProviderInstances) {
+          if (other.provider === instance.provider) other.isDefault = other.id === instance.id;
+        }
+        return instance;
+      },
+      setAccent: async (args: { id: string; accentColor: string | null }) => {
+        const instance = mockProviderInstanceById(args.id);
+        if (args.accentColor) instance.accentColor = args.accentColor;
+        else delete instance.accentColor;
+        return instance;
+      },
+      getSettings: async (args: { provider: "claude" | "codex" }) =>
+        ({ ...mockProviderInstanceSettings[args.provider] }),
+      setSettings: async (args: {
+        provider: "claude" | "codex";
+        settings: { smartBalance?: boolean; autoStartWindows?: boolean };
+      }) => {
+        const current = mockProviderInstanceSettings[args.provider];
+        if (typeof args.settings?.smartBalance === "boolean") current.smartBalance = args.settings.smartBalance;
+        if (typeof args.settings?.autoStartWindows === "boolean") {
+          current.autoStartWindows = args.settings.autoStartWindows;
+        }
+        return { ...current };
+      },
+      loginCommand: async (args: { id: string }) =>
+        mockProviderInstanceLoginCommand(mockProviderInstanceById(args.id)),
+      refresh: async (args?: { provider?: "claude" | "codex" }) =>
+        mockProviderInstances.filter((instance) => !args?.provider || instance.provider === args.provider),
     },
     pty: {
       create: resolvedArg({
@@ -6808,12 +7088,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       validate: resolvedArg({ ok: true, issues: [] as any[] }),
       save: resolvedArg(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
       diffAgainstDisk: resolved({ changed: false } as any),
-      confirmTrust: resolved({
-        sharedHash: "mock",
-        localHash: "mock",
-        approvedSharedHash: null,
-        requiresSharedTrust: false,
-      } as any),
     },
     adeCli: {
       getStatus: resolved({
@@ -6856,26 +7130,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           nextAction: "Run npm link in apps/ade-cli for local development.",
         },
       }),
-    },
-    orchestration: {
-      runCreate: resolvedArg({ runId: MOCK_ORCH_RUN_ID, manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
-      bundleRead: resolvedArg({ manifest: MOCK_ORCH_MANIFEST, planMd: MOCK_ORCH_PLAN_MD, etag: MOCK_ORCH_MANIFEST.etag }),
-      manifestReadSection: async (args: any) => ({ section: args?.section ?? "tasks", data: (MOCK_ORCH_MANIFEST as any)[args?.section ?? "tasks"] ?? [], etag: MOCK_ORCH_MANIFEST.etag }),
-      manifestPatch: resolvedArg({ ok: true, manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
-      planAppend: resolvedArg({ etag: MOCK_ORCH_MANIFEST.etag }),
-      planWrite: resolvedArg({ etag: MOCK_ORCH_MANIFEST.etag }),
-      spawnAgent: resolvedArg({ sessionId: "mock-orch-spawn-new", manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
-      agentInject: resolvedArg({ ok: true }),
-      assetRegister: resolvedArg({ manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
-      claimTask: resolvedArg({ ok: true, manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
-      releaseTask: resolvedArg({ ok: true, manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
-      runList: resolvedArg([{
-        runId: MOCK_ORCH_RUN_ID, laneId: "lane-main", title: MOCK_ORCH_MANIFEST.title, goalSummary: MOCK_ORCH_MANIFEST.goalSummary,
-        currentPhase: "developing", etag: MOCK_ORCH_MANIFEST.etag, createdAt: MOCK_ORCH_MANIFEST.createdAt, updatedAt: MOCK_ORCH_MANIFEST.updatedAt,
-        status: "active", agentCount: MOCK_ORCH_MANIFEST.agents.length, taskCount: MOCK_ORCH_MANIFEST.tasks.length,
-      }]),
-      subscribe: (_args: any, _cb: any) => () => {},
-      assetDataUrl: resolvedArg({ dataUrl: "data:text/html;base64,PGgxPkRhc2hib2FyZCBXaXJlZnJhbWU8L2gxPg==", mimeType: "text/html", text: "<h1>Dashboard Wireframe</h1><p>Mock wireframe preview</p>" }),
     },
     zoom: {
       getLevel: () => mockZoomLevel,

@@ -1651,6 +1651,13 @@ export function TopBar({
     openNewTab();
     if (personalChatsRouteActive || accountRouteActive || hubRouteActive) onNavigate?.("/work");
   }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
+  // The batch launcher's model picker needs a way out of its empty Harnesses
+  // tab. It routes through the same `onNavigate` the shell supplies, so a top
+  // bar rendered without a router (tests) simply has no CTA.
+  const openHarnessSettings = useMemo(
+    () => (onNavigate ? () => onNavigate(settingsRouteFor("agents.harnesses")) : undefined),
+    [onNavigate],
+  );
 
   const handleOpenNewWindow = useCallback(() => {
     if (isProjectBusy) return;
@@ -2260,7 +2267,7 @@ export function TopBar({
         return (
           <div className="flex flex-col gap-0.5">
             <CursorCloudQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
-            <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
+            <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} onOpenHarnessSettings={openHarnessSettings} />
             <HeaderUsageControl
               variant="menu-row"
               onMenuActivate={options?.onActivate}
@@ -2274,7 +2281,7 @@ export function TopBar({
       return (
         <>
           <CursorCloudQuickViewButton />
-          <LinearQuickViewButton />
+          <LinearQuickViewButton onOpenHarnessSettings={openHarnessSettings} />
           {connectionsChip}
           <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
         </>

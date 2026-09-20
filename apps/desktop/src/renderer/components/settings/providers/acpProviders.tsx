@@ -11,7 +11,7 @@ import React from "react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../../../shared/modelRegistry";
-import { ACP_PROVIDER_METADATA } from "../../../../shared/acpProviderMetadata";
+import { ACP_PROVIDER_METADATA, COPILOT_NPM_PACKAGE_SPEC } from "../../../../shared/acpProviderMetadata";
 import { CopyableCommand, SubsectionTitle } from "./providerUi";
 import type {
   AcpSettingsProviderId,
@@ -53,8 +53,8 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     tagline: "Uses the Qwen Code CLI you already set up.",
     logoFamily: "qwen",
     installCommand: "npm install -g @qwen-code/qwen-code",
-    credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai`. The `qwen auth` subcommand is removed in 0.22.3.",
-    setup: "Install Qwen Code and configure it in that CLI. ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
+    credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai` / `qwen --auth-type=openai-responses`. The `qwen auth` subcommand is removed in 0.24.0.",
+    setup: "Install Qwen Code 0.24.0 and configure it in that CLI. ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
   },
   {
     ...ACP_PROVIDER_METADATA.kimi,
@@ -74,18 +74,16 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "grok",
     tagline: "Uses your grok login, or XAI_API_KEY.",
     logoFamily: "xai",
-    installCommand: "npm install -g @xai-official/grok",
-    // Grok honours no config-home override: it reads ~/.grok and nothing else,
-    // so ADE reuses whatever is already there and sets nothing.
-    credentialSource: "Signed in through `grok login` (~/.grok/auth.json), or XAI_API_KEY. ADE does not relocate ~/.grok.",
-    setup: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE reuses ~/.grok and does not write Grok's config. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
+    installCommand: "npm install -g @xai-official/grok@1.0.34",
+    credentialSource: "Signed in through `grok login` (GROK_HOME/auth.json, default ~/.grok/auth.json), or XAI_API_KEY. ADE does not write Grok's config.",
+    setup: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
   },
   {
     ...ACP_PROVIDER_METADATA.copilot,
     id: "copilot",
     tagline: "Uses your GitHub account through the copilot CLI.",
     logoFamily: "github-copilot",
-    installCommand: "npm install -g @github/copilot",
+    installCommand: `npm install -g ${COPILOT_NPM_PACKAGE_SPEC}`,
     credentialSource: "Signed in through `copilot login`; the free plan includes the CLI. ADE does not write ~/.copilot.",
     setup: "Install the Copilot CLI and run `copilot login`. ADE reuses that GitHub login and never writes Copilot's config.json. Cancelled turns can still look finished on Copilot's side; ADE marks them stopped.",
   },

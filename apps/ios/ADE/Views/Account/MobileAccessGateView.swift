@@ -76,21 +76,35 @@ struct MobileAccessGateView: View {
                   .multilineTextAlignment(.center)
               }
 
-              Button {
-                if hasPairedHost {
-                  onContinue()
-                } else {
-                  presentedSheet = .pairMachine
+              // ADE requires an account, so there is no "skip this" here any
+              // more. What remains are the two cases with somewhere to go:
+              //
+              //  - an unreadable pairing credential, which is a fault to repair
+              //    rather than a step to redo, and
+              //  - a phone already paired to a computer, which has cached work
+              //    to show. Blocking that would be a brick, and the signed-out
+              //    bar nags on every screen until they sign in.
+              //
+              // A phone with neither has nothing to pass through to, exactly
+              // like the hosted web client, so the button is absent rather than
+              // disabled.
+              if credentialUnreadable || hasPairedHost {
+                Button {
+                  if credentialUnreadable {
+                    presentedSheet = .pairMachine
+                  } else {
+                    onContinue()
+                  }
+                } label: {
+                  Text(credentialUnreadable ? "Pair again" : "Continue to your work")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(credentialUnreadable ? ADEColor.accent : ADEColor.textSecondary)
+                    .frame(minHeight: 44)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
                 }
-              } label: {
-                Text(credentialUnreadable ? "Pair again" : "Continue without an account")
-                  .font(.subheadline.weight(.semibold))
-                  .foregroundStyle(credentialUnreadable ? ADEColor.accent : ADEColor.textSecondary)
-                  .frame(minHeight: 44)
-                  .frame(maxWidth: .infinity)
-                  .contentShape(Rectangle())
+                .buttonStyle(.plain)
               }
-              .buttonStyle(.plain)
 
               // A pairing whose credential cannot be read is a fault, not a
               // missing step. Without this the button re-presents the same

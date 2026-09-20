@@ -168,6 +168,39 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the whole question this backend exists to answer. Never a device, lane,
   // machine name, address, codec, resolution, or duration.
   "ios_live_view",
+  // One coarse fact per CTO voice call, at the call's end. Whether calls are
+  // had at all, and whether they work, is the only question the feature has —
+  // and a call that dies on a rejected key looks identical to a short one in
+  // every other signal. Never the transcript, the words, the project, the
+  // provider, or any part of a key.
+  "voice_call",
+  // One coarse fact per capture-gesture press: whether the shot reached the
+  // composer. Never the window, its title, the app it belonged to, the path the
+  // PNG passed through, or the image.
+  "capture_gesture",
+  // What became of a handoff's transcript replay. Cross-provider handoffs carry
+  // the conversation as text, and the only product question is whether it
+  // arrives: whole, in part, not at all, or only after ADE re-sent the message
+  // with less history. Never the transcript, the models, the turn counts, or
+  // the share of the window it took.
+  "handoff_replay",
+  // Durable provider/account decisions. These are closed facts emitted by
+  // brain/main owners; ids, labels, paths, keys, and model names never enter
+  // the event.
+  "account_created",
+  "account_removed",
+  "default_selected",
+  "balance_changed",
+  "auto_start_changed",
+  "credential_stored",
+  "credential_removed",
+  "preset_created",
+  "preset_deleted",
+  "sign_in",
+  "start",
+  "stop",
+  "reset_credit_consumed",
+  "pending_input_dismissed",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -266,9 +299,13 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "details_usage", "details_form", "details_lane_details", "add_chat", "multi_chat_grid", "chat",
   ]),
   feature: new Set([
-    "chat", "cli", "work", "lanes", "files", "git", "orchestration", "prs",
+    "chat", "cli", "work", "lanes", "files", "git", "prs",
     "automations", "command_palette", "storage_doctor", "attention", "updates", "connections",
     "usage",
+    // The CTO surface: voice calls and the capture gesture that feeds them.
+    "cto",
+    // Account/provider decisions owned by the brain or desktop main process.
+    "provider_accounts", "api_credentials", "presets", "proxy",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -318,6 +355,27 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // so it would be a typing signal rather than a workflow outcome, and it is
     // derivable from armed minus resumed anyway.
     "armed", "resumed", "paused",
+    // How a CTO voice call ended. `completed` above covers the ordinary case;
+    // these are the four ways it does not, and they are the whole product
+    // question — a rejected key, an unreachable OpenAI, a microphone the OS
+    // would not open, and a call the user or their window ended before it got
+    // going. Mapped from the teardown reason, never from the sentence the user
+    // read: those carry provider text and settings paths.
+    "rejected_key", "connection_failed", "microphone_unavailable", "ended_early",
+    // Whether a capture-gesture press reached the composer. `failed` above is
+    // the general case; `too_large` is the one failure that is a product fact
+    // rather than an environment one — a display ADE cannot fit into an
+    // attachment even after four halvings.
+    "delivered", "too_large",
+    // The five ends of a handoff transcript replay, kept distinct from the
+    // generic outcomes on purpose: `completed`/`partial`/`failed` would read the
+    // same for a brief handoff, and this funnel is only legible if fitting,
+    // truncating, refusing, retrying and giving up are separable in one filter.
+    "fit", "truncated", "refused", "retried", "gave_up",
+    // Provider/account settings and reset-credit states. `enabled` and
+    // `disabled` are the two boolean setting outcomes; the other mutations use
+    // the existing completed/success buckets.
+    "enabled", "disabled", "nothing_to_reset", "no_credit", "already_redeemed",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([

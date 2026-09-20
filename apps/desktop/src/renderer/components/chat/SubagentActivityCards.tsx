@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { ArrowDown, CaretDown, CaretRight, Check, Gear, Square, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
+import { chatToolTypeForProvider } from "../../lib/sessions";
+import { ToolLogo } from "../terminals/ToolLogos";
+import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import type { AgentChatSpawnKind } from "../../../shared/types";
@@ -22,6 +25,7 @@ import type {
   SubagentResultCardRenderEvent,
   SubagentSpawnAnchorRenderEvent,
   SubagentStoppedGroupEvent,
+  SubagentStoppedGroupItem,
 } from "./chatTranscriptRows";
 
 // Re-exported for existing importers that reach it through this module.
@@ -93,6 +97,30 @@ function glyphStatusFor(status: SubagentSpawnAnchorRenderEvent["status"]): ChatS
 }
 
 /**
+ * Who is running this subagent, drawn as the same provider mark the Work
+ * session rows use (bottom-right of the card, same 20px, same muted tone).
+ *
+ * A runtime-native subagent runs on the chat's own provider, so the mark is the
+ * chat's. A spawned ADE chat can use a different provider; the caller resolves
+ * that child's provider when it knows it and this only falls back for an
+ * unknown/unresolved session. Renders nothing for a blank provider so a card
+ * never grows an empty mark.
+ */
+function SubagentProviderMark({ provider }: { provider?: string | null }) {
+  const normalized = provider?.trim();
+  if (!normalized) return null;
+  return (
+    <span
+      className="inline-flex shrink-0 items-center"
+      data-subagent-provider={normalized}
+      title={providerDisplayLabel(normalized, normalized)}
+    >
+      <ToolLogo toolType={chatToolTypeForProvider(normalized)} size={20} className="block shrink-0 opacity-75" />
+    </span>
+  );
+}
+
+/**
  * Spawn card — one row anchored where the agent started. Shows identicon/color,
  * task description title, agent-type + background chips, and ONE single-line
  * live status line (`running · <activity> · <N> tools · <elapsed>`). The elapsed
@@ -104,12 +132,15 @@ export function SubagentSpawnCard({
   onJumpToResult,
   onStop,
   laneId,
+  provider,
 }: {
   event: SubagentSpawnAnchorRenderEvent;
   onJumpToResult?: () => void;
   onStop?: (taskId: string) => void;
   /** Lane of the spawner, forwarded to the navigation event when known. */
   laneId?: string | null;
+  /** Runtime that owns this agent; drives the bottom-right provider mark. */
+  provider?: string | null;
 }) {
   const isRunning = event.status === "running";
   const liveMs = useLiveDurationMs(event.startedAt, isRunning);
@@ -205,9 +236,14 @@ export function SubagentSpawnCard({
             </span>
           ) : null}
         </div>
-        {liveParts.length ? (
+        {liveParts.length || provider ? (
           <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
             <span className="min-w-0 truncate">{liveParts.join(" · ")}</span>
+            {/* Same seat the Work session rows give their provider mark: last
+                thing on the card's bottom line, after the status text. */}
+            <span className="ml-auto flex shrink-0 items-center pl-2">
+              <SubagentProviderMark provider={provider} />
+            </span>
           </div>
         ) : null}
         {resultSummary ? (
@@ -289,19 +325,23 @@ export function SubagentResultCard({
   event,
   laneId,
   onViewTranscript,
+  provider,
 }: {
   event: SubagentResultCardRenderEvent;
   laneId?: string | null;
   onViewTranscript?: () => void;
+  /** Runtime that owns this agent; drives the bottom-right provider mark. */
+  provider?: string | null;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const isSuccess = event.status === "completed";
   const isStopped = event.status === "stopped";
   const isFailed = event.status === "failed";
   const duration = formatSubagentDurationMs(event.durationMs);
-  const statusWord = isSuccess ? "Finished" : isStopped ? "Stopped — interrupted" : "Failed";
+  const statusWord = isSuccess ? "Finished" : isStopped ? stoppedResultStatusLine(event) : "Failed";
   const title = event.description?.trim() || statusWord;
   const summary = firstMeaningfulSummary(event.summaryPreview);
+  const stoppedActivity = event.lastActivity?.trim() || null;
   const childSessionId = event.childSessionId?.trim() || null;
   const typeAccent = spawnTypeAccent(event.spawnKind);
 
@@ -379,9 +419,12 @@ export function SubagentResultCard({
             {summary}
           </div>
         ) : null}
-        {counters.length ? (
-          <div className="mt-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/32">
-            {counters.join(" · ")}
+        {counters.length || provider ? (
+          <div className="mt-1.5 flex min-w-0 items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/32">
+            {counters.length ? <span className="min-w-0 truncate">{counters.join(" · ")}</span> : <span className="min-w-0 flex-1" />}
+            <span className="ml-auto flex shrink-0 items-center pl-2">
+              <SubagentProviderMark provider={provider} />
+            </span>
           </div>
         ) : null}
       </ChatCardRow>
@@ -402,6 +445,18 @@ export function SubagentResultCard({
             </div>
           ) : null}
         </div>
+      ) : null}
+      {isStopped ? (
+        <ChatCardDetail>
+          {stoppedActivity ? (
+            <ChatCardDetailRow tone="idle" label="last activity" value={stoppedActivity} />
+          ) : null}
+          <ChatCardDetailRow
+            tone={event.resultLanded ? "ok" : "idle"}
+            label="outcome"
+            value={stoppedResultOutcome(event.resultLanded)}
+          />
+        </ChatCardDetail>
       ) : null}
     </ChatCard>
   );
@@ -534,19 +589,63 @@ export function BackgroundJobLine({
  * agents. Never a red error block — neither an interrupt nor a usage limit is
  * something that broke.
  */
+/**
+ * The one sentence this card exists to get right.
+ *
+ * "N agents stopped when you interrupted" is reserved for `stopSource: "user"`.
+ * An ADE brain restart, a sibling brain claiming the chat, and a provider that
+ * ended the turn under the agents all used to render as the reader's own Stop
+ * press, which is both false and the most annoying possible false thing for a
+ * card to say. Anything that is not the user names itself instead.
+ */
+type StoppedAttributionEvent = Pick<SubagentStoppedGroupEvent, "stopSource" | "stopReason">;
+
+function stoppedAttributionSuffix(event: StoppedAttributionEvent): string {
+  if (event.stopSource === "user") return " when you interrupted";
+  const reason = event.stopReason?.trim();
+  return reason ? `: ${reason}` : "";
+}
+
+/** Status line for the individual card that represents one stopped agent. */
+export function stoppedResultStatusLine(event: StoppedAttributionEvent): string {
+  return event.stopSource === "user"
+    ? "Stopped — interrupted"
+    : `Stopped${stoppedAttributionSuffix(event)}`;
+}
+
+export function stoppedGroupHeadline(agents: string, event: SubagentStoppedGroupEvent): string {
+  if (event.cause === "usage_limit") return `${agents} stopped · usage limit`;
+  return `${agents} stopped${stoppedAttributionSuffix(event)}`;
+}
+
+/** Title plus what the agent was actually doing when it ended. */
+export function stoppedGroupItemLabel(item: SubagentStoppedGroupItem): string {
+  const activity = item.lastActivity?.trim();
+  return activity ? `${item.title} · ${activity}` : item.title;
+}
+
+/**
+ * Whether this agent's work survived. A folded row that only says "stopped"
+ * hides the difference between a report that had already landed and one that
+ * was lost mid-flight — which is the whole question the reader has.
+ */
+export function stoppedGroupItemOutcome(item: SubagentStoppedGroupItem): string {
+  return stoppedResultOutcome(item.resultLanded);
+}
+
+export function stoppedResultOutcome(resultLanded: boolean): string {
+  return resultLanded ? "report landed" : "work lost";
+}
+
 export function SubagentStoppedGroupCard({
   event,
-  onJumpToStart,
 }: {
   event: SubagentStoppedGroupEvent;
-  onJumpToStart?: (rowKey: string) => void;
 }) {
   const count = event.count;
   const [expanded, setExpanded] = useState(count <= 6);
   const agents = `${count} ${count === 1 ? "agent" : "agents"}`;
-  const headline = event.cause === "usage_limit"
-    ? `${agents} stopped · usage limit`
-    : `${agents} stopped when you interrupted`;
+  const headline = stoppedGroupHeadline(agents, event);
 
   return (
     <ChatCard skin="rail" tone="warn">
@@ -574,10 +673,9 @@ export function SubagentStoppedGroupCard({
             <ChatCardDetailRow
               key={item.agentKey}
               tone="idle"
-              label={item.title}
-              title={item.title}
-              value={onJumpToStart ? "jump to start" : undefined}
-              onClick={onJumpToStart ? () => onJumpToStart(item.jumpToStartRowKey) : undefined}
+              label={stoppedGroupItemLabel(item)}
+              title={item.lastActivity ? `${item.title} — ${item.lastActivity}` : item.title}
+              value={stoppedGroupItemOutcome(item)}
             />
           ))}
         </ChatCardDetail>

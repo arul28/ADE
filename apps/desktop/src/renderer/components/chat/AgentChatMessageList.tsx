@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef,
 import { AnimatePresence, motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  RESET_CREDIT_OUTCOME_TEXT,
+  resetCreditOutcomeText,
+} from "../../../shared/usageResetCredit";
+import {
   CaretDown,
   CaretLeft,
   CaretRight,
@@ -35,6 +39,7 @@ import {
   Cube,
   Moon,
   Play,
+  Microphone,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -55,6 +60,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import type { SceneStillRecord } from "../../../shared/chatScene";
 import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
@@ -66,6 +72,7 @@ import { normalizePath } from "../../lib/pathUtils";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
+import { useCallStills, useSceneStillSrc } from "./sceneStillStore";
 import {
   CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
   splitChatOutputContextSegments,
@@ -134,6 +141,7 @@ import {
   type SubagentResultCardRenderEvent,
   type SubagentSpawnAnchorRenderEvent,
   type SubagentStoppedGroupEvent,
+  type VoiceCallGroupRenderEvent,
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
   type ChatWorkLogEntry,
@@ -172,6 +180,8 @@ import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
 import {
+  ChatCard,
+  ChatCardFaint,
   ChatCardRow,
   ChatCardSub,
   ChatCardTitle,
@@ -206,6 +216,71 @@ type CodexTurnRecoveryEvent = Extract<
   { type: "codex_turn_recovery" | "turn_recovery" }
 >;
 type UserMessageEvent = Extract<AgentChatEvent, { type: "user_message" }>;
+
+/**
+ * The Codex "a reset credit is banked" notice, with the way to spend it.
+ *
+ * The button is offered only when this host can actually spend a credit — the
+ * hosted web client and older preloads do not expose the bridge — because a
+ * control that always fails is worse than a notice that only informs. The
+ * outcome replaces the button rather than sitting beside it: the credit is
+ * gone either way, and a still-clickable button invites a second spend.
+ */
+function ResetCreditNoticeRow({
+  message,
+  accountId,
+  className,
+  icon,
+  chipLabel,
+}: {
+  message: string;
+  accountId: string | null;
+  className?: string;
+  icon: React.ReactNode;
+  chipLabel: string;
+}) {
+  const [spending, setSpending] = useState(false);
+  const [outcome, setOutcome] = useState<string | null>(null);
+  const consume = window.ade?.usage?.consumeResetCredit;
+  const canSpend = Boolean(accountId) && typeof consume === "function" && !outcome;
+  const spend = useCallback(async () => {
+    if (!accountId) return;
+    const call = window.ade?.usage?.consumeResetCredit;
+    if (!call) return;
+    setSpending(true);
+    try {
+      setOutcome(resetCreditOutcomeText(await call({ accountId })));
+    } catch {
+      setOutcome(RESET_CREDIT_OUTCOME_TEXT.failure);
+    } finally {
+      setSpending(false);
+    }
+  }, [accountId]);
+  return (
+    <div className={cn(
+      "inline-flex max-w-[var(--chat-content-width,52rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
+      className,
+    )}>
+      {icon}
+      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
+      <span className="normal-case tracking-normal text-fg/55">{message}</span>
+      {canSpend ? (
+        <button
+          type="button"
+          disabled={spending}
+          onClick={() => { void spend(); }}
+          data-testid="reset-credit-use"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-white/[0.06] disabled:opacity-50"
+        >
+          Use reset
+        </button>
+      ) : null}
+      {outcome ? (
+        <span className="normal-case tracking-normal text-fg/42">{outcome}</span>
+      ) : null}
+    </div>
+  );
+}
 
 function CodexTurnRecoveryCard({
   event,
@@ -1002,9 +1077,12 @@ type RenderEnvelope = {
   | BackgroundJobLineRenderEvent
   | BackgroundJobGroupRenderEvent
   | ScheduledWakeDividerRenderEvent
-  | SpawnWakeDividerRenderEvent;
+  | SpawnWakeDividerRenderEvent
+  | VoiceCallGroupRenderEvent;
   /** Folded-row count from the transcript collapse; see ChatTranscriptRenderEnvelope. */
   repeatCount?: number;
+  /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
+  sceneScopeKey?: string;
 };
 
 function MessageCopyButton({
@@ -2249,6 +2327,20 @@ function isSameProviderModelHandoffEvent(event: {
   return event.type === "model_handoff" && event.fromProvider === event.toProvider;
 }
 
+/**
+ * Rows that never mount a visible row are dropped before grouping. Must gate
+ * every grouping input — the rendered transcript and the anchor resolver both
+ * group rows, and a row key derived with a hidden row present will not match
+ * one derived without it.
+ */
+function filterVisibleTranscriptRows(
+  rows: readonly TranscriptRenderEnvelope[],
+): TranscriptRenderEnvelope[] {
+  return rows.filter(
+    (row) => !isAutomaticContextUsageEvent(row.event) && !isSameProviderModelHandoffEvent(row.event),
+  );
+}
+
 function QueueRecoveryCard({
   recoveryId,
   messageCount,
@@ -2349,9 +2441,176 @@ function dispatchAdeCardAction(
   }
 }
 
+/** The option bag `renderEvent` takes, named so folded rows can be re-rendered with it. */
+type RenderEventOptions = NonNullable<Parameters<typeof renderEvent>[1]>;
+
+/**
+ * A whole CTO voice call as one transcript row.
+ *
+ * A call thinks on the normal chat thread, so without this every spoken word
+ * would read as a user bubble and every reply as an assistant message. Collapsed
+ * is therefore the default: one line saying a call happened, how long it ran,
+ * how much was said, and the first thing the user said. Expanding replays the
+ * exact rows the transcript would have shown, rendered by `renderEvent` itself —
+ * a `voice_call_group` never nests inside another, so the recursion is one level
+ * deep by construction. `work_log_group` rows are skipped here for the same
+ * reason the timeline skips them: tool work lives in the turn footer.
+ */
+/**
+ * One still from a call, or nothing.
+ *
+ * Nothing rather than a broken image. A local window resolves the bytes through
+ * `ade-artifact://project/`; a chat pinned to another machine has no such
+ * handler, so the picture is read back through that machine's own broker — and
+ * if neither answers, the card draws no tile at all.
+ */
+function VoiceCallStill({
+  still,
+  className,
+  testId,
+}: {
+  still: SceneStillRecord;
+  className: string;
+  testId: string;
+}) {
+  // A call's record is bytes on disk and nothing else: this window never held
+  // a data URL for it.
+  const src = useSceneStillSrc({ dataUrl: null, record: still });
+  if (!src) return null;
+  return <img src={src} alt={still.title} data-testid={testId} className={className} />;
+}
+
+function VoiceCallGroupCard({
+  event,
+  options,
+}: {
+  event: VoiceCallGroupRenderEvent;
+  options?: RenderEventOptions;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const duration = formatCompactDuration(event.durationMs);
+  const exchanges = `${event.exchanges} ${event.exchanges === 1 ? "exchange" : "exchanges"}`;
+  /**
+   * The views the call drew.
+   *
+   * They are not in the folded rows and cannot be: a call's scene is rendered
+   * by the HUD, which is gone by the time this card exists, so a card built
+   * only from transcript rows showed a call about a chart with no chart in it.
+   * The still is taken while the scene is still on screen and lands here as a
+   * record of bytes in the project's artifact store — the same picture, from
+   * the place that outlived the frame.
+   */
+  const stills = useCallStills(options?.sessionId ?? null, event.callId);
+  return (
+    <ChatCard
+      skin="rail"
+      tone="neutral"
+      data-testid="voice-call-card"
+      data-voice-call-id={event.callId}
+    >
+      <ChatCardRow
+        tone="neutral"
+        icon={Microphone}
+        align="top"
+        meta={duration ?? undefined}
+      >
+        {/* The caret is INSIDE the toggle, not in the row's action slot: the
+            slot sits outside the button, so the one thing in the row that looks
+            like a disclosure control was the one thing that did nothing. */}
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          className="flex min-w-0 w-full items-start gap-2 text-left"
+        >
+          <span className="min-w-0 flex-1">
+            <ChatCardTitle>
+              Voice call
+              <ChatCardFaint>
+                {` · ${exchanges}`}
+                {event.hadApproval ? " · approval" : ""}
+              </ChatCardFaint>
+            </ChatCardTitle>
+            {event.openingLine ? <ChatCardSub>{event.openingLine}</ChatCardSub> : null}
+          </span>
+          {/* Collapsed, the picture is a hint that there is one — one thumbnail,
+              not a strip, because the row has to stay a row. */}
+          {!expanded && stills.length ? (
+            <VoiceCallStill
+              still={stills[stills.length - 1]!}
+              className="mt-[1px] h-7 w-10 shrink-0 rounded-[3px] object-cover"
+              testId="voice-call-still-thumb"
+            />
+          ) : null}
+          <span className="mt-[3px] shrink-0 text-fg/40" data-testid="voice-call-caret">
+            {expanded
+              ? <CaretDown size={12} weight="bold" aria-hidden />
+              : <CaretRight size={12} weight="bold" aria-hidden />}
+          </span>
+        </button>
+      </ChatCardRow>
+      {expanded && stills.length ? (
+        <div className="mt-2.5 flex flex-wrap gap-2" data-testid="voice-call-stills">
+          {stills.map((still) => (
+            <figure key={still.uri} className="m-0 min-w-0">
+              <VoiceCallStill
+                still={still}
+                className="max-h-40 w-auto rounded-[5px] border border-white/[0.07]"
+                testId="voice-call-still"
+              />
+              <figcaption className="mt-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/40">
+                {still.title}
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      ) : null}
+      {expanded ? (
+        <div className="mt-2.5 space-y-3 border-l border-white/[0.06] pl-3" data-testid="voice-call-rows">
+          {event.rows.map((row) => {
+            if (row.event.type === "work_log_group") return null;
+            return (
+              <div key={row.key} className="min-w-0 max-w-full overflow-hidden">
+                {row.event.type === "activity_bundle"
+                  ? <ChatActivityBundle event={row.event} sessionId={options?.sessionId} />
+                  : renderEvent(row as RenderEnvelope, options)}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </ChatCard>
+  );
+}
+
+/**
+ * The provider marks a subagent card can wear. A spawned ADE chat reports its
+ * own provider when the host can resolve it; runtime-native subagents — and any
+ * child session the host cannot resolve — inherit the chat's own provider,
+ * which is the runtime that actually ran them. Shared by the renderer entry,
+ * the row component, and its option bags so a new provider hook is added in one
+ * place.
+ */
+type SpawnedChatProviderProps = {
+  /** Chat runtime provider; the default mark for runtime-native subagents. */
+  sessionProvider?: string | null;
+  /** Resolve a spawned child chat's own provider for its subagent card mark. */
+  resolveSpawnedChatProvider?: (sessionId: string) => string | null;
+};
+
+function subagentCardProvider(
+  childSessionId: string | null | undefined,
+  options?: SpawnedChatProviderProps,
+): string | null {
+  const childProvider = childSessionId
+    ? options?.resolveSpawnedChatProvider?.(childSessionId) ?? null
+    : null;
+  return childProvider ?? options?.sessionProvider ?? null;
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
-  options?: {
+  options?: SpawnedChatProviderProps & {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
@@ -2680,6 +2939,19 @@ function renderEvent(
             onOpenWorkspacePath={options?.onOpenWorkspacePath}
             mosaic={options?.mosaic}
             mosaicScopeKey={envelope.key}
+            // NOT the render key. A scene's still is filed on disk under this
+            // and looked up again on every reopen, and the render key carries
+            // the event's index in the events array — so prepending an older
+            // page moved it, the lookup missed, and the scene ran again and
+            // filed a second picture. Derived with the row, in
+            // `chatTranscriptRows`, so there is one owner of that identity.
+            sceneScopeKey={envelope.sceneScopeKey}
+            // This row's OWN turn, not the session's. `sessionTurnActive` is
+            // true for every row in the transcript while any turn runs, so a
+            // scene drawn three turns ago came back to life — and re-executed
+            // its script — the moment the user scrolled to it during a later
+            // turn. `turnActive` is already scoped to the row's turn id.
+            sceneLive={Boolean(options?.turnActive)}
           />
         </div>
       </motion.div>
@@ -2869,6 +3141,7 @@ function renderEvent(
       <SubagentSpawnCard
         event={event}
         laneId={options?.laneId ?? null}
+        provider={subagentCardProvider(event.childSessionId, options)}
         onStop={
           event.taskId && options?.onStopSubagent
             ? (taskId) => options.onStopSubagent?.(taskId)
@@ -2889,6 +3162,7 @@ function renderEvent(
       <SubagentResultCard
         event={event}
         laneId={options?.laneId ?? null}
+        provider={subagentCardProvider(event.childSessionId, options)}
         onViewTranscript={
           event.childSessionId
             ? undefined
@@ -2896,6 +3170,11 @@ function renderEvent(
         }
       />
     );
+  }
+
+  /* ── One CTO voice call, folded ── */
+  if (event.type === "voice_call_group") {
+    return <VoiceCallGroupCard event={event} options={options} />;
   }
 
   /* ── Grouped interrupt-stopped subagents ── */
@@ -3254,7 +3533,7 @@ function renderEvent(
     if (event.noticeKind === "info" && event.status === "subagent_spawned") {
       // A plain spawn's announcement is carried by the unified, navigable
       // SubagentSpawnCard, so suppress this quiet pill there (hasInlineCard).
-      // Orchestration-run children and continuity-recovery spawns emit only the
+      // Continuity-recovery spawns emit only the
       // notice (no inline card) — keep a compact deep-link chip for those.
       const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
         hasInlineCard?: boolean;
@@ -3437,6 +3716,25 @@ function renderEvent(
     const chipLabel = event.noticeKind === "rate_limit" && inferredSeverity !== "error"
       ? "usage"
       : event.noticeKind.replace("_", " ");
+
+    // "A reset credit is banked" is the one usage notice with something to DO.
+    // A notice that reports a spendable credit and offers no way to spend it is
+    // the state this row exists to remove, so the action lives on the notice
+    // itself rather than only in the usage popup three clicks away.
+    if (event.status === "reset_credit_available") {
+      const detail = typeof event.detail === "object" && event.detail && !Array.isArray(event.detail)
+        ? event.detail
+        : null;
+      return (
+        <ResetCreditNoticeRow
+          message={event.message}
+          accountId={typeof detail?.accountId === "string" ? detail.accountId : null}
+          className={cn(style.border, style.bg, style.text)}
+          icon={<NoticeIcon size={11} weight="bold" />}
+          chipLabel={chipLabel}
+        />
+      );
+    }
 
     if (hasDetail && event.noticeKind === "rate_limit" && inferredSeverity !== "error") {
       const detail = typeof event.detail === "string"
@@ -4646,7 +4944,7 @@ function getGroupedTurnId(envelope: TranscriptGroupedEnvelope | undefined): stri
 
 /* ── Main component ── */
 
-type EventRowProps = {
+type EventRowProps = SpawnedChatProviderProps & {
   envelope: TranscriptGroupedEnvelope;
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
@@ -4728,6 +5026,8 @@ const EventRow = React.memo(function EventRow({
   surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
+  sessionProvider,
+  resolveSpawnedChatProvider,
   turnActive,
   sessionTurnActive,
   sessionEnded,
@@ -4813,6 +5113,8 @@ const EventRow = React.memo(function EventRow({
             surfaceMode,
             surfaceProfile,
             assistantLabel,
+            sessionProvider,
+            resolveSpawnedChatProvider,
             turnActive,
             sessionTurnActive,
             sessionEnded,
@@ -5237,7 +5539,7 @@ export function resolveAnchoredChatRowIndex({
   const eventIndex = findAnchoredChatEventIndex({ events, anchorEvent, hasFullHistory });
   if (eventIndex < 0) return -1;
   const targetRows = groupChatTranscriptRows(
-    collapseChatTranscriptEvents(events.slice(0, eventIndex + 1)),
+    filterVisibleTranscriptRows(collapseChatTranscriptEvents(events.slice(0, eventIndex + 1))),
   );
   const targetRow = targetRows[targetRows.length - 1];
   if (!targetRow) return -1;
@@ -5350,6 +5652,7 @@ function AgentChatMessageListMain({
   turnDiffSummaries,
   sessionEnded = false,
   sessionProvider = null,
+  resolveSpawnedChatProvider,
   hasOlderHistory = false,
   loadingOlderHistory = false,
   olderHistoryError = null,
@@ -5362,7 +5665,7 @@ function AgentChatMessageListMain({
   proofArtifacts = [],
   allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
-}: {
+}: SpawnedChatProviderProps & {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   /**
@@ -5421,7 +5724,6 @@ function AgentChatMessageListMain({
   /** Stable identity for collapse warm-cache isolation when rendering a nested transcript. */
   transcriptCollapseCacheKey?: string | null;
   sessionEnded?: boolean;
-  sessionProvider?: string | null;
   /** True when older transcript pages exist above the loaded events. */
   hasOlderHistory?: boolean;
   /** True while an older transcript page is being fetched. */
@@ -5724,14 +6026,11 @@ function AgentChatMessageListMain({
   }, [rows]);
   const allGroupedRows = useMemo(
     // Drop automatic context-usage snapshots and same-provider "handoffs"
-    // before they become flex rows: an empty (null-rendered) row still consumes
-    // a `--chat-row-gap` on each side, so leaving them in would stack blank
-    // gaps during a streaming turn.
-    () =>
-      groupChatTranscriptRows(rows).filter(
-        (row) =>
-          !isAutomaticContextUsageEvent(row.event) && !isSameProviderModelHandoffEvent(row.event),
-      ),
+    // before grouping: an empty (null-rendered) row still consumes a
+    // `--chat-row-gap` on each side, and leaving it in the group input also
+    // broke activity phases — two Thinking rows separated only by a hidden
+    // `context_usage` row stayed two rows instead of merging into one.
+    () => groupChatTranscriptRows(filterVisibleTranscriptRows(rows)),
     [rows],
   );
   // Same lookup-map shape as turnProofByRowKey / turnEndDurationByRowKey rather
@@ -6872,6 +7171,8 @@ function AgentChatMessageListMain({
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
+          sessionProvider={sessionProvider}
+          resolveSpawnedChatProvider={resolveSpawnedChatProvider}
           turnActive={rowTurnActive}
           sessionTurnActive={sessionTurnActive}
           sessionEnded={sessionEnded}
@@ -6932,6 +7233,8 @@ function AgentChatMessageListMain({
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
+        sessionProvider={sessionProvider}
+        resolveSpawnedChatProvider={resolveSpawnedChatProvider}
         turnActive={rowTurnActive}
         sessionTurnActive={sessionTurnActive}
         sessionEnded={sessionEnded}
@@ -6965,7 +7268,7 @@ function AgentChatMessageListMain({
         pacedTextReveal={envelope.key === pacedTextRowKey}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

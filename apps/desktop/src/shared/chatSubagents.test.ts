@@ -17,6 +17,7 @@ import {
   subagentModelAttribution,
   subagentSnapshotsFromEvents,
   collapseLegacySubagentEndEvents,
+  isAgentChatWorkflowProgress,
   type SubagentSnapshot,
 } from "./chatSubagents";
 
@@ -32,6 +33,78 @@ function paneSnapshot(id: string, status: SubagentSnapshot["status"], overrides:
 }
 
 describe("chat pane scalability helpers", () => {
+  it("rejects malformed workflow telemetry while preserving the subagent row", () => {
+    const events: AgentChatEventEnvelope[] = [{
+      sessionId: "session-workflow-boundary",
+      timestamp: "2026-09-17T12:00:00.000Z",
+      event: {
+        type: "subagent_progress",
+        taskId: "workflow-1",
+        description: "Run workflow",
+        summary: "Working",
+        workflowProgress: { agents: "not-an-array" } as never,
+      },
+    }];
+
+    const snapshots = subagentSnapshotsFromEvents(events);
+    expect(isAgentChatWorkflowProgress((events[0]!.event as { workflowProgress?: unknown }).workflowProgress)).toBe(false);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toEqual(expect.objectContaining({ id: "workflow-1", status: "running", name: "Run workflow" }));
+    expect(snapshots[0]?.workflowProgress).toBeUndefined();
+  });
+
+  it("accepts the ellipsis added by the provider preview clip at the boundary", () => {
+    const clipped = "x".repeat(240) + "…";
+    const progress = {
+      phases: [{ index: 0, title: clipped }],
+      agents: [{
+        key: "agent-1",
+        index: 0,
+        name: "agent",
+        status: "running",
+        summary: clipped,
+        lastToolName: clipped,
+      }],
+      queuedCount: 0,
+      runningCount: 1,
+      doneCount: 0,
+      failedCount: 0,
+    };
+
+    expect(isAgentChatWorkflowProgress(progress)).toBe(true);
+    expect(isAgentChatWorkflowProgress({
+      ...progress,
+      phases: [{ index: 0, title: clipped + "x" }],
+    })).toBe(false);
+  });
+
+  it("rejects fractional workflow indexes at the client boundary", () => {
+    const progress = {
+      phases: [{ index: 0, title: "Scan" }],
+      agents: [{
+        key: "agent-1",
+        index: 0,
+        name: "agent",
+        status: "running" as const,
+        summary: "Working",
+      }],
+      queuedCount: 0,
+      runningCount: 1,
+      doneCount: 0,
+      failedCount: 0,
+    };
+
+    expect(isAgentChatWorkflowProgress(progress)).toBe(true);
+    expect(isAgentChatWorkflowProgress({
+      ...progress,
+      phases: [{ index: 0.5, title: "Scan" }],
+    })).toBe(false);
+    expect(isAgentChatWorkflowProgress({
+      ...progress,
+      agents: [{ ...progress.agents[0], index: 0.5 }],
+    })).toBe(false);
+  });
+
   it("keeps a child active after its parent turn ends until the child emits a result", () => {
     const parentDoneEvents: AgentChatEventEnvelope[] = [
       {

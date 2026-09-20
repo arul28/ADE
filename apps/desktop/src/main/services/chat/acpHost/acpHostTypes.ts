@@ -68,19 +68,20 @@ export function behaviorOf<TBehavior>(entry: AcpCapability<TBehavior>): TBehavio
 /**
  * How to stop a running turn.
  *
- * Grok, and Copilot 1.0.82, answer a `session/cancel` REQUEST with -32601.
- * They accept the same call as a notification. Qwen and Kimi accept the
- * request form.
+ * Grok and Copilot's ACP server answer a `session/cancel` REQUEST with -32601
+ * on the compatibility baseline. They accept the same call as a notification.
+ * Qwen and Kimi accept the request form.
  */
 export type AcpCancelStyle = "request" | "notification";
 
 /**
  * How to end a session.
  *
- * `kill_process` means the agent has no `session/close`. Qwen 0.22.3 is in
+ * `kill_process` means the agent has no `session/close`. Qwen 0.24.0 is in
  * that group: it does not advertise close and answers -32601. Each such chat
  * owns its own process and the host ends the chat by ending the process.
- * Kimi 0.39.1 advertises close and implements it, so it is `close_request`.
+ * Kimi's 0.39.1 compatibility baseline and 2.0.0 reference both advertise
+ * close and implement it, so it is `close_request`.
  */
 export type AcpCloseStyle = "close_request" | "kill_process";
 
@@ -282,6 +283,15 @@ export type AcpDialectBase = {
   /** Build the process spawn plan. Pure: no file system reads, no spawns. */
   readonly buildSpawnPlan: (context: AcpSpawnContext) => AcpSpawnPlan;
 
+  /** Map ADE's abstract mode to the provider's native config value. */
+  readonly nativeModeValue?: (mode: string) => string;
+
+  /** Map ADE's requested mode to the posture the supervision guard should enforce. */
+  readonly supervisionPermissionMode?: (mode: string | null | undefined) => string | null | undefined;
+
+  /** Whether failure to apply the native mode must abort runtime setup. */
+  readonly modeSetupRequired?: boolean;
+
   readonly cancelStyle: AcpCancelStyle;
 
   /**
@@ -346,6 +356,9 @@ export type AcpDialectBase = {
    * short, factual, and about behavior the user can see.
    */
   readonly degradationNotes: readonly string[];
+
+  /** Optional mode-specific degradation note, emitted only for that mode. */
+  readonly degradationNoteForMode?: (permissionMode: string | null | undefined) => string | null;
 
   /** Optional capabilities. Present ones carry their behavior. */
   readonly sessionConfig: AcpCapability<AcpSessionConfigBehavior>;

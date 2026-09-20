@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatProjectSecretEnv, parseProjectSecretEnv } from "./projectSecretEnv";
 import { createProjectSecretService } from "./projectSecretService";
+import type { AccountVaultBridge } from "../account/accountVaultBridge";
 
 const tempRoots: string[] = [];
 
@@ -12,6 +13,31 @@ function makeProjectRoot(): string {
   tempRoots.push(root);
   fs.mkdirSync(path.join(root, ".ade"), { recursive: true });
   return root;
+}
+
+function addOrigin(projectRoot: string, origin = "git@github.com:acme/project.git"): void {
+  fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, ".git", "config"), `[remote "origin"]\n\turl = ${origin}\n`, "utf8");
+}
+
+function makeVaultMock(): AccountVaultBridge & {
+  list: ReturnType<typeof vi.fn>;
+  get: ReturnType<typeof vi.fn>;
+  set: ReturnType<typeof vi.fn>;
+  remove: ReturnType<typeof vi.fn>;
+} {
+  return {
+    list: vi.fn(async () => ({ ok: true as const, value: [] })),
+    get: vi.fn(async () => ({ ok: true as const, value: null })),
+    set: vi.fn(async () => ({ ok: true as const, value: null })),
+    remove: vi.fn(async () => ({ ok: true as const, value: null })),
+    sync: vi.fn(async () => ({ ok: true as const, value: null })),
+  } as unknown as AccountVaultBridge & {
+    list: ReturnType<typeof vi.fn>;
+    get: ReturnType<typeof vi.fn>;
+    set: ReturnType<typeof vi.fn>;
+    remove: ReturnType<typeof vi.fn>;
+  };
 }
 
 afterEach(() => {
@@ -30,17 +56,135 @@ describe("createProjectSecretService", () => {
 
     expect(saved.name).toBe("STRIPE_API_KEY");
     expect(saved.valueLength).toBe(secretValue.length);
+    expect(saved.storage).toBe("device");
     expect(service.get({ name: "STRIPE_API_KEY" }).value).toBe(secretValue);
     expect(service.list().secrets).toEqual([
       expect.objectContaining({
         name: "STRIPE_API_KEY",
         valueLength: secretValue.length,
+        storage: "device",
       }),
     ]);
 
     const encryptedPath = path.join(projectRoot, ".ade", "secrets", "project-secrets.v1.enc");
     expect(fs.existsSync(encryptedPath)).toBe(true);
     expect(fs.readFileSync(encryptedPath, "utf8")).not.toContain("sk_test_secret");
+  });
+
+  it("writes account secrets to the repository-scoped account vault", () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+
+    const saved = service.set({ name: "ACCOUNT_TOKEN", value: "account-value", storage: "account" });
+
+    expect(saved.storage).toBe("account");
+    expect(service.list().secrets).toEqual([
+      expect.objectContaining({ name: "ACCOUNT_TOKEN", storage: "account" }),
+    ]);
+    expect(vault.set).toHaveBeenCalledWith(
+      "repo:github.com/acme/project",
+      "project_secret",
+      "ACCOUNT_TOKEN",
+      "account-value",
+    );
+  });
+
+  it("keeps device-only secrets local and falls back when there is no remote", () => {
+    const projectRoot = makeProjectRoot();
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, { getAccountVault: () => vault });
+
+    const saved = service.set({ name: "LOCAL_TOKEN", value: "local-value", storage: "account" });
+
+    expect(saved.storage).toBe("device");
+    expect(service.list().secrets[0]?.storage).toBe("device");
+    expect(vault.set).not.toHaveBeenCalled();
+  });
+
+  it("hydrates missing repository account secrets without overwriting local values", async () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    vault.list.mockResolvedValue({
+      ok: true,
+      value: [{
+        scope: "repo:github.com/acme/project",
+        kind: "project_secret",
+        key: "FROM_ACCOUNT",
+        value: null,
+        updatedAt: "2026-07-16T00:00:00.000Z",
+      }],
+    });
+    vault.get.mockResolvedValue({ ok: true, value: "account-value" });
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+
+    await service.hydrateFromVault();
+
+    expect(service.get({ name: "FROM_ACCOUNT" })).toEqual(expect.objectContaining({
+      name: "FROM_ACCOUNT",
+      value: "account-value",
+      storage: "account",
+    }));
+    expect(vault.get).toHaveBeenCalledWith(
+      "repo:github.com/acme/project",
+      "project_secret",
+      "FROM_ACCOUNT",
+    );
+    expect(vault.set).not.toHaveBeenCalled();
+  });
+
+  it("removes an account secret from the vault when changed to device-only", () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, { getAccountVault: () => vault });
+    service.set({ name: "MOVE_ME", value: "account-value", storage: "account" });
+    vault.set.mockClear();
+
+    service.set({ name: "MOVE_ME", value: "device-value", storage: "device" });
+
+    expect(vault.remove).toHaveBeenCalledWith(
+      "repo:github.com/acme/project",
+      "project_secret",
+      "MOVE_ME",
+    );
+  });
+
+  it("records account provenance for hydrated secrets and purges it on sign-out", async () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    vault.list.mockResolvedValue({
+      ok: true,
+      value: [{
+        scope: "repo:github.com/acme/project",
+        kind: "project_secret",
+        key: "FROM_ACCOUNT",
+        value: "account-value",
+        updatedAt: "2026-07-16T00:00:00.000Z",
+      }],
+    });
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+
+    await service.hydrateFromVault();
+    expect(service.getSecretProvenance("FROM_ACCOUNT")).toEqual({
+      source: "account",
+      accountUserId: "account-a",
+    });
+
+    service.purgeAccountCredentials();
+    expect(service.list().secrets).toEqual([]);
   });
 
   it("requires delete confirmation to match the secret name", () => {

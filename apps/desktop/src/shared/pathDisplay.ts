@@ -17,3 +17,14 @@ export function abbreviatePathTail(value: string, segments = 2): string {
   if (parts.length <= segments) return value;
   return `…/${parts.slice(-segments).join("/")}`;
 }
+
+/**
+ * The final segment of a path, treating both `/` and `\` as separators so a
+ * Windows path read on POSIX still yields the file name. Returns `""` for a
+ * value made only of separators, matching `path.basename`'s root case.
+ * Display- and wire-label only; never fed back to `fs` or `path`.
+ */
+export function basenameCrossPlatform(value: string): string {
+  const parts = value.split(/[/\\]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1]! : "";
+}

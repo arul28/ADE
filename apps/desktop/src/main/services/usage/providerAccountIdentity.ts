@@ -169,17 +169,27 @@ async function readJsonFile(filePath: string): Promise<Record<string, unknown> |
   return parsed;
 }
 
-function codexAuthPath(home: string = os.homedir()): string {
-  const codexHome = process.env.CODEX_HOME?.trim() || path.join(home, ".codex");
+/**
+ * `configHome` names ONE provider account's config directory — an ADE provider
+ * instance. It outranks `CODEX_HOME` because the env var describes this
+ * process's own default account, while the argument names the account the
+ * caller is asking about; a machine with several accounts reads each one by
+ * passing its home, never by mutating the environment.
+ */
+export function codexAuthPath(home: string = os.homedir(), configHome?: string): string {
+  const codexHome = configHome?.trim() || process.env.CODEX_HOME?.trim() || path.join(home, ".codex");
   return path.join(codexHome, "auth.json");
 }
 
 /**
  * `~/.codex/auth.json` → `tokens.id_token` → `email` and the OpenAI auth claim's
- * `chatgpt_plan_type`. Honours `CODEX_HOME`.
+ * `chatgpt_plan_type`. Honours `CODEX_HOME`, or an explicit instance home.
  */
-export async function readCodexAccount(home: string = os.homedir()): Promise<ProviderAccountIdentity> {
-  const parsed = await readJsonFile(codexAuthPath(home));
+export async function readCodexAccount(
+  home: string = os.homedir(),
+  configHome?: string,
+): Promise<ProviderAccountIdentity> {
+  const parsed = await readJsonFile(codexAuthPath(home, configHome));
   if (!parsed) return {};
   const tokens = isRecord(parsed.tokens) ? parsed.tokens : parsed;
   const idToken = typeof tokens.id_token === "string" ? tokens.id_token : undefined;
@@ -201,21 +211,24 @@ export async function readCodexAccount(home: string = os.homedir()): Promise<Pro
  * `.claude.json` carries no account block, the home copy's email belongs to
  * someone else's session and must never be stamped on this one's usage.
  */
-function claudeAccountCandidatePaths(home: string = os.homedir()): string[] {
-  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim();
+export function claudeAccountCandidatePaths(home: string = os.homedir(), configHome?: string): string[] {
+  const configDir = configHome?.trim() || process.env.CLAUDE_CONFIG_DIR?.trim();
   return configDir
     ? [path.join(configDir, ".claude.json")]
     : [path.join(home, ".claude.json"), path.join(home, ".claude", ".claude.json")];
 }
 
-function claudeCredentialPath(home: string = os.homedir()): string {
-  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
+export function claudeCredentialPath(home: string = os.homedir(), configHome?: string): string {
+  const configDir = configHome?.trim() || process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
   return path.join(configDir, ".credentials.json");
 }
 
 /** Claude's signed-in account, from the CLI's own config. */
-export async function readClaudeAccount(home: string = os.homedir()): Promise<ProviderAccountIdentity> {
-  for (const candidate of claudeAccountCandidatePaths(home)) {
+export async function readClaudeAccount(
+  home: string = os.homedir(),
+  configHome?: string,
+): Promise<ProviderAccountIdentity> {
+  for (const candidate of claudeAccountCandidatePaths(home, configHome)) {
     const parsed = await readJsonFile(candidate);
     if (!parsed) continue;
     const account = isRecord(parsed.oauthAccount) ? parsed.oauthAccount : null;
@@ -230,11 +243,11 @@ export async function readClaudeAccount(home: string = os.homedir()): Promise<Pr
     if (email || plan) {
       return {
         ...(email ? { email } : {}),
-        ...(plan ? { plan } : { ...(await claudeCredentialPlan(home)) }),
+        ...(plan ? { plan } : { ...(await claudeCredentialPlan(home, configHome)) }),
       };
     }
   }
-  return { ...(await claudeCredentialPlan(home)) };
+  return { ...(await claudeCredentialPlan(home, configHome)) };
 }
 
 /**
@@ -242,8 +255,8 @@ export async function readClaudeAccount(home: string = os.homedir()): Promise<Pr
  * no account block. Only `subscriptionType`/`rateLimitTier` are read — the
  * tokens in that file are never touched.
  */
-async function claudeCredentialPlan(home: string): Promise<ProviderAccountIdentity> {
-  const parsed = await readJsonFile(claudeCredentialPath(home));
+async function claudeCredentialPlan(home: string, configHome?: string): Promise<ProviderAccountIdentity> {
+  const parsed = await readJsonFile(claudeCredentialPath(home, configHome));
   const oauth = parsed && isRecord(parsed.claudeAiOauth) ? parsed.claudeAiOauth : null;
   const plan = formatClaudePlan(oauth?.subscriptionType ?? oauth?.rateLimitTier);
   return plan ? { plan } : {};
