@@ -105,12 +105,24 @@ async function assertPackagedResolutionCliHelp() {
     const nodeModules = path.join(tempRoot, "shipped-node-modules");
     const appDir = path.join(tempRoot, "app");
     await fs.mkdir(appDir, { recursive: true });
+    // The shipped NAMES come from the desktop lock file. The bytes behind a
+    // name may come from the desktop tree or, when a job builds the CLI
+    // without installing the desktop app (the runtime-binary jobs), from this
+    // package's own copy. A dev-only hoisted package is never exposed either
+    // way, because the name list is production-only.
     const notInstalled = [];
     for (const name of productionNames) {
-      const source = path.join(desktopRoot, "node_modules", name);
-      try {
-        await fs.access(source);
-      } catch {
+      let source = null;
+      for (const candidate of [path.join(desktopRoot, "node_modules", name), path.join(packageRoot, "node_modules", name)]) {
+        try {
+          await fs.access(candidate);
+          source = candidate;
+          break;
+        } catch {
+          // try the next location
+        }
+      }
+      if (!source) {
         notInstalled.push(name);
         continue;
       }
@@ -133,9 +145,16 @@ async function assertPackagedResolutionCliHelp() {
       const bare = missing?.replace(/^(@[^/]+\/[^/]+|[^/]+).*$/, "$1");
       let detail = `: ${stderr.trim().split("\n")[0]}`;
       if (missing && bare && notInstalled.includes(bare)) {
-        detail = `: "${bare}" is a shipped production dependency that is not installed in this checkout; ` +
-          "run npm ci in apps/desktop and rebuild.";
-      } else if (missing) {
+        // Neither tree has this shipped package, so the gate cannot be
+        // faithful here; the packaging jobs install the desktop app and run
+        // this same check with the full tree.
+        console.warn(
+          `[ade-cli:build] skipping packaged-resolution check: shipped dependency "${bare}" is not installed ` +
+            "in apps/desktop or apps/ade-cli on this host",
+        );
+        return;
+      }
+      if (missing) {
         detail = `: bare require("${missing}") is reached at module scope but is not in apps/desktop's ` +
           "production dependency tree. Inline it in tsup noExternal (see string-width), or make it a " +
           "production dependency of the desktop package.";
