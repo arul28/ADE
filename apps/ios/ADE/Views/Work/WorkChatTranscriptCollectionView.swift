@@ -245,6 +245,8 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
   private var settleWorkItem: DispatchWorkItem?
   /// A scroll write inside a layout pass can re-enter the pass.
   private var isHandlingLayoutPass = false
+  /// A restore is a scroll write, and a scroll write lays out.
+  private var isRestoringAnchor = false
 
   /// Gap between rows, matching the transcript's former `LazyVStack` spacing.
   private let rowSpacing: CGFloat = 14
@@ -389,8 +391,9 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       // Content inserted or resized above the reader. Put the anchored row
       // back where it was; UIKit already compensated whatever it measured
       // itself, and this covers the rest.
-      restoreAnchor(anchor)
-      liveAnchor = captureAnchor()
+      if !restoreAnchorIfMoved(anchor, reason: "anchor-restore") {
+        liveAnchor = captureAnchor()
+      }
     }
     lastContentHeight = collectionView.contentSize.height
   }
@@ -399,6 +402,10 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
 
   struct Anchor {
     let rowId: String
+    /// The row's top in content coordinates, as of the sample — or of the last
+    /// restore. Comparing against it is what separates "this row moved" from
+    /// "this sample is old", which an absolute restore cannot tell apart.
+    let rowMinY: CGFloat
     /// Where the row's top sat relative to the viewport's top edge.
     let offsetFromViewportTop: CGFloat
   }
@@ -411,19 +418,46 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     else { return nil }
     return Anchor(
       rowId: orderedRowIds[indexPath.item],
+      rowMinY: attributes.frame.minY,
       offsetFromViewportTop: attributes.frame.minY - collectionView.contentOffset.y
     )
   }
 
+  /// Put the reader's row back, if it moved and if the offset is ours to write.
+  ///
+  /// On success the anchor advances to the row's new content position, so the
+  /// next pass compares against what this restore settled on rather than
+  /// re-deciding from a sample the restore already answered.
   @discardableResult
-  private func restoreAnchor(_ anchor: Anchor, reason: String = "anchor-restore") -> Bool {
+  private func restoreAnchorIfMoved(_ anchor: Anchor, reason: String) -> Bool {
+    guard !isRestoringAnchor else { return false }
     guard let index = orderedRowIds.firstIndex(of: anchor.rowId),
           let attributes = collectionView.layoutAttributesForItem(
             at: IndexPath(item: index, section: 0)
           )
     else { return false }
-    let target = attributes.frame.minY - anchor.offsetFromViewportTop
-    performScrollWrite(.setOffset(target), reason: reason)
+    let currentRowMinY = attributes.frame.minY
+    guard workChatShouldRestoreAnchor(
+      anchorRowMinY: anchor.rowMinY,
+      currentRowMinY: currentRowMinY,
+      isDragging: collectionView.isDragging,
+      isDecelerating: collectionView.isDecelerating,
+      contentOffsetY: collectionView.contentOffset.y,
+      minContentOffsetY: minContentOffsetY,
+      maxContentOffsetY: maxContentOffsetY
+    ) else { return false }
+
+    isRestoringAnchor = true
+    defer { isRestoringAnchor = false }
+    performScrollWrite(
+      .setOffset(currentRowMinY - anchor.offsetFromViewportTop),
+      reason: reason
+    )
+    liveAnchor = Anchor(
+      rowId: anchor.rowId,
+      rowMinY: currentRowMinY,
+      offsetFromViewportTop: anchor.offsetFromViewportTop
+    )
     return true
   }
 
@@ -436,14 +470,22 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
   }
 
   /// The only function in the transcript that moves the viewport.
-  private func performScrollWrite(_ write: ScrollWrite, reason: String) {
-    let before = collectionView.contentOffset.y
-    let minOffset = -collectionView.contentInset.top
-    let maxOffset = max(
-      minOffset,
+  private var minContentOffsetY: CGFloat {
+    -collectionView.contentInset.top
+  }
+
+  private var maxContentOffsetY: CGFloat {
+    max(
+      minContentOffsetY,
       collectionView.contentSize.height - collectionView.bounds.height
         + collectionView.contentInset.bottom
     )
+  }
+
+  private func performScrollWrite(_ write: ScrollWrite, reason: String) {
+    let before = collectionView.contentOffset.y
+    let minOffset = minContentOffsetY
+    let maxOffset = maxContentOffsetY
 
     let target: CGFloat
     var animated = false
@@ -612,9 +654,11 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
         // stays glued to the tail; everyone else keeps their row.
         if follow.following {
           followPinNeeded = true
-        } else if let liveAnchor, restoreAnchor(liveAnchor, reason: "viewport-resize") {
+        } else if let liveAnchor {
           // Anchored on the row, which survives a re-measure the saved offset
-          // would not.
+          // would not. A resize that did not move the row needs no write: the
+          // offset it already has is the reader's place.
+          restoreAnchorIfMoved(liveAnchor, reason: "viewport-resize")
         } else {
           performScrollWrite(.setOffset(stableOffsetY), reason: "viewport-resize")
         }
@@ -635,10 +679,10 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     } else if !follow.following || follow.inUserSession, let liveAnchor {
       // A cell measured itself away from its estimate after the update that
       // asked for it — sometimes without changing the total content height at
-      // all, when rows above the reader redistribute. The restore is absolute
-      // rather than incremental, so when UIKit has already compensated
-      // correctly this writes nothing.
-      restoreAnchor(liveAnchor, reason: "anchor-relayout")
+      // all, when rows above the reader redistribute. Gated on the anchored
+      // row having actually moved, so a pass where UIKit already compensated
+      // correctly writes nothing at all.
+      restoreAnchorIfMoved(liveAnchor, reason: "anchor-relayout")
     }
     traceViewportAnchor()
     publishGeometry()

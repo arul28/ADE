@@ -93,3 +93,41 @@ func workChatFollowLatch(
   }
   return next
 }
+
+/// How far the reader's anchored row has to have actually moved before the
+/// transcript puts it back.
+///
+/// Not a deadband on the correction — the correction is exact. It is the
+/// threshold below which "restore" stops being a correction and becomes a
+/// fight: a write of a point or two re-enters layout, which re-reads the same
+/// stale sample, which writes again.
+let workChatAnchorRestoreTolerance: CGFloat = 2
+
+/// Whether the transcript may put the reader's anchored row back right now.
+///
+/// Three refusals, each of which was a live loop before it was written down:
+///
+/// - The reader owns the offset for the whole interaction. Writing under a
+///   live finger or a running fling is the same rule the follow pin already
+///   obeys; the anchor is re-sampled when the interaction ends.
+/// - Overscroll is UIKit's to settle. Restoring into the bounce pins the
+///   rubber band at the anchor's offset instead of letting it return to the
+///   edge, and every settle frame re-triggers the restore that caused it.
+/// - A row that has not moved needs no restore. The restore is absolute, so
+///   applying it to a sample that is merely stale — rather than to a row that
+///   actually shifted — writes a displacement that was never there.
+func workChatShouldRestoreAnchor(
+  anchorRowMinY: CGFloat,
+  currentRowMinY: CGFloat,
+  isDragging: Bool,
+  isDecelerating: Bool,
+  contentOffsetY: CGFloat,
+  minContentOffsetY: CGFloat,
+  maxContentOffsetY: CGFloat
+) -> Bool {
+  guard !isDragging, !isDecelerating else { return false }
+  guard contentOffsetY >= minContentOffsetY - 0.5,
+        contentOffsetY <= maxContentOffsetY + 0.5
+  else { return false }
+  return abs(currentRowMinY - anchorRowMinY) > workChatAnchorRestoreTolerance
+}

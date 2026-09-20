@@ -58,12 +58,36 @@ final class WorkChatScrollBenchUITests: XCTestCase {
     start.press(forDuration: duration, thenDragTo: end)
   }
 
+  /// A slow *drag*, not a long hold that then moves.
+  ///
+  /// `press(forDuration: 0.9, thenDragTo:)` holds the touch stationary first,
+  /// and a stationary touch on a transcript row is a long press: the row's
+  /// context menu claims it and the movement never reaches the scroll view.
+  /// Pressing briefly and moving at a low velocity is the gesture this case
+  /// meant all along.
+  private func slowDrag(
+    _ app: XCUIApplication,
+    fromY: CGFloat,
+    toY: CGFloat,
+    velocity: CGFloat
+  ) {
+    let window = app.windows.firstMatch
+    let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: fromY))
+    let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: toY))
+    start.press(
+      forDuration: 0.05,
+      thenDragTo: end,
+      withVelocity: XCUIGestureVelocity(rawValue: velocity),
+      thenHoldForDuration: 0.1
+    )
+  }
+
   // (a) Open at the tail, then scroll up slowly through three screens.
   func testCaseA_slowScrollUp() {
     let app = launch()
     sleep(6)
     for _ in 0..<3 {
-      drag(app, fromY: 0.25, toY: 0.72, duration: 0.9)
+      slowDrag(app, fromY: 0.25, toY: 0.72, velocity: 320)
       sleep(2)
     }
     sleep(3)

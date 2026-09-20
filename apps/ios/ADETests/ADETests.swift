@@ -16867,6 +16867,61 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(workChatFollowLatch(flinging, .disclosureSettled(isAtEnd: true)).following)
   }
 
+  // MARK: - Work chat transcript anchor restore
+
+  private func shouldRestore(
+    anchorRowMinY: CGFloat = 1_000,
+    currentRowMinY: CGFloat = 1_200,
+    isDragging: Bool = false,
+    isDecelerating: Bool = false,
+    contentOffsetY: CGFloat = 800,
+    minContentOffsetY: CGFloat = -9,
+    maxContentOffsetY: CGFloat = 5_000
+  ) -> Bool {
+    workChatShouldRestoreAnchor(
+      anchorRowMinY: anchorRowMinY,
+      currentRowMinY: currentRowMinY,
+      isDragging: isDragging,
+      isDecelerating: isDecelerating,
+      contentOffsetY: contentOffsetY,
+      minContentOffsetY: minContentOffsetY,
+      maxContentOffsetY: maxContentOffsetY
+    )
+  }
+
+  func testAnchorRestoresWhenTheRowMovedAndTheOffsetIsOursToWrite() {
+    XCTAssertTrue(shouldRestore())
+    XCTAssertTrue(shouldRestore(currentRowMinY: 800))
+  }
+
+  /// The same rule the follow pin obeys: the reader owns the offset for the
+  /// whole interaction, finger-down through the end of momentum.
+  func testAnchorRestoreDefersToTheReadersInteraction() {
+    XCTAssertFalse(shouldRestore(isDragging: true))
+    XCTAssertFalse(shouldRestore(isDecelerating: true))
+  }
+
+  /// Restoring into the rubber band pins it at the anchor's offset instead of
+  /// letting it return to the edge, and every settle frame re-triggers the
+  /// restore that held it there.
+  func testAnchorRestoreLeavesOverscrollToUIKit() {
+    XCTAssertFalse(shouldRestore(contentOffsetY: -18.3))
+    XCTAssertFalse(shouldRestore(contentOffsetY: 5_100))
+    // The edges themselves are at rest, not overscroll.
+    XCTAssertTrue(shouldRestore(contentOffsetY: -9))
+    XCTAssertTrue(shouldRestore(contentOffsetY: 5_000))
+  }
+
+  /// A restore is absolute, so applying it to a sample that is merely stale —
+  /// rather than to a row that actually shifted — writes a displacement that
+  /// was never there, and that write lays out and asks again.
+  func testAnchorRestoreSkipsARowThatDidNotMove() {
+    XCTAssertFalse(shouldRestore(currentRowMinY: 1_000))
+    XCTAssertFalse(shouldRestore(currentRowMinY: 1_002))
+    XCTAssertFalse(shouldRestore(currentRowMinY: 998))
+    XCTAssertTrue(shouldRestore(currentRowMinY: 1_003))
+  }
+
   func testResetOpensAtTheTailAndClearsAnyUserSession() {
     let stuck = WorkChatFollowState(following: false, inUserSession: true)
     let state = workChatFollowLatch(stuck, .reset)
