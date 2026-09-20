@@ -30,7 +30,9 @@ export function ModelPickerEmptyState({
   getProviderLabel,
   isProviderReady,
 }: ModelPickerEmptyStateProps) {
-  if (!searchActive && selection !== "favorites" && selection !== "recents") {
+  // The harnesses tab draws its own empty state (it has its own call to
+  // action), so it never reaches here.
+  if (!searchActive && selection !== "favorites" && selection !== "recents" && selection !== "harnesses") {
     const family = selection.slice("provider:".length) as ProviderFamily;
     if (refreshErrorProvider) {
       return (

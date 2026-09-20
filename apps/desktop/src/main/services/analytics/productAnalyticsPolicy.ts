@@ -184,6 +184,23 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // with less history. Never the transcript, the models, the turn counts, or
   // the share of the window it took.
   "handoff_replay",
+  // Durable provider/account decisions. These are closed facts emitted by
+  // brain/main owners; ids, labels, paths, keys, and model names never enter
+  // the event.
+  "account_created",
+  "account_removed",
+  "default_selected",
+  "balance_changed",
+  "auto_start_changed",
+  "credential_stored",
+  "credential_removed",
+  "preset_created",
+  "preset_deleted",
+  "sign_in",
+  "start",
+  "stop",
+  "reset_credit_consumed",
+  "pending_input_dismissed",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -282,11 +299,13 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "details_usage", "details_form", "details_lane_details", "add_chat", "multi_chat_grid", "chat",
   ]),
   feature: new Set([
-    "chat", "cli", "work", "lanes", "files", "git", "orchestration", "prs",
+    "chat", "cli", "work", "lanes", "files", "git", "prs",
     "automations", "command_palette", "storage_doctor", "attention", "updates", "connections",
     "usage",
     // The CTO surface: voice calls and the capture gesture that feeds them.
     "cto",
+    // Account/provider decisions owned by the brain or desktop main process.
+    "provider_accounts", "api_credentials", "presets", "proxy",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -353,6 +372,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // same for a brief handoff, and this funnel is only legible if fitting,
     // truncating, refusing, retrying and giving up are separable in one filter.
     "fit", "truncated", "refused", "retried", "gave_up",
+    // Provider/account settings and reset-credit states. `enabled` and
+    // `disabled` are the two boolean setting outcomes; the other mutations use
+    // the existing completed/success buckets.
+    "enabled", "disabled", "nothing_to_reset", "no_credit", "already_redeemed",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([

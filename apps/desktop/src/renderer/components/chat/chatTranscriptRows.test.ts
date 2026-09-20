@@ -3678,9 +3678,9 @@ describe("interrupt-stopped subagent grouping", () => {
       env("2026-07-11T10:00:00.300Z", { type: "subagent_started", taskId: "agent-d", agentType: "builder", description: "Build the widget" }),
       // agent-d finishes for real; then the user interrupts and the rest are swept to "stopped".
       env("2026-07-11T10:00:05.000Z", { type: "subagent_result", taskId: "agent-d", status: "completed", summary: "Widget built" }),
-      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
-      env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
-      env("2026-07-11T10:00:06.002Z", { type: "subagent_result", taskId: "agent-c", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
+      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted", stopSource: "user" }),
+      env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted", stopSource: "user" }),
+      env("2026-07-11T10:00:06.002Z", { type: "subagent_result", taskId: "agent-c", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted", stopSource: "user" }),
     ]);
 
     // Exactly one folded group — never a wall of identical stopped cards.
@@ -3690,13 +3690,17 @@ describe("interrupt-stopped subagent grouping", () => {
     if (group.event.type !== "subagent_stopped_group") throw new Error("Expected stopped group");
     // The cause is part of the key: an interrupt group and a usage-limit
     // group starting at the same agent must not share a React identity.
-    expect(group.key).toBe("subagent-stopped-group:interrupt:agent-a");
+    // Cause AND attribution are part of the key: an interrupt group, a
+    // usage-limit group, and an ADE-restart group can all start at the same
+    // agent, and sharing a key would make React reuse one card's state.
+    expect(group.key).toBe("subagent-stopped-group:interrupt:user:unknown:agent-a");
     expect(group.event.cause).toBe("interrupt");
+    expect(group.event.stopSource).toBe("user");
     expect(group.event.count).toBe(3);
     expect(group.event.items).toEqual([
-      { agentKey: "agent-a", title: "Explore auth flow", jumpToStartRowKey: "subagent-stopped-group:interrupt:agent-a" },
-      { agentKey: "agent-b", title: "Explore sync flow", jumpToStartRowKey: "subagent-stopped-group:interrupt:agent-a" },
-      { agentKey: "agent-c", title: "Explore the UI", jumpToStartRowKey: "subagent-stopped-group:interrupt:agent-a" },
+      { agentKey: "agent-a", title: "Explore auth flow", lastActivity: null, resultLanded: false },
+      { agentKey: "agent-b", title: "Explore sync flow", lastActivity: null, resultLanded: false },
+      { agentKey: "agent-c", title: "Explore the UI", lastActivity: null, resultLanded: false },
     ]);
 
     // The completed agent keeps its own result card (real summary the user wants to read).
@@ -3705,6 +3709,45 @@ describe("interrupt-stopped subagent grouping", () => {
     if (resultCards[0]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
     expect(resultCards[0]!.event.status).toBe("completed");
     expect(resultCards[0]!.event.summaryPreview).toBe("Widget built");
+  });
+
+  it("splits adjacent stopped groups when the stop reason changes", () => {
+    const grouped = groupEvents([
+      env("2026-09-18T02:14:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
+      env("2026-09-18T02:14:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
+      env("2026-09-18T02:14:00.200Z", { type: "subagent_started", taskId: "agent-c", agentType: "explorer", description: "Explore the UI" }),
+      env("2026-09-18T02:14:00.300Z", { type: "subagent_started", taskId: "agent-d", agentType: "explorer", description: "Explore the tests" }),
+      env("2026-09-18T02:14:07.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Stopped", stopSource: "system", stopReason: "reason-a" }),
+      env("2026-09-18T02:14:07.001Z", { type: "subagent_result", taskId: "agent-b", status: "stopped", summary: "Stopped", stopSource: "system", stopReason: "reason-a" }),
+      env("2026-09-18T02:14:07.002Z", { type: "subagent_result", taskId: "agent-c", status: "stopped", summary: "Stopped", stopSource: "system", stopReason: "reason-b" }),
+      env("2026-09-18T02:14:07.003Z", { type: "subagent_result", taskId: "agent-d", status: "stopped", summary: "Stopped", stopSource: "system", stopReason: "reason-b" }),
+    ]);
+
+    const groups = grouped.filter((row) => row.event.type === "subagent_stopped_group");
+    expect(groups).toHaveLength(2);
+    expect(groups.map((row) => row.key)).toEqual([
+      "subagent-stopped-group:interrupt:system:reason-a:agent-a",
+      "subagent-stopped-group:interrupt:system:reason-b:agent-c",
+    ]);
+    expect(groups.map((row) => row.event.type === "subagent_stopped_group" ? row.event.stopReason : null))
+      .toEqual(["reason-a", "reason-b"]);
+  });
+
+  it("never folds an ADE-restart sweep into a user interrupt, and carries the reason", () => {
+    const grouped = groupEvents([
+      env("2026-09-18T02:14:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
+      env("2026-09-18T02:14:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
+      env("2026-09-18T02:14:07.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Interrupted", stopSource: "user" }),
+      env("2026-09-18T02:14:08.000Z", { type: "subagent_result", taskId: "agent-b", status: "stopped", summary: "Stopped: lost on ADE restart", stopSource: "system", stopReason: "the ADE brain restarted" }),
+    ]);
+    // Two lone casualties with different attributions: neither folds into the
+    // other, so no card can put the restart's victims under "you interrupted".
+    expect(grouped.filter((row) => row.event.type === "subagent_stopped_group")).toHaveLength(0);
+    const cards = grouped.filter((row) => row.event.type === "subagent_result_card");
+    expect(cards).toHaveLength(2);
+    if (cards[1]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
+    expect(cards[1]!.event.stopSource).toBe("system");
+    expect(cards[1]!.event.stopReason).toBe("the ADE brain restarted");
   });
 
   it("folds a run of usage-limit failures into one group named for the cause", () => {
@@ -3764,6 +3807,34 @@ describe("interrupt-stopped subagent grouping", () => {
     expect(resultCards).toHaveLength(1);
     if (resultCards[0]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
     expect(resultCards[0]!.event.status).toBe("stopped");
+  });
+
+  it.each([
+    ["user", null],
+    ["system", "the ADE brain restarted"],
+    ["foreign-brain", "another ADE brain took over this chat"],
+    ["provider", "the provider ended the turn"],
+    ["unknown", null],
+  ] as const)("keeps lone stopped-card attribution for %s", (stopSource, stopReason) => {
+    const grouped = groupEvents([
+      env("2026-09-18T02:14:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
+      env("2026-09-18T02:14:06.000Z", {
+        type: "subagent_result",
+        taskId: "agent-a",
+        status: "stopped",
+        summary: "Stopped",
+        stopSource,
+        ...(stopReason ? { stopReason } : {}),
+      }),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]!.event).toMatchObject({
+      type: "subagent_result_card",
+      status: "stopped",
+      stopSource,
+      stopReason,
+    });
   });
 });
 

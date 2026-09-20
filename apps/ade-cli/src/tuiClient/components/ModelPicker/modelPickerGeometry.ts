@@ -1,4 +1,4 @@
-import type { ModelPickerProviderTab, ModelPickerState } from "./types";
+import { modelPickerEntryKey, type ModelPickerProviderTab, type ModelPickerState } from "./types";
 import { titleCaseProviderName } from "../../providerMetadata";
 
 /**
@@ -280,7 +280,7 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
     const index = window.start + sliceIndex;
     const y = listTop + (sliceIndex * entryHeight);
     entries.push({
-      id: `right:model-picker:entry:${entry.modelId}`,
+      id: `right:model-picker:entry:${modelPickerEntryKey(entry)}`,
       index,
       modelId: entry.modelId,
       rect: { x: listLeft, y, w: listWidth, h: entryHeight },

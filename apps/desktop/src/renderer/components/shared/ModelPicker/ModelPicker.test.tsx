@@ -339,6 +339,26 @@ describe("composeModelPickerTriggerLabel", () => {
     expect(composeModelPickerTriggerLabel({ model: undefined, value: "  ", fastMode: true }))
       .toBe("Select model");
   });
+
+  it("names a preset chat by the preset and suffixes nothing onto it", () => {
+    // The trigger is 152px wide. "<preset> - <model> Fast" truncates to
+    // neither, and the preset is the thing the user chose and recognises; the
+    // model reaches them through the trigger's title instead.
+    expect(composeModelPickerTriggerLabel({
+      model: FAST_GPT,
+      value: FAST_GPT.id,
+      fastMode: true,
+      presetName: "Opus on work",
+    })).toBe("Opus on work");
+  });
+
+  it("falls back to the model when the preset name is blank or absent", () => {
+    // A preset the user deleted or renamed to nothing must not blank the chip.
+    expect(composeModelPickerTriggerLabel({ model: OPUS, value: OPUS.id, presetName: "  " }))
+      .toBe(OPUS.displayName);
+    expect(composeModelPickerTriggerLabel({ model: OPUS, value: OPUS.id, presetName: null }))
+      .toBe(OPUS.displayName);
+  });
 });
 
 describe("ModelPicker", () => {
@@ -2240,6 +2260,9 @@ describe("ModelPicker", () => {
       const railKeys = Array.from(document.querySelectorAll("[data-rail-selection]"))
         .map((entry) => entry.getAttribute("data-rail-selection"));
       const expectedRailKeys = [
+        // Harnesses leads the rail: a saved preset is a whole launch
+        // configuration, so it sits above the model-level views.
+        "harnesses",
         "favorites",
         "recents",
         "provider:anthropic",
@@ -2256,6 +2279,21 @@ describe("ModelPicker", () => {
         "provider:lmstudio",
       ].filter((key) => key !== "provider:cursor" || cursorProviderAvailable());
       expect(railKeys).toEqual(expectedRailKeys);
+    });
+
+    it("drops the Harnesses rail entry when the surface launches a CLI", async () => {
+      // The locked CLI gate has two halves. This is the one that stops the
+      // choice being offered: four harnesses take no key from the launch, so a
+      // preset picked here would be dropped, and a choice that is then ignored
+      // is worse than no choice. The launch path enforces the other half.
+      const user = userEvent.setup();
+      renderPicker({ listsHarnessPresets: false });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      const railKeys = Array.from(document.querySelectorAll("[data-rail-selection]"))
+        .map((entry) => entry.getAttribute("data-rail-selection"));
+      expect(railKeys).not.toContain("harnesses");
+      expect(railKeys[0]).toBe("favorites");
+      expect(screen.queryByRole("tab", { name: /^Harnesses$/i })).toBeNull();
     });
 
     it("lists curated Qwen models when the Qwen rail is selected", async () => {

@@ -64,6 +64,8 @@ import {
   usageLedgerTranscriptRoots,
 } from "./ledgers/localUsageLedgers";
 import { providerScanners } from "./usageLedgerWorker";
+import { clearProviderAccountCache } from "./providerAccountIdentity";
+import { clearClaudeCredentialCache } from "../ai/providerCredentialSources";
 import type { TokenEntry } from "./ledgers/localUsageLedgers";
 import type { CostSnapshot } from "../../../shared/types";
 import { CURSOR_BILLED_USAGE_KV_REF } from "./cursorBilledUsageStore";
@@ -110,6 +112,7 @@ const {
   scanGeminiLogs,
   findRecentFiles,
   buildCostSnapshots,
+  consumeCodexResetCredit,
 } = _testing;
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -1552,7 +1555,7 @@ describe("pollCodexViaCliRpc", () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     expect(mockState.spawn).toHaveBeenCalledWith(
       "cmd.exe",
-      ["/d", "/s", "/c", '""C:\\Users\\me\\AppData\\Local\\Programs\\codex" "-s" "read-only" "-a" "untrusted" "app-server""'],
+      ["/d", "/s", "/c", '""C:\\Users\\me\\AppData\\Local\\Programs\\codex" "-s" "read-only" "-a" "never" "app-server""'],
       expect.objectContaining({ windowsVerbatimArguments: true }),
     );
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
@@ -1591,7 +1594,7 @@ describe("pollCodexViaCliRpc", () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     const [spawnFile, spawnArgs, spawnOptions] = mockState.spawn.mock.calls[0]!;
     expect(spawnFile).toBe("codex");
-    expect(spawnArgs).toEqual(["-s", "read-only", "-a", "untrusted", "app-server"]);
+    expect(spawnArgs).toEqual(["-s", "read-only", "-a", "never", "app-server"]);
     expect(spawnOptions).toEqual(expect.objectContaining({ windowsVerbatimArguments: false }));
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
     expect(fake.written[0]).toMatch(/\n$/);
@@ -6219,5 +6222,648 @@ describe("usage ledger end-to-end accuracy", () => {
     const point = stats.daily.find((entry) => entry.date === localDayKey(nowMs));
     expect(point?.totalTokens).toBe(500);
     expect(point?.byProvider).toEqual({ codex: { totalTokens: 500, costUsd: 0 } });
+  });
+});
+
+// ── Provider accounts ("instances") ──────────────────────────────
+
+describe("per-account quota attribution", () => {
+  const logger = createLogger();
+  let tempHome: string;
+  let workHome: string;
+  let restoreHomedir: () => void;
+  let restoreClaudeConfigDir: () => void;
+
+  /** One local account, in the shape the poller consumes. */
+  type TestInstance = {
+    id: string;
+    label: string;
+    accentColor?: string;
+    configHome: string;
+    isDefault: boolean;
+  };
+
+  function writeJson(file: string, body: unknown): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(body), "utf8");
+  }
+
+  function writeClaudeAccount(home: string, email: string): void {
+    writeJson(path.join(home, ".claude.json"), { oauthAccount: { emailAddress: email } });
+  }
+
+  function writeClaudeCredentials(configHome: string, accessToken: string): void {
+    writeJson(path.join(configHome, ".credentials.json"), {
+      claudeAiOauth: { accessToken, expiresAt: Date.now() + 8 * 60 * 60_000 },
+    });
+  }
+
+  function claudeUsageBody(fiveHourPercent: number) {
+    return {
+      five_hour: { utilization: fiveHourPercent, resets_at: "2099-03-14T02:00:00+00:00" },
+      seven_day: { utilization: 5, resets_at: "2099-03-20T03:00:00+00:00" },
+    };
+  }
+
+  function defaultInstance(): TestInstance {
+    return { id: "claude", label: "Default", configHome: path.join(tempHome, ".claude"), isDefault: true };
+  }
+
+  function workInstance(): TestInstance {
+    return { id: "work", label: "Work", accentColor: "#112233", configHome: workHome, isDefault: false };
+  }
+
+  beforeEach(() => {
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-accounts-"));
+    workHome = path.join(tempHome, "provider-homes", "claude", "work");
+    fs.mkdirSync(workHome, { recursive: true });
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(tempHome);
+    restoreHomedir = () => spy.mockRestore();
+    // The shared vitest setup pins CLAUDE_CONFIG_DIR at a fixed temp directory;
+    // point it at this test's home so the default account's `.claude.json` is
+    // the one the identity reader finds.
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = path.join(tempHome, ".claude");
+    restoreClaudeConfigDir = () => {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+    };
+    clearProviderAccountCache();
+    clearClaudeCredentialCache();
+  });
+
+  afterEach(() => {
+    restoreHomedir();
+    restoreClaudeConfigDir();
+    clearProviderAccountCache();
+    clearClaudeCredentialCache();
+    vi.unstubAllGlobals();
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  it("polls each Claude account from its own config home and attributes its windows", async () => {
+    writeClaudeCredentials(path.join(tempHome, ".claude"), "default-token");
+    writeClaudeCredentials(workHome, "work-token");
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      seen.push(token);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => claudeUsageBody(token === "work-token" ? 60 : 20),
+      };
+    }));
+
+    const result = await _testing.pollClaudeUsage(
+      logger as never,
+      { reason: "automatic" },
+      [defaultInstance(), workInstance()],
+    );
+
+    expect(seen.sort()).toEqual(["default-token", "work-token"]);
+    expect(result.errors).toEqual([]);
+    const byAccount = new Map(result.windows
+      .filter((window) => window.windowType === "five_hour")
+      .map((window) => [window.accountId, window.percentUsed]));
+    expect(byAccount.get("claude:claude")).toBe(20);
+    expect(byAccount.get("claude:work")).toBe(60);
+  });
+
+  it("polls a promoted secondary default from its own config home", async () => {
+    writeClaudeCredentials(path.join(tempHome, ".claude"), "default-token");
+    writeClaudeCredentials(workHome, "work-token");
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      seen.push(token);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => claudeUsageBody(token === "work-token" ? 60 : 20),
+      };
+    }));
+
+    const result = await _testing.pollClaudeUsage(
+      logger as never,
+      { reason: "automatic" },
+      [
+        { ...defaultInstance(), isDefault: false },
+        { ...workInstance(), isDefault: true },
+      ],
+    );
+
+    expect(seen.sort()).toEqual(["default-token", "work-token"]);
+    const byAccount = new Map(result.windows
+      .filter((window) => window.windowType === "five_hour")
+      .map((window) => [window.accountId, window.percentUsed]));
+    expect(byAccount.get("claude:claude")).toBe(20);
+    expect(byAccount.get("claude:work")).toBe(60);
+  });
+
+  it("stamps every account row from its own home when a secondary holds the default", async () => {
+    // The machine's own login lives beside the home directory; the second
+    // account's lives inside its config home.
+    writeClaudeAccount(path.join(tempHome, ".claude"), "machine@example.com");
+    writeJson(path.join(workHome, ".claude.json"), {
+      oauthAccount: { emailAddress: "work@example.com" },
+    });
+    const providerStatus = {
+      claude: { state: "ok", updatedAt: "2099-03-14T01:00:00.000Z" },
+    };
+
+    const { accounts, defaultAccountIdByProvider } = await _testing.stampProviderAccounts(
+      providerStatus as never,
+      "Mac",
+      new Set<string>(),
+      () => [
+        { ...defaultInstance(), isDefault: false },
+        { ...workInstance(), isDefault: true },
+      ],
+    );
+
+    const byId = new Map(accounts.map((account) => [account.id, account]));
+    // Promoting the second account moves the default pointer, not the identity:
+    // its row must never carry the machine login's address.
+    expect(byId.get("claude:work")?.email).toBe("work@example.com");
+    // …and the base row must still read the machine login, which a scoped
+    // config home would report as signed out.
+    expect(byId.get("claude:claude")?.email).toBe("machine@example.com");
+    expect(defaultAccountIdByProvider.get("claude")).toBe("claude:work");
+    // The single provider line describes whichever account is the default.
+    expect((providerStatus.claude as { accountEmail?: string }).accountEmail)
+      .toBe("work@example.com");
+  });
+
+  it("lets an account with no login contribute nothing rather than an error", async () => {
+    writeClaudeCredentials(path.join(tempHome, ".claude"), "default-token");
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => claudeUsageBody(20),
+    })));
+
+    const result = await _testing.pollClaudeUsage(
+      logger as never,
+      { reason: "automatic" },
+      [defaultInstance(), workInstance()],
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(result.windows.every((window) => window.accountId === "claude:claude")).toBe(true);
+  });
+
+  it("preserves the previous reading when the only account cannot be checked", async () => {
+    const result = await _testing.pollClaudeUsage(
+      logger as never,
+      { reason: "automatic" },
+      [defaultInstance()],
+    );
+
+    expect(result.disposition).toBe("preserve_previous");
+    expect(result.windows).toEqual([]);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("merges preserved default windows and facts with a fresh secondary account", () => {
+    const previous: UsageSnapshot = {
+      windows: [{
+        provider: "codex",
+        accountId: "codex:codex",
+        windowType: "five_hour",
+        percentUsed: 24,
+        resetsAt: "2099-03-14T02:00:00.000Z",
+        resetsInMs: 1_000,
+      }],
+      providerStatus: {
+        codex: { state: "ok", lastSuccessAt: "2099-03-14T01:00:00.000Z", source: "http" },
+      },
+      providerMessages: [{
+        provider: "codex",
+        id: "previous-message",
+        kind: "headline",
+        message: "Previous account message",
+      }],
+      extraUsage: [{
+        provider: "codex",
+        isEnabled: true,
+        usedCreditsUsd: 1,
+        monthlyLimitUsd: 10,
+        utilization: 0.1,
+        currency: "USD",
+      }],
+      dailyUsage7d: { codex: [1, 2, 3] },
+      spendControlReached: true,
+      pacing: {
+        status: "on-track",
+        projectedWeeklyPercent: 0,
+        weekElapsedPercent: 0,
+        expectedPercent: 0,
+        deltaPercent: 0,
+        etaHours: null,
+        willLastToReset: true,
+        resetsInHours: 1,
+      },
+      costs: [],
+      lastPolledAt: "2099-03-14T01:00:00.000Z",
+      errors: [],
+    };
+
+    const result = _testing.mergeInstancePollResults("codex", [
+      {
+        instance: { ...defaultInstance(), id: "codex" },
+        result: { disposition: "preserve_previous", windows: [], errors: [], source: "http" },
+      },
+      {
+        instance: { ...workInstance() },
+        result: {
+          windows: [{
+            provider: "codex",
+            windowType: "five_hour",
+            percentUsed: 61,
+            resetsAt: "2099-03-14T02:00:00.000Z",
+            resetsInMs: 1_000,
+          }],
+          source: "cli",
+          errors: [],
+          providerMessages: [{
+            provider: "codex",
+            id: "secondary-message",
+            kind: "headline",
+            message: "Secondary account message",
+          }],
+          spendControlReached: false,
+        },
+      },
+    ], previous);
+
+    expect(result.windows.map((window) => [window.accountId, window.percentUsed])).toEqual([
+      ["codex:codex", 24],
+      ["codex:work", 61],
+    ]);
+    expect(result.source).toBe("http");
+    expect(result.extraUsage).toEqual(previous.extraUsage[0]);
+    expect(result.dailyUsage7d).toEqual([1, 2, 3]);
+    expect(result.providerMessages).toEqual(previous.providerMessages);
+    expect(result.spendControlReached).toBe(true);
+  });
+
+  it("keeps previous secondary windows when a fresh account poll fails", () => {
+    const previous = {
+      windows: [{
+        provider: "codex",
+        accountId: "codex:work",
+        windowType: "five_hour",
+        percentUsed: 42,
+        resetsAt: "2099-03-14T02:00:00.000Z",
+        resetsInMs: 1_000,
+      }],
+    } as UsageSnapshot;
+
+    const result = _testing.mergeInstancePollResults("codex", [
+      {
+        instance: { ...defaultInstance(), id: "codex" },
+        result: {
+          windows: [{
+            provider: "codex",
+            windowType: "five_hour",
+            percentUsed: 18,
+            resetsAt: "2099-03-14T02:00:00.000Z",
+            resetsInMs: 1_000,
+          }],
+          errors: [],
+        },
+      },
+      {
+        instance: { ...workInstance() },
+        result: {
+          windows: [],
+          errors: ["codex: API returned 503"],
+          errorKind: "network",
+        },
+      },
+    ], previous);
+
+    expect(result.windows.map((window) => [window.accountId, window.percentUsed])).toEqual([
+      ["codex:codex", 18],
+      ["codex:work", 42],
+    ]);
+    expect(result.errors).toEqual(["codex: API returned 503"]);
+  });
+
+  it("drops expired preserved default windows before merging a fresh secondary", () => {
+    const previous = {
+      windows: [{
+        provider: "codex",
+        accountId: "codex:codex",
+        windowType: "five_hour",
+        percentUsed: 24,
+        resetsAt: "2020-01-01T00:00:00.000Z",
+        resetsInMs: 1_000,
+      }],
+      extraUsage: [],
+      pacing: {} as UsageSnapshot["pacing"],
+      costs: [],
+      lastPolledAt: "2026-01-01T00:00:00.000Z",
+      errors: [],
+    } as UsageSnapshot;
+
+    const result = _testing.mergeInstancePollResults("codex", [
+      {
+        instance: { ...defaultInstance(), id: "codex" },
+        result: { disposition: "preserve_previous", windows: [], errors: [], source: "http" },
+      },
+      {
+        instance: { ...workInstance() },
+        result: {
+          windows: [{
+            provider: "codex",
+            windowType: "five_hour",
+            percentUsed: 61,
+            resetsAt: "2099-03-14T02:00:00.000Z",
+            resetsInMs: 1_000,
+          }],
+          errors: [],
+        },
+      },
+    ], previous);
+
+    expect(result.windows.map((window) => window.accountId)).toEqual(["codex:work"]);
+  });
+
+  it("spends a reset credit against a promoted secondary default's own home", async () => {
+    const baseCodexHome = path.join(tempHome, ".codex");
+    const workCodexHome = path.join(tempHome, "provider-homes", "codex", "work");
+    const instances = [
+      { id: "codex", label: "Default", configHome: baseCodexHome, isDefault: false },
+      { id: "work", label: "Work", configHome: workCodexHome, isDefault: true },
+    ];
+    const launches: Array<{ env: NodeJS.ProcessEnv | undefined; written: string[] }> = [];
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.spawn.mockImplementation((_command: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+      const fake = createFakeCodexChild({
+        stdout: `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { outcome: "reset" } })}\n`,
+      });
+      launches.push({ env: options?.env, written: fake.written });
+      return fake.child;
+    });
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+        listProviderInstances: (provider) => provider === "codex" ? instances : [],
+        scanClaudeLogs: vi.fn(async () => []),
+        scanCodexLogs: vi.fn(async () => []),
+        scanCursorLogs: vi.fn(async () => []),
+        scanCursorAgentLogs: vi.fn(async () => []),
+        scanOpenClawLogs: vi.fn(async () => []),
+        scanOpenCodeLogs: vi.fn(async () => []),
+        scanDroidLogs: vi.fn(async () => []),
+        scanCopilotLogs: vi.fn(async () => []),
+        scanGeminiLogs: vi.fn(async () => []),
+      },
+    });
+
+    const result = await service.consumeResetCredit({ accountId: "codex:work" });
+    const consumeLaunch = launches.find((launch) => launch.written.some((line) => (
+      line.includes("account/rateLimitResetCredit/consume")
+    )));
+
+    expect(result).toEqual({ ok: true, status: "reset" });
+    expect(consumeLaunch?.env?.CODEX_HOME).toBe(workCodexHome);
+
+    // Reached off the action domain, where the argument is whatever an RPC
+    // caller sent: a missing account id is a failure result, never a throw.
+    await expect(service.consumeResetCredit(undefined as never)).resolves.toEqual({
+      ok: false,
+      status: "failure",
+      message: "Name the Codex account whose reset credit to spend.",
+    });
+    await expect(service.consumeResetCredit({ accountId: "  " })).resolves.toMatchObject({
+      ok: false,
+      status: "failure",
+    });
+  });
+
+  it("emits one account per signed-in instance and keeps accountEmail on the default", async () => {
+    writeClaudeAccount(path.join(tempHome, ".claude"), "default@example.com");
+    writeClaudeAccount(workHome, "work@example.com");
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({
+          windows: [
+            {
+              provider: "claude" as const,
+              windowType: "five_hour" as const,
+              accountId: "claude:claude",
+              percentUsed: 20,
+              resetsAt: new Date(Date.now() + 60_000).toISOString(),
+              resetsInMs: 60_000,
+            },
+            {
+              provider: "claude" as const,
+              windowType: "five_hour" as const,
+              accountId: "claude:work",
+              percentUsed: 60,
+              resetsAt: new Date(Date.now() + 60_000).toISOString(),
+              resetsInMs: 60_000,
+            },
+          ],
+          errors: [] as never[],
+        })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        listProviderInstances: (provider) => (provider === "claude"
+          ? [defaultInstance(), workInstance()]
+          : []),
+        scanClaudeLogs: vi.fn(async () => [] as never[]),
+        scanCodexLogs: vi.fn(async () => [] as never[]),
+        scanCursorLogs: vi.fn(async () => [] as never[]),
+        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
+        scanOpenClawLogs: vi.fn(async () => [] as never[]),
+        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
+        scanDroidLogs: vi.fn(async () => [] as never[]),
+        scanCopilotLogs: vi.fn(async () => [] as never[]),
+        scanGeminiLogs: vi.fn(async () => [] as never[]),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "user" });
+    const claudeAccounts = (snapshot.accounts ?? []).filter((account) => account.provider === "claude");
+
+    expect(claudeAccounts.map((account) => account.id)).toEqual(["claude:claude", "claude:work"]);
+    expect(claudeAccounts[0]).toEqual(expect.objectContaining({
+      instanceId: "claude",
+      label: "Default",
+      email: "default@example.com",
+    }));
+    expect(claudeAccounts[1]).toEqual(expect.objectContaining({
+      instanceId: "work",
+      label: "Work",
+      accentColor: "#112233",
+      email: "work@example.com",
+    }));
+    // The one-line "who is this" on the provider stays the DEFAULT account, so
+    // a single-account machine reads exactly what it read before.
+    expect(snapshot.providerStatus?.claude?.accountEmail).toBe("default@example.com");
+    // Attribution the poller already made is never overwritten.
+    expect(snapshot.windows.map((window) => window.accountId).sort())
+      .toEqual(["claude:claude", "claude:work"]);
+
+    service.dispose();
+  });
+
+  it("names the default account for a window that arrived without attribution", async () => {
+    writeClaudeAccount(path.join(tempHome, ".claude"), "solo@example.com");
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({
+          windows: [{
+            provider: "claude" as const,
+            windowType: "five_hour" as const,
+            percentUsed: 20,
+            resetsAt: new Date(Date.now() + 60_000).toISOString(),
+            resetsInMs: 60_000,
+          }],
+          errors: [] as never[],
+        })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        listProviderInstances: (provider) => (provider === "claude" ? [defaultInstance()] : []),
+        scanClaudeLogs: vi.fn(async () => [] as never[]),
+        scanCodexLogs: vi.fn(async () => [] as never[]),
+        scanCursorLogs: vi.fn(async () => [] as never[]),
+        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
+        scanOpenClawLogs: vi.fn(async () => [] as never[]),
+        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
+        scanDroidLogs: vi.fn(async () => [] as never[]),
+        scanCopilotLogs: vi.fn(async () => [] as never[]),
+        scanGeminiLogs: vi.fn(async () => [] as never[]),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "user" });
+    const claudeAccounts = (snapshot.accounts ?? []).filter((account) => account.provider === "claude");
+
+    expect(claudeAccounts).toHaveLength(1);
+    expect(claudeAccounts[0]?.id).toBe("claude:claude");
+    expect(snapshot.windows[0]?.accountId).toBe("claude:claude");
+    expect(snapshot.providerStatus?.claude?.accountEmail).toBe("solo@example.com");
+
+    service.dispose();
+  });
+
+  it("fingerprints every account's config home, and Droid's real config home", () => {
+    const originalOverride = process.env.FACTORY_HOME_OVERRIDE;
+    const originalFactoryDir = process.env.FACTORY_DIR;
+    process.env.FACTORY_HOME_OVERRIDE = tempHome;
+    delete process.env.FACTORY_DIR;
+    try {
+      const roots = _testing.defaultTranscriptRoots(
+        [{ provider: "claude" }, { provider: "droid" }] as never,
+        (provider) => (provider === "claude" ? [defaultInstance(), workInstance()] : []),
+      );
+
+      expect(roots).toContain(path.join(tempHome, ".claude"));
+      expect(roots).toContain(workHome);
+      // `FACTORY_HOME_OVERRIDE` is the variable Droid's own binary honours.
+      expect(roots).toContain(path.join(tempHome, ".factory"));
+      // One directory named twice is fingerprinted once.
+      expect(new Set(roots).size).toBe(roots.length);
+    } finally {
+      if (originalOverride === undefined) delete process.env.FACTORY_HOME_OVERRIDE;
+      else process.env.FACTORY_HOME_OVERRIDE = originalOverride;
+      if (originalFactoryDir === undefined) delete process.env.FACTORY_DIR;
+      else process.env.FACTORY_DIR = originalFactoryDir;
+    }
+  });
+});
+
+
+describe("consumeCodexResetCredit", () => {
+  const outcomeChild = (outcome: string) => createFakeCodexChild({
+    stdout: `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { outcome } })}\n`,
+  });
+
+  beforeEach(() => {
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+  });
+
+  it("sends one consume request carrying an idempotency key", async () => {
+    const fake = outcomeChild("reset");
+    mockState.spawn.mockReturnValue(fake.child);
+    const logger = createLogger();
+
+    const result = await consumeCodexResetCredit({ logger: logger as any, configHome: "/tmp/codex-a" });
+
+    expect(result).toEqual({ ok: true, status: "reset" });
+    const lines = fake.written.join("").trim().split("\n");
+    const consume = JSON.parse(lines[lines.length - 1]!);
+    expect(consume.method).toBe("account/rateLimitResetCredit/consume");
+    expect(typeof consume.params.idempotencyKey).toBe("string");
+    expect(consume.params.idempotencyKey.length).toBeGreaterThan(0);
+  });
+
+  it("reports a non-success outcome with its own sentence and ok:false", async () => {
+    for (const [outcome, message] of [
+      ["nothingToReset", "Nothing to reset — this account is not over a limit."],
+      ["noCredit", "No reset credit is banked on this account."],
+      ["alreadyRedeemed", "That reset credit was already redeemed."],
+    ] as const) {
+      mockState.spawn.mockReturnValue(outcomeChild(outcome).child);
+      const result = await consumeCodexResetCredit({
+        logger: createLogger() as any,
+        configHome: `/tmp/codex-${outcome}`,
+      });
+      expect(result).toEqual({ ok: false, status: outcome, message });
+    }
+  });
+
+  it("never reports success for an answer it cannot read", async () => {
+    mockState.spawn.mockReturnValue(outcomeChild("somethingNew").child);
+    const result = await consumeCodexResetCredit({
+      logger: createLogger() as any,
+      configHome: "/tmp/codex-unknown",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("failure");
+  });
+
+  it("reuses the idempotency key after a failure so a retry cannot burn two credits", async () => {
+    const home = "/tmp/codex-retry";
+    const failing = createFakeCodexChild({ closeCode: 1 });
+    mockState.spawn.mockReturnValue(failing.child);
+    const first = await consumeCodexResetCredit({ logger: createLogger() as any, configHome: home });
+    expect(first.ok).toBe(false);
+    const firstKey = JSON.parse(failing.written.join("").trim().split("\n").pop()!).params.idempotencyKey;
+
+    const succeeding = outcomeChild("reset");
+    mockState.spawn.mockReturnValue(succeeding.child);
+    const second = await consumeCodexResetCredit({ logger: createLogger() as any, configHome: home });
+    expect(second).toEqual({ ok: true, status: "reset" });
+    const secondKey = JSON.parse(succeeding.written.join("").trim().split("\n").pop()!).params.idempotencyKey;
+    expect(secondKey).toBe(firstKey);
+
+    // An outcome arrived, so the key has done its job: the next spend is a new
+    // intent and must not reuse it.
+    const third = outcomeChild("nothingToReset");
+    mockState.spawn.mockReturnValue(third.child);
+    await consumeCodexResetCredit({ logger: createLogger() as any, configHome: home });
+    const thirdKey = JSON.parse(third.written.join("").trim().split("\n").pop()!).params.idempotencyKey;
+    expect(thirdKey).not.toBe(firstKey);
+  });
+
+  it("fails loudly rather than silently when the codex binary is missing", async () => {
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "", source: "path" });
+    const result = await consumeCodexResetCredit({
+      logger: createLogger() as any,
+      configHome: "/tmp/codex-missing",
+    });
+    expect(result.ok).toBe(false);
+    expect(mockState.spawn).not.toHaveBeenCalled();
   });
 });

@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef,
 import { AnimatePresence, motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  RESET_CREDIT_OUTCOME_TEXT,
+  resetCreditOutcomeText,
+} from "../../../shared/usageResetCredit";
+import {
   CaretDown,
   CaretLeft,
   CaretRight,
@@ -212,6 +216,71 @@ type CodexTurnRecoveryEvent = Extract<
   { type: "codex_turn_recovery" | "turn_recovery" }
 >;
 type UserMessageEvent = Extract<AgentChatEvent, { type: "user_message" }>;
+
+/**
+ * The Codex "a reset credit is banked" notice, with the way to spend it.
+ *
+ * The button is offered only when this host can actually spend a credit — the
+ * hosted web client and older preloads do not expose the bridge — because a
+ * control that always fails is worse than a notice that only informs. The
+ * outcome replaces the button rather than sitting beside it: the credit is
+ * gone either way, and a still-clickable button invites a second spend.
+ */
+function ResetCreditNoticeRow({
+  message,
+  accountId,
+  className,
+  icon,
+  chipLabel,
+}: {
+  message: string;
+  accountId: string | null;
+  className?: string;
+  icon: React.ReactNode;
+  chipLabel: string;
+}) {
+  const [spending, setSpending] = useState(false);
+  const [outcome, setOutcome] = useState<string | null>(null);
+  const consume = window.ade?.usage?.consumeResetCredit;
+  const canSpend = Boolean(accountId) && typeof consume === "function" && !outcome;
+  const spend = useCallback(async () => {
+    if (!accountId) return;
+    const call = window.ade?.usage?.consumeResetCredit;
+    if (!call) return;
+    setSpending(true);
+    try {
+      setOutcome(resetCreditOutcomeText(await call({ accountId })));
+    } catch {
+      setOutcome(RESET_CREDIT_OUTCOME_TEXT.failure);
+    } finally {
+      setSpending(false);
+    }
+  }, [accountId]);
+  return (
+    <div className={cn(
+      "inline-flex max-w-[var(--chat-content-width,52rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
+      className,
+    )}>
+      {icon}
+      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
+      <span className="normal-case tracking-normal text-fg/55">{message}</span>
+      {canSpend ? (
+        <button
+          type="button"
+          disabled={spending}
+          onClick={() => { void spend(); }}
+          data-testid="reset-credit-use"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-white/[0.06] disabled:opacity-50"
+        >
+          Use reset
+        </button>
+      ) : null}
+      {outcome ? (
+        <span className="normal-case tracking-normal text-fg/42">{outcome}</span>
+      ) : null}
+    </div>
+  );
+}
 
 function CodexTurnRecoveryCard({
   event,
@@ -3464,7 +3533,7 @@ function renderEvent(
     if (event.noticeKind === "info" && event.status === "subagent_spawned") {
       // A plain spawn's announcement is carried by the unified, navigable
       // SubagentSpawnCard, so suppress this quiet pill there (hasInlineCard).
-      // Orchestration-run children and continuity-recovery spawns emit only the
+      // Continuity-recovery spawns emit only the
       // notice (no inline card) — keep a compact deep-link chip for those.
       const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
         hasInlineCard?: boolean;
@@ -3647,6 +3716,25 @@ function renderEvent(
     const chipLabel = event.noticeKind === "rate_limit" && inferredSeverity !== "error"
       ? "usage"
       : event.noticeKind.replace("_", " ");
+
+    // "A reset credit is banked" is the one usage notice with something to DO.
+    // A notice that reports a spendable credit and offers no way to spend it is
+    // the state this row exists to remove, so the action lives on the notice
+    // itself rather than only in the usage popup three clicks away.
+    if (event.status === "reset_credit_available") {
+      const detail = typeof event.detail === "object" && event.detail && !Array.isArray(event.detail)
+        ? event.detail
+        : null;
+      return (
+        <ResetCreditNoticeRow
+          message={event.message}
+          accountId={typeof detail?.accountId === "string" ? detail.accountId : null}
+          className={cn(style.border, style.bg, style.text)}
+          icon={<NoticeIcon size={11} weight="bold" />}
+          chipLabel={chipLabel}
+        />
+      );
+    }
 
     if (hasDetail && event.noticeKind === "rate_limit" && inferredSeverity !== "error") {
       const detail = typeof event.detail === "string"

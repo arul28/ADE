@@ -354,6 +354,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("respondToInput", pin);
       await call("chat.respondToInput", args, undefined, false);
     },
+    dismissPendingInput: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("dismissPendingInput", pin);
+      await call("chat.dismissPendingInput", args, undefined, false);
+    },
     models: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("models", pin);
       return await call("chat.models", args, []);

@@ -98,6 +98,8 @@ import {
   defaultPrTitleForChat,
   defaultPrTitleForLane,
   composerTriggerServedByTui,
+  cycleUsageResetCreditIndex,
+  selectedUsageResetCreditAccountId,
 } from "../app";
 import { detectComposerTrigger } from "../../../../desktop/src/shared/composerTriggers";
 import { formatPromptSmartLinkStrip } from "../promptSmartLinks";
@@ -577,6 +579,28 @@ describe("control input normalization", () => {
     expect(isCtrlInput("\x10", {}, "p")).toBe(true);
     expect(isCtrlInput("o", { ctrl: true, meta: true }, "o")).toBe(false);
     expect(isCtrlInput("x", {}, "o")).toBe(false);
+  });
+});
+
+describe("usage reset credit selection", () => {
+  const rows = [
+    { accountId: "codex:one" },
+    { accountId: "codex:two" },
+  ];
+
+  it("cycles through every reset row and wraps at both ends", () => {
+    expect(cycleUsageResetCreditIndex(0, rows.length, 1)).toBe(1);
+    expect(cycleUsageResetCreditIndex(1, rows.length, 1)).toBe(0);
+    expect(cycleUsageResetCreditIndex(0, rows.length, -1)).toBe(1);
+    expect(cycleUsageResetCreditIndex(1, rows.length, -1)).toBe(0);
+    expect(cycleUsageResetCreditIndex(0, 0, 1)).toBe(0);
+  });
+
+  it("spends the account represented by the selected row", () => {
+    expect(selectedUsageResetCreditAccountId(rows, 0)).toBe("codex:one");
+    expect(selectedUsageResetCreditAccountId(rows, 1)).toBe("codex:two");
+    expect(selectedUsageResetCreditAccountId(rows, 99)).toBe("codex:two");
+    expect(selectedUsageResetCreditAccountId([], 0)).toBeNull();
   });
 });
 
@@ -2261,6 +2285,20 @@ describe("optimistic chat summaries", () => {
       "chat-old",
     ]);
     expect(optimistic.has("chat-new")).toBe(true);
+  });
+
+  it("keeps provider account identity in an optimistic chat summary", () => {
+    const summary = chatSessionToOptimisticSummary(createdSession({
+      instanceId: "codex-work",
+      presetId: "preset-1",
+      credentialId: "cred-1",
+    }));
+
+    expect(summary).toMatchObject({
+      instanceId: "codex-work",
+      presetId: "preset-1",
+      credentialId: "cred-1",
+    });
   });
 
   it("forwards the Claude goal snapshot into an optimistic summary", () => {

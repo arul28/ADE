@@ -1968,7 +1968,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("keeps the subagent_spawned deep-link pill when there is no inline card (orchestration/continuity)", () => {
+  it("keeps the subagent_spawned deep-link pill when there is no inline card (continuity spawn)", () => {
     const dispatchSpy = vi.spyOn(window, "dispatchEvent");
     renderMessageList([
       {
@@ -1982,7 +1982,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           detail: {
             spawnedSession: { sessionId: "child-worker-1", laneId: null, title: "Worker A" },
             spawnKind: "subagent",
-            // No accompanying card (orchestration-run child / continuity spawn) →
+            // No accompanying card (continuity spawn) →
             // the quiet deep-link pill is retained.
             hasInlineCard: false,
           },

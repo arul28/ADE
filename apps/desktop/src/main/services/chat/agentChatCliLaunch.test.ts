@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatLaunchCliArgs } from "../../../shared/types/chat";
 import type { PtyCreateArgs } from "../../../shared/types";
 
@@ -15,6 +18,7 @@ vi.mock("../../utils/codexComputerUse", () => ({
 }));
 
 import { launchAgentChatCli, type AgentChatCliLaunchDeps } from "./agentChatCliLaunch";
+import { resetSharedProviderInstanceStoresForTests } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
 type LaneBaseAndBranch =
   AgentChatCliLaunchDeps["laneService"]["getLaneBaseAndBranch"] extends (
@@ -140,21 +144,6 @@ describe("launchAgentChatCli worktree-path resolution", () => {
       "Unable to resolve worktree path for lane 'lane-1'.",
     );
     expect(deps.create).not.toHaveBeenCalled();
-  });
-});
-
-describe("launchAgentChatCli orchestration policy", () => {
-  it("lets an orchestration role override stricter requested CLI permissions", async () => {
-    const deps = makeDeps();
-
-    await launchAgentChatCli(
-      makeArgs({ permissionMode: "plan", orchestrationRole: "worker" }),
-      deps,
-    );
-
-    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
-    expect(createArg.args).toEqual(expect.arrayContaining(["--dangerously-bypass-approvals-and-sandbox"]));
-    expect(createArg.args).not.toEqual(expect.arrayContaining(["--sandbox", "read-only"]));
   });
 });
 
@@ -307,5 +296,119 @@ describe("launchAgentChatCli attached issue ids", () => {
     // pty so persistence can decide; only the returned id summary is filtered.
     const createArg = deps.create.mock.calls[0]?.[0] as { linearIssues: unknown[] };
     expect(createArg.linearIssues).toHaveLength(4);
+  });
+
+  describe("provider accounts", () => {
+    const WORK_HOME = "/machine/provider-homes/claude/acct-work";
+    let previousAdeHome: string | undefined;
+    let adeRoot = "";
+
+    beforeEach(() => {
+      previousAdeHome = process.env.ADE_HOME;
+      // A real directory, not a mock: this module does not stub fs, and the
+      // store is cached per ADE home so each test needs its own.
+      adeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-launch-instances-"));
+      const adeHome = path.resolve(adeRoot, ".ade");
+      fs.mkdirSync(adeHome, { recursive: true });
+      process.env.ADE_HOME = adeHome;
+      resetSharedProviderInstanceStoresForTests();
+      fs.writeFileSync(
+        path.join(adeHome, "provider-instances.json"),
+        JSON.stringify({
+          version: 1,
+          instances: [{
+            id: "acct-work",
+            provider: "claude",
+            label: "Work",
+            configHome: WORK_HOME,
+            createdAt: "2026-04-09T12:00:00.000Z",
+          }],
+          defaults: {},
+          settings: {},
+        }),
+        "utf8",
+      );
+    });
+
+    afterEach(() => {
+      if (previousAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+      resetSharedProviderInstanceStoresForTests();
+      fs.rmSync(adeRoot, { recursive: true, force: true });
+    });
+
+    it("hands the CLI the chat's provider account, never a rewritten HOME", async () => {
+      const deps = makeDeps();
+
+      await launchAgentChatCli(
+        makeArgs({ provider: "claude", instanceId: "acct-work" }),
+        deps,
+      );
+
+      const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+      expect(createArg.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
+      expect(createArg.env?.HOME).toBeUndefined();
+      expect(createArg.env?.USERPROFILE).toBeUndefined();
+    });
+
+    it("persists the selected account, preset, and credential for resume and reattach", async () => {
+      const deps = makeDeps();
+
+      await launchAgentChatCli(
+        makeArgs({
+          provider: "claude",
+          instanceId: "acct-work",
+          presetId: "preset-work",
+          credentialId: "credential-work",
+          model: "anthropic/claude-sonnet-4-5",
+        }),
+        deps,
+      );
+
+      const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+      expect(createArg.resumeMetadata).toEqual(expect.objectContaining({
+        provider: "claude",
+        targetKind: "session",
+        targetId: createArg.sessionId,
+        instanceId: "acct-work",
+        presetId: "preset-work",
+        credentialId: "credential-work",
+        launch: expect.objectContaining({
+          instanceId: "acct-work",
+          presetId: "preset-work",
+          credentialId: "credential-work",
+          model: "anthropic/claude-sonnet-4-5",
+        }),
+      }));
+      // The metadata is supplied alongside the fresh launch, so pty resume and
+      // crash reattach can resolve the same identity instead of ambient config.
+      expect(createArg.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
+    });
+
+    it("falls back to the default account when the id names nothing, without failing the launch", async () => {
+      const deps = makeDeps();
+
+      const result = await launchAgentChatCli(
+        makeArgs({ provider: "claude", instanceId: "deleted-account" }),
+        deps,
+      );
+
+      const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+      expect(createArg.env?.CLAUDE_CONFIG_DIR).not.toBe(WORK_HOME);
+      expect(result).toMatchObject({ ptyId: "pty-1" });
+    });
+
+    it("ignores an account id for a provider that has only one identity", async () => {
+      const deps = makeDeps();
+
+      await launchAgentChatCli(
+        makeArgs({ provider: "droid", instanceId: "acct-work" }),
+        deps,
+      );
+
+      const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+      expect(createArg.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(createArg.env?.CODEX_HOME).toBeUndefined();
+    });
   });
 });

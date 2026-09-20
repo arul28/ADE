@@ -54,6 +54,19 @@ struct AccountMachinePower: Codable, Equatable, Hashable {
   }
 }
 
+/// Token-free provider/preset counts published on a machine heartbeat.
+/// Optional so older directory rows and older hosts decode exactly as before.
+struct AccountMachineInventoryProvider: Codable, Equatable, Hashable {
+  let provider: String
+  let accounts: Int
+  let models: Int
+}
+
+struct AccountMachineInventorySummary: Codable, Equatable, Hashable {
+  let providers: [AccountMachineInventoryProvider]
+  let presets: Int
+}
+
 /// What a machine last said about being awake.
 ///
 /// `asleep` is a STATED fact — a host announces its suspend in the beat before
@@ -87,6 +100,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   let sleepState: AccountMachineSleepState?
   /// Epoch-milliseconds at which `sleepState` last changed on the machine.
   let sleepStateAt: Double?
+  let inventory: AccountMachineInventorySummary?
   let lastSeenAt: Double?
   let createdAt: Double?
   let online: Bool
@@ -110,6 +124,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
     let rawSleepState = (try? container.decodeIfPresent(String.self, forKey: .sleepState)) ?? nil
     sleepState = rawSleepState.flatMap(AccountMachineSleepState.init(rawValue:))
     sleepStateAt = (try? container.decodeIfPresent(Double.self, forKey: .sleepStateAt)) ?? nil
+    inventory = (try? container.decodeIfPresent(AccountMachineInventorySummary.self, forKey: .inventory)) ?? nil
     lastSeenAt = try container.decodeIfPresent(Double.self, forKey: .lastSeenAt)
     createdAt = try container.decodeIfPresent(Double.self, forKey: .createdAt)
     online = try container.decodeIfPresent(Bool.self, forKey: .online) ?? false
@@ -117,7 +132,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
 
   private enum CodingKeys: String, CodingKey {
     case machineKey, deviceId, name, customName, platform, deviceType, pubkey, reachableEndpoints
-    case power, sleepState, sleepStateAt, lastSeenAt, createdAt, online
+    case power, sleepState, sleepStateAt, inventory, lastSeenAt, createdAt, online
   }
 
   /// Human display name — falls back to the platform or a generic label so a

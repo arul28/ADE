@@ -19,7 +19,6 @@ import type {
 } from "../../../shared/types";
 import type {
   AcpProviderDiagnostics,
-  AiCustomProviderConfig,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
 import { toggleDisabledProvider } from "../../../shared/providerEnablement";
@@ -29,7 +28,7 @@ import {
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
 import { CaretRight } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
@@ -44,7 +43,15 @@ import {
   SettingsManagerRow,
   SettingsManagerTable,
 } from "./primitives/SettingsManagerPage";
+import { HarnessesPage } from "./harnesses/HarnessesPage";
+import { useHarnessPresets } from "./harnesses/useHarnessPresets";
+import { CustomHammerMark } from "../shared/CustomHammerMark";
+import { HelpHint } from "./primitives/HelpHint";
+
+/** The one sentence behind the "?" on the Custom section. */
+const CUSTOM_ENTRY_HELP = "An agent and the model it runs on, saved together — pick one in any model picker to start a chat with that whole setup.";
 import { availableProviderDescriptors, providerDescriptor, providerStatusFor } from "./providers/descriptors";
+import { useProviderAccountCounts } from "./providers/accounts/useProviderInstances";
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
 import { ProviderSignInModal } from "./providers/ProviderSignInModal";
 import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
@@ -57,7 +64,6 @@ import {
 } from "./providers/providerUi";
 import type {
   AcpSettingsProviderId,
-  CustomProviderDraft,
   LocalProviderDraft,
   LocalRuntimeRow,
   ProviderDescriptor,
@@ -97,15 +103,6 @@ const API_KEY_PROVIDERS: Array<{
   { provider: "moonshotai", label: "Moonshot AI", envVar: "MOONSHOT_API_KEY", placeholder: "sk-..." },
 ];
 
-const EMPTY_CUSTOM_PROVIDER: CustomProviderDraft = {
-  id: "",
-  name: "",
-  baseUrl: "",
-  npm: "@ai-sdk/openai-compatible",
-  slugs: "",
-  apiKey: "",
-};
-
 /**
  * The provider list is a manager page: a table you scan, with one row per
  * provider and its own page behind each row. The columns are the three facts
@@ -132,10 +129,13 @@ const PROVIDER_COLUMNS = [
 function ProviderManagerRow({
   descriptor,
   ctx,
+  accountCount,
   onOpen,
 }: {
   descriptor: ProviderDescriptor;
   ctx: ProvidersViewContext;
+  /** Local logins for this provider. Only Claude and Codex can exceed one. */
+  accountCount?: number;
   onOpen: () => void;
 }) {
   const status = providerStatusFor(descriptor, ctx);
@@ -154,6 +154,9 @@ function ProviderManagerRow({
   const message = healthy ? descriptor.credentialLine?.(ctx) ?? null : problem;
 
   const metaParts = [
+    // Only when there is more than one: "1 account" is the state every other
+    // provider is permanently in, so saying it is noise on nine rows.
+    ...(accountCount && accountCount > 1 ? [`${accountCount} accounts`] : []),
     ...(showModelCount ? [`${models.length} model${models.length === 1 ? "" : "s"}`] : []),
     ...(version ? [version] : []),
   ];
@@ -246,6 +249,65 @@ function ProviderManagerRow({
   );
 }
 
+/**
+ * Custom — its own section, under the provider list.
+ *
+ * It sat as a last row inside the providers table, where it read as an eleventh
+ * provider: a thing you sign in to. It is not. It is the combinations *you*
+ * saved of the ten above, which is a different kind of thing and belongs below
+ * them with its own heading and its own mark — a purple hammer, so the one
+ * entry that is yours is not wearing a vendor's logo or the app's own.
+ *
+ * The count is the whole status: a saved setup has no connection to probe.
+ */
+function CustomPresetsCard({ count, onOpen }: { count: number; onOpen: () => void }) {
+  return (
+    <SettingsManagerPage
+      anchor="ai-harnesses-entry"
+      title="Custom"
+      leading={<CustomHammerMark size={18} />}
+      titleAdornment={<HelpHint text={CUSTOM_ENTRY_HELP} />}
+      toolbar={
+        <button type="button" style={outlineButton()} onClick={onOpen}>
+          {count === 0 ? "Add new" : "Manage"}
+        </button>
+      }
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        data-custom-presets-entry="true"
+        aria-label="Open custom setups"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          width: "100%",
+          padding: "10px 12px",
+          borderRadius: 8,
+          border: `1px solid ${COLORS.outlineBorder}`,
+          background: "var(--color-card)",
+          textAlign: "left",
+          cursor: "pointer",
+          font: "inherit",
+          color: COLORS.textPrimary,
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+          <CustomHammerMark size={20} />
+          <span style={{ fontFamily: SANS_FONT, fontSize: 12 }}>
+            {count === 0 ? "Nothing custom yet" : `${count} saved`}
+          </span>
+        </span>
+        <span aria-hidden style={{ display: "flex", color: COLORS.textDim }}>
+          <CaretRight size={13} />
+        </span>
+      </button>
+    </SettingsManagerPage>
+  );
+}
+
 function buildLocalProviderDrafts(
   snapshot: ProjectConfigSnapshot | null | undefined,
   status: AiSettingsStatus | null | undefined,
@@ -273,25 +335,31 @@ export function ProvidersSection({
   forceRefreshOnMount = false,
   providerParam = null,
   onProviderChange,
+  harnessesParam = false,
+  onHarnessesChange,
 }: {
   forceRefreshOnMount?: boolean;
   /** `?provider=<id>` — which provider's page to show, if any. */
   providerParam?: string | null;
   /** Lets the settings shell keep the URL in step with the sub-view. */
   onProviderChange?: (providerId: string | null) => void;
+  /** `#ai-harnesses` — whether the harnesses page is the open sub-view. */
+  harnessesParam?: boolean;
+  onHarnessesChange?: (open: boolean) => void;
 } = {}) {
   const navigate = useNavigate();
+  // Claude and Codex can hold several local logins; the row says how many so
+  // the count is visible without opening the page.
+  const accountCounts = useProviderAccountCounts();
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);
   const [projectConfigSnapshot, setProjectConfigSnapshot] = useState<ProjectConfigSnapshot | null>(null);
   const [storedProviders, setStoredProviders] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [editingLocalProvider, setEditingLocalProvider] = useState<LocalProviderFamily | null>(null);
   const [savingLocalProvider, setSavingLocalProvider] = useState<LocalProviderFamily | null>(null);
   const [localProviderDrafts, setLocalProviderDrafts] = useState<Record<LocalProviderFamily, LocalProviderDraft>>(() =>
     buildLocalProviderDrafts(null, null),
   );
-  const [editValue, setEditValue] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dismissedApiKeyStoreWarning, setDismissedApiKeyStoreWarning] = useState<string | null>(null);
@@ -302,7 +370,6 @@ export function ProvidersSection({
   const [detailProviderId, setDetailProviderId] = useState<string | null>(null);
   const [providerSearch, setProviderSearch] = useState("");
   const [refreshingCatalog, setRefreshingCatalog] = useState(false);
-  const [customProviderDraft, setCustomProviderDraft] = useState<CustomProviderDraft>(EMPTY_CUSTOM_PROVIDER);
   const [customModelSlugs, setCustomModelSlugs] = useState("");
   const [savingAdvanced, setSavingAdvanced] = useState(false);
   const [statusLoadError, setStatusLoadError] = useState<string | null>(null);
@@ -321,6 +388,11 @@ export function ProvidersSection({
   // owned here so the section works standalone (and in tests) without a router
   // that writes search params.
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(providerParam);
+  // The harnesses page is the second sub-view of this tab. Same ownership rule
+  // as the provider page: seeded from the URL, owned here so the section still
+  // works standalone and in tests.
+  const [harnessesOpen, setHarnessesOpen] = useState<boolean>(harnessesParam);
+  const { presets: harnessPresets } = useHarnessPresets();
   const statusKnownRef = useRef(false);
   const pendingRefreshTimerRef = useRef<number | null>(null);
   // Seed the slugs field from config exactly once — saves send the full list
@@ -331,6 +403,15 @@ export function ProvidersSection({
   useEffect(() => {
     setSelectedProviderId(providerParam);
   }, [providerParam]);
+
+  useEffect(() => {
+    setHarnessesOpen(harnessesParam);
+  }, [harnessesParam]);
+
+  const openHarnesses = useCallback((next: boolean) => {
+    setHarnessesOpen(next);
+    onHarnessesChange?.(next);
+  }, [onHarnessesChange]);
 
   const selectProvider = useCallback((next: string | null) => {
     setSelectedProviderId(next);
@@ -644,18 +725,6 @@ export function ProvidersSection({
     setDetailProviderId(id);
   }, []);
 
-  const beginEditing = useCallback((provider: string) => {
-    setEditingProvider(provider);
-    setEditValue("");
-    setError(null);
-    setNotice(null);
-  }, []);
-
-  const cancelEditing = useCallback(() => {
-    setEditingProvider(null);
-    setEditValue("");
-  }, []);
-
   const deleteApiKey = useCallback(async (provider: string, options?: { alsoOpenCode?: boolean }) => {
     setError(null);
     setNotice(null);
@@ -672,7 +741,6 @@ export function ProvidersSection({
         API_KEY_PROVIDERS.find((row) => row.provider === provider)?.label
         ?? (provider === KIMI_PROVIDER_ID ? "Kimi for Coding" : prettifyProviderId(provider));
       setNotice(`${label} disconnected.`);
-      setEditingProvider((current) => (current === provider ? null : current));
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next[provider];
@@ -712,39 +780,6 @@ export function ProvidersSection({
       setVerifyingProvider(null);
     }
   }, [refreshStatus]);
-
-  const saveCursorApiKey = useCallback(async () => {
-    const trimmed = editValue.trim();
-    if (!trimmed) return;
-
-    setError(null);
-    setNotice(null);
-    setVerifyingProvider("cursor");
-    setVerificationByProvider((prev) => {
-      const next = { ...prev };
-      delete next.cursor;
-      return next;
-    });
-    try {
-      await window.ade.ai.storeApiKey("cursor", trimmed);
-      invalidateAiDiscoveryCache();
-      setStoredProviders((prev) => Array.from(new Set([...prev, "cursor"])));
-      const result = await window.ade.ai.verifyApiKey("cursor");
-      invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
-      setVerificationByProvider((prev) => ({ ...prev, cursor: result }));
-      if (result.ok) {
-        setNotice("Cursor connection verified.");
-        cancelEditing();
-      } else {
-        setError(result.message || "Cursor verification failed.");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setVerifyingProvider(null);
-    }
-  }, [cancelEditing, editValue, refreshStatus]);
 
   const loginWithCursor = useCallback(async () => {
     setError(null);
@@ -834,48 +869,6 @@ export function ProvidersSection({
       message: `${modelCount} model${modelCount === 1 ? "" : "s"} added`,
     });
   }, [status?.availableModelIds, refreshStatus, loadAuthMethods]);
-
-  const saveAdvancedProvider = useCallback(async () => {
-    const draft = customProviderDraft;
-    const id = draft.id.trim();
-    const baseURL = draft.baseUrl.trim();
-    const slugs = draft.slugs.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!id || !baseURL || slugs.length === 0) {
-      setError("A custom provider needs an id, a base URL, and at least one model slug.");
-      return;
-    }
-    setSavingAdvanced(true);
-    setError(null);
-    setNotice(null);
-    try {
-      if (draft.apiKey.trim()) {
-        await window.ade.ai.storeApiKey(id, draft.apiKey.trim());
-      }
-      // Full-list write: config merge uses replace semantics, so include every
-      // existing provider (replacing any same-id entry) or they'd be dropped.
-      const existingProviders = (status?.customProviders ?? []).filter((entry) => entry.id !== id);
-      await window.ade.ai.updateConfig({
-        customProviders: [
-          ...existingProviders,
-          {
-            id,
-            name: draft.name.trim() || prettifyProviderId(id),
-            baseURL,
-            npm: draft.npm as AiCustomProviderConfig["npm"],
-            models: slugs,
-          },
-        ],
-      });
-      invalidateAiDiscoveryCache();
-      setNotice(`Custom provider ${id} saved.`);
-      setCustomProviderDraft(EMPTY_CUSTOM_PROVIDER);
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingAdvanced(false);
-    }
-  }, [customProviderDraft, refreshStatus, status?.customProviders]);
 
   const saveCustomModelSlugs = useCallback(async () => {
     const slugs = customModelSlugs.split(",").map((s) => s.trim()).filter(Boolean);
@@ -1046,8 +1039,6 @@ export function ProvidersSection({
     hasKeyFor,
     verificationByProvider,
     verifyingProvider,
-    editingProvider,
-    editValue,
     cursorAuth,
     cursorLoginBusy,
     cursorLoginUrl,
@@ -1063,7 +1054,6 @@ export function ProvidersSection({
     localProviderDrafts,
     editingLocalProvider,
     savingLocalProvider,
-    customProviderDraft,
     customModelSlugs,
     savingAdvanced,
     disabledProviders,
@@ -1077,12 +1067,8 @@ export function ProvidersSection({
       loadAuthMethods,
       setError,
       setNotice,
-      beginEditing,
-      cancelEditing,
-      setEditValue,
       deleteApiKey,
       verifyApiKey,
-      saveCursorApiKey,
       loginWithCursor,
       logoutCursor,
       cancelCursorLogin,
@@ -1093,9 +1079,7 @@ export function ProvidersSection({
       beginEditingLocalRuntime,
       cancelEditingLocalRuntime,
       saveLocalProvider,
-      setCustomProviderDraft,
       setCustomModelSlugs,
-      saveAdvancedProvider,
       saveCustomModelSlugs,
       revealClaudeLoginTerminal: revealClaudeLoginTerminalInWork,
       setProviderDisabled,
@@ -1104,14 +1088,14 @@ export function ProvidersSection({
       openSignInTerminal,
     },
   }), [
-    apiKeySources, authMethods, authMethodsError, beginEditing, beginEditingLocalRuntime, cancelCursorLogin, cancelEditing,
+    apiKeySources, authMethods, authMethodsError, beginEditingLocalRuntime, cancelCursorLogin,
     cancelEditingLocalRuntime, connectedOpenCodeProviders, cursorAuth, cursorLoginBusy,
-    cursorLoginUrl, customModelSlugs, customProviderDraft, deleteApiKey, editValue,
-    editingLocalProvider, editingProvider, handleRefreshCatalog, hasKeyFor, isInitialCheckInFlight,
+    cursorLoginUrl, customModelSlugs, deleteApiKey,
+    editingLocalProvider, handleRefreshCatalog, hasKeyFor, isInitialCheckInFlight,
     loadAuthMethods, loading, localProviderDrafts, localRuntimes, loginWithCursor, logoutCursor,
     openCodeCatalog, openProviderDetail, popularOpenCodeProviders,
-    projectConfigSnapshot, providerSearch, refreshStatus, refreshingCatalog, saveAdvancedProvider,
-    saveCursorApiKey, saveCustomModelSlugs, saveLocalProvider, savingAdvanced,
+    projectConfigSnapshot, providerSearch, refreshStatus, refreshingCatalog,
+    saveCustomModelSlugs, saveLocalProvider, savingAdvanced,
     savingLocalProvider, searchableOpenCodeProviders,
     status, statusLoadError, storedProviders, updateLocalProviderDraft,
     verificationByProvider, verifyApiKey, verifyingProvider, revealClaudeLoginTerminalInWork,
@@ -1159,7 +1143,9 @@ export function ProvidersSection({
         />
       )}
 
-      {selectedDescriptor ? (
+      {harnessesOpen ? (
+        <HarnessesPage onBack={() => openHarnesses(false)} />
+      ) : selectedDescriptor ? (
         <div id={`ai-provider-${selectedDescriptor.id}`}>
           <ProviderDetailPage
             descriptor={selectedDescriptor}
@@ -1179,11 +1165,18 @@ export function ProvidersSection({
                 key={descriptor.id}
                 descriptor={descriptor}
                 ctx={ctx}
+                {...(accountCounts[descriptor.id as keyof typeof accountCounts] != null
+                  ? { accountCount: accountCounts[descriptor.id as keyof typeof accountCounts] }
+                  : {})}
                 onOpen={() => selectProvider(descriptor.id)}
               />
             ))}
           </SettingsManagerTable>
         </SettingsManagerPage>
+      )}
+
+      {harnessesOpen || selectedDescriptor ? null : (
+        <CustomPresetsCard count={harnessPresets.length} onOpen={() => openHarnesses(true)} />
       )}
 
       {signInProvider && signInCommand ? (

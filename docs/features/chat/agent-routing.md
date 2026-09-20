@@ -451,8 +451,8 @@ own `/undo` and `/revert`, whose documented default is `true`. `autoupdate`
 moved out of config into `OPENCODE_DISABLE_AUTOUPDATE=1` on the server env: ADE
 does pin the binary, but that does not need the highest-precedence config slot.
 Both env builders set it — `buildIsolatedOpenCodeEnv` rebuilds the env from
-scratch and drops every inherited `OPENCODE_*` var, so an orchestration lead's
-isolated server would otherwise self-update the binary ADE pinned.
+scratch and drops every inherited `OPENCODE_*` var, so an isolated server would
+otherwise self-update the binary ADE pinned.
 
 Local provider blocks (`ollama`, `lmstudio`) are emitted only when the user
 configured an endpoint or ADE discovered models for that family. An
@@ -789,7 +789,7 @@ is `cursor/grok-4.6` (the SDK receives `grok-4.6`), not ACP's `xai/grok-4-6`.
 
 `resolveCursorSdkPolicy` (`services/chat/cursorSdkPolicy.ts`) turns the ADE
 permission mode into a `CursorSdkPermissionPolicy`: chat mode, approval policy,
-hard guards, orchestration-lead flag, and a `fullAuto` marker.
+hard guards, and a `fullAuto` marker.
 Hard guards refuse paths outside the lane. Read-only exceptions are this
 lane's Cursor `terminals`, `agent-transcripts`, and `assets` directories
 under `~/.cursor/projects/<slug>/`, plus the project's `.ade/attachments`

@@ -13,7 +13,6 @@ import {
   resolveOpenCodeExecutablePath,
   startOpenCodeSession,
 } from "../opencode/openCodeRuntime";
-import { cursorSdkSettingSources, evaluateCursorSdkHook, summarizeCursorHook } from "./cursorSdkPolicy";
 import { createMockAcpAgent, respondWithSession, type MockAcpAgent } from "./acpHost/mockAcpAgent";
 import { createAcpSessionPool } from "./acpHost/acpSessionPool";
 import type { AcpSessionUpdate } from "./acpHost/acpProtocolTypes";
@@ -208,6 +207,11 @@ const mockState = vi.hoisted(() => ({
   releaseCursorSteer: null as (() => void) | null,
   cursorSendParks: [] as Array<() => void>,
   cursorSteerParks: [] as Array<() => void>,
+}));
+
+const turnDiffMockState = vi.hoisted(() => ({
+  beforeTreeGates: [] as Array<Promise<Map<string, string> | null>>,
+  collectSummary: null as ((args: any) => unknown) | null,
 }));
 
 /**
@@ -472,10 +476,7 @@ vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),
 }));
 
-vi.mock("../opencode/openCodeRuntime", async () => {
-  const { orchestrationLeadOpenCodeToolSelection } = await vi.importActual<
-    typeof import("../../../shared/orchestrationRuntimePolicy")
-  >("../../../shared/orchestrationRuntimePolicy");
+vi.mock("../opencode/openCodeRuntime", () => {
   return {
   // Real implementation, not a stub: it decides whether an incremental text
   // delta rode along on `message.part.updated`, and stubbing it to a constant
@@ -495,13 +496,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
       name: file.filename ?? file.path,
     })),
   ),
-  // Faithful stand-in for the real resolver: the E2E assertions below check the
-  // `tools` map that actually reaches OpenCode's prompt body, and
-  // openCodeRuntime.test.ts covers the real implementation.
-  refreshOpenCodeSessionToolSelection: vi.fn(async (
-    _handle: unknown,
-    options?: { orchestrationLead?: boolean },
-  ) => (options?.orchestrationLead ? orchestrationLeadOpenCodeToolSelection() : null)),
   mapPermissionModeToOpenCodeAgent: vi.fn((mode: string) => {
     if (mode === "plan") return "ade-plan";
     if (mode === "full-auto") return "ade-full-auto";
@@ -921,9 +915,20 @@ vi.mock("../git/git", () => ({
   runGit: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
 }));
 
-vi.mock("../orchestrator/providerOrchestratorAdapter", () => ({
-  resolveOpenCodeRuntimeRoot: vi.fn(() => process.cwd()),
-}));
+vi.mock("./turnDiffSummary", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./turnDiffSummary")>();
+  return {
+    ...actual,
+    captureWorkingTreeFingerprint: (cwd: string) => {
+      const gate = turnDiffMockState.beforeTreeGates.shift();
+      if (!gate) return actual.captureWorkingTreeFingerprint(cwd);
+      return gate;
+    },
+    collectTurnDiffSummary: (args: any) => turnDiffMockState.collectSummary
+      ? turnDiffMockState.collectSummary(args)
+      : actual.collectTurnDiffSummary(args),
+  };
+});
 
 vi.mock("./permissionMapping", () => ({
   mapPermissionToClaude: vi.fn(() => "plan"),
@@ -1146,6 +1151,7 @@ import {
   parseCodexServerVersion,
   writeSessionLinearIssueContextFile,
   createAgentChatService,
+  restartRecoveryStopAttribution,
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
   CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
 } from "./agentChatService";
@@ -1159,7 +1165,6 @@ import {
 import { spawn } from "node:child_process";
 import { detectAllAuth, detectCliAuthStatuses } from "../ai/authDetector";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
-import { createOrchestrationService } from "../orchestration/orchestrationService";
 import { runGit } from "../git/git";
 import { deriveScheduledWorkSnapshots } from "../../../shared/chatScheduledWork";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -2164,20 +2169,6 @@ function installCliCaptureMock(
   }) as any);
 }
 
-async function createLoadedOrchestrationRun(leadSessionId = "S-lead") {
-  const orchestrationService = createOrchestrationService({
-    resolveLaneWorktree: () => tmpRoot,
-  });
-  const created = await orchestrationService.runCreate({
-    laneId: "lane-1",
-    leadSessionId,
-    bundleRoot: tmpRoot,
-    title: "test orchestration",
-    goalSummary: "orchestrate the work",
-  });
-  return { orchestrationService, created };
-}
-
 function readPersistedChatState(sessionId: string): Record<string, any> {
   return JSON.parse(
     fs.readFileSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${sessionId}.json`), "utf8"),
@@ -2442,6 +2433,8 @@ beforeEach(() => {
   // home dir into tests, while project-local .claude roots remain distinct.
   vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
   mockState.generation += 1;
+  turnDiffMockState.beforeTreeGates = [];
+  turnDiffMockState.collectSummary = null;
   mockState.sessions.clear();
   mockState.sessionLinearLinks.clear();
   mockState.uuidCounter = 0;
@@ -2792,6 +2785,44 @@ describe("buildLinearSessionDirective", () => {
 // ============================================================================
 // createAgentChatService factory
 // ============================================================================
+
+describe("restartRecoveryStopAttribution", () => {
+  it("marks a different bound socket as a foreign-brain takeover", () => {
+    expect(restartRecoveryStopAttribution({
+      ownerSocketPath: "/tmp/ade-primary.sock",
+      selfSocketPath: "/tmp/ade-secondary.sock",
+    })).toEqual({
+      stopSource: "foreign-brain",
+      stopReason: "another ADE brain took over this chat",
+    });
+  });
+
+  it("marks the same bound socket as a restarted system runtime", () => {
+    expect(restartRecoveryStopAttribution({
+      ownerSocketPath: "/tmp/ade.sock",
+      selfSocketPath: "/tmp/ade.sock",
+    })).toEqual({
+      stopSource: "system",
+      stopReason: "the ADE brain restarted",
+    });
+  });
+
+  it("folds case differences in Windows named-pipe paths", () => {
+    const previousPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      expect(restartRecoveryStopAttribution({
+        ownerSocketPath: String.raw`\\.\PIPE\ADE`,
+        selfSocketPath: String.raw`\\.\pipe\ade`,
+      })).toEqual({
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+      });
+    } finally {
+      Object.defineProperty(process, "platform", { value: previousPlatform, configurable: true });
+    }
+  });
+});
 
 /** Just past the real watchdog budget, derived rather than mirrored. */
 const CURSOR_SILENCE_WATCHDOG_TRIP_MS = CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS + 1;
@@ -4305,7 +4336,7 @@ describe("createAgentChatService", () => {
       // Project/user setting sources stay enabled so the SDK reads the user's
       // configured MCP servers (.mcp.json / ~/.claude.json) — same as a terminal session.
       expect(opts?.settingSources).toEqual(expect.arrayContaining(["project"]));
-      // ADE does not inject mcpServers into a normal chat (only orchestration does),
+      // ADE does not inject mcpServers into a normal chat,
       // and it no longer locks MCP to managed-only — so the user's servers can load.
       expect(opts).not.toHaveProperty("mcpServers");
       expect(opts?.managedSettings).toBeUndefined();
@@ -4852,7 +4883,7 @@ describe("createAgentChatService", () => {
         expect.objectContaining({ currentSessionId: session.id, defaultLaneId: "lane-1" }),
       );
 
-      // The CTO is a daily-driver chat: it must NOT get the orchestration lead's
+      // The CTO is a daily-driver chat: it must NOT get a strict-MCP session's
       // managed-only MCP lockdown, which would strip the user's own servers.
       expect(opts?.managedSettings?.allowManagedMcpServersOnly).toBeUndefined();
     });
@@ -5081,132 +5112,6 @@ describe("createAgentChatService", () => {
         expect(opts.settingSources).toEqual(["user", "project", "local"]);
         expect(opts.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" });
       });
-    });
-
-    it("attaches ADE orchestration tools to Claude lead sessions through an SDK MCP server", async () => {
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-          send: vi.fn(),
-          stream: vi.fn(async function* () {
-            return;
-          }),
-          close: vi.fn(),
-          sessionId: "sdk-session-orchestration",
-        } as any);
-
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        await service.createSession({
-          laneId: "lane-1",
-          provider: "claude",
-          model: "sonnet",
-          modelId: "anthropic/claude-sonnet-5",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await vi.waitFor(() => {
-          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-        });
-
-        const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
-        const server = opts?.mcpServers?.["ade-orchestration"];
-        expect(server?.type).toBe("sdk");
-        const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
-        expect(toolNames).toEqual(expect.arrayContaining(["spawnAgent", "messageAgent"]));
-        expect(toolNames).not.toContain("editFile");
-        expect(toolNames).not.toContain("writeFile");
-        expect(toolNames).not.toContain("bash");
-        expect(opts?.managedSettings?.allowedMcpServers).toEqual(
-          expect.arrayContaining([expect.objectContaining({ serverName: "ade-orchestration" })]),
-        );
-        expect(opts?.disallowedTools).toEqual(expect.arrayContaining(["Agent", "Bash", "Edit", "Task", "TodoWrite", "Write"]));
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("keeps Claude lead sessions read-only even before an orchestration bundle is allocated", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-orchestrator-draft",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-        modelId: "anthropic/claude-sonnet-5",
-        interactionMode: "orchestrator-lead",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
-      expect(opts?.mcpServers?.["ade-orchestration"]).toBeUndefined();
-      // Regression guard (removed base MCP lock): a draft lead has no managed MCP block
-      // yet, so strictMcpConfig must isolate it — user/project MCP servers must not restore
-      // tool capability the read-only lead is denied.
-      expect(opts?.strictMcpConfig).toBe(true);
-      expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
-        "Agent",
-        "Bash",
-        "Edit",
-        "MultiEdit",
-        "NotebookEdit",
-        "Task",
-        "TodoRead",
-        "TodoWrite",
-        "Write",
-      ]));
-    });
-
-    it("keeps Claude role-marked lead sessions read-only even when interaction mode is absent", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-role-lead",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-        modelId: "anthropic/claude-sonnet-5",
-        orchestrationRole: "lead",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
-      // Role-marked lead (no interactionMode, no bundle) is still a read-only lead, so it
-      // must be MCP-isolated too (regression guard for the removed base MCP lock).
-      expect(opts?.strictMcpConfig).toBe(true);
-      expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
-        "Agent",
-        "Bash",
-        "Edit",
-        "Task",
-        "TodoWrite",
-        "Write",
-      ]));
     });
 
     it("passes Claude subprocess spawns through the reaper", async () => {
@@ -10028,229 +9933,6 @@ describe("createAgentChatService", () => {
         expect(instructions.includes("ADE personal chat")).toBe(keepsAdeText);
       },
     );
-
-    it("adds dynamic orchestration tools to Codex orchestrator threads", async () => {
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "codex",
-          model: "gpt-5.4",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.sendMessage({
-          sessionId: session.id,
-          text: "Plan the work.",
-        });
-
-        await vi.waitFor(() => {
-          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
-        });
-
-        const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start") as any;
-        const dynamicTools = startPayload?.params?.dynamicTools ?? [];
-        const toolNames = dynamicTools.map((entry: { name?: string }) => entry.name);
-        expect(toolNames).toEqual(expect.arrayContaining(["spawnAgent", "messageAgent", "getAgentTranscript"]));
-        expect(toolNames).not.toContain("editFile");
-        expect(toolNames).not.toContain("writeFile");
-        expect(toolNames).not.toContain("bash");
-        expect(dynamicTools.every((entry: { namespace?: string }) => entry.namespace === "ade_orchestration")).toBe(true);
-        // Codex exposes no tool allow/deny list, so the lead's "no edits, no
-        // shell" invariant is carried by the thread sandbox instead.
-        expect(startPayload?.params).toMatchObject({
-          approvalPolicy: "never",
-          sandbox: "read-only",
-        });
-        const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
-          call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
-        );
-        expect(spawnCall?.[2]).toEqual(expect.objectContaining({
-          env: expect.objectContaining({
-            ADE_DEFAULT_ROLE: "orchestrator",
-          }),
-        }));
-
-        expect(toolNames.length).toBeGreaterThan(5);
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("wires listProofArtifacts to the broker set via the setter after construction", async () => {
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        // The computer-use artifact broker is wired AFTER the service is
-        // constructed (via setComputerUseArtifactBrokerService) to break a
-        // circular dependency. The lead read tools must observe the late-bound
-        // ref, not the raw constructor param. Regression guard for that bug:
-        // when the ref is only ever set via the setter, listProofArtifacts must
-        // still reach the broker.
-        const listArtifacts = vi.fn(() => [{ artifactId: "proof-1", kind: "screenshot" }]);
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        service.setComputerUseArtifactBrokerService({
-          listArtifacts,
-          getBackendStatus: vi.fn(() => null),
-          ingest: vi.fn(),
-        } as any);
-
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "codex",
-          model: "gpt-5.4",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.sendMessage({
-          sessionId: session.id,
-          text: "Plan the work.",
-        });
-
-        await vi.waitFor(() => {
-          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
-        });
-
-        // Simulate the Codex server invoking the lead-only read tool.
-        mockState.emitCodexPayload({
-          jsonrpc: "2.0",
-          id: "proof-tool-call-1",
-          method: "item/tool/call",
-          params: { name: "listProofArtifacts", namespace: "ade_orchestration", arguments: {} },
-        });
-
-        // Bug behavior: services.listProofArtifacts is undefined (closure over the
-        // raw null param) so the broker is never reached. Fixed behavior: called.
-        await vi.waitFor(() => {
-          expect(listArtifacts).toHaveBeenCalled();
-        });
-
-        const response = mockState.codexRequestPayloads.find(
-          (payload) => (payload as { id?: unknown }).id === "proof-tool-call-1",
-        ) as { result?: { success?: boolean; contentItems?: Array<{ text?: string }> } } | undefined;
-        expect(response?.result?.success).toBe(true);
-        expect(response?.result?.contentItems?.[0]?.text ?? "").toContain("proof-1");
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("attaches ADE orchestration tools to OpenCode orchestrator sessions through MCP", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any);
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "opencode",
-          model: "",
-          modelId: "opencode/openai/gpt-5.4",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.runSessionTurn({
-          sessionId: session.id,
-          text: "Plan the work.",
-        });
-
-        const startArgs = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
-        expect(startArgs?.mcp?.["ade-orchestration"]).toMatchObject({
-          type: "remote",
-          enabled: true,
-          url: expect.stringContaining("/mcp"),
-        });
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("attaches ADE orchestration tools to Cursor SDK orchestrator sessions through MCP", async () => {
-      process.env.CURSOR_API_KEY = "cursor-test-key";
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "cursor",
-          model: "composer-2",
-          modelId: "cursor/composer-2",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.sendMessage({
-          sessionId: session.id,
-          text: "Plan the work.",
-        }, { awaitDispatch: true });
-
-        expect(mockState.cursorSdkAcquireCalls.at(-1)?.mcpServers).toMatchObject({
-          "ade-orchestration": {
-            type: "http",
-            url: expect.stringContaining("/mcp"),
-          },
-        });
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("attaches ADE orchestration tools to Droid SDK orchestrator sessions through MCP", async () => {
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "droid",
-          model: "custom:claude-sonnet-5-thinking-32000",
-          modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.sendMessage({
-          sessionId: session.id,
-          text: "Plan the work.",
-        }, { awaitDispatch: true });
-
-        expect(mockState.droidAcquireCalls.at(-1)?.mcpServers).toEqual([
-          expect.objectContaining({
-            type: "http",
-            name: "ade-orchestration",
-            url: expect.stringContaining("/mcp"),
-          }),
-        ]);
-        expect(mockState.droidAcquireCalls.at(-1)?.allowedMcpServerNames).toEqual(["ade-orchestration"]);
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
 
     it("passes the selected Codex reasoning effort per thread, not on the process", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
@@ -16240,8 +15922,12 @@ describe("createAgentChatService", () => {
       const dbRow = events.filter((e) => (e.event as any).taskId === "wf-1::a1");
       expect(dbRow.some((e) => e.event.type === "subagent_started")).toBe(true);
       const dbResult = dbRow.find((e) => e.event.type === "subagent_result");
-      expect((dbResult?.event as any)?.status).toBe("stopped");
-      expect((dbResult?.event as any)?.finalSummary).toContain("Workflow ended");
+      expect(dbResult?.event).toMatchObject({
+        status: "stopped",
+        finalSummary: "Workflow ended before this agent finished.",
+        stopSource: "system",
+        stopReason: "the runtime process exited",
+      });
 
       // The terminal parent result carries a reconciled workflow snapshot even
       // when the SDK's last progress tick still reports an active agent.
@@ -19525,7 +19211,7 @@ describe("createAgentChatService", () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send, stream, close: vi.fn(), sessionId: "sdk-restart-1", setPermissionMode,
       } as any);
-      const { service } = createService();
+      const { service } = createService({ runtimeSocketPath: "/tmp/ade.sock" });
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
       await service.runSessionTurn({ sessionId: session.id, text: "seed the transcript" });
@@ -19535,6 +19221,7 @@ describe("createAgentChatService", () => {
       const persisted = readPersistedChatState(session.id);
       expect(typeof persisted.sdkSessionId).toBe("string");
       expect(persisted.sdkSessionId.length).toBeGreaterThan(0);
+      expect(persisted.runtimeOwner?.socketPath).toBe("/tmp/ade.sock");
 
       // Process 2 (fresh host): a NEW service instance re-binds the persisted
       // session. Inject an orphaned transcript tail: one still-"running"
@@ -19564,7 +19251,10 @@ describe("createAgentChatService", () => {
         close: vi.fn(),
         sessionId: "sdk-restart-1",
       } as any);
-      const { service: service2 } = createService({ onEvent: (event: AgentChatEventEnvelope) => events2.push(event) });
+      const { service: service2 } = createService({
+        runtimeSocketPath: "/tmp/ade.sock",
+        onEvent: (event: AgentChatEventEnvelope) => events2.push(event),
+      });
       await service2.resumeSession({ sessionId: session.id });
 
       // Background_task row settled as stopped with the restart marker.
@@ -19580,6 +19270,10 @@ describe("createAgentChatService", () => {
         && (e.event as any).taskId === "sub-restart"
         && (e.event as any).status === "stopped");
       expect(subStopped).toBeTruthy();
+      expect(subStopped?.event).toMatchObject({
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+      });
 
       // Exactly one compact reconciliation system_notice, counting background tasks.
       const notices = events2.filter((e) =>
@@ -19617,6 +19311,150 @@ describe("createAgentChatService", () => {
         && e.event.turnId === "turn-old"
         && e.event.status === "interrupted"
       )).toHaveLength(1);
+    });
+
+    /**
+     * The 17-24 hour rows. `reconcileClaudeSessionAfterRestart` only runs when
+     * something re-binds the chat's runtime, so a chat nobody reopens keeps its
+     * "running" subagent and background rows for as long as the transcript is
+     * kept. The stale-run sweep closes them with no runtime involved.
+     */
+    describe("stale-run sweep (no runtime required)", () => {
+      /**
+       * The sweep reads the transcript from disk before it parses anything, so
+       * the file has to exist even though `parseAgentChatTranscript` is mocked.
+       */
+      function writeTranscriptFile(sessionId: string): void {
+        const dir = path.join(tmpRoot, "transcripts");
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, `${sessionId}.chat.jsonl`),
+          `${JSON.stringify({ sessionId, timestamp: "2026-09-18T02:00:00.000Z", event: { type: "system_notice", noticeKind: "info", message: "seed" } })}\n`,
+          "utf8",
+        );
+      }
+
+      function seedOrphanTranscript(sessionId: string, extra: AgentChatEventEnvelope[] = []): void {
+        writeTranscriptFile(sessionId);
+        vi.mocked(parseAgentChatTranscript).mockReturnValue([
+          { sessionId, timestamp: "2026-09-18T02:00:00.000Z", sequence: 1, event: {
+            type: "scheduled_work_update", id: "background:bg-stale", kind: "background_task",
+            status: "running", origin: "background_task", title: "npm run serve", summary: "shell",
+            sourceTaskId: "bg-stale", turnId: "turn-old",
+          } as any },
+          { sessionId, timestamp: "2026-09-18T02:00:01.000Z", sequence: 2, event: {
+            type: "subagent_started", taskId: "sub-stale", agentId: "sub-stale",
+            agentType: "Explore", parentToolUseId: "toolu_stale", description: "look", turnId: "turn-old",
+          } as any },
+          ...extra,
+        ]);
+      }
+
+      it("terminalizes stale subagent and background rows for a chat nobody reopens", async () => {
+        const sessionId = "claude-stale-sweep-1";
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, sessionService } = createService({
+          runtimeSocketPath: "/tmp/ade.sock",
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        sessionService.create({ sessionId, laneId: "lane-1", toolType: "claude-chat", transcriptPath: "" });
+        seedOrphanTranscript(sessionId);
+
+        service.reconcileStaleRuns();
+
+        const bgStopped = events.filter((e) =>
+          e.event.type === "scheduled_work_update"
+          && (e.event as any).id === "background:bg-stale"
+          && (e.event as any).status === "stopped");
+        expect(bgStopped).toHaveLength(1);
+        expect(bgStopped[0]!.event).toMatchObject({ stopSource: "system" });
+
+        const subStopped = events.filter((e) =>
+          e.event.type === "subagent_result"
+          && (e.event as any).taskId === "sub-stale"
+          && (e.event as any).status === "stopped");
+        expect(subStopped).toHaveLength(1);
+        expect(subStopped[0]!.event).toMatchObject({ stopSource: "system", stopReason: "the ADE brain restarted" });
+      });
+
+      it("emits each terminal row exactly once across repeated passes", async () => {
+        const sessionId = "claude-stale-sweep-once";
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, sessionService } = createService({
+          runtimeSocketPath: "/tmp/ade.sock",
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        sessionService.create({ sessionId, laneId: "lane-1", toolType: "claude-chat", transcriptPath: "" });
+        seedOrphanTranscript(sessionId);
+
+        service.reconcileStaleRuns();
+        service.reconcileStaleRuns();
+        service.reconcileStaleRuns();
+
+        expect(events.filter((e) => e.event.type === "subagent_result")).toHaveLength(1);
+        expect(events.filter((e) =>
+          e.event.type === "scheduled_work_update" && (e.event as any).status === "stopped")).toHaveLength(1);
+      });
+
+      it("leaves a chat whose runtime this brain still holds untouched", async () => {
+        let warmupComplete = false;
+        const stream = vi.fn(() => (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-stale-live", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send: vi.fn().mockResolvedValue(undefined), stream, close: vi.fn(),
+          sessionId: "sdk-stale-live", setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        } as any);
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          runtimeSocketPath: "/tmp/ade.sock",
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+        await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+        seedOrphanTranscript(session.id);
+        const before = events.length;
+
+        service.reconcileStaleRuns();
+
+        expect(events.slice(before).filter((e) =>
+          e.event.type === "subagent_result" || e.event.type === "scheduled_work_update")).toHaveLength(0);
+      });
+
+      it("finishes a spawned subagent chat that went idle with a report landed", async () => {
+        const sessionId = "claude-stale-sweep-child";
+        const childId = "child-chat-1";
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, sessionService } = createService({
+          runtimeSocketPath: "/tmp/ade.sock",
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        sessionService.create({ sessionId, laneId: "lane-1", toolType: "claude-chat", transcriptPath: "" });
+        sessionService.create({ sessionId: childId, laneId: "lane-1", toolType: "claude-chat", transcriptPath: "" });
+        // The child chat's own row is the second source of truth: still
+        // "running" in the DB, but no live brain owns it, and it left a report.
+        sessionService.setStatusNote(childId, "Ported the pane, tests green");
+        writeTranscriptFile(sessionId);
+        vi.mocked(parseAgentChatTranscript).mockReturnValue([
+          { sessionId, timestamp: "2026-09-18T02:00:01.000Z", sequence: 1, event: {
+            type: "subagent_started", taskId: `chat:${childId}`, agentType: "subagent",
+            parentToolUseId: "toolu_child", description: "port the pane", turnId: "turn-old",
+          } as any },
+        ]);
+
+        service.reconcileStaleRuns();
+
+        const result = events.find((e) =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === `chat:${childId}`);
+        expect(result?.event).toMatchObject({
+          status: "completed",
+          summary: "Ported the pane, tests green",
+        });
+        expect((result!.event as any).finalSummary).toContain("Finished (report landed)");
+        expect((result!.event as any).stopSource).toBeUndefined();
+      });
     });
 
     it("reconciles before an SDK id exists and emits only a missing terminal half", async () => {
@@ -32207,6 +32045,81 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("attributes a Codex close_agent result to the provider", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-close-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            receiverThreadIds: ["agent-thread-close"],
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-close",
+          turn: { id: "agent-turn-close", status: "inProgress" },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            id: "close-call-1",
+            type: "collabAgentToolCall",
+            tool: "close_agent",
+            receiverThreadIds: ["agent-thread-close"],
+            status: "completed",
+          },
+        },
+      });
+
+      const stopped = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "subagent_result"
+          && event.event.taskId === "agent-thread-close"
+          && event.event.status === "stopped",
+      );
+      expect(stopped.event).toMatchObject({
+        summary: "Agent closed",
+        stopSource: "provider",
+        stopReason: "the provider ended the turn",
+      });
+    });
+
     it("interrupts a Codex child turn after the parent turn has completed", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -39994,7 +39907,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("routes structured Codex stall notices to an orchestration parent without auto-handoff", async () => {
+    it("routes structured Codex stall notices to a spawn parent without auto-handoff", async () => {
       vi.useFakeTimers();
       try {
         const events: AgentChatEventEnvelope[] = [];
@@ -40005,13 +39918,11 @@ describe("createAgentChatService", () => {
           laneId: "lane-1",
           provider: "codex",
           model: "gpt-5.5",
-          orchestrationRole: "lead",
         });
         const child = await service.createSession({
           laneId: "lane-1",
           provider: "codex",
           model: "gpt-5.5",
-          orchestrationRole: "worker",
           orchestrationParentSessionId: parent.id,
           spawnKind: "subagent",
         });
@@ -50664,7 +50575,13 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     });
   });
 
-  it("does not fan a single freeform reply out across multiple structured questions", async () => {
+  // The reply must not be copied into every question — that is the fan-out this
+  // test was written for. It must also not land under a synthetic "response"
+  // key, which is where it used to go: Claude's `question.reply` takes one
+  // answer array per ASKED question, so that key matched nothing and the user's
+  // reply never reached the model. It answers the first question, and only the
+  // first, which is what the desktop composer produces for the same input.
+  it("lands a single freeform reply on one question rather than fanning it out", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -50715,11 +50632,13 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       responseText: "Start with the UI planning case.",
     });
 
-    await expect(requestPromise).resolves.toMatchObject({
+    const resolved = await requestPromise;
+    expect(resolved).toMatchObject({
       decision: "accept",
-      answers: { response: ["Start with the UI planning case."] },
+      answers: { plan_focus: ["Start with the UI planning case."] },
       responseText: "Start with the UI planning case.",
     });
+    expect(Object.keys(resolved.answers ?? {})).toEqual(["plan_focus"]);
   });
 
   it("responds to native Codex requestUserInput declines with empty answers instead of interrupting the turn", async () => {
@@ -54044,352 +53963,14 @@ describe("explicit provider-thread continuity recovery", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Orchestrator-lead provider-native tool denial
+// Caller MCP isolation (strictMcpConfig)
 //
-// The lead plans and delegates; it never edits code or runs shell. ADE's own
-// orchestration toolset already withholds editFile/writeFile/bash from leads,
-// but that toolset is additive — it rides alongside each provider's built-in
-// tools. Asserting only that ADE's tools are absent proves nothing, so each
-// test below pins the provider-native denial ADE actually sends, and checks a
-// worker on the SAME provider and the SAME permissive profile still has it.
+// A user-configured MCP server (filesystem, shell, git, …) is exactly what an
+// embedder asking for strict mode wants withheld. Each test pins the MCP
+// configuration ADE actually sends when strict mode is on.
 // ---------------------------------------------------------------------------
 
-describe("orchestrator-lead provider-native tool denial", () => {
-  const leadArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
-    interactionMode: "orchestrator-lead" as const,
-    orchestrationRunId: created.runId,
-    orchestrationRole: "lead" as const,
-    orchestrationBundlePath: created.manifest.bundlePath,
-  });
-  const workerArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
-    interactionMode: "orchestrator-worker" as const,
-    orchestrationRunId: created.runId,
-    orchestrationRole: "worker" as const,
-    orchestrationBundlePath: created.manifest.bundlePath,
-  });
-
-  it("Claude: denies the SDK's own Edit/Write/Bash/Task tools for a lead only", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-5",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      const leadOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as
-        { disallowedTools?: string[]; canUseTool?: Function } | undefined;
-      expect(leadOptions?.disallowedTools).toEqual(
-        expect.arrayContaining(["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Task", "Agent"]),
-      );
-      // Belt-and-braces: the runtime gate denies the same tools mid-turn.
-      await expect(leadOptions?.canUseTool?.("Write", { file_path: "README.md" }, {}))
-        .resolves.toMatchObject({ behavior: "deny" });
-      await expect(leadOptions?.canUseTool?.("Bash", { command: "echo hi > README.md" }, {}))
-        .resolves.toMatchObject({ behavior: "deny" });
-
-      vi.mocked(query).mockClear();
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-5",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-
-      const workerOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as
-        { disallowedTools?: string[]; canUseTool?: Function } | undefined;
-      expect(workerOptions?.disallowedTools ?? []).not.toContain("Write");
-      expect(workerOptions?.disallowedTools ?? []).not.toContain("Bash");
-      await expect(workerOptions?.canUseTool?.("Write", { file_path: "README.md" }, {}))
-        .resolves.not.toMatchObject({ behavior: "deny" });
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("Codex: starts a lead thread read-only with approvals off, workers full-access", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." });
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-      });
-
-      // Codex's app-server exposes no tool allow/deny list, so `apply_patch`
-      // and `shell` cannot be removed from the model's toolset. The sandbox is
-      // the enforcement point: read-only blocks every write those tools make,
-      // and `approvalPolicy: never` stops the lead escalating past it.
-      const leadStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-      expect(leadStart?.params).toMatchObject({ approvalPolicy: "never", sandbox: "read-only" });
-
-      // The per-turn policy resolves through the same path, so a turn cannot
-      // re-grant write access after the thread starts.
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start")).toBe(true);
-      });
-      const leadTurn = mockState.codexRequestPayloads.find((p) => p.method === "turn/start") as any;
-      expect(leadTurn?.params?.approvalPolicy).toBe("never");
-      expect(leadTurn?.params?.sandboxPolicy?.type).toBe("readOnly");
-
-      mockState.codexRequestPayloads.length = 0;
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." });
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-      });
-      const workerStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-      expect(workerStart?.params).toMatchObject({ approvalPolicy: "never", sandbox: "danger-full-access" });
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("Droid: withholds Droid's own edit/execute tool categories from a lead only", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "droid",
-        model: "custom:claude-sonnet-5-thinking-32000",
-        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      // `disabledToolCategories` is resolved to concrete `disabledToolIds`
-      // against Droid's live tool list in the worker (see
-      // droidSdkProtocol.test.ts) — ids are build-specific, categories are not.
-      expect(mockState.droidAcquireCalls.at(-1)?.settings).toMatchObject({
-        disabledToolCategories: ["edit", "execute"],
-      });
-      // awaitDispatch returns at onDispatched, which is before sendPrompt.
-      await vi.waitFor(() => {
-        expect(mockState.droidPromptCalls.at(-1)?.settings).toMatchObject({
-          disabledToolCategories: ["edit", "execute"],
-        });
-      });
-
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "droid",
-        model: "custom:claude-sonnet-5-thinking-32000",
-        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-      await vi.waitFor(() => {
-        expect(mockState.droidPromptCalls.at(-1)?.settings)
-          .not.toHaveProperty("disabledToolCategories");
-      });
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("OpenCode: switches off OpenCode's own bash/edit/write/patch tools for a lead only", async () => {
-    vi.mocked(streamText).mockImplementation(() => ({
-      fullStream: (async function* () {
-        yield { type: "finish", usage: {} };
-      })(),
-    } as any));
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      const leadState = [...mockState.openCodeSessions.values()].at(-1)!;
-      await vi.waitFor(() => {
-        expect(leadState.promptBodies.length).toBeGreaterThan(0);
-      });
-      expect(leadState.promptBodies.at(-1)?.tools).toMatchObject({
-        bash: false,
-        edit: false,
-        write: false,
-        patch: false,
-        task: false,
-      });
-      expect(vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
-        runtime: "opencode",
-        orchestrationRole: "lead",
-      }));
-
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-
-      const workerState = [...mockState.openCodeSessions.values()].at(-1)!;
-      await vi.waitFor(() => {
-        expect(workerState.promptBodies.length).toBeGreaterThan(0);
-      });
-      // No `tools` field at all: the worker keeps OpenCode's full default set.
-      expect(workerState.promptBodies.at(-1)).not.toHaveProperty("tools");
-      expect(vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
-        runtime: "opencode",
-        orchestrationRole: "worker",
-      }));
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Orchestrator-lead MCP isolation
-//
-// Provider-native tool denials only cover each provider's built-in tools. A
-// user-configured MCP server (filesystem, shell, git, …) hands the same
-// capability back through another door, so a lead must see ADE-managed servers
-// only. Each test pins the MCP configuration ADE actually sends for a lead and
-// checks a worker on the SAME provider still receives the user's servers.
-// ---------------------------------------------------------------------------
-
-describe("orchestrator-lead MCP isolation", () => {
-  const leadArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
-    interactionMode: "orchestrator-lead" as const,
-    orchestrationRunId: created.runId,
-    orchestrationRole: "lead" as const,
-    orchestrationBundlePath: created.manifest.bundlePath,
-  });
-  const workerArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
-    interactionMode: "orchestrator-worker" as const,
-    orchestrationRunId: created.runId,
-    orchestrationRole: "worker" as const,
-    orchestrationBundlePath: created.manifest.bundlePath,
-  });
-
-  it("Claude: ignores ~/.claude.json and project .mcp.json for a lead only", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-5",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      const leadOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as {
-        strictMcpConfig?: boolean;
-        mcpServers?: Record<string, unknown>;
-        managedSettings?: { allowManagedMcpServersOnly?: boolean; allowedMcpServers?: Array<{ serverName: string }> };
-      } | undefined;
-      // strictMcpConfig drops every on-disk MCP source; the managed allow-list
-      // keeps ADE's own programmatic server reachable.
-      expect(leadOptions?.strictMcpConfig).toBe(true);
-      expect(leadOptions?.managedSettings?.allowManagedMcpServersOnly).toBe(true);
-      expect(leadOptions?.managedSettings?.allowedMcpServers?.map((entry) => entry.serverName))
-        .toContain("ade-orchestration");
-      expect(Object.keys(leadOptions?.mcpServers ?? {})).toEqual(["ade-orchestration"]);
-
-      vi.mocked(query).mockClear();
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-5",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-
-      const workerOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as {
-        strictMcpConfig?: boolean;
-        settingSources?: string[];
-      } | undefined;
-      // The worker keeps the user's MCP servers: no strict flag, and the
-      // setting sources that load them are still on.
-      expect(workerOptions?.strictMcpConfig).toBeUndefined();
-      expect(workerOptions?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("Codex: switches off every configured MCP server for a lead only", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
-      const { service } = createService({
-        getOrchestrationService: () => orchestrationService,
-        resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
-        resolveCodexConfiguredMcpServerNames: () => ["filesystem", "computer_use"],
-      });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." });
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-      });
-
-      // Codex merges this overlay into config.toml rather than replacing it, so
-      // the isolation has to name each server. Computer Use is an MCP server
-      // too, so the lead does not get it either.
-      const leadStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-      expect(leadStart?.params?.config?.mcp_servers).toEqual({
-        filesystem: { enabled: false },
-        computer_use: { enabled: false },
-      });
-
-      mockState.codexRequestPayloads.length = 0;
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." });
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-      });
-      const workerStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-      // Nothing disabled: the worker keeps the user's Codex MCP config intact
-      // (only ADE's own Computer Use merge is present).
-      expect(workerStart?.params?.config?.mcp_servers).toEqual({
-        computer_use: { command: signedClient, args: ["mcp"], enabled: true },
-      });
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
+describe("caller MCP isolation", () => {
   // Same overlay, different caller: the ADE SDK injects servers into an
   // ordinary chat. Codex has no "replace the config" mode, so both the caller's
   // servers and strict mode's per-server disables ride the same table.
@@ -54488,98 +54069,6 @@ describe("orchestrator-lead MCP isolation", () => {
     expect(servers.embedder).toMatchObject({ enabled: true });
   });
 
-  it("Cursor: runs a lead without the MCP-carrying setting layers, and denies MCP calls", async () => {
-    process.env.CURSOR_API_KEY = "cursor-test-key";
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "cursor",
-        model: "composer-2",
-        modelId: "cursor/composer-2",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      // The worker turns `policy.orchestrationLead` into the trimmed
-      // `local.settingSources` (cursorSdkSettingSources); the pool call is the
-      // last thing ADE controls in this process.
-      const leadAcquire = mockState.cursorSdkAcquireCalls.at(-1) as any;
-      expect(leadAcquire?.policy?.orchestrationLead).toBe(true);
-      expect(cursorSdkSettingSources(leadAcquire?.policy)).toEqual(["user", "team", "mdm"]);
-      // MCP servers ADE hands Cursor are its own lease only.
-      expect(Object.keys(leadAcquire?.mcpServers ?? {})).toEqual(["ade-orchestration"]);
-
-      // Cursor routes MCP tool calls through the same preToolUse gate as any
-      // other tool, named `MCP:<tool>` — an unknown risk class, denied.
-      const mcpCall = summarizeCursorHook(
-        { toolName: "MCP:write_file", toolInput: { path: "README.md" } },
-        "/tmp/lane",
-      );
-      expect(mcpCall.risk).toBe("unknown");
-      expect(evaluateCursorSdkHook({
-        request: mcpCall,
-        policy: { ...(leadAcquire?.policy as any) },
-        laneRoot: "/tmp/lane",
-        userHomeDir: tmpHomeRoot,
-      })).toBe("deny");
-
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "cursor",
-        model: "composer-2",
-        modelId: "cursor/composer-2",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-      const workerAcquire = mockState.cursorSdkAcquireCalls.at(-1) as any;
-      expect(workerAcquire?.policy?.orchestrationLead).toBe(false);
-      expect(cursorSdkSettingSources(workerAcquire?.policy)).toEqual(["all"]);
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("OpenCode: isolates only leads while ordinary chats keep user config", async () => {
-    vi.mocked(streamText).mockImplementation(() => ({
-      fullStream: (async function* () {
-        yield { type: "finish", usage: {} };
-      })(),
-    } as any));
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      const leadStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
-      // The MCP map ADE hands OpenCode for a lead carries ADE's lease only.
-      expect(Object.keys(leadStart?.mcp ?? {})).toEqual(["ade-orchestration"]);
-      expect(leadStart?.leaseKind).toBe("dedicated");
-      expect(leadStart?.isolatedConfig).toBe(true);
-
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-      const workerStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
-      expect(workerStart?.leaseKind).toBe("shared");
-      expect(workerStart?.isolatedConfig).toBe(false);
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -56311,5 +55800,499 @@ describe("Codex approvals under a host permission policy", () => {
         && event.event.itemId === "perm-deny-1"
         && event.event.resolution === "declined")).toBe(true);
     });
+  });
+});
+
+describe("turn diff capture", () => {
+  it("awaits the per-turn fingerprint before emitting a fast completion summary", async () => {
+    let releaseBeforeTree!: (tree: Map<string, string>) => void;
+    const beforeTree = new Promise<Map<string, string>>((resolve) => {
+      releaseBeforeTree = resolve;
+    });
+    const expectedTree = new Map([["pre-existing.ts", "1:1"]]);
+    const collectSummary = vi.fn(async (args: { beforeTree?: Map<string, string> | null }) => (
+      args.beforeTree
+        ? {
+            files: [{ path: "turn.ts", additions: 1, deletions: 0, status: "A" as const }],
+            totalAdditions: 1,
+            totalDeletions: 0,
+          }
+        : null
+    ));
+    turnDiffMockState.beforeTreeGates = [Promise.resolve(new Map()), beforeTree];
+    turnDiffMockState.collectSummary = collectSummary;
+    vi.mocked(runGit).mockResolvedValue({ stdout: "head-sha\n", stderr: "", exitCode: 0 });
+
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Make a quick change.",
+    }, { awaitDispatch: true });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { turn: { id: "turn-1", status: "completed" } },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(collectSummary).not.toHaveBeenCalled();
+
+    releaseBeforeTree(expectedTree);
+    await vi.waitFor(() => {
+      expect(collectSummary).toHaveBeenCalledTimes(1);
+    });
+    expect(collectSummary.mock.calls[0]?.[0].beforeTree).toEqual(expectedTree);
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "turn_diff_summary")).toBe(true);
+    });
+  });
+});
+
+describe("Codex async questions", () => {
+  const emitAsyncQuestion = (itemId: string, questions: unknown[]): void => {
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "item/completed",
+      params: {
+        turnId: "turn-1",
+        item: {
+          id: itemId,
+          type: "agentMessage",
+          threadId: "thread-1",
+          delivery: "async",
+          questions,
+        },
+      },
+    });
+  };
+
+  const startCodexChat = async (events: AgentChatEventEnvelope[]) => {
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Start working.",
+    }, { awaitDispatch: true });
+    return { service, session };
+  };
+
+  it("raises a card instead of rendering the question as assistant prose", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-1", [
+      { title: "Postgres or SQLite?", options: ["Postgres", "SQLite"] },
+      { title: "Ship today?", options: null },
+    ]);
+
+    const card = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-1",
+    );
+    const request = (card.event as { detail?: { request?: any } }).detail?.request;
+    expect(request.blocking).toBe(false);
+    expect(request.canProceedWithoutAnswer).toBe(true);
+    expect(request.title).toBe("Codex has a question");
+    expect(request.providerMetadata).toMatchObject({ responseMode: "message", dismissible: true });
+    expect(request.questions.map((q: any) => q.id)).toEqual(["0", "1"]);
+    expect(request.questions[0].question).toBe("Postgres or SQLite?");
+    expect(request.questions[0].options.map((o: any) => o.label)).toEqual(["Postgres", "SQLite"]);
+    // Free text is always accepted on this shape; there is no "other" flag.
+    expect(request.questions[1].allowsFreeform).toBe(true);
+    expect(request.questions[1].options).toEqual([]);
+    // The question must never also reach the transcript as prose.
+    expect(events.some((entry) =>
+      entry.event.type === "text" && entry.sessionId === session.id
+      && String((entry.event as { text?: string }).text ?? "").includes("Postgres or SQLite?"),
+    )).toBe(false);
+  });
+
+  it("leaves the composer usable and the row un-blocked", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-2", [{ title: "Keep going?", options: ["Yes"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-2",
+    );
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.awaitingInput).toBeUndefined();
+    expect(summary?.pendingInputItemId).toBeUndefined();
+    expect(summary?.asyncQuestion).toBe(true);
+    // Never persisted as a block — the durable record is the banked question.
+    expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+    expect(readPersistedChatState(session.id).asyncQuestions).toHaveLength(1);
+  });
+
+  it("answers by sending an ordinary message and writes an accepted receipt", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-3", [{ title: "Postgres or SQLite?", options: ["Postgres"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-3",
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "codex-async-3",
+      decision: "accept",
+      answers: { "0": "Postgres" },
+    });
+
+    const receipt = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "pending_input_resolved" && event.event.itemId === "codex-async-3",
+    );
+    expect((receipt.event as { resolution?: string }).resolution).toBe("accepted");
+    const userMessage = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "user_message"
+        && String((event.event as { text?: string }).text ?? "").includes("Postgres or SQLite?"),
+    );
+    expect((userMessage.event as { text?: string }).text).toContain("Postgres");
+    expect(readPersistedChatState(session.id).asyncQuestions).toBeUndefined();
+  });
+
+  it("keeps an async card and markers when its answer cannot be dispatched", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-live-pending", [{ title: "Keep going?", options: ["Yes"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-live-pending",
+    );
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "codex-blocking-request",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-blocking-request",
+        questions: [{ id: "q", question: "Approve this command?", options: [{ label: "Allow" }] }],
+      },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-blocking-request",
+    );
+
+    await expect(service.respondToInput({
+      sessionId: session.id,
+      itemId: "codex-async-live-pending",
+      decision: "accept",
+      answers: { "0": "Yes" },
+    })).rejects.toThrow(/pending input/i);
+
+    expect(events.some((event) =>
+      event.event.type === "pending_input_resolved"
+      && event.event.itemId === "codex-async-live-pending",
+    )).toBe(false);
+    expect((await service.getSessionSummary(session.id))?.asyncQuestion).toBe(true);
+    expect(readPersistedChatState(session.id).asyncQuestions).toHaveLength(1);
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "codex-blocking-request",
+      decision: "decline",
+    });
+  });
+
+  it("dismisses with a receipt and a notice, and stops banking the card", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-4", [{ title: "Keep going?", options: ["Yes"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-4",
+    );
+
+    await service.dismissPendingInput({ sessionId: session.id, itemId: "codex-async-4" });
+
+    const receipt = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "pending_input_resolved" && event.event.itemId === "codex-async-4",
+    );
+    expect((receipt.event as { resolution?: string }).resolution).toBe("cancelled");
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "system_notice"
+        && (event.event as { message?: string }).message === "Question dismissed",
+    );
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.asyncQuestion).toBeUndefined();
+    expect(readPersistedChatState(session.id).asyncQuestions).toBeUndefined();
+  });
+
+  it("refuses to dismiss a card the provider is waiting on", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "blocking-question-1",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-blocking-1",
+        questions: [{ id: "q", question: "Approve this command?", options: [{ label: "Allow" }] }],
+      },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-blocking-1",
+    );
+
+    await expect(
+      service.dismissPendingInput({ sessionId: session.id, itemId: "codex-blocking-1" }),
+    ).rejects.toThrow("This question needs an answer. Answer it or stop the turn.");
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.awaitingInput).toBe(true);
+    expect(summary?.pendingInputItemId).toBe("codex-blocking-1");
+  });
+
+  it("keeps an unanswered card in history regardless of the event window", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-5", [{ title: "Keep going?", options: ["Yes"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-5",
+    );
+    for (let index = 0; index < 5; index += 1) {
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: `codex-cmd-${index}`,
+            type: "commandExecution",
+            command: `echo noise-${index}`,
+            status: "completed",
+          },
+        },
+      });
+    }
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "command"
+        && String((event.event as { command?: string }).command ?? "").includes("noise-4"),
+    );
+
+    const history = await service.getChatEventHistory(session.id, { maxEvents: 2 });
+    expect(history.events.some((entry) =>
+      entry.event.type === "approval_request" && entry.event.itemId === "codex-async-5",
+    )).toBe(true);
+  });
+});
+
+describe("Claude resume_return dialog", () => {
+  type ClaudeOptionsWithDialogs = {
+    onUserDialog?: (
+      request: { dialogKind: string; payload: Record<string, unknown>; toolUseID?: string },
+      options: { signal: AbortSignal; requestId: string },
+    ) => Promise<{ behavior: "completed"; result: unknown } | { behavior: "cancelled" } | null>;
+    supportedDialogKinds?: string[];
+  };
+
+  const capturedClaudeOptions = (): ClaudeOptionsWithDialogs | undefined =>
+    vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as ClaudeOptionsWithDialogs | undefined;
+
+  const startClaudeChat = async (
+    events: AgentChatEventEnvelope[],
+    overrides: Record<string, unknown> = {},
+    sessionArgs: Record<string, unknown> = {},
+  ) => {
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      ...overrides,
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      ...sessionArgs,
+    });
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    return { service, session };
+  };
+
+  it("declares only resume_return", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    const opts = capturedClaudeOptions();
+    expect(typeof opts?.onUserDialog).toBe("function");
+    // `refusal_fallback_prompt` is deliberately withheld — declaring a kind ADE
+    // cannot draw parks a dialog nobody can answer.
+    expect(opts?.supportedDialogKinds).toEqual(["resume_return"]);
+  });
+
+  it("maps each answer to the SDK result", async () => {
+    for (const [label, expected] of [
+      ["Compact and continue", "compact"],
+      ["Keep full history", "continue"],
+    ] as const) {
+      vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startClaudeChat(events);
+      const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+      expect(onUserDialog).toBeTruthy();
+
+      const controller = new AbortController();
+      const answered = onUserDialog!(
+        {
+          dialogKind: "resume_return",
+          payload: { sessionAgeMinutes: 145, estimatedTokens: 275_123 },
+          toolUseID: `tool-${expected}`,
+        },
+        { signal: controller.signal, requestId: `req-${expected}` },
+      );
+
+      const card = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && String(event.event.itemId).startsWith("claude-resume-return:"),
+      );
+      const itemId = String(card.event.itemId);
+      expect((card.event as { detail?: { request?: any } }).detail?.request.description)
+        .toBe("This session is 2h 25m old and uses 275,123 tokens. Compact it before continuing?");
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId,
+        decision: "accept",
+        answers: { resume_decision: label },
+      });
+      await expect(answered).resolves.toEqual({ behavior: "completed", result: expected });
+    }
+  });
+
+  it("cancels an unrecognized dialog kind without drawing a card", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+    const controller = new AbortController();
+    await expect(onUserDialog!(
+      { dialogKind: "refusal_fallback_prompt", payload: {} },
+      { signal: controller.signal, requestId: "req-unknown" },
+    )).resolves.toEqual({ behavior: "cancelled" });
+    expect(events.some((entry) => entry.event.type === "approval_request")).toBe(false);
+  });
+
+  it("cancels and writes a receipt when the dialog is aborted", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+    const controller = new AbortController();
+    const answered = onUserDialog!(
+      { dialogKind: "resume_return", payload: { sessionAgeMinutes: 10, estimatedTokens: 100 }, toolUseID: "tool-abort" },
+      { signal: controller.signal, requestId: "req-abort" },
+    );
+    const card = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && String(event.event.itemId).startsWith("claude-resume-return:"),
+    );
+    const cardItemId = card.event.itemId;
+    controller.abort();
+    await expect(answered).resolves.toEqual({ behavior: "cancelled" });
+    // The card had no answer, so nothing else wrote a receipt — and without one
+    // it would be redrawn with no waiter behind it.
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "pending_input_resolved" && event.event.itemId === cardItemId,
+    );
+  });
+
+  it("remembers Don't ask again and stops declaring the kind", async () => {
+    let dismissed = false;
+    const preference = {
+      isDismissed: () => dismissed,
+      markDismissed: () => { dismissed = true; },
+    };
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startClaudeChat(events, {
+      claudeResumeDialogPreference: preference,
+    });
+    const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+    const controller = new AbortController();
+    const answered = onUserDialog!(
+      { dialogKind: "resume_return", payload: { sessionAgeMinutes: 10, estimatedTokens: 100 }, toolUseID: "tool-never" },
+      { signal: controller.signal, requestId: "req-never" },
+    );
+    const card = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && String(event.event.itemId).startsWith("claude-resume-return:"),
+    );
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: String(card.event.itemId),
+      decision: "accept",
+      answers: { resume_decision: "Don't ask again" },
+    });
+    await expect(answered).resolves.toEqual({ behavior: "completed", result: "never" });
+    expect(dismissed).toBe(true);
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+    const { service: nextService } = createService({ claudeResumeDialogPreference: preference });
+    await nextService.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    // The callback stays wired; only the declaration is withheld, which is what
+    // makes the CLI stop emitting the dialog.
+    expect(capturedClaudeOptions()?.supportedDialogKinds).toBeUndefined();
+    expect(typeof capturedClaudeOptions()?.onUserDialog).toBe("function");
+  });
+
+  it("declares no dialog kinds for a lightweight session", async () => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events, {}, { sessionProfile: "light" });
+    const opts = capturedClaudeOptions();
+    expect(opts?.supportedDialogKinds).toBeUndefined();
+    expect(opts?.onUserDialog).toBeUndefined();
   });
 });

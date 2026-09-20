@@ -14,14 +14,11 @@ export function SettingsDashboardPage({
   anchor,
   title,
   description,
-  remoteMachineName,
   children,
 }: {
   anchor: string;
   title: string;
   description?: React.ReactNode;
-  /** Names the machine a machine-scoped page is being viewed through, if remote. */
-  remoteMachineName?: string | null;
   children: React.ReactNode;
 }) {
   return (
@@ -29,7 +26,6 @@ export function SettingsDashboardPage({
       anchor={anchor}
       title={title}
       description={description}
-      remoteMachineName={remoteMachineName}
       sectionAttrs={{ "data-settings-dashboard": anchor }}
       sectionStyle={{ fontFamily: SANS_FONT, display: "flex", flexDirection: "column", gap: 16 }}
       bodyStyle={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}

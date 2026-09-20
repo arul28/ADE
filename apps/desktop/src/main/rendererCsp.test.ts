@@ -181,7 +181,7 @@ describe("shouldApplyRendererCsp", () => {
  * `will-frame-navigate` is the second door on the same allowlist the CSP is
  * the first door on, so the thing worth pinning is that it is not NARROWER:
  * the handler first shipped without `file:`/`app:`, which in a packaged build
- * is every spec preview (`SpecPreviewCard`, `PlanMarkdown`) going blank.
+ * is every renderer-framed local document preview going blank.
  */
 describe("isRendererFrameNavigationAllowed", () => {
   const options = {

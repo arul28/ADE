@@ -1,6 +1,5 @@
 export const ADE_RUNTIME_ROLES = [
   "cto",
-  "orchestrator",
   "agent",
   "external",
   "evaluator",
@@ -36,7 +35,6 @@ export function canDefaultRoleServeRequestedRole(
   if (requestedRole === "external") return true;
   if (!defaultRole) return false;
   if (defaultRole === "cto") return true;
-  if (defaultRole === "orchestrator") return requestedRole !== "cto";
   if (defaultRole === "agent") return requestedRole === "agent";
   if (defaultRole === "evaluator") return requestedRole === "evaluator";
   return false;
@@ -64,9 +62,8 @@ export function resolveSessionRole(
  * A chat-session binding is an authority boundary, not a source of elevation.
  * In particular, a client launched from ADE's CTO-capable runtime must not
  * inherit the daemon's machine-wide CTO role merely because it omitted (or
- * copied) a narrower role. Preserve explicit lower-privilege identities, allow
- * an explicitly-declared orchestrator to coordinate, and otherwise clamp a
- * session-bound CTO result to a regular agent.
+ * copied) a narrower role. Preserve explicit lower-privilege identities, and
+ * otherwise clamp a session-bound CTO result to a regular agent.
  */
 export function resolveSessionBoundRole(args: {
   defaultRole: AdeRuntimeRole | null;
@@ -77,8 +74,7 @@ export function resolveSessionBoundRole(args: {
   const { requestedRole, chatSessionId } = args;
   if (!chatSessionId || resolvedRole !== "cto") return resolvedRole;
   if (
-    requestedRole === "orchestrator"
-    || requestedRole === "agent"
+    requestedRole === "agent"
     || requestedRole === "external"
     || requestedRole === "evaluator"
   ) {

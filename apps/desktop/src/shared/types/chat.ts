@@ -8,7 +8,6 @@ import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneGitHubIssue, LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
-import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 import type { RuntimeProcessSummary } from "./sessions";
@@ -17,6 +16,34 @@ import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
 import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
 import type { CursorCloudServiceTier } from "./config";
+
+/** Plain-language causes the interrupted-turn card renders verbatim. */
+export const CHAT_STOP_REASON_BRAIN_RESTARTED = "the ADE brain restarted";
+export const CHAT_STOP_REASON_FOREIGN_BRAIN = "another ADE brain took over this chat";
+export const CHAT_STOP_REASON_RUNTIME_EXITED = "the runtime process exited";
+export const CHAT_STOP_REASON_PROVIDER_ENDED_TURN = "the provider ended the turn";
+export const CHAT_STOP_REASON_CHAT_HANDED_OFF = "this chat was handed off to another model";
+
+/**
+ * Who ended an agent's work, for the one card that has to say it out loud.
+ *
+ * The stopped-subagent card used to read "N agents stopped when you
+ * interrupted" for every `stopped` status, which made an ADE restart and a
+ * second brain taking the chat over both read as the user's own doing. Only
+ * `user` earns that sentence now.
+ *
+ * - `user`          — someone pressed Stop on this turn.
+ * - `system`        — ADE itself ended it: a brain restart, a runtime teardown.
+ * - `foreign-brain` — another ADE brain on this ADE home claimed the chat.
+ * - `provider`      — the model runtime ended the turn under the agent.
+ * - `unknown`       — an event from a build or client that did not say.
+ */
+export type AgentChatStopSource =
+  | "user"
+  | "system"
+  | "foreign-brain"
+  | "provider"
+  | "unknown";
 
 export type AgentChatProvider =
   | "codex"
@@ -364,6 +391,14 @@ export type AgentChatNoticeDetailSection = {
 
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
+  /**
+   * The usage-snapshot account id a notice is about (`<provider>:<instanceId>`).
+   *
+   * Carried by the Codex `reset_credit_available` notice so the "Use reset"
+   * control spends the credit belonging to the account that ran out — not
+   * whichever account the usage popup happens to have selected.
+   */
+  accountId?: string;
   state?: "required" | "reconstructed" | "normal" | "warning" | "critical" | "exhausted";
   reason?: AgentChatResumeFailureKind;
   originalThreadId?: string | null;
@@ -395,10 +430,8 @@ export type AgentChatNoticeDetail = {
   spawnKind?: AgentChatSpawnKind;
   /**
    * True when an inline spawned-chat card (`subagent_started`) accompanies this
-   * `subagent_spawned` notice — i.e. a plain (non-orchestration) spawn. The
-   * renderer suppresses the quiet pill in that case (the card is the surface) and
-   * keeps the pill only for orchestration-run children, which emit the notice but
-   * no inline card. Absent/false → render the pill.
+   * `subagent_spawned` notice. The renderer suppresses the quiet pill in that
+   * case (the card is the surface). Absent/false → render the pill.
    */
   hasInlineCard?: boolean;
   spawnCompletion?: AgentChatSpawnCompletion;
@@ -534,24 +567,9 @@ export type AgentChatGitHubIssueContextAttachment = {
   attachedAt?: string;
 };
 
-/**
- * Ephemeral plan-annotation attachment produced by the orchestration plan
- * panel popover (see `goal.md` §10.7). Lives only in the composer tray; not
- * persisted to the manifest in v1. The payload carries the anchor (what was
- * selected) and the user's free-form comment, so the lead sees what was
- * being commented on when the message is sent.
- */
-export type AgentChatOrchestrationAnnotationContextAttachment = {
-  type: "orchestration_annotation";
-  item: OrchestrationContextItem;
-  source?: "manual";
-  attachedAt?: string;
-};
-
 export type AgentChatContextAttachment =
   | AgentChatLinearIssueContextAttachment
-  | AgentChatGitHubIssueContextAttachment
-  | AgentChatOrchestrationAnnotationContextAttachment;
+  | AgentChatGitHubIssueContextAttachment;
 
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
 export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
@@ -1278,6 +1296,14 @@ export type AgentChatEvent =
       status: "completed" | "failed" | "stopped";
       summary: string;
       finalSummary?: string;
+      /**
+       * WHO stopped this agent. Absent on every event written before this field
+       * existed and on every client that does not read it, which is why the
+       * card falls back to "unknown" rather than to "you interrupted".
+       */
+      stopSource?: AgentChatStopSource;
+      /** One plain clause naming the cause, for a non-user stop. Distinct from the provider runtime's turn.completed `stopReason`. */
+      stopReason?: string;
       usage?: {
         totalTokens?: number;
         toolUses?: number;
@@ -1392,6 +1418,17 @@ export type AgentChatEvent =
       sourceTaskId?: string;
       turnId?: string;
       error?: string;
+      /**
+       * WHO ended this work, for a terminal (`stopped`/`cancelled`) row that
+       * nobody asked to end. Same contract as `subagent_result.stopSource`:
+       * additive and optional, so an older client that never reads it still
+       * renders the terminal status correctly and only loses the attribution.
+       * Written by the stale-run reconcile when the process that owned a
+       * background command exited without reporting.
+       */
+      stopSource?: AgentChatStopSource;
+      /** One plain clause naming the cause, for a non-user stop. */
+      stopReason?: string;
     }
   | {
       type: "transcript_retraction";
@@ -1984,18 +2021,13 @@ export function legacyPermissionModeFromDroidPermissionMode(
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatInteractionMode =
   | "default"
-  | "plan"
-  | "orchestrator-lead"
-  | "orchestrator-worker"
-  | "orchestrator-validator";
+  | "plan";
 /**
- * Optional fields persisted on chat sessions/summaries when the session is part
- * of an orchestration run. All fields are optional for migration tolerance —
- * older sessions deserialise cleanly with these absent.
+ * Optional spawn-lineage fields persisted on chat sessions/summaries. All
+ * fields are optional for migration tolerance — older sessions deserialise
+ * cleanly with these absent.
  */
-export type OrchestrationSessionFields = {
-  orchestrationRunId?: string;
-  orchestrationRole?: OrchestrationRole;
+export type SpawnLineageSessionFields = {
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
   /**
@@ -2008,9 +2040,6 @@ export type OrchestrationSessionFields = {
    * the takeover banner instead of resurrecting it against a dead parent.
    */
   orchestrationParentReachable?: boolean;
-  orchestrationTag?: string;
-  orchestrationStepId?: string;
-  orchestrationBundlePath?: string;
 };
 export type AgentChatIdentityKey = "cto";
 export type AgentChatSurface = "work" | "automation" | "personal";
@@ -2209,6 +2238,30 @@ export type AgentChatSession = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  /**
+   * Provider account ("instance") this chat launched under, for `claude` and
+   * `codex` only. Absent means the provider's default account. Resolved
+   * through the machine instance store at launch, so an id that no longer
+   * names an account silently falls back to that default.
+   */
+  instanceId?: string;
+  /**
+   * Saved harness preset this chat launched under (`shared/harnessPresets.ts`).
+   *
+   * A preset names the body, the brain, the model, the permission mode and the
+   * subagent pins as one value, so it is the id that has to survive a resume —
+   * re-deriving the launch from the individual fields would lose whichever of
+   * them the preset set and the session does not carry. A preset that has since
+   * been deleted resolves to `unsupported` at launch and the chat falls back to
+   * the harness's native sign-in with a notice.
+   */
+  presetId?: string;
+  /**
+   * API credential this chat launched under, when the model was chosen from a
+   * provider-card key rather than from a preset. Mutually exclusive with
+   * `presetId` in practice; both are ids into stores, never the secret.
+   */
+  credentialId?: string;
   piProfileId?: string | null;
   piProviderId?: string | null;
   piModelId?: string | null;
@@ -2274,7 +2327,7 @@ export type AgentChatSession = {
   requestedCwd?: string | null;
   createdAt: string;
   lastActivityAt: string;
-} & HostSessionConfigFields & OrchestrationSessionFields;
+} & HostSessionConfigFields & SpawnLineageSessionFields;
 
 /**
  * Usage-limit resume state, computed on the host from the durable
@@ -2337,6 +2390,11 @@ export type AgentChatSessionSummary = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  instanceId?: string;
+  /** Saved harness preset this row's session launched under, when there is one. */
+  presetId?: string;
+  /** API credential this row's session launched under, when there is one. */
+  credentialId?: string;
   piProfileId?: string | null;
   piProviderId?: string | null;
   piModelId?: string | null;
@@ -2406,6 +2464,17 @@ export type AgentChatSessionSummary = {
    * Never persisted; must not set awaitingInput / pendingInputItemId.
    */
   steeringInput?: boolean;
+  /**
+   * Live-only Codex async question (`agentMessage` with `delivery: "async"`).
+   *
+   * The same split as `steeringInput` and for the same reason: the card is real
+   * and the session is NOT blocked by it, so `awaitingInput` and
+   * `pendingInputItemId` must stay unset or the composer locks and the row
+   * reads "Needs you" for a question the user may ignore. Never persisted --
+   * the durable record is the `approval_request` event plus the persisted
+   * `asyncQuestions` entry the host rehydrates from.
+   */
+  asyncQuestion?: boolean;
   /** Earliest armed, unpaused schedule for this chat. */
   nextWakeAt: string | null;
   /**
@@ -2440,6 +2509,18 @@ export type AgentChatSessionSummary = {
    * `ps`. One entry per SDK process; each owns MCP children of its own.
    */
   runtimeProcesses?: RuntimeProcessSummary[];
+  /**
+   * Whether the host still holds a provider runtime for this chat.
+   *
+   * Provider-agnostic, unlike `runtimeProcesses` (Claude subprocess reaper
+   * only) and unlike `activeBackgroundTaskCount` (live bookkeeping that reads
+   * zero for several providers). `false` is a positive statement — there is no
+   * runtime — which is what lets the chat-actions pane stop rendering subagent
+   * and background rows as "running" once the process that owned them is gone.
+   * Absent means an older host that cannot say, and readers must treat that as
+   * unknown rather than as dead.
+   */
+  runtimeAlive?: boolean;
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
   /** KV-backed durable schedules. This is the management source of truth. */
@@ -2455,7 +2536,7 @@ export type AgentChatSessionSummary = {
    * session has no attached issues.
    */
   linearIssueLinks?: SessionLinearIssueLink[];
-} & HostSessionConfigFields & OrchestrationSessionFields;
+} & HostSessionConfigFields & SpawnLineageSessionFields;
 
 /**
  * What `chat.getSessionSummary` returns over the ADE action surface.
@@ -2759,6 +2840,12 @@ export type AgentChatModelCatalogModel = AgentChatModelInfo & {
   providerId?: string;
   providerName?: string;
   stale?: boolean;
+  /**
+   * Set on rows a stored API key makes reachable. The launch carries this id so
+   * the runtime resolves the same key the row came from — two keys on one
+   * provider can declare the same model id against different endpoints.
+   */
+  credentialId?: string;
 };
 
 export type AgentChatModelCatalogSubsection = {
@@ -3034,6 +3121,18 @@ export type AgentChatCreateArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  instanceId?: string;
+  /**
+   * Launch this chat from a saved harness preset. The runtime resolves it
+   * against the account-scoped preset list and the machine's own stores; an id
+   * that no longer names a preset produces a notice, not a failed create.
+   */
+  presetId?: string;
+  /**
+   * Launch this chat on a specific stored API credential, for a model chosen
+   * from a provider-card key rather than from a preset.
+   */
+  credentialId?: string;
   piProfileId?: string | null;
   piProviderId?: string | null;
   piModelId?: string | null;
@@ -3058,18 +3157,13 @@ export type AgentChatCreateArgs = {
    * ade_session_id before the ADE chat row exists.
    */
   sessionId?: string;
-  // Orchestration-mode fields — set when spawning into an orchestration run.
-  orchestrationRunId?: string;
-  orchestrationRole?: OrchestrationRole;
+  // Spawn lineage — set when one chat spawns another.
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
-  orchestrationTag?: string;
-  orchestrationStepId?: string;
-  orchestrationBundlePath?: string;
   /**
    * MCP servers injected by the caller for this chat only. Merged with (never
-   * replacing) the ADE-managed servers a session already receives — the CTO and
-   * orchestration leases keep working alongside them. Providers that cannot
+   * replacing) the ADE-managed servers a session already receives — the CTO
+   * leases keep working alongside them. Providers that cannot
    * accept injected servers report it through `mcpCapability` on the session
    * rather than dropping them silently.
    */
@@ -3103,8 +3197,6 @@ export type AgentChatCreateArgs = {
    * which is strict by default to stay lean. An explicit `false` is not the same
    * as absent — it overrides that default and asks for the user's MCP config,
    * which is how an embedder gets `loadUserMcpServers: true` on a personal chat.
-   * Orchestration-lead sessions stay strict regardless; their isolation is a
-   * policy, not a preference.
    */
   strictMcpConfig?: boolean;
   /**
@@ -3175,7 +3267,7 @@ export type AgentChatImportExternalSessionResult = {
  * Creates the session and fires the first turn off without awaiting it, so a
  * caller (e.g. the multi-lane Linear launch flow) can spin up N lanes that each
  * start working immediately. The kickoff text drives the first turn; optional
- * context attachments (Linear issue / orchestration annotations) are forwarded
+ * context attachments (Linear issues) are forwarded
  * to that turn the same way an interactive send would.
  */
 export type AgentChatLaunchArgs = AgentChatCreateArgs & {
@@ -3215,13 +3307,26 @@ export type AgentChatLaunchCliArgs = {
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean | null;
   permissionMode?: AgentChatPermissionMode;
-  /** Optional orchestration role; when present, role policy overrides the requested permission mode. */
-  orchestrationRole?: OrchestrationRole | null;
   /** Prompt submitted to the CLI agent once it starts. */
   kickoffPrompt: string;
   /** Linear issues to attach to the new session before spawn. */
   linearIssues?: LaneLinearIssue[];
   title?: string;
+  /**
+   * Which Claude/Codex provider account the CLI launches as. Absent means the
+   * provider's default. Ignored for every other provider, which has one
+   * identity per machine.
+   */
+  instanceId?: string | null;
+  /**
+   * Saved harness preset the CLI launches under. The preset's env is applied to
+   * the spawned process and its model id reaches the CLI unrewritten. The CLI
+   * gate still applies: a preset on a harness whose CLI cannot take an outside
+   * key launches the native CLI instead.
+   */
+  presetId?: string | null;
+  /** Stored API credential the CLI launches under, when no preset is named. */
+  credentialId?: string | null;
   /** Foreground opens/focuses the session; background leaves focus alone. */
   disposition?: "foreground" | "background";
 };
@@ -4125,6 +4230,18 @@ export type AgentChatApproveArgs = {
   itemId: string;
   decision: AgentChatApprovalDecision;
   responseText?: string | null;
+};
+
+/**
+ * Drop a non-blocking provider question without answering it.
+ *
+ * Only a request whose `providerMetadata.dismissible` is true may be dismissed:
+ * a card the provider is actually waiting on has no local "never mind", and
+ * pretending otherwise would strand the turn. The host rejects the rest.
+ */
+export type AgentChatDismissPendingInputArgs = {
+  sessionId: string;
+  itemId: string;
 };
 
 export type AgentChatRespondToInputArgs = {

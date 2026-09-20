@@ -12,6 +12,40 @@ import SwiftUI
 // same vocabulary the Settings Usage page and the desktop band use — so the
 // compact module and the full page read as one surface.
 
+/// Keep reset outcomes attached to the account that produced them. A provider
+/// can expose more than one banked credit, so a single view-wide outcome would
+/// incorrectly replace every account's button after one spend.
+func workUsageResetOutcome(accountId: String, outcomes: [String: String]) -> String? {
+  outcomes[accountId]
+}
+
+/// What spending a reset credit did, in the user's words.
+///
+/// Mirrors `resetCreditOutcomeText` in
+/// `apps/desktop/src/shared/usageResetCredit.ts`, and is shared between the two
+/// phone surfaces that spend a credit — the Limits module's account row and the
+/// chat's "a reset credit is banked" notice — because a person who taps one
+/// after the other must not be told two different things about the same answer.
+///
+/// The host names the outcome; the phone only phrases it. An unrecognized
+/// status falls through to the host's own sentence and then to a plain failure:
+/// a reset that did not happen is never reported as one.
+func workResetCreditOutcomeText(_ result: UsageConsumeResetCreditResponse) -> String {
+  switch result.status {
+  case "reset": return "Reset applied. Your windows have cleared."
+  case "nothingToReset": return "Nothing to reset right now."
+  case "noCredit": return "No reset credit left."
+  case "alreadyRedeemed": return "That credit was already redeemed."
+  default:
+    if let message = result.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+      return message
+    }
+    return result.ok == true
+      ? "Reset applied. Your windows have cleared."
+      : "Could not use the reset credit."
+  }
+}
+
 /// Live limits: one group per provider, one card per window, one row per
 /// account — the compact form of the Settings page and the desktop band.
 ///
@@ -39,6 +73,11 @@ struct WorkUsageQuotaCompact: View {
               ),
               status: snapshot.providerStatus?[provider],
               spendControlReached: provider == "codex" && snapshot.spendControlReached == true,
+              // Codex is the only provider that grants reset credits today, so
+              // every other provider gets an empty list and renders nothing.
+              resetCredits: (snapshot.accounts ?? []).filter {
+                $0.provider == provider && ($0.resetCredits?.availableCount ?? 0) > 0
+              },
               onSelect: { segment in
                 detail = WorkUsageQuotaDetail(
                   provider: provider,
@@ -89,9 +128,14 @@ private struct WorkUsageQuotaProviderCard: View {
   let cards: [ADEUsageLimitCard]
   let status: MobileUsageProviderStatus?
   let spendControlReached: Bool
+  /// Accounts on this provider with a credit banked. Empty renders nothing.
+  let resetCredits: [MobileUsageAccount]
   let onSelect: (ADEUsageLimitSegment) -> Void
 
   @Environment(\.openURL) private var openURL
+  @EnvironmentObject private var syncService: SyncService
+  @State private var spendingAccountIds: Set<String> = []
+  @State private var resetOutcomes: [String: String] = [:]
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
@@ -148,16 +192,76 @@ private struct WorkUsageQuotaProviderCard: View {
           .font(ADEUsageType.microFont(.semibold))
           .foregroundStyle(ADEColor.warning)
       }
+
+      // A banked credit with no way to spend it is the state this row removes.
+      // The outcome replaces the button rather than sitting beside it: the
+      // credit is gone either way, and a live button invites a second spend.
+      ForEach(resetCredits) { account in
+        HStack(spacing: 6) {
+          Text("Reset credit banked")
+            .font(ADEUsageType.microFont())
+            .foregroundStyle(ADEColor.textSecondary)
+          Text(account.email ?? account.label ?? account.id)
+            .font(ADEUsageType.microFont())
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          Spacer(minLength: 4)
+          if let resetOutcome = workUsageResetOutcome(accountId: account.id, outcomes: resetOutcomes) {
+            Text(resetOutcome)
+              .font(ADEUsageType.microFont())
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(2)
+          } else if syncService.canInvokeRemoteAction("usage.consumeResetCredit") {
+            Button("Use reset") {
+              Task { await spendResetCredit(accountId: account.id) }
+            }
+            .buttonStyle(.plain)
+            .font(ADEUsageType.microFont(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .disabled(spendingAccountIds.contains(account.id))
+            .adeTapTarget(visual: 16)
+            .accessibilityHint("Clears this account's limit windows now.")
+          } else {
+            Text("Use reset on the host device.")
+              .font(ADEUsageType.microFont())
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(2)
+          }
+        }
+        .frame(minHeight: 44)
+      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var accountSubtitle: String? { adeUsageAccountSubtitle(status) }
+
+  /// The host names the outcome; the phone only phrases it. A reset that did
+  /// not happen is never reported as one — an unrecognized answer falls through
+  /// to the generic failure line rather than to "applied".
+  @MainActor
+  private func spendResetCredit(accountId: String) async {
+    spendingAccountIds.insert(accountId)
+    resetOutcomes[accountId] = nil
+    defer { spendingAccountIds.remove(accountId) }
+    do {
+      let result = try await syncService.consumeUsageResetCredit(accountId: accountId)
+      resetOutcomes[accountId] = workResetCreditOutcomeText(result)
+    } catch {
+      ADEHaptics.error()
+      resetOutcomes[accountId] = error.localizedDescription
+    }
+  }
 }
 
 private struct WorkUsageQuotaWindowRow: View {
   let card: ADEUsageLimitCard
   let onSelect: (ADEUsageLimitSegment) -> Void
+
+  /// The provider's brand, not a hash of the account id — a Claude account was
+  /// being drawn in Gemini's blue.
+  private var accent: Color { adeUsageProviderColor(card.provider) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 2) {
@@ -181,94 +285,47 @@ private struct WorkUsageQuotaWindowRow: View {
       .font(ADEUsageType.microFont().monospacedDigit())
       .lineLimit(1)
 
-      // One chip per account. A single account needs no chip row — the card
-      // number already is that account's number.
-      if card.segments.count > 1 {
-        HStack(spacing: 6) {
-          ForEach(card.segments) { segment in
-            Button {
-              onSelect(segment)
-            } label: {
-              HStack(spacing: 3) {
-                Text(segment.account?.initials ?? "··")
-                  .foregroundStyle(adeUsageAccountAccent(segment.account?.id ?? segment.id))
-                Text("\(Int(segment.percentLeft.rounded()))%")
-                  .foregroundStyle(ADEColor.textSecondary)
-              }
-              .font(ADEUsageType.microFont(.semibold).monospacedDigit())
+      // One row per account, ALWAYS — including the single-account case, which
+      // is exactly the case that used to hide the email. A machine shared
+      // between two logins gave no other clue whose quota was on screen.
+      //
+      // Full-width rows rather than side-by-side chips: the email is the point,
+      // and it does not fit beside a neighbour. Each row is its own 44pt
+      // control, so nothing overlaps and the sheet is one tap away.
+      ForEach(card.segments) { segment in
+        Button {
+          onSelect(segment)
+        } label: {
+          HStack(spacing: 6) {
+            Text(segment.account?.initials ?? "··")
+              .foregroundStyle(accent)
               .padding(.horizontal, 5)
               .padding(.vertical, 2)
               .background(
-                adeUsageAccountAccent(segment.account?.id ?? segment.id).opacity(0.14),
+                accent.opacity(0.14),
                 in: RoundedRectangle(cornerRadius: 5, style: .continuous)
               )
-              // Only the drawn background stays compact: unlike
-              // `.adeTapTarget`, this frame really does take 44pt of layout.
-              // That is the point here — these chips sit side by side, so
-              // overflowing 44pt shapes would overlap and the nearer chip
-              // would swallow its neighbour's taps. The row pays the height.
-              .frame(minWidth: 44, minHeight: 44)
-              .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(
-              "\(card.label), \(segment.account?.email ?? "this machine"), "
-              + "\(Int(segment.percentLeft.rounded())) percent left"
-            )
-            .accessibilityHint("Show account details")
+            Text("\(Int(segment.percentLeft.rounded()))%")
+              .foregroundStyle(ADEColor.textSecondary)
+              // Reserved width so a live tick cannot shuffle the row.
+              .frame(width: 40, alignment: .leading)
+            Text(segment.account?.email ?? "This machine")
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+            Spacer(minLength: 0)
           }
-          Spacer(minLength: 0)
+          .font(ADEUsageType.microFont(.semibold).monospacedDigit())
+          .frame(minHeight: 44)
+          .contentShape(Rectangle())
         }
-      }
-    }
-    // A single-account card IS the control: the chip row is absent, so the row
-    // itself opens the sheet. Multi-account cards stay a plain container whose
-    // chips are the controls.
-    .modifier(WorkUsageQuotaRowInteraction(
-      isSingleSegment: card.segments.count == 1,
-      label: singleSegmentAccessibilityLabel,
-      action: selectSingleSegment
-    ))
-  }
-
-  private func selectSingleSegment() {
-    guard card.segments.count == 1, let segment = card.segments.first else { return }
-    onSelect(segment)
-  }
-
-  private var singleSegmentAccessibilityLabel: String {
-    var parts = ["\(card.label) limit", "\(Int(card.percentLeft.rounded())) percent left"]
-    if let forecast = card.forecast {
-      parts.append(
-        "plus \(Int(forecast.percent.rounded())) percent in "
-        + adeUsageDurationLabel(milliseconds: forecast.resetsInMs)
-      )
-    }
-    return parts.joined(separator: ", ")
-  }
-}
-
-/// The tap gesture alone left VoiceOver with four unrelated strings and no way
-/// to reach the sheet, and a 20pt row is under the 44pt minimum. Both are only
-/// true for the single-account shape, so the modifier is a no-op otherwise.
-private struct WorkUsageQuotaRowInteraction: ViewModifier {
-  let isSingleSegment: Bool
-  let label: String
-  let action: () -> Void
-
-  func body(content: Content) -> some View {
-    if isSingleSegment {
-      content
-        .frame(minHeight: 44)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: action)
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(label)
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+          "\(card.label), \(segment.account?.email ?? "this machine"), "
+          + "\(Int(segment.percentLeft.rounded())) percent left"
+        )
         .accessibilityHint("Show account details")
-        .accessibilityAction { action() }
-    } else {
-      content
+      }
     }
   }
 }

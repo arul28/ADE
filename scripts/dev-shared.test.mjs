@@ -6,6 +6,7 @@ import {
   canAutoStartRuntime,
   computeRuntimeBuildHash,
   detachedDevRuntimeEnv,
+  devRuntimeEnv,
   resolveDevAppVersion,
   runtimeMismatchReason,
   resolveDefaultDevSocketPath,
@@ -122,6 +123,15 @@ test("detached dev runtime does not inherit another runtime's shutdown controls"
   assert.equal(env.ADE_OWNER_ID, undefined);
   assert.equal(env.KEEP_ME, "yes");
   assert.equal(env.ADE_RUNTIME_SOCKET_PATH, "\\\\.\\pipe\\ade-runtime-dev-test");
+});
+
+test("dev runtime env pairs a dev-only desktop bridge socket with the runtime socket", () => {
+  const posix = devRuntimeEnv("/tmp/ade-runtime-x.sock", "/dev/ADE", {});
+  assert.equal(posix.ADE_RUNTIME_SOCKET_PATH, "/tmp/ade-runtime-x.sock");
+  assert.equal(posix.ADE_DESKTOP_BRIDGE_SOCKET_PATH, "/tmp/ade-runtime-x-bridge.sock");
+
+  const windows = devRuntimeEnv("\\\\.\\pipe\\ade-runtime-dev-test", "C:\\dev\\ADE", {});
+  assert.equal(windows.ADE_DESKTOP_BRIDGE_SOCKET_PATH, "\\\\.\\pipe\\ade-runtime-dev-test-bridge");
 });
 
 test("detached dev runtime keeps the cto role when launched from an agent shell", () => {

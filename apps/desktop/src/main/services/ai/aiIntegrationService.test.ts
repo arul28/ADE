@@ -360,11 +360,11 @@ describe("aiIntegrationService", () => {
 
   it("passes through the resolved descriptor and session id", async () => {
     const { service } = makeService({
-      aiConfig: { features: { orchestrator: true } },
+      aiConfig: { features: { initial_context: true } },
     });
 
     await service.executeTask({
-      feature: "orchestrator",
+      feature: "initial_context",
       taskType: "review",
       prompt: "Evaluate this step",
       cwd: "/tmp",
@@ -383,13 +383,13 @@ describe("aiIntegrationService", () => {
   it("uses the feature model override when executeTask omits model", async () => {
     const { service } = makeService({
       aiConfig: {
-        features: { orchestrator: true },
-        featureModelOverrides: { orchestrator: "openai/gpt-5.4" },
+        features: { initial_context: true },
+        featureModelOverrides: { initial_context: "openai/gpt-5.4" },
       },
     });
 
     await service.executeTask({
-      feature: "orchestrator",
+      feature: "initial_context",
       taskType: "implementation",
       prompt: "Implement feature",
       cwd: "/tmp"
@@ -402,17 +402,17 @@ describe("aiIntegrationService", () => {
 
   it("skips AI instead of picking a default model when no setting is configured", async () => {
     const { service } = makeService({
-      aiConfig: { features: { orchestrator: true } },
+      aiConfig: { features: { initial_context: true } },
     });
 
     await expect(
       service.executeTask({
-        feature: "orchestrator",
+        feature: "initial_context",
         taskType: "implementation",
         prompt: "Implement feature",
         cwd: "/tmp"
       })
-    ).rejects.toThrow(missingFeatureModelMessage("orchestrator"));
+    ).rejects.toThrow(missingFeatureModelMessage("initial_context"));
     expect(mockState.runProviderTask).not.toHaveBeenCalled();
   });
 
@@ -443,7 +443,7 @@ describe("aiIntegrationService", () => {
 
     await expect(
       service.executeTask({
-        feature: "orchestrator",
+        feature: "initial_context",
         taskType: "planning",
         prompt: "Plan",
         cwd: "/tmp"

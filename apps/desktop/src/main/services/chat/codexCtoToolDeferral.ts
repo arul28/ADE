@@ -1,6 +1,5 @@
 import { z, type ZodType } from "zod";
 import type { ExecutableTool } from "../ai/tools/executableTool";
-import type { OrchestrationToolMap } from "../ai/tools/orchestrationTools";
 import type { CtoOperatorToolMap } from "../ai/tools/ctoOperatorTools";
 import type { CtoToolPack } from "../ai/tools/ctoToolPacks";
 
@@ -14,6 +13,9 @@ import type { CtoToolPack } from "../ai/tools/ctoToolPacks";
  * model registry and the whole chat graph. Every service-side type below is
  * imported `type`-only for the same reason.
  */
+/** A named set of executable tools, as handed to a provider adapter. */
+export type ExecutableToolMap = Record<string, ExecutableTool>;
+
 export type CodexDynamicToolSpec = {
   namespace?: string | null;
   name: string;
@@ -44,7 +46,7 @@ export function jsonSchemaForExecutableTool(toolDefinition: ExecutableTool): unk
  * had before packs existed.
  */
 export const buildCodexDynamicToolSpecs = (
-  tools: OrchestrationToolMap,
+  tools: ExecutableToolMap,
   namespace: string,
   deferLoading?: (name: string, toolDefinition: ExecutableTool) => boolean,
 ): CodexDynamicToolSpec[] =>

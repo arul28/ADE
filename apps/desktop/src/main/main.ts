@@ -85,6 +85,7 @@ import {
   captureClaudeHooksIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
+import { capturePendingInputDismissedAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -111,6 +112,7 @@ import { createLaneTemplateService } from "./services/lanes/laneTemplateService"
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
+import { createProxyService, type ProxyService } from "../../../ade-cli/src/services/proxy/proxyService";
 import {
   releaseLaneRuntimeResources,
   teardownArchivedLaneEnvironment,
@@ -357,7 +359,6 @@ import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
 import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
-import { createOrchestrationService } from "./services/orchestration/orchestrationService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
@@ -1586,6 +1587,20 @@ app.whenReady().then(async () => {
       .filter((entry) => !entry.remote);
 
   const machineAdeLayout = resolveMachineAdeLayout();
+  // One subscription proxy supervisor belongs to this ADE install, not to the
+  // currently-open project. Project contexts all point at the same machine
+  // state.json; keeping the lazy instance here prevents duplicate children and
+  // ensures closing one project cannot stop another project's proxy.
+  let subscriptionProxyService: ProxyService | null = null;
+  const getSubscriptionProxyService = (): ProxyService => {
+    if (!subscriptionProxyService) {
+      subscriptionProxyService = createProxyService({
+        adeHome: machineAdeLayout.adeDir,
+        analytics: productAnalyticsService,
+      });
+    }
+    return subscriptionProxyService;
+  };
   // Machine-scoped API keys (the CTO voice key) belong to this install, not to
   // whichever project happens to be open — a window with no project bound, a
   // remote-bound window and the in-process mode all reach the machine-key IPC.
@@ -3031,6 +3046,7 @@ app.whenReady().then(async () => {
       getAccountVault: () => accountVaultBridge,
       getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
+      analytics: productAnalyticsService,
     });
     const getAccountAccessToken = () => getSignedInAccountAccessToken(accountAuthService);
     const diskPressureMonitor = createDiskPressureMonitor({
@@ -3773,8 +3789,6 @@ app.whenReady().then(async () => {
     });
     prPollingServiceRef = prPollingService;
 
-    let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
-      null;
     const prSummaryService = createPrSummaryService({
       db,
       logger,
@@ -4037,11 +4051,11 @@ app.whenReady().then(async () => {
     const agentChatService = createAgentChatService({
       runtimeBudget: chatRuntimeBudget,
       projectRoot,
+      runtimeSocketPath: machineAdeLayout.socketPath,
       transcriptsDir: adePaths.transcriptsDir,
       fileService,
       linearIssueTracker,
       githubService,
-      getOrchestrationService: () => orchestrationServiceRef,
       getSearchService: () => searchServiceHolder.current,
       prService,
       diskPressureMonitor,
@@ -4049,6 +4063,17 @@ app.whenReady().then(async () => {
       // is the only moment a turn in flight can still be told why it is about
       // to stall.
       hostPowerSource: getPowerStateService(),
+      // Machine-wide, not per-project: "Don't ask again" on Claude's
+      // resume-return dialog is a decision about this person's habits, and
+      // asking again in the next project would read as the setting not working.
+      claudeResumeDialogPreference: {
+        isDismissed: () => readGlobalState(globalStatePath).claudeResumeReturnDismissed === true,
+        markDismissed: () => {
+          const state = readGlobalState(globalStatePath);
+          if (state.claudeResumeReturnDismissed === true) return;
+          writeGlobalState(globalStatePath, { ...state, claudeResumeReturnDismissed: true });
+        },
+      },
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
@@ -4111,6 +4136,11 @@ app.whenReady().then(async () => {
       onAutoResumeOutcome: (properties) => captureChatAutoResumeAnalytics({
         analytics: productAnalyticsService,
         properties,
+      }),
+      onPendingInputDismissed: ({ provider }) => capturePendingInputDismissedAnalytics({
+        analytics: productAnalyticsService,
+        surface: "api",
+        provider,
       }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
         if (!Notification.isSupported()) return;
@@ -4516,20 +4546,6 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
     );
 
-    const orchestrationService = createOrchestrationService({
-      resolveLaneWorktree: (laneId: string): string | undefined => {
-        try {
-          return laneService.getLaneWorktreePath(laneId);
-        } catch {
-          return undefined;
-        }
-      },
-    });
-    orchestrationServiceRef = orchestrationService;
-    // Register the chat-backed outbox drainer now that the orchestration service
-    // exists — before any run can hydrate on boot — so a persisted brief/ping
-    // survives a restart even if no orchestration turn ever runs to lazily wire it.
-    agentChatService.registerOrchestrationOutboxDrainer();
     const computerUseArtifactBrokerService =
       createComputerUseArtifactBrokerService({
         db,
@@ -4678,6 +4694,7 @@ app.whenReady().then(async () => {
         captureAnalytics: (input) => {
           productAnalyticsService.capture(input);
         },
+        captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
       },
     });
     const storageInsightsService = createStorageInsightsService({
@@ -5166,6 +5183,10 @@ app.whenReady().then(async () => {
       laneTemplateService,
       portAllocationService,
       laneProxyService,
+      getProxyService: getSubscriptionProxyService,
+      get proxyService(): ProxyService | null {
+        return subscriptionProxyService;
+      },
       oauthRedirectService,
       runtimeDiagnosticsService,
       rebaseSuggestionService,
@@ -5405,6 +5426,7 @@ app.whenReady().then(async () => {
         storageInsightsService,
         budgetCapService,
         autoUpdateService,
+        getProxyService: getSubscriptionProxyService,
         isPackaged: app.isPackaged,
       } as unknown as AdeRuntime;
     }
@@ -5429,6 +5451,10 @@ app.whenReady().then(async () => {
       laneTemplateService,
       portAllocationService,
       laneProxyService,
+      getProxyService: getSubscriptionProxyService,
+      get proxyService(): ProxyService | null {
+        return subscriptionProxyService;
+      },
       oauthRedirectService,
       runtimeDiagnosticsService,
       rebaseSuggestionService,
@@ -5468,7 +5494,6 @@ app.whenReady().then(async () => {
       budgetCapService,
       syncHostService: syncService.getHostService(),
       syncService,
-      orchestrationService,
       agentChatService,
       projectConfigService,
       projectSecretService,
@@ -5615,6 +5640,9 @@ app.whenReady().then(async () => {
           broadcast(IPC.usageEvent, snapshot);
         },
         projectRoot: normalizedRoot || null,
+        dependencies: {
+          captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
+        },
       });
     }
     return {
@@ -5638,6 +5666,7 @@ app.whenReady().then(async () => {
       laneTemplateService: null,
       portAllocationService: null,
       laneProxyService: null,
+      getProxyService: getSubscriptionProxyService,
       oauthRedirectService: null,
       runtimeDiagnosticsService: null,
       rebaseSuggestionService: null,
@@ -5675,7 +5704,6 @@ app.whenReady().then(async () => {
       budgetCapService: null,
       syncHostService: null,
       syncService: null,
-      orchestrationService: null,
       projectConfigService: null,
       projectSecretService: null,
       sessionDeltaService: null,
@@ -6962,9 +6990,20 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
-
     const contexts = new Set<AppContext>(projectContexts.values());
     contexts.add(getActiveContext());
+
+    // The subscription proxy is machine-scoped and is deliberately not part of
+    // per-context disposal. Quit is the one owner-level teardown that stops it.
+    if (subscriptionProxyService) {
+      try {
+        void subscriptionProxyService.dispose().catch(() => {
+          // Shutdown is best effort; the process is already leaving.
+        });
+      } catch {
+        // ignore
+      }
+    }
 
     for (const ctx of contexts) {
       try {
@@ -8495,6 +8534,7 @@ app.whenReady().then(async () => {
     getAccountUserId: () => getSharedAccountAuthService({
       secretsDir: machineAdeLayout.secretsDir,
     }).getStatus().userId,
+    analytics: productAnalyticsService,
   });
 
   attentionIpcBridge = registerIpc({

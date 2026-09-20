@@ -4,7 +4,7 @@ import {
   mergeReasoningTextFragments,
   type ActivityPhaseMergeMeta,
 } from "../../../shared/chatActivityPhase";
-import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatScheduledWorkStatus, AgentChatSpawnKind, CodexWebSearchResult } from "../../../shared/types";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatScheduledWorkStatus, AgentChatSpawnKind, AgentChatStopSource, CodexWebSearchResult } from "../../../shared/types";
 import {
   isBackgroundShellCommand,
   isRealSubagent,
@@ -195,6 +195,14 @@ export type SubagentResultCardRenderEvent = {
   worktreeBranch: string | null;
   worktreePath: string | null;
   parentLabel: string | null;
+  /** WHO stopped this agent; "unknown" for an event that did not say. */
+  stopSource: AgentChatStopSource;
+  /** Plain clause naming the cause of a non-user stop. */
+  stopReason: string | null;
+  /** Last thing this agent was observed doing before it ended. */
+  lastActivity: string | null;
+  /** True when a real report had already landed before the stop. */
+  resultLanded: boolean;
   /**
    * Spawned-ADE-chat navigation. Copied from the dropped spawn card so a
    * settled child chat stays openable. Null for runtime-native subagents.
@@ -208,8 +216,14 @@ export type SubagentResultCardRenderEvent = {
 export type SubagentStoppedGroupItem = {
   agentKey: string;
   title: string;
-  /** Stable row key of this agent's remaining card (`subagent-result:${agentKey}`). */
-  jumpToStartRowKey: string;
+  /** What it was doing when it ended; null when nothing was ever observed. */
+  lastActivity: string | null;
+  /**
+   * Whether this agent's report had already landed. A folded row that says
+   * only "stopped" hides the difference between work that was lost and work
+   * that was finished and then discarded by the fold.
+  */
+  resultLanded: boolean;
 };
 
 /**
@@ -229,6 +243,14 @@ export type SubagentStoppedGroupCause = "interrupt" | "usage_limit";
 export type SubagentStoppedGroupEvent = {
   type: "subagent_stopped_group";
   cause: SubagentStoppedGroupCause;
+  /**
+   * Who stopped the run. Only `user` earns "when you interrupted"; every other
+   * source has to name itself, because an ADE restart and a sibling brain
+   * taking the chat over both used to render as the reader's own doing.
+   */
+  stopSource: AgentChatStopSource;
+  /** Plain clause rendered after "N agents stopped: " for a non-user stop. */
+  stopReason: string | null;
   count: number;
   items: SubagentStoppedGroupItem[];
 };
@@ -1761,6 +1783,9 @@ function handleSubagentLifecycleEvent(
     if (wp) state.worktreePath = wp;
   }
   state.endedAt = timestamp;
+  // Read BEFORE the merge: once the stop summary lands, "had a report already"
+  // and "only has the stop sentence" are indistinguishable.
+  const resultLandedBeforeStop = Boolean(subagentText(state.resultSummary));
   state.resultSummary = preferSubagentSummary(state.resultSummary, incomingSummary);
   if (terminalStatus === "failed") {
     state.error = state.resultSummary ?? state.error;
@@ -1801,6 +1826,15 @@ function handleSubagentLifecycleEvent(
     worktreeBranch: state.worktreeBranch,
     worktreePath: state.worktreePath,
     parentLabel: resolveParentLabel(state, anchors),
+    stopSource: event.type === "subagent_result" && event.stopSource ? event.stopSource : "unknown",
+    stopReason: event.type === "subagent_result" ? subagentText(event.stopReason) : null,
+    // Never the description echoed back: the anchor seeds `statusLine` from the
+    // task title, and "Explore auth flow · Explore auth flow" is not evidence.
+    lastActivity: ((): string | null => {
+      const activity = subagentText(state.statusLine) ?? subagentText(state.progressSummary);
+      return activity && activity !== subagentText(state.description) ? activity : null;
+    })(),
+    resultLanded: resultLandedBeforeStop,
     childSessionId: state.childSessionId,
     spawnKind: state.spawnKind,
   };
@@ -3245,6 +3279,23 @@ function stoppedGroupCauseOf(
   return isUsageLimitFailureText(reason) ? "usage_limit" : null;
 }
 
+// The attribution a folded run inherits. A `failed` usage-limit casualty was
+// never anybody's interrupt, so it reports the provider rather than "unknown".
+function stoppedGroupStopSourceOf(
+  event: ChatTranscriptGroupedEnvelope["event"],
+): AgentChatStopSource {
+  if (event.type !== "subagent_result_card") return "unknown";
+  if (event.status === "failed") return "provider";
+  return event.stopSource ?? "unknown";
+}
+
+function stoppedGroupStopReasonOf(
+  event: ChatTranscriptGroupedEnvelope["event"],
+): string | null {
+  if (event.type !== "subagent_result_card") return null;
+  return event.stopReason?.trim() || null;
+}
+
 // Fold a run of 2+ consecutive same-cause result cards into one compact
 // `subagent_stopped_group` card. Cards with real summaries and a lone stopped
 // card stay individual, and a run that changes cause splits at the boundary.
@@ -3264,8 +3315,17 @@ function groupStoppedSubagentResultCards(
       continue;
     }
 
+    // The attribution is part of the run identity, not just the cause: an
+    // ADE-restart casualty and a user interrupt must never share one headline.
+    const stopSource = stoppedGroupStopSourceOf(row.event);
+    const stopReason = stoppedGroupStopReasonOf(row.event);
     let end = index;
-    while (end < rows.length && stoppedGroupCauseOf(rows[end]!.event) === cause) end += 1;
+    while (
+      end < rows.length
+      && stoppedGroupCauseOf(rows[end]!.event) === cause
+      && stoppedGroupStopSourceOf(rows[end]!.event) === stopSource
+      && stoppedGroupStopReasonOf(rows[end]!.event) === stopReason
+    ) end += 1;
     const run = rows.slice(index, end);
     index = end;
 
@@ -3277,19 +3337,18 @@ function groupStoppedSubagentResultCards(
 
     const firstAgentKey = (run[0]!.event as SubagentResultCardRenderEvent).agentKey;
     const lastInRun = run[run.length - 1]!;
-    // Folded result rows (and the spawn cards they replaced) are gone, so a
-    // per-agent `subagent-result:*` jump no-ops. Point at the surviving group
-    // key; the list does not wire a jump affordance because that would scroll
-    // the card onto itself.
-    const groupKey = `subagent-stopped-group:${cause}:${firstAgentKey}`;
+    const groupKey = `subagent-stopped-group:${cause}:${stopSource}:${stopReason ?? "unknown"}:${firstAgentKey}`;
     const items: SubagentStoppedGroupItem[] = run.map((entry) => {
       const event = entry.event as SubagentResultCardRenderEvent;
       return {
         agentKey: event.agentKey,
         title: event.description?.trim() || "Subagent task",
-        jumpToStartRowKey: groupKey,
+        lastActivity: event.lastActivity?.trim() || null,
+        resultLanded: event.resultLanded === true,
       };
     });
+    // Every row in the run shares the source (that is what closed the run), so
+    // the first row's reason is the run's reason.
     result.push({
       // The cause is part of the identity: an interrupt group and a usage-limit
       // group can both start at the same agent (a stop that lands on the same
@@ -3297,7 +3356,7 @@ function groupStoppedSubagentResultCards(
       // one card's state for the other.
       key: groupKey,
       timestamp: lastInRun.timestamp,
-      event: { type: "subagent_stopped_group", cause, count: run.length, items },
+      event: { type: "subagent_stopped_group", cause, stopSource, stopReason, count: run.length, items },
     });
   }
   return result;

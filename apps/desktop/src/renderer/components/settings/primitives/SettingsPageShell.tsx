@@ -1,25 +1,26 @@
 import React from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
-import { settingsScopeForAnchor, type SettingScope } from "../settingsManifest";
-import { ScopeChip } from "./ScopeChip";
 
 /**
  * The chrome every settings surface shares: the anchored `<section>`, the
- * title, the scope chip read off the manifest, and the description beneath.
+ * title, and the description beneath.
  *
  * All three page templates — the card, the manager, the dashboard — had a
- * verbatim copy of it. Three copies of "the chip comes from the manifest" is
- * three chances for one of them to start hand-passing a scope again, which is
- * the exact bug the manifest exists to close. This is internal to `primitives`:
- * a section file picks one of the three templates, never the shell.
+ * verbatim copy of it. This is internal to `primitives`: a section file picks
+ * one of the three templates, never the shell.
+ *
+ * There is no scope badge. Every settings page used to wear a violet "Account"
+ * or amber "This computer" tag beside its title, and with one on every card the
+ * tags stopped reading as information and started reading as decoration. The
+ * sidebar already groups the pages by where they save, which is the same fact
+ * said once instead of forty times.
  */
 export function SettingsPageShell({
   anchor,
   title,
   description,
-  scope,
-  showScopeChip,
-  remoteMachineName,
+  leading,
+  titleAdornment,
   sectionAttrs,
   sectionStyle,
   headerAlign = "center",
@@ -32,14 +33,10 @@ export function SettingsPageShell({
   anchor: string;
   title: string;
   description?: React.ReactNode;
-  /**
-   * Overrides the manifest. Only for an anchor that is deliberately not a
-   * manifest entry; a registered setting must never disagree with the registry.
-   */
-  scope?: SettingScope;
-  /** Forces the chip off. Undefined means "show it whenever a scope is known". */
-  showScopeChip?: boolean;
-  remoteMachineName?: string | null;
+  /** Sits before the title — a back control, a section mark. */
+  leading?: React.ReactNode;
+  /** Sits after the title — a help hint, a count. */
+  titleAdornment?: React.ReactNode;
   /** Extra data-* attributes for the `<section>`, e.g. `data-settings-manager`. */
   sectionAttrs?: Record<string, string>;
   /** Merged over the shared section styling. */
@@ -54,9 +51,6 @@ export function SettingsPageShell({
   bodyStyle?: React.CSSProperties;
   children?: React.ReactNode;
 }) {
-  // The manifest is the source; an explicit `scope` is only for anchors that
-  // are not registered settings at all.
-  const resolvedScope = scope ?? settingsScopeForAnchor(anchor);
   return (
     <section
       id={anchor}
@@ -82,7 +76,8 @@ export function SettingsPageShell({
         }}
       >
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            {leading}
             <h3
               style={{
                 margin: 0,
@@ -95,9 +90,7 @@ export function SettingsPageShell({
             >
               {title}
             </h3>
-            {resolvedScope && showScopeChip !== false ? (
-              <ScopeChip scope={resolvedScope} remoteMachineName={remoteMachineName} />
-            ) : null}
+            {titleAdornment}
           </div>
           {description ? (
             <p

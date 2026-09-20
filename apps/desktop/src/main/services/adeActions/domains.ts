@@ -11,6 +11,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "account",
   "attention",
   "lane",
+  "proxy",
   "git",
   "diff",
   "conflicts",
@@ -55,9 +56,9 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "automations",
   "review",
   "issue",
-  "orchestration",
   "search",
   "external-sessions",
+  "provider_instances",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];

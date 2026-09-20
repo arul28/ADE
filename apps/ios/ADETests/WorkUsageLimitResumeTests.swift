@@ -75,7 +75,9 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     _ title: String,
     summary: String,
     rank: Int,
-    status: WorkSubagentSnapshot.Status = .failed
+    status: WorkSubagentSnapshot.Status = .failed,
+    stopSource: String? = nil,
+    stopReason: String? = nil
   ) -> WorkTimelineEntry {
     let snapshot = WorkSubagentSnapshot(
       taskId: id,
@@ -92,7 +94,9 @@ final class WorkUsageLimitResumeTests: XCTestCase {
       latestSummary: summary,
       turnId: nil,
       startedAt: nil,
-      updatedAt: nil
+      updatedAt: nil,
+      stopSource: stopSource,
+      stopReason: stopReason
     )
     let row = WorkSubagentTimelineRow(
       kind: .result,
@@ -640,7 +644,7 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertEqual(model.count, 3)
     XCTAssertEqual(model.reason, .usageLimit)
     XCTAssertEqual(model.headline, "3 agents stopped · usage limit")
-    XCTAssertEqual(folded[0].id, "subagent-usage-limit-group-a")
+    XCTAssertEqual(folded[0].id, "subagent-usage-limit-group-provider-a")
   }
 
   func testUnrelatedFailureBreaksTheUsageLimitRunAndLoneFailureStaysIndividual() {
@@ -665,8 +669,8 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     // usage-limit casualty can never land in the same group.
     let folded = collapseSameCauseSubagentEntries(
       [
-        failedResultEntry("a", "Alpha", summary: "stopped", rank: 0, status: .stopped),
-        failedResultEntry("b", "Bravo", summary: "stopped", rank: 1, status: .stopped),
+        failedResultEntry("a", "Alpha", summary: "stopped", rank: 0, status: .stopped, stopSource: "user"),
+        failedResultEntry("b", "Bravo", summary: "stopped", rank: 1, status: .stopped, stopSource: "user"),
       ],
       causeOf: workSubagentStoppedGroupCause
     )
@@ -1237,5 +1241,149 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertNil(malformed.message)
     XCTAssertNil(malformed.turnId)
     XCTAssertEqual(malformed.refusalMessage, "This chat can\u{2019}t be resumed right now.")
+  }
+}
+
+/// Coverage for the banked reset credit: the status-derived notice kind, the
+/// `detail.accountId` read, the shared outcome phrasing, and the timeline card
+/// that carries the account through to the "Use reset" control.
+///
+/// Desktop parity target: `ResetCreditNoticeRow` in `AgentChatMessageList.tsx`
+/// plus `resetCreditOutcomeText` in `shared/usageResetCredit.ts`.
+final class WorkResetCreditNoticeTests: XCTestCase {
+
+  // MARK: - Notice kind
+
+  /// The host sends `noticeKind: "rate_limit"` with
+  /// `status: "reset_credit_available"`. Only the status promotion turns it
+  /// into the actionable card; without it the notice renders as a dead
+  /// sentence, which is the bug this covers.
+  func testStatusPromotesNoticeToResetCreditKind() {
+    XCTAssertEqual(
+      normalizedSystemNoticeKind(from: "reset_credit_available"),
+      .resetCreditAvailable
+    )
+    // Unrelated statuses keep their declared kind.
+    XCTAssertNil(normalizedSystemNoticeKind(from: "some_future_status"))
+    XCTAssertNil(normalizedSystemNoticeKind(from: "   "))
+    XCTAssertNil(normalizedSystemNoticeKind(from: nil))
+  }
+
+  // MARK: - detail.accountId
+
+  func testAccountIdIsReadFromNoticeDetail() {
+    XCTAssertEqual(
+      workResetCreditAccountId(from: #"{"accountId":"codex:inst-7"}"#),
+      "codex:inst-7"
+    )
+    XCTAssertEqual(
+      workResetCreditAccountId(from: #"{"accountId":"  codex:inst-7  "}"#),
+      "codex:inst-7"
+    )
+    // A host that omitted the id, sent a blank one, or sent the wrong type
+    // leaves no account to spend against — the card still renders, the button
+    // does not.
+    XCTAssertNil(workResetCreditAccountId(from: #"{"accountId":"   "}"#))
+    XCTAssertNil(workResetCreditAccountId(from: #"{"accountId":42}"#))
+    XCTAssertNil(workResetCreditAccountId(from: #"{}"#))
+    XCTAssertNil(workResetCreditAccountId(from: "not json"))
+    XCTAssertNil(workResetCreditAccountId(from: nil))
+  }
+
+  // MARK: - Outcome phrasing
+
+  /// The host names the outcome; the phone only phrases it. The four known
+  /// statuses must read exactly as desktop's `RESET_CREDIT_OUTCOME_TEXT`.
+  func testKnownStatusesPhraseLikeDesktop() {
+    func text(_ status: String) -> String {
+      workResetCreditOutcomeText(
+        UsageConsumeResetCreditResponse(ok: true, status: status, message: nil)
+      )
+    }
+    XCTAssertEqual(text("reset"), "Reset applied. Your windows have cleared.")
+    XCTAssertEqual(text("nothingToReset"), "Nothing to reset right now.")
+    XCTAssertEqual(text("noCredit"), "No reset credit left.")
+    XCTAssertEqual(text("alreadyRedeemed"), "That credit was already redeemed.")
+  }
+
+  /// A host that cannot spend credits answers with its own sentence and no
+  /// status. That sentence is shown verbatim.
+  func testHostSentenceWinsWhenStatusIsAbsent() {
+    XCTAssertEqual(
+      workResetCreditOutcomeText(
+        UsageConsumeResetCreditResponse(ok: false, status: nil, message: "Update this machine to use resets.")
+      ),
+      "Update this machine to use resets."
+    )
+  }
+
+  /// A reset that did not happen is NEVER reported as one: no status, no
+  /// message, `ok: false` — and a blank message is treated as no message.
+  func testFailureIsNeverDressedUpAsAReset() {
+    XCTAssertEqual(
+      workResetCreditOutcomeText(UsageConsumeResetCreditResponse(ok: false, status: nil, message: nil)),
+      "Could not use the reset credit."
+    )
+    XCTAssertEqual(
+      workResetCreditOutcomeText(UsageConsumeResetCreditResponse(ok: false, status: nil, message: "   ")),
+      "Could not use the reset credit."
+    )
+    // An unrecognized status with a plain `ok` still reads as applied — the
+    // host said it worked — but an unrecognized status with `ok: false` does not.
+    XCTAssertEqual(
+      workResetCreditOutcomeText(UsageConsumeResetCreditResponse(ok: true, status: "futureStatus", message: nil)),
+      "Reset applied. Your windows have cleared."
+    )
+    XCTAssertEqual(
+      workResetCreditOutcomeText(UsageConsumeResetCreditResponse(ok: false, status: "futureStatus", message: nil)),
+      "Could not use the reset credit."
+    )
+  }
+
+  // MARK: - Timeline card
+
+  private func transcript(_ event: String) -> [WorkChatEnvelope] {
+    parseWorkChatTranscript("""
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","event":\(event)}
+    """)
+  }
+
+  /// End to end from the wire: a Codex limit notice becomes a `resetCredit`
+  /// card whose metadata carries the account the credit belongs to — not
+  /// whichever account a usage sheet happens to have open.
+  func testNoticeBecomesResetCreditCardCarryingTheAccount() {
+    let cards = buildWorkEventCards(from: transcript("""
+    {"type":"system_notice","noticeKind":"rate_limit","severity":"info",
+     "status":"reset_credit_available",
+     "message":"Codex hit its limit. A reset credit is banked.",
+     "detail":{"accountId":"codex:inst-7"}}
+    """))
+    let card = cards.first { $0.kind == "resetCredit" }
+    XCTAssertNotNil(card, "The reset-credit notice must get its own actionable card.")
+    XCTAssertEqual(card?.title, "Codex hit its limit. A reset credit is banked.")
+    XCTAssertEqual(card?.metadata, ["codex:inst-7"])
+  }
+
+  /// An older host that sends the notice without an account id still gets the
+  /// sentence. The empty metadata is what hides the button.
+  func testNoticeWithoutAccountIdStillRendersWithoutAnAction() {
+    let cards = buildWorkEventCards(from: transcript("""
+    {"type":"system_notice","noticeKind":"rate_limit","severity":"info",
+     "status":"reset_credit_available",
+     "message":"Codex hit its limit. A reset credit is banked."}
+    """))
+    let card = cards.first { $0.kind == "resetCredit" }
+    XCTAssertNotNil(card)
+    XCTAssertEqual(card?.metadata, [])
+  }
+
+  /// An ordinary rate-limit notice is untouched — the promotion is keyed on the
+  /// status, so a plain limit warning must not sprout a spend button.
+  func testPlainRateLimitNoticeIsNotPromoted() {
+    let cards = buildWorkEventCards(from: transcript("""
+    {"type":"system_notice","noticeKind":"rate_limit","severity":"warning",
+     "message":"Approaching the weekly limit."}
+    """))
+    XCTAssertNil(cards.first { $0.kind == "resetCredit" })
   }
 }

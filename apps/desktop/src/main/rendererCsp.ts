@@ -55,9 +55,9 @@ export function shouldApplyRendererCsp(
 export const FRAME_SRC_EXTRA_SCHEMES = ["ade-scene:", "blob:", "about:"] as const;
 
 /**
- * The schemes only a packaged build serves its own renderer over. The packaged
- * spec previews (`SpecPreviewCard`, `PlanMarkdown`) frame a `bundleAssetFileUrl`,
- * so the navigation door must name them even though the dev CSP does not.
+ * The schemes only a packaged build serves its own renderer over. A packaged
+ * build serves renderer-framed local documents over these, so the navigation
+ * door must name them even though the dev CSP does not.
  */
 export const PACKAGED_FRAME_SCHEMES = ["file:", "app:"] as const;
 

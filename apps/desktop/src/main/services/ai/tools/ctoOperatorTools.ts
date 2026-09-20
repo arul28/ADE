@@ -261,15 +261,6 @@ export interface CtoOperatorToolDeps {
     listSessions: (args?: any) => Promise<any> | any;
     getTrace?: (args?: any) => Promise<any> | any;
   } | null;
-  /**
-   * Orchestration reads. Positional args, matching the real service — the CTO
-   * tools adapt, rather than the service being reshaped for one caller.
-   */
-  orchestrationService?: {
-    runList: (laneId?: string, options?: { limit?: number }) => Promise<any[]>;
-    bundleRead: (runId: string, bundlePath: string) => Promise<any>;
-    bundleRootFor: (laneId: string, runId: string) => string;
-  } | null;
 }
 
 /**
@@ -628,7 +619,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   const insights = inPack("insights");
   const config = inPack("config");
   const devices = inPack("devices");
-  const orchestration = inPack("orchestration");
 
   tools.listLanes = core({
     description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work.",
@@ -3343,41 +3333,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       const getTrace = browser?.getTrace;
       if (!getTrace) return unavailable("Browser traces");
       return attempt(() => getTrace.call(browser, { sessionId }));
-    },
-  });
-
-  // ── Orchestration reads ────────────────────────────────────────────────────
-
-  tools.listOrchestrationRuns = orchestration({
-    description:
-      "List orchestration runs and their status. Read-only — leads and workers drive the runs themselves. "
-      + "Omit laneId to list runs across every lane.",
-    inputSchema: z.object({
-      laneId: z.string().optional().describe("Restrict to one lane. Read-only, so any lane is fine."),
-      limit: z.number().int().min(1).max(100).optional().default(25),
-    }),
-    execute: async ({ laneId, limit }) => {
-      const orchestration = deps.orchestrationService;
-      if (!orchestration) return unavailable("Orchestration");
-      return attempt(() => orchestration.runList(laneId?.trim() || undefined, { limit }));
-    },
-  });
-
-  tools.readOrchestrationBundle = orchestration({
-    description:
-      "Read one orchestration run's bundle: its manifest, plan, and registered assets. "
-      + "Both ids come from listOrchestrationRuns.",
-    inputSchema: z.object({
-      runId: z.string().min(1),
-      laneId: z.string().min(1).describe("Lane the run belongs to — its bundle lives in that lane's worktree."),
-    }),
-    execute: async ({ runId, laneId }) => {
-      const orchestration = deps.orchestrationService;
-      if (!orchestration) return unavailable("Orchestration");
-      return attempt(() => orchestration.bundleRead(
-        runId,
-        orchestration.bundleRootFor(laneId, runId),
-      ));
     },
   });
 

@@ -404,6 +404,10 @@ export function descriptorsFromAgentChatModelCatalog(
             subProviderKey: useSubsectionAsProvider
               ? subsection.key || model.providerId || provider.key || undefined
               : model.providerId || provider.key || subsection.key || undefined,
+            // A key-backed row carries its credential so selecting it can hand
+            // the launch the same key the row came from.
+            ...(model.credentialId ? { credentialId: model.credentialId } : {}),
+            ...(model.credentialId && subsection.label ? { credentialLabel: subsection.label } : {}),
           };
           if (filter && !filter(descriptor)) continue;
           merged.set(descriptor.id, descriptor);

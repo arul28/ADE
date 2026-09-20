@@ -54,6 +54,20 @@ export function pendingApprovalOwnsQuestionKeys(approval: PendingApproval | null
   return approval?.mode === "question";
 }
 
+/**
+ * May this card be thrown away unanswered?
+ *
+ * Reads the provider's own `dismissible` flag rather than inferring it from
+ * `blocking: false`. Codex steering is also non-blocking and is still an open
+ * app-server request; offering Esc there would advertise a key the host
+ * refuses.
+ */
+export function pendingApprovalIsDismissible(
+  approval: PendingApproval | null | undefined,
+): boolean {
+  return approval?.request?.providerMetadata?.dismissible === true;
+}
+
 export function latestPendingApproval(events: AgentChatEventEnvelope[]): PendingApproval | null {
   const unresolved: PendingApproval[] = [];
   const resolved = new Set<string>();

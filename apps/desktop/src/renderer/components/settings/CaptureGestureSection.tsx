@@ -101,8 +101,7 @@ export function CaptureGestureSection() {
             ? `Press ${chord} anywhere to capture the window in front. Over ADE, its tab, lane, PR and open file come along with the image.`
             : blocker ?? "This ADE surface cannot run the native capture helper."
         }
-        scope="machine"
-        showScopeChip
+
         disabled={!available}
         control={
           <SettingsToggle

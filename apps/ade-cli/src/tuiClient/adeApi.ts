@@ -250,7 +250,7 @@ export type TuiSessionLifecycleFields = Pick<
 export type TuiChatSessionSummary = AgentChatSessionSummary & TuiSessionLifecycleFields;
 export type TuiChatTerminalSession = ChatTerminalSession
   & TuiSessionLifecycleFields
-  & Pick<TerminalSessionSummary, "lastActivityAt">;
+  & Pick<TerminalSessionSummary, "lastActivityAt" | "instanceId" | "presetId" | "credentialId">;
 
 export async function listSessionSummaries(
   connection: AdeCodeConnection,
@@ -301,11 +301,17 @@ export function enrichTerminalSessionsWithLifecycle(
   summaries: TerminalSessionSummary[],
 ): TuiChatTerminalSession[] {
   const byId = new Map(summaries.map((summary) => [summary.id, summary] as const));
-  return sessions.map((session) => ({
-    ...session,
-    ...lifecycleFields(byId.get(session.terminalId)),
-    lastActivityAt: byId.get(session.terminalId)?.lastActivityAt ?? null,
-  }));
+  return sessions.map((session) => {
+    const summary = byId.get(session.terminalId);
+    return {
+      ...session,
+      ...lifecycleFields(summary),
+      lastActivityAt: summary?.lastActivityAt ?? null,
+      ...(summary?.instanceId !== undefined ? { instanceId: summary.instanceId } : {}),
+      ...(summary?.presetId !== undefined ? { presetId: summary.presetId } : {}),
+      ...(summary?.credentialId !== undefined ? { credentialId: summary.credentialId } : {}),
+    };
+  });
 }
 
 export async function requestSessionAttention(
@@ -559,6 +565,18 @@ export type StartCliTerminalSessionResult = {
 };
 
 function terminalSummaryToChatSession(session: TerminalSessionSummary): TuiChatTerminalSession {
+  const instanceId = session.instanceId
+    ?? session.resumeMetadata?.instanceId
+    ?? session.resumeMetadata?.launch?.instanceId
+    ?? null;
+  const presetId = session.presetId
+    ?? session.resumeMetadata?.presetId
+    ?? session.resumeMetadata?.launch?.presetId
+    ?? null;
+  const credentialId = session.credentialId
+    ?? session.resumeMetadata?.credentialId
+    ?? session.resumeMetadata?.launch?.credentialId
+    ?? null;
   return {
     terminalId: session.id,
     ptyId: session.ptyId,
@@ -580,6 +598,9 @@ function terminalSummaryToChatSession(session: TerminalSessionSummary): TuiChatT
     lastOutputPreview: session.lastOutputPreview,
     summary: session.summary,
     lastActivityAt: session.lastActivityAt ?? null,
+    ...(instanceId ? { instanceId } : {}),
+    ...(presetId ? { presetId } : {}),
+    ...(credentialId ? { credentialId } : {}),
     ...lifecycleFields(session),
   };
 }
@@ -606,6 +627,9 @@ export async function startCliTerminalSession(args: {
   model?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  instanceId?: string | null;
+  presetId?: string | null;
+  credentialId?: string | null;
   permissionMode?: AgentChatPermissionMode | null;
   initialInput?: string | null;
   cols: number;
@@ -620,6 +644,9 @@ export async function startCliTerminalSession(args: {
     model: args.model ?? undefined,
     reasoningEffort: args.reasoningEffort ?? undefined,
     ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
+    ...(args.instanceId !== undefined ? { instanceId: args.instanceId } : {}),
+    ...(args.presetId !== undefined ? { presetId: args.presetId } : {}),
+    ...(args.credentialId !== undefined ? { credentialId: args.credentialId } : {}),
     permissionMode: args.permissionMode ?? "default",
     initialInput: args.initialInput ?? undefined,
     cols: args.cols,
@@ -840,6 +867,9 @@ export async function createChatSession(args: {
   modelId?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  instanceId?: string | null;
+  presetId?: string | null;
+  credentialId?: string | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -875,6 +905,9 @@ export async function createChatSession(args: {
     ...(args.title?.trim() ? { title: args.title.trim() } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(args.fastMode === true ? { fastMode: true } : {}),
+    ...(args.instanceId ? { instanceId: args.instanceId } : {}),
+    ...(args.presetId ? { presetId: args.presetId } : {}),
+    ...(args.credentialId ? { credentialId: args.credentialId } : {}),
     ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
     ...(provider === "claude" && args.interactionMode ? { interactionMode: args.interactionMode } : {}),
     ...(provider === "claude" && args.claudePermissionMode ? { claudePermissionMode: args.claudePermissionMode } : {}),
@@ -1011,6 +1044,23 @@ export async function respondToInput(args: {
     ...(args.decision ? { decision: args.decision } : {}),
     ...(args.answers ? { answers: args.answers } : {}),
     ...(args.responseText ? { responseText: args.responseText } : {}),
+  });
+}
+
+/**
+ * Throw away a non-blocking question without answering it.
+ *
+ * Only offered for a card the host marked dismissible; the host refuses the
+ * rest, and the TUI surfaces that refusal rather than hiding the key.
+ */
+export async function dismissPendingInput(args: {
+  connection: AdeCodeConnection;
+  sessionId: string;
+  itemId: string;
+}): Promise<void> {
+  await args.connection.action("chat", "dismissPendingInput", {
+    sessionId: args.sessionId,
+    itemId: args.itemId,
   });
 }
 

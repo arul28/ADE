@@ -6,6 +6,8 @@ import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentE
 import type {
   AiApiKeyVerificationResult,
   AiClaudeAvailability,
+  AiHarnessPresetSummary,
+  AiProviderAccountSummary,
   AiCustomProviderConfig,
   AiLocalProviderConfigs,
   AiProviderConnections,
@@ -42,6 +44,10 @@ import {
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
 import { disabledProviderSet } from "../../../shared/providerEnablement";
+import { presetSourceLabel } from "../../../shared/harnessPresets";
+import { readHarnessPresetsOrEmpty } from "../chat/harnessPresetSettings";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../shared/cursorCloudArtifactLimits";
 import { probeAllAcpProviderAuth } from "./acpAuthProbe";
 import { loadQwenUserSettings } from "./qwenUserSettings";
@@ -133,10 +139,14 @@ export type AiFeatureKey =
   | "commit_messages"
   | "pr_descriptions"
   | "terminal_summaries"
-  | "orchestrator"
   | "initial_context";
 
 export type AiProviderMode = "guest" | "subscription";
+
+// Declared in shared/types/config.ts so the agent-facing `AiSettingsStatus`
+// (what `ade actions run ai getStatus` returns) and this main-process status
+// cannot drift apart.
+export type { AiHarnessPresetSummary, AiProviderAccountSummary };
 
 export type AiIntegrationStatus = {
   mode: AiProviderMode;
@@ -174,6 +184,14 @@ export type AiIntegrationStatus = {
     authenticated?: boolean;
     verified?: boolean;
   }>;
+  /**
+   * Saved harness presets and provider accounts on THIS machine, so an agent
+   * reading `ai.getStatus` can name a brain it is allowed to launch on without
+   * a second round trip. Never carries a key or a config path — just the ids
+   * and labels a `--preset` / `--instance` flag takes.
+   */
+  harnessPresets?: AiHarnessPresetSummary[];
+  providerAccounts?: AiProviderAccountSummary[];
   providerConnections?: AiProviderConnections;
   runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: string[];
@@ -250,7 +268,6 @@ const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
   commit_messages: false,
   pr_descriptions: true,
   terminal_summaries: true,
-  orchestrator: true,
   initial_context: true,
 };
 
@@ -288,8 +305,6 @@ export function missingFeatureModelMessage(feature: AiFeatureKey): string {
       return "Choose a Conflict Proposals model in Settings.";
     case "narratives":
       return "Choose a Narratives model in Settings.";
-    case "orchestrator":
-      return "Choose an Orchestrator model in Settings.";
     case "initial_context":
       return "Choose an Initial Context model in Settings.";
     default: {
@@ -1817,6 +1832,56 @@ export function createAiIntegrationService(args: {
   };
 
   const MODEL_LIST_CACHE_TTL_MS = 120_000; // 2 minutes
+  /**
+   * The brains an agent can name in a launch: saved presets and the machine's
+   * provider accounts.
+   *
+   * Both are machine-local reads (the account settings cache and the instance
+   * registry), so this costs no network and is safe inside the status phase.
+   * Failure is silent by design — an unreadable preset list must not fail the
+   * whole AI status, which is what every chat surface renders from.
+   */
+  const readHarnessBrains = (): {
+    harnessPresets?: AiHarnessPresetSummary[];
+    providerAccounts?: AiProviderAccountSummary[];
+  } => {
+    let harnessPresets: AiHarnessPresetSummary[] | undefined;
+    let providerAccounts: AiProviderAccountSummary[] | undefined;
+    let accountLabels = new Map<string, string>();
+    try {
+      const instances = getMachineProviderInstanceStore().list();
+      accountLabels = new Map(instances.map((instance) => [instance.id, instance.label]));
+      providerAccounts = instances.map((instance) => ({
+        id: instance.id,
+        provider: instance.provider,
+        label: instance.label,
+        isDefault: instance.isDefault,
+        signedIn: instance.signedIn,
+      }));
+    } catch (error) {
+      logger.debug?.("ai.status.provider_accounts_unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    try {
+      harnessPresets = readHarnessPresetsOrEmpty(resolveMachineAdeDir()).map((preset) => ({
+        id: preset.id,
+        name: preset.name,
+        harness: preset.harness,
+        model: preset.model,
+        source: presetSourceLabel(preset.source, (instanceId) => accountLabels.get(instanceId)),
+      }));
+    } catch (error) {
+      logger.debug?.("ai.status.harness_presets_unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return {
+      ...(harnessPresets?.length ? { harnessPresets } : {}),
+      ...(providerAccounts?.length ? { providerAccounts } : {}),
+    };
+  };
+
   const modelListCache = new Map<string, { models: AgentModelDescriptor[]; cachedAt: number }>();
 
   const listModels = async (provider: AgentProvider): Promise<AgentModelDescriptor[]> => {
@@ -2186,6 +2251,7 @@ export function createAiIntegrationService(args: {
             customModelSlugs: effectiveConfig?.ai?.customModelSlugs,
             piInstallation: piProfileInventory,
             apiKeyStore: timeSyncPhase("api_key_store_status", () => getApiKeyStoreStatus()),
+            ...timeSyncPhase("harness_brains", () => readHarnessBrains()),
           };
           if (requestGeneration === providerReadinessCacheGeneration) {
             statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion };

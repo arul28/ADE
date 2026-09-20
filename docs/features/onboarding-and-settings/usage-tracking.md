@@ -44,6 +44,26 @@ binding of its own. Bound windows ignore that channel and keep the runtime
 event stream. The in-process tracker is the fallback producer only when no
 brain scope is running, which is also the only time that tracker polls.
 
+## Smart balance and auto-start windows
+
+Smart balance applies to Claude and Codex when it is enabled for that provider.
+New chats consider only signed-in instances. Each instance is scored as
+`five-hour headroom × (1 − w) + weekly headroom × w`, where `w` increases
+linearly from `0.35` at the start of the weekly window to `0.85` at its reset.
+When the weekly duration is unknown, `w` is `0.5`. The default instance wins a
+tie, and a snapshot with no usable quota data falls back to the default without
+guessing. An explicit account selection always wins over balancing.
+
+Auto-start windows are off by default. When enabled, the usage service arms one
+unref'd timer per Claude or Codex instance that has a future five-hour reset.
+Five seconds after that reset, ADE sends one small provider request through the
+instance's own config home, using Claude Haiku 4.5 or Codex GPT-5.6 Luna, then
+refreshes quota data. The timer is replaced when a newer reset arrives and is
+reconstructed from the next snapshot; no timer state is persisted. Accounts
+without a five-hour window, including API-key-only accounts, never run the
+request. ADE records only the provider, instance, model, success, and duration,
+never the response text.
+
 ## ADE versus CodexBar
 
 | Concern | ADE before ADE-117 | CodexBar reference | ADE after ADE-117 |
@@ -442,45 +462,64 @@ Primary provider references: [GitHub billing usage](https://docs.github.com/en/r
   Limits cards use. No token is read into the snapshot, logged, or persisted. Both fields are
   optional: an unknown account shows no line, and a host that predates them
   shows no external link.
-- Live limits reads as headroom, not consumption. One group per provider, one
-  card per window (`5-hour`, `Weekly`, and any model-specific window the
-  provider reports separately), and one segment per account inside the card.
-  The card shows pooled headroom ("49% left") and the next reset that actually
-  returns something ("+50% in 6d 0h"); each segment shows that account's
-  initials chip, its own headroom, and its reset countdown. Hovering or
-  clicking a segment on desktop — tapping it on iOS — opens the account's
+- Live limits reads as headroom, not consumption, and **the account is the
+  row**. Each row names itself — provider mark, provider, `email · plan` — and
+  carries that account's windows side by side underneath as meters: a short
+  label (`5h` / `wk` / `mo`), a bar filled to the HEADROOM with the spent
+  remainder hatched, that same headroom in words ("82% left"), and the reset
+  countdown. One
+  provider with two logins is two rows, both named. Hovering, focusing, or
+  clicking a meter on desktop — tapping a row on iOS — opens that window's
   details: plan, the machines reporting it, headroom, absolute reset time,
-  what the reset restores to the pool, pace, and the link out. The arithmetic
-  is `usageLimitModel.ts` on desktop and the `adeUsageLimitCards` family in
-  `ADEUsageDesign.swift` on iOS; both are pure and clock-injected, and both are
-  asserted against the same numbers. The card itself is `UsageLimitCard.tsx`,
-  rendered by `UsageLimitsBand` in both of its hosts (the header popup and the
-  Live limits band) in place of the old per-window `UsagePaceBar` stack; cards
-  stack unconditionally because the band lives in a 420px popover. Account chips
-  borrow `accountAccentColor` from the same theme-aware fallback palette an
-  unknown provider uses, so there is no palette that exists only here. On iOS
-  the same cards are the Limits tab of the Work usage module
-  (`WorkUsageLimitsModule.swift`, split out of `WorkUsageActivityCarousel.swift`)
-  as well as the Settings Usage page.
+  pace, the model split, what the reset restores to the pool, and the link out.
+  The arithmetic is `usageLimitModel.ts` on desktop (`buildAccountRows`
+  transposes `buildLimitCards`, so one set of numbers feeds both shapes) and the
+  `adeUsageLimitCards` family in `ADEUsageDesign.swift` on iOS; both are pure
+  and clock-injected, and both are asserted against the same numbers. The row
+  itself is `UsageAccountRow.tsx`, rendered by `UsageLimitsBand` in the header
+  popup. It replaced a per-window card stack that cost roughly 360px per
+  provider and hid the email; the popover ran about 720px tall for two
+  providers. Bars are drawn in the PROVIDER's brand colour from
+  `providerColors.ts`, with `usagePressureColor` still overriding at 70/90 —
+  accounts get no colour of their own, because hashing an account id into a
+  palette drew a Claude window in Gemini's blue. On iOS the same rows are the
+  Limits tab of the Work usage module (`WorkUsageLimitsModule.swift`, split out
+  of `WorkUsageActivityCarousel.swift`) as well as the Settings Usage page.
+- A row offers **Use reset** only while its account carries a banked reset
+  credit (`UsageAccount.resetCredits.availableCount > 0`). It calls
+  `ade.usage.consumeResetCredit` and reports what the host did, on the row, for
+  four seconds — "Reset applied. Your windows have cleared.", "Nothing to reset
+  right now.", "No reset credit left.", "That credit was already redeemed.", or
+  "Could not use the reset credit." A host whose usage service cannot spend
+  credits answers "Reset credits are not available on this host yet." rather
+  than reporting a reset it did not perform.
 - Accounts pool by email: the same login reported by two machines is one
   account with two `Via` entries, freshest reading first. **Today the quota
-  poller only reads the local machine**, and a machine resolves exactly one
-  account per provider (one `CODEX_HOME` / `CLAUDE_CONFIG_DIR` per process), so
-  a snapshot normally carries one account per provider with one machine. The
+  poller only reads the local machine**, but it reads EVERY provider account on
+  it: `listQuotaInstances` enumerates the provider-instance registry and polls
+  each account's own config home (default first, because its result decides the
+  provider-level facts that stay singular — the status line's account email, the
+  poll `source`, and the Codex spend-control / 7-day series). A machine with
+  three Claude logins therefore contributes three accounts to the snapshot, not
+  one. A machine with no registry entry falls back to the single ambient
+  `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The
   account-wide fan-out in `accountUsageLiveRefresh.ts` carries history rollups
   (`usage.getUsageRollup`), not live quota. The pooled shape is the contract so
-  a quota fan-out can fill it without moving any client. Where an account is
-  named once for a whole group, the naming is suppressed as soon as it could
-  contradict the rows beneath it: the band's provider heading prints
-  `status.accountEmail` only while that provider has at most one pooled account
-  (the cards carry an initials chip per account otherwise), and the `ade code`
-  usage pane tags a quota row with an email only when its provider has more than
-  one (`usageWindowAccountLabel` in `tuiClient/components/UsagePane.tsx`; the
-  provider status line there always prints the account).
+  a quota fan-out can fill it without moving any client. **Every row names its
+  account, always** — on desktop, iOS, and the `ade code` usage pane
+  (`usageWindowAccountLabel` in `tuiClient/components/UsagePane.tsx`). The
+  earlier rule suppressed the email whenever a provider had one account, which
+  is precisely the case where the row IS that account and a machine shared
+  between two logins gives no other clue. A host with no account directory
+  falls back to `status.accountEmail`, then to "This machine".
 - The iOS quota rows are readings, not controls: the old tap-to-focus gesture
   on a pace bar is gone. Tapping a row opens the account detail sheet.
-- Codex reports no banked/credit resets in the rate-limit payload ADE parses
-  (`parseCodexRateLimitSnapshot` sees primary/secondary windows and a
-  spend-control flag only), so there is no "N banked" line and no redemption
-  action. Claude's `extra_usage` is paid overage in dollars, which the extra
-  usage card already shows.
+- Codex DOES report banked reset credits, and ADE parses them:
+  `parseCodexResetCredits` counts only credits whose status is still
+  `available` and reports the soonest expiry, which lands on
+  `UsageAccount.resetCredits`. That is what gates the Codex row's **Use reset**
+  action, so a Codex account with no banked credit shows no action at all.
+  `parseCodexRateLimitSnapshot` remains windows-and-spend-control only; the
+  credits ride their own key in the same payload. Claude grants no such credit
+  — its `extra_usage` is paid overage in dollars, which the extra usage card
+  already shows.

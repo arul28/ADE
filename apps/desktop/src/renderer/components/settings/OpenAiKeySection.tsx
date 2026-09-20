@@ -55,8 +55,7 @@ export function OpenAiKeySection() {
     <SettingsCard
       anchor={OPENAI_KEY_ANCHOR}
       title="OpenAI API key"
-      scope="machine"
-      showScopeChip
+
       description={<OpenAiKeyCostLine compact />}
       stacked
     >

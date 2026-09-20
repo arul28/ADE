@@ -57,8 +57,6 @@
     "test:integration": "vitest run .integration.test --passWithNoTests",
     "test:component": "vitest run src/renderer",
     "test:coverage": "vitest run --coverage",
-    "test:orchestrator-smoke": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts --reporter=verbose",
-    "test:orchestrator-complex-mock": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts -t \"complex mock prompt\" --reporter=verbose",
     "test:chat-model-runtime-audit": "node ./scripts/audit-chat-model-runtime.mjs --mode=dry-run --max-per-provider=2",
     "validate:win:proof": "node ./scripts/windows-proof-manifest.mjs validate",
     "validate:win:proof-inventory": "node ./scripts/windows-proof-manifest.mjs validate-inventory && node ./scripts/windows-proof-manifest.mjs validate-provenance",

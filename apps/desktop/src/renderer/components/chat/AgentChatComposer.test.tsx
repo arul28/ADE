@@ -77,6 +77,14 @@ vi.mock("@lobehub/icons", () => {
     OpenRouter: brand(),
     Qwen: brand(),
     XAI: brand(),
+    Kimi: brand(),
+    Moonshot: brand(),
+    Ollama: brand(),
+    LmStudio: brand(),
+    Vercel: brand(),
+    Mistral: brand(),
+    DeepSeek: brand(),
+    Meta: brand(),
   };
 });
 
@@ -2218,6 +2226,29 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
   });
 
+  it("keeps harness presets out of the picker on a tracked-CLI launch", () => {
+    renderComposer({
+      sessionProvider: "codex",
+      modelId: "openai/gpt-5.5",
+      availableModelIds: ["openai/gpt-5.5"],
+      listsHarnessPresets: false,
+    });
+
+    fireEvent.click(document.querySelector("[data-model-picker-trigger]") as HTMLElement);
+    expect(screen.queryByRole("tab", { name: "Custom" })).toBeNull();
+  });
+
+  it("offers harness presets on an ordinary chat launch", () => {
+    renderComposer({
+      sessionProvider: "codex",
+      modelId: "openai/gpt-5.5",
+      availableModelIds: ["openai/gpt-5.5"],
+    });
+
+    fireEvent.click(document.querySelector("[data-model-picker-trigger]") as HTMLElement);
+    expect(screen.getByRole("tab", { name: "Custom" })).toBeTruthy();
+  });
+
   it("hides model, reasoning, and fast controls when the host surface owns them", () => {
     renderComposer({
       sessionProvider: "codex",
@@ -2888,66 +2919,6 @@ describe("AgentChatComposer", () => {
     });
 
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it("starts orchestrator mode from a visible composer button", () => {
-    const onStartOrchestratorChat = vi.fn();
-    renderComposer({
-      turnActive: false,
-      sessionId: null,
-      onStartOrchestratorChat,
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "More composer controls" }));
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Start orchestrator mode/ }));
-
-    expect(onStartOrchestratorChat).toHaveBeenCalledTimes(1);
-  });
-
-  it("marks the visible orchestrator composer button as active", () => {
-    const onStopOrchestratorChat = vi.fn();
-    const { container } = renderComposer({
-      turnActive: false,
-      sessionId: null,
-      onStartOrchestratorChat: vi.fn(),
-      onStopOrchestratorChat,
-      orchestratorModeActive: true,
-    });
-
-    // Active state has to survive being folded away, so the collapsed trigger
-    // carries a dot and the row itself reports aria-checked.
-    const trigger = screen.getByRole("button", { name: "More composer controls" });
-    fireEvent.click(trigger);
-
-    const row = screen.getByRole("menuitemcheckbox", { name: /Orchestrator mode/ });
-    expect(row.getAttribute("aria-checked")).toBe("true");
-    expect(container.querySelector("[data-chat-composer-orchestrator-glow]")).toBeTruthy();
-
-    fireEvent.click(row);
-    expect(onStopOrchestratorChat).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps model controls visible for active worker orchestration sessions", () => {
-    renderComposer({
-      orchestrationRole: "worker",
-      sessionId: "worker-session",
-    });
-
-    expect(screen.getByRole("button", { name: /Select model/i })).toBeTruthy();
-  });
-
-  it("hides lead model controls only after the lead session exists", () => {
-    const props = buildComposerProps({
-      orchestrationRole: "lead",
-      sessionId: null,
-    });
-    const view = render(<AgentChatComposer {...props} />);
-
-    expect(screen.getByRole("button", { name: /Select model/i })).toBeTruthy();
-
-    view.rerender(<AgentChatComposer {...props} sessionId="lead-session" />);
-
-    expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
   });
 
   it("renders the issue context menu outside the clipped composer shell", () => {
@@ -3837,10 +3808,10 @@ describe("AgentChatComposer", () => {
       expect(chip(container)?.textContent).toContain(THIS_MACHINE_NAME);
     });
 
-    it("names the remote machine for a running orchestration lead", () => {
+    it("names the remote machine for a running session with model controls hidden", () => {
       const { container } = renderComposer({
         sessionId: "lead-session",
-        orchestrationRole: "lead",
+        hideModelControls: true,
         composerMachineBinding: {
           kind: "remote",
           key: "remote:target-studio:project-a",

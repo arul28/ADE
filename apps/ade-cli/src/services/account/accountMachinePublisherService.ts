@@ -16,6 +16,18 @@ import {
 } from "../../../../desktop/src/shared/types/power";
 import type { MachinePowerSource } from "../power/machinePowerMonitor";
 import { borrowSharedMachinePowerSource } from "../power/sharedMachinePowerMonitor";
+import { normalizeHarnessPresetList } from "../../../../desktop/src/shared/harnessPresets";
+import {
+  buildMachineInventoryDetail,
+  buildMachineInventorySummary,
+  type MachineInventoryDetail,
+  type MachineInventoryModelCounts,
+  type MachineInventoryPresetInput,
+  type MachineInventoryProviderInput,
+  type MachineInventorySummary,
+} from "../../../../desktop/src/shared/types/machineInventory";
+import type { ProviderInstance } from "../../../../desktop/src/shared/types/providerInstances";
+import type { ProviderInstanceStore } from "../providerInstances/providerInstanceStore";
 import {
   createAccountDirectoryCorrelationId,
   readAccountDirectoryHttpReason,
@@ -98,6 +110,8 @@ export type AccountMachineRegistration = {
   deviceType: string;
   pubkey: string | null;
   reachableEndpoints: AdeAccountMachineEndpoint[];
+  /** Counts only; live account/preset detail stays behind a paired RPC. */
+  inventory?: MachineInventorySummary;
   /**
    * This machine's battery and wall power, omitted when we could not read it.
    * A machine with no battery reports a null `batteryPercent`, never a zero.
@@ -146,6 +160,100 @@ export type AccountMachineRegistration = {
    */
   pairingGrant?: string;
 };
+
+type MachineInventorySettingsStore = {
+  get(scope: string, key: string): unknown;
+};
+
+type MachineInventoryAiService = {
+  getStatus(args?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<{
+    models?: Record<string, unknown>;
+  }>;
+};
+
+type MachineInventorySourceArgs = {
+  providerInstanceStore: Pick<ProviderInstanceStore, "list" | "get">
+    & Partial<Pick<ProviderInstanceStore, "getPresetBindings" | "hasPresetBinding">>;
+  accountSettingsStore?: MachineInventorySettingsStore | null;
+  aiIntegrationService?: MachineInventoryAiService | null;
+};
+
+type MachineInventoryInputs = {
+  providerInstances: MachineInventoryProviderInput[];
+  modelCounts: MachineInventoryModelCounts;
+  presets: MachineInventoryPresetInput[];
+  boundPresetIds: Set<string>;
+};
+
+async function readMachineInventoryInputs(args: MachineInventorySourceArgs): Promise<MachineInventoryInputs> {
+  const providerInstances: MachineInventoryProviderInput[] = args.providerInstanceStore
+    .list()
+    .map((instance: ProviderInstance) => ({
+      id: instance.id,
+      provider: instance.provider,
+      label: instance.label,
+      isDefault: instance.isDefault,
+      ...(instance.account?.email || instance.account?.plan
+        ? {
+          account: {
+            ...(instance.account.email ? { email: instance.account.email } : {}),
+            ...(instance.account.plan ? { plan: instance.account.plan } : {}),
+          },
+        }
+        : {}),
+    }));
+  const normalizedPresets = normalizeHarnessPresetList(
+    args.accountSettingsStore?.get("all", "harnessPresets"),
+  );
+  const presets = normalizedPresets.map((preset): MachineInventoryPresetInput => ({
+    id: preset.id,
+    name: preset.name,
+    harness: preset.harness,
+    model: preset.model,
+  }));
+
+  const modelCounts: Record<string, number> = {};
+  try {
+    const status = await args.aiIntegrationService?.getStatus();
+    for (const [provider, models] of Object.entries(status?.models ?? {})) {
+      modelCounts[provider] = Array.isArray(models) ? models.length : 0;
+    }
+  } catch {
+    // A model probe is decoration on the heartbeat; account counts still ship.
+  }
+
+  const boundPresetIds = new Set(args.providerInstanceStore.getPresetBindings?.() ?? []);
+  for (const preset of normalizedPresets) {
+    if (args.providerInstanceStore.hasPresetBinding?.(preset.id)) {
+      boundPresetIds.add(preset.id);
+      continue;
+    }
+    // Account presets store the local provider-instance id as their binding.
+    // This fallback keeps presets created before the explicit binding list
+    // useful while never carrying that source reference over the wire.
+    if (preset.source.kind === "account" && args.providerInstanceStore.get(preset.source.instanceId)) {
+      boundPresetIds.add(preset.id);
+    }
+  }
+
+  return { providerInstances, modelCounts, presets, boundPresetIds };
+}
+
+/** Read the sanitized detail served by `account.getMachineInventory`. */
+export async function readMachineInventoryDetail(
+  args: MachineInventorySourceArgs & { machineKey: string },
+): Promise<MachineInventoryDetail> {
+  const inputs = await readMachineInventoryInputs(args);
+  return buildMachineInventoryDetail({ ...inputs, machineKey: args.machineKey });
+}
+
+/** Read the additive summary placed on the account-directory heartbeat. */
+export async function readMachineInventorySummary(
+  args: MachineInventorySourceArgs,
+): Promise<MachineInventorySummary> {
+  const inputs = await readMachineInventoryInputs(args);
+  return buildMachineInventorySummary(inputs);
+}
 
 /**
  * What the desktop and the CLI say when the directory refuses a re-pair for
@@ -493,6 +601,7 @@ export function buildAccountMachineRegistration(args: {
   publicKeyRawBase64?: string | null;
   /** This machine's power and sleep state at the moment of the publish. */
   powerPublication?: MachinePowerPublication | null;
+  inventory?: MachineInventorySummary | null;
 }): AccountMachineRegistration | null {
   const machineKey = args.machineKey.trim();
   const connectInfo = args.snapshot.pairingConnectInfo;
@@ -557,6 +666,7 @@ export function buildAccountMachineRegistration(args: {
       ? `ed25519:${args.publicKeyRawBase64.trim()}`
       : null,
     reachableEndpoints: endpoints,
+    ...(args.inventory ? { inventory: args.inventory } : {}),
   }, args.powerPublication ?? null);
 }
 
@@ -618,6 +728,8 @@ export function createAccountMachinePublisherService(options: {
    * its lifecycle belongs to that shared instance and not to any consumer.
    */
   powerSource?: MachinePowerSource;
+  /** Best-effort provider/preset counts for the 30-second directory beat. */
+  getInventorySummary?: () => Promise<MachineInventorySummary | null>;
   directoryBaseUrl?: () => string | null | undefined;
   isSyncEnabled?: () => boolean;
   subscribeToSignIn?: (listener: () => void) => (() => void);
@@ -1239,6 +1351,14 @@ export function createAccountMachinePublisherService(options: {
         hardwareId = null;
       }
     }
+    let inventory: MachineInventorySummary | null = null;
+    try {
+      inventory = (await options.getInventorySummary?.()) ?? null;
+    } catch {
+      // Inventory is additive decoration; a failed local probe must not lose
+      // the machine's reachability heartbeat.
+      inventory = null;
+    }
     const registration: AccountMachineRegistration = {
       ...(isPairingPublish
         ? {
@@ -1248,6 +1368,7 @@ export function createAccountMachinePublisherService(options: {
         }
         : registrationWithRelayHint),
       ...(hardwareId ? { hardwareId } : {}),
+      ...(inventory ? { inventory } : {}),
     };
     const reachableEndpointCount = registration.reachableEndpoints.length;
 
@@ -1779,6 +1900,8 @@ export function createBrainAccountMachinePublisherService(options: {
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
   /** See the same option on `createAccountMachinePublisherService`. */
   onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
+  /** Best-effort provider/preset counts for the 30-second directory beat. */
+  getInventorySummary?: () => Promise<MachineInventorySummary | null>;
   /**
    * Override the machine power source. Tests pass `null` to keep the brain's
    * poll and gap timers out of a suite; a host with a precise suspend hook can
@@ -1827,6 +1950,7 @@ export function createBrainAccountMachinePublisherService(options: {
     isSyncEnabled: options.isSyncEnabled,
     getSnapshot: options.getSnapshot,
     getMachineKey: options.getMachineKey,
+    getInventorySummary: options.getInventorySummary,
     getMachineIdentitySigningPublicKey: () =>
       signingStore.getOrCreate().publicKeyRawBase64,
     // Same shared auth service the access token comes from, so the grant a

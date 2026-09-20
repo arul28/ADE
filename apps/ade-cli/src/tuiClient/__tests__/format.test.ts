@@ -1099,21 +1099,11 @@ describe("renderChatLines", () => {
     expect(body).toContain("[delegation] state");
   });
 
-  it("suppresses pending_input_resolved and tokens events from the chat transcript", () => {
+  it("suppresses tokens events from the chat transcript", () => {
     const lines = renderChatLines({
       activeSession: null,
       notices: [],
       events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:00.000Z",
-          sequence: 1,
-          event: {
-            type: "pending_input_resolved",
-            itemId: "q1",
-            resolution: "accepted",
-          } as never,
-        },
         {
           sessionId: "s1",
           timestamp: "2026-01-01T12:00:01.000Z",
@@ -1129,6 +1119,32 @@ describe("renderChatLines", () => {
       ],
     });
     expect(lines).toHaveLength(0);
+  });
+
+  it("renders one receipt row for every pending-input resolution", () => {
+    // A card that vanishes with no row leaves the transcript unable to say
+    // whether the question was answered, declined, or thrown away — and the
+    // desktop and the phone both draw all three.
+    for (const [resolution, verb] of [
+      ["accepted", "Answered"],
+      ["declined", "Declined"],
+      ["cancelled", "Dismissed"],
+    ] as const) {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          {
+            sessionId: "s1",
+            timestamp: "2026-01-01T12:00:00.000Z",
+            sequence: 1,
+            event: { type: "pending_input_resolved", itemId: "q1", resolution } as never,
+          },
+        ],
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]!.body).toBe(`[input] ${verb}`);
+    }
   });
 
   it("fixes the system_notice continue regression (does not duplicate subsequent rows)", () => {

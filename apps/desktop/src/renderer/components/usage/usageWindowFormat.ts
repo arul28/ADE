@@ -7,7 +7,12 @@
  * the Usage page is spend and history.
  */
 import type { UsagePacing, UsageWindow } from "../../../shared/types";
-import { computeResetsInMs, displayPercent } from "../../../shared/usageWindowPresentation";
+import type { UsageWindowLabelInput } from "../../../shared/usageWindowPresentation";
+import {
+  computeResetsInMs,
+  displayPercent,
+  windowLabel,
+} from "../../../shared/usageWindowPresentation";
 
 // The window's name and its fill are spoken by the `ade` CLI too, so they live
 // in shared and are re-exported here: renderer callers keep importing them from
@@ -40,6 +45,37 @@ export function formatCountdown(ms: number): string {
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${mins}m`;
   return `${mins}m`;
+}
+
+/**
+ * "5h" / "wk" / "mo" — the window's name in a two-across meter row.
+ *
+ * The popover now puts a provider's windows side by side inside one account
+ * row, roughly 190px each. "Weekly" spelled out ate a third of that, so the
+ * meter carries the abbreviation and the full `windowLabel` stays on the
+ * accessible name and in the details panel, where there is room for it.
+ */
+export function shortWindowLabel(window: UsageWindowLabelInput): string {
+  switch (window.windowType) {
+    case "five_hour": {
+      const minutes = window.windowDurationMs ? Math.round(window.windowDurationMs / 60_000) : 300;
+      if (minutes > 0 && minutes < 60) return `${minutes}m`;
+      const hours = minutes > 0 ? minutes / 60 : 5;
+      return `${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`;
+    }
+    case "weekly":
+      return "wk";
+    case "monthly":
+      return "mo";
+    // Named in full. Stacked bars have the width for it, and "apps" was a
+    // three-letter riddle for what is actually the OAuth-apps allowance.
+    case "weekly_oauth_apps":
+      return "OAuth apps";
+    case "weekly_cowork":
+      return "Cowork";
+    default:
+      return windowLabel(window);
+  }
 }
 
 /** Absolute reset time, e.g. "9/14 1:29 AM", beside the countdown. */
@@ -94,13 +130,15 @@ export function paceVisual(pacing?: UsagePacing | null): PaceVisual | null {
   if (!pacing || pacing.weekElapsedPercent <= 0) return null;
   const { status, deltaPercent } = pacing;
   const mag = Math.round(Math.abs(deltaPercent));
-  if (status === "on-track" || mag < 1) return { label: "on track", arrow: "", tone: "calm" };
+  if (status === "on-track" || mag < 1) return { label: "on pace", arrow: "", tone: "calm" };
   let tone: PaceVisual["tone"];
   if (status === "far-ahead") tone = "hot";
   else if (status === "ahead" || status === "slightly-ahead") tone = "warm";
   else tone = "cool";
   const ahead = deltaPercent >= 0;
-  return { label: `${mag}% ${ahead ? "ahead" : "behind"}`, arrow: ahead ? "▴" : "▾", tone };
+  // "12% ahead of pace" rather than "12% ahead": on its own line beside an
+  // email, "12% ahead" reads as ahead of *something else on the row*.
+  return { label: `${mag}% ${ahead ? "ahead of" : "behind"} pace`, arrow: ahead ? "▴" : "▾", tone };
 }
 
 /** Full sentence for a bar's tooltip: fill, headroom, and reset. */
@@ -114,6 +152,25 @@ export function headroomTitle(window: UsageWindow, nowMs: number): string {
   return pacing.willLastToReset
     ? `~${left} of headroom at this pace · ${reset}`
     : `~${left} left at this pace — would run dry before reset · ${reset}`;
+}
+
+/**
+ * The projection and its outcome, as two short phrases.
+ *
+ * One joined sentence was too long for the 300px details panel and truncated
+ * mid-word; split, each half is its own one-line row and neither is cut.
+ */
+export function paceOutlook(
+  pacing: UsagePacing | null | undefined,
+  nowMs: number,
+): { projected: string; outcome: string | null } | null {
+  if (!pacing || pacing.weekElapsedPercent <= 0) return null;
+  const projected = `${Math.round(pacing.projectedWeeklyPercent)}% by reset`;
+  if (pacing.etaHours != null && pacing.etaHours > 0 && !pacing.willLastToReset) {
+    return { projected, outcome: `runs dry ~${formatClock(nowMs + pacing.etaHours * 3_600_000, nowMs)}` };
+  }
+  if (pacing.willLastToReset) return { projected, outcome: "lasts to reset" };
+  return { projected, outcome: null };
 }
 
 /** "trending to 87% by reset · runs dry ~tomorrow 3pm" */

@@ -295,9 +295,9 @@ is no `handoffChat`: it targeted "a different agent identity" and
 ### Tool packs
 
 The curated tool surface is large enough that advertising every description on
-every turn is its own context cost. `ctoToolPacks.ts` splits it into thirteen
+every turn is its own context cost. `ctoToolPacks.ts` splits it into twelve
 packs — `core`, `linear`, `files`, `tests`, `conflicts`, `scheduling`, `proof`,
-`review`, `search`, `insights`, `config`, `devices`, `orchestration` — each with
+`review`, `search`, `insights`, `config`, `devices` — each with
 a one-line scope string the capability manifest reuses verbatim.
 
 `core` is the standing surface and is always loaded **by construction**:
@@ -370,8 +370,8 @@ speaks. All three read their identifiers from one descriptor table,
 
 | Provider | Transport |
 | --- | --- |
-| Claude | `buildClaudeSdkMcpServer(managed, "cto")` returns an SDK MCP server named `ade-cto`, merged into `opts.mcpServers`. Unlike the orchestration lead's server it is injected **without** `allowManagedMcpServersOnly` — the CTO is a daily-driver chat and must keep the user's own MCP servers. |
-| Codex | `refreshCodexDynamicTools` walks the table and registers each set as dynamic tools under its own namespace — `ade_cto` alongside orchestration's `ade_orchestration`. Dispatch falls back by bare name across both namespaces when a call arrives un-namespaced. |
+| Claude | `buildClaudeSdkMcpServer(managed, "cto")` returns an SDK MCP server named `ade-cto`, merged into `opts.mcpServers`. It is injected **without** `allowManagedMcpServersOnly` — the CTO is a daily-driver chat and must keep the user's own MCP servers. |
+| Codex | `refreshCodexDynamicTools` walks the table and registers each set as dynamic tools under its own namespace — `ade_cto`. Dispatch falls back by bare name across namespaces when a call arrives un-namespaced. |
 | Cursor / Droid / OpenCode | An HTTP MCP lease from `ensureHttpMcpServer(managed, "cto")`, cached in `managed.httpMcpServers.cto` and advertised under the `ade-cto` server name. Transports resolve every live lease at once via `ensureHttpMcpLeases(managed)`. |
 
 Two invariants keep this from breaking quietly:
@@ -999,7 +999,7 @@ the category — the voice router subscribes in the main process and pushes
 
 **Audio never touches the event buffer.** That buffer is a bounded, replayable
 log (capacity 10,000 with a byte cap); ten chunks a second of PCM16 would evict
-every orchestrator and runtime event inside seconds. Microphone frames are
+every buffered runtime event inside seconds. Microphone frames are
 batched by the desktop and pushed as `pushAudio` arguments every
 `CTO_VOICE_AUDIO_POLL_INTERVAL_MS` (100 ms), and the same interval drains output
 with `pullAudio`. Draining is also the call's heartbeat: the runtime hangs up a

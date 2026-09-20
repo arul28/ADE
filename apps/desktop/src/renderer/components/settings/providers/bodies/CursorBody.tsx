@@ -1,12 +1,13 @@
 /**
- * Cursor's two peers: the OAuth sign-in that mints an ADE key, and a key typed
- * in by hand. Neither is the "real" one — Cursor users arrive with either.
+ * Cursor's OAuth sign-in: the flow that opens a browser and mints an ADE key.
+ * A hand-typed key is no longer a second surface here — every provider page
+ * renders `ProviderApiKeysPanel`, and that panel is the one place a key is
+ * entered, verified, replaced, or deleted.
  */
 import React from "react";
-import { CheckCircle, Info, XCircle } from "@phosphor-icons/react";
-import { COLORS, MONO_FONT, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from "../../../lanes/laneDesignTokens";
-import { ConnectedTag } from "../../providerSectionPrimitives";
-import { CopyableCommand, SourceBadge } from "../providerUi";
+import { CheckCircle } from "@phosphor-icons/react";
+import { COLORS, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from "../../../lanes/laneDesignTokens";
+import { CopyableCommand } from "../providerUi";
 import type { ProvidersViewContext } from "../types";
 
 /** Cursor account OAuth (email in the detail page) is not the same as a
@@ -21,28 +22,9 @@ export function cursorOauthSignedIn(ctx: ProvidersViewContext): boolean {
   );
 }
 
-function cursorKeyState(ctx: ProvidersViewContext) {
-  const connection = ctx.status?.providerConnections?.cursor ?? null;
-  const keySource = ctx.apiKeySources.get("cursor")
-    ?? (ctx.storedProviders.includes("cursor") ? ("store" as const) : undefined);
-  const verification = ctx.verificationByProvider.cursor;
-  const isVerifying = ctx.verifyingProvider === "cursor";
-  const isVerified = !isVerifying && verification?.ok;
-  const isInvalid = !isVerifying && verification && !verification.ok;
-  return {
-    connection,
-    keySource,
-    verification,
-    isVerifying,
-    isVerified,
-    isInvalid,
-    isEditing: ctx.editingProvider === "cursor",
-    isKeyConnected: Boolean(isVerified || (!isInvalid && keySource && connection?.runtimeAvailable)),
-  };
-}
-
 export function CursorAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
-  const { connection, isVerifying } = cursorKeyState(ctx);
+  const connection = ctx.status?.providerConnections?.cursor ?? null;
+  const isVerifying = ctx.verifyingProvider === "cursor";
   const signedInEmail = (ctx.cursorAuth?.email ?? connection?.accountEmail)?.trim() || null;
   const oauthSignedIn = cursorOauthSignedIn(ctx);
   const loginUrl = ctx.cursorLoginUrl ?? ctx.cursorAuth?.loginUrl ?? null;
@@ -100,99 +82,6 @@ export function CursorAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
           <CopyableCommand command={loginUrl} />
         </div>
       ) : null}
-    </section>
-  );
-}
-
-export function CursorBody({ ctx }: { ctx: ProvidersViewContext }) {
-  const { keySource, verification, isVerifying, isEditing, isKeyConnected } = cursorKeyState(ctx);
-
-  return (
-    <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={SECTION_LABEL_STYLE}>API key</div>
-      <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>CURSOR_API_KEY</div>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
-        <div style={{ minWidth: 0 }}>
-          {isEditing ? (
-            <input
-              autoFocus
-              aria-label="Cursor API key"
-              value={ctx.editValue}
-              onChange={(event) => ctx.actions.setEditValue(event.target.value)}
-              placeholder="crsr_..."
-              type="password"
-              disabled={isVerifying}
-              style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-            />
-          ) : keySource ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <SourceBadge source={keySource} />
-              {isVerifying ? (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.info, fontSize: 10, fontFamily: SANS_FONT }}>
-                  <Info size={12} weight="fill" />
-                  Verifying...
-                </span>
-              ) : isKeyConnected ? (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.success, fontSize: 10, fontFamily: SANS_FONT }}>
-                  <CheckCircle size={12} weight="fill" />
-                  Connected
-                </span>
-              ) : verification ? (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: verification.ok ? COLORS.success : COLORS.danger, fontSize: 10, fontFamily: SANS_FONT }}>
-                  {verification.ok ? <CheckCircle size={12} weight="fill" /> : <XCircle size={12} weight="fill" />}
-                  {verification.ok ? "Verified" : verification.message}
-                </span>
-              ) : (
-                <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                  {keySource === "env" ? "Loaded from environment" : keySource === "config" ? "Defined in project config" : "Stored locally"}
-                </span>
-              )}
-            </div>
-          ) : (
-            <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>No Cursor API key configured</span>
-          )}
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-          {isEditing ? (
-            <>
-              <button
-                type="button"
-                aria-label="Save Cursor API key"
-                style={outlineButton({ height: 28 })}
-                disabled={isVerifying || !ctx.editValue.trim()}
-                onClick={() => void ctx.actions.saveCursorApiKey()}
-              >
-                {isVerifying ? "Verifying..." : "Save"}
-              </button>
-              <button type="button" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={ctx.actions.cancelEditing}>Cancel</button>
-            </>
-          ) : keySource ? (
-            <>
-              {isKeyConnected ? (
-                <ConnectedTag />
-              ) : (
-                <button
-                  type="button"
-                  aria-label="Verify Cursor API key"
-                  style={outlineButton({ height: 28 })}
-                  disabled={isVerifying}
-                  onClick={() => void ctx.actions.verifyApiKey("cursor")}
-                >
-                  {isVerifying ? "Verifying..." : "Verify"}
-                </button>
-              )}
-              {keySource === "store" ? (
-                <>
-                  <button type="button" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={() => ctx.actions.beginEditing("cursor")}>Replace</button>
-                  <button type="button" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={() => void ctx.actions.deleteApiKey("cursor").catch(() => undefined)}>Delete</button>
-                </>
-              ) : null}
-            </>
-          ) : (
-            <button type="button" aria-label="Add Cursor API key" style={outlineButton({ height: 28 })} onClick={() => ctx.actions.beginEditing("cursor")}>Add key</button>
-          )}
-        </div>
-      </div>
     </section>
   );
 }

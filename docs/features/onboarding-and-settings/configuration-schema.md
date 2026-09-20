@@ -311,7 +311,6 @@ type AiConfig = {
   budgets?: AiBudgets;
   permissions?: AiPermissionSettings;
   conflictResolution?: AiConflictResolutionConfig;
-  orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
   defaultModel?: ModelId;
   apiKeys?: Record<string, string>;       // stored encrypted per provider

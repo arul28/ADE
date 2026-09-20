@@ -3,7 +3,7 @@ import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../../d
 import type { AiSettingsStatus } from "../../../../../desktop/src/shared/types/config";
 import { buildModelPickerLayoutInput, modelPickerRefreshProvider } from "../../modelPickerController";
 import type { AdeCodeModelState, ModelPickerRightPaneContent } from "../../types";
-import { buildModelPickerLayout, defaultSelectionFor, modelPickerProviderAuthStatus } from "./modelPickerLayout";
+import { buildModelPickerLayout, collectModelPickerEntries, defaultSelectionFor, modelPickerProviderAuthStatus } from "./modelPickerLayout";
 
 function modelInfo(overrides: Partial<AgentChatModelInfo> & { id: string }): AgentChatModelInfo {
   return {
@@ -382,6 +382,69 @@ describe("buildModelPickerLayout", () => {
       subProvider: "OpenAI Codex · team",
       subProviderKey: "__piprov__:team:openai-codex",
     });
+  });
+
+  it("keeps credential-backed rows distinct when a provider repeats a model id", () => {
+    const catalog: AgentChatModelCatalog = {
+      fetchedAt: "2026-05-29T00:00:00.000Z",
+      groups: [{
+        key: "codex",
+        displayName: "Codex",
+        providers: [{
+          key: "codex",
+          displayName: "Codex",
+          badgeColor: "#10A37F",
+          modelCount: 2,
+          subsections: [
+            {
+              key: "credential:work",
+              label: "Work key",
+              models: [{
+                id: "openai/gpt-5.5",
+                runtimeModelId: "gpt-5.5",
+                provider: "codex",
+                providerKey: "codex",
+                groupKey: "codex",
+                displayName: "GPT-5.5",
+                isDefault: true,
+                isAvailable: true,
+                credentialId: "cred-work",
+              }],
+            },
+            {
+              key: "credential:personal",
+              label: "Personal key",
+              models: [{
+                id: "openai/gpt-5.5",
+                runtimeModelId: "gpt-5.5",
+                provider: "codex",
+                providerKey: "codex",
+                groupKey: "codex",
+                displayName: "GPT-5.5",
+                isDefault: false,
+                isAvailable: true,
+                credentialId: "cred-personal",
+              }],
+            },
+          ],
+        }],
+      }],
+    };
+
+    const credentialRows = collectModelPickerEntries({
+      models: [],
+      catalog,
+      favorites: [],
+      activeReasoningEffort: null,
+      aiStatus: null,
+      interfaceMode: "chat",
+    }).filter((entry) => entry.modelId === "openai/gpt-5.5" && entry.credentialId);
+
+    expect(credentialRows).toHaveLength(2);
+    expect(credentialRows.map((entry) => [entry.credentialId, entry.subProvider])).toEqual([
+      ["cred-work", "Work key"],
+      ["cred-personal", "Personal key"],
+    ]);
   });
 
   it("orders recents by insertion order", () => {

@@ -16,6 +16,15 @@ import {
   captureClaudeHooksIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./agentTurnProductAnalytics";
+import {
+  captureApiCredentialAnalytics,
+  captureFeatureUsedAnalytics,
+  capturePendingInputDismissedAnalytics,
+  capturePresetAnalytics,
+  captureProviderAccountAnalytics,
+  captureResetCreditAnalytics,
+  coarseProviderFamily,
+} from "./featureProductAnalytics";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import { reportCaptureGesture } from "./captureGestureProductAnalytics";
 import {
@@ -1588,6 +1597,79 @@ function settledEvent(overrides: Partial<AgentChatTurnSettledEvent> = {}): Agent
 }
 
 describe("product analytics producers", () => {
+  it("keeps provider/account mutation facts closed, coarse, and dedupe-ready", () => {
+    const captures: ProductAnalyticsCapture[] = [];
+    const analytics = settledAnalytics(captures);
+
+    captureProviderAccountAnalytics({
+      analytics,
+      surface: "api",
+      action: "account_created",
+      outcome: "completed",
+      provider: "claude",
+    });
+    captureApiCredentialAnalytics({
+      analytics,
+      surface: "desktop",
+      action: "credential_stored",
+      provider: "anthropic",
+    });
+    capturePresetAnalytics({
+      analytics,
+      surface: "desktop",
+      action: "preset_deleted",
+      provider: "qwen",
+    });
+    captureResetCreditAnalytics({ analytics, surface: "api", outcome: "no_credit" });
+    capturePendingInputDismissedAnalytics({ analytics, surface: "api", provider: "unified" });
+    captureFeatureUsedAnalytics({
+      analytics,
+      surface: "api",
+      feature: "proxy",
+      action: "start",
+      outcome: "completed",
+    });
+
+    expect(captures).toHaveLength(6);
+    for (const capture of captures) {
+      expect(capture.event).toBe("ade_feature_used");
+      expect(capture.dedupeKey).toMatch(/^feature:[a-z_]+:[a-z_]+:[a-z_]+(?::[a-z_]+)?$/);
+      expect(capture.minimumIntervalMs).toBe(60 * 60_000);
+      expect(Object.keys(capture.properties ?? {}).every((key) =>
+        ["feature", "action", "outcome", "provider"].includes(key),
+      )).toBe(true);
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", capture.properties)).toEqual(capture.properties);
+    }
+
+    expect(captures[1]?.properties).toMatchObject({
+      feature: "api_credentials",
+      action: "credential_stored",
+      outcome: "completed",
+      provider: "claude",
+    });
+    expect(captures[2]?.properties).toMatchObject({ provider: "other" });
+    expect(captures[4]?.properties).toMatchObject({ provider: "other" });
+    expect(coarseProviderFamily("https://private.example/key")).toBe("other");
+
+    const sanitized = sanitizeProductAnalyticsProperties("ade_feature_used", {
+      ...captures[0]?.properties,
+      email: "person@example.com",
+      id: "credential-private-id",
+      path: "/Users/private/project",
+      url: "https://private.example/key",
+      content: "secret prompt",
+      key: "sk-secret",
+      model: "private-model-id",
+    });
+    expect(sanitized).toEqual({
+      feature: "provider_accounts",
+      action: "account_created",
+      outcome: "completed",
+      provider: "claude",
+    });
+
+  });
+
   it("keeps a Pi turn attributed to Pi instead of dropping it to the catch-all provider", () => {
     const captures: ProductAnalyticsCapture[] = [];
     const analytics = settledAnalytics(captures);

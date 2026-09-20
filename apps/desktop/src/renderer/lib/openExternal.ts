@@ -86,7 +86,7 @@ export function canOpenInAdeBrowser(url: string | undefined | null): boolean {
     const parsed = new URL(normalized);
     return parsed.protocol === "http:"
       || parsed.protocol === "https:"
-      // Local HTML specs produced by the orchestration bundle (see goal.md §10.6).
+      // Local HTML specs produced inside a lane worktree.
       || parsed.protocol === "file:"
       || parsed.href === "about:blank";
   } catch {

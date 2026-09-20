@@ -195,7 +195,7 @@ describe("Cursor Cloud row badge visibility", () => {
   });
 });
 
-describe("SessionCard orchestration identity", () => {
+describe("SessionCard identity", () => {
   it("stacks the current provider mark above the previous handoff mark", () => {
     render(
       <SessionCard
@@ -242,35 +242,13 @@ describe("SessionCard orchestration identity", () => {
     expect(indicator.nextElementSibling).toBe(status);
   });
 
-  it("names the row with its orchestration role for assistive tech", () => {
-    const { container } = render(
-      <SessionCard
-        session={makeSession({
-          orchestrationRunId: "R-1",
-          orchestrationRole: "worker",
-          orchestrationTag: "ui",
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: /Worker · ui: Build the plan panel/ })).toBeTruthy();
-    // The role PILL is gone from row 1 — the fact moved to the hover tooltip.
-    expect(container.querySelector("[data-orchestration-role]")).toBeNull();
-  });
-
-  it("moves the role, spawn kind and Claude tag into the hover detail card", () => {
+  it("moves the spawn kind and Claude tag into the hover detail card", () => {
     vi.useFakeTimers();
     const { container } = render(
       <SessionCard
         session={makeSession({
           toolType: "claude-chat",
           claudeTag: "customer-ready",
-          orchestrationRole: "worker",
-          orchestrationTag: "ui",
           spawnKind: "subagent",
           orchestrationParentSessionId: "parent-1",
         })}
@@ -283,14 +261,12 @@ describe("SessionCard orchestration identity", () => {
     );
 
     // None of these have a permanent seat on the row any more.
-    expect(screen.queryByText("WORKER · ui")).toBeNull();
     expect(screen.queryByText("SUBAGENT")).toBeNull();
     expect(screen.queryByText("customer-ready")).toBeNull();
 
     // Icon-led rows: the icon is the label, so no "Label:" prefix survives.
     const card = openRowTooltip(container);
-    expect(card.textContent).not.toContain("Role:");
-    expect(hoverRow("role").textContent).toContain("Worker · ui");
+    expect(card.textContent).not.toContain("Spawn:");
     expect(hoverRow("spawn").textContent).toContain("Subagent");
     expect(hoverRow("tag").textContent).toContain("customer-ready");
     expect(hoverRow("live-children").textContent).toContain("3 spawned chats still running");
@@ -433,19 +409,7 @@ describe("SessionCard lineage", () => {
     );
     expect(screen.getByTestId("session-spawn-lineage").textContent).toContain("Peer");
 
-    // No spawn kind: the orchestration role is the next most specific truth.
-    rerender(
-      <SessionCard
-        {...props}
-        session={makeSession({
-          orchestrationParentSessionId: "parent-1",
-          spawnKind: undefined,
-          orchestrationRole: "validator",
-        })}
-      />,
-    );
-    expect(screen.getByTestId("session-spawn-lineage").textContent).toContain("Validator");
-
+    // No spawn kind recorded: "Spawned" is the honest floor.
     rerender(
       <SessionCard
         {...props}

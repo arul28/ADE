@@ -155,6 +155,7 @@ describe("accountSettingsSync (renderer)", () => {
       "chatTranscriptDensity",
       "chatChromeTint",
       "chatShellGeometry",
+      "harnessPresets",
     ]);
     // The screen-specific auto-size lock is deliberately machine-local.
     expect(ACCOUNT_SYNCED_SETTINGS.map((entry) => entry.key)).not.toContain(

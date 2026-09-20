@@ -236,6 +236,12 @@ extension WorkChatSessionView {
             return errorMessage == nil
           }
         },
+        onDismiss: question.dismissible && onDismissQuestion != nil ? {
+          await runSessionAction { () async -> Bool in
+            await onDismissQuestion?(question.id)
+            return errorMessage == nil
+          }
+        } : nil,
         onFreeformFocusChange: { focused in
           guard focused else { return }
           // Wait for the keyboard to start animating in so the ScrollView's
@@ -364,6 +370,8 @@ extension WorkChatSessionView {
         // The card title doubles as the divider's accessibility label.
         accessibilityLabel: card.title
       )
+    } else if card.kind == "resetCredit" {
+      WorkResetCreditNoticeView(card: card)
     } else if card.kind == "turnDiagnostics" {
       WorkTurnDiagnosticsDisclosureView(
         card: card,
@@ -789,6 +797,11 @@ extension WorkChatSessionView {
             await onDeclineQuestion(model.id)
           }
         },
+        onDismiss: model.dismissible && onDismissQuestion != nil ? {
+          await dispatchPendingInputAnswer(itemId: model.id) {
+            await onDismissQuestion?(model.id)
+          }
+        } : nil,
         fallbackProvider: chatSummaryContext.provider,
         maxCardHeight: pendingInputMaxHeight
       )

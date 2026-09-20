@@ -582,8 +582,13 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * `ios-sim` branches read the same `--device|--udid` pair, and five read,
  * require and validate an enumerated argument with the same refusal sentence.
  * One reader each is why neither can drift apart.
+ *
+ * 108 since the provider-account and proxy subcommands: `providers accounts`
+ * (list/add/rename/default/login/remove/refresh) and `proxy` each read their
+ * argv through one plan builder, so an `--instance` or `--provider` spelling
+ * cannot differ between the two families.
  */
-const ARGV_READER_COUNT = 106;
+const ARGV_READER_COUNT = 108;
 
 /** The carrier-aware positional readers the browser table must reach. */
 const CARRIER_AWARE_READERS = [

@@ -2,6 +2,14 @@
 // Model Registry — single source of truth for all AI models
 // ---------------------------------------------------------------------------
 
+import {
+  ACP_PROVIDER_MODEL_COLORS,
+  DYNAMIC_MODEL_COLORS,
+  LOCAL_PROVIDER_MODEL_COLORS,
+  MODEL_DESCRIPTOR_COLORS,
+  OPENCODE_PROVIDER_MODEL_COLORS,
+} from "./providerColors";
+
 export type AuthType = "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
 
 export type ProviderFamily =
@@ -82,6 +90,17 @@ export type ModelDescriptor = {
   openCodeModelId?: string;
   /** True when the model was injected via a local proxy (e.g. vibeproxy in ~/.factory/config.json). */
   customProxy?: boolean;
+  /**
+   * The stored API credential this row is reachable through.
+   *
+   * Set only on rows synthesized from a provider-card key's declared `models[]`
+   * — a key with no preset is still launchable, and its models belong under
+   * that provider in the picker rather than nowhere. The id is what a launch
+   * carries; the key itself never leaves the store.
+   */
+  credentialId?: string;
+  /** The credential's own label, used as the section heading for its models. */
+  credentialLabel?: string;
   /** Pi dynamic inventory identity; the underlying family remains available for branding. */
   piProfileId?: string;
   piProviderId?: string;
@@ -274,10 +293,6 @@ export const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
   ollama: "Ollama",
   lmstudio: "LM Studio",
 };
-const LOCAL_PROVIDER_COLORS: Record<LocalProviderFamily, string> = {
-  ollama: "#71717A",
-  lmstudio: "#64748B",
-};
 const LOCAL_PROVIDER_ENDPOINTS: Record<LocalProviderFamily, string> = {
   ollama: "http://localhost:11434",
   lmstudio: "http://127.0.0.1:1234",
@@ -311,7 +326,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
     defaultReasoningEffort: "high",
     serviceTiers: ["fast"],
-    color: "#D97706",
+    color: MODEL_DESCRIPTOR_COLORS["anthropic/claude-fable-5-1"],
     providerRoute: "claude-cli",
     providerModelId: "claude-fable-5-1",
     cliCommand: "claude",
@@ -340,7 +355,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
     defaultReasoningEffort: "high",
     serviceTiers: ["fast"],
-    color: "#D97706",
+    color: MODEL_DESCRIPTOR_COLORS["anthropic/claude-opus-5"],
     providerRoute: "claude-cli",
     providerModelId: "claude-opus-5",
     cliCommand: "claude",
@@ -369,7 +384,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "max"],
-    color: "#8B5CF6",
+    color: MODEL_DESCRIPTOR_COLORS["anthropic/claude-sonnet-5"],
     providerRoute: "claude-cli",
     providerModelId: "claude-sonnet-5",
     cliCommand: "claude",
@@ -388,7 +403,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 200_000,
     maxOutputTokens: 64_000,
     capabilities: NO_REASONING,
-    color: "#06B6D4",
+    color: MODEL_DESCRIPTOR_COLORS["anthropic/claude-haiku-4-5"],
     providerRoute: "claude-cli",
     providerModelId: "claude-haiku-4-5",
     cliCommand: "claude",
@@ -439,7 +454,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
     serviceTiers: ["fast"],
-    color: "#D97706",
+    color: MODEL_DESCRIPTOR_COLORS["anthropic/claude-opus-4-8"],
     providerRoute: "claude-cli",
     providerModelId: "claude-opus-4-8",
     cliCommand: "claude",
@@ -466,7 +481,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
     defaultReasoningEffort: "low",
     serviceTiers: ["fast"],
-    color: "#10A37F",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-6-astra"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-6-astra",
     cliCommand: "codex",
@@ -488,7 +503,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
     defaultReasoningEffort: "low",
     serviceTiers: ["fast"],
-    color: "#10A37F",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-5.6-sol"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.6-sol",
     cliCommand: "codex",
@@ -510,7 +525,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
     defaultReasoningEffort: "medium",
     serviceTiers: ["fast"],
-    color: "#22B88A",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-5.6-terra"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.6-terra",
     cliCommand: "codex",
@@ -532,7 +547,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
     defaultReasoningEffort: "medium",
     serviceTiers: ["fast"],
-    color: "#34D399",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-5.6-luna"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.6-luna",
     cliCommand: "codex",
@@ -553,7 +568,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
     serviceTiers: ["fast"],
-    color: "#10A37F",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-5.5"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.5",
     cliCommand: "codex",
@@ -574,7 +589,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
     serviceTiers: ["fast"],
-    color: "#10A37F",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-5.4"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.4",
     cliCommand: "codex",
@@ -594,7 +609,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#34D399",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-5.4-mini"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.4-mini",
     cliCommand: "codex",
@@ -614,7 +629,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#10B981",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-5.3-codex"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.3-codex",
     cliCommand: "codex",
@@ -634,7 +649,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 128_000,
     capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
     reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#22C55E",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-5.3-codex-spark"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.3-codex-spark",
     cliCommand: "codex",
@@ -654,7 +669,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#059669",
+    color: MODEL_DESCRIPTOR_COLORS["openai/gpt-5.2"],
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.2",
     cliCommand: "codex",
@@ -678,7 +693,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 1_000_000,
     maxOutputTokens: 65_536,
     capabilities: NO_REASONING,
-    color: "#6D4AFF",
+    color: MODEL_DESCRIPTOR_COLORS["qwen/qwen3-coder-plus"],
     providerRoute: "qwen-acp",
     providerModelId: "qwen3-coder-plus",
     cliCommand: "qwen",
@@ -694,7 +709,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 262_144,
     maxOutputTokens: 65_536,
     capabilities: NO_REASONING,
-    color: "#6D4AFF",
+    color: MODEL_DESCRIPTOR_COLORS["qwen/qwen3-coder-next"],
     providerRoute: "qwen-acp",
     providerModelId: "qwen3-coder-next",
     cliCommand: "qwen",
@@ -710,7 +725,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 1_000_000,
     maxOutputTokens: 65_536,
     capabilities: ALL_CAPS,
-    color: "#5B3EE8",
+    color: MODEL_DESCRIPTOR_COLORS["qwen/qwen3.7-plus"],
     providerRoute: "qwen-acp",
     providerModelId: "qwen3.7-plus",
     cliCommand: "qwen",
@@ -733,7 +748,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "high", "max"],
     defaultReasoningEffort: "max",
-    color: "#1F1F1F",
+    color: MODEL_DESCRIPTOR_COLORS["moonshot/k3"],
     providerRoute: "kimi-acp",
     providerModelId: "kimi-code/k3",
     cliCommand: "kimi",
@@ -749,7 +764,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 262_144,
     maxOutputTokens: 65_536,
     capabilities: ALL_CAPS,
-    color: "#1F1F1F",
+    color: MODEL_DESCRIPTOR_COLORS["moonshot/kimi-for-coding"],
     providerRoute: "kimi-acp",
     providerModelId: "kimi-code/kimi-for-coding",
     cliCommand: "kimi",
@@ -765,7 +780,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 262_144,
     maxOutputTokens: 65_536,
     capabilities: ALL_CAPS,
-    color: "#3F3F46",
+    color: MODEL_DESCRIPTOR_COLORS["moonshot/kimi-for-coding-highspeed"],
     providerRoute: "kimi-acp",
     providerModelId: "kimi-code/kimi-for-coding-highspeed",
     cliCommand: "kimi",
@@ -787,7 +802,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: NO_REASONING,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
     defaultReasoningEffort: "high",
-    color: "#DC2626",
+    color: MODEL_DESCRIPTOR_COLORS["xai/grok-4-6"],
     providerRoute: "grok-acp",
     providerModelId: "grok-4.6",
     cliCommand: "grok",
@@ -805,7 +820,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: NO_REASONING,
     reasoningTiers: ["low", "medium", "high"],
     defaultReasoningEffort: "high",
-    color: "#B91C1C",
+    color: MODEL_DESCRIPTOR_COLORS["xai/grok-4-5"],
     providerRoute: "grok-acp",
     providerModelId: "grok-4.5",
     cliCommand: "grok",
@@ -827,7 +842,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 64_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#8B5CF6",
+    color: MODEL_DESCRIPTOR_COLORS["github-copilot/claude-sonnet-4.6"],
     providerRoute: "copilot-acp",
     providerModelId: "claude-sonnet-4.6",
     cliCommand: "copilot",
@@ -845,7 +860,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 64_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#7C3AED",
+    color: MODEL_DESCRIPTOR_COLORS["github-copilot/claude-opus-4.6"],
     providerRoute: "copilot-acp",
     providerModelId: "claude-opus-4.6",
     cliCommand: "copilot",
@@ -863,7 +878,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#6D28D9",
+    color: MODEL_DESCRIPTOR_COLORS["github-copilot/gpt-5.4"],
     providerRoute: "copilot-acp",
     providerModelId: "gpt-5.4",
     cliCommand: "copilot",
@@ -881,7 +896,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#5B21B6",
+    color: MODEL_DESCRIPTOR_COLORS["github-copilot/gpt-5.3-codex"],
     providerRoute: "copilot-acp",
     providerModelId: "gpt-5.3-codex",
     cliCommand: "copilot",
@@ -901,7 +916,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 128_000,
     maxOutputTokens: 4_096,
     capabilities: BASIC_CAPS,
-    color: "#71717A",
+    color: MODEL_DESCRIPTOR_COLORS["ollama/llama-3.3"],
     providerRoute: "openai-compatible",
     providerModelId: "auto",
     harnessProfile: "guarded",
@@ -1052,7 +1067,7 @@ export function createDynamicLocalModelDescriptor(
     contextWindow: options?.contextWindow ?? 128_000,
     maxOutputTokens: options?.maxOutputTokens ?? 8_192,
     capabilities,
-    color: LOCAL_PROVIDER_COLORS[provider],
+    color: LOCAL_PROVIDER_MODEL_COLORS[provider],
     providerRoute: "openai-compatible",
     providerModelId: normalizedModelId,
     ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
@@ -1176,7 +1191,7 @@ export function createDynamicPiModelDescriptor(
       reasoning: options?.capabilities?.reasoning ?? true,
       streaming: options?.capabilities?.streaming ?? true,
     },
-    color: options?.color ?? "#181C25",
+    color: options?.color ?? DYNAMIC_MODEL_COLORS.pi,
     providerRoute: "pi-sdk",
     providerModelId: `${provider}/${model}`,
     piProfileId: profileId,
@@ -1387,20 +1402,6 @@ const OPENCODE_PROVIDER_FAMILY_MAP: Record<string, ProviderFamily> = {
   together: "together",
 };
 
-const OPENCODE_PROVIDER_COLORS: Record<string, string> = {
-  anthropic: "#D97706",
-  openai: "#10A37F",
-  google: "#F59E0B",
-  mistral: "#F97316",
-  deepseek: "#3B82F6",
-  xai: "#DC2626",
-  openrouter: "#6B7280",
-  ollama: "#71717A",
-  lmstudio: "#64748B",
-  groq: "#06B6D4",
-  together: "#22C55E",
-};
-
 const LOCAL_OPENCODE_PROVIDERS = new Set(["ollama", "lmstudio"]);
 
 export function createDynamicOpenCodeModelDescriptor(
@@ -1442,7 +1443,9 @@ export function createDynamicOpenCodeModelDescriptor(
   const family: ProviderFamily = (opPid && OPENCODE_PROVIDER_FAMILY_MAP[opPid]) || "opencode";
   const isLocal = opPid ? LOCAL_OPENCODE_PROVIDERS.has(opPid) : false;
   const authTypes: AuthType[] = isLocal ? ["local"] : opPid === "openrouter" ? ["openrouter"] : ["api-key"];
-  const color = options?.color ?? (opPid && OPENCODE_PROVIDER_COLORS[opPid]) ?? "#2563EB";
+  const color = options?.color
+    ?? (opPid && OPENCODE_PROVIDER_MODEL_COLORS[opPid])
+    ?? DYNAMIC_MODEL_COLORS.openCodeFallback;
   return {
     id,
     shortId,
@@ -1503,14 +1506,14 @@ const ACP_GROUP_METADATA: Record<
   AcpModelProviderGroup,
   { family: ProviderFamily; providerRoute: string; cliCommand: string; color: string; previewTier: boolean }
 > = {
-  qwen: { family: "qwen", providerRoute: "qwen-acp", cliCommand: "qwen", color: "#6D4AFF", previewTier: false },
-  kimi: { family: "moonshot", providerRoute: "kimi-acp", cliCommand: "kimi", color: "#1F1F1F", previewTier: false },
-  grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: "#DC2626", previewTier: false },
+  qwen: { family: "qwen", providerRoute: "qwen-acp", cliCommand: "qwen", color: ACP_PROVIDER_MODEL_COLORS.qwen, previewTier: false },
+  kimi: { family: "moonshot", providerRoute: "kimi-acp", cliCommand: "kimi", color: ACP_PROVIDER_MODEL_COLORS.kimi, previewTier: false },
+  grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: ACP_PROVIDER_MODEL_COLORS.grok, previewTier: false },
   copilot: {
     family: "github-copilot",
     providerRoute: "copilot-acp",
     cliCommand: "copilot",
-    color: "#8B5CF6",
+    color: ACP_PROVIDER_MODEL_COLORS.copilot,
     previewTier: true,
   },
 };
@@ -1707,13 +1710,13 @@ function formatCursorSdkFallbackDisplayName(providerModelId: string): string {
 
 function colorForCursorSdkId(providerModelId: string): string {
   const s = providerModelId.toLowerCase();
-  if (s === "auto") return "#A78BFA";
-  if (/claude|fable|sonnet|opus|haiku/.test(s)) return "#D97706";
-  if (/composer/.test(s)) return "#8B5CF6";
-  if (/gemini/.test(s)) return "#4285F4";
-  if (/grok/.test(s)) return "#1DA1F2";
-  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "#10A37F";
-  return "#71717A";
+  if (s === "auto") return DYNAMIC_MODEL_COLORS.cursor.auto;
+  if (/claude|fable|sonnet|opus|haiku/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.anthropic;
+  if (/composer/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.composer;
+  if (/gemini/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.google;
+  if (/grok/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.grok;
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.openai;
+  return DYNAMIC_MODEL_COLORS.cursor.fallback;
 }
 
 export function parseDynamicCursorModelRef(modelId: string): { providerModelId: string } | null {
@@ -1814,10 +1817,10 @@ export function droidCliLineGroupLabel(group: DroidCliLineGroup): string {
 
 function colorForDroidModelId(providerModelId: string): string {
   const s = providerModelId.toLowerCase();
-  if (/claude|fable|sonnet|opus|haiku/.test(s)) return "#D97706";
-  if (/gemini/.test(s)) return "#4285F4";
-  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "#10A37F";
-  return "#71717A";
+  if (/claude|fable|sonnet|opus|haiku/.test(s)) return DYNAMIC_MODEL_COLORS.droid.anthropic;
+  if (/gemini/.test(s)) return DYNAMIC_MODEL_COLORS.droid.google;
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return DYNAMIC_MODEL_COLORS.droid.openai;
+  return DYNAMIC_MODEL_COLORS.droid.fallback;
 }
 
 function titleCaseDroidToken(token: string): string {

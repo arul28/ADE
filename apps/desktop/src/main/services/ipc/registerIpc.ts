@@ -79,6 +79,8 @@ import {
 import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
+import type { MachineInventoryDetail } from "../../../shared/types/machineInventory";
+import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
@@ -111,6 +113,7 @@ import {
 } from "../projects/projectIconResolver";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import {
   createPromptStash,
   deletePromptStash,
@@ -118,6 +121,10 @@ import {
 } from "../chat/promptStashService";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import { createAccountRollupFetcher } from "../usage/accountUsageLiveRefresh";
+import {
+  createAccountMachineInventoryFetcher,
+  readLocalMachineInventoryDetail,
+} from "../account/accountMachineInventoryLiveRefresh";
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import {
@@ -482,6 +489,7 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
+  AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
@@ -677,6 +685,7 @@ import type {
   CtoSetLinearOAuthClientArgs,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
+  UsageResetCreditResult,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCheckArgs,
@@ -728,7 +737,20 @@ import type {
   ExternalSessionSummary,
   ExternalSessionDetail,
   ExternalSessionDetailUpdatedEvent,
+  ProviderInstance,
+  ProviderInstanceCreateResult,
+  ProviderInstanceLoginCommand,
+  ProviderInstanceProvider,
+  ProviderInstanceRemoveResult,
+  ProviderInstanceSettings,
 } from "../../../shared/types";
+import type {
+  ApiCredentialGetArgs,
+  ApiCredentialListArgs,
+  ApiCredentialRemoveArgs,
+  ApiCredentialStoreArgs,
+  ApiCredentialSummary,
+} from "../../../shared/types/apiCredentials";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -822,6 +844,9 @@ import {
   getOpenAccountContexts,
 } from "../account/accountMigrationRunner";
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
+import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
+import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
+import { capturePresetAnalytics } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -868,6 +893,7 @@ import {
   setSharedAccountRefreshBroker,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
@@ -880,22 +906,14 @@ import type { createGithubPollingService } from "../automations/githubPollingSer
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import { createSessionBoardMoveActions } from "../adeActions/sessionBoardMove";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
+import type { ProxyService } from "../../../../../ade-cli/src/services/proxy/proxyService";
 import { ADE_WELCOME_VIDEO_ID, ADE_WELCOME_VIDEO_VERSION } from "../../../shared/welcomeVideo";
-
-import type { createOrchestrationService } from "../orchestration/orchestrationService";
-import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import type {
-  ManifestSection,
-  OrchestrationAgentInjectRequest,
-  OrchestrationAssetRegisterRequest,
-  OrchestrationClaimTaskRequest,
-  OrchestrationManifestPatchRequest,
-  OrchestrationPlanAppendRequest,
-  OrchestrationPlanWriteRequest,
-  OrchestrationReleaseTaskRequest,
-  OrchestrationRunCreateRequest,
-  OrchestrationSpawnAgentRequest,
-} from "../../../shared/types/orchestration";
+  SubscriptionProxySetDisabledArgs,
+  SubscriptionProxySignInArgs,
+  SubscriptionProxySignOutArgs,
+} from "../../../shared/types/subscriptionProxy";
+
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { CtoVoiceRuntimeService } from "../cto/ctoVoiceRuntimeService";
@@ -1157,6 +1175,8 @@ export type AppContext = {
   laneTemplateService: ReturnType<typeof createLaneTemplateService> | null;
   portAllocationService: ReturnType<typeof createPortAllocationService> | null;
   laneProxyService: ReturnType<typeof createLaneProxyService> | null;
+  proxyService?: ProxyService | null;
+  getProxyService?: () => ProxyService;
   oauthRedirectService: ReturnType<typeof createOAuthRedirectService> | null;
   runtimeDiagnosticsService: ReturnType<typeof createRuntimeDiagnosticsService> | null;
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
@@ -1192,7 +1212,6 @@ export type AppContext = {
   cursorCloudIngressService?: CursorCloudIngressService | null;
   cursorCloudFleetService?: CursorCloudFleetService | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
-  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
   projectSecretService?: ReturnType<typeof createProjectSecretService> | null;
   testService: ReturnType<typeof createTestService> | null;
@@ -5152,6 +5171,68 @@ export function registerIpc({
     return listStoredProviders();
   });
 
+  /*
+   * Multi-credential provider keys.
+   *
+   * One provider can hold several keys — a direct vendor key plus a gateway
+   * key with its own endpoint, say — so these are keyed by provider AND
+   * credential id rather than by provider alone like the legacy pair above.
+   * Nothing here returns a secret: `get` answers with the same non-secret
+   * summary `list` does, so the renderer never has a way to read a key back.
+   */
+  ipcMain.handle(
+    IPC.apiCredentialsList,
+    async (_event, arg: ApiCredentialListArgs = {}): Promise<ApiCredentialSummary[]> => {
+      const { listApiCredentials } = await import("../ai/apiKeyStore");
+      return listApiCredentials(arg?.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.apiCredentialsGet,
+    async (_event, arg: ApiCredentialGetArgs): Promise<ApiCredentialSummary | null> => {
+      const { getApiCredentialSummary } = await import("../ai/apiKeyStore");
+      return getApiCredentialSummary(arg.provider, arg.credentialId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.apiCredentialsStore,
+    async (_event, arg: ApiCredentialStoreArgs): Promise<ApiCredentialSummary | null> => {
+      const ctx = getCtx();
+      const { getApiCredentialSummary, storeApiCredential } = await import("../ai/apiKeyStore");
+      const credentialId = storeApiCredential(arg);
+      try {
+        // The write already succeeded; invalidation is a freshness step, so a
+        // saved key must not fail because a runtime cache is gone.
+        ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return getApiCredentialSummary(arg.provider, credentialId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.apiCredentialsRemove,
+    async (_event, arg: ApiCredentialRemoveArgs): Promise<void> => {
+      const ctx = getCtx();
+      const { removeApiCredential } = await import("../ai/apiKeyStore");
+      removeApiCredential(arg.provider, arg.credentialId);
+      try {
+        ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  );
+
   // Machine-scoped keys. Like the agent-CLI cache above, these belong to THIS
   // machine's install rather than to the bound project's runtime, so they are
   // deliberately not routed through a project runtime action. Nothing here ever
@@ -6446,6 +6527,94 @@ export function registerIpc({
   });
 
 
+  // ── Provider accounts ("instances") IPC ──────────────────────
+  /*
+   * No `requireAppContextServices` and no runtime field: the registry is a JSON
+   * file beside `projects.json` in this machine's ADE home, so the store is
+   * resolved from the environment the same way in the desktop main process, the
+   * daemon action domain and the CLI. Wiring it through the service graph would
+   * only add a way for one surface to see a different file than another.
+   */
+  const providerInstanceArgs = (arg: unknown): Record<string, unknown> =>
+    arg && typeof arg === "object" && !Array.isArray(arg) ? arg as Record<string, unknown> : {};
+
+  const providerInstanceId = (arg: unknown): string => {
+    const value = providerInstanceArgs(arg).id;
+    const id = typeof value === "string" ? value.trim() : "";
+    if (!id) throw new Error("A provider account id is required.");
+    return id;
+  };
+
+  const providerInstanceProvider = (value: unknown): ProviderInstanceProvider => {
+    if (!isProviderInstanceProvider(value)) {
+      throw new Error("A provider account provider must be \"claude\" or \"codex\".");
+    }
+    return value;
+  };
+
+  ipcMain.handle(IPC.providerInstancesList, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
+    const provider = providerInstanceArgs(arg).provider;
+    return getMachineProviderInstanceStore().list(
+      provider == null ? undefined : providerInstanceProvider(provider),
+    );
+  });
+
+  ipcMain.handle(IPC.providerInstancesCreate, async (_event, arg: unknown): Promise<ProviderInstanceCreateResult> => {
+    const record = providerInstanceArgs(arg);
+    return getMachineProviderInstanceStore().create({
+      provider: record.provider,
+      label: record.label,
+      accentColor: record.accentColor,
+    });
+  });
+
+  ipcMain.handle(IPC.providerInstancesRemove, async (_event, arg: unknown): Promise<ProviderInstanceRemoveResult> => {
+    return getMachineProviderInstanceStore().remove(providerInstanceId(arg));
+  });
+
+  ipcMain.handle(IPC.providerInstancesRename, async (_event, arg: unknown): Promise<ProviderInstance> => {
+    return getMachineProviderInstanceStore().rename(providerInstanceId(arg), providerInstanceArgs(arg).label);
+  });
+
+  ipcMain.handle(IPC.providerInstancesSetDefault, async (_event, arg: unknown): Promise<ProviderInstance> => {
+    return getMachineProviderInstanceStore().setDefault(providerInstanceId(arg));
+  });
+
+  ipcMain.handle(IPC.providerInstancesSetAccent, async (_event, arg: unknown): Promise<ProviderInstance> => {
+    const raw = providerInstanceArgs(arg).accentColor;
+    // `undefined` and `null` both mean "clear it": a renderer that omits the
+    // field is asking for the same thing as one that sends null, and the store
+    // only accepts `string | null`.
+    const accentColor = typeof raw === "string" ? raw : null;
+    return getMachineProviderInstanceStore().setAccent(providerInstanceId(arg), accentColor);
+  });
+
+  ipcMain.handle(IPC.providerInstancesGetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
+    return getMachineProviderInstanceStore()
+      .getProviderSettings(providerInstanceProvider(providerInstanceArgs(arg).provider));
+  });
+
+  ipcMain.handle(IPC.providerInstancesSetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
+    const record = providerInstanceArgs(arg);
+    const settings = record.settings && typeof record.settings === "object" && !Array.isArray(record.settings)
+      ? record.settings as Partial<ProviderInstanceSettings>
+      : {};
+    return getMachineProviderInstanceStore()
+      .setProviderSettings(providerInstanceProvider(record.provider), settings);
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginCommand, async (_event, arg: unknown): Promise<ProviderInstanceLoginCommand> => {
+    return getMachineProviderInstanceStore().loginCommand(providerInstanceId(arg));
+  });
+
+  ipcMain.handle(IPC.providerInstancesRefresh, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
+    const provider = providerInstanceArgs(arg).provider;
+    return getMachineProviderInstanceStore().refreshAccounts(
+      provider == null ? undefined : providerInstanceProvider(provider),
+    );
+  });
+
+
   // ── Usage tracking + budget cap IPC ──────────────────────────
   /**
    * Opportunistic account-wide usage refresh over the already-paired transport.
@@ -6568,6 +6737,32 @@ export function registerIpc({
     if (machine.handled) return machine.result;
     return getCtx().usageTrackingService?.noteQuotaDemand() ?? null;
   });
+
+  /**
+   * Spend one banked reset credit.
+   *
+   * Usage tracking is optional on hosts that have not started that service, so
+   * this forwards when it is present and otherwise says so. It never reports a
+   * success it did not perform: a fake "reset applied" would tell the user
+   * their windows cleared when they did not.
+   */
+  ipcMain.handle(
+    IPC.usageConsumeResetCredit,
+    async (_event, arg: { accountId: string }): Promise<UsageResetCreditResult> => {
+      const accountId = typeof arg?.accountId === "string" ? arg.accountId.trim() : "";
+      if (!accountId) {
+        return { ok: false, status: "failure", message: "Pick an account to reset." };
+      }
+      const service = getCtx().usageTrackingService;
+      if (!service) {
+        return {
+          ok: false,
+          message: "Reset credits are not available on this host yet.",
+        };
+      }
+      return service.consumeResetCredit({ accountId });
+    }
+  );
 
   ipcMain.handle(
     IPC.usageCheckBudget,
@@ -7215,6 +7410,22 @@ export function registerIpc({
     if (!ctx.laneProxyService) return;
     await ctx.laneProxyService.stop();
   });
+
+  const getSubscriptionProxy = (): ProxyService => {
+    const ctx = getCtx();
+    const service = ctx.getProxyService?.() ?? ctx.proxyService;
+    if (!service) throw new Error("Subscription proxy service not available");
+    return service;
+  };
+
+  ipcMain.handle(IPC.proxyStatus, async () => getSubscriptionProxy().status());
+  ipcMain.handle(IPC.proxyEnsureRunning, async () => getSubscriptionProxy().ensureRunning());
+  ipcMain.handle(IPC.proxySignIn, async (_event, args: SubscriptionProxySignInArgs) =>
+    getSubscriptionProxy().signIn(args));
+  ipcMain.handle(IPC.proxySignOut, async (_event, args: SubscriptionProxySignOutArgs) =>
+    getSubscriptionProxy().signOut(args));
+  ipcMain.handle(IPC.proxySetDisabled, async (_event, args: SubscriptionProxySetDisabledArgs) =>
+    getSubscriptionProxy().setDisabled(args));
 
   ipcMain.handle(IPC.lanesProxyAddRoute, async (_event, args: { laneId: string; targetPort: number }) => {
     const ctx = ensureLaneContext();
@@ -8386,6 +8597,14 @@ export function registerIpc({
     await ctx.agentChatService.respondToInput(arg);
   });
 
+  ipcMain.handle(
+    IPC.agentChatDismissPendingInput,
+    async (_event, arg: AgentChatDismissPendingInputArgs): Promise<void> => {
+      const ctx = ensureAgentChatContext();
+      await ctx.agentChatService.dismissPendingInput(arg);
+    },
+  );
+
   ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.getAvailableModels(arg);
@@ -8627,34 +8846,12 @@ export function registerIpc({
     const ctx = getCtx();
     const cwd = ctx.project?.rootPath;
     if (!cwd) throw new Error("No project root");
-    const lang = arg.filePath.split(".").pop() ?? undefined;
-    const maxSideBytes = MAX_DIFF_SIDE_TEXT_BYTES;
-    const readSide = async (spec: string): Promise<{ exists: boolean; text: string; isTruncated?: boolean; isBinary?: boolean }> => {
-      const result = await runGit(["show", spec], {
-        cwd,
-        timeoutMs: 10_000,
-        maxOutputBytes: maxSideBytes + 64 * 1024,
-      });
-      if (result.exitCode !== 0) return { exists: false, text: "" };
-      const buf = Buffer.from(result.stdout, "utf8");
-      if (buf.includes(0)) return { exists: true, text: "", isBinary: true };
-      if (buf.length <= maxSideBytes) return { exists: true, text: result.stdout };
-      return {
-        exists: true,
-        text: appendDiffTruncationNotice(buf.subarray(0, maxSideBytes).toString("utf8")),
-        isTruncated: true,
-      };
-    };
-    const origResult = await readSide(`${arg.beforeSha}:${arg.filePath}`);
-    const modResult = await readSide(`${arg.afterSha}:${arg.filePath}`);
-    return {
-      path: arg.filePath,
-      mode: "commit",
-      language: lang,
-      original: origResult,
-      modified: modResult,
-      ...(origResult.isBinary || modResult.isBinary ? { isBinary: true } : {}),
-    };
+    // Shared with the `chat.getTurnFileDiff` runtime action. Preload prefers
+    // that action and falls back to this channel, so a second copy here meant
+    // the fallback kept reading both sides from the same commit on an
+    // uncommitted turn — every file the turn summary listed opened as
+    // "no changes".
+    return getTurnFileDiffFromGit(cwd, arg);
   });
 
   ipcMain.handle(IPC.agentChatGetEventHistory, async (
@@ -8739,132 +8936,6 @@ export function registerIpc({
       ) => Promise<unknown>;
     }).readTranscript(sessionId, arg?.limit, arg?.since);
   });
-
-  // ---------------------------------------------------------------------------
-  // Orchestration (lead/worker/validator runs)
-  // ---------------------------------------------------------------------------
-  const ensureOrchestration = () => {
-    const ctx = getCtx();
-    if (!ctx.orchestrationService) {
-      throw new Error("orchestration service is not initialised");
-    }
-    requireAppContextServices(ctx, ["laneService", "agentChatService"] as const);
-    return { ctx, service: ctx.orchestrationService };
-  };
-
-  let orchestrationBroadcastSubscribed = false;
-  const subscribeOrchestrationBroadcast = (): void => {
-    if (orchestrationBroadcastSubscribed) return;
-    const ctx = getCtx();
-    if (!ctx.orchestrationService) return;
-    orchestrationBroadcastSubscribed = true;
-    ctx.orchestrationService.on("event", (payload) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed()) continue;
-        try {
-          win.webContents.send(IPC.orchestrationEvent, payload);
-        } catch {
-          // ignore broadcast failures
-        }
-      }
-    });
-  };
-
-  // In-process / test-mode IPC handlers. In every runtime-backed build the
-  // renderer routes these through the daemon's "orchestration" action domain
-  // (see preload `orchestrationBridge`), so these handlers only fire when the
-  // desktop owns the orchestration service directly. Both paths share the same
-  // `createOrchestrationDomainService` factory, so behaviour stays identical.
-  let cachedOrchestrationDomain:
-    | { ctx: ReturnType<typeof getCtx>; domain: ReturnType<typeof createOrchestrationDomainService> }
-    | null = null;
-  const getOrchestrationDomain = () => {
-    const { ctx, service } = ensureOrchestration();
-    // ctx identity fully determines the deps (service + laneService + agentChatService
-    // all hang off it); reuse the closure object across calls, rebuilding only when the
-    // owning context changes (e.g. in-process project switch).
-    if (cachedOrchestrationDomain && cachedOrchestrationDomain.ctx === ctx) {
-      return cachedOrchestrationDomain.domain;
-    }
-    const domain = createOrchestrationDomainService({
-      orchestrationService: service,
-      laneService: {
-        getLaneWorktreePath: (laneId: string) => ctx.laneService.getLaneWorktreePath(laneId),
-      },
-      agentChatService: ctx.agentChatService,
-    });
-    cachedOrchestrationDomain = { ctx, domain };
-    return domain;
-  };
-
-  ipcMain.handle(IPC.orchestrationRunCreate, async (_event, arg: OrchestrationRunCreateRequest & { laneId: string }) => {
-    subscribeOrchestrationBroadcast();
-    return getOrchestrationDomain().runCreate(arg);
-  });
-
-  ipcMain.handle(IPC.orchestrationBundleRead, async (_event, arg: { runId: string; laneId: string }) => {
-    subscribeOrchestrationBroadcast();
-    return getOrchestrationDomain().bundleRead(arg);
-  });
-
-  ipcMain.handle(IPC.orchestrationManifestReadSection, async (
-    _event,
-    arg: { runId: string; laneId: string; section: ManifestSection },
-  ) => getOrchestrationDomain().manifestReadSection(arg));
-
-  ipcMain.handle(IPC.orchestrationManifestPatch, async (
-    _event,
-    arg: OrchestrationManifestPatchRequest & { laneId: string },
-  ) => getOrchestrationDomain().manifestPatch(arg));
-
-  ipcMain.handle(IPC.orchestrationPlanAppend, async (
-    _event,
-    arg: OrchestrationPlanAppendRequest & { laneId: string },
-  ) => getOrchestrationDomain().planAppend(arg));
-
-  ipcMain.handle(IPC.orchestrationPlanWrite, async (
-    _event,
-    arg: OrchestrationPlanWriteRequest & { laneId: string },
-  ) => getOrchestrationDomain().planWrite(arg));
-
-  ipcMain.handle(IPC.orchestrationAssetRegister, async (
-    _event,
-    arg: OrchestrationAssetRegisterRequest & { laneId: string },
-  ) => getOrchestrationDomain().assetRegister(arg));
-
-  ipcMain.handle(IPC.orchestrationClaimTask, async (
-    _event,
-    arg: OrchestrationClaimTaskRequest & { laneId: string },
-  ) => getOrchestrationDomain().claimTask(arg));
-
-  ipcMain.handle(IPC.orchestrationReleaseTask, async (
-    _event,
-    arg: OrchestrationReleaseTaskRequest & { laneId: string },
-  ) => getOrchestrationDomain().releaseTask(arg));
-
-  ipcMain.handle(IPC.orchestrationRunList, async (_event, arg: { laneId?: string } = {}) =>
-    getOrchestrationDomain().runList(arg),
-  );
-
-  ipcMain.handle(IPC.orchestrationSpawnAgent, async (
-    _event,
-    arg: OrchestrationSpawnAgentRequest & { laneId: string; leadSessionId: string },
-  ): Promise<{ sessionId: string; etag: string }> => getOrchestrationDomain().spawnAgent(arg));
-
-  ipcMain.handle(IPC.orchestrationAgentInject, async (
-    _event,
-    arg: OrchestrationAgentInjectRequest,
-  ): Promise<void> => getOrchestrationDomain().agentInject(arg));
-
-  ipcMain.handle(IPC.orchestrationSubscribe, async (_event, arg: { runId: string; laneId?: string }) => {
-    const result = await getOrchestrationDomain().subscribe(arg);
-    subscribeOrchestrationBroadcast();
-    return result;
-  });
-
-  ipcMain.handle(IPC.orchestrationUnsubscribe, async (_event, arg: { runId: string }) =>
-    getOrchestrationDomain().unsubscribe(arg),
-  );
 
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {
     const ctx = ensureComputerUseBroker();
@@ -11047,6 +11118,52 @@ export function registerIpc({
       warn: (message, meta) => getCtx().logger.warn(message, meta),
     },
   });
+  const accountMachineInventoryFetcher = createAccountMachineInventoryFetcher({
+    listMachines: () => accountBridge.listMachines(),
+    resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
+    isTargetConnected: runtimeBridge.isTargetConnected,
+    callMachineMethod: runtimeBridge.callMachineMethod,
+    callLocalMachineMethod: async (machineKey) => {
+      if (!localRuntimeConnectionPool) throw new Error("The local runtime is unavailable.");
+      const rootPath = getCtx().project?.rootPath?.trim();
+      if (!rootPath) throw new Error("The local project runtime is unavailable.");
+      return await readLocalMachineInventoryDetail({
+        machineKey,
+        providerInstanceStore: getMachineProviderInstanceStore(),
+        readPresetValue: async () => {
+          const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
+            domain: "account_settings",
+            action: "get",
+            argsList: ["all", "harnessPresets"],
+          });
+          return response.result;
+        },
+        readModelCounts: async () => {
+          const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
+            domain: "ai",
+            action: "getStatus",
+            args: {},
+          });
+          const result = response.result;
+          const models = result && typeof result === "object" && !Array.isArray(result)
+            ? (result as { models?: unknown }).models
+            : null;
+          if (!models || typeof models !== "object" || Array.isArray(models)) return {};
+          return Object.fromEntries(
+            Object.entries(models).map(([provider, entries]) => [
+              provider,
+              Array.isArray(entries) ? entries.length : 0,
+            ]),
+          );
+        },
+      });
+    },
+    localMachineKey: () => runtimeBridge.getLocalMachineIdentity().machineKey,
+    logger: {
+      debug: (message, meta) => getCtx().logger.debug(message, meta),
+      warn: (message, meta) => getCtx().logger.warn(message, meta),
+    },
+  });
   onAccountRollupFetcherReady?.(accountRollupFetcher);
 
   accountBridge.onPairMachineProgress((progress) => {
@@ -11068,10 +11185,44 @@ export function registerIpc({
    * usage reads borrow a scope. With no pool or no booted scope the service
    * answers "unavailable" and the renderer keeps its local copy.
    */
+  const harnessPresetsAdeDir = resolveMachineAdeLayout().adeDir;
+  let knownHarnessPresets = readHarnessPresetsFromMachine(harnessPresetsAdeDir);
+  const reportHarnessPresetChanges = (): void => {
+    const next = readHarnessPresetsFromMachine(harnessPresetsAdeDir);
+    if (knownHarnessPresets !== null && next !== null) {
+      const before = new Map(knownHarnessPresets.map((preset) => [preset.id, preset]));
+      const after = new Map(next.map((preset) => [preset.id, preset]));
+      for (const preset of next) {
+        if (!before.has(preset.id)) {
+          capturePresetAnalytics({
+            analytics: productAnalyticsService,
+            surface: "desktop",
+            action: "preset_created",
+            provider: preset.harness,
+          });
+        }
+      }
+      for (const preset of knownHarnessPresets) {
+        if (!after.has(preset.id)) {
+          capturePresetAnalytics({
+            analytics: productAnalyticsService,
+            surface: "desktop",
+            action: "preset_deleted",
+            provider: preset.harness,
+          });
+        }
+      }
+    }
+    if (next !== null) knownHarnessPresets = next;
+  };
   const accountSettingsSyncService = createAccountSettingsSyncService({
     getPool: () => localRuntimeConnectionPool,
     getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []),
     logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+    onHarnessPresetsChanged: () => {
+      reportHarnessPresetChanges();
+      pruneOrphanedPresetConfigHomesFromMachine();
+    },
   });
 
   ipcMain.handle(
@@ -11211,6 +11362,13 @@ export function registerIpc({
   ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
     return accountBridge.listMachines();
   });
+
+  ipcMain.handle(
+    IPC.accountGetMachineInventory,
+    async (_event, arg: { machineKey?: string }): Promise<MachineInventoryDetail> => {
+      return await accountMachineInventoryFetcher(arg?.machineKey ?? "");
+    },
+  );
 
   ipcMain.handle(
     IPC.accountRenameMachine,

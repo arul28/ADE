@@ -138,7 +138,6 @@ export function createAdeWebAdapter(
     tests: misc.tests,
     projectConfig: misc.projectConfig,
     cto: misc.cto,
-    orchestration: misc.orchestration,
     computerUse: misc.computerUse,
     iosSimulator: misc.iosSimulator,
     appControl: misc.appControl,

@@ -24,6 +24,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/ade-cli/src/services/builtInBrowser/remoteBrowserForwarder.ts` | `ade browser open` on a machine with no desktop attached. A box running only `ade serve` has no `WebContentsView`, but a desktop elsewhere may hold a remote pin on this machine's lane and can already reach its loopback ports over a port-forward, so the daemon publishes a `built_in_browser_remote_request` on the runtime event stream those desktops already receive and waits briefly for an acknowledgement. Only `navigate` / `createTab` / `showPanel` forward — they mean "put this URL on a screen", which any attached desktop can satisfy. `observe` / `click` and the rest act on a specific live tab and still fail, now with an error that says where the browser actually runs. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
 | `apps/desktop/resources/agent-skills/ade-cli-control-plane/SKILL.md` | Agent-facing ADE CLI control-plane guidance. |
+| `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` | Agent-facing guidance for discovering, selecting, and launching saved harness presets. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime prompt assembly, including one shared timezone-safe scheduled-work contract for Claude, Codex, Cursor, Droid, OpenCode, and Pi, plus runtime-specific native-subagent versus ADE-child routing guidance. |
 | `apps/desktop/resources/agent-skills/ade-mosaic/SKILL.md` | Agent-facing schema for Mosaic v1 interactive cards: an agent emits a fenced ` ```mosaic ` JSON block to ask the user for structured input (select / multiselect / number / input / approval / table) and the submitted answers return as the next user message. Parsing/rendering live in `apps/desktop/src/shared/chatMosaic.ts` (see [chat composer-and-ui.md](../chat/composer-and-ui.md)). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. |
@@ -127,8 +128,7 @@ still match ADE's bundle, preserves modified or unverifiable copies, and then
 retires the manifest.
 
 SDK-backed Claude, Codex, Cursor, Droid, and OpenCode chats receive
-`ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent` (or `orchestrator` for an
-orchestration lead), and their persistent guidance names the concrete
+`ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent`, and their persistent guidance names the concrete
 `--session` argument. Tracked provider CLIs receive the same session binding
 and an `agent` role on both first launch and resume. This keeps the lifecycle
 surface provider-neutral and prevents the host brain's CTO-capable process role
@@ -145,7 +145,7 @@ elicitation consent still applies.
 Ephemeral machine-owned sessions with no user-visible project, lane, repository,
 or PR identity. They share provider/model/turn infrastructure with regular chat
 but receive a neutral general-assistant prompt and a scratch cwd. Project ADE
-guidance, project slash-command discovery, orchestration/Linear metadata, and
+guidance, project slash-command discovery, Linear metadata, and
 project workflow tools are not injected. See [Personal chats](../personal-chats/README.md).
 
 ## Spawning agents and spawn types
@@ -209,22 +209,14 @@ session's `resumeMetadata` and projected onto `TerminalSessionSummary` for
 lineage UI. They do not populate `chatSessionId`, which remains reserved for
 terminal ownership, and a later resume-command refresh preserves the lineage.
 
-The orchestrator's `spawnAgent` tool
-(`services/ai/tools/orchestrationTools.ts`) and the orchestration domain
-spawn path (`services/orchestration/orchestrationDomain.ts`) set the same
-field, defaulting to `spawnKind: "subagent"` so orchestration workers report
-back to their lead without polling. Both child types receive
-`ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and type-specific self-report
-guidance; `chat.messageSession` remains the recovery path.
+Both child types receive `ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and
+type-specific self-report guidance; `chat.messageSession` remains the recovery
+path.
 
-Orchestration `spawnAgent` / `messageAgent` are idempotent: each carries a
-`requestId` (explicit or deterministically derived) backed by a service-owned
-receipt, so a retried call replays its original result rather than spawning a
-second worker. Completion no longer depends on the lead polling transcripts —
-when a worker or validator reaches a terminal state the service enqueues a
-`completion` entry in the run outbox in the same transaction and drains it to
-the lead, and the lead can also block on the `awaitAgent` tool. See
-[Tool Registration › Orchestration sessions](tool-registration.md#in-process-path).
+There is no separate orchestration mode: a coordinating agent spawns its own
+helpers from any thread with
+`ade chat create --type subagent --provider <p> --model <m> [--instance <id>] [--preset <id>]`,
+and reads their results back through the same spawn lineage.
 
 The runtime mechanics — provider-native mid-turn completion steering, the
 idle/fallback message and peer-notice paths, and the navigation/pill/breadcrumb
@@ -307,29 +299,21 @@ The project surfaces use `buildCodingAgentSystemPrompt` with different identity/
   repository/project is attached and that explicit filesystem/shell work must
   remain inside the supplied scratch cwd.
 
-### Orchestration boundary and provider capabilities
+### Provider capability isolation
 
-The orchestration protocol is injected into the provider system/developer
-prompt only for sessions carrying an orchestration role. Ordinary chats do
-not receive or follow that protocol, and `ade-orchestrator` is not a bundled
-skill. Orchestrator leads may inspect their lane but their provider-native
-mutating tools are denied at each provider's runtime boundary; workers retain
-the tools needed to edit and validate.
-
-Provider capability isolation is role-scoped. In particular, ordinary
-OpenCode chats and workers retain the user's OpenCode configuration, project
-configuration, and MCP servers. Only an OpenCode orchestration lead receives
-ADE's isolated configuration and ADE-owned MCP lease. Other providers apply
-their equivalent lead gate without changing ordinary-chat configuration.
+Provider capability isolation is caller-scoped. Ordinary chats retain the
+user's provider configuration and MCP servers; only a chat whose embedder asked
+for `strictMcpConfig` receives ADE's isolated configuration and ADE-owned MCP
+lease.
 
 That is one instance of a rule every provider adapter follows: ADE's settings
 land at the highest precedence tier each SDK offers, so ADE names a config key
 only when it genuinely owns it and leaves everything else absent for the
-provider's own precedence to resolve. The isolated orchestration-lead server is
-where the rule needs care, because `buildIsolatedOpenCodeEnv` rebuilds the
-environment from scratch and drops every inherited `OPENCODE_*` variable — the
-lead's server therefore sets `OPENCODE_DISABLE_AUTOUPDATE=1` itself rather than
-inheriting it, so it cannot self-update the binary ADE pinned. See
+provider's own precedence to resolve. The isolated OpenCode server is where the
+rule needs care, because `buildIsolatedOpenCodeEnv` rebuilds the environment
+from scratch and drops every inherited `OPENCODE_*` variable — that server
+therefore sets `OPENCODE_DISABLE_AUTOUPDATE=1` itself rather than inheriting it,
+so it cannot self-update the binary ADE pinned. See
 [Provider config ownership](../chat/agent-routing.md#provider-config-ownership).
 
 ## Smart memory and reconstruction
@@ -365,7 +349,7 @@ Representative channels:
 - **A bound session never inherits CTO authority.** Keep role resolution on
   `resolveSessionBoundRole` in both single-project and multi-project RPC
   servers, and stamp tracked CLI / SDK chat environments with an explicit
-  agent-or-orchestrator role. A daemon may be CTO-capable, but that capability
+  agent role. A daemon may be CTO-capable, but that capability
   is unrelated to the child session's identity.
 
 ## Detail docs

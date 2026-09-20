@@ -777,6 +777,9 @@ struct WorkChatSessionView: View {
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
   let onSubmitQuestionAnswers: @MainActor (String, [String: AgentChatInputAnswerValue], String?) async -> Void
   let onDeclineQuestion: @MainActor (String) async -> Void
+  /// Dismiss a question the host marked dismissible. Absent on hosts/screens
+  /// that cannot dismiss, which is why the card hides the button when it is nil.
+  var onDismissQuestion: (@MainActor (String) async -> Void)? = nil
   let onRespondToPermission: @MainActor (String, AgentChatApprovalDecision) async -> Void
   let onRetryLoad: @MainActor () async -> Void
   let onOpenFile: @MainActor (String) async -> Void
@@ -2556,6 +2559,10 @@ func workSubagentSnapshotsRenderSignature(_ snapshots: [WorkSubagentSnapshot]) -
     hasher.combine(snapshot.parentAgentId)
     hasher.combine(snapshot.spawnDepth ?? Int.min)
     hasher.combine(snapshot.resourceLinks)
+    hasher.combine(snapshot.stopSource)
+    hasher.combine(snapshot.stopReason)
+    hasher.combine(snapshot.resultLanded)
+    hasher.combine(snapshot.lastActivity)
   }
   return hasher.finalize()
 }

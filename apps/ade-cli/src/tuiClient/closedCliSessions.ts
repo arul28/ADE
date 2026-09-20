@@ -73,6 +73,9 @@ export function terminalSessionToChatSummary(
     ? session.runtimeState === "idle" ? "idle" : "active"
     : "ended";
   const provider = terminalSummaryProvider(session);
+  const instanceId = lifecycle.instanceId ?? session.resumeMetadata?.instanceId ?? session.resumeMetadata?.launch?.instanceId ?? null;
+  const presetId = lifecycle.presetId ?? session.resumeMetadata?.presetId ?? session.resumeMetadata?.launch?.presetId ?? null;
+  const credentialId = lifecycle.credentialId ?? session.resumeMetadata?.credentialId ?? session.resumeMetadata?.launch?.credentialId ?? null;
   return {
     sessionId: session.terminalId,
     laneId: session.laneId,
@@ -92,6 +95,9 @@ export function terminalSessionToChatSummary(
     scheduledWorkPaused: scheduledWorkState?.paused === true,
     scheduledWork: scheduledWorkState?.items ?? [],
     surface: "work",
+    ...(instanceId ? { instanceId } : {}),
+    ...(presetId ? { presetId } : {}),
+    ...(credentialId ? { credentialId } : {}),
     ...(session.resumeMetadata?.orchestrationParentSessionId
       ? { orchestrationParentSessionId: session.resumeMetadata.orchestrationParentSessionId }
       : {}),

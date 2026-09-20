@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
-import type { SettingScope } from "../settingsManifest";
 import { SettingsPageShell } from "./SettingsPageShell";
 
 /**
@@ -12,9 +11,6 @@ export function SettingsCard({
   title,
   description,
   control,
-  scope,
-  showScopeChip,
-  remoteMachineName,
   children,
   /** Renders the control below the description instead of to its right. */
   stacked = false,
@@ -24,19 +20,6 @@ export function SettingsCard({
   title: string;
   description?: React.ReactNode;
   control?: React.ReactNode;
-  /**
-   * Overrides the manifest. Only for a card whose anchor is deliberately not a
-   * manifest entry; a registered setting must never disagree with the registry.
-   */
-  scope?: SettingScope;
-  /**
-   * Forces the chip on or off. Left undefined, the card shows a chip whenever
-   * the manifest knows this anchor's scope — which is the honest default,
-   * because "where does this save" is the one question a settings row cannot
-   * answer by looking at it.
-   */
-  showScopeChip?: boolean;
-  remoteMachineName?: string | null;
   children?: React.ReactNode;
   stacked?: boolean;
   disabled?: boolean;
@@ -46,9 +29,6 @@ export function SettingsCard({
       anchor={anchor}
       title={title}
       description={description}
-      scope={scope}
-      showScopeChip={showScopeChip}
-      remoteMachineName={remoteMachineName}
       sectionStyle={{ opacity: disabled ? 0.6 : 1 }}
       headerStacked={stacked}
       aside={control ? <div style={{ flexShrink: 0 }}>{control}</div> : null}

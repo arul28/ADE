@@ -44,6 +44,8 @@ export type AccountSettingsSyncOptions = {
   /** Any booted project root; null when none is open yet. */
   getRootPath: () => string | null;
   logger?: { debug?(message: string, meta?: Record<string, unknown>): void };
+  /** Called after a confirmed account-scoped preset write/delete reaches the brain. */
+  onHarnessPresetsChanged?: () => void | Promise<void>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,23 +93,31 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
       scope: string,
       key: string,
       value: unknown,
-      options?: AccountSettingsWriteOptions,
+      writeOptions?: AccountSettingsWriteOptions,
     ): Promise<AccountSettingsResult<null>> {
-      return await bridge.call("set", [scope, key, value], () => null, {
+      const result = await bridge.call("set", [scope, key, value], () => null, {
         rejectFalse: true,
-        ...options,
+        ...writeOptions,
       });
+      if (result.ok && scope === "all" && key === "harnessPresets") {
+        await options.onHarnessPresetsChanged?.();
+      }
+      return result;
     },
 
     async remove(
       scope: string,
       key: string,
-      options?: AccountSettingsWriteOptions,
+      writeOptions?: AccountSettingsWriteOptions,
     ): Promise<AccountSettingsResult<null>> {
-      return await bridge.call("remove", [scope, key], () => null, {
+      const result = await bridge.call("remove", [scope, key], () => null, {
         rejectFalse: true,
-        ...options,
+        ...writeOptions,
       });
+      if (result.ok && scope === "all" && key === "harnessPresets") {
+        await options.onHarnessPresetsChanged?.();
+      }
+      return result;
     },
 
     /** Flush this machine's queue and take what changed. */

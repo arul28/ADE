@@ -18,7 +18,7 @@ import type { AdeActionDomain } from "./domains";
    load the registry's whole service graph to get an answer.
    ────────────────────────────────────────────────────────────────────────── */
 
-export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "evaluator";
+export type AdeActionRole = "cto" | "agent" | "external" | "evaluator";
 
 /**
  * A domain's CTO-only rule, with its polarity as DATA.
@@ -152,7 +152,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // renderer's remote-runtime client and the `ade code` TUI, both of which are
   // driven by the user — plus the deterministic PR-merge policy, which never
   // goes through this bridge at all. A session-bound agent CLI authenticates as
-  // `agent`/`orchestrator` and is refused here. Do not add a self-service
+  // `agent` and is refused here. Do not add a self-service
   // settle action back: see the note above `unsettleSession` below.
   session: {
     only: [
@@ -165,7 +165,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // A board move writes the same lifecycle columns a settle does, and then
       // tells the agent the user moved it. Both halves are the user's, so it is
       // gated with the rest of them: a session-bound agent authenticating as
-      // `agent`/`orchestrator` cannot move its own card and then congratulate
+      // `agent` cannot move its own card and then congratulate
       // itself on being told to.
       "moveOnBoard",
       "undoBoardMove",
@@ -178,7 +178,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // ── Domain-coverage decisions (deliberately NOT added here) ──
   // The CTO gained curated tools over automation planning, review runs, search,
   // usage/budget reads, project config reads, iOS-simulator / app-control /
-  // browser reads, and orchestration reads. None of those became CTO-only, and
+  // browser reads. None of those became CTO-only, and
   // each omission is a decision, not an oversight:
   //   • automation_planner.* — `automations.saveRule` already carries the same
   //     power (a rule can run commands and spawn agents) and is open to agents.
@@ -189,7 +189,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   //     a review run mutates nothing outside its own tables.
   //   • ios_simulator / app_control / built_in_browser — device control IS how
   //     agents verify UI work; these are already their normal surface.
-  //   • orchestration.* — leads and workers must reach it by construction.
   //   • search.query / indexStatus — reads over an index agents already build.
   //     `search.rebuildIndex` stays CTO-only above (it is a privileged rebuild).
   //   • project_config.get and project_secret.list — reads with no secret VALUES
@@ -220,8 +219,7 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
   external: 0,
   evaluator: 1,
   agent: 2,
-  orchestrator: 3,
-  cto: 4,
+  cto: 3,
 };
 
 export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -346,6 +344,14 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unarchive",
     "unlinkLinearIssues",
     "updateAppearance",
+  ],
+  proxy: [
+    "ensureRunning",
+    "setDisabled",
+    "signIn",
+    "signOut",
+    "stop",
+    "status",
   ],
   git: [
     "abortRebase",
@@ -587,6 +593,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "acceptCrossMachineHandoff",
     "markCrossMachineHandoff",
     "respondToInput",
+    "dismissPendingInput",
     "resolveSmartLinkPreview",
     "reloadClaudePlugins",
     "rewindFiles",
@@ -791,6 +798,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   feedback: ["list", "prepareDraft", "submitPreparedDraft"],
   usage: [
     "applyAccountRollups",
+    "consumeResetCredit",
     "forceRefresh",
     "getAdeUsageStats",
     "getUsageSnapshot",
@@ -903,28 +911,41 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "assign",
     "setTitle",
   ],
-  orchestration: [
-    "runCreate",
-    "bundleRead",
-    "manifestReadSection",
-    "manifestPatch",
-    "planAppend",
-    "planWrite",
-    "assetRegister",
-    "claimTask",
-    "releaseTask",
-    "runList",
-    "spawnAgent",
-    "agentInject",
-    "subscribe",
-    "unsubscribe",
-  ],
   search: ["query", "indexStatus", "rebuildIndex"],
   // No `watchDetail`/`unwatchDetail`: live detail watching pushes updates over a
   // per-sender Electron IPC channel, which has no remote-runtime equivalent, so
   // it stays local IPC only (`IPC.externalSessions{Watch,Unwatch}Detail`).
   // Exposing them here would hand remote callers a snapshot that never updates.
   "external-sessions": ["list", "import", "getDetail"],
+  /*
+   * Deliberately NOT in `ADE_ACTION_CTO_ONLY`, read AND write.
+   *
+   * A provider instance is a label plus a machine-local config DIRECTORY —
+   * `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The store never reads, writes, copies
+   * or returns a token: the provider's own CLI writes its credentials inside
+   * that directory, `loginCommand` only hands back the argv and the one env var
+   * that points the CLI at it, and `remove` forgets the entry without deleting
+   * anything on disk. So none of these methods can leak or destroy a
+   * credential, which is the bar the CTO gate exists to enforce.
+   *
+   * The locked decision is that an agent may both see and manage accounts:
+   * a worker agent that needs a second Claude login (rate limits, a separate
+   * work identity) must be able to create it and point a session at it without
+   * an operator round-trip. If you are here to "fix" a missing CTO-only rule,
+   * this is that rule's absence, on purpose.
+   */
+  provider_instances: [
+    "list",
+    "create",
+    "remove",
+    "rename",
+    "setDefault",
+    "setAccent",
+    "getSettings",
+    "setSettings",
+    "loginCommand",
+    "refresh",
+  ],
 };
 
 /* ──────────────────────────────────────────────────────────────────────────

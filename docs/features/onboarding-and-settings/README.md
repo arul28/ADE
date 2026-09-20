@@ -30,7 +30,7 @@ directories. Onboarding writes to both.
 
 | Scope | Location | Owner | Contents |
 |---|---|---|---|
-| Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
+| Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and the config homes it names (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
 | Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff/reconciliation state, and machine-local automatic-install preferences. |
 | Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides for ports, env vars, and machine-specific paths. |
 | Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
@@ -142,6 +142,47 @@ Main process:
   and `getMachineApiKeyStatus`, which reports `store` vs `env` without ever
   handing the value back. Every helper takes its `ApiKeyScopeState` as the
   first argument, so each call names the store it reads.
+- `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts` — this
+  machine's provider accounts (Claude and Codex only): the plain-JSON registry,
+  the always-present base account whose `configHome` is recomputed on every read,
+  default selection, `resolve(provider, requestedId)` used by every launch path,
+  and the per-provider settings (smart balance, auto-start windows). Backs the
+  `provider_instances.*` action domain and `ade providers accounts`.
+- `apps/desktop/src/shared/types/providerInstances.ts` — the shared provider,
+  account, environment-key, and per-provider-settings contracts used by the
+  registry, IPC, renderer, and CLI action surface.
+- `apps/desktop/src/shared/types/apiCredentials.ts` — secret-free credential
+  summaries for the stored-key panel and harness launch catalog; values are
+  represented by provider, id, label, source, and masked tail rather than the
+  secret itself.
+- `apps/desktop/src/shared/types/subscriptionProxy.ts` — the public proxy
+  status and provider-route contracts shared by the desktop and CLI surfaces;
+  they intentionally contain no proxy credentials.
+- `apps/desktop/src/shared/types/machineInventory.ts` — token-free account and
+  harness summaries published to paired machines, with detail expansion kept
+  behind the already-connected peer path.
+- `apps/desktop/src/shared/safeIdentifier.ts` — the containment rule every
+  ADE-owned id must pass before it becomes a path or storage-key segment, so an
+  account, preset or credential id cannot escape the directory ADE owns.
+- `apps/desktop/src/shared/providerColors.ts` — the one provider colour table
+  (usage light/dark pairs, picker badge tokens), so a second hex map cannot
+  drift from the iOS mirror.
+- `apps/desktop/src/main/services/account/accountMachineInventoryLiveRefresh.ts`
+  — live detail for one account-directory machine row. Asks only machines
+  already online and already connected in the paired pool, so expanding a row
+  never creates a pairing or spends a reconnect attempt; the durable directory
+  summary stays the floor.
+- `apps/desktop/src/renderer/components/settings/providers/accounts/` — the
+  Accounts panel: rows with the Default badge, the ⋯ menu (rename / default /
+  remove), the Add-account sheet with its embedded terminal, the accent
+  swatches, and `useProviderInstances`.
+- `apps/desktop/src/renderer/components/settings/providers/keys/` — the stored
+  API keys panel, the add-key sheet (only the fields a harness actually has),
+  the OpenCode custom-provider panel, and `useApiCredentials`.
+- `apps/ade-cli/src/services/proxy/` — the local subscription proxy behind
+  `ade proxy` and the `proxy.*` actions: hash-verified release download,
+  install/config management (config written 0600, state carries no secrets),
+  the start/stop/health supervisor, and the shared provider vocabulary.
 - `apps/desktop/src/renderer/components/settings/CaptureGestureSection.tsx` —
   the capture-gesture switch plus the native helper's health line and its
   retry. Reads `supportsCaptureGesturePlatform()` / `captureGestureBlocker()`
@@ -945,13 +986,13 @@ Renderer — settings:
   reload both quota and provider-connection state when the binding changes.
   This keeps the compact percentages and the open panel on the same live
   machine-brain snapshot even across fast project or machine switches.
-  `UsageLimitsBand` is one component with two hosts — the popover body and the
-  **Live limits** band on Settings > Usage — so a window reads identically in
-  both. It renders one `UsageLimitCard` per window (5-hour first, then weekly,
-  then monthly, then anything else the provider reports), with explicit source,
-  updated time, stale state, and inline provider errors. The provider heading's
-  external-link target comes from `status.accountUrl` falling back to the shared
-  `usageProviderAccountUrl`, never from a second URL map in the component.
+  `UsageLimitsBand` renders one row per ACCOUNT (`UsageAccountRow.tsx`): the
+  provider mark, the provider, `email · plan`, and that account's windows side
+  by side as meters (5-hour first, then weekly, then monthly, then anything else
+  the provider reports). Inline provider errors, stale state, and the source and
+  updated time stay on the row. The external-link target comes from
+  `status.accountUrl` falling back to the shared `usageProviderAccountUrl`,
+  never from a second URL map in the component.
   Claude background polling never prompts Keychain and explicit local refresh
   can fall back from OAuth to a bounded CLI probe. When a non-interactive
   caller cannot authoritatively read Claude credentials, the service preserves
@@ -1032,19 +1073,35 @@ Renderer — settings:
   `formatCountdown` is the bare "6d 7h" form for a segment chip whose glyph
   already says "resets"; `formatResetClock` is the absolute time beside it.
 - `apps/desktop/src/renderer/components/usage/usageLimitModel.ts` and
-  `UsageLimitCard.tsx` — the headroom reading of a live window. The model is
+  `UsageAccountRow.tsx` — the headroom reading of a live window. The model is
   pure and clock-injected: `poolAccounts` merges the same login reported by two
-  machines into one `UsageAccountView` with a `machines` list (freshest first)
-  and derives its initials chip; `buildLimitCards` groups a provider's windows
-  into one card per window label with one segment per account, computes pooled
-  headroom, and computes what each account's reset restores to that pool. A
+  machines into one `UsageAccountView` with a `machines` list (freshest first);
+  `buildLimitCards` groups a provider's windows into one card per window label
+  with one segment per account, computes pooled headroom, and computes what each
+  account's reset restores to that pool; `buildAccountRows` transposes those
+  cards into one row per account, so both shapes read one set of numbers. A
   window with no `accountId` (a host predating account attribution) falls back
-  to the provider's single account. The card renders the pooled number, the next
-  restore that actually returns something, and a segment strip; hover, focus, or
-  click on a segment opens that account's detail panel (plan, machines,
-  headroom, absolute reset, pace, and the provider limits link), edge-anchored
-  so it cannot overhang the 420px popover. Full behaviour in
+  to the provider's single account, and a provider with no account directory at
+  all falls back to `status.accountEmail`, then to "This machine". Each meter
+  fills to the HEADROOM in the provider's brand colour — the same quantity its
+  number names — with the spent remainder hatched, and takes its pressure
+  colour from consumption so a nearly-dry window still reads hot; hover, focus,
+  or click opens that window's detail panel (plan,
+  machines, headroom, absolute reset, pace, model split, restore, and the
+  provider limits link), edge-anchored so it cannot overhang the 420px popover.
+  A row carrying a banked reset credit also offers **Use reset**
+  (`ade.usage.consumeResetCredit`). Full behaviour in
   [usage-tracking.md](usage-tracking.md).
+- `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
+  balance selector for new Claude/Codex chats. It weights the remaining weekly
+  headroom by the window's elapsed fraction, then falls back to the default
+  account and finally to the first usable signed-in account.
+- `apps/desktop/src/main/services/usage/windowAutoStart.ts` — schedules one
+  best-effort lightweight request per enabled Claude/Codex account shortly
+  after a future five-hour reset, with provider-specific model selection and
+  no persisted timer state.
+- `apps/desktop/src/shared/usageResetCredit.ts` — the shared reset-credit
+  outcome and copy contract used by desktop, CLI, and paired action callers.
 - `apps/desktop/src/main/services/usage/providerAccountIdentity.ts` — which
   account the live numbers belong to. Reads Codex's `auth.json` `id_token`
   payload (`email`, `chatgpt_plan_type`) and Claude's `.claude.json`
@@ -1217,9 +1274,12 @@ Renderer — settings:
   brand color palette for usage bars and legends. `providerColor(provider,
   theme)` returns a per-provider brand color (Claude's rust family, distinct
   hues for the other providers) with a deterministic hashed fallback for
-  unknown providers. `accountAccentColor(accountId, theme)` gives an account
-  chip a stable accent from that same fallback palette — accounts have no brand
-  of their own, and a palette used by one surface only is a palette that drifts.
+  unknown providers. **This table is the product's source of truth for a
+  provider's colour**: `shared/modelCatalog.ts`'s `PROVIDER_GROUP_COLORS` and
+  both iOS tables (`ADESharedTheme`, `ADEDesignSystem`) mirror its dark values.
+  Accounts deliberately have no colour of their own — the per-account hash that
+  used to tint a chip could draw a Claude account in Gemini's blue, and the
+  email on every row is what tells accounts apart.
 Diagnostics are rendered inside `StorageSection.tsx`
 (`storage/StorageDiagnostics.tsx`) under Diagnostics. The
 standalone `ProxyAndPreviewSection.tsx` and
@@ -1412,6 +1472,9 @@ banner):
   `projectConfigService`; types in `shared/types/config.ts`.
 - [first-run.md](./first-run.md) — first launch lands on Work. There is
   no blocking project-setup dashboard; optional integrations live in Settings.
+- [harness-presets.md](./harness-presets.md) — saved pairings of an agent
+  (the body) and a model source (the brain), managed in Settings › Providers ›
+  Harnesses and selectable from the Harnesses tab of every model picker.
 
 ## Onboarding responsibilities
 
@@ -1604,7 +1667,7 @@ The pages themselves:
 | Activity | `ActivitySection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | The surfaces Activity itself paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle, so neither had a card left for search to land on. `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the two entry points cannot drift. Legacy `?tab=attention` plus the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
 | Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
-| Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsageLimitCard.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
+| Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
 > Live provider quota windows render from one component, `UsageLimitsBand.tsx`, in two places: the top-bar Usage popup (`HeaderUsageControl.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) and the Live limits band on Settings > Usage. The rest of that page is the retrospective cross-client dashboard.
 
@@ -1799,6 +1862,165 @@ behavior. Current behavior:
 Legacy `providers.mode` migration ran during earlier releases and is
 no longer part of the contract; `projectConfigService` still contains
 the migration path but it is idempotent for current configs.
+
+## Provider accounts
+
+A machine can hold several Claude logins and several Codex logins. Each one is a
+provider config directory plus a label, selected at launch by a single
+environment variable — `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Only those two
+providers participate; the rest have no config-home override or no local account
+file, so they have exactly one identity per machine.
+
+- **The registry is a brain-owned JSON file**, `provider-instances.json`, in the
+  machine ADE home beside `projects.json`. It is deliberately not a SQLite
+  table: every table with a primary key in this repo auto-becomes a cr-sqlite
+  CRR and replicates to every paired device, and a list of directory paths on
+  this laptop is meaningless on the phone. Accounts created through ADE get a
+  config home at `<adeHome>/provider-homes/<provider>/<instanceId>/`, created
+  `0700` because the provider CLI writes its own credentials there. ADE never
+  reads, copies, or revokes those credentials.
+- **The default account is synthesized on read.** The login the machine already
+  had is the default account: its id IS the provider slug (`claude`, `codex`)
+  and its config home is whatever `providerConfigHomes.ts` resolves right now,
+  recomputed every read rather than frozen. There is no migration step and no
+  first-boot write — a machine that has never used this feature and one that has
+  both describe the same state, and deleting the registry file is a complete
+  reset. The default account's identity is also read WITHOUT a scoped home,
+  because the Claude CLI records `oauthAccount` in `~/.claude.json`, beside the
+  config directory rather than inside it.
+- **Exactly one account per provider is the default**, stored as a pointer. A
+  pointer at an account that no longer exists resolves to the base identity
+  rather than erroring — the same silent fallback a chat takes.
+- **Removing an account deletes nothing on disk.** It is forgotten from the
+  registry and the config home is returned so the user can be told what is still
+  there. The machine's own login and the current default both refuse removal.
+- **Action domain `provider_instances`** carries `list`, `create`, `remove`,
+  `rename`, `setDefault`, `setAccent`, `getSettings`, `setSettings`,
+  `loginCommand`, and `refresh` — on the agent tier for reads *and* mutations,
+  with no CTO gate, because an account is a directory path and a label, never a
+  token. Reachable from the desktop IPC surface, the preload three-way route
+  (pinned runtime → project runtime → local IPC), the daemon action bus, and
+  `ade providers accounts list|add|remove|rename|default`.
+- **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the
+  same file under `settings.<provider>` and default to off.
+- **Signing in is a command ADE returns, not a flow it drives.**
+  `loginCommand` gives back the resolved provider binary, its argv, and the one
+  env var pointing at that account's config home. `ade providers accounts add`
+  prints it so a shell user can run it directly.
+
+### Accounts panel
+
+Settings → Agents & Models → Claude Code (or Codex CLI) opens the provider page,
+and the first panel of its right column is **Accounts**, above Models. It is the
+only surface that shows the whole set of local logins for that provider. No
+other provider page has the panel, because no other provider can hold more than
+one identity per machine.
+
+- **One row per account**: an accent dot (the account's own `accentColor`, or
+  the provider's brand colour from `usage/providerColors.ts`), the label, and
+  `email · plan` — or `Not signed in` with a **Sign in** button that reopens the
+  login sheet for that account. Under it, the mini usage line `5h NN% · wk NN%`,
+  read from the usage snapshot by matching `UsageAccount.instanceId`, never by
+  email: two logins can share an email, and a login whose email cannot be read
+  still has quota. The default account is marked `Default`.
+- **The row menu (⋯)** carries Rename, Set as default, Change accent (eight
+  fixed swatches plus a `#rrggbb` field), and Remove. Remove asks for
+  confirmation first, and when the store refuses — it will not remove the
+  default account — the store's own sentence is shown rather than a guess.
+- **Two header switches**, each gated on the fact that makes it meaningful.
+  *Smart balance* appears only with two or more accounts and picks the account
+  with the most room when a chat starts, weighting the weekly window more as the
+  week goes on; chats stay on the account they started on, and with it off new
+  chats use the Default account. *Auto-start 5-hour windows* appears only while
+  the provider reports a five-hour window, and sends one tiny request on the
+  cheapest model when a window ends so the next one starts right away, each
+  request logged with its cost. Both read and write `provider_instances`
+  `getSettings`/`setSettings` for that provider. A (?) beside each explains it
+  on hover.
+- **Add account** opens a sheet: a label, an accent, and the sentence "This
+  account gets its own sign-in. Your other accounts are not touched."
+  **Sign in →** creates the account and then runs the returned login command in
+  an embedded terminal — a real PTY created through `pty.create` with the
+  command's own env, the same mechanism the provider sign-in modal uses.
+  Nothing is spawned from the renderer. Below the terminal the sheet says
+  `Waiting for sign-in…` with a one-shot **Check again**; when the terminal
+  exits the registry is refreshed once and the sheet either shows `✓ <email>`
+  and closes, or says "Sign-in did not complete." with **Try again** and
+  **Close**.
+- **The provider list row** shows `N accounts` in its Details column once a
+  provider has more than one.
+- **The model picker** adds one muted line under the provider header —
+  "Smart balance is on for Claude Code" — while that provider is balancing.
+  Nothing else about the picker changes: every model is still listed and an
+  explicit pick is still honoured.
+
+### API credentials
+
+Provider API credentials support multiple non-secret entries per provider. The
+default entry keeps the legacy provider slot; additional entries use a
+provider-and-credential id, while `ai.api_credentials.index.v1` stores labels,
+endpoints, protocols, models, timestamps, and masked tails without storing
+secrets. Environment variables appear only as the provider's default,
+read-only credential. Account-vault mirrors use the provider name for the
+default and `provider#credentialId` for additional entries, so legacy callers
+continue to read only default credentials.
+
+### API keys panel
+
+Every provider page carries an **API keys** panel, between Accounts and Models.
+It lists one row per key ADE can see for that provider: the label, the variable
+the key is exported as, the masked tail, a source badge (Local store,
+Environment, Project config), the endpoint host when one is set, and how many
+models the key declares.
+
+- **Local store** rows offer **Replace** and **Delete**. Delete confirms first.
+- **Environment** and **Project config** rows are read-only and say
+  "Managed outside ADE — clear the env/config value to remove." ADE did not
+  write them, so it does not offer to delete them.
+- **Verify** appears only on the default key of a provider that has a live
+  probe — Claude Code, Codex, Cursor, Grok and Kimi. The verification path reads
+  one key per provider, so a second key gets no button rather than a button that
+  would verify a different key than the row it sits on.
+
+**+ Add** opens a sheet that asks only what that provider's harness reads. Every
+field carries a one-line description, there is one Save, and no field is shown
+that would do nothing:
+
+| Provider | Stored under | Key variable | Endpoint | Protocol | Models | Provider id |
+| --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | `anthropic` | `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` when an endpoint is set | `ANTHROPIC_BASE_URL` | — | yes | — |
+| Codex | `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | — | yes | — |
+| Cursor | `cursor` | `CURSOR_API_KEY` | — | — | — | — |
+| Droid | `droid` | `FACTORY_API_KEY` | base URL | yes | yes | — |
+| Pi | `pi` | — | — | — | — | — |
+| OpenCode | per custom provider id | — | base URL | yes | yes | yes |
+| Qwen Code | `qwen` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | — | — | — |
+| Kimi | `moonshotai` | `MOONSHOT_API_KEY` | — | — | — | — |
+| Grok | `xai` | `XAI_API_KEY` | — | — | — | — |
+| GitHub Copilot | `copilot` | `GITHUB_TOKEN` | — | — | — | — |
+
+A key is filed under the vendor's id rather than the page's id where the two
+differ, which is what makes an `ANTHROPIC_API_KEY` that is already set show up
+as an Environment row on the Claude page, and what lets Verify reach a probe
+that exists. The first key a provider holds takes the default slot, so every
+single-key reader in the app finds it. Cursor writes through the legacy single
+slot, because that is the slot its SDK signs in from.
+
+Pi is the one provider with no endpoint field: it reads its own `models.json`
+for endpoints and model ids, and the sheet says so.
+
+### OpenCode custom providers
+
+The OpenCode page's **Advanced** section lists the custom providers OpenCode is
+configured with — name, id, base URL, model count — with **Edit** and **Delete**
+on each. Add and Edit open the same key sheet, with a **Provider id** field and
+a **Protocol** select in place of the npm package name (each package is one wire
+protocol). An edit may leave the key empty to keep the saved one.
+
+Every write sends the whole provider list: `ai.updateConfig` merges arrays with
+replace semantics, so a write that carried only the entry being changed would
+drop every other custom provider. **Custom model slugs** stays a separate field
+with its own Save.
 
 ## UX contract
 
@@ -1996,6 +2218,17 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
 
 ## Gotchas
 
+- **A provider account is a path, not a credential.** The registry stores config
+  home paths and labels; the tokens inside those directories belong to the
+  provider CLI that wrote them. That is why the registry is plain JSON rather
+  than the encrypted credential store, why `remove` deletes nothing, and why the
+  action domain is not CTO-gated. Do not add a field to this file that a
+  credential would fit in.
+- **The default account's config home is resolved, never stored.** Freezing it
+  would make ADE read one directory and launch the provider against another the
+  moment a user sets `CLAUDE_CONFIG_DIR` in a shell profile. The stored record
+  for the base identity carries a label and an accent; its `configHome` is
+  recomputed on every read and any persisted copy is ignored.
 - **Scope is two axes, not one.** Who owns a setting — your account or this
   computer — and how much it covers — everything, or one repository. The
   placement rule is mechanical so it can be checked: a value holding a path, a

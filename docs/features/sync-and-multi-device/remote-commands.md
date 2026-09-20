@@ -209,9 +209,15 @@ Listed in order of appearance in the registry. The hosted browser web
 client (`../web-client/README.md`) is a controller of this same registry,
 so read-heavy Work/chat/git/PR/history surfaces plus whole families
 (`terminal.*`, `rebase.*`, `history.*`, `github.*`, `projectConfig.*`,
-`ai.*`, `usage.*`, `orchestration.*`) exist to back the desktop renderer's namespaces
+`ai.*`, `usage.*`) exist to back the desktop renderer's namespaces
 over the wire. A controller only invokes an action the host advertises in
 `hello_ok.features.commandRouting.actions`.
+
+**Account** (`account.*`)
+- `getMachineInventory` — viewer-allowed runtime read for the selected machine's
+  token-free provider accounts, model counts, and saved harness presets. Detail
+  is fetched only when the machine is online and already connected; older brains
+  that do not advertise the command are treated as compatibility gaps.
 
 **Usage** (`usage.*`)
 - `getAdeStats` — viewer-allowed project read for today, 7d, 30d, year,
@@ -592,9 +598,6 @@ a boolean.
 
 **AI** (`ai.*`)
 - `getStatus` — provider/auth status for the settings surfaces.
-
-**Orchestration** (`orchestration.*`)
-- `runCreate`
 
 **PRs** (`prs.*`)
 - `list`, `listOpenForRepo`, `refresh`, `getDetail`, `getDetailBundle`, `getStatus`

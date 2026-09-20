@@ -388,7 +388,12 @@ struct SettingsUsagePage: View {
               windows: snapshot.windows.filter { $0.provider == provider },
               accounts: pooledAccounts(snapshot),
               status: snapshot.providerStatus?[provider],
-              spendControlReached: provider == "codex" && snapshot.spendControlReached == true
+              spendControlReached: provider == "codex" && snapshot.spendControlReached == true,
+              // Codex is the only provider that grants reset credits today, so
+              // every other provider gets an empty list and renders nothing.
+              resetCredits: (snapshot.accounts ?? []).filter {
+                $0.provider == provider && ($0.resetCredits?.availableCount ?? 0) > 0
+              }
             )
           }
         }

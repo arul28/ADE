@@ -248,7 +248,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       reasoningEffort: reasoningEffort,
       turnId: turnId
     )
-  case .subagentResult(let taskId, let agentId, let agentType, let parentAgentId, let parentToolUseId, let status, let summary, _, let label, let model, let reasoningEffort, let turnId):
+  case .subagentResult(let taskId, let agentId, let agentType, let parentAgentId, let parentToolUseId, let status, let summary, _, let label, let model, let reasoningEffort, let turnId, _, _):
     return .subagentResult(
       taskId: taskId,
       agentId: agentId,

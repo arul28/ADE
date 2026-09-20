@@ -3980,11 +3980,10 @@ struct WorkSubagentTimelineRowView: View {
   }
 }
 
-/// Folded card for a run of 2+ interrupt-stopped subagents — desktop parity with
-/// `SubagentStoppedGroupCard`. A mass interrupt renders as one calm amber line,
-/// "N agents stopped when you interrupted", that expands to a per-agent list;
-/// tapping a row reopens that subagent's detail (the iOS analog of the desktop
-/// "jump to start"). Never a red error block.
+/// Folded card for a run of 2+ same-cause, same-source stopped subagents —
+/// desktop parity with `SubagentStoppedGroupCard`. A mass stop renders as one
+/// calm line whose attribution is honest about who stopped the work, then
+/// expands to a per-agent list with title, last activity, and outcome.
 struct WorkSubagentStoppedGroupCardView: View {
   let model: WorkSubagentStoppedGroupModel
   let isExpanded: Bool
@@ -4070,20 +4069,46 @@ struct WorkSubagentStoppedGroupCardView: View {
   }
 
   private func stoppedItemLabel(_ row: WorkSubagentTimelineRow) -> some View {
+    let title = workSubagentMeaningfulName(row.snapshot)
+    let lastActivity = row.snapshot.lastActivity?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let outcome = workSubagentStoppedOutcomeLabel(row.snapshot)
     HStack(spacing: 8) {
-      Text(workSubagentMeaningfulName(row.snapshot))
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
-        .truncationMode(.tail)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        if let lastActivity, !lastActivity.isEmpty {
+          Text(lastActivity)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+      }
       Spacer(minLength: 6)
-      Image(systemName: "arrow.up.right")
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-        .opacity(onOpen == nil ? 0 : 1)
+      VStack(alignment: .trailing, spacing: 2) {
+        Text(outcome)
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(row.snapshot.resultLanded ? ADEColor.success : ADEColor.warning)
+        Image(systemName: "arrow.up.right")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .opacity(onOpen == nil ? 0 : 1)
+      }
     }
     .padding(.vertical, 5)
     .contentShape(Rectangle())
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(
+      [title, lastActivity, outcome]
+        .compactMap { value in
+          guard let value, !value.isEmpty else { return nil }
+          return value
+        }
+        .joined(separator: ", ")
+    )
   }
 }
 
@@ -4140,7 +4165,7 @@ private struct WorkSubagentResultRow: View {
 
   private var statusLine: String {
     switch snapshot.status {
-    case .stopped: return "stopped — interrupted"
+    case .stopped: return workSubagentStoppedStatusLine(snapshot)
     case .failed: return "failed"
     case .succeeded: return "completed"
     case .running: return "running"
@@ -4179,6 +4204,20 @@ private struct WorkSubagentResultRow: View {
           .foregroundStyle(snapshot.status == .failed ? ADEColor.danger : ADEColor.textSecondary)
           .lineLimit(2)
           .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      if snapshot.status == .stopped {
+        VStack(alignment: .leading, spacing: 2) {
+          if let lastActivity = snapshot.lastActivity?.trimmingCharacters(in: .whitespacesAndNewlines), !lastActivity.isEmpty {
+            Text(lastActivity)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.tail)
+          }
+          Text(workSubagentStoppedOutcomeLabel(snapshot))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(snapshot.resultLanded ? ADEColor.success : ADEColor.warning)
+        }
       }
     }
     .padding(.horizontal, 12)

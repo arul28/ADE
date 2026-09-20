@@ -17,6 +17,7 @@ import type { SceneStillRecord } from "../shared/chatScene";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
+import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -53,7 +54,6 @@ import {
 } from "../shared/types/attention";
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
 import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
-import { createOrchestrationBridge } from "./orchestrationBridge";
 import {
   createRemoteRuntimeFanout,
   dispatchRemoteRuntimeFanouts,
@@ -69,7 +69,6 @@ import {
   REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS,
   REMOTE_RUNTIME_EVENT_IDLE_POLL_MS,
 } from "./pinnedRuntimeEvents";
-import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type {
   WorkToolId,
   WorkToolsGetLaneStateArgs,
@@ -121,8 +120,30 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
+  ProviderInstance,
+  ProviderInstanceCreateArgs,
+  ProviderInstanceCreateResult,
+  ProviderInstanceGetSettingsArgs,
+  ProviderInstanceListArgs,
+  ProviderInstanceLoginCommand,
+  ProviderInstanceLoginCommandArgs,
+  ProviderInstanceRefreshArgs,
+  ProviderInstanceRemoveArgs,
+  ProviderInstanceRemoveResult,
+  ProviderInstanceRenameArgs,
+  ProviderInstanceSetAccentArgs,
+  ProviderInstanceSetDefaultArgs,
+  ProviderInstanceSetSettingsArgs,
+  ProviderInstanceSettings,
 } from "../shared/types";
 import { isRemoteRuntimeEventCategory } from "../shared/types/remoteRuntime";
+import type {
+  ApiCredentialGetArgs,
+  ApiCredentialListArgs,
+  ApiCredentialRemoveArgs,
+  ApiCredentialStoreArgs,
+  ApiCredentialSummary,
+} from "../shared/types/apiCredentials";
 import type { CtoVoiceActionResult } from "../shared/types/ctoVoice";
 import type {
   BatchAssessmentResult,
@@ -477,6 +498,7 @@ import type {
   AgentChatModelsArgs,
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
+  AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
@@ -682,6 +704,12 @@ import type {
   PortConflict,
   PortAllocationEvent,
   ProxyStatus,
+  SubscriptionProxyStatus,
+  SubscriptionProxySignInArgs,
+  SubscriptionProxySignInResult,
+  SubscriptionProxySignOutArgs,
+  SubscriptionProxySetDisabledArgs,
+  SubscriptionProxyMutationResult,
   ProxyRoute,
   LanePreviewInfo,
   LaneProxyEvent,
@@ -718,6 +746,7 @@ import type {
   WriteTextAtomicArgs,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
+  UsageResetCreditResult,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCheckArgs,
@@ -1705,6 +1734,7 @@ async function callLocalProjectActionStrictIfBound<T>(
 const MUTATING_CHAT_ACTIONS = new Set<string>([
   "sendMessage",
   "respondToInput",
+  "dismissPendingInput",
   "approveToolUse",
   "interrupt",
   "stopTask",
@@ -2501,12 +2531,6 @@ const remoteBuiltInBrowserRemoteRequestFanout =
     label: "built-in browser request",
     onSubscribe: () => ensureRemoteRuntimeEventPump(),
   });
-const remoteOrchestrationEventFanout = createRemoteRuntimeFanout<OrchestrationEventPayload>({
-  eventType: "orchestration_event",
-  label: "orchestration",
-  onSubscribe: () => ensureRemoteRuntimeEventPump(),
-  extract: (payload) => toOrchestrationRuntimeEvent(payload),
-});
 
 /**
  * The wiring itself. Exported so a test can assert every listed domain reaches
@@ -2546,7 +2570,6 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteIosSimulatorEventFanout,
   remoteAppControlEventFanout,
   remoteBuiltInBrowserRemoteRequestFanout,
-  remoteOrchestrationEventFanout,
 ];
 
 function createLocalIpcEventSubscription<T>(
@@ -2727,12 +2750,6 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
   return hasRemoteRuntimeFanoutSubscribers(REMOTE_RUNTIME_FANOUTS);
 }
 
-function registerRemoteOrchestrationEventCallback(
-  cb: (payload: OrchestrationEventPayload) => void,
-): () => void {
-  return remoteOrchestrationEventFanout.subscribe(cb);
-}
-
 function normalizePtyDataSubscriptionIds(value: unknown): Set<string> {
   const ids = new Set<string>();
   if (!Array.isArray(value)) return ids;
@@ -2793,7 +2810,7 @@ function ensureRemoteRuntimeEventPump(): void {
 
 // The active pump owns exactly one main-side subscription at a time. Without an
 // explicit release, a binding the window switched away from keeps streaming
-// orchestrator/dag_mutation/runtime events into a preload that discards them all,
+// dag_mutation/runtime events into a preload that discards them all,
 // for up to the idle-expiry window, once per switch.
 function releaseRuntimeEventSubscriptionForPreviousBinding(
   nextBinding: OpenProjectBinding | null,
@@ -3671,39 +3688,6 @@ function toAutomationsRuntimeEvent(
   return event as unknown as AutomationsEventPayload;
 }
 
-const ORCHESTRATION_EVENT_KINDS = new Set([
-  "manifest",
-  "plan",
-  "asset",
-  "heartbeat",
-  "lifecycle",
-]);
-
-function toOrchestrationRuntimeEvent(
-  payload: unknown,
-): OrchestrationEventPayload | null {
-  if (!isRecord(payload)) return null;
-  if (typeof payload.runId !== "string" || !payload.runId) return null;
-  if (typeof payload.etag !== "string") return null;
-  if (typeof payload.kind !== "string" || !ORCHESTRATION_EVENT_KINDS.has(payload.kind)) {
-    return null;
-  }
-  if (payload.kind === "heartbeat") {
-    if (typeof payload.sessionId !== "string" || !payload.sessionId) return null;
-    if (typeof payload.lastHeartbeatAt !== "string" || !payload.lastHeartbeatAt)
-      return null;
-  }
-  if (
-    payload.kind === "lifecycle" &&
-    payload.status !== "suspended" &&
-    payload.status !== "resumed" &&
-    payload.status !== "deleted"
-  ) {
-    return null;
-  }
-  return payload as unknown as OrchestrationEventPayload;
-}
-
 function toTestEvent(payload: unknown): TestEvent | null {
   if (!isRecord(payload) || typeof payload.type !== "string") return null;
   if (payload.type === "run") {
@@ -3860,6 +3844,36 @@ const projectStateEventFanout = createIpcEventFanout<AdeProjectEvent>(
 );
 const ptyDataEventFanout = createIpcEventFanout<PtyDataEvent>(IPC.ptyData);
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
+
+function normalizeProviderInstanceListResult(
+  result: ProviderInstance[] | { instances: ProviderInstance[] },
+): ProviderInstance[] {
+  return Array.isArray(result) ? result : result.instances;
+}
+
+function normalizeProviderInstanceResult(
+  result: ProviderInstance | { instance: ProviderInstance },
+): ProviderInstance {
+  return isRecord(result) && "instance" in result
+    ? result.instance as ProviderInstance
+    : result as ProviderInstance;
+}
+
+function normalizeProviderInstanceSettingsResult(
+  result: ProviderInstanceSettings | { settings: ProviderInstanceSettings },
+): ProviderInstanceSettings {
+  return isRecord(result) && "settings" in result
+    ? result.settings as ProviderInstanceSettings
+    : result as ProviderInstanceSettings;
+}
+
+function normalizeProviderInstanceLoginCommandResult(
+  result: ProviderInstanceLoginCommand | { loginCommand: ProviderInstanceLoginCommand },
+): ProviderInstanceLoginCommand {
+  return isRecord(result) && "loginCommand" in result
+    ? result.loginCommand as ProviderInstanceLoginCommand
+    : result as ProviderInstanceLoginCommand;
+}
 
 // The bridge object is checked against the declared `Window["ade"]` contract so
 // a preload signature that drifts from global.d.ts — a missing `pin` parameter,
@@ -5627,6 +5641,12 @@ const adeBridge = {
       callProjectRuntimeActionOr("usage", "noteQuotaDemand", {}, () =>
         ipcRenderer.invoke(IPC.usageNoteDemand),
       ),
+    consumeResetCredit: async (args: {
+      accountId: string;
+    }): Promise<UsageResetCreditResult> =>
+      callProjectRuntimeActionOr("usage", "consumeResetCredit", { args }, () =>
+        ipcRenderer.invoke(IPC.usageConsumeResetCredit, args),
+      ),
     checkBudget: async (args: BudgetCheckArgs): Promise<BudgetCheckResult> =>
       callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
         ipcRenderer.invoke(IPC.usageCheckBudget, args),
@@ -7060,6 +7080,25 @@ const adeBridge = {
         await ipcRenderer.invoke(IPC.agentChatRespondToInput, args);
       agentChatSummaryCache.clear();
     },
+    dismissPendingInput: async (
+      args: AgentChatDismissPendingInputArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "dismissPendingInput", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "dismissPendingInput",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.agentChatDismissPendingInput, args);
+      agentChatSummaryCache.clear();
+    },
     models: async (
       args: AgentChatModelsArgs,
       pin?: OpenProjectBinding | null,
@@ -7739,22 +7778,6 @@ const adeBridge = {
       },
     ): Promise<SceneStillRecord | null> => ipcRenderer.invoke(IPC.sceneStoreStill, args),
   },
-  orchestration: createOrchestrationBridge({
-    callAction: (action, args, ipcChannel, pin) => {
-      const request = { args: args as Record<string, unknown> | undefined };
-      return pin
-        ? callPinnedRuntimeAction(pin, "orchestration", action, request)
-        : callProjectRuntimeActionOr(
-            "orchestration",
-            action,
-            request,
-            () => ipcRenderer.invoke(ipcChannel, args),
-          );
-    },
-    subscribeRuntimeOrchestrationEvents: registerRemoteOrchestrationEventCallback,
-    parseLegacyEvent: toOrchestrationRuntimeEvent,
-    ipcRenderer,
-  }),
   computerUse: {
     listArtifacts: async (
       args: ComputerUseArtifactListArgs = {},
@@ -9142,6 +9165,167 @@ const adeBridge = {
       "external session detail updated",
     ),
   },
+  /*
+   * Provider accounts, on the same three-way route every project-scoped surface
+   * uses: a pinned machine first, then the project's own runtime, then local
+   * IPC. The registry is machine-local — it names config directories on ONE
+   * computer — so a window pinned to a remote machine has to ask that machine,
+   * and answering from the local file would list accounts the remote host has
+   * never heard of.
+   */
+  /*
+   * Provider API keys, several per provider.
+   *
+   * Local IPC only, on purpose. The store desktop main writes is Electron
+   * `safeStorage` on THIS machine, so routing a key write at a remote runtime
+   * would file it on a computer that is not the one the harness runs on. And
+   * nothing here reads a secret back: `get` answers with the same non-secret
+   * summary `list` does, so the key travels one way only — in, on `store`.
+   */
+  apiCredentials: {
+    list: (args: ApiCredentialListArgs = {}): Promise<ApiCredentialSummary[]> =>
+      ipcRenderer.invoke(IPC.apiCredentialsList, args),
+    get: (args: ApiCredentialGetArgs): Promise<ApiCredentialSummary | null> =>
+      ipcRenderer.invoke(IPC.apiCredentialsGet, args),
+    store: (args: ApiCredentialStoreArgs): Promise<ApiCredentialSummary | null> =>
+      ipcRenderer.invoke(IPC.apiCredentialsStore, args),
+    remove: (args: ApiCredentialRemoveArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.apiCredentialsRemove, args),
+  },
+  proxy: {
+    status: (): Promise<SubscriptionProxyStatus> =>
+      callProjectRuntimeActionOr("proxy", "status", {}, () =>
+        ipcRenderer.invoke(IPC.proxyStatus),
+      ),
+    ensureRunning: (): Promise<SubscriptionProxyStatus> =>
+      callProjectRuntimeActionOr("proxy", "ensureRunning", {}, () =>
+        ipcRenderer.invoke(IPC.proxyEnsureRunning),
+      ),
+    signIn: (args: SubscriptionProxySignInArgs): Promise<SubscriptionProxySignInResult> =>
+      callProjectRuntimeActionOr("proxy", "signIn", { args }, () =>
+        ipcRenderer.invoke(IPC.proxySignIn, args),
+      ),
+    signOut: (args: SubscriptionProxySignOutArgs): Promise<SubscriptionProxyMutationResult> =>
+      callProjectRuntimeActionOr("proxy", "signOut", { args }, () =>
+        ipcRenderer.invoke(IPC.proxySignOut, args),
+      ),
+    setDisabled: (args: SubscriptionProxySetDisabledArgs): Promise<SubscriptionProxyMutationResult> =>
+      callProjectRuntimeActionOr("proxy", "setDisabled", { args }, () =>
+        ipcRenderer.invoke(IPC.proxySetDisabled, args),
+      ),
+  },
+  providerInstances: {
+    list: async (
+      args: ProviderInstanceListArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance[]> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance[] | { instances: ProviderInstance[] }>(
+        pin,
+        "provider_instances",
+        "list",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesList, args),
+      ).then(normalizeProviderInstanceListResult),
+    create: async (
+      args: ProviderInstanceCreateArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceCreateResult> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceCreateResult>(
+        pin,
+        "provider_instances",
+        "create",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesCreate, args),
+      ),
+    remove: async (
+      args: ProviderInstanceRemoveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceRemoveResult> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceRemoveResult>(
+        pin,
+        "provider_instances",
+        "remove",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesRemove, args),
+      ),
+    rename: async (
+      args: ProviderInstanceRenameArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance | { instance: ProviderInstance }>(
+        pin,
+        "provider_instances",
+        "rename",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesRename, args),
+      ).then(normalizeProviderInstanceResult),
+    setDefault: async (
+      args: ProviderInstanceSetDefaultArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance | { instance: ProviderInstance }>(
+        pin,
+        "provider_instances",
+        "setDefault",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesSetDefault, args),
+      ).then(normalizeProviderInstanceResult),
+    setAccent: async (
+      args: ProviderInstanceSetAccentArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance | { instance: ProviderInstance }>(
+        pin,
+        "provider_instances",
+        "setAccent",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesSetAccent, args),
+      ).then(normalizeProviderInstanceResult),
+    getSettings: async (
+      args: ProviderInstanceGetSettingsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceSettings> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceSettings | { settings: ProviderInstanceSettings }>(
+        pin,
+        "provider_instances",
+        "getSettings",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesGetSettings, args),
+      ).then(normalizeProviderInstanceSettingsResult),
+    setSettings: async (
+      args: ProviderInstanceSetSettingsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceSettings> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceSettings | { settings: ProviderInstanceSettings }>(
+        pin,
+        "provider_instances",
+        "setSettings",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesSetSettings, args),
+      ).then(normalizeProviderInstanceSettingsResult),
+    loginCommand: async (
+      args: ProviderInstanceLoginCommandArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstanceLoginCommand> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstanceLoginCommand | { loginCommand: ProviderInstanceLoginCommand }>(
+        pin,
+        "provider_instances",
+        "loginCommand",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesLoginCommand, args),
+      ).then(normalizeProviderInstanceLoginCommandResult),
+    refresh: async (
+      args: ProviderInstanceRefreshArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance[]> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance[] | { instances: ProviderInstance[] }>(
+        pin,
+        "provider_instances",
+        "refresh",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesRefresh, args),
+      ).then(normalizeProviderInstanceListResult),
+  },
   pty: {
     create: async (args: PtyCreateArgs, pin?: OpenProjectBinding | null): Promise<PtyCreateResult> => {
       if (pin) {
@@ -10499,6 +10683,33 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountSignOut),
     listMachines: (): Promise<AdeAccountMachinesResult> =>
       ipcRenderer.invoke(IPC.accountListMachines),
+    getMachineInventory: async (
+      machineKey?: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MachineInventoryDetail> => {
+      const hasExplicitMachineKey = Boolean(machineKey?.trim());
+      const normalizedMachineKey = hasExplicitMachineKey
+        ? machineKey!.trim()
+        : (await ipcRenderer.invoke(IPC.accountGetLocalMachineIdentity)).machineKey;
+      // “This Mac” has no explicit machine key. Its inventory belongs to the
+      // Electron host that rendered the account page, not to the selected
+      // project's runtime, so keep this path on local main-process IPC.
+      if (!hasExplicitMachineKey) {
+        return ipcRenderer.invoke(IPC.accountGetMachineInventory, {
+          machineKey: normalizedMachineKey,
+        });
+      }
+      const request = { args: { machineKey: normalizedMachineKey } };
+      if (pin) {
+        return callPinnedRuntimeAction<MachineInventoryDetail>(
+          pin,
+          "account",
+          "getMachineInventory",
+          request,
+        );
+      }
+      return ipcRenderer.invoke(IPC.accountGetMachineInventory, { machineKey: normalizedMachineKey });
+    },
     renameMachine: (machineKey: string, customName: string | null): Promise<AdeAccountMachine> =>
       ipcRenderer.invoke(IPC.accountRenameMachine, { machineKey, customName }),
     getLocalMachineIdentity: (): Promise<AdeAccountLocalMachineIdentity> =>

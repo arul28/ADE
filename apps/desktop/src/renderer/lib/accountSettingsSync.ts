@@ -127,6 +127,11 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   pref("chatTranscriptDensity", (state) => state.chatTranscriptDensity, (state, value) => state.setChatTranscriptDensity(value)),
   pref("chatChromeTint", (state) => state.chatChromeTint, (state, value) => state.setChatChromeTint(value)),
   pref("chatShellGeometry", (state) => state.chatShellGeometry, (state, value) => state.setChatShellGeometry(value)),
+  // Harness presets are a list rather than a scalar, which the registry handles
+  // unchanged: the whole list is one value under one key, so the newer-wins
+  // rule applies to the list as a whole and two machines never interleave
+  // half of each other's edits into one preset.
+  pref("harnessPresets", (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
 ] as const;
 
 export type AccountSettingsApi = {

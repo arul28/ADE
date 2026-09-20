@@ -3278,9 +3278,11 @@ The usage commands are viewer-allowed project actions:
   quota-only refresh with interactive host authentication disabled. Work shows
   a compact provider-icon summary using the host's percent-used values directly.
   Live limits mirror the desktop band as headroom cards — one group per
-  provider, one card per window, one segment per account — with provider icons,
-  pressure colors, reset countdowns, source/freshness/error state, explicit
-  refresh, and the provider limits link. The snapshot carries `accounts[]` and a
+  provider, one card per window, and **one named row per account, always**
+  (the email is no longer hidden when a provider has a single login) — with
+  provider icons, provider brand colours from `ADESharedTheme` rather than a
+  per-account hash, pressure colors, reset countdowns, source/freshness/error
+  state, explicit refresh, and the provider limits link. The snapshot carries `accounts[]` and a
   per-window `accountId`; the link comes from `MobileUsageProviderStatus.accountUrl`
   stamped by the host, so the URL lives in exactly one place and an older host
   simply hides it. The arithmetic is `adeUsagePoolAccounts` /

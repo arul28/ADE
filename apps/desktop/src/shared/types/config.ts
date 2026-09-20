@@ -1017,7 +1017,6 @@ export type AiFeatureKey =
   | "commit_messages"
   | "pr_descriptions"
   | "terminal_summaries"
-  | "orchestrator"
   | "initial_context";
 
 export type AiModelDescriptor = {
@@ -1665,6 +1664,25 @@ export type CursorSdkLoginResult =
   | { ok: true; email?: string; apiKeyExpiresAtMs?: number }
   | { ok: false; error: string };
 
+/** One saved harness preset, as an agent-facing row. */
+export type AiHarnessPresetSummary = {
+  id: string;
+  name: string;
+  harness: string;
+  model: string;
+  /** "Claude account · Work", "API key · OpenRouter", "Codex subscription". */
+  source: string;
+};
+
+/** One provider account on this machine. Never carries the config path. */
+export type AiProviderAccountSummary = {
+  id: string;
+  provider: string;
+  label: string;
+  isDefault: boolean;
+  signedIn: boolean;
+};
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -1714,6 +1732,14 @@ export type AiSettingsStatus = {
     encryptedStorePath?: string | null;
     legacyPlaintextPath?: string | null;
   };
+  /**
+   * Saved harness presets and this machine's provider accounts. Agents read
+   * these from `ade actions run ai getStatus` to answer "what brains exist"
+   * without a second round trip; the `ade-harnesses` skill documents them.
+   * Omitted when the machine has none.
+   */
+  harnessPresets?: AiHarnessPresetSummary[];
+  providerAccounts?: AiProviderAccountSummary[];
 };
 export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
 
@@ -1794,34 +1820,6 @@ export type AiConflictResolutionConfig = {
   autoApplyThreshold?: number;
 };
 
-export type AiOrchestratorHookEvent = "TeammateIdle" | "TaskCompleted";
-
-export type AiOrchestratorHookConfig = {
-  command: string;
-  timeoutMs?: number;
-};
-
-export type AiOrchestratorConfig = {
-  teammatePlanMode?: "off" | "auto" | "required";
-  maxParallelWorkers?: number;
-  defaultMergePolicy?: "sequential" | "batch-at-end" | "per-step";
-  defaultConflictHandoff?: "auto-resolve" | "ask-user" | "orchestrator-decides";
-  workerHeartbeatIntervalMs?: number;
-  workerHeartbeatTimeoutMs?: number;
-  workerIdleTimeoutMs?: number;
-  stepTimeoutDefaultMs?: number;
-  maxRetriesPerStep?: number;
-  contextPressureThreshold?: number;
-  progressiveLoading?: boolean;
-  maxTotalTokenBudget?: number;
-  maxPerStepTokenBudget?: number;
-  defaultOrchestratorModel?: ModelConfig;
-  autoResolveInterventions?: boolean;
-  interventionConfidenceThreshold?: number;
-  hooks?: Partial<Record<AiOrchestratorHookEvent, AiOrchestratorHookConfig>>;
-  laneExclusivity?: boolean;
-};
-
 /** Unified config for AI-generated titles and summaries across all session types (chat, CLI, terminal). */
 export type SessionIntelligenceConfig = {
   titles?: {
@@ -1873,7 +1871,6 @@ export type AiConfig = {
   budgets?: AiBudgets;
   permissions?: AiPermissionSettings;
   conflictResolution?: AiConflictResolutionConfig;
-  orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
   // OpenCode/runtime-backed fields
   apiKeys?: Record<string, string>;

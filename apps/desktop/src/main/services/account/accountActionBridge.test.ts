@@ -115,6 +115,26 @@ describe("accountSettingsSync (main)", () => {
     });
   });
 
+  it("runs the preset-home prune hook only after a confirmed account preset write", async () => {
+    const onHarnessPresetsChanged = vi.fn();
+    const pool = poolReturning({ domain: "account_settings", action: "set", result: undefined });
+    const service = createAccountSettingsSyncService({
+      getPool: () => pool,
+      getRootPath: () => "/repo",
+      onHarnessPresetsChanged,
+    });
+
+    await service.set("repo:github.com/ade/ade", "harnessPresets", []);
+    await service.set("all", "theme", "light");
+    expect(onHarnessPresetsChanged).not.toHaveBeenCalled();
+
+    await service.set("all", "harnessPresets", []);
+    expect(onHarnessPresetsChanged).toHaveBeenCalledTimes(1);
+
+    await service.remove("all", "harnessPresets");
+    expect(onHarnessPresetsChanged).toHaveBeenCalledTimes(2);
+  });
+
   it("unwraps the brain envelope and drops malformed rows", async () => {
     const pool = poolReturning({
       domain: "account_settings",

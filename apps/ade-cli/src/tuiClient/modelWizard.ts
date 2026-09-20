@@ -36,6 +36,7 @@ export type ModelWizardOption = {
   provider?: AdeCodeProvider;
   familyKey?: string;
   modelId?: string;
+  credentialId?: string;
   settingKind?: SetupPaneRowKind;
 };
 
@@ -63,6 +64,7 @@ export type ModelWizardInput = {
   recents: readonly string[];
   settingsRows: readonly SetupPaneRow[];
   activeModelId?: string | null;
+  activeCredentialId?: string | null;
 };
 
 /** Settings the wizard's last step exposes, in the order it paints them. */
@@ -195,9 +197,13 @@ export function buildModelWizardView(input: ModelWizardInput): ModelWizardView {
 
   if (selection.step === "provider") {
     const options: ModelWizardOption[] = [];
-    const byModelId = new Map(entries.map((entry) => [entry.modelId, entry] as const));
     for (const modelId of recents.slice(0, MAX_RECENT_SHORTCUTS)) {
-      const entry = byModelId.get(modelId);
+      const entry = entries.find((candidate) => (
+        candidate.modelId === modelId
+        && (input.activeCredentialId
+          ? candidate.credentialId === input.activeCredentialId
+          : !candidate.credentialId)
+      )) ?? entries.find((candidate) => candidate.modelId === modelId);
       if (!entry) continue;
       options.push({
         id: `recent:${modelId}`,
@@ -208,6 +214,7 @@ export function buildModelWizardView(input: ModelWizardInput): ModelWizardView {
         ...(entry.isAvailable ? {} : { disabled: true }),
         provider: entry.family,
         modelId,
+        ...(entry.credentialId ? { credentialId: entry.credentialId } : {}),
       });
     }
     for (const provider of modelWizardProviders(entries)) {
@@ -251,7 +258,7 @@ export function buildModelWizardView(input: ModelWizardInput): ModelWizardView {
   if (selection.step === "model") {
     const models = modelWizardModels(entries, selection.provider, selection.familyKey);
     const options = models.map((entry) => ({
-      id: `model:${entry.modelId}`,
+      id: `model:${entry.modelId}:${entry.credentialId ?? "default"}`,
       kind: "model" as const,
       label: entry.displayName,
       detail: entry.subProvider ?? null,
@@ -259,6 +266,7 @@ export function buildModelWizardView(input: ModelWizardInput): ModelWizardView {
       ...(entry.isAvailable ? {} : { disabled: true }),
       provider: entry.family,
       modelId: entry.modelId,
+      ...(entry.credentialId ? { credentialId: entry.credentialId } : {}),
     }));
     return {
       step: "model",
@@ -302,10 +310,15 @@ function modelStepIndexFor(
   provider: AdeCodeProvider,
   familyKey: string | null,
   activeModelId: string | null | undefined,
+  activeCredentialId?: string | null,
 ): number {
   if (!activeModelId) return 0;
   const models = modelWizardModels(entries, provider, familyKey);
-  return Math.max(0, models.findIndex((entry) => entry.modelId === activeModelId));
+  const activeIndex = models.findIndex((entry) => (
+    entry.modelId === activeModelId
+    && (activeCredentialId ? entry.credentialId === activeCredentialId : !entry.credentialId)
+  ));
+  return Math.max(0, activeIndex >= 0 ? activeIndex : models.findIndex((entry) => entry.modelId === activeModelId));
 }
 
 export type ModelWizardAdvance =
@@ -314,7 +327,7 @@ export type ModelWizardAdvance =
   /** A provider was chosen: apply its remembered settings, then show `selection`. */
   | { kind: "select-provider"; provider: AdeCodeProvider; selection: ModelWizardSelection }
   /** A model was chosen: commit it, then show the settings step. */
-  | { kind: "select-model"; provider: AdeCodeProvider; modelId: string; selection: ModelWizardSelection }
+  | { kind: "select-model"; provider: AdeCodeProvider; modelId: string; credentialId?: string; selection: ModelWizardSelection }
   /** A model row that needs auth was chosen — caller should route to sign-in. */
   | { kind: "sign-in"; provider: AdeCodeProvider; modelId: string }
   /** A settings row was activated: cycle it and stay put. */
@@ -340,6 +353,7 @@ export function advanceModelWizard(input: ModelWizardInput): ModelWizardAdvance 
       kind: "select-model",
       provider: option.provider,
       modelId: option.modelId,
+      ...(option.credentialId ? { credentialId: option.credentialId } : {}),
       selection: { step: "settings", provider: option.provider, familyKey: null, index: 0 },
     };
   }
@@ -355,7 +369,7 @@ export function advanceModelWizard(input: ModelWizardInput): ModelWizardAdvance 
         provider,
         familyKey: null,
         index: nextStep === "model"
-          ? modelStepIndexFor(entries, provider, null, input.activeModelId)
+          ? modelStepIndexFor(entries, provider, null, input.activeModelId, input.activeCredentialId)
           : 0,
       },
     };
@@ -370,7 +384,7 @@ export function advanceModelWizard(input: ModelWizardInput): ModelWizardAdvance 
         step: "model",
         provider,
         familyKey: option.familyKey,
-        index: modelStepIndexFor(entries, provider, option.familyKey, input.activeModelId),
+        index: modelStepIndexFor(entries, provider, option.familyKey, input.activeModelId, input.activeCredentialId),
       },
     };
   }
@@ -383,6 +397,7 @@ export function advanceModelWizard(input: ModelWizardInput): ModelWizardAdvance 
       kind: "select-model",
       provider,
       modelId: option.modelId,
+      ...(option.credentialId ? { credentialId: option.credentialId } : {}),
       selection: { step: "settings", provider, familyKey: selection.familyKey, index: 0 },
     };
   }
@@ -452,7 +467,7 @@ export function backModelWizard(input: ModelWizardInput): ModelWizardBack {
       step: "model",
       provider,
       familyKey: selection.familyKey,
-      index: modelStepIndexFor(entries, provider, selection.familyKey, input.activeModelId),
+      index: modelStepIndexFor(entries, provider, selection.familyKey, input.activeModelId, input.activeCredentialId),
     },
   };
 }
@@ -481,6 +496,7 @@ export function initialModelWizardSelection(args: {
   entries: readonly ModelPickerEntry[];
   provider: AdeCodeProvider | null;
   activeModelId?: string | null;
+  activeCredentialId?: string | null;
   /** Jump straight to the settings step (used by /effort). */
   startAtSettings?: boolean;
 }): ModelWizardSelection {
@@ -494,7 +510,7 @@ export function initialModelWizardSelection(args: {
     step,
     provider,
     familyKey: null,
-    index: step === "model" ? modelStepIndexFor(entries, provider, null, args.activeModelId) : 0,
+    index: step === "model" ? modelStepIndexFor(entries, provider, null, args.activeModelId, args.activeCredentialId) : 0,
   };
 }
 

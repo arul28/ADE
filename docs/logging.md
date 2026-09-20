@@ -170,6 +170,7 @@ Shared desktop/runtime boundary:
 - `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts` owns property allowlists, coarse value normalization, internal-only events, and the global/per-event/per-minute budgets.
 - `apps/desktop/src/main/services/analytics/productAnalyticsService.ts` owns machine consent, installation identity, salted identifier hashing, persisted deduplication/quota state, and the bounded direct Capture API transport.
 - `apps/desktop/src/main/services/analytics/usageProductAnalyticsExporter.ts`, `dailyUsageAnalytics.ts`, and `agentTurnProductAnalytics.ts` are the durable-ledger, daily-aggregate, and work-session producers. `agentTurnProductAnalytics.ts` also owns `captureChatHandoffReplayAnalytics`, the handoff-replay outcome described below. Their focused coverage is consolidated in `productAnalyticsService.test.ts`.
+- `apps/desktop/src/main/services/analytics/featureProductAnalytics.ts` owns the closed, content-free `ade_feature_used` producers for provider accounts, API credentials, custom presets, proxy, reset-credit outcomes, and pending-question dismissal. It maps provider-shaped input to the existing coarse provider-family allowlist before capture.
 - `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` is the capture-gesture producer (`reportCaptureGesture`). It takes a `Pick<ProductAnalyticsService, "captureInternal">` rather than the service, so the one call site cannot reach anything else through it. The CTO voice call's single end-of-call event is emitted inline from `services/cto/ctoVoiceRuntimeService.ts`, the durable owner of a call and the only place that sees every way one can finish.
 - `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts`, and `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx` expose the safe renderer boundary and lifecycle producers. `ProductAnalyticsSection.tsx` is the desktop opt-out UI.
 
@@ -222,6 +223,28 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_relay_suppressed`
 - `ade_account_session_unreadable`
 - `ade_brain_action_failed`
+
+The new product facts reuse `ade_feature_used`; they do not add an event name or
+raise a ceiling. The taxonomy is closed at the producer and again by
+`productAnalyticsPolicy.ts`:
+
+| feature | action | outcome | provider property |
+| --- | --- | --- | --- |
+| `provider_accounts` | `account_created`, `account_removed`, `default_selected` | `completed` | Claude/Codex family |
+| `provider_accounts` | `balance_changed`, `auto_start_changed` | `enabled`, `disabled` | Claude/Codex family |
+| `api_credentials` | `credential_stored`, `credential_removed` | `completed` | coarse provider family |
+| `presets` | `preset_created`, `preset_deleted` | `completed` | coarse harness/provider family |
+| `proxy` | `sign_in` | `success` | Claude/Codex family |
+| `proxy` | `start`, `stop` | `completed` | omitted; no provider is involved |
+| `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | `codex` |
+| `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
+
+Every row is passed through `sanitizeProductAnalyticsProperties` in
+`apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
+keeps only the event's property keys and closed values; its `safeStringProperty`
+path drops arbitrary strings. Provider mapping is also performed by
+`featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
+by the analytics service rather than transmitted.
 
 The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_renderer_recovered` fires once per lost renderer and is bounded by the recovery budget itself (three reload attempts per rolling 60 seconds, after which the window stays down rather than looping), carrying only `crash_reason` — Electron's closed enum, normalized to `unknown` for any future value — and whether the reload was still allowed, never the window URL or title; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt.
 
@@ -343,6 +366,90 @@ enumerate event names, not `action` or `outcome` values. The recovery's local
 operational lines (`agent_chat.claude_replay_overflow_retry`,
 `agent_chat.claude_replay_overflow_gave_up`), which carry session and turn ids
 and turn counts, are not PostHog events.
+
+### Provider accounts, credentials, presets, proxy, and chat decisions
+
+Provider-account mutations are captured at the `provider_instances` action
+domain in `apps/desktop/src/main/services/adeActions/registry.ts`, after the
+machine-local registry write succeeds. `create`, `remove`, and `setDefault`
+use `provider_accounts` with `account_created`, `account_removed`, or
+`default_selected` and `outcome: "completed"`. The two settings carried by
+`setSettings` are split into `balance_changed` and `auto_start_changed`, with
+`outcome: "enabled"` or `"disabled"`. The only other property is the Claude or
+Codex family. A per-action/per-outcome/per-family key with a one-hour minimum
+interval admits at most 336 events in a theoretical two-provider day before
+the event budget applies; the event-level `ade_feature_used` ceiling accepts
+at most 140 per UTC day and 30 per minute (and the shared ceiling remains
+200).
+No account id, label, config-home path, email, plan, or refresh/list activity is
+captured.
+
+API-credential store and remove mutations are captured in
+`apps/desktop/src/main/services/ai/apiKeyStore.ts`, after the multi-credential
+write or removal completes. They use `api_credentials` with
+`credential_stored`/`credential_removed`, `outcome: "completed"`, and the
+coarse provider family. The provider value is mapped before it reaches the
+payload, so arbitrary gateway/provider names become `other`; two actions across
+the eleven closed provider families produce at most 528 one-hour-key slots per
+day before the event budget applies. The event-level 140-per-day /
+30-per-minute `ade_feature_used` ceilings are the hard accepted bound, and the
+shared daily budget remains 200. Legacy secret hydration, credential reads,
+readiness probes, masked summaries, and the secret/key material itself remain
+untracked.
+
+Custom-preset create/delete changes are observed at the main-process
+`accountSettingsSync` write callback in `apps/desktop/src/main/services/ipc/registerIpc.ts`,
+after the account-settings action is confirmed. The callback diffs the
+normalized local list only to identify additions/removals; it sends
+`presets` with `preset_created` or `preset_deleted`, `outcome: "completed"`,
+and the coarse harness/provider family. Updates with the same preset id do not
+look like creates or deletes. Two actions across the eleven closed provider
+families produce at most 528 one-hour-key slots per day; the event-level
+`ade_feature_used` 140-per-day / 30-per-minute limits are the hard accepted
+bound and the shared 200-event ceiling is unchanged. Preset ids, names, logo
+data, model ids, credential ids, labels, paths, URLs, and account-setting
+contents never enter the event. Account-settings list/sync reads and launch
+resolution are not analytics.
+
+Proxy sign-in, start, and stop are captured by the durable service in
+`apps/ade-cli/src/services/proxy/proxyService.ts`. A transition to running
+emits `proxy/start` with `outcome: "completed"`; a successful stop emits
+`proxy/stop` with the same outcome; a successful provider sign-in emits
+`proxy/sign_in` with `outcome: "success"` and the Claude/Codex family. The
+service emits only after the supervisor or auth-file mutation succeeds, and
+never includes authorization URLs, login ids, prefixes, emails, plans,
+management keys, or error text. A one-hour action/outcome/family key limits
+the transition facts to at most 96 accepted events per theoretical two-provider
+day before the existing `ade_feature_used` and shared ceilings; the hard
+event-level bound remains 140 per day and 30 per minute. Proxy status,
+login polling, health probes, and subscription launch reads stay untracked.
+
+Reset-credit consume outcomes are captured in
+`apps/desktop/src/main/services/usage/usageTrackingService.ts` after the
+consume result is known, including invalid/missing-account failures. The event
+is `usage/reset_credit_consumed`, always carries provider `codex`, and maps
+the service statuses to `completed`, `nothing_to_reset`, `no_credit`,
+`already_redeemed`, or `failed`. One key per outcome with a one-hour minimum
+interval admits at most 120 events per day before the existing event-level
+`ade_feature_used` 140-per-day / 30-per-minute ceilings; no polling, quota
+snapshot read, probe, or account id is included. Analytics failures are
+swallowed and never change the reset result.
+
+When a user dismisses a dismissible async question, the chat service emits
+`chat/pending_input_dismissed` with `outcome: "completed"` after the durable
+receipt is written. The provider is reduced to the existing coarse family;
+the pending item id, question text, answers, turn id, session id, transcript,
+and notice copy remain local. The one-hour action/outcome/family key and the
+eleven closed provider families allow at most 264 one-hour-key slots per day
+before budgets. The event-level `ade_feature_used` 140-per-day /
+30-per-minute limits are the hard accepted bound, and the shared daily budget
+remains 200. Approval responses, pending input reads, and provider runtime
+polling do not emit this fact.
+
+These facts intentionally remain out of `scripts/posthog/dashboard-spec.mjs`:
+there is no concrete dashboard question or card for them yet. The existing
+surface/feature volume views continue to include the shared event without a
+dashboard contract change.
 
 Which tool an installation opens in the Work tools pane records the existing
 `ade_feature_used` event at the pane's single writer (`useWorkSidebarTool`'s

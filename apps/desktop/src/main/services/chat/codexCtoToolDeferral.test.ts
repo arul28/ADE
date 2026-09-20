@@ -69,15 +69,15 @@ describe("Codex dynamic tool deferral", () => {
   });
 
   it("never defers a tool set that carries no pack metadata", () => {
-    // Orchestration tools are plain ExecutableTools. The predicate must leave
+    // Non-CTO tool sets are plain ExecutableTools. The predicate must leave
     // them eager rather than guessing.
     const plain = {
-      someOrchestrationTool: {
+      somePlainTool: {
         description: "no pack here",
         inputSchema: { } as any,
         execute: async () => null,
       },
     };
-    expect(codexDeferCtoTool(plain.someOrchestrationTool as any, new Set())).toBe(false);
+    expect(codexDeferCtoTool(plain.somePlainTool as any, new Set())).toBe(false);
   });
 });

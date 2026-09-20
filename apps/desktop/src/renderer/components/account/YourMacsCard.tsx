@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRight,
+  CaretDown,
+  CaretRight,
   CircleNotch,
   DesktopTower,
   DotsThreeVertical,
@@ -12,6 +14,7 @@ import type {
   AdeAccountLocalMachineIdentity,
   AdeAccountMachinePairingRepairResult,
   AdeAccountMachineRemovalResult,
+  MachineInventoryDetail,
 } from "../../../shared/types";
 import { ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE } from "../../../shared/types/account";
 import type { MachinePresence } from "../../../shared/types/power";
@@ -57,6 +60,36 @@ import {
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
+import { CustomHammerMark } from "../shared/CustomHammerMark";
+import { ProviderLogo } from "../shared/ProviderLogos";
+import { providerColor } from "../usage/providerColors";
+
+/** The quiet heading over one column of a machine's expanded inventory. */
+function InventoryGroupLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        fontFamily: SANS_FONT,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.07em",
+        textTransform: "uppercase",
+        color: COLORS.textMuted,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function InventoryEmpty({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>{children}</div>
+  );
+}
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import {
@@ -83,6 +116,7 @@ type AccountBridge = {
     machineKey: string,
     customName: string | null,
   ) => Promise<AdeAccountMachine>;
+  getMachineInventory?: (machineKey?: string) => Promise<MachineInventoryDetail>;
   signOut: () => Promise<AdeAccountStatus>;
 };
 
@@ -359,6 +393,15 @@ type ComputerDisplayRow = {
   catalogKeys: string[];
 };
 
+type MachineInventoryViewState =
+  | { status: "loading" }
+  | { status: "ready"; detail: MachineInventoryDetail }
+  | { status: "error"; message: string };
+
+function providerInventoryLabel(provider: string): string {
+  return provider.length > 0 ? provider[0].toUpperCase() + provider.slice(1) : provider;
+}
+
 /**
  * The row's second line, and the ONE place this list decides it.
  *
@@ -449,6 +492,8 @@ export function YourMacsCard() {
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectOutcome, setReconnectOutcome] = useState<ReconnectOutcome | null>(null);
   const [signInPrompt, setSignInPrompt] = useState<AccountDeviceLoginPrompt | null>(null);
+  const [expandedMachineKey, setExpandedMachineKey] = useState<string | null>(null);
+  const [inventoryByMachine, setInventoryByMachine] = useState<Record<string, MachineInventoryViewState>>({});
   // A ref, not state: the in-flight sign-in loop reads it between polls, and a
   // state value captured in that closure would stay false forever.
   const reconnectCancelledRef = useRef(false);
@@ -583,6 +628,65 @@ export function YourMacsCard() {
   // a machine that announced a suspend is still inside the 90-second online
   // window, so counting it here would put "2 online" above a row saying Asleep.
   const onlineCount = rows.filter((row) => row.awake).length;
+
+  const toggleMachineInventory = useCallback(async (row: ComputerDisplayRow) => {
+    const machine = row.accountMachine;
+    if (!machine) return;
+    if (expandedMachineKey === machine.machineKey) {
+      setExpandedMachineKey(null);
+      return;
+    }
+    setExpandedMachineKey(machine.machineKey);
+    const existing = inventoryByMachine[machine.machineKey];
+    if (existing?.status === "ready" || existing?.status === "loading") return;
+    // Two different reasons, two different sentences. A machine that is awake
+    // and simply not connected FROM HERE was being told it was offline, one
+    // line under its own green "Online" — and the honest sentence also names
+    // the fix, which the offline one cannot.
+    if (!machine.online || row.presence === "offline") {
+      setInventoryByMachine((previous) => ({
+        ...previous,
+        [machine.machineKey]: { status: "error", message: "Details unavailable while offline." },
+      }));
+      return;
+    }
+    if (!row.thisMac && !row.connected) {
+      setInventoryByMachine((previous) => ({
+        ...previous,
+        [machine.machineKey]: { status: "error", message: "Connect to this computer to see what it has installed." },
+      }));
+      return;
+    }
+    const api = accountBridge();
+    if (!api?.getMachineInventory) {
+      setInventoryByMachine((previous) => ({
+        ...previous,
+        [machine.machineKey]: { status: "error", message: "Details unavailable right now." },
+      }));
+      return;
+    }
+    setInventoryByMachine((previous) => ({
+      ...previous,
+      [machine.machineKey]: { status: "loading" },
+    }));
+    try {
+      const detail = await api.getMachineInventory(row.thisMac ? undefined : machine.machineKey);
+      setInventoryByMachine((previous) => ({
+        ...previous,
+        [machine.machineKey]: { status: "ready", detail },
+      }));
+    } catch (error) {
+      setInventoryByMachine((previous) => ({
+        ...previous,
+        [machine.machineKey]: {
+          status: "error",
+          message: error instanceof Error && error.message
+            ? error.message
+            : "Details unavailable right now.",
+        },
+      }));
+    }
+  }, [expandedMachineKey, inventoryByMachine]);
 
   /**
    * Is THIS computer missing from its own account directory?
@@ -929,167 +1033,302 @@ export function YourMacsCard() {
             const machine = row.accountMachine;
             const menuOpen = openMenuKey === row.key;
             const renaming = Boolean(machine && renamingKey === machine.machineKey);
+            const inventoryState = machine ? inventoryByMachine[machine.machineKey] : undefined;
+            const expanded = Boolean(machine && expandedMachineKey === machine.machineKey);
             return (
-              <div
-                key={row.key}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "11px 18px",
-                  borderTop: `1px solid ${COLORS.borderMuted}`,
-                }}
-              >
-                {/* The dot states the SAME presence as the line beside it. The
-                    attribute is how a test pins that, since a CSS variable does
-                    not survive to a style assertion. */}
-                <span
-                  aria-hidden
-                  data-machine-presence={row.presence ?? undefined}
+              <div key={row.key}>
+                <div
                   style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    flexShrink: 0,
-                    background: row.statusColor,
-                    boxShadow: row.awake
-                      ? `0 0 0 3px color-mix(in srgb, ${row.statusColor} 20%, transparent)`
-                      : undefined,
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 8,
+                    padding: "11px 18px",
+                    borderTop: `1px solid ${COLORS.borderMuted}`,
                   }}
-                />
-                <Laptop size={15} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
-                {renaming && machine ? (
-                  <form
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void saveRename(machine);
-                    }}
-                    style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}
-                  >
-                    <input
-                      aria-label={`Name for ${row.name}`}
-                      autoFocus
-                      maxLength={80}
-                      value={renameValue}
-                      disabled={renameBusy}
-                      onChange={(event) => setRenameValue(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Escape") {
-                          event.preventDefault();
-                          cancelRename();
-                        }
-                      }}
-                      style={{
-                        minWidth: 0,
-                        flex: 1,
-                        height: 28,
-                        borderRadius: RADII.sm,
-                        border: `1px solid ${COLORS.borderMuted}`,
-                        background: COLORS.recessedBg,
-                        color: COLORS.textPrimary,
-                        fontFamily: SANS_FONT,
-                        fontSize: 12.5,
-                        padding: "0 9px",
-                        outline: "none",
-                      }}
-                    />
-                    <button
-                      type="submit"
-                      disabled={renameBusy || !renameValue.trim()}
-                      style={primaryButton({ height: 28, fontSize: 11, padding: "0 10px" })}
-                    >
-                      {renameBusy ? "Saving…" : "Save"}
-                    </button>
-                    {machine.customName ? (
-                      <button
-                        type="button"
-                        disabled={renameBusy}
-                        onClick={() => void saveRename(machine, null)}
-                        style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}
-                      >
-                        Use hostname
-                      </button>
-                    ) : null}
+                >
+                  {machine ? (
                     <button
                       type="button"
-                      disabled={renameBusy}
-                      onClick={cancelRename}
-                      style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}
-                    >
-                      Cancel
-                    </button>
-                  </form>
-                ) : (
-                  <>
-                    <span
+                      aria-label={`${expanded ? "Hide" : "Show"} provider inventory for ${row.name}`}
+                      aria-expanded={expanded}
+                      onClick={() => void toggleMachineInventory(row)}
                       style={{
-                        fontFamily: SANS_FONT,
-                        fontSize: 13,
-                        color: COLORS.textPrimary,
-                        minWidth: 0,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
+                        ...outlineButton({ height: 24, width: 22, padding: 0 }),
+                        flexShrink: 0,
+                        border: "none",
+                        background: "transparent",
+                        color: COLORS.textMuted,
                       }}
                     >
-                      {row.name}
-                    </span>
-                    {row.thisMac ? (
-                      <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                        {THIS_MACHINE_NAME}
-                      </span>
-                    ) : null}
-                    {row.rememberedOnly ? (
-                      <span style={inlineBadge(COLORS.textMuted, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                        This browser
-                      </span>
-                    ) : null}
-                    {/* Says the word the status line deliberately drops: with
-                        a live channel open, that line spends itself on the
-                        power reading instead. */}
-                    {row.connected ? (
-                      <span style={inlineBadge(COLORS.success, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                        Connected
-                      </span>
-                    ) : null}
-                  </>
-                )}
-                <span style={{ flex: 1 }} />
-                {row.statusLine && !renaming ? (
+                      {expanded ? <CaretDown size={14} weight="bold" /> : <CaretRight size={14} weight="bold" />}
+                    </button>
+                  ) : <span style={{ width: 22, flexShrink: 0 }} />}
+                  {/* The dot states the SAME presence as the line beside it. */}
                   <span
+                    aria-hidden
+                    data-machine-presence={row.presence ?? undefined}
                     style={{
-                      fontFamily: SANS_FONT,
-                      fontSize: 11,
-                      color: row.awake ? COLORS.success : COLORS.textMuted,
+                      width: 7,
+                      height: 7,
+                      marginTop: 7,
+                      borderRadius: "50%",
                       flexShrink: 0,
-                      whiteSpace: "nowrap",
+                      background: row.statusColor,
+                      boxShadow: row.awake
+                        ? `0 0 0 3px color-mix(in srgb, ${row.statusColor} 20%, transparent)`
+                        : undefined,
+                    }}
+                  />
+                  <Laptop size={15} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0, marginTop: 3 }} />
+                  <div
+                    data-machine-presence={row.presence ?? undefined}
+                    style={{ minWidth: 0, flex: 1 }}
+                  >
+                    {renaming && machine ? (
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void saveRename(machine);
+                        }}
+                        style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}
+                      >
+                        <input
+                          aria-label={`Name for ${row.name}`}
+                          autoFocus
+                          maxLength={80}
+                          value={renameValue}
+                          disabled={renameBusy}
+                          onChange={(event) => setRenameValue(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              cancelRename();
+                            }
+                          }}
+                          style={{
+                            minWidth: 0,
+                            flex: 1,
+                            height: 28,
+                            borderRadius: RADII.sm,
+                            border: `1px solid ${COLORS.borderMuted}`,
+                            background: COLORS.recessedBg,
+                            color: COLORS.textPrimary,
+                            fontFamily: SANS_FONT,
+                            fontSize: 12.5,
+                            padding: "0 9px",
+                            outline: "none",
+                          }}
+                        />
+                        <button type="submit" disabled={renameBusy || !renameValue.trim()} style={primaryButton({ height: 28, fontSize: 11, padding: "0 10px" })}>
+                          {renameBusy ? "Saving…" : "Save"}
+                        </button>
+                        {machine.customName ? (
+                          <button type="button" disabled={renameBusy} onClick={() => void saveRename(machine, null)} style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}>
+                            Use hostname
+                          </button>
+                        ) : null}
+                        <button type="button" disabled={renameBusy} onClick={cancelRename} style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}>
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                          <span
+                            data-machine-presence={row.presence ?? undefined}
+                            style={{
+                              fontFamily: SANS_FONT,
+                              fontSize: 13,
+                              color: COLORS.textPrimary,
+                              minWidth: 0,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {row.name}
+                          </span>
+                          {row.thisMac ? (
+                            <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+                              {THIS_MACHINE_NAME}
+                            </span>
+                          ) : null}
+                          {row.rememberedOnly ? (
+                            <span style={inlineBadge(COLORS.textMuted, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+                              This browser
+                            </span>
+                          ) : null}
+                          {row.connected ? (
+                            <span style={inlineBadge(COLORS.success, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+                              Connected
+                            </span>
+                          ) : null}
+                        </div>
+                        {row.statusLine ? (
+                          <div
+                            style={{
+                              marginTop: 2,
+                              fontFamily: SANS_FONT,
+                              fontSize: 11,
+                              color: row.awake ? COLORS.success : COLORS.textMuted,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {row.statusLine}
+                          </div>
+                        ) : null}
+                        {/* No inventory chips here. A collapsed machine row is
+                            "which computer, is it up" — a second line of
+                            "Claude · 2 accounts · 6 models" chips made every
+                            row two lines tall to say something nobody reads at
+                            a glance. It is all in the expanded details now,
+                            grouped and with the provider marks on it. */}
+                      </>
+                    )}
+                  </div>
+                  {renaming ? (
+                    <span style={{ width: 26, flexShrink: 0 }} />
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={`Options for ${row.name}`}
+                      aria-haspopup="menu"
+                      aria-expanded={menuOpen}
+                      onClick={(event) =>
+                        menuOpen ? closeMenu() : openMenu(row.key, event.currentTarget)
+                      }
+                      style={{
+                        ...outlineButton({ height: 26, width: 26, padding: 0 }),
+                        flexShrink: 0,
+                        border: "none",
+                        background: menuOpen ? COLORS.hoverBg : "transparent",
+                        color: COLORS.textMuted,
+                      }}
+                    >
+                      <DotsThreeVertical size={16} weight="bold" />
+                    </button>
+                  )}
+                </div>
+                {expanded && machine ? (
+                  <div
+                    data-machine-inventory-detail
+                    style={{
+                      borderTop: `1px solid ${COLORS.borderMuted}`,
+                      padding: "10px 18px 13px 68px",
+                      background: COLORS.recessedBg,
                     }}
                   >
-                    {row.statusLine}
-                  </span>
+                    {inventoryState?.status === "loading" ? (
+                      <div role="status" style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                        Loading provider inventory…
+                      </div>
+                    ) : inventoryState?.status === "error" ? (
+                      <div role="status" style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                        {inventoryState.message}
+                      </div>
+                    ) : inventoryState?.status === "ready" ? (
+                      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
+                        {/* One tile per provider, in that provider's own
+                            colour, with its mark and its model count on the
+                            header. The old version was three nested plain
+                            divs per account with no mark anywhere, so two
+                            providers read as one undifferentiated list. */}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                          <InventoryGroupLabel>Accounts</InventoryGroupLabel>
+                          {inventoryState.detail.providers.length === 0 ? (
+                            <InventoryEmpty>No provider accounts here.</InventoryEmpty>
+                          ) : inventoryState.detail.providers.map((provider) => {
+                            const tone = providerColor(provider.provider);
+                            return (
+                              <div
+                                key={provider.provider}
+                                data-machine-inventory-provider={provider.provider}
+                                style={{
+                                  minWidth: 0,
+                                  overflow: "hidden",
+                                  borderRadius: 8,
+                                  border: `1px solid color-mix(in srgb, ${tone} 30%, transparent)`,
+                                  background: `color-mix(in srgb, ${tone} 6%, transparent)`,
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    gap: 8,
+                                    padding: "5px 9px",
+                                    background: `color-mix(in srgb, ${tone} 12%, transparent)`,
+                                  }}
+                                >
+                                  <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                                    <ProviderLogo family={provider.provider} size={13} />
+                                    <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textPrimary }}>
+                                      {providerInventoryLabel(provider.provider)}
+                                    </span>
+                                  </span>
+                                  <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted, whiteSpace: "nowrap" }}>
+                                    {provider.modelCount} {provider.modelCount === 1 ? "model" : "models"}
+                                  </span>
+                                </div>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "7px 9px" }}>
+                                  {provider.accounts.map((account) => {
+                                    const accountMeta = [account.email, account.plan].filter(Boolean).join(" · ");
+                                    return (
+                                      <div key={account.instanceId} style={{ minWidth: 0, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45 }}>
+                                        <div style={{ color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                          {account.label}
+                                          {account.isDefault && account.label !== "Default" ? (
+                                            <span style={{ color: COLORS.textMuted }}> · default</span>
+                                          ) : null}
+                                        </div>
+                                        {accountMeta ? (
+                                          <div style={{ color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                            {accountMeta}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                          <InventoryGroupLabel>
+                            <CustomHammerMark size={13} />
+                            Custom
+                          </InventoryGroupLabel>
+                          {inventoryState.detail.presets.length === 0 ? (
+                            <InventoryEmpty>Nothing custom here.</InventoryEmpty>
+                          ) : (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                              {inventoryState.detail.presets.map((preset) => (
+                                <div key={preset.id} style={{ minWidth: 0, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45 }}>
+                                  <div style={{ color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {preset.name}
+                                  </div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, color: COLORS.textMuted }}>
+                                    <ProviderLogo family={preset.harness} size={11} />
+                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {providerInventoryLabel(preset.harness)} · {preset.model}
+                                    </span>
+                                    {!preset.bound ? (
+                                      <span style={{ ...inlineBadge(COLORS.warning, { fontSize: 9, padding: "1px 5px" }), flexShrink: 0 }}>
+                                        Not here
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 ) : null}
-                {renaming ? (
-                  <span style={{ width: 26, flexShrink: 0 }} />
-                ) : (
-                  <button
-                    type="button"
-                    aria-label={`Options for ${row.name}`}
-                    aria-haspopup="menu"
-                    aria-expanded={menuOpen}
-                    onClick={(event) =>
-                      menuOpen ? closeMenu() : openMenu(row.key, event.currentTarget)
-                    }
-                    style={{
-                      ...outlineButton({ height: 26, width: 26, padding: 0 }),
-                      flexShrink: 0,
-                      border: "none",
-                      background: menuOpen ? COLORS.hoverBg : "transparent",
-                      color: COLORS.textMuted,
-                    }}
-                  >
-                    <DotsThreeVertical size={16} weight="bold" />
-                  </button>
-                )}
               </div>
             );
           })}

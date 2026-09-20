@@ -2,7 +2,6 @@
  * The settings primitive set. Every settings surface builds from these — see
  * `settingsManifest.ts` for how a setting becomes navigable and searchable.
  */
-export { ScopeChip } from "./ScopeChip";
 export { SettingsCard, SettingsGroup, SavedFlash, useSavedFlash } from "./SettingsCard";
 export { SettingsDisclosure } from "./SettingsDisclosure";
 

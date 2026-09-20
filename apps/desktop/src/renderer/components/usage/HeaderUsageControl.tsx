@@ -80,6 +80,16 @@ function percentLabel(percent: number | null): string {
   return percent == null ? "…" : `${Math.round(percent)}%`;
 }
 
+/**
+ * The chip speaks headroom, like every row in the popup it opens ("19% left").
+ * It used to print the consumed share while the popup printed the remaining
+ * one, so the same window read "wk 81%" in the top bar and "wk 19% left" one
+ * click later.
+ */
+function headroomLabel(percentUsed: number | null): string {
+  return percentUsed == null ? "…" : `${Math.max(0, Math.round(100 - percentUsed))}% left`;
+}
+
 // The chip stays quota-led: it is the ambient "am I about to be cut off"
 // signal. Its thresholds are the shared ones, so "nearly dry" means the same
 // thing in the top bar as it does on the Usage page. Below the warn threshold
@@ -94,7 +104,7 @@ function percentStyle(percent: number | null): React.CSSProperties {
 }
 
 function formatUsageTitle(usage: HeaderUsageWindowSummary): string {
-  return `${usage.planLabel} ${percentLabel(usage.planPercent)}, 5h ${percentLabel(usage.fiveHourPercent)}`;
+  return `${usage.planLabel} ${headroomLabel(usage.planPercent)}, 5h ${headroomLabel(usage.fiveHourPercent)}`;
 }
 
 function formatUpdatedAgo(snapshot: UsageSnapshot | null, nowMs: number): string {
@@ -137,7 +147,7 @@ function HeaderProviderUsageChip({
         className={cn("inline-flex items-center gap-0.5 font-semibold", USAGE_TEXT.micro, USAGE_NUMERIC_CLASS)}
       >
         <span className="text-muted-fg">{usage.planLabel}</span>
-        <span style={percentStyle(usage.planPercent)}>{percentLabel(usage.planPercent)}</span>
+        <span style={percentStyle(usage.planPercent)}>{headroomLabel(usage.planPercent)}</span>
       </span>
     </div>
   );

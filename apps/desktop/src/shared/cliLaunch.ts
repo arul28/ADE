@@ -11,6 +11,12 @@ import type {
   TerminalToolType,
   WindowsShellKind,
 } from "./types";
+import type { ProviderInstanceProvider } from "./types/providerInstances";
+import {
+  isBaseProviderInstance,
+  isProviderInstanceProvider,
+  PROVIDER_INSTANCE_ENV_KEY,
+} from "./types/providerInstances";
 import {
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   droidPermissionModeFromLegacyPermissionMode,
@@ -26,9 +32,7 @@ import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { grokSupervisionEnv } from "./grokSupervision";
 import { decodeOpenCodeRegistryId, decodePiRegistryId } from "./modelRegistry";
-import { effectiveOrchestrationPermissionMode } from "./orchestrationRuntimePolicy";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
-import type { OrchestrationRole } from "./types/orchestration";
 
 export type CliProvider =
   | "claude"
@@ -135,6 +139,51 @@ export type PtyContinuationLaunchFields = Pick<
   | "codexSandbox"
   | "codexConfigSource"
 >;
+
+export type CliIdentityResumeMetadataArgs = {
+  provider: TerminalResumeMetadata["provider"];
+  targetId: string | null;
+  permissionMode: NonNullable<TerminalResumeLaunchConfig["permissionMode"]>;
+  droidPermissionMode?: TerminalResumeLaunchConfig["droidPermissionMode"];
+  model: string | null;
+  reasoningEffort: string | null;
+  fastMode: boolean | null;
+  instanceId?: string | null;
+  presetId?: string | null;
+  credentialId?: string | null;
+};
+
+/** Build the durable identity metadata shared by local and sync CLI launches. */
+export function buildCliIdentityResumeMetadata(
+  args: CliIdentityResumeMetadataArgs,
+): TerminalResumeMetadata | null {
+  const instanceId = args.instanceId?.trim() || null;
+  const presetId = args.presetId?.trim() || null;
+  const credentialId = args.credentialId?.trim() || null;
+  const identity = {
+    ...(instanceId ? { instanceId } : {}),
+    ...(presetId ? { presetId } : {}),
+    ...(credentialId ? { credentialId } : {}),
+  };
+  if (Object.keys(identity).length === 0) return null;
+
+  return {
+    provider: args.provider,
+    targetKind: args.provider === "codex" ? "thread" : "session",
+    targetId: args.targetId,
+    launch: {
+      permissionMode: args.permissionMode,
+      ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
+      model: args.model,
+      reasoningEffort: args.reasoningEffort,
+      fastMode: args.fastMode,
+      ...identity,
+    },
+    // Mirror the ids so older readers and the resume path can recover the
+    // selected identity without reconstructing the original launch request.
+    ...identity,
+  };
+}
 
 export function buildPtyContinuationLaunchFields(
   launch: TerminalResumeLaunchConfig | null | undefined,
@@ -680,11 +729,85 @@ function withAdeAgentSkillEnv(
   return { ...skillsEnv, ...(env ?? {}) };
 }
 
+/**
+ * One provider account, already resolved to a directory.
+ *
+ * `shared/` cannot reach the machine instance store (it lives in the CLI
+ * package and reads the filesystem), so callers resolve the id and hand the
+ * answer down. That also keeps the fallback rule for a deleted account in one
+ * place — the resolver — instead of two builders.
+ */
+export type ProviderInstanceLaunchTarget = {
+  /** The account id; the provider slug names the base identity. */
+  id: string;
+  provider: ProviderInstanceProvider;
+  configHome: string;
+};
+
+/**
+ * The env entry that points ONE provider CLI at ONE account's config home.
+ *
+ * Empty for every provider that does not keep its identity in a config
+ * directory, and empty when the resolved account belongs to a different
+ * provider than the launch — a Claude account cannot redirect a Codex run.
+ * Never rewrites `HOME`.
+ */
+export function providerInstanceLaunchEnv(
+  provider: LaunchProfile,
+  instance: ProviderInstanceLaunchTarget | null | undefined,
+): Record<string, string> {
+  if (!instance) return {};
+  const configHome = instance.configHome?.trim();
+  if (!configHome) return {};
+  if (!isProviderInstanceProvider(provider) || provider !== instance.provider) return {};
+  // The base identity inherits the environment; see `isBaseProviderInstance`.
+  if (isBaseProviderInstance(instance)) return {};
+  return { [PROVIDER_INSTANCE_ENV_KEY[instance.provider]]: configHome };
+}
+
+/**
+ * A harness preset, already resolved to what a process needs.
+ *
+ * `shared/` cannot read the key store or write a config home, so the same rule
+ * that applies to provider accounts applies here: the caller resolves
+ * (`main/services/chat/harnessPresetLaunch.ts`) and hands the answer down.
+ *
+ * `configFragments` are files the harness reads at startup — Codex's
+ * `config.toml`, Droid's `settings.json`. The resolver writes them on the
+ * machine it runs on; they travel with the launch so a runtime that
+ * materializes a command built elsewhere can write the same bytes before the
+ * spawn rather than starting a CLI whose config home is empty.
+ */
+export type TrackedCliPresetLaunch = {
+  env?: Record<string, string>;
+  configFragments?: Array<{ path: string; contents: string }>;
+  /**
+   * Send the model id to the CLI exactly as stated, skipping ADE's alias
+   * table. A preset's model can be a gateway's spelling that ADE's catalog
+   * does not know, and rewriting it would point the run at a different model.
+   */
+  passthroughModelId?: boolean;
+};
+
+/** The env a resolved preset contributes. Empty when there is no preset. */
+export function harnessPresetLaunchEnv(
+  preset: TrackedCliPresetLaunch | null | undefined,
+): Record<string, string> {
+  return preset?.env && Object.keys(preset.env).length ? { ...preset.env } : {};
+}
+
+function mergeLaunchEnv<B extends Record<string, string> | null | undefined>(
+  base: B,
+  patch: Record<string, string>,
+): B | Record<string, string> {
+  if (!Object.keys(patch).length) return base;
+  return { ...(base ?? {}), ...patch };
+}
+
 export function buildTrackedCliStartupCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
-  orchestrationRole?: OrchestrationRole | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
   /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
@@ -699,6 +822,17 @@ export function buildTrackedCliStartupCommand(args: {
   laneWorktreePath?: string | null;
   /** Signed standalone Computer Use MCP client selected by ADE's main process. */
   codexComputerUse?: CodexComputerUseCliConfig | null;
+  /**
+   * Provider account to launch under, already resolved by the caller. Only
+   * `claude` and `codex` have one; every other provider ignores it.
+   */
+  instance?: ProviderInstanceLaunchTarget | null;
+  /**
+   * Saved harness preset for this launch, already resolved. Its env is merged
+   * over ADE's own launch env, and `passthroughModelId` turns off the model
+   * alias rewrite.
+   */
+  preset?: TrackedCliPresetLaunch | null;
 }): string {
   return buildTrackedCliLaunchCommand(args).startupCommand;
 }
@@ -707,7 +841,6 @@ export function buildTrackedCliLaunchCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
-  orchestrationRole?: OrchestrationRole | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
   /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
@@ -722,14 +855,38 @@ export function buildTrackedCliLaunchCommand(args: {
   laneWorktreePath?: string | null;
   /** Signed standalone Computer Use MCP client selected by ADE's main process. */
   codexComputerUse?: CodexComputerUseCliConfig | null;
+  /**
+   * Provider account to launch under, already resolved by the caller. Only
+   * `claude` and `codex` have one; every other provider ignores it.
+   */
+  instance?: ProviderInstanceLaunchTarget | null;
+  /**
+   * Saved harness preset for this launch, already resolved. Its env is merged
+   * over ADE's own launch env, and `passthroughModelId` turns off the model
+   * alias rewrite.
+   */
+  preset?: TrackedCliPresetLaunch | null;
 }): TrackedCliLaunchCommand {
-  const permissionMode = effectiveOrchestrationPermissionMode(args);
+  const permissionMode = args.permissionMode ?? "default";
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
   const initialPrompt = normalizeInitialPrompt(args.initialPrompt);
   const skillRoots = args.laneWorktreePath
     ? getAgentSkillRootCandidates({ cwd: args.laneWorktreePath })
     : getAdeAgentSkillRootsForPrompt();
-  const agentSkillEnv = adeAgentSkillEnv(skillRoots);
+  // The preset lands LAST so it outranks the account env: a preset that names
+  // its own config home must win over the instance patch, or a key-sourced
+  // preset would run inside the user's own signed-in directory.
+  const agentSkillEnv = mergeLaunchEnv(
+    mergeLaunchEnv(
+      adeAgentSkillEnv(skillRoots),
+      providerInstanceLaunchEnv(args.provider, args.instance),
+    ),
+    harnessPresetLaunchEnv(args.preset),
+  );
+  const passthroughModelId = args.preset?.passthroughModelId === true;
+  const modelForLaunch = passthroughModelId
+    ? normalizeCliFlagValue(args.model)
+    : args.model;
 
   if (args.provider === "claude") {
     const commandArgs: string[] = [];
@@ -737,7 +894,9 @@ export function buildTrackedCliLaunchCommand(args: {
     if (assignedSessionId) {
       commandArgs.push("--session-id", assignedSessionId);
     }
-    const model = resolveClaudeCliModelForLaunch(args.model);
+    const model = passthroughModelId
+      ? normalizeCliFlagValue(args.model)
+      : resolveClaudeCliModelForLaunch(args.model);
     if (model) {
       commandArgs.push("--model", model);
     }
@@ -782,7 +941,9 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "codex") {
-    const codexModel = resolveCodexCliModelForLaunch(args.model);
+    const codexModel = passthroughModelId
+      ? normalizeCliFlagValue(args.model)
+      : resolveCodexCliModelForLaunch(args.model);
     const initialInput = workTabCliPrompt(initialPrompt, skillRoots);
     const commandArgs: string[] = [
       "--no-alt-screen",
@@ -812,7 +973,9 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "cursor") {
-    const cursorModel = resolveCursorCliModelForLaunch(args.model);
+    const cursorModel = passthroughModelId
+      ? normalizeCliFlagValue(args.model)
+      : resolveCursorCliModelForLaunch(args.model);
     const commandArgs = [
       ...permissionModeToCursorFlags(permissionMode),
       ...modelToCliFlag(cursorModel),
@@ -846,7 +1009,7 @@ export function buildTrackedCliLaunchCommand(args: {
       const startupCommand = droidPowerShellCommand({
         permissionMode,
         droidPermissionMode: args.droidPermissionMode,
-        model: args.model,
+        model: modelForLaunch,
         reasoningEffort: args.reasoningEffort,
       });
       return {
@@ -861,7 +1024,7 @@ export function buildTrackedCliLaunchCommand(args: {
     const startupCommand = buildDroidCommandLine({
       permissionMode,
       droidPermissionMode: args.droidPermissionMode,
-      model: args.model,
+      model: modelForLaunch,
       reasoningEffort: args.reasoningEffort,
       prompt,
     });
@@ -879,7 +1042,7 @@ export function buildTrackedCliLaunchCommand(args: {
       `ADE permission policy for this Pi session: ${permissionMode}. Pi has no supported native ADE permission flag, so follow this policy and the ADE guidance without bypassing it.`,
     ].join("\n");
     const commandArgs = [
-      ...modelToCliFlag(resolvePiCliModelForLaunch(args.model)),
+      ...modelToCliFlag(resolvePiCliModelForLaunch(modelForLaunch)),
       ...piThinkingFlags(args.reasoningEffort),
       ...piToolFlags(permissionMode),
       "--append-system-prompt",
@@ -908,7 +1071,7 @@ export function buildTrackedCliLaunchCommand(args: {
       // with that id, so it can never appear beside `--resume`/`--continue`.
       commandArgs.push("--session-id", assignedSessionId);
     }
-    commandArgs.push(...qwenModelFlags(args.model));
+    commandArgs.push(...qwenModelFlags(modelForLaunch));
     commandArgs.push(...permissionModeToQwenFlags(permissionMode));
     commandArgs.push("--append-system-prompt", buildAdeCliAgentGuidance(skillRoots));
     // `qwen` is an npm bin, so on Windows it resolves to a `.cmd` shim and the
@@ -940,7 +1103,7 @@ export function buildTrackedCliLaunchCommand(args: {
     // handed a session id at launch; the id is captured from its sessions
     // directory afterwards, so no `assignedSessionId` is returned here.
     const commandArgs = [
-      ...kimiModelFlags(args.model),
+      ...kimiModelFlags(modelForLaunch),
       ...permissionModeToKimiFlags(permissionMode),
     ];
     return {
@@ -960,7 +1123,7 @@ export function buildTrackedCliLaunchCommand(args: {
       // only legal alongside `--fork-session`. Fresh launches only.
       commandArgs.push("-s", assignedSessionId);
     }
-    commandArgs.push(...grokModelFlags(args.model));
+    commandArgs.push(...grokModelFlags(modelForLaunch));
     commandArgs.push(...grokReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToGrokFlags(permissionMode));
     commandArgs.push("--rules", buildAdeCliAgentGuidance(skillRoots));
@@ -996,7 +1159,7 @@ export function buildTrackedCliLaunchCommand(args: {
       // when it does. One spelling, both jobs.
       commandArgs.push(`--resume=${assignedSessionId}`);
     }
-    commandArgs.push(...copilotModelFlags(args.model));
+    commandArgs.push(...copilotModelFlags(modelForLaunch));
     commandArgs.push(...copilotReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToCopilotFlags(permissionMode));
     const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
@@ -1024,10 +1187,16 @@ export function buildTrackedCliLaunchCommand(args: {
   // withOpenCodeAdeInstructions.
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
-    model: args.model,
+    model: modelForLaunch,
     ...(initialPrompt ? { prompt: initialPrompt } : {}),
   });
-  const opencodeEnv = withAdeAgentSkillEnv(opencode.env, skillRoots);
+  const opencodeEnv = mergeLaunchEnv(
+    mergeLaunchEnv(
+      withAdeAgentSkillEnv(opencode.env, skillRoots),
+      providerInstanceLaunchEnv(args.provider, args.instance),
+    ),
+    harnessPresetLaunchEnv(args.preset),
+  );
   return {
     command: "opencode",
     args: opencode.args,
@@ -1722,12 +1891,74 @@ export type TrackedCliResumeOverrides = {
   codexConfigSource?: AgentChatCodexConfigSource | null;
   prompt?: string | null;
   codexComputerUse?: CodexComputerUseCliConfig | null;
+  /**
+   * The account named by `metadata.launch.instanceId`, already resolved by the
+   * caller (including the fallback to the provider's default when that id no
+   * longer names anything). Omit it and the resume inherits whatever config
+   * home the environment already points at, exactly as before this existed.
+   */
+  instance?: ProviderInstanceLaunchTarget | null;
+  /**
+   * The preset named by `metadata.launch.presetId`, already resolved by the
+   * caller. A resume that cannot resolve it (deleted preset, key removed)
+   * omits it, and the terminal comes back on the harness's native sign-in.
+   */
+  preset?: TrackedCliPresetLaunch | null;
 };
+
+/** Canonical read of the account a tracked CLI session launched under. */
+export function trackedCliResumeInstanceId(
+  metadata: Pick<TerminalResumeMetadata, "launch" | "instanceId"> | null | undefined,
+): string | null {
+  for (const value of [metadata?.launch?.instanceId, metadata?.instanceId]) {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (trimmed.length) return trimmed;
+  }
+  return null;
+}
+
+/** Canonical read of the harness preset a tracked CLI session launched under. */
+export function trackedCliResumePresetId(
+  metadata: Pick<TerminalResumeMetadata, "launch" | "presetId"> | null | undefined,
+): string | null {
+  for (const value of [metadata?.launch?.presetId, metadata?.presetId]) {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (trimmed.length) return trimmed;
+  }
+  return null;
+}
+
+/** Canonical read of the stored credential a tracked CLI session launched under. */
+export function trackedCliResumeCredentialId(
+  metadata: Pick<TerminalResumeMetadata, "launch" | "credentialId"> | null | undefined,
+): string | null {
+  for (const value of [metadata?.launch?.credentialId, metadata?.credentialId]) {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (trimmed.length) return trimmed;
+  }
+  return null;
+}
 
 export function buildTrackedCliResumeLaunchCommand(
   metadata: TerminalResumeMetadata,
   overrides: TrackedCliResumeOverrides = {},
   options: { platform?: NodeJS.Platform } = {},
+): TrackedCliLaunchCommand {
+  const launch = buildProviderResumeLaunchCommand(metadata, overrides, options);
+  // Preset last, for the same reason as a fresh launch: a preset that owns its
+  // own config home must outrank the account patch.
+  const resumeEnv = {
+    ...providerInstanceLaunchEnv(metadata.provider, overrides.instance),
+    ...harnessPresetLaunchEnv(overrides.preset),
+  };
+  if (!Object.keys(resumeEnv).length) return launch;
+  return { ...launch, env: { ...(launch.env ?? {}), ...resumeEnv } };
+}
+
+function buildProviderResumeLaunchCommand(
+  metadata: TerminalResumeMetadata,
+  overrides: TrackedCliResumeOverrides,
+  options: { platform?: NodeJS.Platform },
 ): TrackedCliLaunchCommand {
   const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode;
   const hasPermissionModeOverride = overrides.permissionMode !== undefined;
@@ -1758,12 +1989,18 @@ export function buildTrackedCliResumeLaunchCommand(
     : metadata.launch.droidPermissionMode
       ?? droidPermissionModeFromLegacyPermissionMode(permissionMode);
   const prompt = normalizeCliFlagValue(overrides.prompt);
+  const passthroughModelId = overrides.preset?.passthroughModelId === true;
+  const modelForLaunch = passthroughModelId
+    ? normalizeCliFlagValue(model)
+    : model;
   validateLaunchProfilePermissionMode(metadata.provider, permissionMode);
 
   const targetId = sanitizeTrackedCliResumeTargetId(metadata.targetId) ?? "";
   if (metadata.provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
-    const claudeModel = resolveClaudeCliModelForLaunch(model);
+    const claudeModel = passthroughModelId
+      ? normalizeCliFlagValue(model)
+      : resolveClaudeCliModelForLaunch(model);
     if (claudeModel) parts.push("--model", claudeModel);
     parts.push(...claudeRuntimeEffortFlags(reasoningEffort));
     parts.push(...claudeSessionSettingsFlags(fastMode, reasoningEffort));
@@ -1778,10 +2015,13 @@ export function buildTrackedCliResumeLaunchCommand(
   }
 
   if (metadata.provider === "codex") {
+    const codexModel = passthroughModelId
+      ? normalizeCliFlagValue(model)
+      : resolveCodexCliModelForLaunch(model);
     const parts = [
       "codex",
       "--no-alt-screen",
-      ...modelToCliFlag(model),
+      ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(reasoningEffort),
       ...codexServiceTierFlags(fastMode),
       ...codexComputerUseMcpFlags(overrides.codexComputerUse),
@@ -1803,8 +2043,8 @@ export function buildTrackedCliResumeLaunchCommand(
   }
 
   if (metadata.provider === "cursor") {
-    const cursorModel = normalizeCliFlagValue(model)
-      ? resolveCursorCliModelForLaunch(model)
+    const cursorModel = normalizeCliFlagValue(modelForLaunch)
+      ? (passthroughModelId ? normalizeCliFlagValue(model) : resolveCursorCliModelForLaunch(model))
       : null;
     const parts = [
       "cursor-agent",
@@ -1839,7 +2079,7 @@ export function buildTrackedCliResumeLaunchCommand(
     const droidArgs = {
       permissionMode,
       droidPermissionMode,
-      model,
+      model: modelForLaunch,
       reasoningEffort,
       ...(prompt ? { prompt } : {}),
       resumeTarget: targetId || null,
@@ -1869,7 +2109,7 @@ export function buildTrackedCliResumeLaunchCommand(
   if (metadata.provider === "pi") {
     const parts = [
       "pi",
-      ...modelToCliFlag(resolvePiCliModelForLaunch(model)),
+      ...modelToCliFlag(resolvePiCliModelForLaunch(modelForLaunch)),
       ...piThinkingFlags(reasoningEffort),
       ...piToolFlags(permissionMode),
     ];
@@ -1898,7 +2138,7 @@ export function buildTrackedCliResumeLaunchCommand(
   if (metadata.provider === "qwen") {
     const parts = [
       "qwen",
-      ...qwenModelFlags(model),
+      ...qwenModelFlags(modelForLaunch),
       ...permissionModeToQwenFlags(permissionMode),
     ];
     // `--session-id` is never emitted here: it starts a new conversation and is
@@ -1918,7 +2158,7 @@ export function buildTrackedCliResumeLaunchCommand(
   if (metadata.provider === "kimi") {
     const parts = [
       "kimi",
-      ...kimiModelFlags(model),
+      ...kimiModelFlags(modelForLaunch),
       ...permissionModeToKimiFlags(permissionMode),
     ];
     // Lowercase `-c`, and `-S` for a session id — Kimi's resume selectors do
@@ -1938,7 +2178,7 @@ export function buildTrackedCliResumeLaunchCommand(
     const parts = [
       "grok",
       "--no-alt-screen",
-      ...grokModelFlags(model),
+      ...grokModelFlags(modelForLaunch),
       ...grokReasoningEffortFlags(reasoningEffort),
       ...permissionModeToGrokFlags(permissionMode),
     ];
@@ -1962,7 +2202,7 @@ export function buildTrackedCliResumeLaunchCommand(
     const parts = [
       "copilot",
       "--no-alt-screen",
-      ...copilotModelFlags(model),
+      ...copilotModelFlags(modelForLaunch),
       ...copilotReasoningEffortFlags(reasoningEffort),
       ...permissionModeToCopilotFlags(permissionMode),
     ];
@@ -1980,7 +2220,7 @@ export function buildTrackedCliResumeLaunchCommand(
 
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
-    model,
+    model: modelForLaunch,
     ...(prompt ? { prompt } : {}),
     resumeTarget: targetId || null,
     continueLast: !targetId,
@@ -2021,7 +2261,6 @@ export function resolveTrackedCliResumeCommand(session: Pick<TerminalSessionSumm
 export function resolveLaunchFields<P extends LaunchProfile>(args: {
   profile: P;
   permissionMode?: AgentChatPermissionMode;
-  orchestrationRole?: OrchestrationRole | null;
   startupCommand?: string;
   command?: string;
   args?: string[];
@@ -2036,7 +2275,7 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
   initialInput?: string;
   initialInputDelayMs?: number;
 } {
-  const permissionMode = effectiveOrchestrationPermissionMode(args);
+  const permissionMode = args.permissionMode ?? "default";
   validateLaunchProfilePermissionMode(args.profile, permissionMode);
 
   const callerHasOverride =
@@ -2063,7 +2302,6 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
   const defaultLaunch = buildTrackedCliLaunchCommand({
     provider: args.profile,
     permissionMode,
-    orchestrationRole: args.orchestrationRole,
   });
   return {
     startupCommand: defaultLaunch.startupCommand,

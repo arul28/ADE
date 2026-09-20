@@ -1314,6 +1314,13 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "pending_input_resolved") {
+      // The receipt, not silence. A card that vanishes with no row leaves the
+      // transcript unable to say whether the question was answered, declined,
+      // or thrown away — and the desktop and phone both draw all three.
+      const verb = event.resolution === "accepted"
+        ? "Answered"
+        : event.resolution === "declined" ? "Declined" : "Dismissed";
+      lines.push({ id, tone: "notice", body: `[input] ${verb}` });
       continue;
     }
     if (event.type === "delegation_state") {
@@ -1444,7 +1451,6 @@ export function formatLaneLabel(lane: LaneSummary | null): string {
 
 export function formatSessionLabel(session: AgentChatSessionSummary): string {
   const label = (session.title ?? session.goal ?? session.summary ?? session.sessionId).trim();
-  const tag = session.orchestrationTag ? ` #${session.orchestrationTag}` : "";
   const completion = session.completion?.status;
   const state = session.archivedAt
     ? " ×"
@@ -1459,7 +1465,7 @@ export function formatSessionLabel(session: AgentChatSessionSummary): string {
             : completion === "completed"
               ? " ✓"
               : "";
-  return `${label}${tag}${state}`;
+  return `${label}${state}`;
 }
 
 export function renderObject(value: unknown, maxLines = 24): string {

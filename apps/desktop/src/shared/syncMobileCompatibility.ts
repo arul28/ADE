@@ -190,6 +190,7 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "chat.cancelDispatchedSteer",
   "chat.approve",
   "chat.respondToInput",
+  "chat.dismissPendingInput",
   "chat.updateSession",
   "cto.ensureSession",
   "cto.getLinearQuickView",

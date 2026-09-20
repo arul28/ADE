@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -44,11 +44,6 @@ import {
   makeGitHubIssueContextAttachment,
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
-import type {
-  ModelSelection,
-  OrchestrationModelSelectionMetadata,
-  OrchestrationRole,
-} from "../../../shared/types/orchestration";
 import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
 import {
   composerTriggerForSelection,
@@ -120,7 +115,6 @@ import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
 import { approvalDetailIsRedundant, approvalRequestDetail } from "./approvalRequestDetail";
 import { formatCursorModeLabel } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
-import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle, type ComposerPrSuggestion } from "./ChatCommandMenu";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
@@ -139,6 +133,8 @@ import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
+import { presetLabel } from "../../../shared/harnessPresets";
+import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 import {
   ComposerPromptStash,
@@ -286,58 +282,6 @@ function isHttpAuthorizationUrl(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * Best-effort decoder for the `providerMetadata` payload carried on a
- * `model_selection` PendingInputRequest. The server packs
- * `OrchestrationModelSelectionMetadata` into the metadata bag; here we
- * recover it defensively so a malformed payload renders an empty picker
- * rather than crashing the composer.
- */
-function readOrchestrationModelSelectionMetadata(
-  value: Record<string, unknown> | undefined,
-): OrchestrationModelSelectionMetadata | null {
-  if (!value || typeof value !== "object") return null;
-  const role = value.role;
-  if (role !== "lead" && role !== "worker" && role !== "validator") return null;
-  const tag = typeof value.tag === "string" ? value.tag : "";
-  const workDescription =
-    typeof value.workDescription === "string" && value.workDescription.trim()
-      ? value.workDescription
-      : null;
-  const filesHint = Array.isArray(value.filesHint)
-    ? value.filesHint.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-    : undefined;
-  const dependsOn = Array.isArray(value.dependsOn)
-    ? value.dependsOn.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-    : undefined;
-  const rawSuggested = value.suggested;
-  let suggested: ModelSelection | undefined;
-  if (rawSuggested && typeof rawSuggested === "object") {
-    const r = rawSuggested as Record<string, unknown>;
-    const sProvider = typeof r.provider === "string" ? r.provider : null;
-    const sModelId = typeof r.modelId === "string" ? r.modelId : null;
-    if (sProvider && sModelId) {
-      suggested = {
-        provider: sProvider as ModelSelection["provider"],
-        modelId: sModelId,
-        ...(typeof r.reasoningEffort === "string" || r.reasoningEffort === null
-          ? { reasoningEffort: r.reasoningEffort as string | null }
-          : {}),
-        ...(typeof r.fastMode === "boolean" ? { fastMode: r.fastMode } : {}),
-      };
-    }
-  }
-  return {
-    role,
-    tag,
-    ...(workDescription ? { workDescription } : {}),
-    ...(filesHint && filesHint.length ? { filesHint } : {}),
-    ...(dependsOn && dependsOn.length ? { dependsOn } : {}),
-    ...(suggested ? { suggested } : {}),
-    ...(value.availableModels !== undefined ? { availableModels: value.availableModels } : {}),
-  };
 }
 
 type PasteShortcutEvent = {
@@ -1012,7 +956,7 @@ function ComposerOverflowMenu({
         forceEnabled
         content={{
           label: "More controls",
-          description: "Orchestrator, parallel models, and the lane tool drawers.",
+          description: "Parallel models and the lane tool drawers.",
         }}
       >
         <button
@@ -1664,12 +1608,15 @@ export function AgentChatComposer({
   shouldAutofocus = isActive,
   sdkSlashCommands = [],
   modelId,
+  activeHarnessPresetId = null,
   availableModelIds,
   constrainModelSelection = false,
   modelUnavailableMessage,
   providerAuthStatus,
   onRuntimeCatalogRefreshed,
   allowCliOnlyModels = false,
+  listsHarnessPresets = true,
+  onOpenHarnessSettings,
   reasoningEffort,
   fastMode = false,
   cursorCloudServiceTier = null,
@@ -1712,7 +1659,6 @@ export function AgentChatComposer({
   permissionModeLocked = false,
   hideNativeControls = false,
   hideModelControls = false,
-  orchestrationRole = null,
   messagePlaceholder,
   inputLockMessage,
   onModelChange,
@@ -1767,9 +1713,6 @@ export function AgentChatComposer({
   launchPromptClipboardEnabled = false,
   launchPromptClipboardNoticeEnabled = true,
   onOpenLaunchPromptClipboardSettings,
-  onStartOrchestratorChat,
-  onStopOrchestratorChat,
-  orchestratorModeActive = false,
   sessionId,
   parallelChatMode = false,
   onParallelChatModeChange,
@@ -1816,12 +1759,23 @@ export function AgentChatComposer({
   shouldAutofocus?: boolean;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
+  /**
+   * The saved harness preset this chat launched from, when there is one. The
+   * model trigger then shows the preset's logo and name instead of the model's
+   * — the preset is what the user chose, and it names the model, the effort and
+   * the permission mode at once. The model id stays in the trigger's tooltip.
+   */
+  activeHarnessPresetId?: string | null;
   availableModelIds?: string[];
   constrainModelSelection?: boolean;
   modelUnavailableMessage?: string;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   allowCliOnlyModels?: boolean;
+  /** False on a tracked-CLI launch, where a preset would be dropped anyway. */
+  listsHarnessPresets?: boolean;
+  /** Opens Settings › Providers › Custom from the Custom empty state. */
+  onOpenHarnessSettings?: () => void;
   reasoningEffort: string | null;
   fastMode?: boolean;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
@@ -1885,21 +1839,14 @@ export function AgentChatComposer({
   hideNativeControls?: boolean;
   /** Hide model, reasoning, and fast-mode controls when the host surface owns them. */
   hideModelControls?: boolean;
-  /**
-   * Orchestration role lock (see `goal.md` §10.10).
-   *   - `"lead"`: hide permission picker AND model picker once the lead
-   *     session exists (lead's model is fixed at create-time).
-   *   - `"worker"` / `"validator"`: hide permission picker; show model +
-   *     fast + reasoning rows.
-   *   - `null` / undefined: default behaviour (regular chat composer).
-   *
-   * Worker/Validator permission tier is forced by the orchestration spawn
-   * profile (`goal.md` §12) — the user should not be able to demote it.
-   */
-  orchestrationRole?: OrchestrationRole | null;
   messagePlaceholder?: string;
   inputLockMessage?: string | null;
-  onModelChange: (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => void;
+  /**
+   * `options` is the picker's own selection shape: fast mode, a Cursor Cloud
+   * service tier, and — when the row came from the harnesses tab or from a
+   * stored key's declared models — the brain that row names.
+   */
+  onModelChange: (modelId: string, options?: ModelPickerSelection) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onFastModeChange?: (enabled: boolean) => void;
   onCursorCloudServiceTierChange?: (tier: CursorCloudServiceTier | null) => void;
@@ -1995,14 +1942,6 @@ export function AgentChatComposer({
   launchPromptClipboardEnabled?: boolean;
   launchPromptClipboardNoticeEnabled?: boolean;
   onOpenLaunchPromptClipboardSettings?: () => void;
-  /**
-   * Open the "New orchestrator chat" flow from the visible composer mode
-   * button (see `goal.md` §10.1). Hosts that don't want the entry simply
-   * leave this undefined.
-   */
-  onStartOrchestratorChat?: () => void;
-  onStopOrchestratorChat?: () => void;
-  orchestratorModeActive?: boolean;
   sessionId?: string | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
@@ -2442,8 +2381,6 @@ export function AgentChatComposer({
   });
   const contextAttachmentCount = contextAttachments.length;
   const canAttachIssueContext = !composerInputLocked && typeof onAddContextAttachment === "function";
-  const showOrchestratorModeButton = Boolean(onStartOrchestratorChat && !sessionId && !parallelChatMode);
-  const orchestratorModeButtonDisabled = composerInputLocked || busy || turnActive;
   const showLaunchClipboardNotice =
     launchPromptClipboardEnabled
     && launchPromptClipboardNoticeEnabled
@@ -4062,6 +3999,22 @@ export function AgentChatComposer({
       ? parallelModelSlots[parallelConfiguringIndex]?.fastMode === true
       : fastMode === true;
 
+  /* The preset this chat runs on, resolved from the account-scoped list.
+
+     Resolved here rather than passed in already-shaped so a preset the user
+     renames or re-logos is reflected without the chat being reloaded. A
+     presetId that no longer names a preset falls through to the model trigger,
+     which is the same honest degradation the launch path takes. */
+  // Root store: the preset list is an account-scoped preference the project
+  // store only ever holds a stale seed copy of (see `useHarnessPresets`).
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  const activeHarnessPreset = useMemo(() => {
+    const id = activeHarnessPresetId?.trim();
+    if (!id) return null;
+    const preset = harnessPresets.find((entry) => entry.id === id);
+    return preset ? { name: presetLabel(preset), logo: preset.logo } : null;
+  }, [activeHarnessPresetId, harnessPresets]);
+
   /* Where this chat executes.
 
      Running chats only. A draft has no machine yet — it has a CHOICE of one, and
@@ -4198,12 +4151,6 @@ export function AgentChatComposer({
   }, [capUse, ccsUse, codexPreset, csUse, sp]);
   const nativeControlPanel = useMemo(() => {
     if (hideNativeControls) {
-      return null;
-    }
-    // Orchestration-locked composers (lead / worker / validator) hide the
-    // native permission picker — the orchestrator forces the permission
-    // tier per `goal.md` §10.10 + §12.
-    if (orchestrationRole) {
       return null;
     }
     const effectiveModelId =
@@ -4425,7 +4372,6 @@ export function AgentChatComposer({
     codexCustomSummary,
     nativeControlsDisabled,
     hideNativeControls,
-    orchestrationRole,
     onClaudeModeChange,
     onClaudePermissionModeChange,
     onInteractionModeChange,
@@ -4445,10 +4391,8 @@ export function AgentChatComposer({
   ]);
 
   // Clean composer: no provider-tinted glow border (that produced the bright
-  // "highlighted" outline). Only the orchestrator's special mode keeps a glow.
-  const composerGlowColor = useMemo(() => {
-    return orchestratorModeActive ? "rgba(217, 70, 239, 0.36)" : null;
-  }, [orchestratorModeActive]);
+  // "highlighted" outline).
+  const composerGlowColor = null;
 
   const applyPromptHistoryEntry = useCallback((
     entry: AgentChatPromptHistoryEntry,
@@ -5254,17 +5198,17 @@ export function AgentChatComposer({
     setSelectedBuiltInBrowserContextId(null);
   }, [builtInBrowserContextItems, selectedBuiltInBrowserContextId]);
   // Idle composer motion keeps the GPU busy; keep the animated beam to active
-  // turns and explicit orchestration mode.
+  // turns.
   // BorderBeam disabled — the traveling beam around the composer read as
-  // distracting chrome. (Orchestrator mode keeps its own separate glow.)
+  // distracting chrome.
   const composerBeamActive = false
     && isActive
     && layoutVariant !== "grid-tile"
     && !iosSimulatorOpen
-    && (turnActive || orchestratorModeActive);
-  const composerBeamVariant = orchestratorModeActive ? "colorful" : turnActive ? "ocean" : "colorful";
-  const composerBeamDuration = orchestratorModeActive ? 8 : turnActive ? 20 : 5;
-  const composerBeamStrength = orchestratorModeActive ? 0.68 : turnActive ? 0.26 : 0.44;
+    && turnActive;
+  const composerBeamVariant = turnActive ? "ocean" : "colorful";
+  const composerBeamDuration = turnActive ? 20 : 5;
+  const composerBeamStrength = turnActive ? 0.26 : 0.44;
 
   const parallelReady =
     parallelChatMode
@@ -5515,7 +5459,6 @@ export function AgentChatComposer({
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
-      orchestratorActive={orchestratorModeActive}
       className={cn(
         layoutVariant === "grid-tile"
           ? "border-0 bg-transparent shadow-none"
@@ -5531,31 +5474,6 @@ export function AgentChatComposer({
             onApprove={() => onApproval("accept")}
             onReject={() => onApproval("decline")}
           />
-        ) : pendingInput.kind === "model_selection" ? (
-          (() => {
-            // Decode the orchestration model-selection metadata payload. The
-            // server packs `{ role, tag, suggested?, availableModels? }` into
-            // `providerMetadata`; if it's malformed we fall back to a
-            // permissive shape so the user can still pick a model.
-            const meta = readOrchestrationModelSelectionMetadata(pendingInput.providerMetadata);
-            const availableModelIdsForPicker = meta?.availableModels && Array.isArray(meta.availableModels)
-              ? (meta.availableModels as unknown[]).filter((id): id is string => typeof id === "string")
-              : availableModelIds;
-            return (
-              <ChatModelSelectionPendingCard
-                metadata={meta}
-                {...(availableModelIdsForPicker ? { availableModelIds: availableModelIdsForPicker } : {})}
-                {...(providerAuthStatus ? { providerAuthStatus } : {})}
-                runtimePin={modelRuntimePin}
-                catalogScopeKey={modelCatalogScopeKey}
-                responding={approvalResponding ?? false}
-                onConfirm={(selection) => {
-                  onApproval("accept", null, { selection: JSON.stringify(selection) });
-                }}
-                onCancel={() => onApproval("cancel")}
-              />
-            );
-          })()
         ) : (
           <div className="px-4 py-3">
             <div className="mb-2 flex items-center gap-2">
@@ -6164,6 +6082,8 @@ export function AgentChatComposer({
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
                   allowCliOnlyModels={allowCliOnlyModels}
+                  listsHarnessPresets={listsHarnessPresets}
+                  {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
@@ -6187,11 +6107,12 @@ export function AgentChatComposer({
                 />
               </>
             ) : null}
-            {!hideModelControls && !parallelChatMode && (orchestrationRole !== "lead" || !sessionId) ? (
+            {!hideModelControls && !parallelChatMode ? (
               <>
                 <ModelPicker
                   value={modelId}
                   onChange={onModelChange}
+                  {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
                   openRequestKey={modelPickerOpenRequestKey}
                   onOpenRequestHandled={onModelPickerOpenRequestHandled}
                   {...(availableModelIds ? { availableModelIds } : {})}
@@ -6201,6 +6122,8 @@ export function AgentChatComposer({
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
                   allowCliOnlyModels={allowCliOnlyModels}
+                  listsHarnessPresets={listsHarnessPresets}
+                  {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
                   disabled={modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
@@ -6225,8 +6148,8 @@ export function AgentChatComposer({
             ) : null}
             {/* Right of the thinking-level selector when controls are present:
                 model, then how hard it thinks, then where it runs. It stays
-                outside that conditional because orchestration leads and host
-                surfaces hide model controls without hiding a running chat. */}
+                outside that conditional because host surfaces hide model
+                controls without hiding a running chat. */}
             {composerMachineName ? (
               <ComposerMachineChip
                 machineName={composerMachineName}
@@ -6311,23 +6234,6 @@ export function AgentChatComposer({
                       icon: <CloudArrowUp size={14} weight={cursorCloudPaneOpen ? "fill" : "regular"} />,
                       active: cursorCloudPaneOpen,
                       onSelect: onToggleCursorCloudPanel,
-                    }]
-                  : []),
-                ...(showOrchestratorModeButton
-                  ? [{
-                      id: "orchestrator",
-                      label: orchestratorModeActive ? "Orchestrator mode" : "Start orchestrator mode",
-                      icon: <Strategy size={14} weight={orchestratorModeActive ? "fill" : "regular"} />,
-                      active: orchestratorModeActive,
-                      disabled: orchestratorModeButtonDisabled,
-                      onSelect: () => {
-                        if (orchestratorModeButtonDisabled) return;
-                        if (orchestratorModeActive) {
-                          onStopOrchestratorChat?.();
-                          return;
-                        }
-                        onStartOrchestratorChat?.();
-                      },
                     }]
                   : []),
                 ...(showParallelChatToggle && !parallelChatMode

@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import stringWidth from "string-width";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "./services/account/accountMachinePublisherService";
 import {
@@ -5365,6 +5366,56 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("renders the typed chat model inventory as a table for --text and leaves --json raw", () => {
+    expect(inferFormatter(expectExecutePlan(buildCliPlan(["chat", "models"])))).toBe("chat-models");
+    expect(inferFormatter(expectExecutePlan(buildCliPlan([
+      "chat",
+      "models",
+      "--personal",
+    ])))).toBe("chat-models");
+
+    const models = [
+      {
+        id: "claude-opus-5",
+        displayName: "Claude Opus 5",
+        isDefault: true,
+        modelId: "anthropic/claude-opus-5",
+        family: "anthropic",
+      },
+      {
+        id: "gpt-5.5",
+        displayName: "GPT-5.5",
+        isDefault: false,
+        modelId: "openai/gpt-5.5",
+        family: "openai",
+      },
+    ];
+
+    const text = formatOutput(models, {
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: true,
+    }, "chat-models");
+    expect(text).toContain("PROVIDER");
+    expect(text).toContain("MODEL ID");
+    expect(text).toContain("LABEL");
+    expect(text).toContain("FAMILY");
+    expect(text).toContain("claude");
+    expect(text).toContain("anthropic/claude-opus-5");
+    expect(text).toContain("Claude Opus 5");
+    expect(text).toContain("anthropic");
+    expect(text).toContain("codex");
+    expect(text).toContain("openai/gpt-5.5");
+    // `--json` is the machine contract: the wire shape is untouched.
+    expect(formatOutput(models, {
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: false,
+    }, "chat-models")).toBe(`${JSON.stringify(models, null, 0)}\n`);
+  });
+
   it("builds chat message with an explicit routing kind", () => {
     const executePlan = expectExecutePlan(buildCliPlan([
       "chat",
@@ -10458,6 +10509,85 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("forwards provider accounts and harness brains for compatibility launches", () => {
+    const accountPlan = expectExecutePlan(buildCliPlan([
+      "shell",
+      "start-cli",
+      "codex",
+      "--lane",
+      "lane-1",
+      "--instance",
+      "work",
+      "--credential",
+      "openrouter",
+    ]));
+    expect(accountPlan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        instanceId: "work",
+        credentialId: "openrouter",
+      },
+    });
+
+    const presetPlan = expectExecutePlan(buildCliPlan([
+      "shell",
+      "start-cli",
+      "claude",
+      "--lane",
+      "lane-1",
+      "--preset",
+      "hp_opus_work",
+    ]));
+    expect(presetPlan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: { presetId: "hp_opus_work" },
+    });
+  });
+
+  it("keeps launch selector-looking prompt text after the terminator", () => {
+    const plan = expectExecutePlan(buildCliPlan([
+      "shell",
+      "start-cli",
+      "codex",
+      "--lane",
+      "lane-1",
+      "--",
+      "--instance",
+      "literal prompt",
+    ]));
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        initialInput: "--instance literal prompt",
+      },
+    });
+    expect((plan.steps[0]?.params as { arguments?: Record<string, unknown> }).arguments)
+      .not.toHaveProperty("instanceId");
+  });
+
+  it("validates start-cli account and harness options like new chat", () => {
+    expect(() => buildCliPlan([
+      "shell",
+      "start-cli",
+      "cursor",
+      "--lane",
+      "lane-1",
+      "--instance",
+      "work",
+    ])).toThrow(/single identity per machine/);
+    expect(() => buildCliPlan([
+      "shell",
+      "start-cli",
+      "codex",
+      "--lane",
+      "lane-1",
+      "--preset",
+      "hp_1",
+      "--credential",
+      "openrouter",
+    ])).toThrow(/two different brains/);
+  });
+
   it("accepts --provider on shell start as the CLI-session launcher", () => {
     const plan = buildCliPlan([
       "shell",
@@ -10891,6 +11021,15 @@ describe("ADE CLI", () => {
     expect(parsed).toMatchObject({
       execution: { laneMode: "create", laneNamePreset: "issue-num-title" },
     });
+    // The example is what users copy, so it must teach the canonical
+    // `modelConfig` shape, not the orchestration-era nested
+    // `modelConfig.orchestratorModel` that the reader only still accepts for
+    // back-compat.
+    expect(parsed.modelConfig).toEqual({
+      modelId: "openai/gpt-5.6-sol",
+      thinkingLevel: "xhigh",
+    });
+    expect(plan.text).not.toContain("orchestratorModel");
   });
 
   it("automations create auto-migrates a legacy create-lane first action into laneMode", () => {
@@ -15102,5 +15241,568 @@ describe("formatDiagnosticError", () => {
       },
     );
     expect(() => formatDiagnosticError(hostile)).not.toThrow();
+  });
+});
+
+describe("ade proxy", () => {
+  it("maps lifecycle and sign-in commands onto the proxy action domain", () => {
+    const status = expectExecutePlan(buildCliPlan(["proxy", "status"]));
+    expect(status).toMatchObject({
+      label: "proxy status",
+      machineOnly: true,
+      machineAutoStart: true,
+      formatter: "proxy-status",
+    });
+    expect(status.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "proxy", action: "status", args: {} },
+    });
+
+    expect(expectExecutePlan(buildCliPlan(["proxy", "start"])).steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "proxy", action: "ensureRunning", args: {} },
+    });
+    expect(expectExecutePlan(buildCliPlan(["proxy", "stop"])).steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "proxy", action: "stop", args: {} },
+    });
+    expect(expectExecutePlan(buildCliPlan([
+      "proxy", "login", "--provider", "claude",
+    ])).steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "proxy", action: "signIn", args: { provider: "claude" } },
+    });
+    expect(expectExecutePlan(buildCliPlan(["proxy", "logout", "login-1"])).steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "proxy", action: "signOut", args: { loginId: "login-1" } },
+    });
+  });
+
+  it("keeps --login-id's value from becoming the proxy subcommand", () => {
+    expect(expectExecutePlan(buildCliPlan(["proxy", "--login-id", "abc", "logout"])).steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "proxy", action: "signOut", args: { loginId: "abc" } },
+    });
+  });
+
+  it("validates sign-in provider and logout id", () => {
+    expect(() => buildCliPlan(["proxy", "login"])).toThrow(/provider is required/i);
+    expect(() => buildCliPlan(["proxy", "login", "--provider", "openai"])).toThrow(/claude or codex/);
+    expect(() => buildCliPlan(["proxy", "logout"])).toThrow(/login id is required/i);
+  });
+
+  it("renders status without exposing credential fields", () => {
+    const output = formatOutput({
+      installed: true,
+      running: true,
+      port: 43123,
+      version: "7.3.7",
+      logins: [{
+        loginId: "login-1",
+        provider: "codex",
+        email: "user@example.test",
+        plan: "plus",
+        prefix: "sub-0123abcd",
+        disabled: true,
+      }],
+    }, {
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: true,
+    }, "proxy-status");
+    expect(output).toContain("ADE subscription proxy");
+    expect(output).toContain("codex · user@example.test · plus · sub-0123abcd · disabled · login-1");
+    expect(output).not.toContain("apiKey");
+    expect(output).not.toContain("managementKey");
+  });
+});
+
+describe("ade providers accounts", () => {
+  const textOpts = {
+    ...baseResolveOpts(),
+    projectRoot: null,
+    workspaceRoot: null,
+    text: true,
+  };
+
+  it("maps every subcommand onto the provider_instances action domain", () => {
+    expect(
+      expectExecutePlan(buildCliPlan(["providers", "accounts", "list"])).steps[0]?.params,
+    ).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "provider_instances", action: "list", args: {} },
+    });
+
+    expect(
+      expectExecutePlan(buildCliPlan([
+        "providers", "accounts", "list", "--provider", "claude",
+      ])).steps[0]?.params,
+    ).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "provider_instances", action: "list", args: { provider: "claude" } },
+    });
+
+    expect(
+      expectExecutePlan(buildCliPlan([
+        "providers", "accounts", "add", "--provider", "codex", "--label", "Work", "--accent", "#3b82f6",
+      ])).steps[0]?.params,
+    ).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "provider_instances",
+        action: "create",
+        args: { provider: "codex", label: "Work", accentColor: "#3b82f6" },
+      },
+    });
+
+    expect(
+      expectExecutePlan(buildCliPlan([
+        "providers", "accounts", "rename", "--instance", "work", "--label", "Work (EU)",
+      ])).steps[0]?.params,
+    ).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "provider_instances",
+        action: "rename",
+        args: { id: "work", label: "Work (EU)" },
+      },
+    });
+
+    expect(
+      expectExecutePlan(buildCliPlan([
+        "providers", "accounts", "default", "--instance", "work",
+      ])).steps[0]?.params,
+    ).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "provider_instances", action: "setDefault", args: { id: "work" } },
+    });
+
+    expect(
+      expectExecutePlan(buildCliPlan([
+        "providers", "accounts", "remove", "--instance", "work",
+      ])).steps[0]?.params,
+    ).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "provider_instances", action: "remove", args: { id: "work" } },
+    });
+
+    expect(
+      expectExecutePlan(buildCliPlan(["providers", "actions"])).steps[0]?.params,
+    ).toEqual({ name: "list_ade_actions", arguments: { domain: "provider_instances" } });
+  });
+
+  it("requires the inputs each mutation cannot invent", () => {
+    expect(() => buildCliPlan(["providers", "accounts", "add", "--label", "Work"]))
+      .toThrow(/--provider claude\|codex/);
+    expect(() => buildCliPlan(["providers", "accounts", "add", "--provider", "claude"]))
+      .toThrow(/account label is required/i);
+    expect(() => buildCliPlan(["providers", "accounts", "remove"]))
+      .toThrow(/account id is required/i);
+    expect(() => buildCliPlan(["providers", "accounts", "sync"]))
+      .toThrow(/list, add, remove, rename, default, login, or refresh/);
+  });
+
+  it("--json is the default and --text renders the account table and the login command", () => {
+    const instances = [
+      {
+        id: "claude",
+        provider: "claude",
+        label: "Default",
+        configHome: "/home/me/.claude",
+        isDefault: true,
+        createdAt: new Date(0).toISOString(),
+        signedIn: true,
+        account: { email: "me@example.com" },
+      },
+      {
+        id: "work",
+        provider: "claude",
+        label: "Work",
+        configHome: "/home/me/.ade/provider-homes/claude/work",
+        isDefault: false,
+        createdAt: new Date(1).toISOString(),
+        signedIn: false,
+      },
+    ];
+
+    const json = formatOutput(instances, { ...textOpts, text: false }, "provider-accounts");
+    expect(JSON.parse(json)).toEqual(instances);
+
+    const table = formatOutput(instances, textOpts, "provider-accounts");
+    expect(table).toContain("work");
+    expect(table).toContain("me@example.com");
+    expect(table).toContain("/home/me/.ade/provider-homes/claude/work");
+
+    const created = formatOutput(
+      {
+        instance: instances[1],
+        loginCommand: {
+          command: "/usr/local/bin/claude",
+          args: ["auth", "login"],
+          env: { CLAUDE_CONFIG_DIR: "/home/me/.ade/provider-homes/claude/work" },
+        },
+      },
+      textOpts,
+      "provider-accounts",
+    );
+    expect(created).toContain("Sign in by running:");
+    expect(created).toContain(
+      "CLAUDE_CONFIG_DIR=/home/me/.ade/provider-homes/claude/work /usr/local/bin/claude auth login",
+    );
+
+    const removed = formatOutput(
+      { removed: true, configHome: "/home/me/.ade/provider-homes/claude/work" },
+      textOpts,
+      "provider-accounts",
+    );
+    expect(removed).toContain("still on disk at /home/me/.ade/provider-homes/claude/work");
+
+    const empty = formatOutput([], textOpts, "provider-accounts");
+    expect(empty).toContain("no provider accounts found");
+  });
+
+  it("lines the account table up when a label holds wide characters", () => {
+    // A CJK label renders two terminal columns per glyph while `.length`
+    // counts one, so a code-unit-measured table shifted every column after it.
+    const table = formatOutput(
+      [
+        {
+          id: "claude",
+          provider: "claude",
+          label: "Default",
+          configHome: "/home/me/.claude",
+          isDefault: true,
+          signedIn: false,
+        },
+        {
+          id: "wide",
+          provider: "claude",
+          label: "LV Ünïcode Ω 空 space",
+          configHome: "/home/me/.ade/provider-homes/claude/wide",
+          isDefault: false,
+          signedIn: false,
+        },
+      ],
+      textOpts,
+      "provider-accounts",
+    );
+    const lines = table.split("\n");
+    const widthOf = (line: string): number => stringWidth(line.replace(/\s+$/, ""));
+    const ruleWidth = widthOf(lines[1] ?? "");
+    for (const line of lines) {
+      // Every row's "config home" column starts at the same terminal cell.
+      const home = line.indexOf("/home/me");
+      if (home < 0) continue;
+      expect(stringWidth(line.slice(0, home))).toBe(
+        stringWidth((lines[2] ?? "").slice(0, (lines[2] ?? "").indexOf("/home/me"))),
+      );
+    }
+    expect(ruleWidth).toBeGreaterThan(0);
+  });
+
+  it("renders the wrapped payloads rename, default and login actually return", () => {
+    const instance = {
+      id: "work",
+      provider: "claude",
+      label: "Work (EU)",
+      configHome: "/home/me/.ade/provider-homes/claude/work",
+      isDefault: true,
+      createdAt: new Date(1).toISOString(),
+      signedIn: false,
+    };
+
+    // rename / setDefault / setAccent answer { instance } — never a bare
+    // instance and never a list. Falling through to the table branch printed
+    // "(no provider accounts found)" after a rename that had succeeded.
+    const renamed = formatOutput({ instance }, textOpts, "provider-accounts");
+    expect(renamed).toContain("ADE provider account");
+    expect(renamed).toContain("Work (EU)");
+    expect(renamed).not.toContain("no provider accounts found");
+
+    // loginCommand answers { loginCommand }.
+    const login = formatOutput(
+      {
+        loginCommand: {
+          command: "/usr/local/bin/claude",
+          args: ["auth", "login"],
+          env: { CLAUDE_CONFIG_DIR: "/home/me/.ade/provider-homes/claude/work" },
+        },
+      },
+      textOpts,
+      "provider-accounts",
+    );
+    expect(login).toContain("Sign in by running:");
+    expect(login).toContain(
+      "CLAUDE_CONFIG_DIR=/home/me/.ade/provider-homes/claude/work /usr/local/bin/claude auth login",
+    );
+    expect(login).not.toContain("no provider accounts found");
+
+    // getSettings / setSettings answer { settings }.
+    const settings = formatOutput(
+      { settings: { smartBalance: true, autoStartWindows: false } },
+      textOpts,
+      "provider-accounts",
+    );
+    expect(settings).toContain("smart balance");
+    expect(settings).toContain("on");
+    expect(settings).not.toContain("no provider accounts found");
+  });
+});
+
+describe("--instance threads a provider account into chat launches", () => {
+  it("carries instanceId into chat create and both ade new chat modes", () => {
+    const create = expectStaticPlan(buildCliPlan([
+      "chat", "create",
+      "--lane", "lane-1",
+      "--provider", "claude",
+      "--instance", "work",
+      "--no-parent",
+      "--print-config",
+    ]));
+    expect((create.value as { input: Record<string, unknown> }).input.instanceId).toBe("work");
+
+    const chatMode = expectStaticPlan(buildCliPlan([
+      "new", "chat",
+      "--mode", "chat",
+      "--lane", "lane-1",
+      "--provider", "claude",
+      "--instance", "work",
+      "--no-parent",
+      "--print-config",
+    ]));
+    expect((chatMode.value as { launch: Record<string, unknown> }).launch.instanceId).toBe("work");
+
+    const cliMode = expectStaticPlan(buildCliPlan([
+      "new", "chat",
+      "--mode", "cli",
+      "--lane", "lane-1",
+      "--provider", "codex",
+      "--instance", "work",
+      "--no-parent",
+      "--print-config",
+    ]));
+    expect((cliMode.value as { launch: Record<string, unknown> }).launch.instanceId).toBe("work");
+  });
+
+  it("rejects --instance for providers that have one identity per machine", () => {
+    expect(() => buildCliPlan([
+      "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "cursor", "--instance", "work",
+    ])).toThrow(/single identity per machine/);
+    expect(() => buildCliPlan([
+      "chat", "create", "--lane", "lane-1", "--provider", "droid", "--instance", "work", "--no-parent",
+    ])).toThrow(/single identity per machine/);
+  });
+
+  it("omits instanceId entirely when no account is named", () => {
+    const create = expectStaticPlan(buildCliPlan([
+      "chat", "create",
+      "--lane", "lane-1",
+      "--provider", "claude",
+      "--no-parent",
+      "--print-config",
+    ]));
+    expect((create.value as { input: Record<string, unknown> }).input)
+      .not.toHaveProperty("instanceId");
+  });
+});
+
+describe("--preset and --credential thread a harness brain into chat launches", () => {
+  it("carries presetId into chat create and both ade new chat modes", () => {
+    const create = expectStaticPlan(buildCliPlan([
+      "chat", "create",
+      "--lane", "lane-1",
+      "--provider", "claude",
+      "--preset", "hp_opus_work",
+      "--no-parent",
+      "--print-config",
+    ]));
+    expect((create.value as { input: Record<string, unknown> }).input.presetId).toBe("hp_opus_work");
+
+    const chatMode = expectStaticPlan(buildCliPlan([
+      "new", "chat",
+      "--mode", "chat",
+      "--lane", "lane-1",
+      "--provider", "claude",
+      "--preset", "hp_opus_work",
+      "--no-parent",
+      "--print-config",
+    ]));
+    expect((chatMode.value as { launch: Record<string, unknown> }).launch.presetId).toBe("hp_opus_work");
+
+    // CLI mode sends the same id; the locked gate for grok/cursor/copilot/kimi
+    // is applied by the runtime that owns the lane, not by argument parsing.
+    const cliMode = expectStaticPlan(buildCliPlan([
+      "new", "chat",
+      "--mode", "cli",
+      "--lane", "lane-1",
+      "--provider", "codex",
+      "--preset", "hp_opus_work",
+      "--no-parent",
+      "--print-config",
+    ]));
+    expect((cliMode.value as { launch: Record<string, unknown> }).launch.presetId).toBe("hp_opus_work");
+  });
+
+  it("carries credentialId for a key with no preset around it", () => {
+    const create = expectStaticPlan(buildCliPlan([
+      "chat", "create",
+      "--lane", "lane-1",
+      "--provider", "claude",
+      "--credential", "openrouter",
+      "--no-parent",
+      "--print-config",
+    ]));
+    const input = (create.value as { input: Record<string, unknown> }).input;
+    expect(input.credentialId).toBe("openrouter");
+    expect(input).not.toHaveProperty("presetId");
+  });
+
+  it("previews a credential launch through the shared resolver without exposing its key", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-credential-preview-"));
+    try {
+      const secretsDir = path.join(adeHome, "secrets");
+      fs.mkdirSync(secretsDir, { recursive: true });
+      const store = new EncryptedFileCredentialStore({ secretsDir });
+      store.setSync("ai.api_key.anthropic#work.v1", "sk-preview-secret");
+      store.setSync("ai.api_credentials.index.v1", JSON.stringify([{
+        provider: "anthropic",
+        credentialId: "work",
+        label: "Work",
+        baseUrl: "https://openrouter.ai/api/v1",
+        source: "store",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }]));
+
+      withEnv({ ADE_HOME: adeHome }, () => {
+        const value = expectStaticPlan(buildCliPlan([
+          "chat", "create", "--lane", "lane-1", "--provider", "claude",
+          "--credential", "work", "--model", "user/model", "--no-parent", "--print-config",
+        ])).value as { resolved: Record<string, unknown> };
+        expect(value.resolved.model).toBe("user/model");
+        expect(value.resolved.env).toMatchObject({
+          ANTHROPIC_AUTH_TOKEN: "<redacted>",
+          ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
+          ANTHROPIC_API_KEY: "",
+        });
+        expect(JSON.stringify(value)).not.toContain("sk-preview-secret");
+      });
+    } finally {
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("omits a gated CLI preset env and model override from print-config", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-gated-preview-"));
+    try {
+      withEnv({ ADE_HOME: adeHome, ADE_CHAT_SESSION_ID: undefined }, () => {
+        const value = expectStaticPlan(buildCliPlan([
+          "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "grok",
+          "--preset", "hp_grok", "--model", "user/model", "--no-parent", "--print-config",
+        ])).value as { launch: Record<string, unknown> };
+        expect(value.launch.model).toBe("user/model");
+        expect(value.launch.modelId).toBe("user/model");
+        expect(value.launch).not.toHaveProperty("env");
+      });
+    } finally {
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses both at once rather than guessing which brain was meant", () => {
+    expect(() => buildCliPlan([
+      "chat", "create", "--lane", "lane-1", "--provider", "claude",
+      "--preset", "hp_1", "--credential", "openrouter", "--no-parent",
+    ])).toThrow(/two different brains/);
+    expect(() => buildCliPlan([
+      "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "claude",
+      "--preset", "hp_1", "--credential", "openrouter",
+    ])).toThrow(/two different brains/);
+  });
+
+  it("omits both entirely when no brain is named", () => {
+    const create = expectStaticPlan(buildCliPlan([
+      "chat", "create",
+      "--lane", "lane-1",
+      "--provider", "claude",
+      "--no-parent",
+      "--print-config",
+    ]));
+    const input = (create.value as { input: Record<string, unknown> }).input;
+    expect(input).not.toHaveProperty("presetId");
+    expect(input).not.toHaveProperty("credentialId");
+  });
+
+  it("shows the same resolved preset env and model override in chat and CLI dry-runs", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-preview-home-"));
+    const providerHome = path.join(adeHome, "provider-homes", "claude", "work");
+    const preset = {
+      id: "hp_preview",
+      name: "Preview",
+      harness: "claude",
+      source: { kind: "account", provider: "claude", instanceId: "work" },
+      model: "gateway/claude-fable",
+      subagentModel: "inherit",
+      agentOverrides: {},
+      permissionMode: "plan",
+      accentColor: "#7c5ce0",
+      logo: { kind: "ade" },
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    };
+    try {
+      fs.mkdirSync(path.dirname(providerHome), { recursive: true });
+      fs.writeFileSync(path.join(adeHome, "account-settings.json"), JSON.stringify({
+        settings: {
+          "all\u0000harnessPresets": { value: [preset] },
+        },
+      }));
+      fs.writeFileSync(path.join(adeHome, "provider-instances.json"), JSON.stringify({
+        version: 1,
+        instances: [{
+          id: "work",
+          provider: "claude",
+          label: "Work",
+          configHome: providerHome,
+          createdAt: new Date(1).toISOString(),
+        }],
+        defaults: { claude: "work" },
+        settings: {},
+        presetBindings: [],
+      }));
+
+      withEnv({ ADE_HOME: adeHome, ADE_CHAT_SESSION_ID: undefined }, () => {
+        const chat = expectStaticPlan(buildCliPlan([
+          "chat", "create", "--lane", "lane-1", "--provider", "claude",
+          "--preset", "hp_preview", "--model", "user/model", "--no-parent", "--print-config",
+        ])).value as { resolved: Record<string, unknown> };
+        const cli = expectStaticPlan(buildCliPlan([
+          "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "claude",
+          "--preset", "hp_preview", "--model", "user/model", "--no-parent", "--print-config",
+        ])).value as { launch: Record<string, unknown> };
+
+        expect(chat.resolved.model).toBe("gateway/claude-fable");
+        expect(cli.launch.model).toBe("gateway/claude-fable");
+        expect(cli.launch.modelId).toBe("gateway/claude-fable");
+        expect(chat.resolved.env).toEqual({ CLAUDE_CONFIG_DIR: providerHome });
+        expect(cli.launch.env).toEqual({ CLAUDE_CONFIG_DIR: providerHome });
+
+        const instanceChat = expectStaticPlan(buildCliPlan([
+          "chat", "create", "--lane", "lane-1", "--provider", "claude",
+          "--instance", "work", "--model", "user/model", "--no-parent", "--print-config",
+        ])).value as { resolved: Record<string, unknown> };
+        const instanceCli = expectStaticPlan(buildCliPlan([
+          "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "claude",
+          "--instance", "work", "--model", "user/model", "--no-parent", "--print-config",
+        ])).value as { launch: Record<string, unknown> };
+        expect(instanceChat.resolved.model).toBe("user/model");
+        expect(instanceCli.launch.model).toBe("user/model");
+        expect(instanceChat.resolved.env).toEqual({ CLAUDE_CONFIG_DIR: providerHome });
+        expect(instanceCli.launch.env).toEqual({ CLAUDE_CONFIG_DIR: providerHome });
+      });
+    } finally {
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    }
   });
 });

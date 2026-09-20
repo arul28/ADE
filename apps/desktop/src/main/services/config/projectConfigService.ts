@@ -182,21 +182,6 @@ function asNonNegativeInt(value: unknown): number | undefined {
   return Math.max(0, Math.floor(numeric));
 }
 
-function coerceOrchestratorHookConfig(value: unknown): { command: string; timeoutMs?: number } | null {
-  if (typeof value === "string") {
-    const command = value.trim();
-    return command.length ? { command } : null;
-  }
-  if (!isRecord(value)) return null;
-  const command = asString(value.command)?.trim() ?? "";
-  if (!command.length) return null;
-  const timeoutMs = asNumber(value.timeoutMs);
-  return {
-    command,
-    ...(timeoutMs != null ? { timeoutMs: Math.max(1_000, Math.floor(timeoutMs)) } : {})
-  };
-}
-
 function asStringMap(value: unknown): Record<string, string> | undefined {
   return STRING_MAP_SCHEMA.parse(value);
 }
@@ -1324,7 +1309,6 @@ const AI_FEATURE_KEYS: AiFeatureKey[] = [
   "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
-  "orchestrator",
   "initial_context"
 ];
 
@@ -1535,88 +1519,6 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     const threshold = asNumber(conflictRaw.autoApplyThreshold);
     if (threshold != null) conflict.autoApplyThreshold = threshold;
     if (Object.keys(conflict).length) out.conflictResolution = conflict;
-  }
-
-  const orchestratorRaw = isRecord(value.orchestrator) ? value.orchestrator : null;
-  if (orchestratorRaw) {
-    const orchestrator: NonNullable<AiConfig["orchestrator"]> = {};
-    const teammatePlanMode = asString(orchestratorRaw.teammatePlanMode)?.trim();
-    if (teammatePlanMode === "off" || teammatePlanMode === "auto" || teammatePlanMode === "required") {
-      orchestrator.teammatePlanMode = teammatePlanMode;
-    }
-
-    const maxParallelWorkers = asNumber(orchestratorRaw.maxParallelWorkers);
-    if (maxParallelWorkers != null) orchestrator.maxParallelWorkers = Math.max(1, Math.floor(maxParallelWorkers));
-
-    const defaultMergePolicy = asString(orchestratorRaw.defaultMergePolicy)?.trim();
-    if (defaultMergePolicy === "sequential" || defaultMergePolicy === "batch-at-end" || defaultMergePolicy === "per-step") {
-      orchestrator.defaultMergePolicy = defaultMergePolicy;
-    }
-
-    const defaultConflictHandoff = asString(orchestratorRaw.defaultConflictHandoff)?.trim();
-    if (
-      defaultConflictHandoff === "auto-resolve" ||
-      defaultConflictHandoff === "ask-user" ||
-      defaultConflictHandoff === "orchestrator-decides"
-    ) {
-      orchestrator.defaultConflictHandoff = defaultConflictHandoff;
-    }
-
-    const workerHeartbeatIntervalMs = asNumber(orchestratorRaw.workerHeartbeatIntervalMs);
-    if (workerHeartbeatIntervalMs != null) orchestrator.workerHeartbeatIntervalMs = Math.max(1_000, Math.floor(workerHeartbeatIntervalMs));
-
-    const workerHeartbeatTimeoutMs = asNumber(orchestratorRaw.workerHeartbeatTimeoutMs);
-    if (workerHeartbeatTimeoutMs != null) orchestrator.workerHeartbeatTimeoutMs = Math.max(1_000, Math.floor(workerHeartbeatTimeoutMs));
-
-    const workerIdleTimeoutMs = asNumber(orchestratorRaw.workerIdleTimeoutMs);
-    if (workerIdleTimeoutMs != null) orchestrator.workerIdleTimeoutMs = Math.max(1_000, Math.floor(workerIdleTimeoutMs));
-
-    const stepTimeoutDefaultMs = asNumber(orchestratorRaw.stepTimeoutDefaultMs);
-    if (stepTimeoutDefaultMs != null) orchestrator.stepTimeoutDefaultMs = Math.max(1_000, Math.floor(stepTimeoutDefaultMs));
-
-    const maxRetriesPerStep = asNumber(orchestratorRaw.maxRetriesPerStep);
-    if (maxRetriesPerStep != null) orchestrator.maxRetriesPerStep = Math.max(0, Math.floor(maxRetriesPerStep));
-
-    const contextPressureThreshold = asNumber(orchestratorRaw.contextPressureThreshold);
-    if (contextPressureThreshold != null) orchestrator.contextPressureThreshold = Math.max(0.1, Math.min(0.99, contextPressureThreshold));
-
-    const progressiveLoading = asBool(orchestratorRaw.progressiveLoading);
-    if (progressiveLoading != null) orchestrator.progressiveLoading = progressiveLoading;
-
-    const maxTotalTokenBudget = asNumber(orchestratorRaw.maxTotalTokenBudget);
-    if (maxTotalTokenBudget != null && maxTotalTokenBudget > 0) orchestrator.maxTotalTokenBudget = maxTotalTokenBudget;
-
-    const maxPerStepTokenBudget = asNumber(orchestratorRaw.maxPerStepTokenBudget);
-    if (maxPerStepTokenBudget != null && maxPerStepTokenBudget > 0) orchestrator.maxPerStepTokenBudget = maxPerStepTokenBudget;
-
-    const defaultOrchestratorModel = coerceModelConfig(orchestratorRaw.defaultOrchestratorModel);
-    if (defaultOrchestratorModel) {
-      orchestrator.defaultOrchestratorModel = defaultOrchestratorModel;
-    }
-
-    const autoResolveInterventions = asBool(orchestratorRaw.autoResolveInterventions);
-    if (autoResolveInterventions != null) orchestrator.autoResolveInterventions = autoResolveInterventions;
-
-    const interventionConfidenceThreshold = asNumber(orchestratorRaw.interventionConfidenceThreshold);
-    if (interventionConfidenceThreshold != null) {
-      orchestrator.interventionConfidenceThreshold = Math.max(0, Math.min(1, interventionConfidenceThreshold));
-    }
-
-    const hooksRaw = isRecord(orchestratorRaw.hooks) ? orchestratorRaw.hooks : null;
-    if (hooksRaw) {
-      const hooks: NonNullable<NonNullable<AiConfig["orchestrator"]>["hooks"]> = {};
-      const teammateIdle = coerceOrchestratorHookConfig(
-        hooksRaw.TeammateIdle ?? hooksRaw.teammateIdle
-      );
-      if (teammateIdle) hooks.TeammateIdle = teammateIdle;
-      const taskCompleted = coerceOrchestratorHookConfig(
-        hooksRaw.TaskCompleted ?? hooksRaw.taskCompleted
-      );
-      if (taskCompleted) hooks.TaskCompleted = taskCompleted;
-      if (Object.keys(hooks).length) orchestrator.hooks = hooks;
-    }
-
-    if (Object.keys(orchestrator).length) out.orchestrator = orchestrator;
   }
 
   const chatRaw = isRecord(value.chat) ? value.chat : null;
@@ -1953,22 +1855,6 @@ function mergeAiPermissions(
   return Object.keys(permissions).length ? permissions : undefined;
 }
 
-function mergeAiOrchestrator(
-  sharedOrchestrator?: AiConfig["orchestrator"],
-  localOrchestrator?: AiConfig["orchestrator"]
-): AiConfig["orchestrator"] {
-  if (!sharedOrchestrator && !localOrchestrator) return undefined;
-  const orchestrator = {
-    ...(sharedOrchestrator ?? {}),
-    ...(localOrchestrator ?? {}),
-    hooks: {
-      ...(sharedOrchestrator?.hooks ?? {}),
-      ...(localOrchestrator?.hooks ?? {})
-    }
-  };
-  return Object.keys(orchestrator).length ? orchestrator : undefined;
-}
-
 function mergeSessionIntelligenceConfig(
   sharedSessionIntelligence?: AiConfig["sessionIntelligence"],
   localSessionIntelligence?: AiConfig["sessionIntelligence"],
@@ -2008,7 +1894,6 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.conflictResolution ?? {}),
     ...(localAi?.conflictResolution ?? {})
   };
-  const orchestrator = mergeAiOrchestrator(sharedAi?.orchestrator, localAi?.orchestrator);
   const chat = {
     ...(sharedAi?.chat ?? {}),
     ...(localAi?.chat ?? {})
@@ -2054,7 +1939,6 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(budgets).length ? { budgets } : {}),
     ...(permissions ? { permissions } : {}),
     ...(Object.keys(conflictResolution).length ? { conflictResolution } : {}),
-    ...(orchestrator ? { orchestrator } : {}),
     ...(Object.keys(chat).length ? { chat } : {}),
     ...(sessionIntelligence ? { sessionIntelligence } : {}),
     ...(Object.keys(featureModelOverrides).length ? { featureModelOverrides } : {}),

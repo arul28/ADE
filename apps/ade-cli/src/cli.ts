@@ -33,6 +33,7 @@ import {
   runDoctorCommand,
   type DoctorRow,
 } from "./commands/doctor";
+import { formatProxyStatus } from "./commands/proxy";
 import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
@@ -199,9 +200,15 @@ import {
   isLaunchProfile,
   isTrackedCliPermissionMode,
   LAUNCH_PROFILE_TITLE,
+  providerInstanceLaunchEnv,
   validateLaunchProfilePermissionMode,
   type LaunchProfile,
 } from "../../desktop/src/shared/cliLaunch";
+import {
+  previewHarnessLaunchPlan,
+  type HarnessPresetLaunchDeps,
+} from "../../desktop/src/main/services/chat/harnessPresetLaunch";
+import { DEFAULT_API_CREDENTIAL_ID, type ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
   createSyncAccountDirectoryHealth,
   type SyncMobileProjectSummary,
@@ -244,7 +251,12 @@ import type { AccountMachinePublisherService } from "./services/account/accountM
 import {
   ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE,
   PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+  readMachineInventorySummary,
 } from "./services/account/accountMachinePublisherService";
+import {
+  getMachineProviderInstanceStore,
+  resolveProviderInstanceForLaunch,
+} from "./services/providerInstances/providerInstanceStore";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import type { MachinePairingAutoRecovery } from "./services/account/machinePairingAutoRecovery";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
@@ -264,6 +276,11 @@ import {
   runAdeCodeRemote,
   takeAdeCodeRemoteArgs,
 } from "./tuiClient/remoteLauncher";
+import {
+  displayClusters,
+  padDisplayEnd,
+  terminalDisplayWidth,
+} from "./tuiClient/displayWidth";
 import { copyToClipboard } from "./lib/clipboard";
 import { pickPrimaryPrRecord, prRecordNumber } from "./lib/primaryPr";
 import {
@@ -298,7 +315,7 @@ type SyncWebPairingCliOutput = {
 type GlobalOptions = {
   projectRoot: string | null;
   workspaceRoot: string | null;
-  role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
+  role: "cto" | "agent" | "external" | "evaluator";
   headless: boolean;
   requireSocket: boolean;
   socketPath: string | null;
@@ -365,6 +382,7 @@ type FormatterId =
   | "chat-list"
   | "chat-read"
   | "chat-status"
+  | "chat-models"
   | "chat-resume-now"
   | "session-lifecycle"
   | "lane-drift"
@@ -406,6 +424,8 @@ type FormatterId =
   | "search-results"
   | "search-status"
   | "external-sessions"
+  | "provider-accounts"
+  | "proxy-status"
   | "storage-snapshot"
   | "storage-compress"
   | "storage-maintenance"
@@ -849,6 +869,10 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
+    $ ade providers accounts list | add | remove | rename | default
+                                                    Manage this machine's Claude/Codex logins
+    $ ade proxy status | start | stop | login | logout
+                                                    Manage local subscription sign-ins
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
@@ -2521,6 +2545,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
+  Provider CLI launches accept --instance for Claude/Codex accounts and
+  --preset or --credential for saved harness brains.
+
   Prefer ade new chat --mode cli for new tracked provider CLI sessions. start-cli
   remains as the compatibility command behind that mode.
 `,
@@ -3417,6 +3444,63 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade storage actions --text                    List raw storage service actions
     $ ade storage action cleanupPreview --input-json '{"targets":[...]}'   Preview a target-scoped cleanup
     $ ade --role cto storage action cleanup --input-json '{"targets":[...],"preview":{...}}'   Delete previewed targets (CTO)
+`,
+  providers: `${ADE_BANNER}
+  Provider accounts on this machine
+
+  Claude and Codex each keep a whole signed-in identity inside one config
+  directory (\$CLAUDE_CONFIG_DIR / \$CODEX_HOME). An ADE provider account is one
+  of those directories plus a label, so several logins can live side by side on
+  one machine. Other providers have a single identity per machine and are not
+  listed here.
+
+  ADE never drives a provider's sign-in: \`add\` prints the exact command and env
+  var to run so the login lands in the new directory. \`remove\` forgets the
+  account and deletes nothing — the directory (and the login inside it) stays.
+  The machine's own pre-existing login is always present, is always removable-
+  proof, and starts out as the default.
+
+    $ ade providers accounts list --text            All accounts, both providers
+    $ ade providers accounts list --provider claude --text
+    $ ade providers accounts add --provider claude --label Work --text
+                                                    Create an account and print its login command
+    $ ade providers accounts add --provider codex --label "Personal" --accent '#3b82f6' --text
+    $ ade providers accounts login --instance work --text
+                                                    Reprint one account's login command
+    $ ade providers accounts rename --instance work --label "Work (EU)" --text
+    $ ade providers accounts default --instance work --text
+                                                    Make an account the provider's default
+    $ ade providers accounts remove --instance work --text
+                                                    Forget an account (nothing on disk is deleted)
+    $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
+    $ ade providers actions --text                  List raw provider-account service actions
+
+  Use an account for one session:
+    $ ade chat create --lane <lane> --provider claude --instance work
+    $ ade new chat --mode cli --lane <lane> --provider claude --instance work
+
+  Use a saved custom setup (agent + model, from Settings > Providers > Custom)
+  or one stored API key for one session:
+    $ ade chat create --lane <lane> --preset hp_opus_work
+    $ ade new chat --mode cli --lane <lane> --provider claude --preset hp_opus_work
+    $ ade chat create --lane <lane> --provider claude --credential openrouter
+  --preset and --credential are mutually exclusive. In CLI mode a preset on
+  grok, cursor, copilot or kimi launches the native CLI instead: those binaries
+  take no key from the launch.
+`,
+  proxy: `${ADE_BANNER}
+  ADE subscription proxy
+
+  Keep a Claude or Codex subscription available for your custom setups on this
+  machine. Sign-in opens the provider page and waits for the browser flow to
+  finish; the status view never prints proxy credentials.
+
+    $ ade proxy status --text                    Show installation, runtime, and sign-ins
+    $ ade proxy start --text                     Install and start the proxy
+    $ ade proxy stop --text                      Stop it without removing sign-ins
+    $ ade proxy login --provider claude --text   Sign in to a Claude subscription
+    $ ade proxy login --provider codex --text    Sign in to a Codex subscription
+    $ ade proxy logout <login-id> --text         Remove one subscription sign-in
 `,
   secrets: `${ADE_BANNER}
   ADE project secrets
@@ -5119,7 +5203,7 @@ function parseRole(value: string): GlobalOptions["role"] {
   const role = normalizeAdeRuntimeRole(value);
   if (role) return role;
   throw new CliUsageError(
-    "--role must be one of cto, orchestrator, agent, external, or evaluator.",
+    "--role must be one of cto, agent, external, or evaluator.",
   );
 }
 
@@ -5967,6 +6051,9 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const droidPermissionMode = readDroidPermissionMode(args);
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
+  const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
+  const presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
+  const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
   const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
 
   if (!isLaunchProfile(provider)) {
@@ -5977,6 +6064,14 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   }
   if (droidPermissionMode && provider !== "droid") {
     throw new CliUsageError("Droid autonomy is only supported for Droid chat sessions.");
+  }
+  if (instanceId && provider !== "claude" && provider !== "codex") {
+    throw new CliUsageError(
+      "--instance names a Claude or Codex account on this machine; other providers have a single identity per machine.",
+    );
+  }
+  if (presetId && credentialId) {
+    throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
   }
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
@@ -6015,6 +6110,12 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
         title,
         surface: readValue(args, ["--surface"]) ?? "work",
+        ...(instanceId ? { instanceId } : {}),
+        // A saved harness preset (body + brain + model). CLI mode passes the
+        // same id; the runtime is what applies the locked gate for the four
+        // harnesses whose CLI cannot take an outside key.
+        ...(presetId ? { presetId } : {}),
+        ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
       })
     : collectGenericObjectArgs(args, {
@@ -6026,6 +6127,9 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         modelId: modelArg,
         reasoningEffort,
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
+        ...(instanceId ? { instanceId } : {}),
+        ...(presetId ? { presetId } : {}),
+        ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
         // Spawn lineage rides on resume metadata, which only agent providers
         // have — plain shell terminals can't persist it, so don't pretend.
@@ -6038,6 +6142,16 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
       });
 
   if (printConfig) {
+    const launchPreview = previewLaunchConfig(launchArgs, { mode });
+    const previewLaunchArgs = {
+      ...launchArgs,
+      ...(launchPreview.model
+        ? { model: launchPreview.model, modelId: launchPreview.model }
+        : {}),
+      ...(Object.keys(launchPreview.env).length
+        ? { env: launchPreview.env }
+        : {}),
+    };
     return {
       kind: "static",
       formatter: "action-result",
@@ -6048,7 +6162,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         mode,
         autoCreateLane: lane.autoCreateLane,
         ...(lane.createLaneArgs ? { createLane: lane.createLaneArgs } : { laneId: lane.laneId }),
-        launch: compactPreviewObject(launchArgs),
+        launch: compactPreviewObject(previewLaunchArgs),
         ...(mode === "chat" && prompt
           ? { afterCreate: [{ action: "chat.messageSession", input: { text: prompt, kind: "auto" } }] }
           : {}),
@@ -6218,6 +6332,94 @@ function compactPreviewObject(input: JsonObject): JsonObject {
   return output;
 }
 
+type LaunchConfigPreview = {
+  model: string | null;
+  env: Record<string, string>;
+  presetId: string | null;
+};
+
+const CLI_API_CREDENTIALS_INDEX_KEY = "ai.api_credentials.index.v1";
+
+function cliCredentialStorageKey(provider: string, credentialId: string): string {
+  return credentialId === DEFAULT_API_CREDENTIAL_ID
+    ? provider
+    : `${provider}#${credentialId}`;
+}
+
+function cliHarnessPreviewDeps(): HarnessPresetLaunchDeps {
+  const adeHome = resolveMachineAdeDir();
+  const store = new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir });
+  const readKey = (provider: string, credentialId: string): string | null => {
+    try {
+      return store.getSync(`ai.api_key.${cliCredentialStorageKey(provider, credentialId)}.v1`)?.trim() || null;
+    } catch {
+      return null;
+    }
+  };
+  const readSummaries = (): ApiCredentialSummary[] => {
+    try {
+      const raw = store.getSync(CLI_API_CREDENTIALS_INDEX_KEY);
+      if (!raw) return [];
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed as ApiCredentialSummary[] : [];
+    } catch {
+      return [];
+    }
+  };
+
+  return {
+    adeHome,
+    getCredentialSummary: (provider, credentialId) => {
+      const key = readKey(provider, credentialId);
+      if (!key) return null;
+      return readSummaries().find((summary) =>
+        summary.provider === provider && summary.credentialId === credentialId,
+      ) ?? {
+        provider,
+        credentialId,
+        label: credentialId,
+        source: "store",
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      };
+    },
+    getCredentialKey: readKey,
+  };
+}
+
+function previewLaunchConfig(
+  args: JsonObject,
+  options: { mode?: "chat" | "cli" } = {},
+): LaunchConfigPreview {
+  const provider = asString(args.provider)?.trim().toLowerCase() ?? "";
+  const presetId = asString(args.presetId)?.trim() || null;
+  const credentialId = asString(args.credentialId)?.trim() || null;
+  const instanceId = asString(args.instanceId)?.trim() || null;
+  const requestedModel = asString(args.model) ?? asString(args.modelId) ?? null;
+  let model = requestedModel;
+  let env = instanceId && !presetId && !credentialId && isLaunchProfile(provider)
+    ? providerInstanceLaunchEnv(provider, resolveProviderInstanceForLaunch(provider, instanceId))
+    : {};
+
+  if (presetId || credentialId) {
+    const brain = previewHarnessLaunchPlan(
+      { provider, presetId, credentialId, mode: options.mode ?? "chat" },
+      cliHarnessPreviewDeps(),
+    );
+    if (brain.status === "ready") {
+      model = brain.model ?? requestedModel;
+      env = brain.env;
+    } else {
+      // Unsupported and CLI-gated brains must fall back to the native launch;
+      // showing their requested env/model would make --print-config promise a
+      // launch that the runtime deliberately will not perform.
+      env = {};
+    }
+  }
+
+  return { model, env, presetId };
+}
+
 function buildChatCreateConfigPreview(
   args: JsonObject,
   options: {
@@ -6228,6 +6430,7 @@ function buildChatCreateConfigPreview(
   } = {},
 ): JsonObject {
   const input = compactPreviewObject(args);
+  const launchPreview = previewLaunchConfig(input, { mode: "chat" });
   const permissionMode = asString(input.permissionMode) ?? "default";
   const afterCreate: JsonObject[] = [];
   if (options.linearIssue) {
@@ -6258,9 +6461,12 @@ function buildChatCreateConfigPreview(
     ...(afterCreate.length ? { afterCreate } : {}),
     resolved: {
       provider: asString(input.provider) ?? null,
-      model: asString(input.model) ?? asString(input.modelId) ?? null,
+      model: launchPreview.model,
       reasoningEffort: asString(input.reasoningEffort) ?? null,
       fastMode: typeof input.fastMode === "boolean" ? input.fastMode : null,
+      ...(Object.keys(launchPreview.env).length
+        ? { env: launchPreview.env }
+        : {}),
       ...permissionModePreview(permissionMode, asString(input.droidPermissionMode)),
     },
   };
@@ -6465,7 +6671,7 @@ function resolveStashSelectionForCli(listResult: unknown, stashRef: string | nul
 }
 
 function buildGitPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "status";
+  const sub = firstStandalonePositional(args) ?? "status";
   if (sub === "actions") {
     return {
       kind: "execute",
@@ -7938,6 +8144,17 @@ function buildCliSessionStartPlan(
   const initialInput = promptArgs
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--message", "--prompt", "--initial-input"]);
+  const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
+  const presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
+  const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
+  if (instanceId && provider !== "claude" && provider !== "codex") {
+    throw new CliUsageError(
+      "--instance names a Claude or Codex account on this machine; other providers have a single identity per machine.",
+    );
+  }
+  if (presetId && credentialId) {
+    throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
+  }
   const permissionMode =
     readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
   const droidPermissionMode = readDroidPermissionMode(args);
@@ -7974,6 +8191,9 @@ function buildCliSessionStartPlan(
     ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
     ...(spawnKind ? { spawnKind } : {}),
     ...(droidPermissionMode ? { droidPermissionMode } : {}),
+    ...(instanceId ? { instanceId } : {}),
+    ...(presetId ? { presetId } : {}),
+    ...(credentialId ? { credentialId } : {}),
     tracked: !readFlag(args, ["--untracked"]),
   });
 
@@ -8818,6 +9038,12 @@ function buildChatPlan(args: string[]): CliPlan {
     }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
     const { orchestrationParentSessionId, spawnKind } = readAgentSpawnLineage(args);
+    const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
+    const presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
+    const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
+    if (presetId && credentialId) {
+      throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
+    }
     const createStep = actionStep(
       "result",
       "chat",
@@ -8837,12 +9063,32 @@ function buildChatPlan(args: string[]): CliPlan {
         droidPermissionMode: readDroidPermissionMode(args),
         title: readValue(args, ["--title"]),
         surface: readValue(args, ["--surface"]) ?? "work",
+        // Which of this machine's provider accounts the session signs in as.
+        // Omitted (not sent as null) when unset, so the runtime keeps its own
+        // "use the provider's default account" rule instead of receiving a
+        // second, CLI-shaped way of saying the same thing.
+        ...(instanceId ? { instanceId } : {}),
+        // Which saved harness preset the chat launches under. Same omit-when-
+        // unset rule as the account: the runtime keeps its own default instead
+        // of receiving a second, CLI-shaped way to say "no preset".
+        ...(presetId ? { presetId } : {}),
+        ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
         ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
       }),
     );
     const createArgs = (createStep.params as JsonObject).arguments as JsonObject;
     const actionArgs = createArgs.args as JsonObject;
+    if (
+      instanceId
+      && typeof actionArgs.provider === "string"
+      && actionArgs.provider !== "claude"
+      && actionArgs.provider !== "codex"
+    ) {
+      throw new CliUsageError(
+        "--instance names a Claude or Codex account on this machine; other providers have a single identity per machine.",
+      );
+    }
     const kickoffText =
       explicitKickoff ??
       (linearIssue && !noKickoff ? deriveLinearKickoffPrompt(linearIssue) : null);
@@ -14218,6 +14464,172 @@ function buildSecretsPlan(args: string[]): CliPlan {
   throw new CliUsageError("secrets supports list, get, set, delete, or actions.");
 }
 
+function buildProxyPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.proxy ?? topLevelHelpText() };
+  }
+  const sub = firstStandalonePositional(args) ?? "status";
+  const base = {
+    kind: "execute" as const,
+    machineOnly: true,
+    machineAutoStart: true,
+  };
+  if (sub === "status" || sub === "show") {
+    return {
+      ...base,
+      label: "proxy status",
+      formatter: "proxy-status",
+      steps: [actionStep("result", "proxy", "status")],
+    };
+  }
+  if (sub === "start" || sub === "ensure-running") {
+    return {
+      ...base,
+      label: "proxy start",
+      formatter: "proxy-status",
+      steps: [actionStep("result", "proxy", "ensureRunning")],
+    };
+  }
+  if (sub === "stop") {
+    return {
+      ...base,
+      label: "proxy stop",
+      steps: [actionStep("result", "proxy", "stop")],
+    };
+  }
+  if (sub === "login" || sub === "sign-in") {
+    const provider = requireValue(readValue(args, ["--provider"]), "provider").trim().toLowerCase();
+    if (provider !== "claude" && provider !== "codex") {
+      throw new CliUsageError("proxy login --provider must be claude or codex.");
+    }
+    return {
+      ...base,
+      label: "proxy login",
+      minTimeoutMs: 5 * 60_000,
+      steps: [actionStep("result", "proxy", "signIn", { provider })],
+    };
+  }
+  if (sub === "logout" || sub === "sign-out") {
+    const loginId = requireValue(
+      readValue(args, ["--login-id", "--id"]) ?? firstStandalonePositional(args),
+      "login id",
+    );
+    return {
+      ...base,
+      label: "proxy logout",
+      steps: [actionStep("result", "proxy", "signOut", { loginId })],
+    };
+  }
+  throw new CliUsageError("proxy supports status, start, stop, login, or logout.");
+}
+
+/**
+ * `ade providers accounts …` — this machine's Claude and Codex logins.
+ *
+ * An account is a label plus a provider config directory (`CLAUDE_CONFIG_DIR` /
+ * `CODEX_HOME`), never a credential: ADE does not drive the provider's OAuth
+ * flow, so `add` prints the exact command and env var a shell must run for the
+ * login to land in the new directory, and `remove` forgets the entry without
+ * deleting anything on disk.
+ */
+function buildProvidersPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
+  }
+  const group = firstPositional(args) ?? "accounts";
+  if (group === "actions") {
+    return {
+      kind: "execute",
+      label: "providers actions",
+      formatter: "actions-list",
+      steps: [listActionsStep("result", "provider_instances")],
+    };
+  }
+  if (group !== "accounts" && group !== "account") {
+    throw new CliUsageError(
+      "providers supports `accounts <list|add|remove|rename|default>` or `actions`.",
+    );
+  }
+  const sub = firstPositional(args) ?? "list";
+  const provider = readValue(args, ["--provider"])?.trim().toLowerCase() ?? null;
+  if (sub === "list" || sub === "ls") {
+    return {
+      kind: "execute",
+      label: "providers accounts list",
+      formatter: "provider-accounts",
+      steps: [actionStep("result", "provider_instances", "list", provider ? { provider } : {})],
+    };
+  }
+  if (sub === "refresh") {
+    return {
+      kind: "execute",
+      label: "providers accounts refresh",
+      formatter: "provider-accounts",
+      steps: [actionStep("result", "provider_instances", "refresh", provider ? { provider } : {})],
+    };
+  }
+  if (sub === "add" || sub === "create" || sub === "new") {
+    if (!provider) {
+      throw new CliUsageError("providers accounts add requires --provider claude|codex.");
+    }
+    const label = requireValue(
+      readValue(args, ["--label", "--name"]) ?? firstPositional(args),
+      "account label",
+    );
+    const accentColor = readValue(args, ["--accent", "--accent-color"]);
+    return {
+      kind: "execute",
+      label: "providers accounts add",
+      formatter: "provider-accounts",
+      steps: [actionStep("result", "provider_instances", "create", {
+        provider,
+        label,
+        ...(accentColor ? { accentColor } : {}),
+      })],
+    };
+  }
+  if (sub === "remove" || sub === "rm" || sub === "delete" || sub === "forget") {
+    const id = requireValue(readValue(args, ["--instance", "--instance-id", "--id"]) ?? firstPositional(args), "account id");
+    return {
+      kind: "execute",
+      label: "providers accounts remove",
+      formatter: "provider-accounts",
+      steps: [actionStep("result", "provider_instances", "remove", { id })],
+    };
+  }
+  if (sub === "rename") {
+    const id = requireValue(readValue(args, ["--instance", "--instance-id", "--id"]) ?? firstPositional(args), "account id");
+    const label = requireValue(readValue(args, ["--label", "--name"]) ?? firstPositional(args), "account label");
+    return {
+      kind: "execute",
+      label: "providers accounts rename",
+      formatter: "provider-accounts",
+      steps: [actionStep("result", "provider_instances", "rename", { id, label })],
+    };
+  }
+  if (sub === "default" || sub === "set-default" || sub === "use") {
+    const id = requireValue(readValue(args, ["--instance", "--instance-id", "--id"]) ?? firstPositional(args), "account id");
+    return {
+      kind: "execute",
+      label: "providers accounts default",
+      formatter: "provider-accounts",
+      steps: [actionStep("result", "provider_instances", "setDefault", { id })],
+    };
+  }
+  if (sub === "login" || sub === "login-command") {
+    const id = requireValue(readValue(args, ["--instance", "--instance-id", "--id"]) ?? firstPositional(args), "account id");
+    return {
+      kind: "execute",
+      label: "providers accounts login",
+      formatter: "provider-accounts",
+      steps: [actionStep("result", "provider_instances", "loginCommand", { id })],
+    };
+  }
+  throw new CliUsageError(
+    "providers accounts supports list, add, remove, rename, default, login, or refresh.",
+  );
+}
+
 function buildActionsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "list" || sub === "ls")
@@ -14524,10 +14936,8 @@ function automationsExampleText(): string {
       },
       prompt: "Investigate and propose a fix for {{trigger.issue.title}}.",
       modelConfig: {
-        orchestratorModel: {
-          modelId: "openai/gpt-5.6-sol",
-          thinkingLevel: "xhigh",
-        },
+        modelId: "openai/gpt-5.6-sol",
+        thinkingLevel: "xhigh",
       },
     },
     null,
@@ -15327,6 +15737,8 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-t",
   "--additional-instructions",
   "--app",
+  "--accent",
+  "--accent-color",
   "--action",
   "--app-bundle",
   "--at",
@@ -15412,12 +15824,20 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--input-json",
   "--input-text",
   "--interval-ms",
+  "--instance",
+  "--instance-id",
+  "--preset",
+  "--preset-id",
+  "--credential",
+  "--credential-id",
   "--instructions",
   "--kind",
   "--json-input",
+  "--label",
   "--lane",
   "--lane-id",
   "--limit",
+  "--login-id",
   "--max-bytes",
   "--line",
   "--max-log-bytes",
@@ -15959,6 +16379,9 @@ function buildCliPlan(
     return buildStoragePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
+  if (primary === "proxy") return buildProxyPlan(args);
+  if (primary === "providers" || primary === "provider")
+    return buildProvidersPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting")
     return buildSettingsPlan(args);
   if (primary === "operation" || primary === "operations")
@@ -18287,6 +18710,7 @@ async function createConnection(
     runtime = await createAdeRuntime({
       projectRoot: roots.projectRoot,
       workspaceRoot: roots.workspaceRoot,
+      runtimeSocketPath: legacySocketPath,
     });
     const createHandler = () =>
       createAdeRpcRequestHandler({
@@ -18537,7 +18961,6 @@ function canRuntimeDefaultRoleServe(
   if (requestedRole === "external") return true;
   if (!defaultRole) return false;
   if (defaultRole === "cto") return true;
-  if (defaultRole === "orchestrator") return requestedRole !== "cto";
   if (defaultRole === "agent") return requestedRole === "agent";
   if (defaultRole === "evaluator") return requestedRole === "evaluator";
   return false;
@@ -19078,7 +19501,7 @@ async function runRuntimeCommand(
   options: GlobalOptions,
 ): Promise<unknown> {
   const args = [...rest];
-  const sub = firstStandalonePositional(args) ?? "status";
+  const sub = firstPositional(args) ?? "status";
 
   // The external wedge check. Runs from the `com.ade.watchdog` launch agent on
   // a timer, so it must not open the runtime socket: a wedged brain is exactly
@@ -20807,6 +21230,7 @@ async function runServe(
       }),
   };
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
+    runtimeSocketPath: socketPath,
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -21391,6 +21815,14 @@ async function runServe(
           return brainSyncHostLease ? projectlessSyncSnapshot() : null;
         },
         getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
+        getInventorySummary: async () => {
+          const activeScope = await scopeRegistry.resolveActiveSyncHost();
+          return await readMachineInventorySummary({
+            providerInstanceStore: getMachineProviderInstanceStore(),
+            accountSettingsStore: activeScope?.runtime.accountSettingsStore ?? null,
+            aiIntegrationService: activeScope?.runtime.aiIntegrationService ?? null,
+          });
+        },
         // The SAME store instance the machine key above comes from, so a
         // `supersededMachineKeys` answer is checked against the keys this brain
         // actually retired. The publisher used to build a private second store
@@ -22149,11 +22581,30 @@ function linearIssueLabels(lane: JsonObject): string[] {
   return labels;
 }
 
+// Budgets are TERMINAL CELLS, not code units: a CJK label ("空") occupies two
+// columns while `.length` counts one, so a code-unit budget lets one row push
+// every column after it out of alignment.
+/**
+ * The longest grapheme-boundary prefix that fits in `budget` terminal cells.
+ * Never returns a partial cluster, so a two-cell glyph is dropped rather than
+ * allowed to overflow the column it was measured into.
+ */
+function displayPrefixWithinCells(value: string, budget: number): string {
+  let out = "";
+  let cells = 0;
+  for (const cluster of displayClusters(value)) {
+    if (cells + cluster.width > budget) break;
+    out += cluster.text;
+    cells += cluster.width;
+  }
+  return out;
+}
+
 function truncateCell(value: string, width = 42): string {
   const normalized = value.replace(/\s+/g, " ").trim();
-  if (normalized.length <= width) return normalized;
-  if (width <= 3) return normalized.slice(0, width);
-  return `${normalized.slice(0, width - 3)}...`;
+  if (terminalDisplayWidth(normalized) <= width) return normalized;
+  if (width <= 3) return displayPrefixWithinCells(normalized, Math.max(0, width));
+  return `${displayPrefixWithinCells(normalized, width - 3)}...`;
 }
 
 function cell(value: unknown, width = 42): string {
@@ -23094,19 +23545,22 @@ function renderTable(
   emptyMessage: string,
 ): string {
   if (rows.length === 0) return emptyMessage;
+  // Column widths and padding are measured in terminal cells so a wide
+  // (CJK/emoji) value cannot shift the columns to its right.
   const widths = headers.map((header, index) =>
     Math.max(
-      header.length,
+      terminalDisplayWidth(header),
       ...rows.map(
         (row) =>
-          cell(row[index], index === headers.length - 1 ? 64 : 28).length,
+          terminalDisplayWidth(cell(row[index], index === headers.length - 1 ? 64 : 28)),
       ),
     ),
   );
   const renderRow = (row: unknown[]) =>
     row
       .map((entry, index) =>
-        cell(entry, index === headers.length - 1 ? 64 : 28).padEnd(
+        padDisplayEnd(
+          cell(entry, index === headers.length - 1 ? 64 : 28),
           widths[index] ?? 0,
         ),
       )
@@ -23683,6 +24137,60 @@ function formatChatList(value: unknown): string {
       session.title,
     ]),
     "ADE chats\n(no sessions)",
+  );
+}
+
+/**
+ * The runtime provider a model family belongs to.
+ *
+ * `AgentChatModelInfo` carries the model family (`anthropic`, `openai`, `xai`…)
+ * but not always the provider the chat runs on (`claude`, `codex`, `grok`…), so
+ * `ade chat models` derives it. A row that already names its provider wins; this
+ * map is only the fallback, keyed by both the family and the model-id prefix.
+ */
+const CHAT_MODEL_FAMILY_PROVIDERS: Record<string, string> = {
+  anthropic: "claude",
+  openai: "codex",
+  google: "gemini",
+  cursor: "cursor",
+  factory: "droid",
+  qwen: "qwen",
+  moonshot: "kimi",
+  xai: "grok",
+  "github-copilot": "copilot",
+};
+
+function chatModelProvider(model: JsonObject): string | null {
+  const declared = asString(model.provider) ?? asString(model.providerKey);
+  if (declared) return declared;
+  const family = asString(model.family);
+  if (family && CHAT_MODEL_FAMILY_PROVIDERS[family]) return CHAT_MODEL_FAMILY_PROVIDERS[family];
+  const modelId = asString(model.modelId) ?? asString(model.id);
+  const prefix = modelId?.split("/")[0]?.trim();
+  if (prefix && CHAT_MODEL_FAMILY_PROVIDERS[prefix]) return CHAT_MODEL_FAMILY_PROVIDERS[prefix];
+  return family ?? prefix ?? null;
+}
+
+/**
+ * The `ade chat models` table.
+ *
+ * The command printed the raw `AgentChatModelInfo` JSON even with `--text` — a
+ * wall of reasoning-tier objects around the four fields a human reads. ACCOUNT
+ * is deliberately absent until provider accounts land; it goes beside PROVIDER.
+ */
+function formatChatModels(value: unknown): string {
+  const models = Array.isArray(value)
+    ? value.filter(isRecord)
+    : firstArray(value, ["models", "availableModels"]);
+  return renderTable(
+    ["PROVIDER", "MODEL ID", "LABEL", "FAMILY"],
+    models.map((model) => [
+      chatModelProvider(model),
+      asString(model.modelId) ?? asString(model.id),
+      model.displayName,
+      asString(model.family),
+    ]),
+    "ADE chat models\n(no models)",
   );
 }
 
@@ -24876,6 +25384,114 @@ function formatProjectSecrets(value: unknown): string {
   return `${header}${pathLine}`;
 }
 
+/**
+ * Every `provider_instances` result in one renderer: a list, one mutated
+ * account, a removal receipt, or a create (account + login command).
+ *
+ * `add` and `login` print the login command in full — binary, argv and the env
+ * var with its value — because that string is the entire point of the command:
+ * ADE cannot sign the account in, so the user runs it themselves.
+ */
+function formatProviderAccounts(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+
+  const loginLines = (login: unknown): string[] => {
+    if (!isRecord(login)) return [];
+    const command = typeof login.command === "string" ? login.command : "";
+    const argv = Array.isArray(login.args) ? login.args.map((arg) => cell(arg, 64)) : [];
+    const env = isRecord(login.env) ? login.env : {};
+    const envPairs = Object.entries(env).map(([key, entry]) => `${key}=${cell(entry, 96)}`);
+    if (!command) return [];
+    return [
+      "",
+      "Sign in by running:",
+      `  ${[...envPairs, command, ...argv].join(" ")}`,
+      "",
+      `  command  ${command}`,
+      `  args     ${argv.join(" ") || "(none)"}`,
+      ...envPairs.map((pair) => `  env      ${pair}`),
+    ];
+  };
+
+  const describe = (instance: JsonObject): string =>
+    renderKeyValues("ADE provider account", [
+      ["id", instance.id],
+      ["provider", instance.provider],
+      ["label", instance.label],
+      ["default", instance.isDefault === true ? "yes" : "no"],
+      ["signed in", instance.signedIn === true ? "yes" : "no"],
+      ["account", isRecord(instance.account) ? instance.account.email ?? instance.account.plan : undefined],
+      ["accent", instance.accentColor],
+      ["config home", instance.configHome],
+      ["created", instance.createdAt],
+    ]);
+
+  // Every mutation on the provider_instances domain wraps its payload:
+  // create → { instance, loginCommand }, rename/setDefault/setAccent →
+  // { instance }, loginCommand → { loginCommand }, get/setSettings →
+  // { settings }. Unwrap first so a successful rename never falls through to
+  // the table branch and prints "(no provider accounts found)" — which reads
+  // as a failed command.
+  const instanceRecord = isRecord(record.instance)
+    ? record.instance
+    : typeof record.id === "string" && typeof record.provider === "string"
+      ? record
+      : null;
+  const loginRecord = isRecord(record.loginCommand)
+    ? record.loginCommand
+    : typeof record.command === "string" && Array.isArray(record.args)
+      ? record
+      : null;
+  // create → { instance, loginCommand }
+  if (instanceRecord && loginRecord) {
+    return [describe(instanceRecord), ...loginLines(loginRecord)].join("\n");
+  }
+  // loginCommand → { loginCommand: { command, args, env } }
+  if (loginRecord) {
+    const lines = loginLines(loginRecord);
+    return lines.length ? lines.slice(1).join("\n") : "No login command is available for this account.";
+  }
+  // remove → { removed, configHome }
+  if (typeof record.removed === "boolean") {
+    if (!record.removed) return "No provider account was removed.";
+    const home = typeof record.configHome === "string" ? record.configHome : "";
+    return home
+      ? `Removed the provider account. Its config directory is still on disk at ${home}.`
+      : "Removed the provider account. Nothing on disk was deleted.";
+  }
+  // getSettings / setSettings → { settings: { smartBalance, autoStartWindows } }
+  const settingsRecord = isRecord(record.settings)
+    ? record.settings
+    : typeof record.smartBalance === "boolean"
+      ? record
+      : null;
+  if (settingsRecord && typeof settingsRecord.smartBalance === "boolean") {
+    return renderKeyValues("ADE provider account settings", [
+      ["smart balance", settingsRecord.smartBalance ? "on" : "off"],
+      ["auto-start (Windows)", settingsRecord.autoStartWindows === true ? "on" : "off"],
+    ]);
+  }
+  // rename / setDefault / setAccent → { instance }
+  if (instanceRecord) {
+    return describe(instanceRecord);
+  }
+  const instances = firstArray(value, ["instances"]);
+  return renderTable(
+    ["id", "provider", "label", "default", "signed in", "config home"],
+    instances.map((instance) => [
+      instance.id,
+      instance.provider,
+      instance.label,
+      instance.isDefault === true ? "yes" : "",
+      instance.signedIn === true
+        ? (isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes")
+        : "no",
+      instance.configHome,
+    ]),
+    "ADE provider accounts\n(no provider accounts found)",
+  );
+}
+
 function formatProjectsList(value: unknown): string {
   const projects = Array.isArray(value)
     ? value.filter(isRecord)
@@ -25400,6 +26016,8 @@ function formatTextOutput(
       return formatPrComments(value);
     case "chat-list":
       return formatChatList(value);
+    case "chat-models":
+      return formatChatModels(value);
     case "chat-status":
       return formatChatStatus(value);
     case "chat-resume-now":
@@ -25504,6 +26122,10 @@ function formatTextOutput(
       return formatSearchStatus(value);
     case "external-sessions":
       return formatExternalSessions(value);
+    case "provider-accounts":
+      return formatProviderAccounts(value);
+    case "proxy-status":
+      return formatProxyStatus(value);
     case "sync-status":
       return formatSyncStatus(value);
     case "sync-web":
@@ -25561,6 +26183,7 @@ function inferFormatter(
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";
   if (label === "chat list") return "chat-list";
+  if (label === "chat models" || label === "personal chat models") return "chat-models";
   if (label === "chat status") return "chat-status";
   if (label === "chat resume-now") return "chat-resume-now";
   if (label === "test runs") return "tests-runs";
@@ -27355,6 +27978,7 @@ export {
   findProjectRoots,
   formatDiagnosticError,
   formatOutput,
+  formatProxyStatus,
   graphWaitState,
   inferFormatter,
   iosSimulatorErrorHint,

@@ -10,9 +10,8 @@ import { SettingsPageShell } from "./SettingsPageShell";
  * that do the same job — add a thing, see the things, remove a thing — read as
  * three different products. This is the one template they share.
  *
- * Like `SettingsCard`, the page owns its anchor and reads its scope from the
- * manifest. A manager never hand-passes a scope: the whole point of the
- * manifest is that "where does this save" has exactly one answer per anchor.
+ * Like `SettingsCard`, the page owns its anchor, so a Cmd-K result or a
+ * deeplink of the form `?tab=<tab>#<anchor>` lands exactly here.
  */
 
 /** One table column. Widths are grid track sizes, so `132px` or `1.4fr` both work. */
@@ -30,15 +29,18 @@ export function SettingsManagerPage({
   anchor,
   title,
   description,
-  remoteMachineName,
+  leading,
+  titleAdornment,
   toolbar,
   children,
 }: {
   anchor: string;
   title: string;
   description?: React.ReactNode;
-  /** Names the machine a machine-scoped page is being viewed through, if remote. */
-  remoteMachineName?: string | null;
+  /** Sits before the title — a back control, a section mark. */
+  leading?: React.ReactNode;
+  /** Sits after the title — a help hint, a count. */
+  titleAdornment?: React.ReactNode;
   /** Right-aligned actions beside the title — add buttons, import/export, filters. */
   toolbar?: React.ReactNode;
   children: React.ReactNode;
@@ -48,7 +50,8 @@ export function SettingsManagerPage({
       anchor={anchor}
       title={title}
       description={description}
-      remoteMachineName={remoteMachineName}
+      leading={leading}
+      titleAdornment={titleAdornment}
       sectionAttrs={{ "data-settings-manager": anchor }}
       sectionStyle={{ fontFamily: SANS_FONT, display: "flex", flexDirection: "column", gap: 16 }}
       headerAlign="flex-start"

@@ -7,6 +7,10 @@ import {
   answeredQuestionCount,
   buildAnswers,
   flattenAnswerForSingleStringProvider,
+  formatPendingInputAnswersAsMessage,
+  isDismissiblePendingRequest,
+  isNonBlockingPendingRequest,
+  normalizePendingInputAnswers,
   foldedSummary,
   notePlaceholder,
   sanitizeAnswersForTranscript,
@@ -270,5 +274,136 @@ describe("sanitizeAnswersForTranscript", () => {
   it("leaves an in-budget payload untouched", () => {
     const questions = [question({ id: "one" })];
     expect(sanitizeAnswersForTranscript(questions, { one: ["alpha", "note"] })).toEqual({ one: ["alpha", "note"] });
+  });
+});
+
+describe("normalizePendingInputAnswers", () => {
+  const questions = [question({ id: "one" }), question({ id: "two" })];
+
+  it("keys every answered question and omits the unanswered ones", () => {
+    expect(normalizePendingInputAnswers({ questions }, { one: "alpha", two: "  " })).toEqual({
+      one: ["alpha"],
+    });
+  });
+
+  it("keeps every value of a multi-value answer, trimmed", () => {
+    expect(normalizePendingInputAnswers({ questions }, { two: ["a ", " b", "  "] })).toEqual({
+      two: ["a", "b"],
+    });
+  });
+
+  // The bug: a shared responseText used to land under a synthetic "response"
+  // key whenever more than one question was asked. Claude's `question.reply`
+  // takes one array per ASKED question, so that key matched nothing and the
+  // user's actual reply never reached the model.
+  it("regression: shared response text joins the last answered question, not a 'response' key", () => {
+    const normalized = normalizePendingInputAnswers(
+      { questions },
+      { one: "alpha", two: "beta" },
+      "and ship it friday",
+    );
+
+    expect(normalized).toEqual({ one: ["alpha"], two: ["beta", "and ship it friday"] });
+    expect(Object.prototype.hasOwnProperty.call(normalized, "response")).toBe(false);
+  });
+
+  it("attaches shared response text to the last question that was actually answered", () => {
+    expect(normalizePendingInputAnswers({ questions }, { one: "alpha" }, "with a caveat")).toEqual({
+      one: ["alpha", "with a caveat"],
+    });
+  });
+
+  it("falls back to the first question when nothing was answered", () => {
+    expect(normalizePendingInputAnswers({ questions }, {}, "just do whatever")).toEqual({
+      one: ["just do whatever"],
+    });
+    expect(normalizePendingInputAnswers({ questions }, undefined, "just do whatever")).toEqual({
+      one: ["just do whatever"],
+    });
+  });
+
+  it("still answers a single question the way it always did", () => {
+    expect(normalizePendingInputAnswers({ questions: [questions[0]!] }, {}, "freeform")).toEqual({
+      one: ["freeform"],
+    });
+  });
+
+  it("does not repeat response text the composer already folded into the answer", () => {
+    expect(
+      normalizePendingInputAnswers({ questions }, { one: ["alpha", "a note"] }, "a note"),
+    ).toEqual({ one: ["alpha", "a note"] });
+  });
+
+  it("uses the 'response' key only when the request asks no questions", () => {
+    expect(normalizePendingInputAnswers({ questions: [] }, {}, "approved")).toEqual({
+      response: ["approved"],
+    });
+    expect(normalizePendingInputAnswers(undefined, undefined, "approved")).toEqual({
+      response: ["approved"],
+    });
+  });
+
+  it("carries a model_selection selection alongside the questions", () => {
+    expect(
+      normalizePendingInputAnswers({ questions: [], kind: "model_selection" }, { selection: "opus" }),
+    ).toEqual({ selection: ["opus"] });
+  });
+
+  it("ignores inherited Object.prototype keys in the answers record", () => {
+    expect(normalizePendingInputAnswers({ questions: [question({ id: "toString" })] }, {})).toEqual({});
+  });
+
+  it("returns an empty payload when there is nothing to send", () => {
+    expect(normalizePendingInputAnswers({ questions }, {}, "   ")).toEqual({});
+  });
+});
+
+describe("isNonBlockingPendingRequest", () => {
+  it("is true only for an explicit blocking: false", () => {
+    expect(isNonBlockingPendingRequest({ blocking: false })).toBe(true);
+    expect(isNonBlockingPendingRequest({ blocking: true })).toBe(false);
+    // Absent means blocking, matching Codex `unwrap_or(true)`: a card ADE
+    // cannot read must not silently stop gating sends.
+    expect(isNonBlockingPendingRequest({})).toBe(false);
+    expect(isNonBlockingPendingRequest(null)).toBe(false);
+  });
+});
+
+describe("isDismissiblePendingRequest", () => {
+  it("reads the provider's flag, not blocking", () => {
+    expect(isDismissiblePendingRequest({ providerMetadata: { dismissible: true } })).toBe(true);
+    expect(isDismissiblePendingRequest({ providerMetadata: { dismissible: false } })).toBe(false);
+    // Codex steering: non-blocking, still an open app-server request.
+    expect(isDismissiblePendingRequest({ providerMetadata: {} })).toBe(false);
+    expect(isDismissiblePendingRequest({})).toBe(false);
+  });
+});
+
+describe("formatPendingInputAnswersAsMessage", () => {
+  const request = {
+    questions: [
+      { id: "0", question: "Which database?", allowsFreeform: true },
+      { id: "1", question: "Ship today?", allowsFreeform: true },
+    ],
+  };
+
+  it("restates each question above its answer, blocks separated by a blank line", () => {
+    expect(formatPendingInputAnswersAsMessage(request, { "0": ["Postgres"], "1": ["Yes"] }))
+      .toBe("Which database?\nPostgres\n\nShip today?\nYes");
+  });
+
+  it("joins a multi-select answer", () => {
+    expect(formatPendingInputAnswersAsMessage(request, { "0": ["Postgres", "SQLite"] }))
+      .toBe("Which database?\nPostgres, SQLite");
+  });
+
+  it("omits an unanswered question rather than sending it blank", () => {
+    expect(formatPendingInputAnswersAsMessage(request, { "1": ["Yes"] }))
+      .toBe("Ship today?\nYes");
+  });
+
+  it("returns an empty string when nothing was answered", () => {
+    expect(formatPendingInputAnswersAsMessage(request, {})).toBe("");
+    expect(formatPendingInputAnswersAsMessage(request, { "0": ["   "] })).toBe("");
   });
 });

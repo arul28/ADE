@@ -34,7 +34,7 @@ import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttach
  * a dispatch commit point. A caller-asserted `usageLimitResume: "manual"` or
  * `scheduledWake` would exempt its message from the auto-resume cancel sweep
  * and leave a chat's resume armed through real activity, to fire an unattended
- * prompt later; `spawnDispatch` / `orchestrationOrigin` would let a caller
+ * prompt later; `spawnDispatch` would let a caller
  * manufacture mission ownership. The rest of the caller's metadata is passed
  * through untouched.
  */
@@ -358,20 +358,6 @@ export class PersonalChatScope {
         const provider = requiredString(args.provider, "provider") as AgentChatCreateArgs["provider"];
         const model = requiredString(args.model, "model");
         const laneId = await this.getInternalLaneId(runtime);
-        // A personal chat is never an orchestration lead. The orchestration
-        // fields below are stripped, but `interactionMode` is forwarded, and
-        // "orchestrator-lead" alone makes the runtime treat the session as a
-        // lead: locked permissions, and MCP isolation that is always strict.
-        // The chat would then run strict while its capability report said
-        // strictRequested: false — a report contradicting the session it
-        // describes. Refusing is the only outcome that keeps the report honest,
-        // and no legitimate embedder asks a projectless chat to lead a run.
-        if (args.interactionMode === "orchestrator-lead" || args.orchestrationRole === "lead") {
-          throw new Error(
-            "Personal chats cannot be orchestration leads. Create this chat without "
-            + "interactionMode 'orchestrator-lead', or start it in a project.",
-          );
-        }
         const kickoffText = typeof args.kickoffText === "string" ? args.kickoffText.trim() : "";
         // Validated here rather than in the chat service: this is the boundary
         // an external embedder speaks to, and the refusal has to happen before
@@ -396,12 +382,7 @@ export class PersonalChatScope {
           identityKey: _identityKey,
           automationId: _automationId,
           automationRunId: _automationRunId,
-          orchestrationRunId: _orchestrationRunId,
-          orchestrationRole: _orchestrationRole,
           orchestrationParentSessionId: _orchestrationParentSessionId,
-          orchestrationTag: _orchestrationTag,
-          orchestrationStepId: _orchestrationStepId,
-          orchestrationBundlePath: _orchestrationBundlePath,
           kickoffText: _kickoffText,
           ...forwarded
         } = args;

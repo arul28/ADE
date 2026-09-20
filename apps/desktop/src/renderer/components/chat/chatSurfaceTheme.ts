@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import type { ChatChromeTint } from "../../state/appStore";
 import type { ChatSurfaceChipTone, ChatSurfaceMode } from "../../../shared/types";
+import { PROVIDER_CHAT_ACCENTS as SHARED_PROVIDER_CHAT_ACCENTS } from "../../../shared/providerColors";
 
 export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
   standard: "#71717A",
@@ -15,24 +16,7 @@ export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
  * Mirror this map in `apps/ios/ADE/Views/Components/ADEDesignSystem.swift`
  * (`providerChatAccents`).
  */
-export const PROVIDER_CHAT_ACCENTS: Record<string, string> = {
-  claude: "#D97706",
-  anthropic: "#D97706",
-  codex: "#E7E5E4",
-  openai: "#E7E5E4",
-  cursor: "#13120C",
-  droid: "#D46C2E",
-  factory: "#D46C2E",
-  opencode: "#739CEE",
-  pi: "#181C25",
-  google: "#F59E0B",
-  gemini: "#F59E0B",
-  mistral: "#F97316",
-  deepseek: "#3B82F6",
-  xai: "#DC2626",
-  grok: "#DC2626",
-  groq: "#06B6D4",
-};
+export const PROVIDER_CHAT_ACCENTS: Record<string, string> = { ...SHARED_PROVIDER_CHAT_ACCENTS };
 
 /**
  * Look up the unified chat accent for a provider id ("claude", "codex",

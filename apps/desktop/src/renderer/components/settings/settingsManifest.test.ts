@@ -197,6 +197,33 @@ describe("settings manifest", () => {
     expect(searchSettingsEntries("crash").map((e) => e.id)).toContain("general.diagnostics-sharing");
   });
 
+  // The lane-A surfaces are PANELS on a provider's page, not pages of their
+  // own, so before these entries existed ⌘K answered nothing for the words a
+  // user actually types to reach them.
+  it("finds provider accounts, API keys and custom setups by the words users type", () => {
+    for (const query of ["provider accounts", "accounts", "second account", "instance", "api keys", "byok", "stored key"]) {
+      expect(searchSettingsEntries(query).map((e) => e.id)).toContain("agents.providers");
+    }
+    // The section is called Custom now; "harness" and "preset" are the words
+    // the docs, the CLI flags and every older screenshot still use, so both
+    // vocabularies have to land on it.
+    for (const query of ["custom", "harness", "harnesses", "preset"]) {
+      expect(searchSettingsEntries(query).map((e) => e.id)).toContain("agents.harnesses");
+    }
+  });
+
+  /**
+   * The Providers page's caption said "Which coding agents ADE can use, and how
+   * each one signs in." above a list of named coding agents with their sign-in
+   * status. A caption that restates the page is scaffolding, and it pushed the
+   * search box off the title's row.
+   */
+  it("leaves the Providers page without a caption", () => {
+    const agents = SETTINGS_TABS.find((tab) => tab.id === "agents");
+    expect(agents).toBeTruthy();
+    expect(agents!.description).toBeUndefined();
+  });
+
   it("returns nothing for a blank query rather than every setting", () => {
     expect(searchSettingsEntries("")).toHaveLength(0);
     expect(searchSettingsEntries("   ")).toHaveLength(0);
@@ -291,7 +318,7 @@ function buildPaletteCommands(): PaletteCommand[] {
     ...SETTINGS_TABS.map((tab) => ({
       id: `go-settings-${tab.id}`,
       title: `Go to ${tab.label}`,
-      hint: tab.description,
+      hint: tab.description ?? tab.label,
       keywords: [] as string[],
       path: `/settings?tab=${tab.id}`,
     })),

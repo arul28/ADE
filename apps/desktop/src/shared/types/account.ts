@@ -3,6 +3,7 @@
 // token-free surface — the raw bearer never crosses into the renderer.
 
 import type { MachinePower, MachineSleepState } from "./power";
+import type { MachineInventorySummary } from "./machineInventory";
 
 /** Which identity provider signed this account in, when known. */
 export type AdeAccountProvider = "github" | "google" | "apple" | "email";
@@ -129,6 +130,8 @@ export type AdeAccountMachine = {
   sleepState?: MachineSleepState | null;
   /** Epoch ms at which `sleepState` last changed. */
   sleepStateAt?: number | null;
+  /** Provider/preset counts from the machine's most recent heartbeat. */
+  inventory?: MachineInventorySummary | null;
 };
 
 /**

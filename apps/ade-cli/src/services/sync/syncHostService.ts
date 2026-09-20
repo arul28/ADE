@@ -119,6 +119,7 @@ import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
+import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
@@ -141,7 +142,6 @@ import type { createLaneService } from "../../../../desktop/src/main/services/la
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
@@ -1121,7 +1121,7 @@ type SyncHostServiceArgs = {
     "call" | "streamEvents" | "transcriptPath" | "isTurnActive"
   >;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
-  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
+  accountSettingsStore?: AccountSettingsStore | null;
   /** Brain→push-relay publisher; forwarded to the default remote-command service. */
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -2226,7 +2226,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
-    orchestrationService: args.orchestrationService,
+    accountSettingsStore: args.accountSettingsStore,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,

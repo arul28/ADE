@@ -1038,7 +1038,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalled();
   });
 
-  it("focuses orchestration-selected chats from the Work select-session event", async () => {
+  it("focuses chats selected through the Work select-session event", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },

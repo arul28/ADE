@@ -43,6 +43,22 @@ import {
 } from "./modelCatalog";
 import type { AgentChatModelCatalogRefreshProvider, OpenProjectBinding } from "../../../../shared/types";
 import { refreshProviderForFamily } from "./runtimeCatalogCache";
+import { harnessPresetMatchesQuery, type HarnessPreset } from "../../../../shared/harnessPresets";
+import { useHarnessPresets } from "../../settings/harnesses/useHarnessPresets";
+import { HarnessPresetEmptyState, HarnessPresetList } from "./HarnessPresetList";
+import { useSmartBalanceProviders } from "../../settings/providers/accounts/useProviderInstances";
+
+/**
+ * The two picker families that map onto a multi-account CLI provider.
+ *
+ * Only Claude and Codex can hold more than one local login, so only their rails
+ * can carry the smart-balance note. Named here rather than derived so an
+ * unrelated family can never inherit a sentence about accounts it does not have.
+ */
+const SMART_BALANCE_FAMILIES: Partial<Record<ProviderFamily, { provider: "claude" | "codex"; label: string }>> = {
+  anthropic: { provider: "claude", label: "Claude Code" },
+  openai: { provider: "codex", label: "Codex CLI" },
+};
 
 const MODEL_ROW_ESTIMATED_HEIGHT = 44;
 
@@ -107,31 +123,63 @@ function modelRequiresConfiguration(model: ModelDescriptor): boolean {
   return (model as RuntimeCatalogModelDescriptor).catalogRequiresConfiguration === true;
 }
 
+/**
+ * What a picker row hands back.
+ *
+ * `presetId` is set only by the Custom tab, and it is the picker's own type
+ * rather than a chat type: this module can describe "the user picked a saved
+ * harness" without the chat contract growing a field before the launch path
+ * that reads it exists.
+ */
+export type ModelPickerSelection = {
+  fastMode: boolean;
+  serviceTier?: CursorCloudServiceTier | null;
+  /** Set when the selection came from a saved harness preset. */
+  presetId?: string;
+  /**
+   * Set when the selection came from a row a stored API key makes reachable.
+   * Never set together with `presetId`: a preset already names its own brain.
+   */
+  credentialId?: string;
+};
+
 export type ModelPickerContentProps = {
   value: string;
   models: readonly ModelDescriptor[];
   isAvailable: (modelId: string) => boolean;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
-  onSelect: (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => void;
+  onSelect: (modelId: string, options?: ModelPickerSelection) => void;
   onRequestClose: () => void;
+  /** Opens Settings › Providers › Custom from the Custom empty state. */
+  onOpenHarnessSettings?: () => void;
   onProviderRailSelect?: (family: ProviderFamily) => void;
   /**
-   * When true (set by orchestration `model_selection` pending input), hide
-   * any permission-related rail/picker rows so the user only chooses model
-   * + fast-mode + reasoning. The permission tier is forced by the
-   * orchestration spawn profile (see `goal.md` §12, §10.9).
+   * When true, hide any permission-related rail/picker rows so the user only
+   * chooses model + fast-mode + reasoning, because the caller already pins the
+   * permission tier.
    *
    * v1 ModelPickerContent does not render permission rows directly — the
    * permission picker lives in `AgentChatComposer.tsx` alongside the model
    * picker — so this flag is a forward-compat hook. It is propagated to
    * children that may render permission-aware affordances (e.g. sign-in
-   * rails) so they can elide them when the surface is orchestrated.
+   * rails) so they can elide them when the permission tier is pinned.
    */
   hidePermissionRail?: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   refreshErrorProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
   allowCliOnlyModels?: boolean;
+  /**
+   * Whether this picker offers the Custom rail entry at all.
+   *
+   * False for a surface launching a tracked CLI. Four of the ten harnesses
+   * take no key from the launch, so a preset chosen there would be silently
+   * dropped — and offering a choice that is then ignored is worse than not
+   * offering it. The launch path enforces the same rule
+   * (`shared/harnessPresetCliGate.ts`); this is the half that keeps the user
+   * from making the choice in the first place.
+   */
+  listsHarnessPresets?: boolean;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   allowRegistryExpansion?: boolean;
   registryFilter?: (model: ModelDescriptor) => boolean;
@@ -157,12 +205,14 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   providerAuthStatus,
   onSelect,
   onRequestClose,
+  onOpenHarnessSettings,
   onProviderRailSelect,
   refreshingProvider,
   refreshErrorProvider,
   onOpenSignIn,
   hidePermissionRail = false,
   allowCliOnlyModels = false,
+  listsHarnessPresets = true,
   cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   allowRegistryExpansion = true,
   registryFilter,
@@ -181,6 +231,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const searchRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
+  const { presets: harnessPresets } = useHarnessPresets();
   const { favorites, isFavorite, toggleFavorite } = useModelFavorites();
   const { recents, recordUsage } = useModelRecents();
   const { authOnly, toggleAuthOnly } = useAuthOnlyFilter();
@@ -280,12 +331,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   }, [expandedModels]);
 
   const railEntries = useMemo<RailEntry[]>(() => {
-    const out: RailEntry[] = [{ kind: "favorites" }, { kind: "recents" }];
+    const out: RailEntry[] = [
+      ...(listsHarnessPresets ? [{ kind: "harnesses" } as RailEntry] : []),
+      { kind: "favorites" },
+      { kind: "recents" },
+    ];
     for (const family of providersPresent) {
       out.push({ kind: "provider", family, label: providerLabel(family) });
     }
     return out;
-  }, [providersPresent]);
+  }, [listsHarnessPresets, providersPresent]);
 
   const initialSelectionRef = useRef<RailSelection | null>(null);
   if (initialSelectionRef.current == null) {
@@ -307,7 +362,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   }, []);
 
   const handleSelectRail = useCallback((next: RailSelection) => {
-    if (next !== "favorites" && next !== "recents") {
+    if (next !== "favorites" && next !== "recents" && next !== "harnesses") {
       onProviderRailSelect?.(next.slice("provider:".length) as ProviderFamily);
     }
     setSelection(next);
@@ -340,6 +395,22 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   );
 
   const searchActive = query.trim().length > 0;
+  const harnessesActive = listsHarnessPresets && selection === "harnesses";
+
+  // The harnesses tab searches presets, not models: the box in front of you
+  // filters the list you are looking at, which is the only behaviour that does
+  // not require explaining.
+  const visiblePresets = useMemo<HarnessPreset[]>(
+    () => harnessPresets.filter((preset) => harnessPresetMatchesQuery(preset, query)),
+    [harnessPresets, query],
+  );
+
+  const handlePresetSelect = useCallback(
+    (preset: HarnessPreset) => {
+      onSelect(preset.model, { fastMode: false, presetId: preset.id });
+    },
+    [onSelect],
+  );
 
   const toSearchItem = useCallback(
     (m: ModelDescriptor) => ({
@@ -356,6 +427,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 
   const candidateModels = useMemo<ModelDescriptor[]>(() => {
     let pool: ModelDescriptor[] = [];
+    if (harnessesActive) return pool;
     if (searchActive) {
       pool = expandedModels.filter(filterAvailable);
     } else if (selection === "favorites") {
@@ -389,6 +461,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     );
     return sorted.map((entry) => entry._model);
   }, [
+    harnessesActive,
     searchActive,
     selection,
     expandedModels,
@@ -402,7 +475,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 
   const activeProviderFamily = useMemo<ProviderFamily | null>(() => {
     if (searchActive) return null;
-    if (selection === "favorites" || selection === "recents") return null;
+    if (selection === "favorites" || selection === "recents" || selection === "harnesses") return null;
     return selection.slice("provider:".length) as ProviderFamily;
   }, [searchActive, selection]);
 
@@ -539,9 +612,64 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const handleRowSelect = useCallback(
     (modelId: string) => {
       recordUsage(modelId);
-      onSelect(modelId);
+      // A row a stored key makes reachable hands its credential back with the
+      // model id. Without it the launch would find the model but not the
+      // endpoint it is served from.
+      const credentialId = expandedModels
+        .find((entry) => entry.id === modelId)?.credentialId?.trim();
+      onSelect(modelId, credentialId ? { fastMode: false, credentialId } : undefined);
     },
-    [onSelect, recordUsage],
+    [expandedModels, onSelect, recordUsage],
+  );
+
+  /**
+   * Arrow keys on the harnesses tab.
+   *
+   * The model list's arrow handling walks `visibleModels`, which is empty here
+   * — so before this the tab answered nothing at all to ArrowUp/ArrowDown and
+   * a preset could only be reached by tabbing past every control above it.
+   * Roving focus over the rendered rows keeps the keyboard contract the same
+   * on both tabs; Enter is then the button's own activation, and
+   * ArrowRight/ArrowLeft open and close the details the row hides.
+   */
+  const handleHarnessListKeyDown = useCallback(
+    (event: React.KeyboardEvent): boolean => {
+      const container = listRef.current;
+      if (!container) return false;
+      const rows = Array.from(
+        container.querySelectorAll<HTMLButtonElement>("[data-harness-preset-select]"),
+      );
+      if (rows.length === 0) return false;
+      const active = document.activeElement as HTMLElement | null;
+      const current = rows.findIndex((row) => row === active || row.contains(active));
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const next = event.key === "ArrowDown"
+          ? Math.min(current + 1, rows.length - 1)
+          : current <= 0 ? 0 : current - 1;
+        rows[next]?.focus();
+        return true;
+      }
+      if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        (event.key === "Home" ? rows[0] : rows[rows.length - 1])?.focus();
+        return true;
+      }
+      if ((event.key === "ArrowRight" || event.key === "ArrowLeft") && current >= 0) {
+        const presetId = rows[current]?.getAttribute("data-harness-preset-select");
+        const toggle = presetId
+          ? container.querySelector<HTMLButtonElement>(`[data-harness-preset-expand="${presetId}"]`)
+          : null;
+        if (!toggle) return false;
+        const expanded = toggle.getAttribute("aria-expanded") === "true";
+        if (expanded === (event.key === "ArrowRight")) return true;
+        event.preventDefault();
+        toggle.click();
+        return true;
+      }
+      return false;
+    },
+    [],
   );
 
   const handleListKeyDown = useCallback(
@@ -550,6 +678,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         event.preventDefault();
         onRequestClose();
         return;
+      }
+      if (harnessesActive) {
+        if (handleHarnessListKeyDown(event)) return;
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -591,6 +722,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       onOpenSignIn,
       onRequestClose,
       visibleModels,
+      harnessesActive,
+      handleHarnessListKeyDown,
     ],
   );
 
@@ -700,6 +833,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     && !activeProviderRefreshFailed
     && !activeProviderRefreshing;
 
+  // Which providers are spreading new chats across their accounts. Read once
+  // per mount; the setting only changes from Settings, which is not open at the
+  // same time as the picker.
+  const smartBalanceProviders = useSmartBalanceProviders();
+  const smartBalanceFamily = activeProviderFamily ? SMART_BALANCE_FAMILIES[activeProviderFamily] : undefined;
+  const smartBalanceNote =
+    smartBalanceFamily && smartBalanceProviders.has(smartBalanceFamily.provider)
+      ? `Smart balance is on for ${smartBalanceFamily.label}`
+      : null;
+
   // Sticky "Currently using" detection — show when active row is not in the visible window.
   const activeRowVisibleRef = useRef(true);
   const [activeOutOfView, setActiveOutOfView] = useState(false);
@@ -756,8 +899,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search models..."
-              aria-label="Search models"
+              placeholder={harnessesActive ? "Search custom..." : "Search models..."}
+              aria-label={harnessesActive ? "Search custom setups" : "Search models"}
               className={cn(
                 "min-w-0 flex-1 bg-transparent text-[12px] font-medium leading-tight",
                 // The field is auto-focused on open, which is right — you opened
@@ -769,6 +912,11 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 "border-b border-transparent focus-visible:border-white/20",
               )}
             />
+            {/* The harnesses tab lists saved presets, not the model catalog, so
+                the catalog's auth filter has nothing to act on there. Leaving a
+                live switch that changes nothing is the kind of dead control
+                that makes a user doubt the rest of the panel. */}
+            {harnessesActive ? null : (
             <button
               type="button"
               role="switch"
@@ -803,6 +951,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               </span>
               <span>Show all models</span>
             </button>
+            )}
           </div>
 
 	          {providerTabs.length > 1 ? (
@@ -836,15 +985,39 @@ export const ModelPickerContent = memo(function ModelPickerContent({
             </div>
           ) : null}
 
+          {/* One muted line, and nothing else: the picker still lists every
+              model and still honours an explicit pick. This only says which
+              account a new chat would start on. */}
+          {smartBalanceNote ? (
+            <div className="border-b border-white/[0.05] px-2.5 py-1 text-[10px] leading-tight text-muted-fg/60">
+              {smartBalanceNote}
+            </div>
+          ) : null}
+
 	          <div
 	            ref={listRef}
 	            id="model-picker-model-list"
             role="listbox"
-	            aria-label="Models"
+	            aria-label={harnessesActive ? "Custom" : "Models"}
 	            aria-busy={activeProviderRefreshing || undefined}
 	            className="relative flex-1 overflow-y-auto px-1.5 py-1"
 	          >
 
+	            {harnessesActive ? (
+              visiblePresets.length === 0 ? (
+                <HarnessPresetEmptyState
+                  searchActive={searchActive}
+                  {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
+                />
+              ) : (
+                <HarnessPresetList
+                  presets={visiblePresets}
+                  activeModelId={value}
+                  onSelect={handlePresetSelect}
+                />
+              )
+            ) : (
+              <>
 	            {activeOutOfView && activeModel ? (
               <div
                 className={cn(
@@ -936,6 +1109,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                   );
                 })}
               </div>
+            )}
+              </>
             )}
           </div>
         </div>

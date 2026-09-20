@@ -1,17 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   ADE_ACTION_ALLOWLIST,
   getAdeActionInputContract,
   getAdeActionDomainServices,
+  getTurnFileDiffFromGit,
   isCtoOnlyAdeAction,
   isAllowedAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "./registry";
+import { runGit } from "../git/git";
 
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -2541,6 +2543,81 @@ describe("runtime AI actions", () => {
     });
   });
 
+  it("forwards harness presets and provider accounts to the agent-facing AI status", async () => {
+    // The `ade-harnesses` skill tells agents to read these two arrays from
+    // `ade actions run ai getStatus`. This projection is that call's only
+    // source, so an omitted field silently breaks the documented contract
+    // while the renderer's own IPC status still shows them.
+    const getStatus = vi.fn(async () => ({
+      mode: "subscription",
+      availableProviders: {
+        claude: { binary: { present: true, source: "path", path: null }, auth: { ready: true, mode: "oauth", detail: null } },
+        codex: false,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      harnessPresets: [
+        { id: "hp_opus_work", name: "Opus (Work)", harness: "claude", model: "anthropic/claude-opus-5", source: "Claude account · Work" },
+      ],
+      providerAccounts: [
+        { id: "work", provider: "claude", label: "Work", isDefault: false, signedIn: true },
+      ],
+    }));
+    const runtime = {
+      aiIntegrationService: {
+        getStatus,
+        getDailyUsageBatch: vi.fn(() => new Map<string, number>()),
+        getFeatureFlag: vi.fn(() => true),
+        getDailyBudgetLimit: vi.fn(() => null),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const aiService = getAdeActionDomainServices(runtime).ai as {
+      getStatus(): Promise<{
+        harnessPresets?: Array<{ id: string; source: string }>;
+        providerAccounts?: Array<{ id: string; label: string }>;
+      }>;
+    };
+
+    const status = await aiService.getStatus();
+
+    expect(status.harnessPresets).toEqual([
+      { id: "hp_opus_work", name: "Opus (Work)", harness: "claude", model: "anthropic/claude-opus-5", source: "Claude account · Work" },
+    ]);
+    expect(status.providerAccounts).toEqual([
+      { id: "work", provider: "claude", label: "Work", isDefault: false, signedIn: true },
+    ]);
+  });
+
+  it("omits harness presets and provider accounts when the machine has none", async () => {
+    const getStatus = vi.fn(async () => ({
+      mode: "guest",
+      availableProviders: {
+        claude: { binary: { present: false, source: "missing", path: null }, auth: { ready: false, mode: "none", detail: null } },
+        codex: false,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+    }));
+    const runtime = {
+      aiIntegrationService: {
+        getStatus,
+        getDailyUsageBatch: vi.fn(() => new Map<string, number>()),
+        getFeatureFlag: vi.fn(() => true),
+        getDailyBudgetLimit: vi.fn(() => null),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const aiService = getAdeActionDomainServices(runtime).ai as {
+      getStatus(): Promise<Record<string, unknown>>;
+    };
+
+    const status = await aiService.getStatus();
+
+    expect(status).not.toHaveProperty("harnessPresets");
+    expect(status).not.toHaveProperty("providerAccounts");
+  });
+
   it("delegates AI key mutations to the runtime service", () => {
     const storeApiKey = vi.fn();
     const deleteApiKey = vi.fn();
@@ -3036,5 +3113,124 @@ describe("search domain", () => {
       "query",
       "rebuildIndex",
     ]);
+  });
+});
+
+
+describe("getTurnFileDiffFromGit", () => {
+  const repos: string[] = [];
+
+  const git = async (cwd: string, args: string[]): Promise<void> => {
+    const result = await runGit(args, { cwd, timeoutMs: 20_000 });
+    if (result.exitCode !== 0) {
+      throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
+    }
+  };
+
+  const headSha = async (cwd: string): Promise<string> => {
+    const result = await runGit(["rev-parse", "HEAD"], { cwd, timeoutMs: 20_000 });
+    return result.stdout.trim();
+  };
+
+  const makeRepo = async (): Promise<string> => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ade-turn-file-diff-"));
+    repos.push(cwd);
+    await git(cwd, ["init", "--initial-branch=main"]);
+    await git(cwd, ["config", "user.email", "test@example.com"]);
+    await git(cwd, ["config", "user.name", "ADE Test"]);
+    await git(cwd, ["config", "commit.gpgsign", "false"]);
+    fs.writeFileSync(path.join(cwd, "app.ts"), "before\n", "utf8");
+    await git(cwd, ["add", "."]);
+    await git(cwd, ["commit", "-m", "base"]);
+    return cwd;
+  };
+
+  afterAll(() => {
+    for (const cwd of repos.splice(0)) {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reads both sides from commits when the turn moved HEAD", async () => {
+    const repo = await makeRepo();
+    const before = await headSha(repo);
+    fs.writeFileSync(path.join(repo, "app.ts"), "after\n", "utf8");
+    await git(repo, ["commit", "-am", "turn"]);
+    const after = await headSha(repo);
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: before,
+      afterSha: after,
+      filePath: "app.ts",
+    });
+
+    expect(diff.original).toMatchObject({ exists: true, text: "before\n" });
+    expect(diff.modified).toMatchObject({ exists: true, text: "after\n" });
+  });
+
+  // The bug: an uncommitted turn reports the same sha on both sides, so both
+  // sides were read from the same commit and every listed file opened as a
+  // diff of a file against itself.
+  it("regression: reads the modified side from the working tree when the turn never committed", async () => {
+    const repo = await makeRepo();
+    const head = await headSha(repo);
+    fs.writeFileSync(path.join(repo, "app.ts"), "uncommitted edit\n", "utf8");
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: head,
+      afterSha: head,
+      filePath: "app.ts",
+    });
+
+    expect(diff.original).toMatchObject({ exists: true, text: "before\n" });
+    expect(diff.modified).toMatchObject({ exists: true, text: "uncommitted edit\n" });
+  });
+
+  it("shows a file created this turn as an addition", async () => {
+    const repo = await makeRepo();
+    const head = await headSha(repo);
+    fs.writeFileSync(path.join(repo, "created.ts"), "brand new\n", "utf8");
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: head,
+      afterSha: head,
+      filePath: "created.ts",
+    });
+
+    expect(diff.original.exists).toBe(false);
+    expect(diff.modified).toMatchObject({ exists: true, text: "brand new\n" });
+  });
+
+  it("shows a file deleted this turn as a deletion", async () => {
+    const repo = await makeRepo();
+    const head = await headSha(repo);
+    fs.rmSync(path.join(repo, "app.ts"));
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: head,
+      afterSha: head,
+      filePath: "app.ts",
+    });
+
+    expect(diff.original).toMatchObject({ exists: true, text: "before\n" });
+    expect(diff.modified.exists).toBe(false);
+  });
+
+  it("refuses a worktree path that escapes the project", async () => {
+    const repo = await makeRepo();
+    const head = await headSha(repo);
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: head,
+      afterSha: head,
+      filePath: "../outside.ts",
+    });
+
+    expect(diff.modified.exists).toBe(false);
   });
 });

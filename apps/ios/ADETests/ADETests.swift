@@ -4580,7 +4580,8 @@ final class ADETests: XCTestCase {
       let status,
       let summary,
       _, let label, _, _,
-      let completionTurnId
+      let completionTurnId,
+      _, _
     ) = spawnCompletionEnvelope.event else {
       return XCTFail("Expected typed subagent completion event.")
     }
@@ -4712,7 +4713,7 @@ final class ADETests: XCTestCase {
     }
     """
     let spawnEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(spawnJSON.utf8))
-    guard case .subagentResult(_, let agentId, _, _, _, let status, _, _, _, _, _, _) = spawnEnvelope.event else {
+    guard case .subagentResult(_, let agentId, _, _, _, let status, _, _, _, _, _, _, _, _) = spawnEnvelope.event else {
       return XCTFail("Expected an object detail to still route to a subagent result.")
     }
     XCTAssertEqual(agentId, "child-1")
@@ -7705,6 +7706,94 @@ final class ADETests: XCTestCase {
       XCTAssertEqual(nsError.localizedDescription, "This action is not available from a viewer device.")
       XCTAssertFalse(nsError.localizedDescription.contains("Update ADE"))
     }
+  }
+
+  /// Reset spending must use the same viewer capability gate as the rest of
+  /// the host-only command surface, so an advertised but denied action fails
+  /// before it reaches the transport.
+  @MainActor
+  func testUsageResetCreditIsViewerGated() async throws {
+    let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            [
+              "action": "usage.consumeResetCredit",
+              "policy": ["viewerAllowed": false, "queueable": false],
+            ],
+          ],
+        ],
+      ],
+    ])
+    service.configureConnectedTransportForTesting()
+
+    XCTAssertTrue(service.supportsRemoteAction("usage.consumeResetCredit"))
+    XCTAssertFalse(service.supportsViewerRemoteAction("usage.consumeResetCredit"))
+    XCTAssertFalse(service.canInvokeRemoteAction("usage.consumeResetCredit"))
+    do {
+      _ = try await service.consumeUsageResetCredit(accountId: "codex:one")
+      XCTFail("A viewer device must not spend a host reset credit")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 15)
+      XCTAssertEqual(nsError.localizedDescription, "This action is not available from a viewer device.")
+    }
+  }
+
+  /// Dismissing a pending chat question is a host mutation too: keep the card
+  /// visible to a viewer, but reject the tap before it reaches the transport.
+  @MainActor
+  func testDismissChatPendingInputIsViewerGated() async throws {
+    let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            [
+              "action": "chat.dismissPendingInput",
+              "policy": ["viewerAllowed": false, "queueable": false],
+            ],
+          ],
+        ],
+      ],
+    ])
+    service.configureConnectedTransportForTesting()
+
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.dismissPendingInput", sessionId: "chat-1"))
+    XCTAssertFalse(service.canInvokeChatRemoteAction("chat.dismissPendingInput", sessionId: "chat-1"))
+    do {
+      try await service.dismissChatPendingInput(sessionId: "chat-1", itemId: "item-1")
+      XCTFail("A viewer device must not dismiss a host chat question")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 15)
+      XCTAssertEqual(nsError.localizedDescription, "This action is not available from a viewer device.")
+    }
+  }
+
+  func testWorkUsageResetOutcomeIsKeyedByAccountId() {
+    let outcomes = [
+      "codex:one": "Reset applied.",
+      "codex:two": "No reset credit left.",
+    ]
+    XCTAssertEqual(workUsageResetOutcome(accountId: "codex:one", outcomes: outcomes), "Reset applied.")
+    XCTAssertEqual(workUsageResetOutcome(accountId: "codex:two", outcomes: outcomes), "No reset credit left.")
+    XCTAssertNil(workUsageResetOutcome(accountId: "codex:three", outcomes: outcomes))
   }
 
   /// Owner device, advertised action, but nothing live to send over: the message
@@ -16120,6 +16209,31 @@ final class ADETests: XCTestCase {
       preferredWorkSubagentSummary("short", incoming: "a much longer richer summary"),
       "a much longer richer summary"
     )
+  }
+
+  func testWorkSubagentResultDropsTaskDescriptionEchoFromLastActivity() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"agent-echo","agentId":"agent-echo","agentType":"Explore","description":"Explore provider lifecycle","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"subagent_progress","taskId":"agent-echo","agentId":"agent-echo","summary":"Explore provider lifecycle","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"subagent_result","taskId":"agent-echo","agentId":"agent-echo","status":"stopped","summary":"Stopped before finishing","stopSource":"system","stopReason":"the ADE brain restarted","turnId":"turn-1"}}
+    """
+
+    let snapshots = buildWorkSubagentSnapshots(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(snapshots.count, 1)
+    XCTAssertNil(snapshots.first?.lastActivity)
+  }
+
+  func testRemoteWorkSubagentSnapshotDropsTaskDescriptionEchoFromLastActivity() throws {
+    let json = """
+    {"taskId":"remote-echo","description":"Explore provider lifecycle","status":"stopped","summary":"Explore provider lifecycle"}
+    """
+    let remote = try JSONDecoder().decode(
+      SyncService.AgentChatSubagentSnapshot.self,
+      from: Data(json.utf8)
+    )
+
+    let snapshot = workSubagentSnapshot(from: remote)
+    XCTAssertNil(snapshot.lastActivity)
   }
 
   // MARK: - Scheduled work partitioning + background lifecycle
@@ -27425,8 +27539,8 @@ final class ADETests: XCTestCase {
         "providerMetadata": {
           "role": "worker",
           "tag": "web-ui",
-          "workDescription": "Build the orchestration roster.",
-          "filesHint": ["OrchestrationPanel.tsx", "TaskCard.tsx"],
+          "workDescription": "Build the agent roster.",
+          "filesHint": ["TaskPanel.tsx", "TaskCard.tsx"],
           "dependsOn": ["planning-rounds", "model-routing"],
           "suggested": {
             "provider": "codex",
@@ -27449,8 +27563,8 @@ final class ADETests: XCTestCase {
     }
 
     XCTAssertEqual(model.title, "Pick a model for the \"web-ui\" worker")
-    XCTAssertEqual(model.workDescription, "Build the orchestration roster.")
-    XCTAssertEqual(model.filesHint, ["OrchestrationPanel.tsx", "TaskCard.tsx"])
+    XCTAssertEqual(model.workDescription, "Build the agent roster.")
+    XCTAssertEqual(model.filesHint, ["TaskPanel.tsx", "TaskCard.tsx"])
     XCTAssertEqual(model.dependsOn, ["planning-rounds", "model-routing"])
     XCTAssertEqual(model.availableModelIds, ["gpt-5.4", "claude-sonnet-5"])
     XCTAssertFalse(
@@ -27766,9 +27880,9 @@ final class ADETests: XCTestCase {
     )
   }
 
-  // MARK: - Orchestration session fields forward-compat
+  // MARK: - Spawn lineage session fields forward-compat
 
-  func testAgentChatSessionSummaryDecodesOrchestrationFields() throws {
+  func testAgentChatSessionSummaryDecodesSpawnLineageFields() throws {
     let json = """
     {
       "sessionId": "sess-orch-1",
@@ -27778,26 +27892,16 @@ final class ADETests: XCTestCase {
       "status": "running",
       "startedAt": "2026-05-25T00:00:00.000Z",
       "lastActivityAt": "2026-05-25T00:01:00.000Z",
-      "orchestrationRunId": "run-abc",
-      "orchestrationRole": "worker",
       "orchestrationParentSessionId": "sess-lead-1",
-      "spawnKind": "subagent",
-      "orchestrationTag": "impl-auth",
-      "orchestrationStepId": "step-2",
-      "orchestrationBundlePath": "/tmp/.ade/orchestration/run-abc"
+      "spawnKind": "subagent"
     }
     """.data(using: .utf8)!
     let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: json)
-    XCTAssertEqual(summary.orchestrationRunId, "run-abc")
-    XCTAssertEqual(summary.orchestrationRole, "worker")
     XCTAssertEqual(summary.orchestrationParentSessionId, "sess-lead-1")
     XCTAssertEqual(summary.spawnKind, .subagent)
-    XCTAssertEqual(summary.orchestrationTag, "impl-auth")
-    XCTAssertEqual(summary.orchestrationStepId, "step-2")
-    XCTAssertEqual(summary.orchestrationBundlePath, "/tmp/.ade/orchestration/run-abc")
   }
 
-  func testAgentChatSessionSummaryDecodesWithoutOrchestrationFields() throws {
+  func testAgentChatSessionSummaryDecodesWithoutSpawnLineageFields() throws {
     let json = """
     {
       "sessionId": "sess-plain-1",
@@ -27810,37 +27914,8 @@ final class ADETests: XCTestCase {
     }
     """.data(using: .utf8)!
     let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: json)
-    XCTAssertNil(summary.orchestrationRunId)
-    XCTAssertNil(summary.orchestrationRole)
     XCTAssertNil(summary.orchestrationParentSessionId)
     XCTAssertNil(summary.spawnKind)
-    XCTAssertNil(summary.orchestrationTag)
-    XCTAssertNil(summary.orchestrationStepId)
-    XCTAssertNil(summary.orchestrationBundlePath)
-  }
-
-  func testTerminalSessionSummaryDecodesOrchestrationFields() throws {
-    let json = """
-    {
-      "id": "term-orch-1",
-      "laneId": "lane-1",
-      "laneName": "Feature",
-      "tracked": true,
-      "pinned": false,
-      "title": "Worker: auth impl",
-      "status": "running",
-      "startedAt": "2026-05-25T00:00:00.000Z",
-      "transcriptPath": "/tmp/transcript.jsonl",
-      "runtimeState": "running",
-      "orchestrationRunId": "run-xyz",
-      "orchestrationRole": "validator",
-      "orchestrationTag": "test-coverage"
-    }
-    """.data(using: .utf8)!
-    let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
-    XCTAssertEqual(session.orchestrationRunId, "run-xyz")
-    XCTAssertEqual(session.orchestrationRole, "validator")
-    XCTAssertEqual(session.orchestrationTag, "test-coverage")
   }
 
   // MARK: - CTO lineage on a Work row
@@ -27912,9 +27987,7 @@ final class ADETests: XCTestCase {
       "status": "running",
       "startedAt": "2026-09-12T00:00:00.000Z",
       "transcriptPath": "/tmp/transcript.jsonl",
-      "runtimeState": "running",
-      "orchestrationRunId": "run-xyz",
-      "orchestrationRole": "worker"
+      "runtimeState": "running"
     }
     """.data(using: .utf8)!
     let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
@@ -27940,30 +28013,22 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(session.isCtoChild)
   }
 
-  func testAgentChatSessionDecodesOrchestrationFields() throws {
+  func testAgentChatSessionDecodesSpawnLineageFields() throws {
     let json = """
     {
-      "sessionId": "sess-full-orch",
+      "sessionId": "sess-full-spawn",
       "laneId": "lane-2",
       "provider": "claude",
       "model": "claude-sonnet-5",
       "status": "running",
       "createdAt": "2026-05-25T00:00:00.000Z",
       "lastActivityAt": "2026-05-25T00:02:00.000Z",
-      "orchestrationRunId": "run-full",
-      "orchestrationRole": "lead",
-      "spawnKind": "none",
-      "orchestrationTag": "coordinator"
+      "spawnKind": "none"
     }
     """.data(using: .utf8)!
     let session = try JSONDecoder().decode(AgentChatSession.self, from: json)
-    XCTAssertEqual(session.orchestrationRunId, "run-full")
-    XCTAssertEqual(session.orchestrationRole, "lead")
     XCTAssertEqual(session.spawnKind, .legacyUntyped)
-    XCTAssertEqual(session.orchestrationTag, "coordinator")
     XCTAssertNil(session.orchestrationParentSessionId)
-    XCTAssertNil(session.orchestrationStepId)
-    XCTAssertNil(session.orchestrationBundlePath)
   }
 
   func testRoleTransitionActionsAreHiddenWhenSpawnKindUpdateIsUnsupported() {
@@ -28924,7 +28989,7 @@ final class LinearPaneTests: XCTestCase {
 }
 
 /// Parity coverage for the iOS mirror of the desktop `groupStoppedSubagentResultCards`
-/// fold: a mass interrupt collapses a run of 2+ consecutive stopped result rows
+/// fold: a mass stop collapses a run of 2+ consecutive same-source result rows
 /// into one `.subagentStoppedGroup`, while lone stops and non-stopped rows stay
 /// individual and break runs.
 final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
@@ -28932,7 +28997,11 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     _ id: String,
     _ title: String,
     status: WorkSubagentSnapshot.Status,
-    rank: Int
+    rank: Int,
+    stopSource: String? = nil,
+    stopReason: String? = nil,
+    resultLanded: Bool = false,
+    lastActivity: String? = nil
   ) -> WorkTimelineEntry {
     let snapshot = WorkSubagentSnapshot(
       taskId: id,
@@ -28949,7 +29018,11 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
       latestSummary: nil,
       turnId: nil,
       startedAt: nil,
-      updatedAt: nil
+      updatedAt: nil,
+      stopSource: stopSource,
+      stopReason: stopReason,
+      resultLanded: resultLanded,
+      lastActivity: lastActivity
     )
     let row = WorkSubagentTimelineRow(
       kind: .result,
@@ -28962,8 +29035,25 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     return WorkTimelineEntry(id: row.id, timestamp: row.timestamp, rank: rank, payload: .subagent(row))
   }
 
-  private func stopped(_ id: String, _ title: String, rank: Int) -> WorkTimelineEntry {
-    resultEntry(id, title, status: .stopped, rank: rank)
+  private func stopped(
+    _ id: String,
+    _ title: String,
+    rank: Int,
+    stopSource: String? = nil,
+    stopReason: String? = nil,
+    resultLanded: Bool = false,
+    lastActivity: String? = nil
+  ) -> WorkTimelineEntry {
+    resultEntry(
+      id,
+      title,
+      status: .stopped,
+      rank: rank,
+      stopSource: stopSource,
+      stopReason: stopReason,
+      resultLanded: resultLanded,
+      lastActivity: lastActivity
+    )
   }
 
   private func isGroup(_ entry: WorkTimelineEntry) -> Bool {
@@ -28984,7 +29074,29 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     XCTAssertEqual(model.count, 3)
     XCTAssertEqual(model.rows.map { $0.snapshot.description }, ["Alpha", "Bravo", "Charlie"])
     // Group key derives from the first agent so it stays stable as the run grows.
-    XCTAssertEqual(folded[0].id, "subagent-stopped-group-a")
+    XCTAssertEqual(folded[0].id, "subagent-stopped-group-unknown-unknown-a")
+  }
+
+  func testStoppedGroupsSplitWhenStopReasonChanges() throws {
+    let folded = collapseSameCauseSubagentEntries([
+      stopped("a", "Alpha", rank: 0, stopSource: "system", stopReason: "reason-a"),
+      stopped("b", "Bravo", rank: 1, stopSource: "system", stopReason: "reason-a"),
+      stopped("c", "Charlie", rank: 2, stopSource: "system", stopReason: "reason-b"),
+      stopped("d", "Delta", rank: 3, stopSource: "system", stopReason: "reason-b"),
+    ], causeOf: workSubagentStoppedGroupCause)
+
+    XCTAssertEqual(folded.count, 2)
+    let models = try folded.map { entry -> WorkSubagentStoppedGroupModel in
+      guard case .subagentStoppedGroup(let model) = entry.payload else {
+        throw NSError(domain: "WorkSubagentStoppedGroupFoldTests", code: 2)
+      }
+      return model
+    }
+    XCTAssertEqual(models.map(\.stopReason), ["reason-a", "reason-b"])
+    XCTAssertEqual(folded.map(\.id), [
+      "subagent-stopped-group-system-reason-a-a",
+      "subagent-stopped-group-system-reason-b-c",
+    ])
   }
 
   func testLoneStoppedResultStaysIndividual() {
@@ -28995,6 +29107,27 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     ], causeOf: workSubagentStoppedGroupCause)
     XCTAssertEqual(folded.count, 3)
     XCTAssertFalse(folded.contains(where: isGroup))
+  }
+
+  func testLoneStoppedResultUsesAttributionAndKeepsActivityOutcome() throws {
+    let folded = collapseSameCauseSubagentEntries([
+      stopped(
+        "system-a",
+        "System A",
+        rank: 0,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+        resultLanded: true,
+        lastActivity: "Writing the report"
+      ),
+    ], causeOf: workSubagentStoppedGroupCause)
+
+    guard case .subagent(let row) = folded.first?.payload else {
+      return XCTFail("expected a lone stopped result row")
+    }
+    XCTAssertEqual(workSubagentStoppedStatusLine(row.snapshot), "stopped: the ADE brain restarted")
+    XCTAssertEqual(row.snapshot.lastActivity, "Writing the report")
+    XCTAssertEqual(workSubagentStoppedOutcomeLabel(row.snapshot), "report landed")
   }
 
   func testNonStoppedRowBreaksRunIntoSeparateGroups() {
@@ -29014,6 +29147,143 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     }
     XCTAssertEqual(first.rows.map { $0.snapshot.description }, ["Alpha", "Bravo"])
     XCTAssertEqual(last.rows.map { $0.snapshot.description }, ["Charlie", "Delta"])
+  }
+
+  func testStoppedGroupsSplitBySourceAndUseExactHeadlines() throws {
+    let folded = collapseSameCauseSubagentEntries([
+      stopped("user-a", "User A", rank: 0, stopSource: "user"),
+      stopped("user-b", "User B", rank: 1, stopSource: "user"),
+      stopped(
+        "system-a",
+        "System A",
+        rank: 2,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted"
+      ),
+      stopped(
+        "system-b",
+        "System B",
+        rank: 3,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted"
+      ),
+      stopped(
+        "foreign-a",
+        "Foreign A",
+        rank: 4,
+        stopSource: "foreign-brain",
+        stopReason: "another ADE brain took over this chat"
+      ),
+      stopped(
+        "foreign-b",
+        "Foreign B",
+        rank: 5,
+        stopSource: "foreign-brain",
+        stopReason: "another ADE brain took over this chat"
+      ),
+      stopped("unknown-a", "Unknown A", rank: 6),
+      stopped("unknown-b", "Unknown B", rank: 7),
+    ], causeOf: workSubagentStoppedGroupCause)
+
+    XCTAssertEqual(folded.count, 4)
+    let models = try folded.map { entry -> WorkSubagentStoppedGroupModel in
+      guard case .subagentStoppedGroup(let model) = entry.payload else {
+        throw NSError(domain: "WorkSubagentStoppedGroupFoldTests", code: 1)
+      }
+      return model
+    }
+    XCTAssertEqual(models.map(\.stopSource), ["user", "system", "foreign-brain", "unknown"])
+    XCTAssertEqual(models.map(\.headline), [
+      "2 agents stopped when you interrupted",
+      "2 agents stopped: the ADE brain restarted",
+      "2 agents stopped: another ADE brain took over this chat",
+      "2 agents stopped",
+    ])
+  }
+
+  func testStoppedGroupRowsKeepLastActivityAndReportOutcome() throws {
+    let folded = collapseSameCauseSubagentEntries([
+      stopped(
+        "landed",
+        "Report agent",
+        rank: 0,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+        resultLanded: true,
+        lastActivity: "Writing the report"
+      ),
+      stopped(
+        "lost",
+        "Research agent",
+        rank: 1,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+        lastActivity: "Reading the source"
+      ),
+    ], causeOf: workSubagentStoppedGroupCause)
+
+    guard case .subagentStoppedGroup(let model) = folded.first?.payload else {
+      return XCTFail("expected a stopped group")
+    }
+    XCTAssertEqual(model.rows.map { $0.snapshot.lastActivity }, ["Writing the report", "Reading the source"])
+    XCTAssertEqual(model.rows.map { workSubagentStoppedOutcomeLabel($0.snapshot) }, ["report landed", "work lost"])
+  }
+
+  func testSubagentResultStopMetadataDecodesOptionalAndMapsToWorkEnvelope() throws {
+    let json = """
+    {
+      "sessionId":"chat-1",
+      "timestamp":"2026-09-19T00:00:00.000Z",
+      "sequence":1,
+      "event":{
+        "type":"subagent_result",
+        "taskId":"agent-1",
+        "agentId":"agent-1",
+        "status":"stopped",
+        "summary":"Stopped before finishing",
+        "stopSource":"system",
+        "stopReason":"the ADE brain restarted",
+        "turnId":"turn-1"
+      }
+    }
+    """
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    XCTAssertEqual(envelope.stopSource, "system")
+    XCTAssertEqual(envelope.stopReason, "the ADE brain restarted")
+    guard case .subagentResult(
+      _, _, _, _, _, _, _, _, _, _, _, _,
+      let decodedStopSource,
+      let decodedStopReason
+    ) = envelope.event else {
+      return XCTFail("Expected typed subagent result event.")
+    }
+    XCTAssertEqual(decodedStopSource, "system")
+    XCTAssertEqual(decodedStopReason, "the ADE brain restarted")
+    let workEnvelope = try XCTUnwrap(makeWorkChatTranscript(from: [envelope]).first)
+    XCTAssertEqual(workEnvelope.stopSource, "system")
+    XCTAssertEqual(workEnvelope.stopReason, "the ADE brain restarted")
+
+    let olderHostJSON = """
+    {
+      "sessionId":"chat-1",
+      "timestamp":"2026-09-19T00:00:00.000Z",
+      "sequence":1,
+      "event":{
+        "type":"subagent_result",
+        "taskId":"agent-1",
+        "agentId":"agent-1",
+        "status":"stopped",
+        "summary":"Stopped before finishing",
+        "turnId":"turn-1"
+      }
+    }
+    """
+    let olderEnvelope = try JSONDecoder().decode(
+      AgentChatEventEnvelope.self,
+      from: Data(olderHostJSON.utf8)
+    )
+    XCTAssertNil(olderEnvelope.stopSource)
+    XCTAssertNil(olderEnvelope.stopReason)
   }
 }
 

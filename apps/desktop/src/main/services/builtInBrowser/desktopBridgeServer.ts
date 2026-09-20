@@ -93,11 +93,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         reason: error instanceof Error ? error.message : String(error),
       });
     }
-    try {
-      fs.unlinkSync(socketPath);
-    } catch {
-      // ignore — only succeeds if a stale socket file exists
-    }
+    // The path is NOT unlinked here. A dev desktop that shares the machine's
+    // ADE home with the live desktop resolves the same bridge path, and a
+    // blind unlink handed the live brain's browser calls to whichever desktop
+    // started last (2026-09-18). Listen first; on EADDRINUSE probe the socket
+    // and unlink only a socket nobody answers on (see the error handler).
   }
 
   const activeServerHandles = new Set<() => void>();
@@ -136,7 +136,45 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     });
   });
 
+  // One retry after a stale-socket unlink; a second EADDRINUSE means a live
+  // owner appeared in between and this desktop yields to it.
+  let retriedAfterStaleUnlink = false;
   server.on("error", (error) => {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EADDRINUSE" && !isNamedPipe && !retriedAfterStaleUnlink) {
+      retriedAfterStaleUnlink = true;
+      // Probe: a live bridge accepts the connection; a stale file refuses it.
+      const probe = net.connect(socketPath);
+      let settled = false;
+      const settle = (live: boolean) => {
+        if (settled) return;
+        settled = true;
+        probe.destroy();
+        if (live) {
+          logger.warn("built_in_browser_bridge.already_served", {
+            socketPath,
+            reason: "another desktop answers on this bridge socket; leaving it in place",
+          });
+          try {
+            server.close();
+          } catch {
+            // ignore close failures when yielding
+          }
+          return;
+        }
+        try {
+          fs.unlinkSync(socketPath);
+        } catch {
+          // the stale file may already be gone
+        }
+        logger.info("built_in_browser_bridge.stale_socket_replaced", { socketPath });
+        server.listen(localIpcListenOptions(socketPath));
+      };
+      probe.once("connect", () => settle(true));
+      probe.once("error", () => settle(false));
+      probe.setTimeout(1_000, () => settle(false));
+      return;
+    }
     logger.error("built_in_browser_bridge.server_error", {
       socketPath,
       reason: error instanceof Error ? error.message : String(error),

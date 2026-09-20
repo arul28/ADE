@@ -9,7 +9,6 @@ export const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
-  "orchestrator",
   "initial_context",
 ];
 

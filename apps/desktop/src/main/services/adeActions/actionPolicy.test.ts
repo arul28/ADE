@@ -82,7 +82,6 @@ describe("the cto_voice gate", () => {
     for (const action of VOICE_ACTIONS) {
       const gated = isCtoOnlyAdeAction("cto_voice", action);
       expect(gated && !callerHasRoleAtLeast("agent", "cto"), action).toBe(true);
-      expect(gated && !callerHasRoleAtLeast("orchestrator", "cto"), action).toBe(true);
       expect(gated && !callerHasRoleAtLeast("external", "cto"), action).toBe(true);
     }
     // Desktop main launches the project runtime with ADE_DEFAULT_ROLE=cto and
@@ -597,7 +596,6 @@ const CTO_DOMAIN_COVERAGE: ReadonlyArray<{
   { domain: "ios_simulator", why: "simulator reads", actions: ["getStatus", "listDevices", "listLaunchTargets", "getScreenSnapshot"] },
   { domain: "app_control", why: "desktop app-control reads", actions: ["getStatus", "listTargets", "getSnapshot"] },
   { domain: "built_in_browser", why: "browser reads", actions: ["getStatus", "listSessions", "getTrace"] },
-  { domain: "orchestration", why: "orchestration run and bundle reads", actions: ["runList", "bundleRead"] },
 ];
 
 const ROWS = CTO_DOMAIN_COVERAGE.flatMap(({ domain, actions, why }) =>
@@ -636,7 +634,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
       ["ios_simulator", "listDevices"],
       ["app_control", "listTargets"],
       ["built_in_browser", "getStatus"],
-      ["orchestration", "runList"],
       ["project_config", "get"],
       ["project_secret", "list"],
     ] as Array<[AdeActionDomain, string]>) {

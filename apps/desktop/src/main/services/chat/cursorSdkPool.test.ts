@@ -31,7 +31,6 @@ const TEST_POLICY = {
   approvalPolicy: "on-request",
   fullAuto: false,
   hardGuards: true,
-  orchestrationLead: false,
   autoReview: true,
 } as const;
 const tempDirs: string[] = [];
