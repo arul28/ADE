@@ -129,7 +129,7 @@ struct WorkQueuedSteerDetailSheet: View {
       systemImage: "arrow.turn.down.right",
       tint: ADEColor.accent,
       title: "Send now",
-      description: "\(capability.agentLabel) picks it up after the current tool step.",
+      description: "Send it now, ahead of the current step.",
       unavailableReason: sendNowUnavailableReason,
       identifier: "Work.Chat.StagedStrip.DetailSheet.SendNow"
     ) {
