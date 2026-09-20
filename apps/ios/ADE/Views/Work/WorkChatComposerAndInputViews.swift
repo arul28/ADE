@@ -2,6 +2,83 @@ import SwiftUI
 import UIKit
 import AVKit
 
+// MARK: - Composer fold
+
+/// The one animation the composer fold rides. A single spring on the collapsed
+/// state, applied where the state changes rather than as an `.animation(_:value:)`
+/// modifier, so the card's height is the only thing interpolated and nothing
+/// animates the change twice.
+let workComposerFoldAnimation: Animation = .snappy(duration: 0.26, extraBounce: 0.02)
+
+/// Minimum downward travel that counts as a fold swipe. Short enough to feel
+/// like a flick, long enough that it is never a mis-read tap or a text
+/// selection drag.
+let workComposerFoldSwipeThreshold: CGFloat = 40
+
+/// What a finished drag on the composer card means.
+enum WorkComposerFoldGesture: Equatable {
+  case collapse
+  case expand
+  case ignore
+}
+
+/// Classifies a drag on the composer card.
+///
+/// A swipe only counts when it is mostly vertical — a mostly horizontal drag is
+/// the attachment tray scrolling or a text selection, and stealing it would
+/// make both unusable. Direction is read against the current state so the same
+/// gesture never toggles back and forth mid-drag.
+func workComposerFoldGesture(
+  translation: CGSize,
+  collapsed: Bool
+) -> WorkComposerFoldGesture {
+  let dy = translation.height
+  let dx = abs(translation.width)
+  guard abs(dy) >= workComposerFoldSwipeThreshold, abs(dy) > dx * 1.5 else { return .ignore }
+  if dy > 0 { return collapsed ? .ignore : .collapse }
+  return collapsed ? .expand : .ignore
+}
+
+/// The composer's fold state: what the card shows and whether the keyboard is
+/// up. Collapsed is a view mode only — nothing is unstaged, and the draft is
+/// untouched.
+struct WorkComposerFoldState: Equatable {
+  var collapsed: Bool
+  var focused: Bool
+
+  static let expanded = WorkComposerFoldState(collapsed: false, focused: false)
+}
+
+/// Every way the fold can change.
+enum WorkComposerFoldIntent: Equatable {
+  /// Swipe down on the card: fold to one line and put the keyboard away.
+  case collapse
+  /// Swipe up on the folded card, or a tap on the compact tray.
+  case expand
+  /// The field reported focus (the user tapped into it, or a restore pushed
+  /// focus there). Typing is always an escape from the folded state.
+  case focusChanged(Bool)
+}
+
+/// Pure transition for the composer fold.
+///
+/// `canCompose` is false while a question gates the field; expanding then must
+/// not raise a keyboard over a field that rejects every keystroke.
+func workComposerFoldTransition(
+  _ state: WorkComposerFoldState,
+  intent: WorkComposerFoldIntent,
+  canCompose: Bool
+) -> WorkComposerFoldState {
+  switch intent {
+  case .collapse:
+    return WorkComposerFoldState(collapsed: true, focused: false)
+  case .expand:
+    return WorkComposerFoldState(collapsed: false, focused: canCompose)
+  case .focusChanged(let focused):
+    return WorkComposerFoldState(collapsed: focused ? false : state.collapsed, focused: focused)
+  }
+}
+
 struct WorkTurnUsageSummaryBanner: View {
   let summary: WorkUsageSummary
   /// Retained for call-site compatibility. Model is shown in usage and composer, not the turn line.

@@ -1697,6 +1697,9 @@ struct WorkComposerTextView: UIViewRepresentable {
     textView.backgroundColor = .clear
     textView.textContainerInset = .zero
     textView.isScrollEnabled = false
+    // A downward drag inside a draft long enough to scroll takes the keyboard
+    // with it, matching the composer card's fold swipe.
+    textView.keyboardDismissMode = .interactive
     // Keep natural-language prompt traits aligned with `adePromptInputTraits()`.
     textView.autocorrectionType = .yes
     textView.autocapitalizationType = .sentences

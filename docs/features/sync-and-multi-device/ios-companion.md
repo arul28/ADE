@@ -2443,6 +2443,34 @@ stored choice. `WorkNewChatScreen` captures the active project id when pushed;
 changes so a hub-created session cannot accidentally launch with the previous
 project's interface mode.
 
+The Work chat composer folds by gesture, not by a control. A downward swipe
+anywhere on the composer card — the field, the controls row, or the card's own
+padding — folds the field to one line and lowers the keyboard in one spring; an
+upward swipe on the folded card, a tap into the field, or a tap on the compact
+attachment tray brings both back. The card carries no collapse row: the
+dedicated `keyboard.chevron.compact.down` button that used to sit in its own row
+above the field is gone, and the row with it. (The structured-question card
+keeps its own separate chevron footer.) The swipe rides alongside the field's
+own recognizers rather than replacing them, so text selection and the tray's
+horizontal scroll still work, and only a mostly-vertical drag past 40 pt is
+claimed (`workComposerFoldGesture`). Inside a draft long enough for the field to
+scroll, `keyboardDismissMode = .interactive` drags the keyboard down with the
+finger as well.
+
+Folding does not re-measure the field. The `UITextView` keeps the height it
+measured for the full draft and the folded card clips it to one line from the
+top, so a forty-line draft folds as a single animated container height instead
+of re-laying the text out on a background hop that lands outside the animation.
+One spring drives it, applied where the collapsed state changes rather than as
+an `.animation(_:value:)` modifier, so nothing animates the fold twice. The
+composer's fold switches the tray to 24 pt chips without unstaging anything, and
+it changes only its own height: no fold path scrolls the transcript, because a
+reader who folds the composer mid-sentence is folding it *to read*, and moving
+their place is the one thing that makes the gesture useless. The rules live in
+`workComposerFoldTransition` / `workComposerFoldGesture`
+(`WorkChatComposerAndInputViews.swift`) rather than in the view, so expanding
+while a pending question has locked the field never raises a keyboard over it.
+
 Submitting a valid prompt dismisses the keyboard across every mobile chat
 composer: Work session chat clears the observable `UITextView` focus request,
 Work new-chat and personal new-chat clear their focus bindings, and the Hub
@@ -2484,8 +2512,8 @@ Staged non-image attachments preview in place
 `chat.getAttachmentChunk` and render in QuickLook, with video played from the
 reassembled file. Attachment chips are kind-aware
 (`WorkChatInputAttachmentKind` → `photo` / `film` / `doc` glyphs), and the
-composer's collapse control switches the tray to 24 pt chips without unstaging
-anything. Hub, Work new-session, and in-session composers open attach, dictate,
+composer's fold gesture switches the tray to 24 pt chips without unstaging
+anything, and a tap on that compact row expands the composer again. Hub, Work new-session, and in-session composers open attach, dictate,
 and per-project prompt stash from `WorkComposerOverflowButton` (a three-dot
 menu) rather than a plus control or idle mic. Their `UITextView` inputs also
 advertise Paste for image-only clipboards and stage pasted images through the

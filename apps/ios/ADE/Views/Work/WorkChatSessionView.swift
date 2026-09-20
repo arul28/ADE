@@ -3196,18 +3196,6 @@ private struct WorkChatComposerCard: View {
       onSend: onSend,
       onSent: onSent
     )
-    .padding(.horizontal, 12)
-    .padding(.vertical, compact ? 8 : 10)
-    .background(composerSurface)
-  }
-
-  private var composerSurface: some View {
-    RoundedRectangle(cornerRadius: 24, style: .continuous)
-      .fill(ADEColor.composerBackground)
-      .overlay(
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 1)
-      )
   }
 }
 
@@ -3355,42 +3343,53 @@ private struct WorkChatComposerDraftInput: View {
     !isPersonalChat && syncService.canInvokeRemoteAction("chat.listPromptStashes")
   }
 
-  /// The collapse affordance lives in the composer card, not in a
-  /// `ToolbarItemGroup(placement: .keyboard)`. Keyboard toolbars are scoped to
-  /// the view that mounts them, so one mounted here could not dismiss the main
-  /// composer's `UITextView` — and a toolbar button also disappears with the
-  /// keyboard, which is exactly when the user needs the control to get back.
-  private var collapseControlVisible: Bool {
-    draftState.isFocused || !inputAttachments.isEmpty
+  /// The fold is a gesture, not a control: a downward swipe anywhere on the
+  /// card puts the keyboard away and folds the field to one line, and an upward
+  /// swipe (or a tap into the field, or on the compact tray) brings both back.
+  /// The old dedicated button cost the composer a whole row above the field,
+  /// and a keyboard toolbar item cannot work here at all — a toolbar is scoped
+  /// to the view that mounts it, and it disappears with the keyboard, which is
+  /// exactly when the user needs the way back.
+  private var foldState: WorkComposerFoldState {
+    WorkComposerFoldState(collapsed: composerCollapsed, focused: draftState.isFocused)
   }
 
-  @ViewBuilder
-  private var composerHeaderRow: some View {
-    if collapseControlVisible {
-      HStack(spacing: 0) {
-        Spacer(minLength: 0)
-        Button {
-          draftState.isFocused = false
-          composerCollapsed = true
-        } label: {
-          Image(systemName: "keyboard.chevron.compact.down")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .frame(width: 28, height: 28)
-            .background(ADEColor.surfaceBackground.opacity(0.38), in: Circle())
-            .overlay(Circle().stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6))
-            // 28pt reads right next to a one-line field but is under the 44pt
-            // minimum; the hit area grows, the drawn circle does not — the same
-            // split the composer's overflow control uses.
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Collapse composer")
-        .accessibilityHint("Lowers the keyboard and shrinks the composer")
-        .accessibilityIdentifier("Work.Chat.Composer.Collapse")
+  /// Applies a fold intent. The height change rides one spring; the focus
+  /// change is deliberately outside it, because the keyboard runs its own
+  /// animation and driving it from here animates the fold twice.
+  private func applyFold(_ intent: WorkComposerFoldIntent) {
+    let next = workComposerFoldTransition(foldState, intent: intent, canCompose: canCompose)
+    if next.collapsed != composerCollapsed {
+      withAnimation(workComposerFoldAnimation) {
+        composerCollapsed = next.collapsed
       }
     }
+    if next.focused != draftState.isFocused {
+      draftState.isFocused = next.focused
+    }
+  }
+
+  /// Rides alongside the field's own recognizers rather than replacing them, so
+  /// text selection and the tray's horizontal scroll keep working; only a
+  /// mostly-vertical swipe past the threshold is claimed.
+  private var foldGesture: some Gesture {
+    DragGesture(minimumDistance: 12, coordinateSpace: .local)
+      .onEnded { value in
+        switch workComposerFoldGesture(translation: value.translation, collapsed: composerCollapsed) {
+        case .collapse: applyFold(.collapse)
+        case .expand: applyFold(.expand)
+        case .ignore: break
+        }
+      }
+  }
+
+  private var composerSurface: some View {
+    RoundedRectangle(cornerRadius: 24, style: .continuous)
+      .fill(ADEColor.composerBackground)
+      .overlay(
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 1)
+      )
   }
 
   private var sendEnabled: Bool {
@@ -3474,24 +3473,21 @@ private struct WorkChatComposerDraftInput: View {
     WorkChatInputAttachmentTray(
       attachments: $inputAttachments,
       compact: composerCollapsed,
-      onExpand: {
-        composerCollapsed = false
-        if canCompose { draftState.isFocused = true }
-      },
+      onExpand: { applyFold(.expand) },
       chatSessionId: sessionId.isEmpty ? nil : sessionId
     )
   }
 
-  /// Text lines the field may grow to. Collapsed clamps to one, which is the
-  /// same `compact` clamp the small composer already uses.
-  private var composerMaxLines: Int {
-    composerCollapsed ? 1 : 6
-  }
+  /// Text lines the field may grow to.
+  ///
+  /// Deliberately NOT tied to the fold: re-measuring the `UITextView` mid-fold
+  /// re-lays the whole draft out on a background hop that lands outside the
+  /// animation, which is what made a long draft fold in steps. The folded card
+  /// clips the same measured field instead (`collapsed:` below).
+  private var composerMaxLines: Int { 6 }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      composerHeaderRow
-
       sendFailureRow
 
       if compact {
@@ -3515,7 +3511,8 @@ private struct WorkChatComposerDraftInput: View {
               onPasteImages: { images in
                 workChatInputPasteImages(images, into: $inputAttachments)
               },
-              maxLines: 1
+              maxLines: 1,
+              collapsed: composerCollapsed
             )
           }
 
@@ -3542,7 +3539,8 @@ private struct WorkChatComposerDraftInput: View {
           onPasteImages: { images in
             workChatInputPasteImages(images, into: $inputAttachments)
           },
-          maxLines: composerMaxLines
+          maxLines: composerMaxLines,
+          collapsed: composerCollapsed
         )
 
         if showInterrupt && hasSendableDraftOrAttachment {
@@ -3577,6 +3575,16 @@ private struct WorkChatComposerDraftInput: View {
           }
         }
       }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, compact ? 8 : 10)
+    .background(composerSurface)
+    // The gesture covers the card's chrome, not just the field, so the swipe
+    // works from the padding and the controls row too.
+    .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .simultaneousGesture(foldGesture)
+    .accessibilityAction(named: composerCollapsed ? "Expand composer" : "Collapse composer") {
+      applyFold(composerCollapsed ? .expand : .collapse)
     }
     .onAppear {
       configureSuggestionController()
@@ -3622,23 +3630,18 @@ private struct WorkChatComposerDraftInput: View {
     .workChatAttachmentPicker(
       isPresented: $presentedPicker.isPresenting(.photos),
       attachments: $inputAttachments,
-      onDismiss: {
-        composerCollapsed = false
-        if canCompose { draftState.isFocused = true }
-      }
+      onDismiss: { applyFold(.expand) }
     )
     .workChatFileAttachmentPickers(
       presentedPicker: $presentedPicker,
       attachments: $inputAttachments,
-      onDismiss: {
-        composerCollapsed = false
-        if canCompose { draftState.isFocused = true }
-      }
+      onDismiss: { applyFold(.expand) }
     )
     // Typing is the escape from the collapsed state, so it is never a mode the
     // user has to work out how to leave.
     .onChange(of: draftState.isFocused) { _, focused in
-      if focused { composerCollapsed = false }
+      guard focused, composerCollapsed else { return }
+      withAnimation(workComposerFoldAnimation) { composerCollapsed = false }
     }
     // Stage every ready attachment on the host the moment it lands, then persist
     // the refs. Uploading on attach is what makes the draft persistable (refs,
@@ -4383,7 +4386,21 @@ private struct WorkChatComposerTextField: View {
   var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
   var maxLines = 6
+  /// Folded composer. The field keeps its measured height and is clipped to one
+  /// line from the top, so folding a long draft animates one frame height
+  /// instead of re-laying the text out.
+  var collapsed = false
   @State private var measuredHeight: CGFloat = 24
+
+  /// One line of body text plus the same 8pt slack `WorkComposerTextView` adds
+  /// to its own line-count clamp.
+  private var singleLineHeight: CGFloat {
+    ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + 8
+  }
+
+  private var displayHeight: CGFloat {
+    collapsed ? min(measuredHeight, singleLineHeight) : measuredHeight
+  }
 
   var body: some View {
     WorkComposerTextView(
@@ -4397,6 +4414,8 @@ private struct WorkChatComposerTextField: View {
       maxLines: maxLines
     )
     .frame(height: measuredHeight)
+    .frame(height: displayHeight, alignment: .top)
+    .clipped()
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
